@@ -100,7 +100,7 @@ func (a *Authority) ForBead(beadID string) Session {
 // town database even when their ID carries a rig prefix.
 func (a *Authority) ForAgentBead(beadID string) Session {
 	if a == nil {
-		return Session{beadID: beadID, noRoute: true}
+		return Session{beadID: beadID}
 	}
 	townBeads := a.fallbackDir
 	workDir := parentDir(townBeads)
@@ -113,7 +113,6 @@ func (a *Authority) ForAgentBead(beadID string) Session {
 		townRoot: a.townRoot,
 		beadsDir: townBeads,
 		workDir:  workDir,
-		noRoute:  true,
 	}
 }
 
@@ -124,7 +123,6 @@ type Session struct {
 	workDir  string
 	beadsDir string
 	routed   bool
-	noRoute  bool
 	store    beadsdk.Storage
 }
 
