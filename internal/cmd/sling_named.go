@@ -50,61 +50,29 @@ func executeNamedTargetSling(ctx context.Context, intent sling.Intent) (*SlingRe
 		return result, fmt.Errorf("checking bead status: %w", err)
 	}
 
-	if beads.IsFlagLikeTitle(info.Title) {
-		result.ErrMsg = "flag-like title"
-		return result, fmt.Errorf("refusing to sling bead %s: title %q looks like a CLI flag (garbage bead from flag-parsing bug)", beadID, info.Title)
+	sameTarget := false
+	formulaRefresh := formulaName != ""
+	if intent.Target == "" || intent.Target == "." {
+		if sa, _, _, err := resolveSelfTarget(); err == nil {
+			sameTarget = matchesSlingTarget(intent.Target, info.Assignee, sa)
+		}
+	} else {
+		sameTarget = matchesSlingTarget(intent.Target, info.Assignee, "")
 	}
-
-	if info.Status == "closed" || info.Status == "tombstone" {
-		result.ErrMsg = "already " + info.Status
-		return result, fmt.Errorf("bead %s is %s (work already completed)", beadID, info.Status)
+	status := evaluateSlingStatus(info, beadID, intent.Force, intent.Merge, sameTarget, formulaRefresh)
+	if status.Err != nil {
+		result.ErrMsg = status.ErrMsg
+		return result, status.Err
 	}
-
-	mergeStrategy := resolveBeadMergeStrategy(intent.Merge, info)
-
-	if isDeferredBead(info) && !intent.Force {
-		result.ErrMsg = "deferred"
-		return result, fmt.Errorf("refusing to sling deferred bead %s: %q\nDeferred work should not consume polecat slots. Use --force to override", beadID, info.Title)
+	if status.NoOp {
+		result.Success = true
+		result.NoOp = true
+		return result, nil
 	}
-
+	mergeStrategy := status.Merge
+	force := status.Force
 	originalStatus := info.Status
 	originalAssignee := info.Assignee
-	force := intent.Force
-	if (info.Status == "pinned" || info.Status == "hooked" || info.Status == "in_progress") && !force {
-		if (info.Status == "hooked" || info.Status == "in_progress") && info.Assignee != "" && isHookedAgentDeadFn(info.Assignee) {
-			fmt.Printf("%s Hooked agent %s has no active session, auto-forcing re-sling...\n",
-				style.Warning.Render("⚠"), info.Assignee)
-			force = true
-		} else {
-			target := intent.Target
-			selfAgent := ""
-			skipIdempotency := false
-			if target == "" || target == "." {
-				sa, _, _, err := resolveSelfTarget()
-				if err != nil {
-					skipIdempotency = true
-				} else {
-					selfAgent = sa
-				}
-			}
-			if !skipIdempotency && matchesSlingTarget(target, info.Assignee, selfAgent) {
-				if formulaName == "" {
-					fmt.Printf("%s Bead %s is already %s to %s, no-op\n",
-						style.Dim.Render("○"), beadID, info.Status, info.Assignee)
-					result.Success = true
-					result.NoOp = true
-					return result, nil
-				}
-			} else {
-				assignee := info.Assignee
-				if assignee == "" {
-					assignee = "(unknown)"
-				}
-				result.ErrMsg = "already " + info.Status
-				return result, fmt.Errorf("bead %s is already %s to %s\nUse --force to re-sling", beadID, info.Status, assignee)
-			}
-		}
-	}
 
 	resolved, err := resolveTarget(intent.Target, ResolveTargetOptions{
 		DryRun:       intent.DryRun,
