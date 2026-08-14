@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInstallForRole_RoleAware(t *testing.T) {
@@ -268,8 +270,13 @@ await handlers.session_start({}, {
 });
 process.stdout.write(JSON.stringify(calls));
 `
-	out, err := exec.Command(node, "--input-type=module", "--eval", harness, extensionPath).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, node, "--input-type=module", "--eval", harness, extensionPath).Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("exercise Pi extension: %v", ctx.Err())
+		}
 		t.Fatalf("exercise Pi extension: %v", err)
 	}
 

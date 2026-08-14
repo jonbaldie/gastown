@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+func clearRuntimeSessionSelection(t *testing.T) {
+	t.Helper()
+	t.Setenv("GT_SESSION_ID_ENV", "")
+	t.Setenv("GT_AGENT", "")
+}
+
 // TestReadHookSessionID_EnvTakesPriority verifies GT_SESSION_ID env var is
 // returned without touching stdin or persisted files.
 func TestReadHookSessionID_EnvTakesPriority(t *testing.T) {
@@ -24,6 +30,7 @@ func TestReadHookSessionID_EnvTakesPriority(t *testing.T) {
 // TestReadHookSessionID_ClaudeSessionIDFallback verifies CLAUDE_SESSION_ID
 // is used when GT_SESSION_ID is unset.
 func TestReadHookSessionID_ClaudeSessionIDFallback(t *testing.T) {
+	clearRuntimeSessionSelection(t)
 	want := "claude-session-xyz"
 	t.Setenv("GT_SESSION_ID", "")
 	t.Setenv("CLAUDE_SESSION_ID", want)
@@ -52,6 +59,7 @@ func TestReadHookSessionID_RuntimeSessionEnv(t *testing.T) {
 // TestReadHookSessionID_PersistedFileFallback verifies the persisted
 // .runtime/session_id file is used when env vars are unset.
 func TestReadHookSessionID_PersistedFileFallback(t *testing.T) {
+	clearRuntimeSessionSelection(t)
 	want := "persisted-session-456"
 	t.Setenv("GT_SESSION_ID", "")
 	t.Setenv("CLAUDE_SESSION_ID", "")
@@ -95,6 +103,7 @@ func TestReadHookSessionID_SourceFromEnv(t *testing.T) {
 // TestReadHookSessionID_AutoGeneratesFallback verifies a UUID is generated
 // when no env vars, stdin, or persisted file are available.
 func TestReadHookSessionID_AutoGeneratesFallback(t *testing.T) {
+	clearRuntimeSessionSelection(t)
 	t.Setenv("GT_SESSION_ID", "")
 	t.Setenv("CLAUDE_SESSION_ID", "")
 
