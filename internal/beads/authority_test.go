@@ -1,11 +1,14 @@
 package beads
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	beadsdk "github.com/steveyegge/beads"
 )
 
 func TestAuthorityForBeadRoutesByPrefix(t *testing.T) {
@@ -211,6 +214,25 @@ func TestSessionForAgentBeadShowStaysInTown(t *testing.T) {
 	}
 	if strings.Contains(logOutput, "BEADS_DIR="+town.rigBeads) {
 		t.Fatalf("ForAgentBead Show leaked rig BEADS_DIR\nlog:\n%s", logOutput)
+	}
+}
+
+func TestSessionShowUsesStoreAdapter(t *testing.T) {
+	town := newAuthorityTown(t)
+	store := newMockStorage()
+	if err := store.CreateIssue(context.Background(), &beadsdk.Issue{
+		Title:    "from-store",
+		Priority: 2,
+	}, "actor"); err != nil {
+		t.Fatal(err)
+	}
+
+	issue, err := NewAuthority(town.root).ForBead("test-1").WithStore(store).Show()
+	if err != nil {
+		t.Fatalf("Show() via store error = %v", err)
+	}
+	if issue == nil || issue.Title != "from-store" {
+		t.Fatalf("Show() issue = %+v, want title from-store", issue)
 	}
 }
 

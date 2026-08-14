@@ -2,6 +2,8 @@ package beads
 
 import (
 	"path/filepath"
+
+	beadsdk "github.com/steveyegge/beads"
 )
 
 // Authority is the Beads routing module. Callers ask for a Session for a
@@ -79,7 +81,7 @@ func (a *Authority) ForBead(beadID string) Session {
 		if townRoot == "" {
 			townRoot = filepath.Dir(routesDir)
 		}
-		beadsDir := routesDir
+		beadsDir := ResolveBeadsDir(routesDir)
 		if r.Path != "." {
 			beadsDir = ResolveBeadsDir(filepath.Join(townRoot, r.Path))
 		}
@@ -123,6 +125,7 @@ type Session struct {
 	beadsDir string
 	routed   bool
 	noRoute  bool
+	store    beadsdk.Storage
 }
 
 // BeadID returns the bead this Session was opened for.
@@ -138,6 +141,24 @@ func (s Session) WorkDir() string { return s.workDir }
 // Routed reports whether prefix routing found an owning rig or town path.
 func (s Session) Routed() bool { return s.routed }
 
+// WithStore binds an in-process beads SDK adapter. Show, Update, Close, and
+// Hook then use the store instead of the bd CLI.
+func (s Session) WithStore(store beadsdk.Storage) Session {
+	s.store = store
+	return s
+}
+
+func (a *Authority) withFallback(dir string) *Authority {
+	if a == nil {
+		return &Authority{fallbackDir: dir}
+	}
+	cp := *a
+	if dir != "" {
+		cp.fallbackDir = dir
+	}
+	return &cp
+}
+
 // Client returns a Beads wrapper pinned to this Session's database.
 // Routing is already applied, so the client does not re-route by prefix.
 func (s Session) Client() *Beads {
@@ -146,6 +167,7 @@ func (s Session) Client() *Beads {
 		beadsDir: s.beadsDir,
 		townRoot: s.townRoot,
 		noRoute:  true,
+		store:    s.store,
 	}
 }
 

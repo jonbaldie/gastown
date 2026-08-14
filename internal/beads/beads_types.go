@@ -45,10 +45,7 @@ func FindTownRoot(startDir string) string {
 //
 // If townRoot is empty or prefix is not found, falls back to the provided fallbackDir.
 func ResolveRoutingTarget(townRoot, beadID, fallbackDir string) string {
-	auth := NewAuthority(townRoot)
-	if fallbackDir != "" {
-		auth.fallbackDir = fallbackDir
-	}
+	auth := NewAuthority(townRoot).withFallback(fallbackDir)
 	s := auth.ForBead(beadID)
 	if s.Routed() {
 		return s.BeadsDir()
