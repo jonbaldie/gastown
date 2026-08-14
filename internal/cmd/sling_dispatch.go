@@ -171,7 +171,9 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 				style.Dim.Render("○"), params.BeadID, info.Status, info.Assignee)
 			result.Success = true
 			result.NoOp = true
-			result.PolecatName = polecatNameFromAssignee(info.Assignee)
+			if name, ok := polecatNameFromAssignee(params.RigName, info.Assignee); ok {
+				result.PolecatName = name
+			}
 			return result, nil
 		} else {
 			result.ErrMsg = "already " + info.Status
@@ -460,14 +462,6 @@ func isDefaultRigSlingNoop(params SlingParams, info *beadInfo, townRoot string) 
 	}
 	defaultFormula := resolveFormula("", params.HookRawBead, townRoot, params.RigName)
 	return params.FormulaName == "" || params.FormulaName == defaultFormula
-}
-
-func polecatNameFromAssignee(assignee string) string {
-	parts := strings.Split(assignee, "/")
-	if len(parts) >= 3 && parts[1] == "polecats" {
-		return parts[2]
-	}
-	return ""
 }
 
 // findTownRoot is defined in hook.go
