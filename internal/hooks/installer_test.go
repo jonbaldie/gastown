@@ -3,6 +3,7 @@ package hooks
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -230,6 +231,64 @@ func TestInstallForRole_RoleAgnostic(t *testing.T) {
 				t.Fatalf("%s not created", tt.hooksFile)
 			}
 		})
+	}
+}
+
+func TestPiExtensionPassesSessionIDToGasTown(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is required to exercise the Pi extension boundary")
+	}
+
+	dir := t.TempDir()
+	content, err := resolveAndSubstitute("pi", "gastown-hooks.js", "polecat")
+	if err != nil {
+		t.Fatalf("resolveAndSubstitute: %v", err)
+	}
+	extensionPath := filepath.Join(dir, "gastown-hooks.mjs")
+	if err := os.WriteFile(extensionPath, content, 0644); err != nil {
+		t.Fatalf("write extension: %v", err)
+	}
+
+	const harness = `
+import { pathToFileURL } from "node:url";
+const { default: extension } = await import(pathToFileURL(process.argv[1]));
+const handlers = {};
+const calls = [];
+const pi = {
+  on(event, handler) { handlers[event] = handler; },
+  async exec(command, args) {
+    calls.push({ command, args });
+    return { code: 0, stdout: "prime context", stderr: "", killed: false };
+  },
+};
+extension(pi);
+await handlers.session_start({}, {
+  sessionManager: { getSessionId: () => "pi-session-123" },
+});
+process.stdout.write(JSON.stringify(calls));
+`
+	out, err := exec.Command(node, "--input-type=module", "--eval", harness, extensionPath).Output()
+	if err != nil {
+		t.Fatalf("exercise Pi extension: %v", err)
+	}
+
+	var calls []struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	if err := json.Unmarshal(out, &calls); err != nil {
+		t.Fatalf("decode Pi extension calls: %v", err)
+	}
+	if len(calls) == 0 {
+		t.Fatal("Pi session_start did not invoke Gas Town")
+	}
+	if calls[0].Command != "env" {
+		t.Fatalf("Pi session_start command = %q, want env", calls[0].Command)
+	}
+	wantArgs := []string{"PI_SESSION_ID=pi-session-123", resolveGTBinary(), "prime", "--hook"}
+	if got := calls[0].Args; strings.Join(got, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("Pi session_start args = %q, want %q", got, wantArgs)
 	}
 }
 

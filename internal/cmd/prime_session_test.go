@@ -34,6 +34,21 @@ func TestReadHookSessionID_ClaudeSessionIDFallback(t *testing.T) {
 	}
 }
 
+// TestReadHookSessionID_RuntimeSessionEnv verifies non-Claude runtimes can
+// provide their session ID through the configured runtime environment variable.
+func TestReadHookSessionID_RuntimeSessionEnv(t *testing.T) {
+	want := "pi-session-0198f6c0"
+	t.Setenv("GT_SESSION_ID", "")
+	t.Setenv("GT_SESSION_ID_ENV", "PI_SESSION_ID")
+	t.Setenv("PI_SESSION_ID", want)
+	t.Setenv("CLAUDE_SESSION_ID", "should-not-use-this")
+
+	id, _ := readHookSessionID()
+	if id != want {
+		t.Errorf("readHookSessionID() = %q, want %q", id, want)
+	}
+}
+
 // TestReadHookSessionID_PersistedFileFallback verifies the persisted
 // .runtime/session_id file is used when env vars are unset.
 func TestReadHookSessionID_PersistedFileFallback(t *testing.T) {
