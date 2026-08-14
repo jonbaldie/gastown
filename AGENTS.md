@@ -243,4 +243,5 @@ The environment snapshot may still install the same collections globally under
 `~/.agents/skills/` and mirror them to `~/.cursor/skills-cursor/` (Cursor Cloud
 discovers global skills there, not `~/.cursor/skills`). That snapshot copy is a
 fallback for sessions that boot before a pull. The in-repo tree is the source of
-truth for this project. The snapshot refresh is best-effort (`|| true`).
+truth for this project. The snapshot refresh is best-effort (`|| true`). Changes
+under `.agents/` skip the Go CI workflows.
