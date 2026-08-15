@@ -2,7 +2,9 @@ package rig
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -523,6 +525,62 @@ func TestEnsureGitignorePatterns_UpgradePreservesBroadPattern(t *testing.T) {
 	if !containsLine(string(content), ".claude/") {
 		t.Error(".claude/ should be preserved")
 	}
+}
+
+// TestEnsureLocalExcludePatterns_HidesAgentsInWorktree is the cleanliness
+// seam for provisioned skills: a linked worktree must not show .agents/ in
+// git status after EnsureLocalExcludePatterns. Git reads info/exclude from
+// the common dir, not the worktree-specific git dir.
+func TestEnsureLocalExcludePatterns_HidesAgentsInWorktree(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@test.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hi\n"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	worktree := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", worktree)
+
+	if err := EnsureLocalExcludePatterns(worktree); err != nil {
+		t.Fatalf("EnsureLocalExcludePatterns: %v", err)
+	}
+
+	skill := filepath.Join(worktree, ".agents", "skills", "implement", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0755); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+	if err := os.WriteFile(skill, []byte("# skill\n"), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	status := runGitOutput(t, worktree, "status", "--porcelain")
+	if strings.Contains(status, ".agents") {
+		t.Fatalf("git status in linked worktree should hide .agents/, got:\n%s", status)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
 }
 
 // TestGasTownLocalExcludePatterns_IncludesBeads verifies that the local exclude
