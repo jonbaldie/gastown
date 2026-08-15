@@ -798,7 +798,7 @@ func TestRigSettingsEdgeCases(t *testing.T) {
 		if err := runRigSettingsSet(cmd, []string{rigName, "role_agents.witness", "gemini"}); err != nil {
 			t.Fatalf("set witness: %v", err)
 		}
-		if err := runRigSettingsSet(cmd, []string{rigName, "role_agents.refinery", "claude-sonnet"}); err != nil {
+		if err := runRigSettingsSet(cmd, []string{rigName, "role_agents.refinery", "codex"}); err != nil {
 			t.Fatalf("set refinery: %v", err)
 		}
 
@@ -817,8 +817,8 @@ func TestRigSettingsEdgeCases(t *testing.T) {
 		if settings.RoleAgents["witness"] != "gemini" {
 			t.Errorf("RoleAgents[witness] = %q, want %q", settings.RoleAgents["witness"], "gemini")
 		}
-		if settings.RoleAgents["refinery"] != "claude-sonnet" {
-			t.Errorf("RoleAgents[refinery] = %q, want %q", settings.RoleAgents["refinery"], "claude-sonnet")
+		if settings.RoleAgents["refinery"] != "codex" {
+			t.Errorf("RoleAgents[refinery] = %q, want %q", settings.RoleAgents["refinery"], "codex")
 		}
 	})
 }
