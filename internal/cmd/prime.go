@@ -289,6 +289,8 @@ func runPrimeCompactResume(ctx RoleContext) {
 
 	fmt.Println("\n---")
 	fmt.Println()
+	outputSkillDirectives(os.Stdout)
+	fmt.Println()
 	fmt.Println("**Continue your current task.** If you've lost context, run `gt prime` for full reload.")
 
 	// Remind polecats about gt done — after compaction the agent may have lost
@@ -538,6 +540,7 @@ func outputRoleContext(ctx RoleContext) (string, error) {
 		return "", err
 	}
 
+	outputSkillDirectives(os.Stdout)
 	outputRoleDirectives(ctx, os.Stdout, primeExplain)
 	outputContextFile(ctx)
 	outputHandoffContent(ctx)

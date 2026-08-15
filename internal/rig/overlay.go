@@ -16,6 +16,7 @@ func gasTownIgnorePatterns() []string {
 		".runtime/",
 		".claude/",
 		".opencode/",
+		".agents/",
 		".logs/",
 		"__pycache__/",
 		"state.json",
