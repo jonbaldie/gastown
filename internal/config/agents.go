@@ -621,12 +621,7 @@ func cloneAgentPresetInfo(src *AgentPresetInfo) *AgentPresetInfo {
 	if src.Args != nil {
 		clone.Args = append([]string(nil), src.Args...)
 	}
-	if src.RequiredArgGroups != nil {
-		clone.RequiredArgGroups = make([][]string, len(src.RequiredArgGroups))
-		for i, group := range src.RequiredArgGroups {
-			clone.RequiredArgGroups[i] = append([]string(nil), group...)
-		}
-	}
+	clone.RequiredArgGroups = cloneStringGroups(src.RequiredArgGroups)
 	if src.Env != nil {
 		clone.Env = make(map[string]string, len(src.Env))
 		for k, v := range src.Env {
@@ -648,6 +643,17 @@ func cloneAgentPresetInfo(src *AgentPresetInfo) *AgentPresetInfo {
 		clone.ACP = &acp
 	}
 	return &clone
+}
+
+func cloneStringGroups(src [][]string) [][]string {
+	if src == nil {
+		return nil
+	}
+	clone := make([][]string, len(src))
+	for i, group := range src {
+		clone[i] = append([]string(nil), group...)
+	}
+	return clone
 }
 
 // LoadAgentRegistry loads agent definitions from a JSON file and merges with built-ins.

@@ -108,8 +108,9 @@ var configRoleCmd = &cobra.Command{
 	Long: `Configure the agent profile and thinking effort used by each role.
 
 Agent profiles are built-ins or aliases created with 'gt config agent set'.
-Effort is optional and must be low, medium, high, or max. For Pi profiles,
-the configured effort is passed to Pi as --thinking.`,
+Effort is optional. Pi profiles accept off, minimal, low, medium, high, xhigh,
+or max; other runtimes accept low, medium, high, or max. For Pi profiles, the
+configured effort is passed to Pi as --thinking.`,
 	RunE: requireSubcommand,
 }
 
@@ -607,7 +608,7 @@ func runConfigDefaultAgent(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigRoleList(cmd *cobra.Command, args []string) error {
+func runConfigRoleList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -638,47 +639,19 @@ func runConfigRoleList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigRoleSet(cmd *cobra.Command, args []string) error {
+func runConfigRoleSet(_ *cobra.Command, args []string) error {
 	role, agent := args[0], args[1]
-	if !isConfigurableRole(role) {
-		return fmt.Errorf("unknown role %q (valid: %s)", role, strings.Join(config.TierManagedRoles, ", "))
-	}
-
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
-	}
-	settingsPath := config.TownSettingsPath(townRoot)
-	settings, err := config.LoadOrCreateTownSettings(settingsPath)
-	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
-	}
-	if !isConfiguredAgent(agent, settings) {
-		return fmt.Errorf("agent %q not found (use 'gt config agent list' to see available agents)", agent)
 	}
 
 	effort := ""
 	if len(args) == 3 {
 		effort = args[2]
-		if !config.IsValidEffortLevel(effort) {
-			return fmt.Errorf("invalid effort %q (valid: %s)", effort, strings.Join(config.ValidEffortLevels(), ", "))
-		}
 	}
-
-	if settings.RoleAgents == nil {
-		settings.RoleAgents = make(map[string]string)
-	}
-	settings.RoleAgents[role] = agent
-	if effort != "" {
-		if settings.RoleEffort == nil {
-			settings.RoleEffort = make(map[string]string)
-		}
-		settings.RoleEffort[role] = effort
-	}
-	settings.CostTier = ""
-
-	if err := config.SaveTownSettings(settingsPath, settings); err != nil {
-		return fmt.Errorf("saving town settings: %w", err)
+	if err := config.SetTownRole(config.TownSettingsPath(townRoot), role, agent, effort); err != nil {
+		return err
 	}
 	if effort == "" {
 		fmt.Printf("Set role %s to agent %s (effort unchanged)\n", style.Bold.Render(role), style.Bold.Render(agent))
@@ -688,51 +661,17 @@ func runConfigRoleSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigRoleUnset(cmd *cobra.Command, args []string) error {
+func runConfigRoleUnset(_ *cobra.Command, args []string) error {
 	role := args[0]
-	if !isConfigurableRole(role) {
-		return fmt.Errorf("unknown role %q (valid: %s)", role, strings.Join(config.TierManagedRoles, ", "))
-	}
-
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
-	settingsPath := config.TownSettingsPath(townRoot)
-	settings, err := config.LoadOrCreateTownSettings(settingsPath)
-	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
-	}
-	delete(settings.RoleAgents, role)
-	delete(settings.RoleEffort, role)
-	settings.CostTier = ""
-	if err := config.SaveTownSettings(settingsPath, settings); err != nil {
-		return fmt.Errorf("saving town settings: %w", err)
+	if err := config.UnsetTownRole(config.TownSettingsPath(townRoot), role); err != nil {
+		return err
 	}
 	fmt.Printf("Cleared role configuration for %s\n", style.Bold.Render(role))
 	return nil
-}
-
-func isConfigurableRole(role string) bool {
-	for _, candidate := range config.TierManagedRoles {
-		if role == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-func isConfiguredAgent(name string, settings *config.TownSettings) bool {
-	for _, preset := range config.ListAgentPresets() {
-		if name == preset {
-			return true
-		}
-	}
-	if settings != nil && settings.Agents != nil {
-		_, ok := settings.Agents[name]
-		return ok
-	}
-	return false
 }
 
 func runConfigAgentEmailDomain(cmd *cobra.Command, args []string) error {

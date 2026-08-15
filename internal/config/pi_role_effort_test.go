@@ -34,6 +34,12 @@ func TestBuildStartupCommandAppliesPiRoleEffort(t *testing.T) {
 			effort:   "high",
 			want:     "--model openai-codex/gpt-5.6-luna --thinking high",
 		},
+		{
+			name:     "replaces a trailing thinking flag with Pi-specific effort",
+			baseArgs: []string{"--model", "openai-codex/gpt-5.6-luna", "--thinking"},
+			effort:   "xhigh",
+			want:     "--model openai-codex/gpt-5.6-luna --thinking xhigh",
+		},
 	}
 
 	for _, tt := range tests {

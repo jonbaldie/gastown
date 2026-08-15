@@ -32,7 +32,8 @@ Rig settings control behavioral configuration for a rig:
 
 Settings are stored in settings/config.json within each rig directory.
 Use dot notation to access nested keys (e.g., role_agents.witness or
-role_effort.witness).`,
+role_effort.witness). For role configuration, 'gt rig role' provides a simpler
+validated interface.`,
 	RunE: requireSubcommand,
 }
 
@@ -70,7 +71,9 @@ Examples:
   gt rig settings set gastown merge_queue.max_concurrent 5
   gt rig settings set gastown theme.disabled true
   gt rig settings set gastown theme.name forest
-  gt rig settings set gastown theme.custom '{"bg":"#111111","fg":"#eeeeee"}'`,
+  gt rig settings set gastown theme.custom '{"bg":"#111111","fg":"#eeeeee"}'
+
+Prefer 'gt rig role set' when changing role_agents and role_effort together.`,
 	Args: cobra.ExactArgs(3),
 	RunE: runRigSettingsSet,
 }
@@ -127,12 +130,12 @@ func runRigSettingsShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigSettingsSet(cmd *cobra.Command, args []string) error {
+func runRigSettingsSet(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	keyPath := args[1]
 	valueStr := args[2]
 
-	_, r, err := getRig(rigName)
+	townRoot, r, err := getRig(rigName)
 	if err != nil {
 		return err
 	}
@@ -150,11 +153,12 @@ func runRigSettingsSet(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Parse the value
-	value := parseValue(valueStr)
-	if err := validateRigRoleEffort(keyPath, value); err != nil {
+	if err := validateRigRoleSetting(townRoot, r.Path, keyPath, valueStr); err != nil {
 		return err
 	}
+
+	// Parse the value
+	value := parseValue(valueStr)
 
 	// Set the value using dot notation
 	if err := setNestedValue(settings, keyPath, value); err != nil {
@@ -171,17 +175,19 @@ func runRigSettingsSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func validateRigRoleEffort(keyPath string, value interface{}) error {
+func validateRigRoleSetting(townRoot, rigPath, keyPath, value string) error {
 	parts := strings.Split(keyPath, ".")
-	if len(parts) != 2 || parts[0] != "role_effort" {
+	if len(parts) != 2 {
 		return nil
 	}
-
-	effort, ok := value.(string)
-	if !ok || !config.IsValidEffortLevel(effort) {
-		return fmt.Errorf("invalid effort %q (valid: %s)", fmt.Sprint(value), strings.Join(config.ValidEffortLevels(), ", "))
+	switch parts[0] {
+	case "role_agents":
+		return config.ValidateRigRoleAgent(townRoot, rigPath, parts[1], value)
+	case "role_effort":
+		return config.ValidateRigRoleEffort(townRoot, rigPath, parts[1], value)
+	default:
+		return nil
 	}
-	return nil
 }
 
 func runRigSettingsUnset(cmd *cobra.Command, args []string) error {

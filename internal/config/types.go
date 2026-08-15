@@ -93,7 +93,9 @@ type TownSettings struct {
 
 	// RoleEffort maps role names to effort levels for per-role effort configuration.
 	// Keys are role names: "mayor", "deacon", "witness", "refinery", "polecat", "crew", "boot", "dog".
-	// Values are effort levels: "low", "medium", "high", "max".
+	// Values are runtime-specific effort levels. Pi accepts "off", "minimal",
+	// "low", "medium", "high", "xhigh", and "max"; other managed runtimes
+	// accept "low", "medium", "high", and "max".
 	// Allows cost/speed optimization by using lower effort for simpler roles.
 	// Managed by cost-tier presets alongside RoleAgents.
 	RoleEffort map[string]string `json:"role_effort,omitempty"`
@@ -704,7 +706,9 @@ type RigSettings struct {
 
 	// RoleEffort maps role names to effort levels, overriding TownSettings.RoleEffort for this rig.
 	// Keys are role names: "witness", "refinery", "polecat", "crew".
-	// Values are effort levels: "low", "medium", "high", "max".
+	// Values are runtime-specific effort levels. Pi accepts "off", "minimal",
+	// "low", "medium", "high", "xhigh", and "max"; other managed runtimes
+	// accept "low", "medium", "high", and "max".
 	// Example: {"crew": "max", "witness": "low"}
 	RoleEffort map[string]string `json:"role_effort,omitempty"`
 }
@@ -1065,10 +1069,12 @@ func ensureRequiredArgGroups(args []string, requiredGroups [][]string) []string 
 }
 
 func containsArgSequence(args, sequence []string) bool {
-	if len(sequence) == 0 {
+	sequenceLength := len(sequence)
+	if sequenceLength == 0 {
 		return true
 	}
-	for i := 0; i+len(sequence) <= len(args); i++ {
+	argsLength := len(args)
+	for i := 0; i+sequenceLength <= argsLength; i++ {
 		matched := true
 		for j := range sequence {
 			if args[i+j] != sequence[j] {

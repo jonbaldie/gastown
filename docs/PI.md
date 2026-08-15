@@ -55,16 +55,19 @@ Use `gt config role set <role> <profile> [effort]` for town-wide assignments:
 
 ```bash
 gt config role set mayor pi-luna high
-gt config role set deacon pi-local low
-gt config role set witness pi-local low
+gt config role set deacon pi-local
+gt config role set witness pi-local
 gt config role set refinery pi-luna medium
 gt config role set polecat pi-luna high
 gt config role set crew pi-luna max
 ```
 
-Supported effort values are `low`, `medium`, `high`, and `max`. Gas Town passes
-the selected value to Pi as `--thinking <effort>`. A role setting overrides a
-`--thinking` value included in the underlying profile.
+Pi supports `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Gas
+Town passes the selected value to Pi as `--thinking <effort>`. Other managed
+runtimes accept `low`, `medium`, `high`, and `max`. Validation follows the
+selected profile, and a role setting overrides a `--thinking` value included
+in the underlying profile. When a model reports no thinking capability, omit
+the effort as shown for `pi-local`; Pi otherwise clamps the request to `off`.
 
 Inspect the effective town-wide map:
 
@@ -83,19 +86,24 @@ apply a changed model or effort.
 
 ## Override a single rig
 
-Rig settings take precedence over town settings:
+Rig settings take precedence over town settings. Set the profile and effort in
+one validated command:
 
 ```bash
-gt rig settings set sample role_agents.polecat pi-local
-gt rig settings set sample role_effort.polecat low
+gt rig role set sample polecat pi-local
+gt rig role set sample witness pi-luna xhigh
+gt rig role list sample
 ```
 
 Remove the rig override to return to the town assignment:
 
 ```bash
-gt rig settings unset sample role_agents.polecat
-gt rig settings unset sample role_effort.polecat
+gt rig role unset sample polecat
 ```
+
+The lower-level `gt rig settings set` interface remains available and now
+rejects unknown role names, unknown profiles, and effort levels unsupported by
+the selected runtime.
 
 ## Container setup
 

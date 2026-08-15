@@ -1508,13 +1508,12 @@ func applyRoleEffortToRuntime(rc *RuntimeConfig, effort string) {
 		return
 	}
 
-	args := make([]string, 0, len(rc.Args)+2)
-	for i := 0; i < len(rc.Args); i++ {
+	var args []string
+	argCount := len(rc.Args)
+	for i := 0; i < argCount; i++ {
 		arg := rc.Args[i]
 		if arg == "--thinking" {
-			if i+1 < len(rc.Args) {
-				i++
-			}
+			i++
 			continue
 		}
 		if strings.HasPrefix(arg, "--thinking=") {
