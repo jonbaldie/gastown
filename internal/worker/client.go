@@ -169,7 +169,7 @@ func (a *AgentClient) get(ctx context.Context, path string) ([]byte, error) {
 
 // Hello registers the agent connection.
 func (a *AgentClient) Hello(ctx context.Context, runID, sessionID string) error {
-	_, err := a.post(ctx, "/v1/hello", Envelope{Kind: "hello", Peer: PeerAgent, RunID: runID, SessionID: sessionID})
+	_, err := a.post(ctx, "/v1/hello", Envelope{Kind: KindIdentity, Peer: PeerAgent, RunID: runID, SessionID: sessionID})
 	return err
 }
 

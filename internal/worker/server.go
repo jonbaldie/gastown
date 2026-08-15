@@ -280,7 +280,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	case env := <-conn.outbound:
 		writeJSON(w, http.StatusOK, env)
 	case <-timer.C:
-		writeJSON(w, http.StatusOK, map[string]any{"kind": "idle"})
+		writeJSON(w, http.StatusOK, Envelope{Kind: KindHealth, RunID: runID})
 	case <-r.Context().Done():
 	}
 }
@@ -578,11 +578,6 @@ func (s *Server) applyHealth(h Health) error {
 	}
 	run.LastHealth = nowUTC()
 	run.UpdatedAt = run.LastHealth
-	if h.CurrentState != "" {
-		if st := State(h.CurrentState); st.known() {
-			run.State = st
-		}
-	}
 	s.touch(h.RunID)
 	return s.store.putRun(run)
 }
@@ -595,10 +590,10 @@ func (s *Server) deliver(ctx context.Context, p Prompt) (*Delivery, error) {
 		return nil, fmt.Errorf("invalid priority %q", p.Priority)
 	}
 	run, err := s.resolveRun(p.RunID, "")
-	if errors.Is(err, ErrRunNotFound) && p.RunID != "" {
-		run, err = s.startRun(StartSpec{SessionID: p.RunID, BeadID: p.BeadID})
-	}
 	if err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			return nil, fmt.Errorf("%w: %s", ErrUnknownState, p.RunID)
+		}
 		return nil, err
 	}
 	p.RunID = run.RunID
@@ -614,9 +609,6 @@ func (s *Server) deliver(ctx context.Context, p Prompt) (*Delivery, error) {
 
 	if s.connected(run.RunID) {
 		return s.deliverProtocol(ctx, run, p)
-	}
-	if run.Adapter == AdapterProtocol {
-		return nil, fmt.Errorf("%w: protocol session %s has no client", ErrUnknownState, run.RunID)
 	}
 	return s.deliverTmux(run, p)
 }
