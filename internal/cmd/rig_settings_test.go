@@ -27,9 +27,9 @@ func setupTestRigForSettings(t *testing.T) (string, string) {
 	// Create town.json (primary marker for workspace detection)
 	townConfig := &config.TownConfig{
 		Type:      "town",
-		Version:    config.CurrentTownVersion,
-		Name:       "test-town",
-		CreatedAt:  time.Now().Truncate(time.Second),
+		Version:   config.CurrentTownVersion,
+		Name:      "test-town",
+		CreatedAt: time.Now().Truncate(time.Second),
 	}
 	townConfigPath := filepath.Join(mayorDir, "town.json")
 	if err := config.SaveTownConfig(townConfigPath, townConfig); err != nil {
@@ -213,6 +213,40 @@ func TestRigSettingsSet(t *testing.T) {
 		}
 		if settings.RoleAgents["witness"] != "gemini" {
 			t.Errorf("RoleAgents[witness] = %q, want %q", settings.RoleAgents["witness"], "gemini")
+		}
+	})
+
+	t.Run("sets valid role effort", func(t *testing.T) {
+		townRoot, rigName := setupTestRigForSettings(t)
+		rigPath := filepath.Join(townRoot, rigName)
+
+		if err := runRigSettingsSet(rigSettingsSetCmd, []string{rigName, "role_effort.witness", "medium"}); err != nil {
+			t.Fatalf("runRigSettingsSet error: %v", err)
+		}
+
+		settings, err := config.LoadRigSettings(filepath.Join(rigPath, "settings", "config.json"))
+		if err != nil {
+			t.Fatalf("load settings: %v", err)
+		}
+		if got := settings.RoleEffort["witness"]; got != "medium" {
+			t.Fatalf("RoleEffort[witness] = %q, want medium", got)
+		}
+	})
+
+	t.Run("rejects invalid role effort", func(t *testing.T) {
+		townRoot, rigName := setupTestRigForSettings(t)
+		rigPath := filepath.Join(townRoot, rigName)
+		settingsPath := filepath.Join(rigPath, "settings", "config.json")
+
+		err := runRigSettingsSet(rigSettingsSetCmd, []string{rigName, "role_effort.witness", "extreme"})
+		if err == nil {
+			t.Fatal("invalid role effort succeeded, want error")
+		}
+		if !strings.Contains(err.Error(), "invalid effort") {
+			t.Fatalf("error = %q, want invalid effort", err)
+		}
+		if _, statErr := os.Stat(settingsPath); !os.IsNotExist(statErr) {
+			t.Fatalf("invalid setting created %s", settingsPath)
 		}
 	})
 

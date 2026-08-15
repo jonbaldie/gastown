@@ -1043,6 +1043,46 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 const codexUpdateCheckKey = "check_for_update_on_startup"
 const codexUpdateCheckConfig = codexUpdateCheckKey + "=false"
 
+func ensureRequiredArgGroups(args []string, requiredGroups [][]string) []string {
+	missingCount := 0
+	for _, group := range requiredGroups {
+		if !containsArgSequence(args, group) {
+			missingCount += len(group)
+		}
+	}
+	if missingCount == 0 {
+		return args
+	}
+
+	result := make([]string, 0, missingCount+len(args))
+	for _, group := range requiredGroups {
+		if !containsArgSequence(args, group) {
+			result = append(result, group...)
+		}
+	}
+	result = append(result, args...)
+	return result
+}
+
+func containsArgSequence(args, sequence []string) bool {
+	if len(sequence) == 0 {
+		return true
+	}
+	for i := 0; i+len(sequence) <= len(args); i++ {
+		matched := true
+		for j := range sequence {
+			if args[i+j] != sequence[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureCodexAutomationArgs(command string, args []string) []string {
 	if !isCodexRuntime(command) || hasCodexUpdateCheckConfig(args) {
 		return args

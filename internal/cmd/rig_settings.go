@@ -31,7 +31,8 @@ Rig settings control behavioral configuration for a rig:
 - Workflow settings
 
 Settings are stored in settings/config.json within each rig directory.
-Use dot notation to access nested keys (e.g., role_agents.witness).`,
+Use dot notation to access nested keys (e.g., role_agents.witness or
+role_effort.witness).`,
 	RunE: requireSubcommand,
 }
 
@@ -65,6 +66,7 @@ If the settings file doesn't exist, it will be created with a valid scaffold.
 Examples:
   gt rig settings set gastown agent claude
   gt rig settings set gastown role_agents.witness gemini
+  gt rig settings set gastown role_effort.witness low
   gt rig settings set gastown merge_queue.max_concurrent 5
   gt rig settings set gastown theme.disabled true
   gt rig settings set gastown theme.name forest
@@ -83,7 +85,8 @@ specified key is removed (parent objects remain if they have other keys).
 
 Examples:
   gt rig settings unset gastown agent
-  gt rig settings unset gastown role_agents.witness`,
+  gt rig settings unset gastown role_agents.witness
+  gt rig settings unset gastown role_effort.witness`,
 	Args: cobra.ExactArgs(2),
 	RunE: runRigSettingsUnset,
 }
@@ -149,6 +152,9 @@ func runRigSettingsSet(cmd *cobra.Command, args []string) error {
 
 	// Parse the value
 	value := parseValue(valueStr)
+	if err := validateRigRoleEffort(keyPath, value); err != nil {
+		return err
+	}
 
 	// Set the value using dot notation
 	if err := setNestedValue(settings, keyPath, value); err != nil {
@@ -162,6 +168,19 @@ func runRigSettingsSet(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("%s Set %s=%v in settings for rig %s\n",
 		style.Success.Render("✓"), keyPath, formatValueForDisplay(value), rigName)
+	return nil
+}
+
+func validateRigRoleEffort(keyPath string, value interface{}) error {
+	parts := strings.Split(keyPath, ".")
+	if len(parts) != 2 || parts[0] != "role_effort" {
+		return nil
+	}
+
+	effort, ok := value.(string)
+	if !ok || !config.IsValidEffortLevel(effort) {
+		return fmt.Errorf("invalid effort %q (valid: %s)", fmt.Sprint(value), strings.Join(config.ValidEffortLevels(), ", "))
+	}
 	return nil
 }
 
@@ -332,7 +351,7 @@ func setNestedValue(obj interface{}, keyPath string, value interface{}) error {
 				validKeys := []string{
 					"type", "version",
 					"merge_queue", "theme", "namepool", "crew", "workflow",
-					"runtime", "agent", "agents", "role_agents",
+					"runtime", "agent", "agents", "role_agents", "role_effort",
 				}
 				return fmt.Errorf("unknown key %q (valid top-level keys: %s)", keyPath, strings.Join(validKeys, ", "))
 			}

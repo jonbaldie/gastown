@@ -1499,6 +1499,41 @@ func isClaudeAgent(rc *RuntimeConfig) bool {
 	return base == "claude"
 }
 
+// applyRoleEffortToRuntime translates the provider-neutral role_effort setting
+// into the runtime's native controls. Claude consumes the corresponding
+// CLAUDE_CODE_EFFORT_LEVEL environment variable from AgentEnv. Pi uses an
+// explicit --thinking flag, so apply it to the resolved command here.
+func applyRoleEffortToRuntime(rc *RuntimeConfig, effort string) {
+	if rc == nil || effort == "" || !isPiAgent(rc) {
+		return
+	}
+
+	args := make([]string, 0, len(rc.Args)+2)
+	for i := 0; i < len(rc.Args); i++ {
+		arg := rc.Args[i]
+		if arg == "--thinking" {
+			if i+1 < len(rc.Args) {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--thinking=") {
+			continue
+		}
+		args = append(args, arg)
+	}
+	rc.Args = append(args, "--thinking", effort)
+}
+
+func isPiAgent(rc *RuntimeConfig) bool {
+	if rc.Provider != "" {
+		return rc.Provider == string(AgentPi)
+	}
+	base := filepath.Base(rc.Command)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	return base == "pi"
+}
+
 // withRoleSettingsFlag appends --settings to the Args for Claude agents whose
 // settings directory differs from the session working directory. Claude Code
 // resolves project-level settings from its working directory only; the --settings
@@ -1958,6 +1993,9 @@ func fillRuntimeDefaults(rc *RuntimeConfig) *RuntimeConfig {
 	if result.Args == nil && preset != nil {
 		result.Args = append([]string(nil), preset.Args...)
 	}
+	if preset != nil {
+		result.Args = ensureRequiredArgGroups(result.Args, preset.RequiredArgGroups)
+	}
 	result.Args = ensureCodexAutomationArgs(result.Command, result.Args)
 
 	// Auto-fill Hooks defaults from preset for agents that support hooks.
@@ -2236,6 +2274,9 @@ func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) stri
 			}
 		}
 	}
+	if role != "" {
+		applyRoleEffortToRuntime(rc, ResolveRoleEffort(role, townRoot, rigPath))
+	}
 
 	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
 	// ExecWrapper is a deployment-level setting (sandbox/container) independent of agent choice.
@@ -2493,6 +2534,9 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 	// non-override ResolveRoleAgentConfig path included it, causing hooks
 	// to silently not fire for polecats launched with --agent.
 	rc = withRoleSettingsFlag(rc, role, rigPath)
+	if role != "" {
+		applyRoleEffortToRuntime(rc, ResolveRoleEffort(role, townRoot, rigPath))
+	}
 
 	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
 	if len(rc.ExecWrapper) == 0 {
