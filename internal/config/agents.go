@@ -802,7 +802,8 @@ func BuildResumeCommand(agentName, sessionID string) string {
 		Command:  info.Command,
 		Args:     append([]string(nil), info.Args...),
 	}
-	applyResolvedAutoCompact(rc, "", "")
+	townRoot, _ := findTownRootFromCwd()
+	applyResolvedAutoCompact(rc, townRoot, "")
 	args := rc.Args
 
 	// Add resume based on style

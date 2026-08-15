@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,14 +51,8 @@ func ParseTokenCount(s string) (int, bool) {
 	return n * multiplier, true
 }
 
-// ConfiguredAutoCompactCap returns the configured auto-compaction cap.
-// Priority: GT_AUTO_COMPACT_WINDOW, then town settings, then the 150k default.
-func ConfiguredAutoCompactCap(townRoot string) int {
-	return ResolveAutoCompactCap(townRoot, os.Getenv(AutoCompactWindowEnv))
-}
-
 // ResolveAutoCompactCap returns the configured auto-compaction cap.
-// envOverride is the session/process value of GT_AUTO_COMPACT_WINDOW.
+// Priority: envOverride (GT_AUTO_COMPACT_WINDOW), then town settings, then 150k.
 func ResolveAutoCompactCap(townRoot, envOverride string) int {
 	if n, ok := ParseTokenCount(envOverride); ok {
 		return n
@@ -101,7 +94,8 @@ func ModelDefaultContextWindow(model string) int {
 		strings.Contains(model, "opus"),
 		strings.Contains(model, "haiku"):
 		return 200_000
-	case strings.HasPrefix(model, "gpt-4o"), strings.HasPrefix(model, "gpt-4"):
+	case model == "gpt-4o", strings.HasPrefix(model, "gpt-4o-"),
+		model == "gpt-4", strings.HasPrefix(model, "gpt-4-"):
 		return 128_000
 	default:
 		return 0

@@ -154,6 +154,7 @@ func TestModelDefaultContextWindow(t *testing.T) {
 		{model: "haiku", want: 200_000},
 		{model: "claude-sonnet-4-6", want: 200_000},
 		{model: "gpt-4o", want: 128_000},
+		{model: "gpt-4.1", want: 0},
 		{model: "unknown-local-model", want: 0},
 		{model: "", want: 0},
 	}

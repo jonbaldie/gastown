@@ -839,8 +839,15 @@ func TestConfigSetGet(t *testing.T) {
 			t.Errorf("AutoCompactWindow = %d, want 80000", loaded.AutoCompactWindow)
 		}
 
-		if err := runConfigGet(cmd, []string{"auto_compact_window"}); err != nil {
-			t.Fatalf("runConfigGet failed: %v", err)
+		var getErr error
+		out := captureStdout(t, func() {
+			getErr = runConfigGet(cmd, []string{"auto_compact_window"})
+		})
+		if getErr != nil {
+			t.Fatalf("runConfigGet failed: %v", getErr)
+		}
+		if strings.TrimSpace(out) != "80000" {
+			t.Fatalf("config get auto_compact_window = %q, want 80000", strings.TrimSpace(out))
 		}
 	})
 
@@ -854,8 +861,15 @@ func TestConfigSetGet(t *testing.T) {
 		}
 
 		cmd := &cobra.Command{}
-		if err := runConfigGet(cmd, []string{"auto_compact_window"}); err != nil {
-			t.Fatalf("runConfigGet failed: %v", err)
+		var getErr error
+		out := captureStdout(t, func() {
+			getErr = runConfigGet(cmd, []string{"auto_compact_window"})
+		})
+		if getErr != nil {
+			t.Fatalf("runConfigGet failed: %v", getErr)
+		}
+		if strings.TrimSpace(out) != "150000" {
+			t.Fatalf("config get auto_compact_window = %q, want 150000", strings.TrimSpace(out))
 		}
 	})
 
