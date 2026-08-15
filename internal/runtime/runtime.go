@@ -85,9 +85,9 @@ func provisionRoleSkills(workDir, provider string) error {
 		if err := skills.ProvisionFor(townRoot, townProvider); err != nil {
 			return err
 		}
-	}
-	if commandsInherited(workDir) {
-		return nil
+		if samePath(townRoot, workDir) {
+			return nil
+		}
 	}
 	return skills.ProvisionFor(workDir, provider)
 }

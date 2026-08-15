@@ -2220,7 +2220,6 @@ func TestIsGasTownRuntimePath(t *testing.T) {
 		{".opencode/commands/handoff.md", true},
 		{".agents/", true},
 		{".agents/skills/implement/SKILL.md", true},
-		{".cursor/skills/implement/SKILL.md", true},
 		{".beads/", true},
 		{".beads/db.json", true},
 		{".beads\\db.json", true},

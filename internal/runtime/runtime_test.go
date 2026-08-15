@@ -1069,7 +1069,7 @@ func TestEnsureSettingsForRole_ProvisionsSkillsWithoutHooks(t *testing.T) {
 	}
 }
 
-func TestEnsureSettingsForRole_SkipsWorkDirSkillsWhenInherited(t *testing.T) {
+func TestEnsureSettingsForRole_ProvisionsInheritedRoleWorkDir(t *testing.T) {
 	root := makeTownRootWithGit(t)
 	mayorDir := root + "/mayor"
 	if err := os.MkdirAll(mayorDir, 0755); err != nil {
@@ -1087,10 +1087,10 @@ func TestEnsureSettingsForRole_SkipsWorkDirSkillsWhenInherited(t *testing.T) {
 		t.Fatalf("EnsureSettingsForRole() error = %v", err)
 	}
 
-	if _, err := os.Stat(mayorDir + "/.agents/skills/implement/SKILL.md"); err == nil {
-		t.Error("mayor dir should inherit town-root skills, not get a duplicate tree")
+	if _, err := os.Stat(mayorDir + "/.agents/skills/implement/SKILL.md"); err != nil {
+		t.Fatalf("mayor workDir must have local skills: %v", err)
 	}
 	if _, err := os.Stat(root + "/.agents/skills/implement/SKILL.md"); err != nil {
-		t.Fatalf("town root should receive skills for inherited roles: %v", err)
+		t.Fatalf("town root should also receive skills: %v", err)
 	}
 }

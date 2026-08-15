@@ -1087,6 +1087,20 @@ func TestCompactResumeReminder_NonPolecatNoGtDone(t *testing.T) {
 	}
 }
 
+func TestEnsurePrimeSkills_WritesWorkDirAndTownRoot(t *testing.T) {
+	townRoot := t.TempDir()
+	workDir := t.TempDir()
+	if err := ensurePrimeSkills(workDir, townRoot, "claude"); err != nil {
+		t.Fatalf("ensurePrimeSkills: %v", err)
+	}
+	for _, root := range []string{townRoot, workDir} {
+		path := filepath.Join(root, ".agents", "skills", "implement", "SKILL.md")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("missing skill in %s: %v", root, err)
+		}
+	}
+}
+
 func TestCompactResumeReminder_IncludesSkillDirectives(t *testing.T) {
 	ctx := RoleContext{Role: RoleCrew}
 	primeHookSource = "compact"

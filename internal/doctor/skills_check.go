@@ -10,7 +10,6 @@ import (
 // SkillsCheck validates that town-level mattpocock skills are provisioned.
 type SkillsCheck struct {
 	FixableCheck
-	townRoot      string
 	missingSkills []string
 }
 
@@ -29,7 +28,6 @@ func NewSkillsCheck() *SkillsCheck {
 
 // Run checks if town-level skills are provisioned.
 func (c *SkillsCheck) Run(ctx *CheckContext) *CheckResult {
-	c.townRoot = ctx.TownRoot
 	c.missingSkills = skills.MissingFor(ctx.TownRoot, "claude")
 
 	if len(c.missingSkills) == 0 {

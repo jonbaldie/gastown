@@ -21,21 +21,29 @@ const (
 	userSkillsRel      = "skills"
 )
 
-// Names returns the embedded mattpocock skill directory names, sorted.
-func Names() []string {
+var embeddedNames = mustEmbeddedNames()
+
+func mustEmbeddedNames() []string {
 	entries, err := fs.ReadDir(embeddedFS, "embedded")
 	if err != nil {
-		return nil
+		panic("reading embedded mattpocock skills: " + err.Error())
 	}
 	var names []string
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if entry.IsDir() {
+			names = append(names, entry.Name())
 		}
-		names = append(names, entry.Name())
+	}
+	if len(names) == 0 {
+		panic("embedded mattpocock skills are empty")
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Names returns the embedded mattpocock skill directory names, sorted.
+func Names() []string {
+	return append([]string(nil), embeddedNames...)
 }
 
 // ProvisionFor writes the embedded mattpocock skills into workspacePath so a
@@ -48,13 +56,13 @@ func ProvisionFor(workspacePath, agent string) error {
 
 	universalDir := filepath.Join(workspacePath, filepath.FromSlash(universalSkillsRel))
 	if err := writeEmbeddedTree(universalDir); err != nil {
-		return err
+		return fmt.Errorf("provisioning skills in %s: %w", universalDir, err)
 	}
 
 	if configDir := agentConfigDir(agent); configDir != "" {
 		agentDir := filepath.Join(workspacePath, configDir, "skills")
 		if err := linkOrWrite(agentDir, universalDir); err != nil {
-			return err
+			return fmt.Errorf("provisioning skills in %s: %w", agentDir, err)
 		}
 	}
 	return nil
@@ -66,21 +74,30 @@ func ProvisionUserDir(configDir string) error {
 	if configDir == "" {
 		return fmt.Errorf("config dir is required")
 	}
-	return writeEmbeddedTree(filepath.Join(configDir, userSkillsRel))
+	dest := filepath.Join(configDir, userSkillsRel)
+	if err := writeEmbeddedTree(dest); err != nil {
+		return fmt.Errorf("provisioning skills in %s: %w", dest, err)
+	}
+	return nil
 }
 
 // MissingFor returns embedded skill names that are not present in the
-// workspace's universal skill tree.
+// workspace skill trees the agent will search.
 func MissingFor(workspacePath, agent string) []string {
-	_ = agent
 	if workspacePath == "" {
-		return append([]string(nil), Names()...)
+		return Names()
 	}
-	root := filepath.Join(workspacePath, filepath.FromSlash(universalSkillsRel))
+	roots := []string{filepath.Join(workspacePath, filepath.FromSlash(universalSkillsRel))}
+	if configDir := agentConfigDir(agent); configDir != "" {
+		roots = append(roots, filepath.Join(workspacePath, configDir, "skills"))
+	}
 	var missing []string
 	for _, name := range Names() {
-		if _, err := os.Stat(filepath.Join(root, name, "SKILL.md")); err != nil {
-			missing = append(missing, name)
+		for _, root := range roots {
+			if _, err := os.Stat(filepath.Join(root, name, "SKILL.md")); err != nil {
+				missing = append(missing, name)
+				break
+			}
 		}
 	}
 	return missing
@@ -101,32 +118,38 @@ func writeEmbeddedTree(destDir string) error {
 
 	return fs.WalkDir(embeddedFS, "embedded", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("walking embedded skills: %w", err)
 		}
 		rel, err := filepath.Rel("embedded", path)
 		if err != nil {
-			return err
+			return fmt.Errorf("rel path for %s: %w", path, err)
 		}
 		if rel == "." {
 			return nil
 		}
 		target := filepath.Join(destDir, rel)
 		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return fmt.Errorf("creating %s: %w", target, err)
+			}
+			return nil
 		}
 		if _, err := os.Lstat(target); err == nil {
 			return nil
 		} else if !os.IsNotExist(err) {
-			return err
+			return fmt.Errorf("stat %s: %w", target, err)
 		}
 		data, err := embeddedFS.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("reading embedded %s: %w", path, err)
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
+			return fmt.Errorf("creating %s: %w", filepath.Dir(target), err)
 		}
-		return os.WriteFile(target, data, 0644)
+		if err := os.WriteFile(target, data, 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", target, err)
+		}
+		return nil
 	})
 }
 
@@ -149,18 +172,20 @@ func linkOrWrite(destDir, sourceDir string) error {
 			return fmt.Errorf("skills path %s exists and is not a directory", destDir)
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("stat %s: %w", destDir, err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(destDir), 0755); err != nil {
-		return err
+		return fmt.Errorf("creating %s: %w", filepath.Dir(destDir), err)
 	}
 	rel, err := filepath.Rel(filepath.Dir(destDir), sourceDir)
 	if err != nil {
 		rel = sourceDir
 	}
 	if err := os.Symlink(rel, destDir); err != nil {
-		return writeEmbeddedTree(destDir)
+		if writeErr := writeEmbeddedTree(destDir); writeErr != nil {
+			return fmt.Errorf("copying skills after symlink failed: %w", writeErr)
+		}
 	}
 	return nil
 }
