@@ -146,7 +146,7 @@ func (m *Manager) StartTMUX(agentOverride string) error {
 
 	// Kill any existing zombie session (tmux alive but agent dead).
 	// Returns error if session is healthy and already running.
-	_, err := session.KillExistingSession(t, sessionID, true)
+	_, err := session.KillExistingSession(t, m.townRoot, sessionID, true)
 	if err != nil {
 		return ErrAlreadyRunning
 	}

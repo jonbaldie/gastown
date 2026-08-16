@@ -406,7 +406,7 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 		}
 	}
 
-	if _, err := session.KillExistingSession(d.tmux, sessionName, true); err != nil {
+	if _, err := session.KillExistingSession(d.tmux, d.config.TownRoot, sessionName, true); err != nil {
 		if errors.Is(err, session.ErrSessionAlive) {
 			d.logger.Printf("Session %s already running with healthy agent, skipping restart", sessionName)
 			return nil

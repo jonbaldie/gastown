@@ -753,10 +753,10 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 	// Check if session already exists — kill AFTER command is fully built
 	// so validation failures don't destroy the user's running session.
 	if opts.KillExisting {
-		if _, err := session.KillExistingSession(t, sessionID, false); err != nil {
+		if _, err := session.KillExistingSession(t, townRoot, sessionID, false); err != nil {
 			return err
 		}
-	} else if _, err := session.KillExistingSession(t, sessionID, true); err != nil {
+	} else if _, err := session.KillExistingSession(t, townRoot, sessionID, true); err != nil {
 		if errors.Is(err, session.ErrSessionAlive) {
 			return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
 		}

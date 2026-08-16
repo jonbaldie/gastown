@@ -120,6 +120,7 @@ func (m *Manager) prepareWitnessDir(townRoot string) (string, error) {
 func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []string) error {
 	t := m.tmux
 	sessionID := m.SessionName()
+	townRoot := m.townRoot()
 
 	if foreground {
 		// Foreground mode is deprecated - patrol logic moved to mol-witness-patrol
@@ -152,14 +153,13 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 			return ErrAlreadyRunning
 		}
 
-		if err := t.KillSessionWithProcesses(sessionID); err != nil {
+		if err := session.StopSession(t, townRoot, sessionID, false); err != nil && !errors.Is(err, session.ErrNotFound) {
 			return fmt.Errorf("killing zombie session: %w", err)
 		}
 	}
 
 	// Note: No PID check per ZFC - tmux session is the source of truth
 
-	townRoot := m.townRoot()
 	witnessDir, err := m.prepareWitnessDir(townRoot)
 	if err != nil {
 		return err

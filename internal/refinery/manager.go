@@ -173,7 +173,7 @@ func (m *Manager) start(foreground bool, agentOverride string, allowForkRig bool
 	if stop != nil {
 		if running, _ := t.HasSession(sessionID); running {
 			_, _ = fmt.Fprintf(m.output, "Refinery %s is safety-stopped; killing leftover session %s.\n", m.rig.Name, sessionID)
-			if err := t.KillSessionWithProcesses(sessionID); err != nil {
+			if err := session.StopSession(t, townRoot, sessionID, false); err != nil && !errors.Is(err, session.ErrNotFound) {
 				return fmt.Errorf("%w: killing leftover refinery session: %v", NewSafetyStoppedError(stop), err)
 			}
 		}
@@ -181,7 +181,7 @@ func (m *Manager) start(foreground bool, agentOverride string, allowForkRig bool
 	}
 
 	// Check if session already exists
-	if _, err := session.KillExistingSession(t, sessionID, true); err != nil {
+	if _, err := session.KillExistingSession(t, townRoot, sessionID, true); err != nil {
 		if errors.Is(err, session.ErrSessionAlive) {
 			return ErrAlreadyRunning
 		}

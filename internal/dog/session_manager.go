@@ -91,7 +91,7 @@ func (m *SessionManager) Start(dogName string, opts SessionStartOptions) error {
 	sessionID := m.SessionName(dogName)
 
 	// Kill any existing zombie session (tmux alive but agent dead).
-	_, err := session.KillExistingSession(m.tmux, sessionID, true)
+	_, err := session.KillExistingSession(m.tmux, m.townRoot, sessionID, true)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
 	}

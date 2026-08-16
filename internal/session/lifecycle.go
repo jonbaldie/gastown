@@ -444,7 +444,9 @@ var ErrSessionAlive = errors.New("session already running")
 // If checkAlive is true, only kills zombie sessions (tmux alive but agent dead).
 // If the session exists and the agent is alive, returns ErrSessionAlive.
 // If checkAlive is false, kills any existing session unconditionally.
-func KillExistingSession(t TmuxOps, sessionID string, checkAlive bool) (bool, error) {
+// The kill goes through StopSession so the nudge poller, worker run, and
+// log watcher are torn down before the next start.
+func KillExistingSession(t TmuxOps, townRoot, sessionID string, checkAlive bool) (bool, error) {
 	running, err := t.HasSession(sessionID)
 	if err != nil {
 		return false, fmt.Errorf("checking session: %w", err)
@@ -457,10 +459,9 @@ func KillExistingSession(t TmuxOps, sessionID string, checkAlive bool) (bool, er
 		return false, fmt.Errorf("%w: %s", ErrSessionAlive, sessionID)
 	}
 
-	if err := t.KillSessionWithProcesses(sessionID); err != nil {
-		return false, fmt.Errorf("killing session %s: %w", sessionID, err)
+	if err := StopSession(t, townRoot, sessionID, false); err != nil && !errors.Is(err, ErrNotFound) {
+		return false, err
 	}
-
 	return true, nil
 }
 

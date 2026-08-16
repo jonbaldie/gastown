@@ -241,3 +241,42 @@ func TestStartSession_MayorAgentWaitIsFatal(t *testing.T) {
 		t.Fatal("expected the half-started session to be killed")
 	}
 }
+
+func TestKillExistingSession_StopsNudgePoller(t *testing.T) {
+	townRoot := t.TempDir()
+	sessionID := "gt-test-zombie"
+	pidDir := filepath.Join(townRoot, constants.DirRuntime, "nudge_poller")
+	if err := os.MkdirAll(pidDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pidPath := filepath.Join(pidDir, sessionID+".pid")
+	if err := os.WriteFile(pidPath, []byte("999999\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockTmux{hasSession: true, agentAlive: false}
+	killed, err := KillExistingSession(mock, townRoot, sessionID, true)
+	if err != nil {
+		t.Fatalf("KillExistingSession: %v", err)
+	}
+	if !killed {
+		t.Fatal("expected zombie session to be killed")
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("poller pid file still present after start-time kill: %v", err)
+	}
+}
+
+func TestKillExistingSession_AliveAgentUntouched(t *testing.T) {
+	mock := &mockTmux{hasSession: true, agentAlive: true}
+	killed, err := KillExistingSession(mock, t.TempDir(), "gt-live", true)
+	if !errors.Is(err, ErrSessionAlive) {
+		t.Fatalf("err = %v, want ErrSessionAlive", err)
+	}
+	if killed {
+		t.Fatal("must not kill a live agent")
+	}
+	if len(mock.killCalls) != 0 {
+		t.Fatalf("kill calls = %d, want 0", len(mock.killCalls))
+	}
+}

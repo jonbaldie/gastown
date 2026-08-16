@@ -337,7 +337,7 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// (manager.go:cleanupOrphanedDirs) intentionally keeps the conservative
 	// isSessionProcessDead path to avoid killing healthy sessions during
 	// transient pgrep/ps failures.
-	if _, err := session.KillExistingSession(m.tmux, sessionID, true); err != nil {
+	if _, err := session.KillExistingSession(m.tmux, filepath.Dir(m.rig.Path), sessionID, true); err != nil {
 		if errors.Is(err, session.ErrSessionAlive) {
 			return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
 		}
