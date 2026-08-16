@@ -78,8 +78,8 @@ var versionChanges = []VersionChange{
 		Version: "1.2.2",
 		Date:    "2026-08-16",
 		Changes: []string{
-			"CHANGED: Public install is CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest. This tag is the first post-migration release, so @latest resolves to github.com/jonbaldie/gastown instead of pre-migration v1.2.1.",
-			"CHANGED: The Go module path is github.com/jonbaldie/gastown. Raw go install binaries on macOS no longer exit before running.",
+			"CHANGED: First post-migration release on github.com/jonbaldie/gastown. Default-proxy @latest can resolve to this module instead of pre-migration v1.2.1 (github.com/steveyegge/gastown).",
+			"CHANGED: Raw go install binaries on macOS no longer exit before running. Keep CGO_ENABLED=0 when installing cmd/gt.",
 		},
 	},
 	{

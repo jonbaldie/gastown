@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Home install path is jonbaldie/gastown.** `CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest` is the public install command. This is the first post-migration tag whose `go.mod` declares `github.com/jonbaldie/gastown`, so default-proxy `@latest` resolves here instead of pre-migration `v1.2.1` (`github.com/steveyegge/gastown`). Raw `go install` binaries on macOS no longer exit before running.
+- **Home install path is jonbaldie/gastown.** This is the first post-migration tag whose `go.mod` declares `github.com/jonbaldie/gastown`, so default-proxy `@latest` can resolve here instead of pre-migration `v1.2.1` (`github.com/steveyegge/gastown`). Raw `go install` binaries on macOS no longer exit before running. Keep `CGO_ENABLED=0` when installing `cmd/gt`.
 
 ### Added
 
