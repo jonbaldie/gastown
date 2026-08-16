@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`gt prime` standing skill lines** now also tell every role to follow
-  `/to-spec` and `/to-tickets` rigorously when slinging a spec or tickets.
+  `/to-spec` when writing a spec and `/to-tickets` when breaking a spec
+  into beads. The lines do not use `sling` — that remains `gt sling`.
   The four lines still point at SKILL.md and do not inline those skills.
 
 ### Fixed

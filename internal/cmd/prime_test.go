@@ -1113,8 +1113,8 @@ func TestCompactResumeReminder_IncludesSkillDirectives(t *testing.T) {
 	for _, want := range []string{
 		"Working on production code: use /implement's SKILL.md rigorously.",
 		"Looking at a bug: use /diagnosing-bugs's SKILL.md rigorously.",
-		"Slinging a spec: use /to-spec's SKILL.md rigorously.",
-		"Slinging tickets: use /to-tickets's SKILL.md rigorously.",
+		"Writing a spec: use /to-spec's SKILL.md rigorously.",
+		"Breaking a spec into beads: use /to-tickets's SKILL.md rigorously.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("compact/resume missing skill directive %q:\n%s", want, output)
@@ -1139,8 +1139,8 @@ func TestPrimeDryRun_PrintsStandingSkillDirectives(t *testing.T) {
 	for _, want := range []string{
 		"Working on production code: use /implement's SKILL.md rigorously.",
 		"Looking at a bug: use /diagnosing-bugs's SKILL.md rigorously.",
-		"Slinging a spec: use /to-spec's SKILL.md rigorously.",
-		"Slinging tickets: use /to-tickets's SKILL.md rigorously.",
+		"Writing a spec: use /to-spec's SKILL.md rigorously.",
+		"Breaking a spec into beads: use /to-tickets's SKILL.md rigorously.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("gt prime missing %q:\n%s", want, got)

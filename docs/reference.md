@@ -378,8 +378,8 @@ via the SessionStart hook. `gt prime` also provisions the mattpocock/skills
 collection into `.agents/skills` (and the active agent's skills directory) and
 prints four standing lines: production code must follow `/implement`'s SKILL.md
 rigorously, bug work must follow `/diagnosing-bugs`'s SKILL.md rigorously,
-slinging a spec must follow `/to-spec`'s SKILL.md rigorously, and slinging
-tickets must follow `/to-tickets`'s SKILL.md rigorously.
+writing a spec must follow `/to-spec`'s SKILL.md rigorously, and breaking a
+spec into beads must follow `/to-tickets`'s SKILL.md rigorously.
 No per-directory CLAUDE.md or AGENTS.md files are created.
 
 **Why no per-directory files?**
