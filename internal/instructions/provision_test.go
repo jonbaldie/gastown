@@ -266,6 +266,9 @@ func TestProvision_RepairsBrokenClaudeSymlink(t *testing.T) {
 
 func TestProvision_GeminiAliasPointsAtCanonical(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Symlink(AliasFile, filepath.Join(dir, GeminiAliasFile)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Provision(dir, townIdentity, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -284,6 +287,9 @@ func TestProvision_GeminiAliasPointsAtLocalCanonical(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, AliasFile), []byte("# Project\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(CanonicalFile, filepath.Join(dir, GeminiAliasFile)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Provision(dir, polecatOverlay, LifecycleMarker); err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +300,16 @@ func TestProvision_GeminiAliasPointsAtLocalCanonical(t *testing.T) {
 	}
 	if target != LocalCanonicalFile {
 		t.Errorf("GEMINI.md target = %q, want %q", target, LocalCanonicalFile)
+	}
+}
+
+func TestProvision_DoesNotCreateMissingGemini(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Provision(dir, townIdentity, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, GeminiAliasFile)); !os.IsNotExist(err) {
+		t.Fatal("GEMINI.md should not be created when it was absent")
 	}
 }
 

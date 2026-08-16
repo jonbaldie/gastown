@@ -933,6 +933,9 @@ func TestCreatePolecatCLAUDEmd_GitCleanScenario(t *testing.T) {
 
 func TestCreatePolecatCLAUDEmd_GeminiAliasPointsAtCanonical(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Symlink("CLAUDE.md", filepath.Join(dir, "GEMINI.md")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := CreatePolecatCLAUDEmd(dir, "greenplace", "nux"); err != nil {
 		t.Fatal(err)
 	}

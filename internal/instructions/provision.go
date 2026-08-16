@@ -28,7 +28,8 @@ func Provision(dir, content, skipIfContains string) (bool, error) {
 
 // CanonicalName returns the canonical instruction file name for dir.
 func CanonicalName(dir string) string {
-	if snapshot(dir).agentsLocal.regular {
+	snap := snapshot(dir)
+	if hasConstitution(snap) && snap.agentsLocal.regular {
 		return LocalCanonicalFile
 	}
 	return CanonicalFile

@@ -1,9 +1,12 @@
 package instructions
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 type fsEntry struct {
@@ -59,10 +62,23 @@ func readEntry(dir, name string) fsEntry {
 }
 
 func isTracked(dir, name string) bool {
-	cmd := exec.Command("git", "-C", dir, "ls-files", "--error-unmatch", "--", name)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "ls-files", "--error-unmatch", "--", name)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	return cmd.Run() == nil
+	err := cmd.Run()
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return true
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false
+	}
+	return false
 }
 
 func (s dirSnap) entry(name string) fsEntry {
@@ -101,4 +117,14 @@ func symlinkPointsAt(entry fsEntry, target string) bool {
 		return false
 	}
 	return filepath.Clean(entry.target) == target || filepath.Base(filepath.Clean(entry.target)) == target
+}
+
+func isGasTownAliasTarget(target string) bool {
+	base := filepath.Base(filepath.Clean(target))
+	switch base {
+	case CanonicalFile, LocalCanonicalFile, AliasFile, LocalAliasFile:
+		return true
+	default:
+		return false
+	}
 }

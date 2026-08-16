@@ -55,11 +55,9 @@ func planProvision(snap dirSnap, content, skipIfContains string) provisionPlan {
 	gemini := snap.gemini
 	if gemini.regular {
 		plan.writeGemini = false
-	} else if !symlinkPointsAt(gemini, names.canonical) {
+	} else if gemini.symlink && isGasTownAliasTarget(gemini.target) && !symlinkPointsAt(gemini, names.canonical) {
 		plan.writeGemini = true
-		if gemini.exists {
-			plan.remove = appendUnique(plan.remove, GeminiAliasFile)
-		}
+		plan.remove = appendUnique(plan.remove, GeminiAliasFile)
 	}
 
 	return plan
