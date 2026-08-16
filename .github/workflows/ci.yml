@@ -248,7 +248,7 @@ jobs:
           tmpdir="$(mktemp -d)"
           mkdir -p "$tmpdir/bin" "$tmpdir/work"
           cd "$tmpdir/work"
-          GOWORK=off GOPROXY=direct CGO_ENABLED=0 GOBIN="$tmpdir/bin" \
+          GOWORK=off CGO_ENABLED=0 GOBIN="$tmpdir/bin" \
             go install "github.com/jonbaldie/gastown/cmd/gt@$REF"
           go version -m "$tmpdir/bin/gt" | grep 'github.com/jonbaldie/gastown/cmd/gt'
           go version -m "$tmpdir/bin/gt" | grep 'mod[[:space:]]\+github.com/jonbaldie/gastown[[:space:]]'

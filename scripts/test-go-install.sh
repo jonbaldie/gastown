@@ -10,7 +10,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 mkdir -p "$TMPDIR/bin" "$TMPDIR/work"
 cd "$TMPDIR/work"
 
-GOWORK=off GOPROXY=direct CGO_ENABLED=0 GOBIN="$TMPDIR/bin" \
+GOWORK=off CGO_ENABLED=0 GOBIN="$TMPDIR/bin" \
   go install "$MODULE/cmd/gt@$REF"
 
 meta="$(go version -m "$TMPDIR/bin/gt")"

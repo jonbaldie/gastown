@@ -18,7 +18,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/session"
 	"github.com/jonbaldie/gastown/internal/telemetry"
 	"github.com/jonbaldie/gastown/internal/tmux"
-	"github.com/jonbaldie/gastown/internal/worker"
 	"github.com/jonbaldie/gastown/internal/workspace"
 )
 
