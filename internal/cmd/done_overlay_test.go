@@ -121,8 +121,11 @@ func TestStripOverlayInstructionFiles_LeavesNonOverlayLocalAgents(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != custom {
+	if !strings.Contains(got, "Not a Gas Town overlay") {
 		t.Fatalf("AGENTS.local.md changed: %q", got)
+	}
+	if instructions.IsGasTownOverlay(got) {
+		t.Fatal("non-overlay AGENTS.local.md was treated as overlay")
 	}
 }
 
