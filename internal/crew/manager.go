@@ -33,15 +33,6 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 )
 
-// startupDialogPolicy makes every unattended crew startup wait for the runtime
-// and dismiss blocking dialogs, regardless of the selected agent preset.
-func startupDialogPolicy(interactive bool) (waitForAgent, acceptDialogs bool) {
-	if interactive {
-		return false, false
-	}
-	return true, true
-}
-
 // StartOptions configures crew session startup.
 type StartOptions struct {
 	// Account specifies the account handle to use (overrides default).

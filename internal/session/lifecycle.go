@@ -1,4 +1,4 @@
-// Package session provides polecat session lifecycle management.
+// Package session provides Worker session start and stop.
 package session
 
 import (

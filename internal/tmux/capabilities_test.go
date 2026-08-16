@@ -62,3 +62,17 @@ func TestSubmitEnterArgs(t *testing.T) {
 		t.Fatalf("named Enter path = %v", got)
 	}
 }
+
+func TestSetCapabilities_IsPerInstance(t *testing.T) {
+	withCR := NewTmuxWithSocketAndBinary("sock-a", "tmux")
+	withoutCR := NewTmuxWithSocketAndBinary("sock-b", "tmux")
+	withCR.SetCapabilities(Capabilities{LiteralCR: true})
+	withoutCR.SetCapabilities(Capabilities{})
+
+	if !withCR.capabilities().LiteralCR {
+		t.Fatal("override LiteralCR=true did not stick on this Tmux")
+	}
+	if withoutCR.capabilities().LiteralCR {
+		t.Fatal("sibling Tmux inherited LiteralCR from another instance")
+	}
+}

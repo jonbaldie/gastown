@@ -4,7 +4,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // Version is a parsed tmux -V result.
@@ -21,10 +20,18 @@ type Capabilities struct {
 	LiteralCR bool
 }
 
-var (
-	globalCapsOnce sync.Once
-	globalCaps     Capabilities
-)
+func (t *Tmux) capabilities() Capabilities {
+	if t == nil {
+		return CapabilitiesForVersion(Version{})
+	}
+	if t.capsOverride != nil {
+		return *t.capsOverride
+	}
+	t.capsOnce.Do(func() {
+		t.caps = probeCapabilities(t.binary)
+	})
+	return t.caps
+}
 
 // ParseVersion reads a `tmux -V` line such as "tmux 3.7b".
 func ParseVersion(output string) (Version, bool) {
@@ -78,20 +85,6 @@ func probeCapabilities(binary string) Capabilities {
 		return CapabilitiesForVersion(Version{})
 	}
 	return CapabilitiesForVersion(v)
-}
-
-func (t *Tmux) capabilities() Capabilities {
-	if t != nil && t.capsOverride != nil {
-		return *t.capsOverride
-	}
-	globalCapsOnce.Do(func() {
-		binary := ""
-		if t != nil {
-			binary = t.binary
-		}
-		globalCaps = probeCapabilities(binary)
-	})
-	return globalCaps
 }
 
 // SetCapabilities is the test seam: tests set the version-derived quirks

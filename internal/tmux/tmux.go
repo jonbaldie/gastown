@@ -184,6 +184,8 @@ func BuildCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 type Tmux struct {
 	socketName   string // tmux socket name (-L flag), empty = default socket
 	binary       string // optional tmux executable override; empty means "tmux"
+	capsOnce     sync.Once
+	caps         Capabilities
 	capsOverride *Capabilities
 }
 

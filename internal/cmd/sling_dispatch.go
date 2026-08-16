@@ -61,10 +61,10 @@ func executeSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 	if intent.RigName == "" {
 		return executeNamedTargetSling(ctx, intent)
 	}
-	return executeRigSling(intent)
+	return executeRigSling(ctx, intent)
 }
 
-func executeRigSling(intent sling.Intent) (*SlingResult, error) {
+func executeRigSling(ctx context.Context, intent sling.Intent) (*SlingResult, error) {
 	townRoot := intent.TownRoot
 	if townRoot == "" {
 		var err error
@@ -299,7 +299,7 @@ func executeRigSling(intent sling.Intent) (*SlingResult, error) {
 		}
 		varsForAttachment = append([]string(nil), allVars...)
 		formulaVarsForAttachment = strings.Join(allVars, "\n")
-		formulaResult, err := InstantiateFormulaOnBead(context.Background(), intent.Formula, intent.BeadID, info.Title, hookWorkDir, townRoot, true, allVars)
+		formulaResult, err := InstantiateFormulaOnBead(ctx, intent.Formula, intent.BeadID, info.Title, hookWorkDir, townRoot, true, allVars)
 		if err != nil {
 			if intent.FormulaFailFatal {
 				// Rollback spawned polecat on fatal formula failure

@@ -5,6 +5,7 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,7 @@ type Table struct {
 func Capture() (Table, error) {
 	out, err := exec.Command("ps", "-axo", "pid=,ppid=,tty=,etime=,args=").Output()
 	if err != nil {
-		return Table{}, err
+		return Table{}, fmt.Errorf("snapshot processes: %w", err)
 	}
 	return Parse(out), nil
 }
