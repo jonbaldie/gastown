@@ -20,9 +20,9 @@ var ProductionForbiddenPrefixes = []string{
 	"github.com/go-rod/",
 }
 
-// Hits returns the deps that start with any of the given prefixes.
-// The result preserves dep order and lists each dep at most once.
-func Hits(deps, prefixes []string) []string {
+// MatchingPrefixes returns the import paths that start with any prefix.
+// Order of deps is preserved. Each dep appears at most once.
+func MatchingPrefixes(deps, prefixes []string) []string {
 	var hits []string
 	for _, dep := range deps {
 		for _, prefix := range prefixes {

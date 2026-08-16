@@ -2,14 +2,16 @@ package buildgraph
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestHitsReportsOnlyForbiddenPrefixes(t *testing.T) {
+func TestMatchingPrefixesReportsOnlyForbiddenPrefixes(t *testing.T) {
 	deps := []string{
 		"fmt",
 		"github.com/dolthub/driver",
@@ -19,7 +21,7 @@ func TestHitsReportsOnlyForbiddenPrefixes(t *testing.T) {
 		"github.com/go-rod/rod/lib/launcher",
 	}
 
-	got := Hits(deps, ProductionForbiddenPrefixes)
+	got := MatchingPrefixes(deps, ProductionForbiddenPrefixes)
 	want := []string{
 		"github.com/dolthub/driver",
 		"github.com/testcontainers/testcontainers-go",
@@ -27,18 +29,18 @@ func TestHitsReportsOnlyForbiddenPrefixes(t *testing.T) {
 		"github.com/go-rod/rod/lib/launcher",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("Hits() = %q, want %q", got, want)
+		t.Fatalf("MatchingPrefixes() = %q, want %q", got, want)
 	}
 }
 
-func TestHitsEmptyWhenGraphIsClean(t *testing.T) {
+func TestMatchingPrefixesEmptyWhenGraphIsClean(t *testing.T) {
 	deps := []string{
 		"fmt",
 		"github.com/steveyegge/beads",
 		"github.com/go-sql-driver/mysql",
 	}
-	if hits := Hits(deps, ProductionForbiddenPrefixes); len(hits) != 0 {
-		t.Fatalf("Hits() = %q, want none", hits)
+	if hits := MatchingPrefixes(deps, ProductionForbiddenPrefixes); len(hits) != 0 {
+		t.Fatalf("MatchingPrefixes() = %q, want none", hits)
 	}
 }
 
@@ -54,28 +56,28 @@ func TestMakefileDefaultsCGOOff(t *testing.T) {
 
 func TestCmdGTWithoutCGOOmitsForbiddenDeps(t *testing.T) {
 	deps := listDeps(t, "0", "./cmd/gt")
-	if hits := Hits(deps, ProductionForbiddenPrefixes); len(hits) != 0 {
+	if hits := MatchingPrefixes(deps, ProductionForbiddenPrefixes); len(hits) != 0 {
 		t.Fatalf("CGO_ENABLED=0 ./cmd/gt still imports forbidden packages:\n%s", strings.Join(hits, "\n"))
 	}
 }
 
 func TestCmdGTWithCGOPullsEmbeddedDolt(t *testing.T) {
 	deps := listDeps(t, "1", "./cmd/gt")
-	if Hits(deps, []string{"github.com/steveyegge/beads/internal/storage/embeddeddolt"}) == nil {
+	if MatchingPrefixes(deps, []string{"github.com/steveyegge/beads/internal/storage/embeddeddolt"}) == nil {
 		t.Fatal("CGO_ENABLED=1 ./cmd/gt should import beads embeddeddolt; that is the compile tax CGO_ENABLED=0 removes")
 	}
 }
 
 func TestTestutilDefaultImportsOmitTestcontainers(t *testing.T) {
 	imports := listPackageImports(t, "", "./internal/testutil")
-	if hits := Hits(imports, []string{"github.com/testcontainers/"}); len(hits) != 0 {
+	if hits := MatchingPrefixes(imports, []string{"github.com/testcontainers/"}); len(hits) != 0 {
 		t.Fatalf("default ./internal/testutil imports testcontainers:\n%s", strings.Join(hits, "\n"))
 	}
 }
 
 func TestTestutilIntegrationTagKeepsTestcontainers(t *testing.T) {
 	imports := listPackageImports(t, "integration", "./internal/testutil")
-	if Hits(imports, []string{"github.com/testcontainers/testcontainers-go"}) == nil {
+	if MatchingPrefixes(imports, []string{"github.com/testcontainers/testcontainers-go"}) == nil {
 		t.Fatal("go test -tags=integration must still compile the real testcontainers Dolt helpers")
 	}
 }
@@ -100,17 +102,7 @@ func moduleRoot(t *testing.T) string {
 
 func listDeps(t *testing.T, cgo, pkg string) []string {
 	t.Helper()
-	cmd := exec.Command("go", "list", "-deps", pkg)
-	cmd.Dir = moduleRoot(t)
-	cmd.Env = append(os.Environ(), "CGO_ENABLED="+cgo)
-	out, err := cmd.Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			t.Fatalf("go list -deps %s: %v\n%s", pkg, err, ee.Stderr)
-		}
-		t.Fatal(err)
-	}
-	return splitNonEmpty(string(out))
+	return runGoList(t, []string{"list", "-deps", pkg}, "CGO_ENABLED="+cgo)
 }
 
 func listPackageImports(t *testing.T, tags, pkg string) []string {
@@ -120,12 +112,20 @@ func listPackageImports(t *testing.T, tags, pkg string) []string {
 		args = append(args, "-tags", tags)
 	}
 	args = append(args, pkg)
-	cmd := exec.Command("go", args...)
+	return runGoList(t, args)
+}
+
+func runGoList(t *testing.T, args []string, extraEnv ...string) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = moduleRoot(t)
+	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			t.Fatalf("go list %s: %v\n%s", pkg, err, ee.Stderr)
+			t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, ee.Stderr)
 		}
 		t.Fatal(err)
 	}
