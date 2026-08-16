@@ -75,6 +75,14 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.2.2",
+		Date:    "2026-08-16",
+		Changes: []string{
+			"CHANGED: Public install is CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest. This tag is the first post-migration release, so @latest resolves to github.com/jonbaldie/gastown instead of pre-migration v1.2.1.",
+			"CHANGED: The Go module path is github.com/jonbaldie/gastown. Raw go install binaries on macOS no longer exit before running.",
+		},
+	},
+	{
 		Version: "1.2.1",
 		Date:    "2026-06-06",
 		Changes: []string{
