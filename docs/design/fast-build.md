@@ -4,11 +4,14 @@ Daily `make build` must not compile the Dolt engine.
 
 ## Why builds were slow
 
-`go list -deps ./cmd/gt` with CGO on is about 1400 packages. Almost all of
-the extra cost is one unused import:
+`CGO_ENABLED=1 go list -deps ./cmd/gt` pulls in beads' unused embedded Dolt
+engine. The extra cost is one import path:
 
 `github.com/steveyegge/beads` + CGO → `internal/storage/embeddeddolt` →
 `github.com/dolthub/driver` → the Dolt engine, ICU (C), and cloud SDKs.
+
+`internal/buildgraph` records the forbidden prefixes. Run
+`go test ./internal/buildgraph` to see the live CGO-on vs CGO-off graphs.
 
 Gas Town does not call `OpenBestAvailable`. Production store opens use
 `OpenFromConfig`, which talks to a Dolt SQL server over MySQL. The embedded
@@ -19,21 +22,22 @@ testcontainers in the same package as `CleanGTEnv`. Any test that imported
 testutil compiled Docker, the Dolt test module, and that module's dependency
 tree.
 
-`internal/cmd` is still one ~100k-line package. That does not change the
+`internal/cmd` is still one large command package. That does not change the
 cold CGO graph, but it makes every command edit a full-package rebuild.
 
 ## What this fork does
 
 | Lever | Effect |
 | --- | --- |
-| `CGO_ENABLED ?= 0` in the Makefile | Default `make build` / `make test` omit `embeddeddolt`. About 600 packages remain. |
+| `CGO_ENABLED ?= 0` in the Makefile | Default `make build` / `make test` omit `embeddeddolt`. |
 | `make build-dev` | Compile only `./cmd/gt`. |
 | `make build-cgo` | Old graph, in-process embedded Dolt. |
 | `//go:build integration` on testutil container files | Default `go test` compiles skip stubs. `go test -tags=integration` keeps the real helpers. |
-| `internal/buildgraph` | Fails CI if the CGO-off `./cmd/gt` graph grows `dolthub`, testcontainers, or go-rod. |
+| `internal/buildgraph` | Fails CI if the CGO-off `./cmd/gt` graph or default `go test` graphs grow `dolthub`, testcontainers, or go-rod. |
 
-`go test -race` still enables CGO, so race jobs still compile the embedded
-engine. That is a Go toolchain constraint, not a Gas Town one.
+Bare `go build` / `go run` do not set `CGO_ENABLED`. Use `make build` or
+`CGO_ENABLED=0`. `go test -race` still enables CGO; that is a Go toolchain
+constraint, not a Gas Town one.
 
 ## What a further step change requires
 

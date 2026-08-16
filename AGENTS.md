@@ -196,9 +196,9 @@ update script runs `go mod download` to refresh module deps after a pull.
 ### Build / lint / test / run
 
 - Build: `make build` → produces `gt`, `gt-proxy-server`, `gt-proxy-client` at repo root.
-  Default is `CGO_ENABLED=0` (no beads embedded Dolt engine; ~600 packages).
-  `make build-dev` builds only `gt`. `make build-cgo` restores the old CGO graph
-  (~1400 packages, ~1.5 min cold). `go run ./cmd/gt …` also works.
+  Default is `CGO_ENABLED=0` (no beads embedded Dolt engine).
+  `make build-dev` builds only `gt`. `make build-cgo` restores the CGO graph.
+  Bare `go build` / `go run` do not set `CGO_ENABLED`; use `make` or `CGO_ENABLED=0`.
 - Lint: `golangci-lint run --timeout=5m` (installed at `~/go/bin`).
   - GOTCHA: `golangci-lint` refuses to run if it was built with an older Go than `go.mod`'s
     `1.26.2` ("the Go language version go1.25 ... is lower than the targeted Go version 1.26.2").

@@ -8,6 +8,9 @@ func TestContainerStubsWithoutIntegrationTag(t *testing.T) {
 	if err := EnsureDoltContainerForTestMain(); err == nil {
 		t.Fatal("EnsureDoltContainerForTestMain() must fail without -tags=integration")
 	}
+	if DoltContainersEnabled() {
+		t.Fatal("DoltContainersEnabled() must be false without -tags=integration")
+	}
 	if got := DoltContainerPort(); got != "" {
 		t.Fatalf("DoltContainerPort() = %q, want empty", got)
 	}
@@ -15,6 +18,13 @@ func TestContainerStubsWithoutIntegrationTag(t *testing.T) {
 		t.Fatalf("DoltContainerAddr() = %q, want empty", got)
 	}
 	TerminateDoltContainer()
+}
+
+func TestSkipWithoutDoltContainerSkipsWithoutIntegrationTag(t *testing.T) {
+	t.Run("skip", func(t *testing.T) {
+		SkipWithoutDoltContainer(t)
+		t.Fatal("SkipWithoutDoltContainer should have skipped")
+	})
 }
 
 func TestRequireDoltContainerSkipsWithoutIntegrationTag(t *testing.T) {

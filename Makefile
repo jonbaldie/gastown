@@ -1,4 +1,4 @@
-.PHONY: build build-dev build-cgo desktop-build desktop-run install safe-install check-forward-only check-version-tag check-install-path clean test test-makefile test-integration test-e2e-container check-up-to-date
+.PHONY: build build-dev build-cgo cgo-enabled desktop-build desktop-run install safe-install check-forward-only check-version-tag check-install-path clean test test-makefile test-integration test-e2e-container check-up-to-date
 
 BINARY := gt
 BINARY_DESKTOP := gt-desktop
@@ -12,7 +12,7 @@ E2E_RUN_RETRIES ?= 1
 
 # Daily builds do not compile beads' CGO embedded Dolt engine. Gas Town
 # talks to Dolt as an external SQL server via OpenFromConfig. CGO_ENABLED=1
-# pulls ~800 extra packages (dolthub/driver + ICU + cloud SDKs).
+# compiles the unused embedded engine (dolthub/driver, ICU, and cloud SDKs).
 # Use `make build-cgo` when you need an in-process embedded engine.
 CGO_ENABLED ?= 0
 export CGO_ENABLED
@@ -51,6 +51,9 @@ build-dev:
 # Full CGO build that links beads' embedded Dolt engine.
 build-cgo:
 	$(MAKE) build CGO_ENABLED=1
+
+cgo-enabled:
+	@printf '%s\n' '$(CGO_ENABLED)'
 
 desktop-build:
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_DESKTOP) ./cmd/gt-desktop

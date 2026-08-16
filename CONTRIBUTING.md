@@ -8,8 +8,8 @@ Thanks for your interest in contributing! Gas Town is experimental software, and
 2. Clone your fork
 3. Install prerequisites (see README.md)
 4. Build and test: `make build-dev && go test ./...`
-   (`make build` defaults to `CGO_ENABLED=0`. Use `make build-cgo` only if you
-   need beads' in-process embedded Dolt engine.)
+   (`make build` defaults to `CGO_ENABLED=0`. Bare `go build` / `go run` do not.
+   Use `make build-cgo` only if you need beads' in-process embedded Dolt engine.)
 
 ## Setting up a rig to contribute to Gas Town
 

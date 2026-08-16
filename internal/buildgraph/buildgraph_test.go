@@ -1,7 +1,6 @@
 package buildgraph
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -44,13 +43,21 @@ func TestMatchingPrefixesEmptyWhenGraphIsClean(t *testing.T) {
 	}
 }
 
-func TestMakefileDefaultsCGOOff(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(moduleRoot(t), "Makefile"))
+func TestMakeDefaultsCGOOff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "make", "--no-print-directory", "cgo-enabled")
+	cmd.Dir = moduleRoot(t)
+	cmd.Env = envWithout(os.Environ(), "CGO_ENABLED")
+	out, err := cmd.Output()
 	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("make cgo-enabled: %v\n%s", err, ee.Stderr)
+		}
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte("CGO_ENABLED ?= 0")) {
-		t.Fatal("Makefile must default CGO_ENABLED to 0 so daily builds skip beads' embedded Dolt engine")
+	if got := strings.TrimSpace(string(out)); got != "0" {
+		t.Fatalf("make cgo-enabled = %q, want 0 (Makefile default must be CGO off)", got)
 	}
 }
 
@@ -68,17 +75,24 @@ func TestCmdGTWithCGOPullsEmbeddedDolt(t *testing.T) {
 	}
 }
 
-func TestTestutilDefaultImportsOmitTestcontainers(t *testing.T) {
-	imports := listPackageImports(t, "", "./internal/testutil")
-	if hits := MatchingPrefixes(imports, []string{"github.com/testcontainers/"}); len(hits) != 0 {
-		t.Fatalf("default ./internal/testutil imports testcontainers:\n%s", strings.Join(hits, "\n"))
+func TestTestutilDefaultTestGraphOmitsTestcontainers(t *testing.T) {
+	deps := listTestDeps(t, "", "./internal/testutil")
+	if hits := MatchingPrefixes(deps, []string{"github.com/testcontainers/"}); len(hits) != 0 {
+		t.Fatalf("go test ./internal/testutil (no tags) still depends on testcontainers:\n%s", strings.Join(hits, "\n"))
 	}
 }
 
-func TestTestutilIntegrationTagKeepsTestcontainers(t *testing.T) {
-	imports := listPackageImports(t, "integration", "./internal/testutil")
-	if MatchingPrefixes(imports, []string{"github.com/testcontainers/testcontainers-go"}) == nil {
-		t.Fatal("go test -tags=integration must still compile the real testcontainers Dolt helpers")
+func TestConvoyDefaultTestGraphOmitsTestcontainers(t *testing.T) {
+	deps := listTestDeps(t, "", "./internal/convoy")
+	if hits := MatchingPrefixes(deps, []string{"github.com/testcontainers/"}); len(hits) != 0 {
+		t.Fatalf("go test ./internal/convoy (no tags) still depends on testcontainers:\n%s", strings.Join(hits, "\n"))
+	}
+}
+
+func TestTestutilIntegrationTestGraphKeepsTestcontainers(t *testing.T) {
+	deps := listTestDeps(t, "integration", "./internal/testutil")
+	if MatchingPrefixes(deps, []string{"github.com/testcontainers/testcontainers-go"}) == nil {
+		t.Fatal("go test -tags=integration ./internal/testutil must still compile testcontainers")
 	}
 }
 
@@ -105,14 +119,25 @@ func listDeps(t *testing.T, cgo, pkg string) []string {
 	return runGoList(t, []string{"list", "-deps", pkg}, "CGO_ENABLED="+cgo)
 }
 
-func listPackageImports(t *testing.T, tags, pkg string) []string {
+func listTestDeps(t *testing.T, tags, pkg string) []string {
 	t.Helper()
-	args := []string{"list", "-f", "{{join .Imports \"\\n\"}}"}
+	args := []string{"list", "-deps", "-test"}
 	if tags != "" {
 		args = append(args, "-tags", tags)
 	}
 	args = append(args, pkg)
 	return runGoList(t, args)
+}
+
+func envWithout(env []string, key string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func runGoList(t *testing.T, args []string, extraEnv ...string) []string {

@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-const DoltDockerImage = "dolthub/dolt-sql-server:2.0.7"
-
 const integrationTagRequired = "Dolt test containers require -tags=integration"
 
 // StartIsolatedDoltContainer skips when the integration tag is off so default
@@ -35,3 +33,5 @@ func DoltContainerAddr() string { return "" }
 func DoltContainerPort() string { return "" }
 
 func TerminateDoltContainer() {}
+
+func DoltContainersEnabled() bool { return false }
