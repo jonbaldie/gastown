@@ -13,6 +13,19 @@ cd "$TMPDIR/work"
 GOWORK=off GOPROXY=direct CGO_ENABLED=0 GOBIN="$TMPDIR/bin" \
   go install "$MODULE/cmd/gt@$REF"
 
-go version -m "$TMPDIR/bin/gt" | grep -F "path\t$MODULE/cmd/gt"
-go version -m "$TMPDIR/bin/gt" | grep -F "mod\t$MODULE "
+meta="$(go version -m "$TMPDIR/bin/gt")"
+printf '%s\n' "$meta" | awk -v path="path\t${MODULE}/cmd/gt" -v mod="mod\t${MODULE}\t" '
+  $0 ~ path { found_path = 1 }
+  $0 ~ mod { found_mod = 1 }
+  END {
+    if (!found_path) {
+      print "missing package path " path > "/dev/stderr"
+      exit 1
+    }
+    if (!found_mod) {
+      print "missing module line " mod > "/dev/stderr"
+      exit 1
+    }
+  }
+'
 "$TMPDIR/bin/gt" version
