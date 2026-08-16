@@ -11,6 +11,7 @@ import (
 	"github.com/jonbaldie/gastown/internal/cli"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/hooks"
+	"github.com/jonbaldie/gastown/internal/instructions"
 	"github.com/jonbaldie/gastown/internal/skills"
 	"github.com/jonbaldie/gastown/internal/templates/commands"
 	"github.com/jonbaldie/gastown/internal/tmux"
@@ -97,8 +98,9 @@ func ensureGeminiContextFile(workDir string) error {
 		return nil
 	}
 
-	agentsPath := filepath.Join(workDir, "AGENTS.md")
-	geminiPath := filepath.Join(workDir, "GEMINI.md")
+	canonical := instructions.CanonicalName(workDir)
+	canonicalPath := filepath.Join(workDir, canonical)
+	geminiPath := filepath.Join(workDir, instructions.GeminiAliasFile)
 	info, err := os.Lstat(geminiPath)
 	if err == nil {
 		if info.Mode()&os.ModeSymlink == 0 {
@@ -109,17 +111,17 @@ func ensureGeminiContextFile(workDir string) error {
 		if err != nil {
 			return fmt.Errorf("reading GEMINI.md symlink: %w", err)
 		}
-		if target == "AGENTS.md" {
+		if target == canonical {
 			return nil
 		}
-		if !pointsToAgentsMD(target) {
+		if !pointsToCanonical(target, canonical) {
 			return nil
 		}
-		if _, err := os.Stat(agentsPath); err != nil {
+		if _, err := os.Stat(canonicalPath); err != nil {
 			if os.IsNotExist(err) {
 				return nil
 			}
-			return fmt.Errorf("checking AGENTS.md: %w", err)
+			return fmt.Errorf("checking %s: %w", canonical, err)
 		}
 		if err := os.Remove(geminiPath); err != nil {
 			return fmt.Errorf("removing non-canonical GEMINI.md symlink: %w", err)
@@ -128,21 +130,21 @@ func ensureGeminiContextFile(workDir string) error {
 		return fmt.Errorf("checking GEMINI.md: %w", err)
 	}
 
-	if _, err := os.Stat(agentsPath); err != nil {
+	if _, err := os.Stat(canonicalPath); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("checking AGENTS.md: %w", err)
+		return fmt.Errorf("checking %s: %w", canonical, err)
 	}
 
-	if err := os.Symlink("AGENTS.md", geminiPath); err != nil {
+	if err := os.Symlink(canonical, geminiPath); err != nil {
 		return fmt.Errorf("creating GEMINI.md symlink: %w", err)
 	}
 	return nil
 }
 
-func pointsToAgentsMD(target string) bool {
-	return filepath.Base(filepath.Clean(target)) == "AGENTS.md"
+func pointsToCanonical(target, canonical string) bool {
+	return filepath.Base(filepath.Clean(target)) == canonical
 }
 
 // commandsInherited reports whether workDir will receive slash commands via

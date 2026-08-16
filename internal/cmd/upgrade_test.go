@@ -27,50 +27,48 @@ func TestGenerateCLAUDEMD(t *testing.T) {
 	}
 }
 
-
 func TestUpgradeCLAUDEMD_CreatesMissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Test with a "town root" that has no CLAUDE.md
 	upgradeDryRun = false
 	upgradeVerbose = false
 
 	result := upgradeCLAUDEMD(tmpDir)
 
-	// 2 changes: CLAUDE.md created + AGENTS.md symlink created
 	if runtime.GOOS == "windows" {
-		// On Windows, symlink creation requires elevated privileges.
-		// Only CLAUDE.md is created; AGENTS.md symlink may fail silently.
 		if result.changed < 1 {
-			t.Errorf("expected at least 1 change for new CLAUDE.md, got %d", result.changed)
+			t.Errorf("expected at least 1 change for new AGENTS.md, got %d", result.changed)
 		}
-	} else {
-		if result.changed != 2 {
-			t.Errorf("expected 2 changes for new CLAUDE.md + AGENTS.md, got %d", result.changed)
-		}
+	} else if result.changed != 2 {
+		t.Errorf("expected 2 changes for new AGENTS.md + CLAUDE.md symlink, got %d", result.changed)
 	}
 
-	// Verify file was created
-	claudePath := filepath.Join(tmpDir, "CLAUDE.md")
-	data, err := os.ReadFile(claudePath)
+	agentsPath := filepath.Join(tmpDir, "AGENTS.md")
+	data, err := os.ReadFile(agentsPath)
 	if err != nil {
-		t.Fatalf("CLAUDE.md not created: %v", err)
+		t.Fatalf("AGENTS.md not created: %v", err)
 	}
 
 	expected := generateCLAUDEMD()
 	if string(data) != expected {
-		t.Error("CLAUDE.md content doesn't match expected template")
+		t.Error("AGENTS.md content doesn't match expected template")
 	}
 
-	// Verify AGENTS.md symlink was created
-	agentsPath := filepath.Join(tmpDir, "AGENTS.md")
+	info, err := os.Lstat(agentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("AGENTS.md should be a regular file")
+	}
+
 	if runtime.GOOS != "windows" {
-		target, err := os.Readlink(agentsPath)
+		target, err := os.Readlink(filepath.Join(tmpDir, "CLAUDE.md"))
 		if err != nil {
-			t.Fatalf("AGENTS.md symlink not created: %v", err)
+			t.Fatalf("CLAUDE.md symlink not created: %v", err)
 		}
-		if target != "CLAUDE.md" {
-			t.Errorf("AGENTS.md symlink target = %q, want %q", target, "CLAUDE.md")
+		if target != "AGENTS.md" {
+			t.Errorf("CLAUDE.md symlink target = %q, want %q", target, "AGENTS.md")
 		}
 	}
 }
@@ -78,10 +76,11 @@ func TestUpgradeCLAUDEMD_CreatesMissingFile(t *testing.T) {
 func TestUpgradeCLAUDEMD_UpToDate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Write the expected content
 	expected := generateCLAUDEMD()
-	claudePath := filepath.Join(tmpDir, "CLAUDE.md")
-	if err := os.WriteFile(claudePath, []byte(expected), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(expected), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("AGENTS.md", filepath.Join(tmpDir, "CLAUDE.md")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,7 +90,72 @@ func TestUpgradeCLAUDEMD_UpToDate(t *testing.T) {
 	result := upgradeCLAUDEMD(tmpDir)
 
 	if result.changed != 0 {
-		t.Errorf("expected 0 changes for up-to-date CLAUDE.md, got %d", result.changed)
+		t.Errorf("expected 0 changes for up-to-date pair, got %d", result.changed)
+	}
+}
+
+func TestUpgradeCLAUDEMD_FlipsOldSymlinkDirection(t *testing.T) {
+	tmpDir := t.TempDir()
+	expected := generateCLAUDEMD()
+	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte(expected), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("CLAUDE.md", filepath.Join(tmpDir, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	upgradeDryRun = false
+	upgradeVerbose = false
+	result := upgradeCLAUDEMD(tmpDir)
+	if result.changed == 0 {
+		t.Fatal("expected pair flip to report a change")
+	}
+
+	info, err := os.Lstat(filepath.Join(tmpDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("AGENTS.md should be a regular file after flip")
+	}
+	target, err := os.Readlink(filepath.Join(tmpDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("CLAUDE.md should be a symlink: %v", err)
+	}
+	if target != "AGENTS.md" {
+		t.Errorf("CLAUDE.md target = %q, want AGENTS.md", target)
+	}
+	got, err := os.ReadFile(filepath.Join(tmpDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != expected {
+		t.Error("identity text was lost during flip")
+	}
+}
+
+func TestCreateTownRootAgentMDs_WritesAgentsCanonical(t *testing.T) {
+	tmpDir := t.TempDir()
+	created, err := createTownRootAgentMDs(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("expected town-root pair to be created")
+	}
+	got, err := os.ReadFile(filepath.Join(tmpDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != generateCLAUDEMD() {
+		t.Error("AGENTS.md missing identity text")
+	}
+	target, err := os.Readlink(filepath.Join(tmpDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("CLAUDE.md should be a symlink: %v", err)
+	}
+	if target != "AGENTS.md" {
+		t.Errorf("CLAUDE.md target = %q, want AGENTS.md", target)
 	}
 }
 
@@ -103,8 +167,8 @@ func TestUpgradeCLAUDEMD_DryRun(t *testing.T) {
 
 	result := upgradeCLAUDEMD(tmpDir)
 
-	if result.changed != 1 {
-		t.Errorf("expected 1 change in dry-run mode, got %d", result.changed)
+	if result.changed < 1 {
+		t.Errorf("expected at least 1 change in dry-run mode, got %d", result.changed)
 	}
 
 	// Verify file was NOT created

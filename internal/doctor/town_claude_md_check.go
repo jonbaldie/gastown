@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jonbaldie/gastown/internal/instructions"
 	"github.com/jonbaldie/gastown/internal/templates"
 )
 
@@ -21,6 +22,7 @@ type TownCLAUDEmdCheck struct {
 	FixableCheck
 	missingSections []templates.TownRootRequiredSection
 	fileMissing     bool
+	pairWrong       bool
 }
 
 // NewTownCLAUDEmdCheck creates a new town-root CLAUDE.md version check.
@@ -40,31 +42,26 @@ func NewTownCLAUDEmdCheck() *TownCLAUDEmdCheck {
 func (c *TownCLAUDEmdCheck) Run(ctx *CheckContext) *CheckResult {
 	c.missingSections = nil
 	c.fileMissing = false
+	c.pairWrong = false
 
-	claudePath := filepath.Join(ctx.TownRoot, "CLAUDE.md")
-
-	// Check if file exists
-	data, err := os.ReadFile(claudePath)
+	content, err := readTownIdentity(ctx.TownRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.fileMissing = true
 			return &CheckResult{
 				Name:    c.Name(),
 				Status:  StatusError,
-				Message: "Town-root CLAUDE.md is missing",
+				Message: "Town-root AGENTS.md is missing",
 				FixHint: "Run 'gt doctor --fix' to create it from embedded template",
 			}
 		}
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusError,
-			Message: fmt.Sprintf("Cannot read town-root CLAUDE.md: %v", err),
+			Message: fmt.Sprintf("Cannot read town-root identity file: %v", err),
 		}
 	}
 
-	content := string(data)
-
-	// Check for required sections
 	required := templates.TownRootRequiredSections()
 	var missing []templates.TownRootRequiredSection
 	var details []string
@@ -76,75 +73,95 @@ func (c *TownCLAUDEmdCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	if len(missing) == 0 {
+	c.pairWrong = !instructions.TownPairValid(ctx.TownRoot)
+	if c.pairWrong {
+		details = append(details, "CLAUDE.md is not a symlink to AGENTS.md")
+	}
+
+	if len(missing) == 0 && !c.pairWrong {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusOK,
-			Message: "Town-root CLAUDE.md has all required sections",
+			Message: "Town-root AGENTS.md has all required sections",
 		}
 	}
 
 	c.missingSections = missing
+	if len(missing) == 0 {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusWarning,
+			Message: "Town-root instruction pair is inverted or incomplete",
+			Details: details,
+			FixHint: "Run 'gt doctor --fix' to make AGENTS.md canonical and CLAUDE.md a symlink",
+		}
+	}
 
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusWarning,
-		Message: fmt.Sprintf("Town-root CLAUDE.md missing %d section(s)", len(missing)),
+		Message: fmt.Sprintf("Town-root AGENTS.md missing %d section(s)", len(missing)),
 		Details: details,
 		FixHint: "Run 'gt doctor --fix' to add missing sections from embedded template",
 	}
 }
 
+func readTownIdentity(townRoot string) (string, error) {
+	for _, name := range []string{instructions.CanonicalFile, instructions.AliasFile} {
+		data, err := os.ReadFile(filepath.Join(townRoot, name))
+		if err == nil {
+			return string(data), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	return "", os.ErrNotExist
+}
+
 // Fix updates the town-root CLAUDE.md with missing sections from the
 // embedded template while preserving user customizations.
 func (c *TownCLAUDEmdCheck) Fix(ctx *CheckContext) error {
-	claudePath := filepath.Join(ctx.TownRoot, "CLAUDE.md")
 	canonical := templates.TownRootCLAUDEmd()
 
-	// If file is missing, create it from the canonical template
 	if c.fileMissing {
-		return os.WriteFile(claudePath, []byte(canonical), 0644)
+		_, err := instructions.Provision(ctx.TownRoot, canonical, "")
+		return err
 	}
 
-	// File exists but is missing sections — append them
-	if len(c.missingSections) == 0 {
-		return nil
-	}
-
-	// Read current content
-	data, err := os.ReadFile(claudePath)
+	current, err := readTownIdentity(ctx.TownRoot)
 	if err != nil {
-		return fmt.Errorf("reading CLAUDE.md: %w", err)
+		if os.IsNotExist(err) {
+			_, provErr := instructions.Provision(ctx.TownRoot, canonical, "")
+			return provErr
+		}
+		return fmt.Errorf("reading identity file: %w", err)
 	}
-	current := string(data)
 
-	// Parse canonical content into H2 sections
-	canonicalSections := parseH2Sections(canonical)
-
-	// For each missing section, find it in the canonical and append
 	var toAppend strings.Builder
-	for _, missing := range c.missingSections {
-		// Find the H2 section that contains this heading
-		for _, cs := range canonicalSections {
-			if strings.Contains(cs.content, missing.Heading) {
-				toAppend.WriteString("\n")
-				toAppend.WriteString(cs.content)
-				break
+	if len(c.missingSections) > 0 {
+		canonicalSections := parseH2Sections(canonical)
+		for _, missing := range c.missingSections {
+			for _, cs := range canonicalSections {
+				if strings.Contains(cs.content, missing.Heading) {
+					toAppend.WriteString("\n")
+					toAppend.WriteString(cs.content)
+					break
+				}
 			}
 		}
 	}
 
-	if toAppend.Len() == 0 {
-		return nil
+	updated := current
+	if toAppend.Len() > 0 {
+		if !strings.HasSuffix(updated, "\n") {
+			updated += "\n"
+		}
+		updated += toAppend.String()
 	}
 
-	// Ensure current content ends with a newline before appending
-	if !strings.HasSuffix(current, "\n") {
-		current += "\n"
-	}
-
-	updated := current + toAppend.String()
-	return os.WriteFile(claudePath, []byte(updated), 0644)
+	_, err = instructions.Provision(ctx.TownRoot, updated, "")
+	return err
 }
 
 // h2Section represents a section of markdown delimited by H2 headings.

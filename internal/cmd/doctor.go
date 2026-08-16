@@ -94,7 +94,7 @@ Formula overlay checks (fixable):
   - overlay-health           Check formula overlay step IDs are valid (fixable)
 
 Migration checks:
-  - town-claude-md           Check town-root CLAUDE.md matches embedded version (fixable)
+  - town-claude-md           Check town-root AGENTS.md identity pair matches embedded version (fixable)
 
 Session hook checks:
   - session-hooks            Check settings.json use session-start.sh

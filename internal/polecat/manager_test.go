@@ -1884,8 +1884,8 @@ func TestAddWithOptions_NoFilesAddedToRepo(t *testing.T) {
 		if strings.Contains(line, ".beads") {
 			continue
 		}
-		// CLAUDE.md is expected - provisioned by CreatePolecatCLAUDEmd for gt done instructions
-		if strings.Contains(line, "CLAUDE.md") {
+		// Gas Town instruction overlay pair (canonical file plus aliases)
+		if strings.Contains(line, "CLAUDE.md") || strings.Contains(line, "AGENTS.md") || strings.Contains(line, "GEMINI.md") {
 			continue
 		}
 		unexpected = append(unexpected, line)
