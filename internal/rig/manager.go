@@ -763,10 +763,6 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		fmt.Printf("  Warning: Could not provision refinery workspace: %v\n", err)
 	}
 
-	// NOTE: Claude settings are installed by the agent at startup, not here.
-	// Claude Code does NOT traverse parent directories for settings.json.
-	// See: https://github.com/anthropics/claude-code/issues/12962
-
 	// Create empty crew directory with README (crew members added via gt crew add)
 	crewPath := filepath.Join(rigPath, "crew")
 	if err := os.MkdirAll(crewPath, 0755); err != nil {
