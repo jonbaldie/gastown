@@ -209,6 +209,36 @@ func TestApplyTownMix_RejectsUnknownAgentAndDuplicateTargets(t *testing.T) {
 	}
 }
 
+func TestApplyTownMix_DropsIncompatiblePreservedEffort(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	settings := NewTownSettings()
+	settings.Agents = map[string]*RuntimeConfig{
+		"pi-luna": {Provider: "pi", Command: "pi"},
+	}
+	settings.RoleAgents = map[string]string{"mayor": "pi-luna"}
+	settings.RoleEffort = map[string]string{"mayor": "xhigh"}
+	if err := SaveTownSettings(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTownSettings: %v", err)
+	}
+
+	if err := ApplyTownMix(settingsPath, []MixAssignment{
+		{Kind: MixKindRole, Name: "mayor", Agent: "codex"},
+	}); err != nil {
+		t.Fatalf("ApplyTownMix mayor=codex: %v", err)
+	}
+
+	got, err := LoadOrCreateTownSettings(settingsPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateTownSettings: %v", err)
+	}
+	if got.RoleAgents["mayor"] != "codex" {
+		t.Fatalf("RoleAgents[mayor] = %q, want codex", got.RoleAgents["mayor"])
+	}
+	if _, ok := got.RoleEffort["mayor"]; ok {
+		t.Fatalf("RoleEffort[mayor] = %q, want cleared Pi-only effort", got.RoleEffort["mayor"])
+	}
+}
+
 func TestDescribeTownMix_ReportsMixedProviders(t *testing.T) {
 	settings := NewTownSettings()
 	settings.DefaultAgent = "codex"

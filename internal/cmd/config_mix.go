@@ -58,7 +58,14 @@ func runConfigMix(_ *cobra.Command, args []string) error {
 	}
 	mix := config.DescribeTownMix(settings)
 	if configMixJSON {
-		data, marshalErr := json.MarshalIndent(mix, "", "  ")
+		report := struct {
+			config.TownMix
+			Binaries []config.MixBinary `json:"binaries"`
+		}{
+			TownMix:  mix,
+			Binaries: config.DescribeMixBinaries(settings),
+		}
+		data, marshalErr := json.MarshalIndent(report, "", "  ")
 		if marshalErr != nil {
 			return fmt.Errorf("encoding mix: %w", marshalErr)
 		}

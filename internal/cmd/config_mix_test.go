@@ -70,12 +70,18 @@ func TestConfigMixJSONListsEffectiveAssignments(t *testing.T) {
 	env := testutil.CleanGTEnv("HOME=" + t.TempDir())
 	output := runGTCmdOutput(t, gtBinary, townRoot, env, "config", "mix", "--json")
 
-	var mix config.TownMix
+	var mix struct {
+		config.TownMix
+		Binaries []config.MixBinary `json:"binaries"`
+	}
 	if err := json.Unmarshal([]byte(output), &mix); err != nil {
 		t.Fatalf("unmarshal mix JSON: %v\n%s", err, output)
 	}
 	if !mix.Mixed || mix.DefaultAgent != "codex" {
 		t.Fatalf("JSON mix = %+v, want mixed codex default", mix)
+	}
+	if len(mix.Binaries) == 0 {
+		t.Fatalf("JSON mix missing binaries:\n%s", output)
 	}
 }
 

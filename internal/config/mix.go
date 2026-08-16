@@ -179,6 +179,10 @@ func ApplyTownMix(settingsPath string, assignments []MixAssignment) error {
 					settings.RoleEffort = make(map[string]string)
 				}
 				settings.RoleEffort[assignment.Name] = assignment.Effort
+			} else if runtimeConfig := lookupAgentConfigIfExists(assignment.Agent, settings, nil); runtimeConfig != nil {
+				if validateRuntimeEffort(runtimeConfig, settings.RoleEffort[assignment.Name]) != nil {
+					delete(settings.RoleEffort, assignment.Name)
+				}
 			}
 		case MixKindCrew:
 			if settings.CrewAgents == nil {
@@ -201,21 +205,22 @@ func validateMixAssignment(settings *TownSettings, assignment MixAssignment) err
 		if assignment.Effort != "" {
 			return fmt.Errorf("default agent cannot set effort")
 		}
-		if lookupAgentConfigIfExists(assignment.Agent, settings, nil) == nil {
-			return fmt.Errorf("agent %q not found (use 'gt config agent list' to see available agents)", assignment.Agent)
-		}
-		return nil
+		_, err := requireKnownAgent(assignment.Agent, settings)
+		return err
 	case MixKindRole:
 		if err := validateManagedRole(assignment.Name); err != nil {
 			return err
 		}
-		runtimeConfig := lookupAgentConfigIfExists(assignment.Agent, settings, nil)
-		if runtimeConfig == nil {
-			return fmt.Errorf("agent %q not found (use 'gt config agent list' to see available agents)", assignment.Agent)
+		runtimeConfig, err := requireKnownAgent(assignment.Agent, settings)
+		if err != nil {
+			return err
 		}
 		effectiveEffort := assignment.Effort
 		if effectiveEffort == "" {
 			effectiveEffort = settings.RoleEffort[assignment.Name]
+			if effectiveEffort != "" && validateRuntimeEffort(runtimeConfig, effectiveEffort) != nil {
+				return nil
+			}
 		}
 		return validateRuntimeEffort(runtimeConfig, effectiveEffort)
 	case MixKindCrew:
@@ -225,10 +230,8 @@ func validateMixAssignment(settings *TownSettings, assignment MixAssignment) err
 		if assignment.Effort != "" {
 			return fmt.Errorf("crew assignment cannot set effort")
 		}
-		if lookupAgentConfigIfExists(assignment.Agent, settings, nil) == nil {
-			return fmt.Errorf("agent %q not found (use 'gt config agent list' to see available agents)", assignment.Agent)
-		}
-		return nil
+		_, err := requireKnownAgent(assignment.Agent, settings)
+		return err
 	default:
 		return fmt.Errorf("unknown mix kind %q", assignment.Kind)
 	}
@@ -287,6 +290,14 @@ func DescribeTownMix(settings *TownSettings) TownMix {
 	sort.Strings(mix.Providers)
 	mix.Mixed = len(mix.Providers) > 1
 	return mix
+}
+
+func requireKnownAgent(agent string, settings *TownSettings) (*RuntimeConfig, error) {
+	runtimeConfig := lookupAgentConfigIfExists(agent, settings, nil)
+	if runtimeConfig == nil {
+		return nil, fmt.Errorf("agent %q not found (use 'gt config agent list' to see available agents)", agent)
+	}
+	return runtimeConfig, nil
 }
 
 func mixEntry(kind, name, agent, effort, source string, settings *TownSettings) MixEntry {

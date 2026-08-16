@@ -39,6 +39,10 @@ A later `gt config cost-tier` preset overwrites `role_agents`. Use
 `gt config mix` or `gt config role set` after a tier change if you want
 a custom mix.
 
+If you switch a role to a new agent without `:effort`, and the stored
+effort is not valid for that agent, the mix command clears the effort
+instead of rejecting the assignment.
+
 ## Apply the mix to running sessions
 
 Configuration is read when a session starts. Restart or hand off an
