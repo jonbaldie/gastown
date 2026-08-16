@@ -47,7 +47,7 @@ var templateFS embed.FS
 var supervisorFS embed.FS
 
 //go:embed polecat-CLAUDE.md
-var polecatCLAUDEmd string
+var polecatAgentsMD string
 
 // Templates manages role and message templates.
 type Templates struct {
@@ -182,12 +182,12 @@ func (t *Templates) MessageNames() []string {
 // Used to detect whether the Gas Town pair already contains lifecycle rules.
 const PolecatLifecycleMarker = instructions.LifecycleMarker
 
-// CreatePolecatCLAUDEmd writes polecat lifecycle rules through the shared
+// CreatePolecatAgentsMD writes polecat lifecycle rules through the shared
 // instruction-file provisioner. AGENTS.md is the canonical file. CLAUDE.md is
 // a symlink to it. A constitution file keeps the Rig file unchanged and uses
 // the local pair instead.
-func CreatePolecatCLAUDEmd(worktreePath, rigName, polecatName string) (bool, error) {
-	content := polecatCLAUDEmd
+func CreatePolecatAgentsMD(worktreePath, rigName, polecatName string) (bool, error) {
+	content := polecatAgentsMD
 	content = strings.ReplaceAll(content, "{{rig}}", rigName)
 	content = strings.ReplaceAll(content, "{{name}}", polecatName)
 	return instructions.Provision(worktreePath, content, PolecatLifecycleMarker)

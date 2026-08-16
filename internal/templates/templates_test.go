@@ -3,13 +3,13 @@ package templates
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jonbaldie/gastown/internal/constants"
 	"github.com/jonbaldie/gastown/internal/instructions"
+	"github.com/jonbaldie/gastown/internal/testutil/gitcmd"
 )
 
 func TestNew(t *testing.T) {
@@ -642,15 +642,15 @@ func TestRenderRole_BootUsesNudgeNotRawTmux(t *testing.T) {
 	}
 }
 
-func TestCreatePolecatCLAUDEmd(t *testing.T) {
+func TestCreatePolecatAgentsMD(t *testing.T) {
 	dir := t.TempDir()
 
-	created, err := CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa")
+	created, err := CreatePolecatAgentsMD(dir, "greenplace", "furiosa")
 	if err != nil {
-		t.Fatalf("CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("CreatePolecatAgentsMD() error = %v", err)
 	}
 	if !created {
-		t.Fatal("CreatePolecatCLAUDEmd() created = false, want true")
+		t.Fatal("CreatePolecatAgentsMD() created = false, want true")
 	}
 
 	content := readCanonicalOverlay(t, dir)
@@ -679,22 +679,22 @@ func TestCreatePolecatCLAUDEmd(t *testing.T) {
 	assertSymlinkTo(t, filepath.Join(dir, "CLAUDE.md"), "AGENTS.md")
 }
 
-func TestCreatePolecatCLAUDEmd_WritesToLocalWhenTrackedExists(t *testing.T) {
+func TestCreatePolecatAgentsMD_WritesToLocalWhenTrackedExists(t *testing.T) {
 	dir := t.TempDir()
-	initTestGitRepo(t, dir)
+	gitcmd.InitRepo(t, dir)
 
-	existing := TownRootCLAUDEmd()
+	existing := TownRootAgentsMD()
 	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(existing), 0644); err != nil {
 		t.Fatalf("writing existing CLAUDE.md: %v", err)
 	}
-	gitCommitFile(t, dir, "CLAUDE.md", "track constitution")
+	gitcmd.CommitFile(t, dir, "CLAUDE.md", "track constitution")
 
-	created, err := CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa")
+	created, err := CreatePolecatAgentsMD(dir, "greenplace", "furiosa")
 	if err != nil {
-		t.Fatalf("CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("CreatePolecatAgentsMD() error = %v", err)
 	}
 	if !created {
-		t.Fatal("CreatePolecatCLAUDEmd() created = false, want true (should write local pair)")
+		t.Fatal("CreatePolecatAgentsMD() created = false, want true (should write local pair)")
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
@@ -723,14 +723,14 @@ func TestCreatePolecatCLAUDEmd_WritesToLocalWhenTrackedExists(t *testing.T) {
 	assertSymlinkTo(t, filepath.Join(dir, "CLAUDE.local.md"), "AGENTS.local.md")
 }
 
-func TestCreatePolecatCLAUDEmd_WritesToLocalWhenAgentsExists(t *testing.T) {
+func TestCreatePolecatAgentsMD_WritesToLocalWhenAgentsExists(t *testing.T) {
 	dir := t.TempDir()
 	constitution := "# Project agents\nKeep this file.\n"
 	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(constitution), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa"); err != nil {
+	if _, err := CreatePolecatAgentsMD(dir, "greenplace", "furiosa"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -752,7 +752,7 @@ func TestCreatePolecatCLAUDEmd_WritesToLocalWhenAgentsExists(t *testing.T) {
 	assertSymlinkTo(t, filepath.Join(dir, "CLAUDE.local.md"), "AGENTS.local.md")
 }
 
-func TestCreatePolecatCLAUDEmd_WritesToLocalWhenBothExist(t *testing.T) {
+func TestCreatePolecatAgentsMD_WritesToLocalWhenBothExist(t *testing.T) {
 	dir := t.TempDir()
 	claude := "# Claude constitution\n"
 	agents := "# Agents constitution\n"
@@ -763,7 +763,7 @@ func TestCreatePolecatCLAUDEmd_WritesToLocalWhenBothExist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa"); err != nil {
+	if _, err := CreatePolecatAgentsMD(dir, "greenplace", "furiosa"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -777,12 +777,12 @@ func TestCreatePolecatCLAUDEmd_WritesToLocalWhenBothExist(t *testing.T) {
 	assertSymlinkTo(t, filepath.Join(dir, "CLAUDE.local.md"), "AGENTS.local.md")
 }
 
-func TestCreatePolecatCLAUDEmd_SkipsWhenAlreadyProvisioned(t *testing.T) {
+func TestCreatePolecatAgentsMD_SkipsWhenAlreadyProvisioned(t *testing.T) {
 	dir := t.TempDir()
 
-	created, err := CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa")
+	created, err := CreatePolecatAgentsMD(dir, "greenplace", "furiosa")
 	if err != nil {
-		t.Fatalf("first CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("first CreatePolecatAgentsMD() error = %v", err)
 	}
 	if !created {
 		t.Fatal("first call should create")
@@ -790,9 +790,9 @@ func TestCreatePolecatCLAUDEmd_SkipsWhenAlreadyProvisioned(t *testing.T) {
 
 	data1, _ := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
 
-	created, err = CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa")
+	created, err = CreatePolecatAgentsMD(dir, "greenplace", "furiosa")
 	if err != nil {
-		t.Fatalf("second CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("second CreatePolecatAgentsMD() error = %v", err)
 	}
 	if created {
 		t.Fatal("second call should skip (lifecycle instructions already present)")
@@ -804,20 +804,20 @@ func TestCreatePolecatCLAUDEmd_SkipsWhenAlreadyProvisioned(t *testing.T) {
 	}
 }
 
-func TestCreatePolecatCLAUDEmd_ReusePath(t *testing.T) {
+func TestCreatePolecatAgentsMD_ReusePath(t *testing.T) {
 	dir := t.TempDir()
-	initTestGitRepo(t, dir)
+	gitcmd.InitRepo(t, dir)
 	claudePath := filepath.Join(dir, "CLAUDE.md")
 
-	townRoot := TownRootCLAUDEmd()
+	townRoot := TownRootAgentsMD()
 	if err := os.WriteFile(claudePath, []byte(townRoot), 0644); err != nil {
 		t.Fatalf("writing tracked CLAUDE.md: %v", err)
 	}
-	gitCommitFile(t, dir, "CLAUDE.md", "track constitution")
+	gitcmd.CommitFile(t, dir, "CLAUDE.md", "track constitution")
 
-	created, err := CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa")
+	created, err := CreatePolecatAgentsMD(dir, "greenplace", "furiosa")
 	if err != nil {
-		t.Fatalf("first CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("first CreatePolecatAgentsMD() error = %v", err)
 	}
 	if !created {
 		t.Fatal("first call should create local pair")
@@ -841,9 +841,9 @@ func TestCreatePolecatCLAUDEmd_ReusePath(t *testing.T) {
 		t.Fatal("AGENTS.local.md lifecycle marker lost — should survive git reset --hard")
 	}
 
-	created, err = CreatePolecatCLAUDEmd(dir, "greenplace", "furiosa")
+	created, err = CreatePolecatAgentsMD(dir, "greenplace", "furiosa")
 	if err != nil {
-		t.Fatalf("second CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("second CreatePolecatAgentsMD() error = %v", err)
 	}
 	if created {
 		t.Fatal("second call should be a no-op (lifecycle instructions still in local pair)")
@@ -859,18 +859,18 @@ func TestCreatePolecatCLAUDEmd_ReusePath(t *testing.T) {
 	}
 }
 
-func TestCreatePolecatCLAUDEmd_GitCleanRemovesLocal(t *testing.T) {
+func TestCreatePolecatAgentsMD_GitCleanRemovesLocal(t *testing.T) {
 	dir := t.TempDir()
-	initTestGitRepo(t, dir)
+	gitcmd.InitRepo(t, dir)
 	claudePath := filepath.Join(dir, "CLAUDE.md")
 
-	townRoot := TownRootCLAUDEmd()
+	townRoot := TownRootAgentsMD()
 	if err := os.WriteFile(claudePath, []byte(townRoot), 0644); err != nil {
 		t.Fatalf("writing tracked CLAUDE.md: %v", err)
 	}
-	gitCommitFile(t, dir, "CLAUDE.md", "track constitution")
+	gitcmd.CommitFile(t, dir, "CLAUDE.md", "track constitution")
 
-	if _, err := CreatePolecatCLAUDEmd(dir, "greenplace", "nux"); err != nil {
+	if _, err := CreatePolecatAgentsMD(dir, "greenplace", "nux"); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
 
@@ -879,7 +879,7 @@ func TestCreatePolecatCLAUDEmd_GitCleanRemovesLocal(t *testing.T) {
 	}
 	_ = os.Remove(filepath.Join(dir, "CLAUDE.local.md"))
 
-	created, err := CreatePolecatCLAUDEmd(dir, "greenplace", "nux")
+	created, err := CreatePolecatAgentsMD(dir, "greenplace", "nux")
 	if err != nil {
 		t.Fatalf("second provision: %v", err)
 	}
@@ -897,12 +897,12 @@ func TestCreatePolecatCLAUDEmd_GitCleanRemovesLocal(t *testing.T) {
 	}
 }
 
-func TestCreatePolecatCLAUDEmd_GitCleanScenario(t *testing.T) {
+func TestCreatePolecatAgentsMD_GitCleanScenario(t *testing.T) {
 	dir := t.TempDir()
 
-	created, err := CreatePolecatCLAUDEmd(dir, "greenplace", "nux")
+	created, err := CreatePolecatAgentsMD(dir, "greenplace", "nux")
 	if err != nil {
-		t.Fatalf("first CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("first CreatePolecatAgentsMD() error = %v", err)
 	}
 	if !created {
 		t.Fatal("first call should create file")
@@ -916,9 +916,9 @@ func TestCreatePolecatCLAUDEmd_GitCleanScenario(t *testing.T) {
 		t.Fatal("git clean simulation should have removed AGENTS.md")
 	}
 
-	created, err = CreatePolecatCLAUDEmd(dir, "greenplace", "nux")
+	created, err = CreatePolecatAgentsMD(dir, "greenplace", "nux")
 	if err != nil {
-		t.Fatalf("second CreatePolecatCLAUDEmd() error = %v", err)
+		t.Fatalf("second CreatePolecatAgentsMD() error = %v", err)
 	}
 	if !created {
 		t.Fatal("second call should re-create file after git clean")
@@ -931,24 +931,24 @@ func TestCreatePolecatCLAUDEmd_GitCleanScenario(t *testing.T) {
 	assertSymlinkTo(t, filepath.Join(dir, "CLAUDE.md"), "AGENTS.md")
 }
 
-func TestCreatePolecatCLAUDEmd_GeminiAliasPointsAtCanonical(t *testing.T) {
+func TestCreatePolecatAgentsMD_GeminiAliasPointsAtCanonical(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Symlink("CLAUDE.md", filepath.Join(dir, "GEMINI.md")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreatePolecatCLAUDEmd(dir, "greenplace", "nux"); err != nil {
+	if _, err := CreatePolecatAgentsMD(dir, "greenplace", "nux"); err != nil {
 		t.Fatal(err)
 	}
 	assertSymlinkTo(t, filepath.Join(dir, "GEMINI.md"), "AGENTS.md")
 }
 
-func TestCreatePolecatCLAUDEmd_LeavesRegularGeminiUnchanged(t *testing.T) {
+func TestCreatePolecatAgentsMD_LeavesRegularGeminiUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	gemini := "# Gemini project file\n"
 	if err := os.WriteFile(filepath.Join(dir, "GEMINI.md"), []byte(gemini), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreatePolecatCLAUDEmd(dir, "greenplace", "nux"); err != nil {
+	if _, err := CreatePolecatAgentsMD(dir, "greenplace", "nux"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "GEMINI.md"))
@@ -991,27 +991,5 @@ func assertRegularFile(t *testing.T, path string) {
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("%s is a symlink, want a regular file", path)
-	}
-}
-
-func initTestGitRepo(t *testing.T, dir string) {
-	t.Helper()
-	runGit(t, dir, "init")
-	runGit(t, dir, "config", "user.name", "test")
-	runGit(t, dir, "config", "user.email", "test@example.com")
-}
-
-func gitCommitFile(t *testing.T, dir, name, message string) {
-	t.Helper()
-	runGit(t, dir, "add", name)
-	runGit(t, dir, "commit", "-m", message)
-}
-
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

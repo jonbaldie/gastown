@@ -10,28 +10,28 @@ import (
 	"github.com/jonbaldie/gastown/internal/templates"
 )
 
-// TownCLAUDEmdCheck verifies the town-root CLAUDE.md is up to date with
+// TownAgentsMDCheck verifies the town-root AGENTS.md is up to date with
 // the version embedded in the binary. This is the highest-value migration
-// check — behavioral norms for agents come from CLAUDE.md.
+// check — behavioral norms for agents come from AGENTS.md.
 //
-// The town-root CLAUDE.md (~/gt/CLAUDE.md) is loaded by Claude Code for
-// all agents running from within the town git tree (Mayor, Deacon).
-// It must contain operational norms (Dolt awareness, communication hygiene,
-// nudge-first) that guide agent behavior.
-type TownCLAUDEmdCheck struct {
+// The town-root AGENTS.md (~/gt/AGENTS.md) is loaded by agents running
+// from within the town git tree (Mayor, Deacon). CLAUDE.md is a symlink
+// to that file. It must contain operational norms (Dolt awareness,
+// communication hygiene, nudge-first) that guide agent behavior.
+type TownAgentsMDCheck struct {
 	FixableCheck
 	missingSections []templates.TownRootRequiredSection
 	fileMissing     bool
 	pairWrong       bool
 }
 
-// NewTownCLAUDEmdCheck creates a new town-root CLAUDE.md version check.
-func NewTownCLAUDEmdCheck() *TownCLAUDEmdCheck {
-	return &TownCLAUDEmdCheck{
+// NewTownAgentsMDCheck creates a new town-root AGENTS.md version check.
+func NewTownAgentsMDCheck() *TownAgentsMDCheck {
+	return &TownAgentsMDCheck{
 		FixableCheck: FixableCheck{
 			BaseCheck: BaseCheck{
-				CheckName:        "town-claude-md",
-				CheckDescription: "Verify town-root CLAUDE.md is up to date with embedded version",
+				CheckName:        "town-agents-md",
+				CheckDescription: "Verify town-root AGENTS.md is up to date with embedded version",
 				CheckCategory:    CategoryConfig,
 			},
 		},
@@ -39,7 +39,7 @@ func NewTownCLAUDEmdCheck() *TownCLAUDEmdCheck {
 }
 
 // Run checks the town-root CLAUDE.md for completeness.
-func (c *TownCLAUDEmdCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *TownAgentsMDCheck) Run(ctx *CheckContext) *CheckResult {
 	c.missingSections = nil
 	c.fileMissing = false
 	c.pairWrong = false
@@ -119,10 +119,10 @@ func readTownIdentity(townRoot string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-// Fix updates the town-root CLAUDE.md with missing sections from the
+// Fix updates the town-root AGENTS.md with missing sections from the
 // embedded template while preserving user customizations.
-func (c *TownCLAUDEmdCheck) Fix(ctx *CheckContext) error {
-	canonical := templates.TownRootCLAUDEmd()
+func (c *TownAgentsMDCheck) Fix(ctx *CheckContext) error {
+	canonical := templates.TownRootAgentsMD()
 
 	if c.fileMissing {
 		_, err := instructions.Provision(ctx.TownRoot, canonical, "")

@@ -17,10 +17,14 @@ func Provision(dir, content, skipIfContains string) (bool, error) {
 	}
 	snap := snapshot(dir)
 	plan := planProvision(snap, content, skipIfContains)
-	if planNoop(plan) {
+	geminiOp := geminiAction(snap, plan.canonicalName, false)
+	if planNoop(plan) && geminiOp == geminiNone {
 		return false, nil
 	}
 	if err := applyPlan(dir, plan); err != nil {
+		return false, err
+	}
+	if err := applyGemini(dir, plan.canonicalName, geminiOp); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -53,12 +57,6 @@ func applyPlan(dir string, plan provisionPlan) error {
 	if plan.writeAlias {
 		if err := os.Symlink(plan.canonicalName, filepath.Join(dir, plan.aliasName)); err != nil {
 			return fmt.Errorf("linking %s: %w", plan.aliasName, err)
-		}
-	}
-
-	if plan.writeGemini {
-		if err := os.Symlink(plan.canonicalName, filepath.Join(dir, GeminiAliasFile)); err != nil {
-			return fmt.Errorf("linking %s: %w", GeminiAliasFile, err)
 		}
 	}
 

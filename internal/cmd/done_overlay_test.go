@@ -2,13 +2,13 @@ package cmd
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/instructions"
+	"github.com/jonbaldie/gastown/internal/testutil/gitcmd"
 )
 
 func TestStripOverlayInstructionFiles_RemovesAgentsOverlay(t *testing.T) {
@@ -52,12 +52,12 @@ func TestStripOverlayInstructionFiles_RemovesLocalPair(t *testing.T) {
 func TestStripOverlayInstructionFiles_RestoresConstitution(t *testing.T) {
 	dir := initOverlayRepo(t)
 	constitution := "# Project\nKeep this file.\n"
-	runOverlayGit(t, dir, "checkout", "main")
+	gitcmd.Run(t, dir, "checkout", "main")
 	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(constitution), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runOverlayGit(t, dir, "add", "CLAUDE.md")
-	runOverlayGit(t, dir, "commit", "-m", "add constitution")
+	gitcmd.Run(t, dir, "add", "CLAUDE.md")
+	gitcmd.Run(t, dir, "commit", "-m", "add constitution")
 
 	writeAndCommit(t, dir, "feature", map[string]string{
 		"CLAUDE.md": polecatOverlayText(),
@@ -82,12 +82,12 @@ func TestStripOverlayInstructionFiles_RestoresConstitution(t *testing.T) {
 func TestStripOverlayInstructionFiles_LeavesConstitutionAlone(t *testing.T) {
 	dir := initOverlayRepo(t)
 	constitution := "# Project\nKeep this file.\n"
-	runOverlayGit(t, dir, "checkout", "main")
+	gitcmd.Run(t, dir, "checkout", "main")
 	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(constitution), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runOverlayGit(t, dir, "add", "CLAUDE.md")
-	runOverlayGit(t, dir, "commit", "-m", "add constitution")
+	gitcmd.Run(t, dir, "add", "CLAUDE.md")
+	gitcmd.Run(t, dir, "commit", "-m", "add constitution")
 
 	writeAndCommit(t, dir, "feature", map[string]string{
 		"README.md": "# still working\n",
@@ -106,6 +106,26 @@ func TestStripOverlayInstructionFiles_LeavesConstitutionAlone(t *testing.T) {
 	}
 }
 
+func TestStripOverlayInstructionFiles_LeavesNonOverlayLocalAgents(t *testing.T) {
+	dir := initOverlayRepo(t)
+	custom := "# Local notes\nNot a Gas Town overlay.\n"
+	writeAndCommit(t, dir, "feature", map[string]string{
+		"AGENTS.local.md": custom,
+	})
+
+	g := git.NewGit(dir)
+	if stripOverlayInstructionFiles(g, "main", "main") {
+		t.Fatal("non-overlay AGENTS.local.md should not be stripped")
+	}
+	got, err := g.ShowFile("HEAD", "AGENTS.local.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != custom {
+		t.Fatalf("AGENTS.local.md changed: %q", got)
+	}
+}
+
 func polecatOverlayText() string {
 	return "# Polecat Context\n\n## 🚨 THE " + instructions.LifecycleMarker + " 🚨\n\ngt done\n"
 }
@@ -113,34 +133,25 @@ func polecatOverlayText() string {
 func initOverlayRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	runOverlayGit(t, dir, "init", "-b", "main")
-	runOverlayGit(t, dir, "config", "user.name", "test")
-	runOverlayGit(t, dir, "config", "user.email", "test@example.com")
+	gitcmd.Run(t, dir, "init", "-b", "main")
+	gitcmd.Run(t, dir, "config", "user.name", "test")
+	gitcmd.Run(t, dir, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# repo\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runOverlayGit(t, dir, "add", "README.md")
-	runOverlayGit(t, dir, "commit", "-m", "init")
+	gitcmd.Run(t, dir, "add", "README.md")
+	gitcmd.Run(t, dir, "commit", "-m", "init")
 	return dir
 }
 
 func writeAndCommit(t *testing.T, dir, branch string, files map[string]string) {
 	t.Helper()
-	runOverlayGit(t, dir, "checkout", "-B", branch)
+	gitcmd.Run(t, dir, "checkout", "-B", branch)
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
 			t.Fatal(err)
 		}
-		runOverlayGit(t, dir, "add", name)
+		gitcmd.Run(t, dir, "add", name)
 	}
-	runOverlayGit(t, dir, "commit", "-m", "add overlay")
-}
-
-func runOverlayGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
+	gitcmd.Run(t, dir, "commit", "-m", "add overlay")
 }

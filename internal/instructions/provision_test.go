@@ -2,10 +2,11 @@ package instructions
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jonbaldie/gastown/internal/testutil/gitcmd"
 )
 
 const townIdentity = `# Gas Town
@@ -175,11 +176,11 @@ func TestProvision_BothConstitutionFilesStayUnchanged(t *testing.T) {
 
 func TestProvision_TrackedRigClaudeIsConstitution(t *testing.T) {
 	dir := t.TempDir()
-	initGitRepo(t, dir)
+	gitcmd.InitRepo(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, AliasFile), []byte(townIdentity), 0644); err != nil {
 		t.Fatal(err)
 	}
-	gitCommitFile(t, dir, AliasFile, "track constitution")
+	gitcmd.CommitFile(t, dir, AliasFile, "track constitution")
 
 	if _, err := Provision(dir, polecatOverlay, LifecycleMarker); err != nil {
 		t.Fatal(err)
@@ -334,14 +335,66 @@ func TestProvision_LeavesRegularGeminiUnchanged(t *testing.T) {
 	assertRegularFile(t, filepath.Join(dir, GeminiAliasFile))
 }
 
+func TestProvision_RetargetsPathLikeGeminiAlias(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, CanonicalFile), []byte(townIdentity), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("./rig/worktree/AGENTS.md", filepath.Join(dir, GeminiAliasFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := Provision(dir, townIdentity, "# Gas Town")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected GEMINI.md path-like alias to be retargeted")
+	}
+	target, err := os.Readlink(filepath.Join(dir, GeminiAliasFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != CanonicalFile {
+		t.Fatalf("GEMINI.md target = %q, want %q", target, CanonicalFile)
+	}
+}
+
+func TestEnsureGeminiAlias_CreatesWhenCanonicalExists(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, CanonicalFile), []byte(townIdentity), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureGeminiAlias(dir); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(filepath.Join(dir, GeminiAliasFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != CanonicalFile {
+		t.Fatalf("GEMINI.md target = %q, want %q", target, CanonicalFile)
+	}
+}
+
+func TestEnsureGeminiAlias_NoopsWithoutCanonical(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureGeminiAlias(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, GeminiAliasFile)); !os.IsNotExist(err) {
+		t.Fatal("GEMINI.md should not be created without a canonical file")
+	}
+}
+
 func TestProvision_ReuseAfterResetKeepsLocalPair(t *testing.T) {
 	dir := t.TempDir()
-	initGitRepo(t, dir)
+	gitcmd.InitRepo(t, dir)
 	constitution := "# Project\n"
 	if err := os.WriteFile(filepath.Join(dir, AliasFile), []byte(constitution), 0644); err != nil {
 		t.Fatal(err)
 	}
-	gitCommitFile(t, dir, AliasFile, "track claude")
+	gitcmd.CommitFile(t, dir, AliasFile, "track claude")
 
 	if _, err := Provision(dir, polecatOverlay, LifecycleMarker); err != nil {
 		t.Fatal(err)
@@ -364,12 +417,12 @@ func TestProvision_ReuseAfterResetKeepsLocalPair(t *testing.T) {
 
 func TestProvision_ReuseAfterCleanRewritesLocalPair(t *testing.T) {
 	dir := t.TempDir()
-	initGitRepo(t, dir)
+	gitcmd.InitRepo(t, dir)
 	constitution := "# Project\n"
 	if err := os.WriteFile(filepath.Join(dir, AliasFile), []byte(constitution), 0644); err != nil {
 		t.Fatal(err)
 	}
-	gitCommitFile(t, dir, AliasFile, "track claude")
+	gitcmd.CommitFile(t, dir, AliasFile, "track claude")
 
 	if _, err := Provision(dir, polecatOverlay, LifecycleMarker); err != nil {
 		t.Fatal(err)
@@ -427,27 +480,5 @@ func assertRegularFile(t *testing.T, path string) {
 	}
 	if !info.Mode().IsRegular() {
 		t.Fatalf("%s is not a regular file", path)
-	}
-}
-
-func initGitRepo(t *testing.T, dir string) {
-	t.Helper()
-	runGit(t, dir, "init")
-	runGit(t, dir, "config", "user.name", "test")
-	runGit(t, dir, "config", "user.email", "test@example.com")
-}
-
-func gitCommitFile(t *testing.T, dir, name, message string) {
-	t.Helper()
-	runGit(t, dir, "add", name)
-	runGit(t, dir, "commit", "-m", message)
-}
-
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

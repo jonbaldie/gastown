@@ -54,7 +54,7 @@ func EnsureSettingsForRole(settingsDir, workDir, role string, rc *config.Runtime
 		return err
 	}
 	if provider == "gemini" {
-		if err := ensureGeminiContextFile(workDir); err != nil {
+		if err := instructions.EnsureGeminiAlias(workDir); err != nil {
 			return err
 		}
 	}
@@ -91,60 +91,6 @@ func provisionRoleSkills(workDir, provider string) error {
 		}
 	}
 	return skills.ProvisionFor(workDir, provider)
-}
-
-func ensureGeminiContextFile(workDir string) error {
-	if workDir == "" {
-		return nil
-	}
-
-	canonical := instructions.CanonicalName(workDir)
-	canonicalPath := filepath.Join(workDir, canonical)
-	geminiPath := filepath.Join(workDir, instructions.GeminiAliasFile)
-	info, err := os.Lstat(geminiPath)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink == 0 {
-			return nil
-		}
-
-		target, err := os.Readlink(geminiPath)
-		if err != nil {
-			return fmt.Errorf("reading GEMINI.md symlink: %w", err)
-		}
-		if target == canonical {
-			return nil
-		}
-		if !pointsToCanonical(target, canonical) {
-			return nil
-		}
-		if _, err := os.Stat(canonicalPath); err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return fmt.Errorf("checking %s: %w", canonical, err)
-		}
-		if err := os.Remove(geminiPath); err != nil {
-			return fmt.Errorf("removing non-canonical GEMINI.md symlink: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("checking GEMINI.md: %w", err)
-	}
-
-	if _, err := os.Stat(canonicalPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("checking %s: %w", canonical, err)
-	}
-
-	if err := os.Symlink(canonical, geminiPath); err != nil {
-		return fmt.Errorf("creating GEMINI.md symlink: %w", err)
-	}
-	return nil
-}
-
-func pointsToCanonical(target, canonical string) bool {
-	return filepath.Base(filepath.Clean(target)) == canonical
 }
 
 // commandsInherited reports whether workDir will receive slash commands via

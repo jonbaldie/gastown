@@ -5,14 +5,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/jonbaldie/gastown/internal/templates"
 )
 
-func TestGenerateCLAUDEMD(t *testing.T) {
-	content := generateCLAUDEMD()
+func TestTownIdentity(t *testing.T) {
+	content := templates.TownIdentity()
 
 	// Must contain the Gas Town header
 	if content == "" {
-		t.Fatal("generateCLAUDEMD returned empty string")
+		t.Fatal("templates.TownIdentity returned empty string")
 	}
 	if content[0:10] != "# Gas Town" {
 		t.Errorf("expected content to start with '# Gas Town', got: %q", content[:10])
@@ -20,20 +22,20 @@ func TestGenerateCLAUDEMD(t *testing.T) {
 
 	// Must contain identity anchoring instructions
 	if !contains(content, "Do NOT adopt an identity") {
-		t.Error("CLAUDE.md should contain identity anchoring warning")
+		t.Error("identity text should contain identity anchoring warning")
 	}
 	if !contains(content, "GT_ROLE") {
-		t.Error("CLAUDE.md should reference GT_ROLE environment variable")
+		t.Error("identity text should reference GT_ROLE environment variable")
 	}
 }
 
-func TestUpgradeCLAUDEMD_CreatesMissingFile(t *testing.T) {
+func TestUpgradeAgentsMD_CreatesMissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	upgradeDryRun = false
 	upgradeVerbose = false
 
-	result := upgradeCLAUDEMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir)
 
 	if runtime.GOOS == "windows" {
 		if result.changed < 1 {
@@ -49,7 +51,7 @@ func TestUpgradeCLAUDEMD_CreatesMissingFile(t *testing.T) {
 		t.Fatalf("AGENTS.md not created: %v", err)
 	}
 
-	expected := generateCLAUDEMD()
+	expected := templates.TownIdentity()
 	if string(data) != expected {
 		t.Error("AGENTS.md content doesn't match expected template")
 	}
@@ -73,10 +75,10 @@ func TestUpgradeCLAUDEMD_CreatesMissingFile(t *testing.T) {
 	}
 }
 
-func TestUpgradeCLAUDEMD_UpToDate(t *testing.T) {
+func TestUpgradeAgentsMD_UpToDate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	expected := generateCLAUDEMD()
+	expected := templates.TownIdentity()
 	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(expected), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -87,16 +89,16 @@ func TestUpgradeCLAUDEMD_UpToDate(t *testing.T) {
 	upgradeDryRun = false
 	upgradeVerbose = false
 
-	result := upgradeCLAUDEMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir)
 
 	if result.changed != 0 {
 		t.Errorf("expected 0 changes for up-to-date pair, got %d", result.changed)
 	}
 }
 
-func TestUpgradeCLAUDEMD_FlipsOldSymlinkDirection(t *testing.T) {
+func TestUpgradeAgentsMD_FlipsOldSymlinkDirection(t *testing.T) {
 	tmpDir := t.TempDir()
-	expected := generateCLAUDEMD()
+	expected := templates.TownIdentity()
 	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte(expected), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +108,7 @@ func TestUpgradeCLAUDEMD_FlipsOldSymlinkDirection(t *testing.T) {
 
 	upgradeDryRun = false
 	upgradeVerbose = false
-	result := upgradeCLAUDEMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir)
 	if result.changed == 0 {
 		t.Fatal("expected pair flip to report a change")
 	}
@@ -147,7 +149,7 @@ func TestCreateTownRootAgentMDs_WritesAgentsCanonical(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != generateCLAUDEMD() {
+	if string(got) != templates.TownIdentity() {
 		t.Error("AGENTS.md missing identity text")
 	}
 	target, err := os.Readlink(filepath.Join(tmpDir, "CLAUDE.md"))
@@ -159,13 +161,13 @@ func TestCreateTownRootAgentMDs_WritesAgentsCanonical(t *testing.T) {
 	}
 }
 
-func TestUpgradeCLAUDEMD_DryRun(t *testing.T) {
+func TestUpgradeAgentsMD_DryRun(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	upgradeDryRun = true
 	upgradeVerbose = false
 
-	result := upgradeCLAUDEMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir)
 
 	if result.changed < 1 {
 		t.Errorf("expected at least 1 change in dry-run mode, got %d", result.changed)

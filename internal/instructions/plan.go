@@ -13,7 +13,6 @@ type provisionPlan struct {
 	canonicalBody string
 	writeBody     bool
 	writeAlias    bool
-	writeGemini   bool
 	remove        []string
 }
 
@@ -50,14 +49,6 @@ func planProvision(snap dirSnap, content, skipIfContains string) provisionPlan {
 	if writeBody && names.canonical == LocalCanonicalFile && snap.claudeLocal.regular {
 		plan.remove = appendUnique(plan.remove, LocalAliasFile)
 		plan.writeAlias = true
-	}
-
-	gemini := snap.gemini
-	if gemini.regular {
-		plan.writeGemini = false
-	} else if gemini.symlink && isGasTownAliasTarget(gemini.target) && !symlinkPointsAt(gemini, names.canonical) {
-		plan.writeGemini = true
-		plan.remove = appendUnique(plan.remove, GeminiAliasFile)
 	}
 
 	return plan
@@ -116,7 +107,7 @@ func appendUnique(items []string, name string) []string {
 }
 
 func planNoop(plan provisionPlan) bool {
-	return !plan.writeBody && !plan.writeAlias && !plan.writeGemini
+	return !plan.writeBody && !plan.writeAlias
 }
 
 // TownPairValid reports whether dir has AGENTS.md as a regular file and

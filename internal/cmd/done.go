@@ -2681,8 +2681,8 @@ func stripOverlayInstructionFiles(g *git.Git, defaultBranch, baseRef string) boo
 	needsCommit := false
 	needsCommit = stripOverlayCanonical(g, defaultBranch, baseRef, "CLAUDE.md", changed["CLAUDE.md"]) || needsCommit
 	needsCommit = stripOverlayCanonical(g, defaultBranch, baseRef, "AGENTS.md", changed["AGENTS.md"]) || needsCommit
-	needsCommit = stripOverlayLocal(g, "CLAUDE.local.md", changed["CLAUDE.local.md"]) || needsCommit
-	needsCommit = stripOverlayLocal(g, "AGENTS.local.md", changed["AGENTS.local.md"]) || needsCommit
+	needsCommit = stripOverlayLocal(g, "CLAUDE.local.md", changed["CLAUDE.local.md"], false) || needsCommit
+	needsCommit = stripOverlayLocal(g, "AGENTS.local.md", changed["AGENTS.local.md"], true) || needsCommit
 
 	if !needsCommit {
 		return false
@@ -2724,9 +2724,15 @@ func stripOverlayCanonical(g *git.Git, defaultBranch, baseRef, name string, chan
 	return false
 }
 
-func stripOverlayLocal(g *git.Git, name string, changed bool) bool {
+func stripOverlayLocal(g *git.Git, name string, changed, requireOverlay bool) bool {
 	if !changed {
 		return false
+	}
+	if requireOverlay {
+		currentContent, showErr := g.ShowFile("HEAD", name)
+		if showErr != nil || !instructions.IsGasTownOverlay(currentContent) {
+			return false
+		}
 	}
 	if rmErr := g.RmCached(name); rmErr == nil {
 		fmt.Printf("%s Removed %s from branch (Gas Town overlay)\n",

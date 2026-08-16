@@ -611,7 +611,7 @@ func doltReinstallHint(goos string) string {
 // instruction-file provisioner. AGENTS.md is the canonical file. CLAUDE.md is
 // a symlink to it.
 func createTownRootAgentMDs(townRoot string) (bool, error) {
-	return instructions.Provision(townRoot, generateCLAUDEMD(), "# Gas Town")
+	return instructions.Provision(townRoot, templates.TownIdentity(), "# Gas Town")
 }
 
 func writeJSON(path string, data interface{}) error {

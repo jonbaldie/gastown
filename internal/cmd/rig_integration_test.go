@@ -62,7 +62,7 @@ var agentAllowlist = map[string][]string{
 		"?? .claude/",   // bd init: creates .claude/commands/ with handoff/review slash commands
 		"?? .gitignore", // EnsureGitignorePatterns: adds .claude/, .runtime/, .logs/, __pycache__/ patterns
 		"?? CLAUDE.md",  // instruction pair: CLAUDE.md is a symlink to AGENTS.md
-		"?? AGENTS.md",  // CreatePolecatCLAUDEmd: gt done instructions and lifecycle context
+		"?? AGENTS.md",  // CreatePolecatAgentsMD: gt done instructions and lifecycle context
 	},
 }
 
