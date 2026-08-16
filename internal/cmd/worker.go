@@ -97,7 +97,7 @@ func runWorkerServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	fmt.Fprintf(os.Stderr, "worker listening on %s\n", worker.SocketPath(townRoot))
 

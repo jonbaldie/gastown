@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -441,7 +440,11 @@ func TestWorkerFailClosedDeliver_UnknownState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatalf("find test-agent: %v", err)
+	}
+	if err := proc.Kill(); err != nil {
 		t.Fatalf("kill test-agent: %v", err)
 	}
 	_, _ = wt.cmd.Process.Wait()
