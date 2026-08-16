@@ -114,10 +114,9 @@ func (m *SessionManager) Start(dogName string, opts SessionStartOptions) error {
 
 	// Use unified session lifecycle.
 	theme := tmux.DogTheme()
-	_, err = session.StartSession(m.tmux, session.SessionConfig{
+	_, err = session.StartSession(m.tmux, "dog", session.Work{
 		SessionID: sessionID,
 		WorkDir:   kennelDir,
-		Role:      "dog",
 		TownRoot:  m.townRoot,
 		AgentName: dogName,
 		Beacon: session.BeaconConfig{
@@ -125,15 +124,9 @@ func (m *SessionManager) Start(dogName string, opts SessionStartOptions) error {
 			Sender:    "deacon",
 			Topic:     "assigned",
 		},
-		Instructions:   instructions,
-		AgentOverride:  opts.AgentOverride,
-		Theme:          &theme,
-		WaitForAgent:   true,
-		WaitFatal:      true,
-		AcceptBypass:   true,
-		ReadyDelay:     true,
-		VerifySurvived: true,
-		TrackPID:       true,
+		Instructions:  instructions,
+		AgentOverride: opts.AgentOverride,
+		Theme:         &theme,
 	})
 	if err != nil {
 		return err
