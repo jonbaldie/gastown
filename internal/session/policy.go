@@ -2,7 +2,7 @@ package session
 
 import "github.com/jonbaldie/gastown/internal/constants"
 
-// rolePolicy is the start behaviour for one Worker role.
+// rolePolicy is the start behavior for one Worker role.
 // Callers do not set these flags; StartSession reads them from rolePolicies.
 type rolePolicy struct {
 	WaitForAgent   bool
