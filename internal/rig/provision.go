@@ -22,7 +22,7 @@ func Provision(rigPath, workDir, role string) error {
 	}
 
 	if err := beads.SetupRedirect(townRoot, workDir); err != nil {
-		return err
+		style.PrintWarning("could not set up beads redirect: %v", err)
 	}
 	if err := beads.ProvisionPrimeMDForWorktree(workDir); err != nil {
 		style.PrintWarning("could not provision PRIME.md: %v", err)

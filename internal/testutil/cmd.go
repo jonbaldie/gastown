@@ -33,9 +33,8 @@ func CleanGTEnv(extraEnv ...string) []string {
 	return append(clean, extraEnv...)
 }
 
-// NewBDCommand creates an exec.Command for the bd CLI with GT_DOLT_PORT
-// automatically propagated. The command inherits the full process environment
-// (which includes GT_DOLT_PORT set by TestMain).
+// NewBDCommand creates an exec.Command for the bd CLI. Dolt targeting comes
+// from beads.Spawn so host, port, and database choice stay in Authority.
 //
 // Use this instead of bare beads.Spawn(...) in tests.
 func NewBDCommand(args ...string) *exec.Cmd {

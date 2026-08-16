@@ -109,3 +109,21 @@ func TestProvision_RunsSetupHooksAndCopiesOverlay(t *testing.T) {
 		t.Fatalf("setup hook did not run: %v", err)
 	}
 }
+
+func TestProvision_MissingBeadsStillCompletes(t *testing.T) {
+	town := t.TempDir()
+	rigDir := filepath.Join(town, "wyvern")
+	workDir := filepath.Join(rigDir, "polecats", "toast")
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	initGitWorktree(t, workDir)
+
+	if err := Provision(rigDir, workDir, "polecat"); err != nil {
+		t.Fatalf("Provision without beads: %v", err)
+	}
+	exclude := filepath.Join(workDir, ".git", "info", "exclude")
+	if _, err := os.Stat(exclude); err != nil {
+		t.Fatalf("expected local exclude after missing-beads provision: %v", err)
+	}
+}
