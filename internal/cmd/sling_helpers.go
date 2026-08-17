@@ -438,7 +438,7 @@ func prepareTownBeadForRigSling(beadID, targetRig, townRoot string, dryRun bool)
 		return "", fmt.Errorf("cannot sling town bead %s to rig %q: no rig prefix is registered\nCreate the work in the target rig first:\n  bd -C %s create --title=...\nor move it explicitly:\n  gt bead move %s <rig-prefix>", beadID, targetRig, targetRig, beadID)
 	}
 	if dryRun {
-		if _, err := previewBeadMove(beadID, targetPrefix, townRoot); err != nil {
+		if err := previewBeadMove(beadID, targetPrefix, townRoot); err != nil {
 			return "", err
 		}
 		fmt.Printf("Would move town bead %s into rig %s (prefix %s)\n", beadID, targetRig, normalizeBeadPrefix(targetPrefix))

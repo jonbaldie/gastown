@@ -110,14 +110,12 @@ func runBeadMove(cmd *cobra.Command, args []string) error {
 	targetPrefix := args[1]
 
 	if beadMoveDryRun {
-		newID, err := previewBeadMove(sourceID, targetPrefix, "")
-		if err != nil {
+		if err := previewBeadMove(sourceID, targetPrefix, ""); err != nil {
 			return err
 		}
 		fmt.Printf("\nDry run - would:\n")
 		fmt.Printf("  1. Create new bead with prefix %s\n", normalizeBeadPrefix(targetPrefix))
 		fmt.Printf("  2. Close %s with reference to new bead\n", sourceID)
-		_ = newID
 		return nil
 	}
 
@@ -139,16 +137,16 @@ func normalizeBeadPrefix(prefix string) string {
 	return prefix
 }
 
-func previewBeadMove(sourceID, targetPrefix, townRoot string) (string, error) {
+func previewBeadMove(sourceID, targetPrefix, townRoot string) error {
 	source, err := loadMoveBeadInfo(sourceID, townRoot)
 	if err != nil {
-		return "", err
+		return err
 	}
 	targetPrefix = normalizeBeadPrefix(targetPrefix)
 	fmt.Printf("%s Moving %s to %s...\n", style.Bold.Render("→"), sourceID, targetPrefix)
 	fmt.Printf("  Title: %s\n", source.Title)
 	fmt.Printf("  Type: %s\n", source.Type)
-	return "", nil
+	return nil
 }
 
 func loadMoveBeadInfo(sourceID, townRoot string) (*moveBeadInfo, error) {
