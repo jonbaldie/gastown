@@ -387,18 +387,36 @@ func TestNowRefusesConvertingRepoIntoTownHQ(t *testing.T) {
 	home := t.TempDir()
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	bin := nowAgentBin(t)
-	env := nowTestEnv(t, home, bin, "now-self-town", true)
-
 	gtBinary := buildGT(t)
-	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", repo, "--no-attach",
-		"--mayor", "cursor:high", "--workers", "cursor:low")
-	if err == nil {
-		t.Fatalf("gt now converted the project repo into a Town HQ:\n%s", out)
+
+	cases := []struct {
+		name string
+		env  []string
+		args []string
+	}{
+		{
+			name: "--town",
+			env:  nowTestEnv(t, home, bin, "now-self-town", true),
+			args: []string{"now", "--town", repo, "--no-attach", "--mayor", "cursor:high", "--workers", "cursor:low"},
+		},
+		{
+			name: "GT_TOWN_ROOT",
+			env:  append(nowTestEnv(t, home, bin, "now-self-root", true), "GT_TOWN_ROOT="+repo),
+			args: []string{"now", "--no-attach", "--mayor", "cursor:high", "--workers", "cursor:low"},
+		},
 	}
-	if !strings.Contains(out, "Town HQ") && !strings.Contains(out, "convert") {
-		t.Fatalf("error should refuse Town HQ conversion:\n%s", out)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runGTCmdMayFail(t, gtBinary, repo, tc.env, tc.args...)
+			if err == nil {
+				t.Fatalf("gt now converted the project repo into a Town HQ:\n%s", out)
+			}
+			if !strings.Contains(out, "Town HQ") && !strings.Contains(out, "convert") {
+				t.Fatalf("error should refuse Town HQ conversion:\n%s", out)
+			}
+			assertNoTownFilesInRepo(t, repo)
+		})
 	}
-	assertNoTownFilesInRepo(t, repo)
 }
 
 func TestNowRefusesTownHQUnlessRegisteredRig(t *testing.T) {

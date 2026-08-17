@@ -80,7 +80,7 @@ func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts
 	}
 
 	if opts.RestartWorkers {
-		return restartWorkers(townRoot, opts)
+		return restartWorkers(townRoot)
 	}
 	return nil
 }
@@ -120,7 +120,7 @@ func ignoreStartConflict(err error, skipStart ...error) bool {
 	return false
 }
 
-func restartWorkers(townRoot string, opts Options) error {
+func restartWorkers(townRoot string) error {
 	rigsPath := constants.MayorRigsPath(townRoot)
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
@@ -136,16 +136,14 @@ func restartWorkers(townRoot string, opts Options) error {
 		}
 		wit := witness.NewManager(r)
 		if err := wit.Stop(); err != nil && !errors.Is(err, witness.ErrNotRunning) {
-			fmt.Fprintf(opts.Stderr, "warning: stopping witness for %s: %v\n", name, err)
-		}
-		if err := wit.Start(false, "", nil); err != nil && !errors.Is(err, witness.ErrAlreadyRunning) {
+			errs = append(errs, fmt.Errorf("stopping witness for %s: %w", name, err))
+		} else if err := wit.Start(false, "", nil); err != nil && !errors.Is(err, witness.ErrAlreadyRunning) {
 			errs = append(errs, fmt.Errorf("restarting witness for %s: %w", name, err))
 		}
 		ref := refinery.NewManager(r)
 		if err := ref.Stop(); err != nil && !errors.Is(err, refinery.ErrNotRunning) {
-			fmt.Fprintf(opts.Stderr, "warning: stopping refinery for %s: %v\n", name, err)
-		}
-		if err := ref.Start(false, ""); err != nil && !errors.Is(err, refinery.ErrAlreadyRunning) {
+			errs = append(errs, fmt.Errorf("stopping refinery for %s: %w", name, err))
+		} else if err := ref.Start(false, ""); err != nil && !errors.Is(err, refinery.ErrAlreadyRunning) {
 			errs = append(errs, fmt.Errorf("restarting refinery for %s: %w", name, err))
 		}
 	}
@@ -170,7 +168,11 @@ func startDeferredProvision(executable, townRoot string) error {
 }
 
 func provisionTown(townRoot string, hooks Hooks) error {
-	if ok, _ := workspace.IsWorkspace(townRoot); !ok {
+	ok, err := workspace.IsWorkspace(townRoot)
+	if err != nil {
+		return fmt.Errorf("checking Town HQ: %w", err)
+	}
+	if !ok {
 		return fmt.Errorf("not a Gas Town HQ: %s", townRoot)
 	}
 	var errs []error

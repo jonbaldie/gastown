@@ -23,7 +23,11 @@ import (
 )
 
 func ensureTown(ctx context.Context, townRoot string, hooks Hooks) error {
-	if ok, _ := workspace.IsWorkspace(townRoot); ok {
+	ok, err := workspace.IsWorkspace(townRoot)
+	if err != nil {
+		return fmt.Errorf("checking Town HQ: %w", err)
+	}
+	if ok {
 		return nil
 	}
 

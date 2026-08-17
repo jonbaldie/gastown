@@ -93,7 +93,10 @@ func (m *Manager) start(agentOverride string, skipReady bool) error {
 	t := m.tmux
 	sessionID := m.SessionName()
 
-	running, _ := t.HasSession(sessionID)
+	running, err := t.HasSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("checking session: %w", err)
+	}
 	if running {
 		if t.IsAgentAlive(sessionID) {
 			m.startNudgePoller(sessionID)
