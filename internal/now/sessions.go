@@ -1,0 +1,174 @@
+package now
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+
+	"github.com/jonbaldie/gastown/internal/config"
+	"github.com/jonbaldie/gastown/internal/constants"
+	"github.com/jonbaldie/gastown/internal/deacon"
+	"github.com/jonbaldie/gastown/internal/formula"
+	"github.com/jonbaldie/gastown/internal/git"
+	"github.com/jonbaldie/gastown/internal/mayor"
+	"github.com/jonbaldie/gastown/internal/refinery"
+	"github.com/jonbaldie/gastown/internal/rig"
+	"github.com/jonbaldie/gastown/internal/runtime"
+	"github.com/jonbaldie/gastown/internal/skills"
+	"github.com/jonbaldie/gastown/internal/templates"
+	"github.com/jonbaldie/gastown/internal/tmux"
+	"github.com/jonbaldie/gastown/internal/util"
+	"github.com/jonbaldie/gastown/internal/witness"
+	"github.com/jonbaldie/gastown/internal/workspace"
+)
+
+func startSessions(townRoot string, mayorChanged bool, opts Options, hooks Hooks) error {
+	if err := config.EnsureDaemonPatrolConfig(townRoot); err != nil {
+		return fmt.Errorf("ensuring daemon config: %w", err)
+	}
+
+	if hooks.EnsureDaemon != nil {
+		if err := hooks.EnsureDaemon(townRoot); err != nil {
+			return fmt.Errorf("starting daemon: %w", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var mu sync.Mutex
+	setErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr := mayor.NewManager(townRoot)
+		tm := tmux.NewTmux()
+		has, _ := tm.HasSession(mayor.SessionName())
+		if has && mayorChanged && opts.MayorSpec != "" {
+			if err := mgr.Stop(); err != nil && !errors.Is(err, mayor.ErrNotRunning) {
+				setErr(fmt.Errorf("stopping Mayor: %w", err))
+				return
+			}
+			has = false
+		}
+		if has {
+			return
+		}
+		if err := mgr.StartImmediate(""); err != nil && !errors.Is(err, mayor.ErrAlreadyRunning) && !errors.Is(err, mayor.ErrACPActive) {
+			setErr(fmt.Errorf("starting Mayor: %w", err))
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr := deacon.NewManager(townRoot)
+		if err := mgr.StartImmediate(""); err != nil && !errors.Is(err, deacon.ErrAlreadyRunning) {
+			setErr(fmt.Errorf("starting Deacon: %w", err))
+		}
+	}()
+
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+
+	if opts.RestartWorkers {
+		return restartWorkers(townRoot, opts)
+	}
+	return nil
+}
+
+func restartWorkers(townRoot string, opts Options) error {
+	rigsPath := constants.MayorRigsPath(townRoot)
+	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	if err != nil {
+		return fmt.Errorf("loading rigs for --restart-workers: %w", err)
+	}
+	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+	var errs []error
+	for name := range rigsConfig.Rigs {
+		r, err := mgr.GetRig(name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("loading rig %s: %w", name, err))
+			continue
+		}
+		wit := witness.NewManager(r)
+		if err := wit.Stop(); err != nil && !errors.Is(err, witness.ErrNotRunning) {
+			fmt.Fprintf(opts.Stderr, "warning: stopping witness for %s: %v\n", name, err)
+		}
+		if err := wit.Start(false, "", nil); err != nil && !errors.Is(err, witness.ErrAlreadyRunning) {
+			errs = append(errs, fmt.Errorf("restarting witness for %s: %w", name, err))
+		}
+		ref := refinery.NewManager(r)
+		if err := ref.Stop(); err != nil && !errors.Is(err, refinery.ErrNotRunning) {
+			fmt.Fprintf(opts.Stderr, "warning: stopping refinery for %s: %v\n", name, err)
+		}
+		if err := ref.Start(false, ""); err != nil && !errors.Is(err, refinery.ErrAlreadyRunning) {
+			errs = append(errs, fmt.Errorf("restarting refinery for %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func startDeferredProvision(executable, townRoot string) error {
+	if executable == "" {
+		return fmt.Errorf("gt executable path is empty")
+	}
+	cmd := exec.Command(executable, "now", "--provision-only", "--town", townRoot)
+	cmd.Dir = townRoot
+	cmd.Env = append(os.Environ(), "GT_TOWN_ROOT="+townRoot)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	util.SetDetachedProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting deferred provision: %w", err)
+	}
+	return nil
+}
+
+func provisionTown(townRoot string, hooks Hooks) error {
+	if ok, _ := workspace.IsWorkspace(townRoot); !ok {
+		return fmt.Errorf("not a Gas Town HQ: %s", townRoot)
+	}
+	var errs []error
+	count, err := formula.ProvisionFormulas(townRoot)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("provisioning formulas: %w", err))
+	} else if count > 0 {
+		fmt.Printf("provisioned %d formulas\n", count)
+	}
+	if err := templates.ProvisionCommands(townRoot); err != nil {
+		errs = append(errs, fmt.Errorf("provisioning slash commands: %w", err))
+	}
+	if err := skills.ProvisionFor(townRoot, "claude"); err != nil {
+		errs = append(errs, fmt.Errorf("provisioning skills: %w", err))
+	}
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := runtime.EnsureSettingsForRole(mayorDir, mayorDir, "mayor", config.ResolveRoleAgentConfig("mayor", townRoot, mayorDir)); err != nil {
+		errs = append(errs, fmt.Errorf("writing Mayor settings: %w", err))
+	}
+	deaconDir := filepath.Join(townRoot, "deacon")
+	if err := runtime.EnsureSettingsForRole(deaconDir, deaconDir, "deacon", config.ResolveRoleAgentConfig("deacon", townRoot, deaconDir)); err != nil {
+		errs = append(errs, fmt.Errorf("writing Deacon settings: %w", err))
+	}
+	if hooks.InitAgentBeads != nil {
+		if err := hooks.InitAgentBeads(townRoot); err != nil {
+			errs = append(errs, fmt.Errorf("initializing agent beads: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}

@@ -286,6 +286,236 @@ func TestNowRejectsUnknownRuntimeWithoutWritingTown(t *testing.T) {
 	}
 }
 
+func TestNowNameSetsRigName(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := "nowt-name"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--name", "custom_rig", "--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("gt now --name failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "rig=custom_rig") {
+		t.Fatalf("missing custom rig name:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(town, "custom_rig", ".repo.git")); err != nil {
+		t.Fatalf("custom rig missing .repo.git: %v", err)
+	}
+}
+
+func TestNowAcceptsPathArgument(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	cwd := t.TempDir()
+	bin := nowAgentBin(t)
+	socket := "nowt-path"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, cwd, env, "now", repo, "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("gt now [path] failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "rig=proj") {
+		t.Fatalf("path argument did not register the repo:\n%s", out)
+	}
+	assertNoTownFilesInRepo(t, repo)
+}
+
+func TestNowRefusesTownHQUnlessRegisteredRig(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := "nowt-hq"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	if out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low"); err != nil {
+		t.Fatalf("setup gt now failed: %v\n%s", err, out)
+	}
+
+	for _, args := range [][]string{
+		{"git", "init", "--initial-branch=main"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test User"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = town
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args[1:], err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(town, "README.md"), []byte("town\n"), 0644); err != nil {
+		t.Fatalf("write town README: %v", err)
+	}
+	for _, args := range [][]string{{"git", "add", "."}, {"git", "commit", "-m", "town"}} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = town
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args[1:], err, out)
+		}
+	}
+
+	out, err := runGTCmdMayFail(t, gtBinary, town, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err == nil {
+		t.Fatalf("gt now from Town HQ succeeded:\n%s", out)
+	}
+	if !strings.Contains(out, "Town HQ") {
+		t.Fatalf("error should mention Town HQ:\n%s", out)
+	}
+}
+
+func TestNowDefaultRuntimeUsesFirstOnPATH(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := "nowt-default"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach")
+	if err != nil {
+		t.Fatalf("gt now with default runtime failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "mix=cursor:high / cursor:low") {
+		t.Fatalf("default mix should be cursor high/low:\n%s", out)
+	}
+	mix := readNowMix(t, gtBinary, town, env)
+	assertRoleMix(t, mix, "mayor", "now-mayor", "high")
+	assertRoleMix(t, mix, "witness", "now-workers", "low")
+}
+
+func TestNowMayorFlagsRestartMayorAndWorkersPersist(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := "nowt-restart"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	if out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low"); err != nil {
+		t.Fatalf("first gt now failed: %v\n%s", err, out)
+	}
+	created := nowSessionCreated(t, socket, "hq-mayor")
+	if nowWitnessSessionExists(t, socket) {
+		t.Fatal("Witness started before attach")
+	}
+
+	if out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--workers", "cursor:low"); err != nil {
+		t.Fatalf("worker-only gt now failed: %v\n%s", err, out)
+	}
+	if nowSessionCreated(t, socket, "hq-mayor") != created {
+		t.Fatal("worker flags restarted the Mayor session")
+	}
+	if nowWitnessSessionExists(t, socket) {
+		t.Fatal("worker flags started Witness without --restart-workers")
+	}
+
+	if out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:grok-4.6:high"); err != nil {
+		t.Fatalf("mayor-change gt now failed: %v\n%s", err, out)
+	}
+	if nowSessionCreated(t, socket, "hq-mayor") == created {
+		t.Fatal("new --mayor flags did not restart the Mayor session")
+	}
+	if !nowMayorSessionExists(t, socket) {
+		t.Fatal("Mayor session missing after mayor mix change")
+	}
+}
+
+func TestNowRestartWorkersStartsWitness(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBinStay(t)
+	socket := "nowt-rw"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	if out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low"); err != nil {
+		t.Fatalf("first gt now failed: %v\n%s", err, out)
+	}
+	if nowWitnessSessionExists(t, socket) {
+		t.Fatal("Witness started before attach")
+	}
+
+	if out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--workers", "cursor:low", "--restart-workers"); err != nil {
+		t.Fatalf("gt now --restart-workers failed: %v\n%s", err, out)
+	}
+	if !nowWitnessSessionExists(t, socket) {
+		t.Fatal("--restart-workers did not start Witness")
+	}
+}
+
+func TestNowDoctorFailsWhenMayorBinaryMissing(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := "nowt-doctor"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	if out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low"); err != nil {
+		t.Fatalf("gt now failed: %v\n%s", err, out)
+	}
+
+	isolated := nowToolBin(t)
+	doctorEnv := nowTestEnv(t, home, isolated, socket, true)
+	out, err := runGTCmdMayFail(t, gtBinary, town, doctorEnv, "doctor")
+	if err == nil {
+		t.Fatalf("gt doctor succeeded without the Mayor binary:\n%s", out)
+	}
+	if !strings.Contains(out, "mayor-binary") && !strings.Contains(out, "cursor-agent") {
+		t.Fatalf("doctor should fail on the missing Mayor binary:\n%s", out)
+	}
+}
+
 func requireNowStack(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
@@ -347,6 +577,16 @@ func nowToolBin(t *testing.T) string {
 		if err := os.Symlink(src, filepath.Join(dir, name)); err != nil {
 			t.Fatalf("symlink %s: %v", name, err)
 		}
+	}
+	return dir
+}
+
+func nowAgentBinStay(t *testing.T) string {
+	t.Helper()
+	dir := nowToolBin(t)
+	script := "#!/bin/sh\nexec sleep 3600\n"
+	if err := os.WriteFile(filepath.Join(dir, "cursor-agent"), []byte(script), 0755); err != nil {
+		t.Fatalf("write cursor-agent: %v", err)
 	}
 	return dir
 }
@@ -442,13 +682,44 @@ func assertRoleMix(t *testing.T, mix nowMixReport, role, agent, effort string) {
 
 func nowMayorSessionExists(t *testing.T, socket string) bool {
 	t.Helper()
+	return nowSessionExists(t, socket, "hq-mayor")
+}
+
+func nowWitnessSessionExists(t *testing.T, socket string) bool {
+	t.Helper()
 	tm := tmux.NewTmuxWithSocket(socket)
-	ok, err := tm.HasSession("hq-mayor")
+	sessions, err := tm.ListSessions()
+	if err != nil {
+		t.Logf("ListSessions: %v", err)
+		return false
+	}
+	for _, name := range sessions {
+		if strings.Contains(name, "witness") {
+			return true
+		}
+	}
+	return false
+}
+
+func nowSessionExists(t *testing.T, socket, name string) bool {
+	t.Helper()
+	tm := tmux.NewTmuxWithSocket(socket)
+	ok, err := tm.HasSession(name)
 	if err != nil {
 		t.Logf("HasSession: %v", err)
 		return false
 	}
 	return ok
+}
+
+func nowSessionCreated(t *testing.T, socket, session string) string {
+	t.Helper()
+	cmd := exec.Command("tmux", "-L", socket, "display-message", "-t", session, "-p", "#{session_created}")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("session_created for %s: %v\n%s", session, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func doltPortFromNowOutput(t *testing.T, out string) int {

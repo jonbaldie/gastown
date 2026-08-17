@@ -125,8 +125,10 @@ func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr err
 	if settingsDir == "" {
 		settingsDir = work.WorkDir
 	}
-	if err := runtime.EnsureSettingsForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
-		return nil, fmt.Errorf("ensuring runtime settings: %w", err)
+	if !work.SkipReady {
+		if err := runtime.EnsureSettingsForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
+			return nil, fmt.Errorf("ensuring runtime settings: %w", err)
+		}
 	}
 	if work.RuntimeConfigDir != "" && !work.SkipReady {
 		if err := skills.ProvisionUserDir(work.RuntimeConfigDir); err != nil {
