@@ -54,42 +54,24 @@ func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts
 		mu.Unlock()
 	}
 
+	restartMayorRoles := mayorChanged && opts.MayorSpec != ""
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := ctx.Err(); err != nil {
-			setErr(err)
-			return
-		}
 		mgr := mayor.NewManager(townRoot)
-		tm := tmux.NewTmux()
-		has, err := tm.HasSession(mayor.SessionName())
-		if err != nil {
-			setErr(fmt.Errorf("checking Mayor session: %w", err))
-			return
-		}
-		if has && mayorChanged && opts.MayorSpec != "" {
-			if err := mgr.Stop(); err != nil && !errors.Is(err, mayor.ErrNotRunning) {
-				setErr(fmt.Errorf("stopping Mayor: %w", err))
-				return
-			}
-			has = false
-		}
-		if has {
-			return
-		}
-		if err := mgr.StartImmediate(""); err != nil && !errors.Is(err, mayor.ErrAlreadyRunning) && !errors.Is(err, mayor.ErrACPActive) {
-			setErr(fmt.Errorf("starting Mayor: %w", err))
-		}
+		setErr(reuseOrStartSession(ctx, mayor.SessionName(), restartMayorRoles, mgr.Stop, func() error {
+			return mgr.StartImmediate("")
+		}, mayor.ErrNotRunning, mayor.ErrAlreadyRunning, mayor.ErrACPActive))
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		mgr := deacon.NewManager(townRoot)
-		if err := mgr.StartImmediate(""); err != nil && !errors.Is(err, deacon.ErrAlreadyRunning) {
-			setErr(fmt.Errorf("starting Deacon: %w", err))
-		}
+		setErr(reuseOrStartSession(ctx, deacon.SessionName(), restartMayorRoles, mgr.Stop, func() error {
+			return mgr.StartImmediate("")
+		}, deacon.ErrNotRunning, deacon.ErrAlreadyRunning))
 	}()
 
 	wg.Wait()
@@ -101,6 +83,41 @@ func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts
 		return restartWorkers(townRoot, opts)
 	}
 	return nil
+}
+
+func reuseOrStartSession(ctx context.Context, name string, restart bool, stop, start func() error, skipStop error, skipStart ...error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	has, err := tmux.NewTmux().HasSession(name)
+	if err != nil {
+		return fmt.Errorf("checking %s session: %w", name, err)
+	}
+	if has && restart {
+		if err := stop(); err != nil && !errors.Is(err, skipStop) {
+			return fmt.Errorf("stopping %s: %w", name, err)
+		}
+		has = false
+	}
+	if has {
+		return nil
+	}
+	if err := start(); err != nil && !ignoreStartConflict(err, skipStart...) {
+		return fmt.Errorf("starting %s: %w", name, err)
+	}
+	return nil
+}
+
+func ignoreStartConflict(err error, skipStart ...error) bool {
+	if errors.Is(err, tmux.ErrSessionExists) {
+		return true
+	}
+	for _, skip := range skipStart {
+		if errors.Is(err, skip) {
+			return true
+		}
+	}
+	return false
 }
 
 func restartWorkers(townRoot string, opts Options) error {
