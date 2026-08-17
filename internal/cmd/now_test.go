@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +84,7 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	start := time.Now()
 	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
 		"--mayor", "cursor:grok-4.6:high", "--workers", "cursor:grok-4.6:low")
@@ -107,6 +109,16 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(town, "mayor", "town.json")); err != nil {
 		t.Fatalf("town missing mayor/town.json: %v", err)
+	}
+	rigsJSON, err := os.ReadFile(filepath.Join(town, "mayor", "rigs.json"))
+	if err != nil {
+		t.Fatalf("reading mayor/rigs.json: %v", err)
+	}
+	if !strings.Contains(string(rigsJSON), `"proj"`) && !strings.Contains(string(rigsJSON), "proj") {
+		t.Fatalf("rig proj not registered in mayor/rigs.json:\n%s", rigsJSON)
+	}
+	if _, err := os.Stat(filepath.Join(town, "proj", ".repo.git")); err != nil {
+		t.Fatalf("rig missing local .repo.git: %v", err)
 	}
 	assertNoTownFilesInRepo(t, repo)
 	if _, err := os.Stat(filepath.Join(repo, "settings", "config.json")); !os.IsNotExist(err) {
@@ -133,6 +145,21 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 
 	if !nowMayorSessionExists(t, socket) {
 		t.Fatal("Mayor session was not created")
+	}
+
+	mayorEnv := append(append([]string{}, env...),
+		"GT_TOWN_ROOT="+town,
+		"GT_ROLE=mayor",
+		"GT_AGENT=mayor",
+		"BD_ACTOR=mayor",
+	)
+	hookOut, hookErr := runGTCmdMayFail(t, gtBinary, town, mayorEnv, "hook")
+	if hookErr != nil {
+		t.Fatalf("gt hook after gt now failed: %v\n%s", hookErr, hookOut)
+	}
+	mailOut, mailErr := runGTCmdMayFail(t, gtBinary, town, mayorEnv, "mail", "inbox")
+	if mailErr != nil {
+		t.Fatalf("gt mail inbox after gt now failed: %v\n%s", mailErr, mailOut)
 	}
 
 	secondStart := time.Now()
@@ -463,6 +490,19 @@ func lookPathExtra(name string) (string, error) {
 		}
 	}
 	return "", os.ErrNotExist
+}
+
+func nowFreeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close probe listener: %v", err)
+	}
+	return port
 }
 
 func fileExists(path string) bool {

@@ -180,14 +180,22 @@ func runNow(cmd *cobra.Command, args []string) error {
 
 	startDeferredProvision(townRoot)
 
+	tm := tmux.NewTmux()
+	running, err := tm.HasSession(mayor.SessionName())
+	if err != nil || !running {
+		if err != nil {
+			return fmt.Errorf("Mayor session is not running: %w", err)
+		}
+		return fmt.Errorf("Mayor session is not running")
+	}
+
 	if nowNoAttach {
 		fmt.Println("Mayor session is running.")
 		return nil
 	}
 
 	fmt.Println("You are in the Mayor session.")
-	t := tmux.NewTmux()
-	return t.AttachSession(mayor.SessionName())
+	return tm.AttachSession(mayor.SessionName())
 }
 
 func resolveNowRepo(args []string) (string, error) {
@@ -557,6 +565,10 @@ func startNowSessions(townRoot string, mayorChanged bool) error {
 		fmt.Printf("  %s Could not ensure daemon config: %v\n", style.Dim.Render("○"), err)
 	}
 
+	if err := ensureDaemon(townRoot); err != nil {
+		return fmt.Errorf("starting daemon: %w", err)
+	}
+
 	var wg sync.WaitGroup
 	var firstErr error
 	var mu sync.Mutex
@@ -570,14 +582,6 @@ func startNowSessions(townRoot string, mayorChanged bool) error {
 		}
 		mu.Unlock()
 	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := ensureDaemon(townRoot); err != nil {
-			setErr(fmt.Errorf("starting daemon: %w", err))
-		}
-	}()
 
 	wg.Add(1)
 	go func() {

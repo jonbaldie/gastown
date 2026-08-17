@@ -687,17 +687,17 @@ func bdInitDoltConfig(townPath string) *doltserver.Config {
 // Town beads use the "hq-" prefix for mayor mail and cross-rig coordination.
 // Uses Dolt backend in server mode (Gas Town requires a running Dolt sql-server).
 func initTownBeads(townPath string) error {
-	return initTownBeadsWith(townPath, buildBdInitArgs(townPath))
+	return initTownBeadsWith(townPath, buildBdInitArgs(townPath), 20, 500*time.Millisecond, "10s")
 }
 
 func initNowBeads(townPath string) error {
 	args := append(append([]string{}, buildBdInitArgs(townPath)...),
 		"--skip-agents", "--skip-hooks", "--non-interactive", "--quiet",
 		"--external", "--role", "maintainer")
-	return initTownBeadsWith(townPath, args)
+	return initTownBeadsWith(townPath, args, 40, 50*time.Millisecond, "2s")
 }
 
-func initTownBeadsWith(townPath string, bdInitArgs []string) error {
+func initTownBeadsWith(townPath string, bdInitArgs []string, attempts int, delay time.Duration, waitLabel string) error {
 	// Dolt server is required — wait for it to accept queries before proceeding.
 	// The server may have just been started by gt install and TCP reachability
 	// alone is not sufficient; we need MySQL protocol readiness.
@@ -705,7 +705,7 @@ func initTownBeadsWith(townPath string, bdInitArgs []string) error {
 	// wa-d6f: socket-first DSN (TCP fallback) — same rationale.
 	dsn := buildDoltDSNFromConfig(cfg, "", dsnOpts{})
 	var lastErr error
-	for attempt := 0; attempt < 40; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		db, err := sql.Open("mysql", dsn)
 		if err == nil {
 			err = db.Ping()
@@ -716,10 +716,10 @@ func initTownBeadsWith(townPath string, bdInitArgs []string) error {
 			break
 		}
 		lastErr = err
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(delay)
 	}
 	if lastErr != nil {
-		return fmt.Errorf("Dolt server is not ready after 2s: %w", lastErr)
+		return fmt.Errorf("Dolt server is not ready after %s: %w", waitLabel, lastErr)
 	}
 
 	// Run: bd init --prefix hq --server --server-port <port>

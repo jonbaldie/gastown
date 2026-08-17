@@ -415,6 +415,21 @@ func (t *Tmux) NewSessionWithCommand(name, workDir, command string) error {
 // but -e provides defense-in-depth for the initial shell environment.
 // Requires tmux >= 3.2.
 func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env map[string]string) error {
+	return t.newSessionWithCommandAndEnv(name, workDir, command, env, true)
+}
+
+// NewSessionWithCommandAndEnvNoWait creates a session and treats pane creation
+// as the ready state. remain-on-exit stays on so a command that exits 0 still
+// leaves a session for attach.
+func (t *Tmux) NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error {
+	if err := t.newSessionWithCommandAndEnv(name, workDir, command, env, false); err != nil {
+		return err
+	}
+	_, _ = t.run("set-option", "-t", name, "remain-on-exit", "on")
+	return nil
+}
+
+func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env map[string]string, waitReady bool) error {
 	if err := validateSessionName(name); err != nil {
 		return err
 	}
@@ -463,18 +478,10 @@ func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env ma
 		}
 	}
 
-	return t.checkSessionAfterCreate(name, command)
-}
-
-// NewSessionWithCommandAndEnvNoWait creates a session and treats pane creation
-// as the ready state. remain-on-exit stays on so a command that exits 0 still
-// leaves a session for attach.
-func (t *Tmux) NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error {
-	if err := t.NewSessionWithCommandAndEnv(name, workDir, command, env); err != nil {
-		return err
+	if !waitReady {
+		return nil
 	}
-	_, _ = t.run("set-option", "-t", name, "remain-on-exit", "on")
-	return nil
+	return t.checkSessionAfterCreate(name, command)
 }
 
 // checkSessionAfterCreate verifies that a newly created session's command didn't
@@ -493,6 +500,7 @@ func (t *Tmux) checkSessionAfterCreate(name, command string) error {
 			_ = t.KillSession(name)
 			return true, fmt.Errorf("session %q: command exited with status %s: %s", name, status, command)
 		}
+		_ = t.KillSession(name)
 		return true, nil
 	}
 

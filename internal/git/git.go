@@ -605,7 +605,6 @@ type cloneOptions struct {
 	depth        int    // Pass --depth N to git clone (shallow clone); 0 means full history
 	branch       string // Pass --branch <name> to git clone (checkout specific branch)
 	filter       string // Pass --filter=<spec> to git clone (e.g. "blob:none", "tree:0")
-	local        bool   // Pass --local to git clone (hardlink objects from a local repo)
 }
 
 // cloneInternal runs `git clone` in an isolated temp directory, moves the result
@@ -661,9 +660,6 @@ func (g *Git) cloneInternal(url, dest string, opts cloneOptions) error {
 	}
 	if opts.reference != "" {
 		args = append(args, "--reference-if-able", opts.reference)
-	}
-	if opts.local {
-		args = append(args, "--local")
 	}
 	args = append(args, url, tmpDest)
 
@@ -935,7 +931,7 @@ func configureLocalBareRefspec(repoPath string) error {
 	util.SetDetachedProcessGroup(configCmd)
 	configCmd.Stderr = &stderr
 	if err := configCmd.Run(); err != nil {
-		return fmt.Errorf("configuring refspec: %s", strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("configuring refspec: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return nil
 }
