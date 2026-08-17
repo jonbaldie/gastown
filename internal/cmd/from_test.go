@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/jonbaldie/gastown/internal/config"
+	"github.com/jonbaldie/gastown/internal/doltserver"
 	"github.com/jonbaldie/gastown/internal/from"
 	"github.com/jonbaldie/gastown/internal/testutil"
 	"github.com/jonbaldie/gastown/internal/workspace"
@@ -417,6 +418,39 @@ func TestFromConflictsWhenRigNamePointsAtDifferentPath(t *testing.T) {
 	}
 }
 
+func TestFromExistingTownPrefixCollisionOmitsPrefixFlag(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "demo")
+	initFromChildRepo(t, parent, "auth")
+	town := filepath.Join(root, "town")
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0755); err != nil {
+		t.Fatalf("mkdir town: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(town, "mayor", "town.json"), []byte(`{"type":"town","version":2,"name":"town"}`), 0644); err != nil {
+		t.Fatalf("write town.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(town, "mayor", "rigs.json"), []byte(`{"version":1,"rigs":{}}`), 0644); err != nil {
+		t.Fatalf("write rigs.json: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(town, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir beads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(town, ".beads", "routes.jsonl"), []byte(`{"prefix":"au-","path":"other"}\n`), 0644); err != nil {
+		t.Fatalf("write routes: %v", err)
+	}
+
+	err := runFromRequest(fromRequest{Parent: parent, Town: town, DryRun: true})
+	if err == nil {
+		t.Fatal("expected prefix collision against the existing Town")
+	}
+	if !strings.Contains(err.Error(), "prefix") {
+		t.Fatalf("error = %v, want prefix collision", err)
+	}
+	if strings.Contains(err.Error(), "--prefix") {
+		t.Fatalf("gt from has no --prefix flag, got %v", err)
+	}
+}
+
 func TestFromRelativeParentResolvesFromCwd(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "services")
@@ -572,6 +606,31 @@ func TestFromReusesExistingTown(t *testing.T) {
 	}
 	if _, ok := rigs["billing"]; !ok {
 		t.Fatal("new billing Rig was not added to existing Town")
+	}
+}
+
+func TestFromReuseStartsDoltWhenStopped(t *testing.T) {
+	setupFromApply(t)
+	root := t.TempDir()
+	parent := filepath.Join(root, "demo")
+	initFromChildRepo(t, parent, "auth")
+	townPath := filepath.Join(root, "existing-town")
+	testutil.ReapOwnedDoltOnCleanup(t, townPath)
+
+	if err := runFromRequest(fromRequest{Parent: parent, Town: townPath}); err != nil {
+		t.Fatalf("first from: %v", err)
+	}
+	if err := doltserver.Stop(townPath); err != nil {
+		t.Fatalf("stop Dolt: %v", err)
+	}
+
+	initFromChildRepo(t, parent, "billing")
+	if err := runFromRequest(fromRequest{Parent: parent, Town: townPath}); err != nil {
+		t.Fatalf("reuse from with Dolt stopped: %v", err)
+	}
+	rigs := loadFromRigs(t, townPath)
+	if _, ok := rigs["billing"]; !ok {
+		t.Fatal("new billing Rig was not added after Dolt restart")
 	}
 }
 

@@ -72,7 +72,11 @@ func Prepare(parent, town string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if pathInside(townAbs, parentAbs) {
+	inside, err := pathInside(townAbs, parentAbs)
+	if err != nil {
+		return nil, fmt.Errorf("comparing Town path %s to parent %s: %w", townAbs, parentAbs, err)
+	}
+	if inside {
 		return nil, fmt.Errorf("Town path %s is inside parent folder %s; HQ files must not mix with project repositories", townAbs, parentAbs)
 	}
 
@@ -146,20 +150,20 @@ func resolvePath(p string) (string, error) {
 	}
 	abs, err := filepath.Abs(p)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolving absolute path: %w", err)
 	}
 	return filepath.Clean(abs), nil
 }
 
-func pathInside(inner, outer string) bool {
+func pathInside(inner, outer string) (bool, error) {
 	rel, err := filepath.Rel(outer, inner)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if rel == "." {
-		return true
+		return true, nil
 	}
-	return !strings.HasPrefix(rel, "..")
+	return !strings.HasPrefix(rel, ".."), nil
 }
 
 func discover(plan *Plan) error {
@@ -295,7 +299,10 @@ func preflight(plan *Plan) error {
 				continue
 			}
 			if err := beads.CheckPrefixAvailable(plan.TownAbs, r.Prefix+"-", r.Name); err != nil {
-				return fmt.Errorf("prefix collision: %w", err)
+				if strings.Contains(err.Error(), "already used") {
+					return fmt.Errorf("Beads prefix %q for Rig %q collides with an existing Town prefix", r.Prefix, r.Name)
+				}
+				return fmt.Errorf("checking Beads prefix %q: %w", r.Prefix, err)
 			}
 		}
 	}

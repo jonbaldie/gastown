@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/jonbaldie/gastown/internal/doltserver"
 	"github.com/jonbaldie/gastown/internal/from"
 	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/style"
@@ -125,9 +127,14 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 		}); err != nil {
 			return fmt.Errorf("installing Town at %s: %w", plan.TownAbs, err)
 		}
+	} else if fromPlanAddsRigs(plan) {
+		if err := ensureFromTownDolt(plan.TownAbs); err != nil {
+			return err
+		}
 	}
 
-	var added, skipped, failures []string
+	var added, skipped []string
+	var addErrs []error
 	for _, r := range plan.Rigs {
 		if r.Action == from.ActionSkip {
 			skipped = append(skipped, r.Name)
@@ -140,15 +147,45 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 			BeadsPrefix:   r.Prefix,
 			DefaultBranch: r.Branch,
 		}); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", r.Name, err))
+			addErrs = append(addErrs, fmt.Errorf("%s: %w", r.Name, err))
 			continue
 		}
 		added = append(added, r.Name)
 	}
 
+	failures := make([]string, len(addErrs))
+	for i, err := range addErrs {
+		failures[i] = err.Error()
+	}
 	printFromReport(w, plan, created, added, skipped, failures)
-	if len(failures) > 0 {
-		return fmt.Errorf("failed to add %d Rig(s): %s", len(failures), strings.Join(failures, "; "))
+	if len(addErrs) > 0 {
+		return fmt.Errorf("failed to add %d Rig(s): %w", len(addErrs), errors.Join(addErrs...))
+	}
+	return nil
+}
+
+func fromPlanAddsRigs(plan *from.Plan) bool {
+	for _, r := range plan.Rigs {
+		if r.Action == from.ActionAdd {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureFromTownDolt(townRoot string) error {
+	running, _, err := doltserver.IsRunning(townRoot)
+	if err != nil {
+		return fmt.Errorf("checking Dolt server for Town %s: %w", townRoot, err)
+	}
+	if running {
+		return nil
+	}
+	if err := doltserver.Start(townRoot); err != nil {
+		if strings.Contains(err.Error(), "already running") {
+			return nil
+		}
+		return fmt.Errorf("starting Dolt server for Town %s: %w", townRoot, err)
 	}
 	return nil
 }
