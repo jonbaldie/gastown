@@ -9,10 +9,10 @@
 #   docker build -f Dockerfile.e2e -t gastown-test .
 #   docker run --rm gastown-test
 
-FROM golang:1.26-alpine
+FROM golang:1.26.5-alpine
 
 ARG DOLT_VERSION=2.0.7
-ARG BD_VERSION=v0.57.0
+ARG BD_VERSION=v1.2.2-0.20260817230026-3e7110daa8e3
 
 # Install dependencies including CGO build requirements for beads daemon
 # procps and lsof are required by gt dolt start for process verification
@@ -29,7 +29,7 @@ RUN apk add --no-cache \
 
 # Install beads daemon (bd)
 RUN for i in 1 2 3; do \
-      go install github.com/steveyegge/beads/cmd/bd@${BD_VERSION} && break; \
+      go install github.com/jonbaldie/beads/cmd/bd@${BD_VERSION} && break; \
       if [ "$i" -eq 3 ]; then exit 1; fi; \
       sleep 2; \
     done

@@ -5,8 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	beadsdk "github.com/jonbaldie/beads"
 	agentconfig "github.com/jonbaldie/gastown/internal/config"
-	beadsdk "github.com/steveyegge/beads"
 )
 
 // Authority is the Beads routing module. Callers ask for a Session for a

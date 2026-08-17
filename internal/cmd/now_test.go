@@ -75,6 +75,9 @@ func TestNowFailsWhenNotGitRepo(t *testing.T) {
 }
 
 func TestNowStartsTownInFiveSeconds(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("latency contract runs in a dedicated non-race CI step")
+	}
 	requireNowStack(t)
 	home := t.TempDir()
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))

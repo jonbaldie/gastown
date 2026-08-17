@@ -2,8 +2,9 @@
 # docker build -t gastown:latest -f Dockerfile .
 FROM docker/sandbox-templates:claude-code
 
-ARG GO_VERSION=1.26.2
+ARG GO_VERSION=1.26.5
 ARG DOLT_VERSION=2.0.7
+ARG BD_VERSION=v1.2.2-0.20260817230026-3e7110daa8e3
 ARG PI_VERSION=0.84.1
 
 USER root
@@ -30,7 +31,7 @@ RUN ARCH=$(dpkg --print-architecture) && \
 ENV PATH="/app/gastown:/usr/local/go/bin:/home/agent/go/bin:${PATH}"
 
 # Install beads (bd) and dolt
-RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+RUN GOBIN=/usr/local/bin CGO_ENABLED=0 go install github.com/jonbaldie/beads/cmd/bd@${BD_VERSION}
 RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh | bash
 
 # Install Pi as an additional runtime. Authentication and model settings are

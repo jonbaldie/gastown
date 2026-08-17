@@ -57,22 +57,22 @@ else
     warn "Unknown OS, assuming deps are installed"
 fi
 
-# Install Go 1.23+
+REQUIRED_GO_VERSION=1.26.5
 if command -v go &> /dev/null; then
-    GO_VERSION=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+')
-    if [[ $(echo "$GO_VERSION >= 1.23" | bc -l) -eq 1 ]]; then
+    GO_VERSION=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+\.[0-9]+')
+    if printf '%s\n%s\n' "$REQUIRED_GO_VERSION" "$GO_VERSION" | sort -V -C; then
         check "Go $GO_VERSION already installed"
     else
-        warn "Go $GO_VERSION too old, installing 1.23..."
+        warn "Go $GO_VERSION too old, installing $REQUIRED_GO_VERSION..."
         INSTALL_GO=1
     fi
 else
     INSTALL_GO=1
 fi
 
-if [[ -n "$INSTALL_GO" ]]; then
-    log "Installing Go 1.23..."
-    curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf -
+if [[ -n "${INSTALL_GO:-}" ]]; then
+    log "Installing Go $REQUIRED_GO_VERSION..."
+    curl -fsSL "https://go.dev/dl/go${REQUIRED_GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xzf -
     export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin
     echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> ~/.bashrc
     check "Go installed: $(go version)"
@@ -90,7 +90,7 @@ if command -v bd &> /dev/null; then
     check "beads already installed: $(bd --version)"
 else
     # Install via go install
-    go install github.com/steveyegge/beads/cmd/bd@latest
+    go install github.com/jonbaldie/beads/cmd/bd@main
     if command -v bd &> /dev/null; then
         check "beads installed: $(bd --version)"
     else

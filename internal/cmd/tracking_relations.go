@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/beads"
-	beadsdk "github.com/steveyegge/beads"
 )
 
 var (

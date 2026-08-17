@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	beadsdk "github.com/steveyegge/beads"
+	beadsdk "github.com/jonbaldie/beads"
 
 	"github.com/jonbaldie/gastown/internal/constants"
 	"github.com/jonbaldie/gastown/internal/telemetry"

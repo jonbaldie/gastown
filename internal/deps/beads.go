@@ -3,8 +3,8 @@ package deps
 
 import (
 	"context"
+	"debug/buildinfo"
 	"fmt"
-	"github.com/jonbaldie/gastown/internal/beads"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/util"
 )
 
@@ -19,8 +20,10 @@ import (
 // Update this when Gas Town requires new beads features.
 const MinBeadsVersion = "0.57.0"
 
+const beadsMainPackage = "github.com/jonbaldie/beads/cmd/bd"
+
 // BeadsInstallPath is the go install path for beads.
-const BeadsInstallPath = "github.com/steveyegge/beads/cmd/bd@latest"
+const BeadsInstallPath = beadsMainPackage + "@main"
 
 // BeadsStatus represents the state of the beads installation.
 type BeadsStatus int
@@ -40,7 +43,16 @@ func CheckBeads() (BeadsStatus, string) {
 	if err != nil {
 		return BeadsNotFound, ""
 	}
-	_ = path // bd found
+	// Release and pseudo-version installs record their module version in the
+	// executable. Reading it avoids cold-starting the full bd CLI on gt's
+	// startup path. Development binaries report "(devel)" and fall back to the
+	// command below.
+	if version := beadsBuildVersion(path); version != "" {
+		if CompareVersions(version, MinBeadsVersion) < 0 {
+			return BeadsTooOld, version
+		}
+		return BeadsOK, version
+	}
 
 	// Get version (with timeout to prevent hanging on broken bd installs).
 	// 10s is generous but necessary: under heavy CI load (parallel test
@@ -139,6 +151,21 @@ func appendGOBIN(env []string) []string {
 		}
 	}
 	return append(env, "GOBIN="+gobin)
+}
+
+func beadsBuildVersion(path string) string {
+	info, err := buildinfo.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return beadsVersionFromBuildInfo(info)
+}
+
+func beadsVersionFromBuildInfo(info *buildinfo.BuildInfo) string {
+	if info == nil || info.Main.Path != beadsMainPackage {
+		return ""
+	}
+	return parseBeadsVersion("bd version " + strings.TrimPrefix(info.Main.Version, "v"))
 }
 
 // parseBeadsVersion extracts version from "bd version X.Y.Z ..." output.

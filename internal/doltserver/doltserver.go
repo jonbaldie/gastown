@@ -49,12 +49,12 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gofrs/flock"
+	beadssdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/atomicfile"
 	"github.com/jonbaldie/gastown/internal/beads"
 	configpkg "github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/constants"
 	"github.com/jonbaldie/gastown/internal/style"
-	beadssdk "github.com/steveyegge/beads"
 )
 
 // EnsureDoltIdentity configures dolt global identity (user.name, user.email)
@@ -2760,7 +2760,9 @@ func EnsureRigIssuePrefix(townRoot, rigName string, serverMode bool) error {
 		return fmt.Errorf("ensuring metadata.json: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Fresh databases run the full Beads schema bootstrap before SetConfig.
+	// Allow more time than ordinary store operations under loaded CI or hosts.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
 	if !serverMode {

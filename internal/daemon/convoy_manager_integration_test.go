@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	beadsdk "github.com/steveyegge/beads"
+	beadsdk "github.com/jonbaldie/beads"
 )
 
 // TestConvoyManager_FullLifecycle starts a real ConvoyManager with a real beads

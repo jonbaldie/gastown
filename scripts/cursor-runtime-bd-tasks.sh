@@ -11,7 +11,7 @@ fi
 cd "$ROOT"
 
 if ! command -v bd >/dev/null 2>&1; then
-  echo "bd (beads) not on PATH. Install: https://github.com/steveyegge/beads" >&2
+  echo "bd (beads) not on PATH. Install: https://github.com/jonbaldie/beads" >&2
   exit 1
 fi
 

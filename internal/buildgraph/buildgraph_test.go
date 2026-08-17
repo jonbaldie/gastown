@@ -14,7 +14,7 @@ func TestMatchingPrefixesReportsOnlyForbiddenPrefixes(t *testing.T) {
 	deps := []string{
 		"fmt",
 		"github.com/dolthub/driver",
-		"github.com/steveyegge/beads",
+		"github.com/jonbaldie/beads",
 		"github.com/testcontainers/testcontainers-go",
 		"github.com/go-rod/rod",
 		"github.com/go-rod/rod/lib/launcher",
@@ -35,7 +35,7 @@ func TestMatchingPrefixesReportsOnlyForbiddenPrefixes(t *testing.T) {
 func TestMatchingPrefixesEmptyWhenGraphIsClean(t *testing.T) {
 	deps := []string{
 		"fmt",
-		"github.com/steveyegge/beads",
+		"github.com/jonbaldie/beads",
 		"github.com/go-sql-driver/mysql",
 	}
 	if hits := MatchingPrefixes(deps, ProductionForbiddenPrefixes); len(hits) != 0 {
@@ -70,7 +70,7 @@ func TestCmdGTWithoutCGOOmitsForbiddenDeps(t *testing.T) {
 
 func TestCmdGTWithCGOPullsEmbeddedDolt(t *testing.T) {
 	deps := listDeps(t, "1", "./cmd/gt")
-	if MatchingPrefixes(deps, []string{"github.com/steveyegge/beads/internal/storage/embeddeddolt"}) == nil {
+	if MatchingPrefixes(deps, []string{"github.com/jonbaldie/beads/internal/storage/embeddeddolt"}) == nil {
 		t.Fatal("CGO_ENABLED=1 ./cmd/gt should import beads embeddeddolt; that is the compile tax CGO_ENABLED=0 removes")
 	}
 }

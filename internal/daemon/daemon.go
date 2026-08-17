@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/boot"
 	agentconfig "github.com/jonbaldie/gastown/internal/config"
@@ -41,7 +42,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/util"
 	"github.com/jonbaldie/gastown/internal/wisp"
 	"github.com/jonbaldie/gastown/internal/witness"
-	beadsdk "github.com/steveyegge/beads"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -153,7 +153,7 @@ const (
 	doctorMolCooldown = 5 * time.Minute
 )
 
-const beadsModulePath = "github.com/steveyegge/beads"
+const beadsModulePath = "github.com/jonbaldie/beads"
 
 var semverPattern = regexp.MustCompile(`v?(\d+\.\d+\.\d+)`)
 
