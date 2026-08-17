@@ -112,12 +112,15 @@ func TestFromDryRunMixedChildrenWritesNothing(t *testing.T) {
 	httpsRepo := initFromChildRepo(t, parent, "auth")
 	setOrigin(t, httpsRepo, "https://github.com/acme/auth.git")
 	httpsHEAD := gitHEAD(t, httpsRepo)
+	httpsOrigin := gitOrigin(t, httpsRepo)
 
 	sshRepo := initFromChildRepo(t, parent, "billing")
 	setOrigin(t, sshRepo, "git@github.com:acme/billing.git")
+	sshOrigin := gitOrigin(t, sshRepo)
 
 	localRepo := initFromChildRepo(t, parent, "my-app")
 	localHEAD := gitHEAD(t, localRepo)
+	localOrigin := gitOrigin(t, localRepo)
 
 	if err := os.WriteFile(filepath.Join(parent, "compose.yaml"), []byte("services: {}\n"), 0644); err != nil {
 		t.Fatalf("write compose.yaml: %v", err)
@@ -178,6 +181,15 @@ func TestFromDryRunMixedChildrenWritesNothing(t *testing.T) {
 	}
 	if gitHEAD(t, localRepo) != localHEAD {
 		t.Fatal("dry-run must not change local-only source HEAD")
+	}
+	if gitOrigin(t, httpsRepo) != httpsOrigin {
+		t.Fatal("dry-run must not change HTTPS origin")
+	}
+	if gitOrigin(t, sshRepo) != sshOrigin {
+		t.Fatal("dry-run must not change SSH origin")
+	}
+	if gitOrigin(t, localRepo) != localOrigin {
+		t.Fatal("dry-run must not add an origin to a local-only child")
 	}
 }
 
@@ -438,10 +450,13 @@ func TestFromCreatesTownAndRigsFromMixedChildren(t *testing.T) {
 	httpsRepo := initFromChildRepo(t, parent, "auth")
 	setOrigin(t, httpsRepo, "https://github.com/acme/auth.git")
 	httpsHEAD := gitHEAD(t, httpsRepo)
+	httpsOrigin := gitOrigin(t, httpsRepo)
 	sshRepo := initFromChildRepo(t, parent, "billing")
 	setOrigin(t, sshRepo, "git@github.com:acme/billing.git")
+	sshOrigin := gitOrigin(t, sshRepo)
 	localRepo := initFromChildRepo(t, parent, "my-app")
 	localHEAD := gitHEAD(t, localRepo)
+	localOrigin := gitOrigin(t, localRepo)
 	if err := os.WriteFile(filepath.Join(parent, "compose.yaml"), []byte("services: {}\n"), 0644); err != nil {
 		t.Fatalf("write compose.yaml: %v", err)
 	}
@@ -469,14 +484,23 @@ func TestFromCreatesTownAndRigsFromMixedChildren(t *testing.T) {
 	if _, ok := rigs["compose"]; ok {
 		t.Fatal("compose.yaml must not become a Rig")
 	}
-	assertRig(t, rigs, "auth", "https://github.com/acme/auth.git", httpsRepo)
-	assertRig(t, rigs, "billing", "git@github.com:acme/billing.git", sshRepo)
-	assertRig(t, rigs, "my_app", (&url.URL{Scheme: "file", Path: localRepo}).String(), localRepo)
+	assertRig(t, rigs, "auth", "https://github.com/acme/auth.git", httpsRepo, "au")
+	assertRig(t, rigs, "billing", "git@github.com:acme/billing.git", sshRepo, "bi")
+	assertRig(t, rigs, "my_app", (&url.URL{Scheme: "file", Path: localRepo}).String(), localRepo, "ma")
 	if gitHEAD(t, httpsRepo) != httpsHEAD {
 		t.Fatal("source HEAD changed for HTTPS child")
 	}
 	if gitHEAD(t, localRepo) != localHEAD {
 		t.Fatal("source HEAD changed for local-only child")
+	}
+	if gitOrigin(t, httpsRepo) != httpsOrigin {
+		t.Fatal("source origin changed for HTTPS child")
+	}
+	if gitOrigin(t, sshRepo) != sshOrigin {
+		t.Fatal("source origin changed for SSH child")
+	}
+	if gitOrigin(t, localRepo) != localOrigin {
+		t.Fatal("source origin changed for local-only child")
 	}
 	if _, err := os.Stat(filepath.Join(httpsRepo, "README.md")); err != nil {
 		t.Fatal("source working tree was changed")
@@ -567,9 +591,47 @@ func TestFromParentAsOnlyRepoCreatesOneRig(t *testing.T) {
 	if len(rigs) != 1 {
 		t.Fatalf("got %d rigs, want 1", len(rigs))
 	}
-	assertRig(t, rigs, "solo", (&url.URL{Scheme: "file", Path: parent}).String(), parent)
+	assertRig(t, rigs, "solo", (&url.URL{Scheme: "file", Path: parent}).String(), parent, "so")
 	if gitHEAD(t, parent) != head {
 		t.Fatal("parent-as-only-repo HEAD changed")
+	}
+	if gitOrigin(t, parent) != "" {
+		t.Fatal("parent-as-only-repo origin was rewritten")
+	}
+}
+
+func TestFromApplyContinuesAfterOneRigFails(t *testing.T) {
+	setupFromApply(t)
+	root := t.TempDir()
+	parent := filepath.Join(root, "demo")
+	keep := initFromChildRepo(t, parent, "alpha")
+	keepHEAD := gitHEAD(t, keep)
+	fail := initFromChildRepo(t, parent, "broken")
+	dead := "file:///no-such-from-clone-target"
+	setOrigin(t, fail, dead)
+	failOrigin := gitOrigin(t, fail)
+	townPath := filepath.Join(root, "demo.gt")
+	testutil.ReapOwnedDoltOnCleanup(t, townPath)
+
+	var out bytes.Buffer
+	err := runFromRequest(fromRequest{Parent: parent, Stdout: &out})
+	if err == nil {
+		t.Fatalf("expected a failure for the unreachable origin, got:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "broken") {
+		t.Fatalf("error = %v, want the failed Rig named", err)
+	}
+
+	rigs := loadFromRigs(t, townPath)
+	assertRig(t, rigs, "alpha", (&url.URL{Scheme: "file", Path: keep}).String(), keep, "al")
+	if _, ok := rigs["broken"]; ok {
+		t.Fatalf("failed Rig must not be registered, have %v", keysOf(rigs))
+	}
+	if gitHEAD(t, keep) != keepHEAD {
+		t.Fatal("successful source HEAD changed")
+	}
+	if gitOrigin(t, fail) != failOrigin {
+		t.Fatal("failed source origin changed")
 	}
 }
 
@@ -622,6 +684,16 @@ func gitHEAD(t *testing.T, repo string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func gitOrigin(t *testing.T, repo string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func isolateGitConfig(t *testing.T) {
 	t.Helper()
 	if os.Getenv("GIT_CONFIG_GLOBAL") != "" && strings.Contains(os.Getenv("GIT_CONFIG_GLOBAL"), "from-test-gitconfig") {
@@ -647,9 +719,6 @@ func runGitAt(t *testing.T, dir string, args ...string) {
 
 func setupFromApply(t *testing.T) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping gt from apply test in short mode")
-	}
 	origHome, err := os.UserHomeDir()
 	if err == nil && origHome != "" {
 		t.Setenv("PATH", filepath.Join(origHome, "go", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -704,7 +773,7 @@ func loadFromRigs(t *testing.T, townPath string) map[string]config.RigEntry {
 	return cfg.Rigs
 }
 
-func assertRig(t *testing.T, rigs map[string]config.RigEntry, name, gitURL, localRepo string) {
+func assertRig(t *testing.T, rigs map[string]config.RigEntry, name, gitURL, localRepo, prefix string) {
 	t.Helper()
 	entry, ok := rigs[name]
 	if !ok {
@@ -716,8 +785,12 @@ func assertRig(t *testing.T, rigs map[string]config.RigEntry, name, gitURL, loca
 	if filepath.Clean(entry.LocalRepo) != filepath.Clean(localRepo) {
 		t.Fatalf("rig %s local_repo = %q, want %q", name, entry.LocalRepo, localRepo)
 	}
-	if entry.BeadsConfig == nil || entry.BeadsConfig.Prefix == "" {
-		t.Fatalf("rig %s missing beads prefix", name)
+	if entry.BeadsConfig == nil {
+		t.Fatalf("rig %s missing beads config", name)
+	}
+	gotPrefix := strings.TrimSuffix(entry.BeadsConfig.Prefix, "-")
+	if gotPrefix != prefix {
+		t.Fatalf("rig %s prefix = %q, want %q", name, entry.BeadsConfig.Prefix, prefix)
 	}
 }
 

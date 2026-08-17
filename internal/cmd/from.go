@@ -5,15 +5,14 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/jonbaldie/gastown/internal/from"
+	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/style"
 	"github.com/spf13/cobra"
 )
 
 var fromDryRun bool
-var fromApplyMu sync.Mutex
 
 var fromCmd = &cobra.Command{
 	Use:     "from <parent> [town]",
@@ -98,10 +97,10 @@ func printFromPlan(w io.Writer, plan *from.Plan) {
 		}
 		fmt.Fprintf(w, "  %-16s %-40s %s  [%s]\n", r.Name, r.GitURL, r.SourcePath, action)
 	}
-	if len(plan.Glue) > 0 {
-		fmt.Fprintf(w, "\nIgnored glue:\n")
-		for _, glue := range plan.Glue {
-			fmt.Fprintf(w, "  %s\n", glue)
+	if len(plan.LeftoverFiles) > 0 {
+		fmt.Fprintf(w, "\nIgnored leftover files:\n")
+		for _, leftover := range plan.LeftoverFiles {
+			fmt.Fprintf(w, "  %s\n", leftover)
 		}
 	}
 	if len(plan.Skipped) > 0 {
@@ -118,13 +117,13 @@ func composeReminder() string {
 }
 
 func applyFromPlan(w io.Writer, plan *from.Plan) error {
-	fromApplyMu.Lock()
-	defer fromApplyMu.Unlock()
-
 	created := !plan.TownExists
 	if !plan.TownExists {
-		if err := installTownForFrom(plan.TownAbs); err != nil {
-			return err
+		if err := installTown(installTownOptions{
+			destPath: plan.TownAbs,
+			git:      true,
+		}); err != nil {
+			return fmt.Errorf("installing Town at %s: %w", plan.TownAbs, err)
 		}
 	}
 
@@ -134,7 +133,13 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 			skipped = append(skipped, r.Name)
 			continue
 		}
-		if err := addRigForFrom(plan.TownAbs, r); err != nil {
+		if err := addRigToTown(plan.TownAbs, rig.AddRigOptions{
+			Name:          r.Name,
+			GitURL:        r.GitURL,
+			LocalRepo:     r.SourcePath,
+			BeadsPrefix:   r.Prefix,
+			DefaultBranch: r.Branch,
+		}); err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", r.Name, err))
 			continue
 		}
@@ -146,73 +151,6 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 		return fmt.Errorf("failed to add %d Rig(s): %s", len(failures), strings.Join(failures, "; "))
 	}
 	return nil
-}
-
-func installTownForFrom(townPath string) error {
-	origGit := installGit
-	origShell := installShell
-	origForce := installForce
-	origWrappers := installWrappers
-	origSupervisor := installSupervisor
-	installGit = true
-	installShell = false
-	installForce = false
-	installWrappers = false
-	installSupervisor = false
-	defer func() {
-		installGit = origGit
-		installShell = origShell
-		installForce = origForce
-		installWrappers = origWrappers
-		installSupervisor = origSupervisor
-	}()
-	return runInstall(installCmd, []string{townPath})
-}
-
-func addRigForFrom(townRoot string, r from.Rig) error {
-	origLocal := rigAddLocalRepo
-	origBranch := rigAddBranch
-	origPrefix := rigAddPrefix
-	origAdopt := rigAddAdopt
-	origPush := rigAddPushURL
-	origUpstream := rigAddUpstreamURL
-	origFilter := rigAddFilter
-	origSparse := rigAddSparseCheckout
-	rigAddLocalRepo = r.LocalRepo
-	rigAddBranch = r.Branch
-	rigAddPrefix = r.Prefix
-	rigAddAdopt = false
-	rigAddPushURL = ""
-	rigAddUpstreamURL = ""
-	rigAddFilter = ""
-	rigAddSparseCheckout = nil
-	defer func() {
-		rigAddLocalRepo = origLocal
-		rigAddBranch = origBranch
-		rigAddPrefix = origPrefix
-		rigAddAdopt = origAdopt
-		rigAddPushURL = origPush
-		rigAddUpstreamURL = origUpstream
-		rigAddFilter = origFilter
-		rigAddSparseCheckout = origSparse
-	}()
-
-	origTown := os.Getenv("GT_TOWN_ROOT")
-	if err := os.Setenv("GT_TOWN_ROOT", townRoot); err != nil {
-		return err
-	}
-	defer func() { _ = os.Setenv("GT_TOWN_ROOT", origTown) }()
-
-	wd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
-	}
-	if err := os.Chdir(townRoot); err != nil {
-		return fmt.Errorf("entering Town: %w", err)
-	}
-	defer func() { _ = os.Chdir(wd) }()
-
-	return runRigAdd(rigAddCmd, []string{r.Name, r.GitURL})
 }
 
 func printFromReport(w io.Writer, plan *from.Plan, created bool, added, skipped, failures []string) {
@@ -231,8 +169,8 @@ func printFromReport(w io.Writer, plan *from.Plan, created bool, added, skipped,
 		fmt.Fprintf(w, ": %s", strings.Join(skipped, ", "))
 	}
 	fmt.Fprintln(w)
-	if len(plan.Glue) > 0 {
-		fmt.Fprintf(w, "Ignored glue: %s\n", strings.Join(plan.Glue, ", "))
+	if len(plan.LeftoverFiles) > 0 {
+		fmt.Fprintf(w, "Ignored leftover files: %s\n", strings.Join(plan.LeftoverFiles, ", "))
 	}
 	if len(plan.Skipped) > 0 {
 		fmt.Fprintf(w, "Skipped sources: %s\n", strings.Join(plan.Skipped, ", "))

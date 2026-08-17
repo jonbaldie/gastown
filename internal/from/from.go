@@ -16,7 +16,7 @@ import (
 	"github.com/jonbaldie/gastown/internal/workspace"
 )
 
-var glueNames = []string{
+var leftoverFileNames = []string{
 	"compose.yaml",
 	"compose.yml",
 	"docker-compose.yaml",
@@ -38,7 +38,6 @@ type Rig struct {
 	SourcePath string
 	Name       string
 	GitURL     string
-	LocalRepo  string
 	Branch     string
 	Prefix     string
 	Action     RigAction
@@ -46,12 +45,12 @@ type Rig struct {
 
 // Plan is the dry-run and apply input for gt from.
 type Plan struct {
-	ParentAbs  string
-	TownAbs    string
-	TownExists bool
-	Rigs       []Rig
-	Glue       []string
-	Skipped    []string
+	ParentAbs     string
+	TownAbs       string
+	TownExists    bool
+	Rigs          []Rig
+	LeftoverFiles []string
+	Skipped       []string
 }
 
 // Prepare resolves paths, discovers candidate repositories, and fails before
@@ -103,9 +102,7 @@ func Prepare(parent, town string) (*Plan, error) {
 			return nil, fmt.Errorf("path %s exists but is not a Gas Town HQ", townAbs)
 		}
 		plan.TownExists = true
-	case os.IsNotExist(townStatErr):
-		// New Town.
-	default:
+	case !os.IsNotExist(townStatErr):
 		return nil, fmt.Errorf("checking Town path: %w", townStatErr)
 	}
 
@@ -175,8 +172,8 @@ func discover(plan *Plan) error {
 	for _, entry := range entries {
 		name := entry.Name()
 		if !entry.IsDir() {
-			if isGlueName(name) {
-				plan.Glue = append(plan.Glue, name)
+			if isLeftoverFileName(name) {
+				plan.LeftoverFiles = append(plan.LeftoverFiles, name)
 			}
 			continue
 		}
@@ -225,7 +222,6 @@ func planRig(source string) Rig {
 		SourcePath: source,
 		Name:       name,
 		GitURL:     gitURL,
-		LocalRepo:  source,
 		Branch:     g.DefaultBranch(),
 		Prefix:     rig.DeriveBeadsPrefix(name),
 		Action:     ActionAdd,
@@ -237,7 +233,7 @@ func classifyAgainstExisting(planned *Rig, existing map[string]config.RigEntry) 
 	if !ok {
 		return
 	}
-	if samePath(entry.LocalRepo, planned.LocalRepo) || entry.GitURL == planned.GitURL {
+	if samePath(entry.LocalRepo, planned.SourcePath) || entry.GitURL == planned.GitURL {
 		planned.Action = ActionSkip
 		return
 	}
@@ -328,9 +324,9 @@ func looksLikeAssembledRig(path string) bool {
 	return cfg.Type == "rig"
 }
 
-func isGlueName(name string) bool {
-	for _, glue := range glueNames {
-		if name == glue {
+func isLeftoverFileName(name string) bool {
+	for _, leftover := range leftoverFileNames {
+		if name == leftover {
 			return true
 		}
 	}

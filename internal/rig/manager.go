@@ -350,10 +350,8 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 
 	// Reject reserved names that collide with town-level infrastructure.
 	// "hq" is special-cased by EnsureMetadata and dolt routing as the town-level alias.
-	for _, reserved := range reservedRigNames {
-		if strings.EqualFold(opts.Name, reserved) {
-			return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
-		}
+	if IsReservedName(opts.Name) {
+		return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
 	}
 
 	// Dolt server is required — refuse to proceed without it.
@@ -1639,10 +1637,8 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 		return nil, fmt.Errorf("rig name %q contains invalid characters; hyphens, dots, spaces, and path separators are not allowed. Try %q instead (underscores are allowed)", opts.Name, sanitized)
 	}
 
-	for _, reserved := range reservedRigNames {
-		if strings.EqualFold(opts.Name, reserved) {
-			return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
-		}
+	if IsReservedName(opts.Name) {
+		return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
 	}
 
 	rigPath := filepath.Join(m.townRoot, opts.Name)
