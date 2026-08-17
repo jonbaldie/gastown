@@ -435,7 +435,7 @@ func TestFromExistingTownPrefixCollisionOmitsPrefixFlag(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(town, ".beads"), 0755); err != nil {
 		t.Fatalf("mkdir beads: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(town, ".beads", "routes.jsonl"), []byte(`{"prefix":"au-","path":"other"}\n`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(town, ".beads", "routes.jsonl"), []byte("{\"prefix\":\"au-\",\"path\":\"other\"}\n"), 0644); err != nil {
 		t.Fatalf("write routes: %v", err)
 	}
 
