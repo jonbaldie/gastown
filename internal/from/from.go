@@ -3,6 +3,7 @@ package from
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -19,8 +20,6 @@ import (
 var leftoverFileNames = []string{
 	"compose.yaml",
 	"compose.yml",
-	"docker-compose.yaml",
-	"docker-compose.yml",
 }
 
 // RigAction is what apply should do for one discovered repository.
@@ -172,7 +171,6 @@ func discover(plan *Plan) error {
 	}
 
 	var children []string
-	sawGitChild := false
 	for _, entry := range entries {
 		name := entry.Name()
 		if !entry.IsDir() {
@@ -186,18 +184,16 @@ func discover(plan *Plan) error {
 		}
 		child := filepath.Join(plan.ParentAbs, name)
 		if looksLikeAssembledRig(child) {
-			sawGitChild = true
 			plan.Skipped = append(plan.Skipped, name+" (assembled Rig)")
 			continue
 		}
 		if isGitDirRepo(child) {
-			sawGitChild = true
 			children = append(children, child)
 		}
 	}
 
 	sources := children
-	if len(sources) == 0 && !sawGitChild && isGitDirRepo(plan.ParentAbs) {
+	if len(sources) == 0 && isGitDirRepo(plan.ParentAbs) {
 		sources = []string{plan.ParentAbs}
 	}
 	if len(sources) == 0 {
@@ -210,19 +206,28 @@ func discover(plan *Plan) error {
 	}
 
 	for _, source := range sources {
-		planned := planRig(source)
+		planned, err := planRig(source)
+		if err != nil {
+			return err
+		}
 		classifyAgainstExisting(&planned, existing)
 		plan.Rigs = append(plan.Rigs, planned)
 	}
 	return nil
 }
 
-func planRig(source string) Rig {
+func planRig(source string) (Rig, error) {
 	name := rig.SanitizeName(filepath.Base(source))
 	g := git.NewGit(source)
 	gitURL := fileURL(source)
-	if origin, err := g.ConfiguredRemoteURL("origin"); err == nil && strings.TrimSpace(origin) != "" {
+	origin, err := g.ConfiguredRemoteURL("origin")
+	switch {
+	case err == nil && strings.TrimSpace(origin) != "":
 		gitURL = strings.TrimSpace(origin)
+	case err == nil, errors.Is(err, git.ErrRemoteNotConfigured):
+		// Keep the file:// URL when origin is absent.
+	default:
+		return Rig{}, fmt.Errorf("reading origin for %s: %w", source, err)
 	}
 	return Rig{
 		SourcePath: source,
@@ -230,7 +235,7 @@ func planRig(source string) Rig {
 		GitURL:     gitURL,
 		Prefix:     rig.DeriveBeadsPrefix(name),
 		Action:     ActionAdd,
-	}
+	}, nil
 }
 
 func classifyAgainstExisting(planned *Rig, existing map[string]config.RigEntry) {
@@ -238,9 +243,8 @@ func classifyAgainstExisting(planned *Rig, existing map[string]config.RigEntry) 
 	if !ok {
 		return
 	}
-	if samePath(entry.LocalRepo, planned.SourcePath) || entry.GitURL == planned.GitURL {
+	if samePath(entry.LocalRepo, planned.SourcePath) {
 		planned.Action = ActionSkip
-		return
 	}
 }
 
@@ -300,8 +304,8 @@ func preflight(plan *Plan) error {
 				continue
 			}
 			if err := beads.CheckPrefixAvailable(plan.TownAbs, r.Prefix+"-", r.Name); err != nil {
-				if strings.Contains(err.Error(), "already used") {
-					return fmt.Errorf("Beads prefix %q for Rig %q collides with an existing Town prefix", r.Prefix, r.Name)
+				if errors.Is(err, beads.ErrPrefixInUse) {
+					return fmt.Errorf("Beads prefix %q for Rig %q collides with an existing Town prefix: %w", r.Prefix, r.Name, err)
 				}
 				return fmt.Errorf("checking Beads prefix %q: %w", r.Prefix, err)
 			}

@@ -324,8 +324,8 @@ func TestCloneFileURLAllowsProtocol(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	// Recent Git can refuse file:// clones when protocol.file.allow is never.
-	// The production clone helper must still succeed for local file URLs.
+	// The production clone helper must still succeed for local file URLs when
+	// protocol.file.allow is never.
 	t.Setenv("GIT_CONFIG_COUNT", "1")
 	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
 	t.Setenv("GIT_CONFIG_VALUE_0", "never")
@@ -375,6 +375,19 @@ func TestConfiguredRemoteURLIgnoresInsteadOf(t *testing.T) {
 	}
 	if got != origin {
 		t.Fatalf("ConfiguredRemoteURL = %q, want stored origin %q", got, origin)
+	}
+}
+
+func TestConfiguredRemoteURLMissingOrigin(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	if err := exec.Command("git", "init", "--initial-branch=main", src).Run(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	g := NewGit(src)
+	_, err := g.ConfiguredRemoteURL("origin")
+	if !errors.Is(err, ErrRemoteNotConfigured) {
+		t.Fatalf("ConfiguredRemoteURL missing origin = %v, want ErrRemoteNotConfigured", err)
 	}
 }
 

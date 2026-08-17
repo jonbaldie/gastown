@@ -99,18 +99,7 @@ func printFromPlan(w io.Writer, plan *from.Plan) {
 		}
 		fmt.Fprintf(w, "  %-16s %-40s %s  [%s]\n", r.Name, r.GitURL, r.SourcePath, action)
 	}
-	if len(plan.LeftoverFiles) > 0 {
-		fmt.Fprintf(w, "\nIgnored leftover files:\n")
-		for _, leftover := range plan.LeftoverFiles {
-			fmt.Fprintf(w, "  %s\n", leftover)
-		}
-	}
-	if len(plan.Skipped) > 0 {
-		fmt.Fprintf(w, "\nSkipped:\n")
-		for _, skipped := range plan.Skipped {
-			fmt.Fprintf(w, "  %s\n", skipped)
-		}
-	}
+	writeFromNotes(w, plan)
 	fmt.Fprintf(w, "\n%s\n", composeReminder())
 }
 
@@ -202,12 +191,7 @@ func printFromReport(w io.Writer, plan *from.Plan, created bool, added, skipped,
 		fmt.Fprintf(w, ": %s", strings.Join(skipped, ", "))
 	}
 	fmt.Fprintln(w)
-	if len(plan.LeftoverFiles) > 0 {
-		fmt.Fprintf(w, "Ignored leftover files: %s\n", strings.Join(plan.LeftoverFiles, ", "))
-	}
-	if len(plan.Skipped) > 0 {
-		fmt.Fprintf(w, "Skipped sources: %s\n", strings.Join(plan.Skipped, ", "))
-	}
+	writeFromNotes(w, plan)
 	if len(failures) > 0 {
 		fmt.Fprintf(w, "\n%s Failures:\n", style.Warning.Render("⚠"))
 		for _, failure := range failures {
@@ -215,4 +199,13 @@ func printFromReport(w io.Writer, plan *from.Plan, created bool, added, skipped,
 		}
 	}
 	fmt.Fprintf(w, "\n%s\n", composeReminder())
+}
+
+func writeFromNotes(w io.Writer, plan *from.Plan) {
+	if len(plan.LeftoverFiles) > 0 {
+		fmt.Fprintf(w, "Ignored leftover files: %s\n", strings.Join(plan.LeftoverFiles, ", "))
+	}
+	if len(plan.Skipped) > 0 {
+		fmt.Fprintf(w, "Skipped sources: %s\n", strings.Join(plan.Skipped, ", "))
+	}
 }

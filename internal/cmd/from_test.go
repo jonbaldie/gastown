@@ -375,7 +375,7 @@ func TestFromSkipsAssembledRigDirectories(t *testing.T) {
 	}
 }
 
-func TestFromParentGitWithOnlyAssembledChildrenIsRefused(t *testing.T) {
+func TestFromParentGitWithOnlyAssembledChildrenUsesParent(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "mono")
 	initGitRepoAt(t, parent)
@@ -387,15 +387,21 @@ func TestFromParentGitWithOnlyAssembledChildrenIsRefused(t *testing.T) {
 		t.Fatalf("write config.json: %v", err)
 	}
 
-	err := runFromRequest(fromRequest{Parent: parent, DryRun: true})
-	if err == nil {
-		t.Fatal("expected error when the only Git children are assembled Rigs")
+	plan, err := from.Prepare(parent, "")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no Git repositories") {
-		t.Fatalf("error = %v, want no Git repositories (parent must not become a Rig)", err)
+	if len(plan.Rigs) != 1 || plan.Rigs[0].Name != "mono" {
+		t.Fatalf("got rigs %+v, want one Rig from the parent", plan.Rigs)
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "mono.gt")); !os.IsNotExist(statErr) {
-		t.Fatal("assembled-only parent must not create a Town")
+	foundAssembled := false
+	for _, skipped := range plan.Skipped {
+		if strings.Contains(skipped, "assembled Rig") {
+			foundAssembled = true
+		}
+	}
+	if !foundAssembled {
+		t.Fatalf("assembled child should be skipped, got %v", plan.Skipped)
 	}
 }
 
@@ -429,6 +435,32 @@ func TestFromConflictsWhenRigNamePointsAtDifferentPath(t *testing.T) {
 		t.Fatalf("write town.json: %v", err)
 	}
 	rigsJSON := `{"version":1,"rigs":{"auth":{"git_url":"https://example.com/other.git","local_repo":"/other/auth"}}}`
+	if err := os.WriteFile(filepath.Join(town, "mayor", "rigs.json"), []byte(rigsJSON), 0644); err != nil {
+		t.Fatalf("write rigs.json: %v", err)
+	}
+
+	err := runFromRequest(fromRequest{Parent: parent, Town: town, DryRun: true})
+	if err == nil {
+		t.Fatal("expected conflict when Rig name is taken by a different local path")
+	}
+	if !strings.Contains(err.Error(), "different source") {
+		t.Fatalf("error = %v, want different source conflict", err)
+	}
+}
+
+func TestFromConflictsWhenRigNameMatchesURLButNotPath(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "demo")
+	auth := initFromChildRepo(t, parent, "auth")
+	setOrigin(t, auth, "https://github.com/acme/auth.git")
+	town := filepath.Join(root, "town")
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0755); err != nil {
+		t.Fatalf("mkdir town: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(town, "mayor", "town.json"), []byte(`{"type":"town","version":2,"name":"town"}`), 0644); err != nil {
+		t.Fatalf("write town.json: %v", err)
+	}
+	rigsJSON := `{"version":1,"rigs":{"auth":{"git_url":"https://github.com/acme/auth.git","local_repo":"/other/auth"}}}`
 	if err := os.WriteFile(filepath.Join(town, "mayor", "rigs.json"), []byte(rigsJSON), 0644); err != nil {
 		t.Fatalf("write rigs.json: %v", err)
 	}

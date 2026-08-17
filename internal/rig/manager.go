@@ -314,7 +314,10 @@ func resolveLocalRepo(path, gitURL string) (string, string) {
 
 	origin, err := repoGit.ConfiguredRemoteURL("origin")
 	if err != nil {
-		return absPath, "local repo has no origin; using it anyway"
+		if errors.Is(err, git.ErrRemoteNotConfigured) {
+			return absPath, "local repo has no origin; using it anyway"
+		}
+		return "", fmt.Sprintf("local repo origin: %v", err)
 	}
 	if origin != gitURL {
 		return "", fmt.Sprintf("local repo origin %q does not match %q", origin, gitURL)
@@ -382,6 +385,9 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 
 	// Check for prefix collision with existing rigs before expensive operations.
 	if err := beads.CheckPrefixAvailable(m.townRoot, opts.BeadsPrefix+"-", opts.Name); err != nil {
+		if errors.Is(err, beads.ErrPrefixInUse) {
+			return nil, fmt.Errorf("prefix collision (derived prefix %q): %w; use --prefix to specify a different prefix", opts.BeadsPrefix, err)
+		}
 		return nil, fmt.Errorf("prefix collision (derived prefix %q): %w", opts.BeadsPrefix, err)
 	}
 
@@ -1354,7 +1360,6 @@ func DeriveBeadsPrefix(name string) string {
 	return deriveBeadsPrefix(name)
 }
 
-// deriveBeadsPrefix generates a beads prefix from a rig name.
 func deriveBeadsPrefix(name string) string {
 	// Strip path separators — callers should validate names, but be defensive
 	name = filepath.Base(name)
@@ -1691,6 +1696,9 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 
 	// Check for prefix collision with existing rigs.
 	if err := beads.CheckPrefixAvailable(m.townRoot, result.BeadsPrefix+"-", opts.Name); err != nil {
+		if errors.Is(err, beads.ErrPrefixInUse) {
+			return nil, fmt.Errorf("prefix collision (prefix %q): %w; use --prefix to specify a different prefix", result.BeadsPrefix, err)
+		}
 		return nil, fmt.Errorf("prefix collision (prefix %q): %w", result.BeadsPrefix, err)
 	}
 
