@@ -686,7 +686,7 @@ func gitHEAD(t *testing.T, repo string) string {
 
 func gitOrigin(t *testing.T, repo string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repo, "remote", "get-url", "origin")
+	cmd := exec.Command("git", "-C", repo, "config", "--get", "remote.origin.url")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
