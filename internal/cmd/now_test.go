@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -78,9 +79,10 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBin(t)
-	socket := "nowt-happy"
+	socket := nowSocket("happy")
 	env := nowTestEnv(t, home, bin, socket, false)
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -195,9 +197,10 @@ func TestNowPicksFreeDoltPortWhenBusy(t *testing.T) {
 
 	repoA := createNowGitRepo(t, filepath.Join(t.TempDir(), "alpha"))
 	townA := filepath.Join(t.TempDir(), "town-a")
-	socketA := "nowt-porta"
+	socketA := nowSocket("porta")
 	envA := nowTestEnv(t, home, bin, socketA, false)
 	testutil.ReapOwnedDoltOnCleanup(t, townA)
+	testutil.StopDaemonOnCleanup(t, townA)
 	t.Cleanup(func() { killNowTmux(t, socketA) })
 
 	gtBinary := buildGT(t)
@@ -210,9 +213,10 @@ func TestNowPicksFreeDoltPortWhenBusy(t *testing.T) {
 
 	repoB := createNowGitRepo(t, filepath.Join(t.TempDir(), "beta"))
 	townB := filepath.Join(t.TempDir(), "town-b")
-	socketB := "nowt-portb"
+	socketB := nowSocket("portb")
 	envB := nowTestEnv(t, home, bin, socketB, false)
 	testutil.ReapOwnedDoltOnCleanup(t, townB)
+	testutil.StopDaemonOnCleanup(t, townB)
 	t.Cleanup(func() { killNowTmux(t, socketB) })
 
 	outB, err := runGTCmdMayFail(t, gtBinary, repoB, envB, "now", "--town", townB, "--no-attach",
@@ -298,10 +302,11 @@ func TestNowNameSetsRigName(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBin(t)
-	socket := "nowt-name"
+	socket := nowSocket("name")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -325,10 +330,11 @@ func TestNowAcceptsPathArgument(t *testing.T) {
 	town := filepath.Join(t.TempDir(), "town")
 	cwd := t.TempDir()
 	bin := nowAgentBin(t)
-	socket := "nowt-path"
+	socket := nowSocket("path")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -371,10 +377,11 @@ func TestNowStoresSlashInModel(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBin(t)
-	socket := "nowt-slash"
+	socket := nowSocket("slash")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -431,10 +438,11 @@ func TestNowRefusesTownHQUnlessRegisteredRig(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBin(t)
-	socket := "nowt-hq"
+	socket := nowSocket("hq")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -481,10 +489,11 @@ func TestNowDefaultRuntimeUsesFirstOnPATH(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBin(t)
-	socket := "nowt-default"
+	socket := nowSocket("default")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -506,10 +515,11 @@ func TestNowMayorFlagsRestartMayorAndWorkersPersist(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBin(t)
-	socket := "nowt-restart"
+	socket := nowSocket("restart")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -551,10 +561,11 @@ func TestNowRestartWorkersStartsWitness(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBinStay(t)
-	socket := "nowt-rw"
+	socket := nowSocket("rw")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -581,10 +592,11 @@ func TestNowDoctorFailsWhenMayorBinaryMissing(t *testing.T) {
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
 	town := filepath.Join(t.TempDir(), "town")
 	bin := nowAgentBin(t)
-	socket := "nowt-doctor"
+	socket := nowSocket("doctor")
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
+	testutil.StopDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -617,6 +629,13 @@ func requireNowStack(t *testing.T) {
 	if _, err := lookPathExtra("bd"); err != nil {
 		t.Skip("bd not installed")
 	}
+}
+
+// nowSocket names a tmux socket for one test in one test-binary run. The PID
+// keeps a town daemon that escaped an earlier run from finding this run's
+// sessions: it would kill and respawn them under a shared socket name.
+func nowSocket(name string) string {
+	return fmt.Sprintf("nowt-%s-%d", name, os.Getpid())
 }
 
 func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string {
