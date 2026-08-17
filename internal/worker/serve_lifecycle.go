@@ -58,15 +58,12 @@ func canonicalTownRoot(townRoot string) string {
 // stale socket/port files. It does not signal processes for other towns.
 func StopServe(townRoot string) int {
 	pids := FindServePIDs(townRoot)
-	stopped := 0
 	for _, pid := range pids {
-		if stopServePID(pid) {
-			stopped++
-		}
+		stopServePID(pid)
 	}
 	_ = os.Remove(SocketPath(townRoot))
 	_ = os.Remove(PortPath(townRoot))
-	return stopped
+	return len(pids)
 }
 
 func isTownWorkerServeArgs(args, townRoot string) bool {
@@ -112,12 +109,12 @@ func sameTownPath(got, want string) bool {
 	return gotResErr == nil && wantResErr == nil && gotRes == wantRes
 }
 
-func stopServePID(pid int) bool {
+func stopServePID(pid int) {
 	_ = terminateServePID(pid)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if !process.Alive(pid) {
-			return true
+			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -125,11 +122,8 @@ func stopServePID(pid int) bool {
 	deadline = time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if !process.Alive(pid) {
-			return true
+			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// A zombie still has a PID until its parent reaps it. After SIGKILL,
-	// treat that as stopped so shutdown does not keep waiting on the parent.
-	return true
 }
