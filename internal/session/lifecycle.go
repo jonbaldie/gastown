@@ -76,6 +76,10 @@ type Work struct {
 	// Interactive marks an attended crew start. The role table then skips
 	// unattended waits and dialog dismissal.
 	Interactive bool
+
+	// SkipReady treats session creation as the ready state. Used by gt now so
+	// attach does not wait for a runtime prompt or the Cursor ready delay.
+	SkipReady bool
 }
 
 // StartResult contains the results of session startup.
@@ -124,7 +128,7 @@ func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr err
 	if err := runtime.EnsureSettingsForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
 		return nil, fmt.Errorf("ensuring runtime settings: %w", err)
 	}
-	if work.RuntimeConfigDir != "" {
+	if work.RuntimeConfigDir != "" && !work.SkipReady {
 		if err := skills.ProvisionUserDir(work.RuntimeConfigDir); err != nil {
 			return nil, fmt.Errorf("ensuring account skills: %w", err)
 		}
@@ -161,7 +165,7 @@ func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr err
 		envVars[k] = v
 	}
 
-	if err := t.NewSessionWithCommandAndEnv(work.SessionID, work.WorkDir, command, envVars); err != nil {
+	if err := startSessionCommand(t, work, command, envVars); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
 	}
 
@@ -299,6 +303,19 @@ func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr err
 		role, work.AgentName, work.SessionID, work.RigName, work.TownRoot, work.Beacon.MolID, work.WorkDir)
 
 	return &StartResult{RuntimeConfig: runtimeConfig, RunID: runID}, nil
+}
+
+type sessionNoWait interface {
+	NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error
+}
+
+func startSessionCommand(tm TmuxOps, work Work, command string, envVars map[string]string) error {
+	if work.SkipReady {
+		if n, ok := tm.(sessionNoWait); ok {
+			return n.NewSessionWithCommandAndEnvNoWait(work.SessionID, work.WorkDir, command, envVars)
+		}
+	}
+	return tm.NewSessionWithCommandAndEnv(work.SessionID, work.WorkDir, command, envVars)
 }
 
 // RecordAgentInstantiateFromDir resolves the git branch/commit from workDir and

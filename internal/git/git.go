@@ -605,6 +605,7 @@ type cloneOptions struct {
 	depth        int    // Pass --depth N to git clone (shallow clone); 0 means full history
 	branch       string // Pass --branch <name> to git clone (checkout specific branch)
 	filter       string // Pass --filter=<spec> to git clone (e.g. "blob:none", "tree:0")
+	local        bool   // Pass --local to git clone (hardlink objects from a local repo)
 }
 
 // cloneInternal runs `git clone` in an isolated temp directory, moves the result
@@ -660,6 +661,9 @@ func (g *Git) cloneInternal(url, dest string, opts cloneOptions) error {
 	}
 	if opts.reference != "" {
 		args = append(args, "--reference-if-able", opts.reference)
+	}
+	if opts.local {
+		args = append(args, "--local")
 	}
 	args = append(args, url, tmpDest)
 
@@ -879,6 +883,61 @@ func (g *Git) CloneBareWithReference(url, dest, reference string) error {
 // CloneBareWithReferenceAndBranch clones a bare repo using a local reference, checking out a specific branch.
 func (g *Git) CloneBareWithReferenceAndBranch(url, dest, reference, branch string) error {
 	return g.cloneInternal(url, dest, cloneOptions{bare: true, reference: reference, singleBranch: true, depth: 1, branch: branch})
+}
+
+// CloneBareLocal clones a local repository as a bare repo using git --local.
+// The clone lands on the destination filesystem so hardlinks survive.
+// It does not fetch from the network.
+func (g *Git) CloneBareLocal(src, dest string) error {
+	src = gitPathAbs(src, "")
+	dest = gitPathAbs(dest, "")
+	if protectedTownRuntimePath(dest) {
+		return fmt.Errorf("%w: clone destination %s", ErrUnsafeTownRootGitMutation, dest)
+	}
+
+	destParent := filepath.Dir(dest)
+	if err := os.MkdirAll(destParent, 0755); err != nil {
+		return fmt.Errorf("creating destination parent: %w", err)
+	}
+
+	tmpDir, err := os.MkdirTemp(destParent, ".gt-clone-*")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	tmpDest := filepath.Join(tmpDir, filepath.Base(dest))
+	args := []string{"clone", "--bare", "--local", src, tmpDest}
+	cmd := exec.Command("git", args...)
+	util.SetDetachedProcessGroup(cmd)
+	cmd.Dir = tmpDir
+	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+tmpDir)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return g.wrapError(err, stdout.String(), stderr.String(), args)
+	}
+
+	if err := os.Rename(tmpDest, dest); err != nil {
+		if moveErr := moveDir(tmpDest, dest); moveErr != nil {
+			return fmt.Errorf("moving clone to destination: %w", moveErr)
+		}
+	}
+
+	return configureLocalBareRefspec(dest)
+}
+
+func configureLocalBareRefspec(repoPath string) error {
+	gitDir := filepath.Clean(repoPath)
+	var stderr bytes.Buffer
+	configCmd := exec.Command("git", "--git-dir", gitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	util.SetDetachedProcessGroup(configCmd)
+	configCmd.Stderr = &stderr
+	if err := configCmd.Run(); err != nil {
+		return fmt.Errorf("configuring refspec: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // Checkout checks out the given ref.

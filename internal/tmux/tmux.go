@@ -466,6 +466,17 @@ func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env ma
 	return t.checkSessionAfterCreate(name, command)
 }
 
+// NewSessionWithCommandAndEnvNoWait creates a session and treats pane creation
+// as the ready state. remain-on-exit stays on so a command that exits 0 still
+// leaves a session for attach.
+func (t *Tmux) NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error {
+	if err := t.NewSessionWithCommandAndEnv(name, workDir, command, env); err != nil {
+		return err
+	}
+	_, _ = t.run("set-option", "-t", name, "remain-on-exit", "on")
+	return nil
+}
+
 // checkSessionAfterCreate verifies that a newly created session's command didn't
 // fail immediately (binary not found, syntax error, etc.). Expects remain-on-exit
 // to already be enabled on the session. Checks the exit status after a brief delay.
@@ -482,7 +493,6 @@ func (t *Tmux) checkSessionAfterCreate(name, command string) error {
 			_ = t.KillSession(name)
 			return true, fmt.Errorf("session %q: command exited with status %s: %s", name, status, command)
 		}
-		_ = t.KillSession(name)
 		return true, nil
 	}
 

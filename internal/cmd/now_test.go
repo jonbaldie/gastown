@@ -1,0 +1,471 @@
+package cmd
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jonbaldie/gastown/internal/config"
+	"github.com/jonbaldie/gastown/internal/testutil"
+	"github.com/jonbaldie/gastown/internal/tmux"
+)
+
+func TestNowHelpDescribesFiveSecondPath(t *testing.T) {
+	gtBinary := buildGT(t)
+	out, err := exec.Command(gtBinary, "now", "--help").CombinedOutput()
+	if err != nil {
+		t.Fatalf("gt now --help: %v\n%s", err, out)
+	}
+	text := string(out)
+	for _, want := range []string{"five seconds", "--mayor", "--workers", "--town", "--no-attach"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("gt now --help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestNowFailsWithoutAgentCLI(t *testing.T) {
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowToolBin(t)
+	env := nowTestEnv(t, home, bin, "now-no-agent", true)
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach")
+	if err == nil {
+		t.Fatalf("gt now succeeded without an agent CLI:\n%s", out)
+	}
+	if !strings.Contains(out, "PATH") && !strings.Contains(out, "cursor-agent") && !strings.Contains(out, "claude") {
+		t.Fatalf("error should name a missing binary:\n%s", out)
+	}
+	if _, statErr := os.Stat(town); !os.IsNotExist(statErr) {
+		t.Fatalf("town was created after agent-missing failure")
+	}
+	assertNoTownFilesInRepo(t, repo)
+}
+
+func TestNowFailsWhenNotGitRepo(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	env := nowTestEnv(t, home, bin, "now-not-git", true)
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, dir, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err == nil {
+		t.Fatalf("gt now succeeded outside a git repo:\n%s", out)
+	}
+	if !strings.Contains(out, "git") {
+		t.Fatalf("error should mention git repository:\n%s", out)
+	}
+	if _, statErr := os.Stat(town); !os.IsNotExist(statErr) {
+		t.Fatalf("town was created for a non-git directory")
+	}
+}
+
+func TestNowStartsTownInFiveSeconds(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := "nowt-happy"
+	env := nowTestEnv(t, home, bin, socket, false)
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	start := time.Now()
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:grok-4.6:high", "--workers", "cursor:grok-4.6:low")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("gt now failed: %v\n%s", err, out)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("gt now took %s, want under 5s\n%s", elapsed, out)
+	}
+	if !strings.Contains(out, "town="+town) {
+		t.Fatalf("missing town path in output:\n%s", out)
+	}
+	if !strings.Contains(out, "rig=proj") {
+		t.Fatalf("missing rig name in output:\n%s", out)
+	}
+	if !strings.Contains(out, "dolt=") {
+		t.Fatalf("missing dolt port in output:\n%s", out)
+	}
+	if strings.Contains(out, "Attaching") && strings.Contains(strings.ToLower(out), "attach-session") {
+		t.Fatalf("--no-attach still looks like a tmux attach:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(town, "mayor", "town.json")); err != nil {
+		t.Fatalf("town missing mayor/town.json: %v", err)
+	}
+	assertNoTownFilesInRepo(t, repo)
+	if _, err := os.Stat(filepath.Join(repo, "settings", "config.json")); !os.IsNotExist(err) {
+		t.Fatal("gt now wrote mix into the project cwd")
+	}
+
+	mix := readNowMix(t, gtBinary, town, env)
+	assertRoleMix(t, mix, "mayor", "now-mayor", "high")
+	assertRoleMix(t, mix, "deacon", "now-mayor", "high")
+	assertRoleMix(t, mix, "witness", "now-workers", "low")
+	assertRoleMix(t, mix, "polecat", "now-workers", "low")
+	assertRoleMix(t, mix, "refinery", "now-workers", "low")
+	assertRoleMix(t, mix, "crew", "now-workers", "low")
+	assertRoleMix(t, mix, "boot", "now-workers", "low")
+	assertRoleMix(t, mix, "dog", "now-workers", "low")
+	if mix.CostLikeClaudePreset {
+		t.Fatalf("gt now applied a cost-tier Claude preset:\n%+v", mix)
+	}
+
+	agentOut := runGTCmdOutput(t, gtBinary, town, env, "config", "agent", "get", "now-mayor")
+	if !strings.Contains(agentOut, "--model") || !strings.Contains(agentOut, "grok-4.6") {
+		t.Fatalf("now-mayor alias missing --model grok-4.6:\n%s", agentOut)
+	}
+
+	if !nowMayorSessionExists(t, socket) {
+		t.Fatal("Mayor session was not created")
+	}
+
+	secondStart := time.Now()
+	secondOut, secondErr := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:grok-4.6:high", "--workers", "cursor:grok-4.6:low")
+	secondElapsed := time.Since(secondStart)
+	if secondErr != nil {
+		t.Fatalf("second gt now failed: %v\n%s", secondErr, secondOut)
+	}
+	if secondElapsed > 5*time.Second {
+		t.Fatalf("second gt now took %s, want under 5s\n%s", secondElapsed, secondOut)
+	}
+
+	badOut, badErr := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:grok-4.6:xhigh")
+	if badErr == nil {
+		t.Fatalf("invalid effort succeeded:\n%s", badOut)
+	}
+	mixAfter := readNowMix(t, gtBinary, town, env)
+	assertRoleMix(t, mixAfter, "mayor", "now-mayor", "high")
+}
+
+func TestNowPicksFreeDoltPortWhenBusy(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	bin := nowAgentBin(t)
+
+	repoA := createNowGitRepo(t, filepath.Join(t.TempDir(), "alpha"))
+	townA := filepath.Join(t.TempDir(), "town-a")
+	socketA := "nowt-porta"
+	envA := nowTestEnv(t, home, bin, socketA, false)
+	testutil.ReapOwnedDoltOnCleanup(t, townA)
+	t.Cleanup(func() { killNowTmux(t, socketA) })
+
+	gtBinary := buildGT(t)
+	outA, err := runGTCmdMayFail(t, gtBinary, repoA, envA, "now", "--town", townA, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("first gt now failed: %v\n%s", err, outA)
+	}
+	portA := doltPortFromNowOutput(t, outA)
+
+	repoB := createNowGitRepo(t, filepath.Join(t.TempDir(), "beta"))
+	townB := filepath.Join(t.TempDir(), "town-b")
+	socketB := "nowt-portb"
+	envB := nowTestEnv(t, home, bin, socketB, false)
+	testutil.ReapOwnedDoltOnCleanup(t, townB)
+	t.Cleanup(func() { killNowTmux(t, socketB) })
+
+	outB, err := runGTCmdMayFail(t, gtBinary, repoB, envB, "now", "--town", townB, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("second gt now failed: %v\n%s", err, outB)
+	}
+	portB := doltPortFromNowOutput(t, outB)
+	if portA == portB {
+		t.Fatalf("both towns used Dolt port %d", portA)
+	}
+
+	dataA := filepath.Join(townA, ".dolt-data")
+	dataB := filepath.Join(townB, ".dolt-data")
+	cfgB, err := os.ReadFile(filepath.Join(dataB, "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading town B config.yaml: %v", err)
+	}
+	if strings.Contains(string(cfgB), dataA) {
+		t.Fatalf("town B Dolt config points at town A data dir:\n%s", cfgB)
+	}
+}
+
+func TestNowFailsWhenRepoHasNoCommits(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(t.TempDir(), "empty")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	for _, args := range [][]string{
+		{"git", "init", "--initial-branch=main"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test User"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args[1:], err, out)
+		}
+	}
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	env := nowTestEnv(t, home, bin, "now-empty", true)
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err == nil {
+		t.Fatalf("gt now succeeded on an empty repo:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "empty") {
+		t.Fatalf("error should mention empty repository:\n%s", out)
+	}
+	if _, statErr := os.Stat(town); !os.IsNotExist(statErr) {
+		t.Fatalf("town was created for an empty repository")
+	}
+}
+
+func TestNowRejectsUnknownRuntimeWithoutWritingTown(t *testing.T) {
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	env := nowTestEnv(t, home, bin, "now-unknown", true)
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "not-a-runtime:high")
+	if err == nil {
+		t.Fatalf("unknown runtime succeeded:\n%s", out)
+	}
+	if !strings.Contains(out, "unknown runtime") {
+		t.Fatalf("error should mention unknown runtime:\n%s", out)
+	}
+	if _, statErr := os.Stat(town); !os.IsNotExist(statErr) {
+		t.Fatalf("town was created after unknown runtime")
+	}
+}
+
+func requireNowStack(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	if _, err := exec.LookPath("dolt"); err != nil && !fileExists(filepath.Join(os.Getenv("HOME"), "go", "bin", "dolt")) {
+		if _, err := exec.LookPath("dolt"); err != nil {
+			t.Skip("dolt not installed")
+		}
+	}
+	if _, err := lookPathExtra("bd"); err != nil {
+		t.Skip("bd not installed")
+	}
+}
+
+func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string {
+	t.Helper()
+	writeNowHomeGitConfig(t, home)
+	path := bin
+	if isolated {
+		path = strings.Join([]string{bin, "/usr/local/bin", "/usr/bin", "/bin"}, string(os.PathListSeparator))
+	} else {
+		path = bin + string(os.PathListSeparator) + os.Getenv("PATH")
+	}
+	env := testutil.CleanGTEnv()
+	filtered := make([]string, 0, len(env)+4)
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		switch key {
+		case "HOME", "PATH", "GT_TMUX_SOCKET", "BEADS_DOLT_AUTO_START", "GT_DOLT_PORT", "GT_TOWN_ROOT", "GT_ROOT":
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered,
+		"HOME="+home,
+		"PATH="+path,
+		"GT_TMUX_SOCKET="+socket,
+		"BEADS_DOLT_AUTO_START=0",
+	)
+}
+
+func writeNowHomeGitConfig(t *testing.T, home string) {
+	t.Helper()
+	content := "[user]\n\tname = Test User\n\temail = test@test.com\n"
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(content), 0644); err != nil {
+		t.Fatalf("write gitconfig: %v", err)
+	}
+}
+
+func nowToolBin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"git", "tmux", "dolt", "bd", "sh", "bash", "true", "false", "ps", "lsof", "ss"} {
+		src, err := lookPathExtra(name)
+		if err != nil {
+			continue
+		}
+		if err := os.Symlink(src, filepath.Join(dir, name)); err != nil {
+			t.Fatalf("symlink %s: %v", name, err)
+		}
+	}
+	return dir
+}
+
+func nowAgentBin(t *testing.T) string {
+	t.Helper()
+	dir := nowToolBin(t)
+	script := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "cursor-agent"), []byte(script), 0755); err != nil {
+		t.Fatalf("write cursor-agent: %v", err)
+	}
+	return dir
+}
+
+func createNowGitRepo(t *testing.T, repoDir string) string {
+	t.Helper()
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	cmds := [][]string{
+		{"git", "init", "--initial-branch=main"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test User"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args[1:], err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# proj\n"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	for _, args := range [][]string{{"git", "add", "."}, {"git", "commit", "-m", "init"}} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args[1:], err, out)
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(repoDir); err == nil {
+		return resolved
+	}
+	return repoDir
+}
+
+func assertNoTownFilesInRepo(t *testing.T, repo string) {
+	t.Helper()
+	for _, name := range []string{"mayor", "deacon", "AGENTS.md"} {
+		if _, err := os.Stat(filepath.Join(repo, name)); !os.IsNotExist(err) {
+			t.Fatalf("project git repository gained %s", name)
+		}
+	}
+}
+
+type nowMixReport struct {
+	config.TownMix
+	CostLikeClaudePreset bool
+}
+
+func readNowMix(t *testing.T, gtBinary, town string, env []string) nowMixReport {
+	t.Helper()
+	output := runGTCmdOutput(t, gtBinary, town, env, "config", "mix", "--json")
+	var mix config.TownMix
+	if err := json.Unmarshal([]byte(output), &mix); err != nil {
+		t.Fatalf("unmarshal mix JSON: %v\n%s", err, output)
+	}
+	report := nowMixReport{TownMix: mix}
+	for _, entry := range mix.Roles {
+		if strings.Contains(entry.Agent, "claude") || entry.Agent == "opus" {
+			report.CostLikeClaudePreset = true
+		}
+	}
+	return report
+}
+
+func assertRoleMix(t *testing.T, mix nowMixReport, role, agent, effort string) {
+	t.Helper()
+	for _, entry := range mix.Roles {
+		if entry.Name == role {
+			if entry.Agent != agent {
+				t.Fatalf("role %s agent = %q, want %q", role, entry.Agent, agent)
+			}
+			if entry.Effort != effort {
+				t.Fatalf("role %s effort = %q, want %q", role, entry.Effort, effort)
+			}
+			return
+		}
+	}
+	t.Fatalf("role %s missing from mix", role)
+}
+
+func nowMayorSessionExists(t *testing.T, socket string) bool {
+	t.Helper()
+	tm := tmux.NewTmuxWithSocket(socket)
+	ok, err := tm.HasSession("hq-mayor")
+	if err != nil {
+		t.Logf("HasSession: %v", err)
+		return false
+	}
+	return ok
+}
+
+func doltPortFromNowOutput(t *testing.T, out string) int {
+	t.Helper()
+	for _, field := range strings.Fields(out) {
+		after, ok := strings.CutPrefix(field, "dolt=")
+		if !ok {
+			continue
+		}
+		port, err := strconv.Atoi(strings.TrimRight(after, "\n"))
+		if err != nil {
+			t.Fatalf("parse dolt port from %q: %v", field, err)
+		}
+		return port
+	}
+	t.Fatalf("no dolt= field in output:\n%s", out)
+	return 0
+}
+
+func killNowTmux(t *testing.T, socket string) {
+	t.Helper()
+	cmd := exec.Command("tmux", "-L", socket, "kill-server")
+	_ = cmd.Run()
+}
+
+func lookPathExtra(name string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	candidates := []string{
+		filepath.Join(os.Getenv("HOME"), "go", "bin", name),
+		filepath.Join("/home/ubuntu/go/bin", name),
+		filepath.Join("/usr/local/bin", name),
+		filepath.Join("/exec-daemon", name),
+	}
+	for _, candidate := range candidates {
+		if fileExists(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
