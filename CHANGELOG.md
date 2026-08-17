@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gt now` installs runtime hooks before the Mayor starts.** SkipReady still
+  skips skill trees, slash commands, and the Cursor ready delay, but Pi needs
+  `mayor/.pi/extensions/gastown-hooks.js` or the pane exits immediately.
+
 - **Install docs no longer treat `gt enable` as town-scoped.** `gt enable`
   / `gt disable` stay machine-wide (`~/.local/state/gastown/state.json`).
   `docs/INSTALLING.md` Step 4 now boots with `gt up` only. A test or

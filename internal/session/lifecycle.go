@@ -125,10 +125,15 @@ func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr err
 	if settingsDir == "" {
 		settingsDir = work.WorkDir
 	}
-	if !work.SkipReady {
-		if err := runtime.EnsureSettingsForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
-			return nil, fmt.Errorf("ensuring runtime settings: %w", err)
+	// SkipReady skips skill trees and slash commands (deferred by gt now) and
+	// the Cursor ready delay. Hooks still install: Pi exits if gastown-hooks.js
+	// is missing.
+	if work.SkipReady {
+		if err := runtime.EnsureHooksForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
+			return nil, fmt.Errorf("ensuring runtime hooks: %w", err)
 		}
+	} else if err := runtime.EnsureSettingsForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
+		return nil, fmt.Errorf("ensuring runtime settings: %w", err)
 	}
 	if work.RuntimeConfigDir != "" && !work.SkipReady {
 		if err := skills.ProvisionUserDir(work.RuntimeConfigDir); err != nil {

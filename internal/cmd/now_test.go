@@ -397,6 +397,37 @@ func TestNowStoresSlashInModel(t *testing.T) {
 	}
 }
 
+func TestNowPiMayorKeepsSessionAlive(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowPiBinStay(t)
+	socket := nowSocket("pi")
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "pi:low", "--workers", "pi:low")
+	if err != nil {
+		t.Fatalf("gt now --mayor pi:low failed: %v\n%s", err, out)
+	}
+	hook := filepath.Join(town, "mayor", ".pi", "extensions", "gastown-hooks.js")
+	if _, err := os.Stat(hook); err != nil {
+		t.Fatalf("mayor Pi hook missing: %v", err)
+	}
+	if !nowMayorSessionExists(t, socket) {
+		t.Fatal("Mayor session missing after gt now --mayor pi")
+	}
+	if nowMayorPaneDead(t, socket) {
+		t.Fatal("Mayor pane died; Pi needs gastown-hooks.js before start")
+	}
+}
+
 func TestNowRefusesConvertingRepoIntoTownHQ(t *testing.T) {
 	home := t.TempDir()
 	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
@@ -713,6 +744,30 @@ func nowAgentBinStay(t *testing.T) string {
 	return dir
 }
 
+func nowPiBinStay(t *testing.T) string {
+	t.Helper()
+	dir := nowToolBin(t)
+	script := `#!/bin/sh
+file=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-e" ]; then
+    file="$arg"
+  fi
+  prev="$arg"
+done
+if [ -n "$file" ] && [ ! -f "$file" ]; then
+  echo "Extension path does not exist: $file" >&2
+  exit 1
+fi
+exec sleep 3600
+`
+	if err := os.WriteFile(filepath.Join(dir, "pi"), []byte(script), 0755); err != nil {
+		t.Fatalf("write pi: %v", err)
+	}
+	return dir
+}
+
 func nowAgentBin(t *testing.T) string {
 	t.Helper()
 	dir := nowToolBin(t)
@@ -828,6 +883,16 @@ func nowMayorHasClient(t *testing.T, socket string) bool {
 		return false
 	}
 	return strings.TrimSpace(string(out)) != ""
+}
+
+func nowMayorPaneDead(t *testing.T, socket string) bool {
+	t.Helper()
+	cmd := exec.Command("tmux", "-L", socket, "display-message", "-t", "hq-mayor", "-p", "#{pane_dead}")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(out)) == "1"
 }
 
 func nowWitnessSessionExists(t *testing.T, socket string) bool {
