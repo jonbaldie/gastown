@@ -25,8 +25,9 @@ Native source installs require these host tools. Docker installs only require Do
 | Tool | Version | Check | Install |
 |------|---------|-------|---------|
 | **tmux** | 3.0+ | `tmux -V` | See below |
-| **Claude Code** (default) | >= 2.0.20 | `claude --version` | See [claude.ai/claude-code](https://claude.ai/claude-code) |
-| **Pi** (optional) | latest | `pi --version` | See [Pi runtime](PI.md) |
+| **Cursor** | latest | `cursor --version` | See [cursor.com](https://cursor.com) |
+| **Claude Code** | >= 2.0.20 | `claude --version` | See [claude.ai/claude-code](https://claude.ai/claude-code) |
+| **Pi** | latest | `pi --version` | See [Pi runtime](PI.md) |
 | **Codex CLI** (optional) | latest | `codex --version` | See [developers.openai.com/codex/cli](https://developers.openai.com/codex/cli) |
 | **OpenCode CLI** (optional) | latest | `opencode --version` | See [opencode.ai](https://opencode.ai) |
 | **GitHub Copilot CLI** (optional) | latest | `copilot --version` | See [cli.github.com](https://cli.github.com) (requires Copilot seat) |
@@ -369,7 +370,7 @@ bd doctor                  # Run beads health check
 
 ## Updating
 
-Reinstall `gt` from `main` to pick up updates:
+Reinstall `gt` from `@latest` to pick up updates:
 
 ```bash
 CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest

@@ -47,7 +47,7 @@ graph TB
 
 ### The Mayor 🎩
 
-Your primary AI coordinator. The Mayor is a Claude Code instance with full context about your workspace, projects, and agents. **Start here** - just tell the Mayor what you want to accomplish.
+Your primary AI coordinator. The Mayor is an agent session with full context about your workspace, projects, and agents. **Start here** - just tell the Mayor what you want to accomplish.
 
 ### Town 🏘️
 
@@ -134,7 +134,7 @@ Native installs require the host tools below. Docker installs only require Docke
 | sqlite3 | any | Used by convoy database queries. Usually pre-installed on macOS and Linux. |
 | ICU4C dev headers | varies | Required only for `make build-cgo`, which compiles the optional embedded query layer. |
 | tmux | 3.0+ | Required for `gt up` and the tmux-backed roles (Mayor, Witnesses, Refineries, polecats). Optional only for minimal-mode workflows where you run runtime instances manually. |
-| Agent CLI | latest | One of Cursor, Claude, Pi, or another supported runtime. `gt now` picks the first of `cursor`, `claude`, `pi` on `PATH`. |
+| Agent CLI | latest | One of Cursor, Claude, Pi, or another supported runtime. |
 
 ### Local setup
 
