@@ -143,7 +143,7 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 
 	printFromReport(w, plan, created, added, skipped, failures)
 	if len(failures) > 0 {
-		return fmt.Errorf("failed to add %d Rig(s)", len(failures))
+		return fmt.Errorf("failed to add %d Rig(s): %s", len(failures), strings.Join(failures, "; "))
 	}
 	return nil
 }

@@ -630,7 +630,7 @@ func (g *Git) cloneInternal(url, dest string, opts cloneOptions) error {
 	// Build clone args
 	var args []string
 	// Git 2.38+ may refuse file:// clones unless the file protocol is allowed.
-	// Local --reference clones can also be rewritten onto file:// by insteadOf.
+	// --reference clones of a local repo can also be rewritten onto file://.
 	if strings.HasPrefix(url, "file://") || opts.reference != "" {
 		args = append(args, "-c", "protocol.file.allow=always")
 	}

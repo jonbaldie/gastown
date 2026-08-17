@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/rig"
@@ -41,7 +42,6 @@ type Rig struct {
 	Branch     string
 	Prefix     string
 	Action     RigAction
-	SkipReason string
 }
 
 // Plan is the dry-run and apply input for gt from.
@@ -78,6 +78,9 @@ func Prepare(parent, town string) (*Plan, error) {
 	}
 
 	if townRoot, err := workspace.Find(parentAbs); err == nil && townRoot != "" {
+		if townRoot == parentAbs {
+			return nil, fmt.Errorf("parent %s is a Gas Town HQ; gt from scans a folder of project repositories, not a Town", parentAbs)
+		}
 		return nil, fmt.Errorf("parent %s is inside Gas Town HQ %s; gt from scans a folder of project repositories, not a Town", parentAbs, townRoot)
 	}
 
@@ -236,7 +239,6 @@ func classifyAgainstExisting(planned *Rig, existing map[string]config.RigEntry) 
 	}
 	if samePath(entry.LocalRepo, planned.LocalRepo) || entry.GitURL == planned.GitURL {
 		planned.Action = ActionSkip
-		planned.SkipReason = "already registered"
 		return
 	}
 }
@@ -272,7 +274,7 @@ func preflight(plan *Plan) error {
 		}
 	}
 	for prefix, names := range byPrefix {
-		if uniqueCount(names) > 1 {
+		if len(unique(names)) > 1 {
 			return fmt.Errorf("Rigs %s would share Beads prefix %q", strings.Join(unique(names), " and "), prefix)
 		}
 	}
@@ -290,6 +292,16 @@ func preflight(plan *Plan) error {
 			continue
 		}
 		return fmt.Errorf("Rig %q already exists for a different source (%s)", r.Name, entry.LocalRepo)
+	}
+	if plan.TownExists {
+		for _, r := range plan.Rigs {
+			if r.Action == ActionSkip {
+				continue
+			}
+			if err := beads.CheckPrefixAvailable(plan.TownAbs, r.Prefix+"-", r.Name); err != nil {
+				return fmt.Errorf("prefix collision: %w", err)
+			}
+		}
 	}
 	return nil
 }
@@ -356,8 +368,4 @@ func unique(values []string) []string {
 		out = append(out, v)
 	}
 	return out
-}
-
-func uniqueCount(values []string) int {
-	return len(unique(values))
 }

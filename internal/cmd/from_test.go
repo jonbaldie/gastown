@@ -273,6 +273,47 @@ func TestFromParentGitWithChildrenUsesChildrenOnly(t *testing.T) {
 	}
 }
 
+func TestFromTownHQParentIsRefused(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "demo")
+	if err := os.MkdirAll(filepath.Join(parent, "mayor"), 0755); err != nil {
+		t.Fatalf("mkdir town: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "mayor", "town.json"), []byte(`{"type":"town","version":2,"name":"demo"}`), 0644); err != nil {
+		t.Fatalf("write town.json: %v", err)
+	}
+	initFromChildRepo(t, parent, "auth")
+
+	err := runFromRequest(fromRequest{Parent: parent, DryRun: true})
+	if err == nil {
+		t.Fatal("expected error when parent is a Town HQ")
+	}
+	if !strings.Contains(err.Error(), "Gas Town HQ") {
+		t.Fatalf("error = %v, want Gas Town HQ", err)
+	}
+}
+
+func TestFromSkipsSubmoduleGitFiles(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "demo")
+	initFromChildRepo(t, parent, "auth")
+	sub := filepath.Join(parent, "vendorlib")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatalf("mkdir submodule: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../auth/.git/modules/vendorlib\n"), 0644); err != nil {
+		t.Fatalf("write git file: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runFromRequest(fromRequest{Parent: parent, DryRun: true, Stdout: &out}); err != nil {
+		t.Fatalf("dry-run: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "vendorlib") {
+		t.Fatalf("submodule git files must not become Rigs, got:\n%s", out.String())
+	}
+}
+
 func TestFromExistingNonTownPathFails(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "demo")
