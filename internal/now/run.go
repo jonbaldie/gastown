@@ -211,7 +211,11 @@ func refuseTownHQConversion(repoPath, townRoot string) error {
 	if !repoIsTown {
 		return fmt.Errorf("refusing to convert this git repository into a Town HQ; pass --town for a separate Town")
 	}
-	if !repoIsRegisteredRig(townRoot, repoPath) {
+	registered, err := repoIsRegisteredRig(townRoot, repoPath)
+	if err != nil {
+		return fmt.Errorf("checking whether this Town HQ is a registered Rig: %w", err)
+	}
+	if !registered {
 		return fmt.Errorf("this directory is a Town HQ; run gt now from a project git repository")
 	}
 	return nil

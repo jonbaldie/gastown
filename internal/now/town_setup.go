@@ -193,15 +193,15 @@ func persistDoltPort(townRoot string, port int) error {
 	return os.WriteFile(path, out, 0644)
 }
 
-func repoIsRegisteredRig(townRoot, repoPath string) bool {
+func repoIsRegisteredRig(townRoot, repoPath string) (bool, error) {
 	rigsPath := constants.MayorRigsPath(townRoot)
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
-		return false
+		return false, err
 	}
 	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
 	_, ok := mgr.FindByLocalRepo(repoPath)
-	return ok
+	return ok, nil
 }
 
 func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string, error) {
