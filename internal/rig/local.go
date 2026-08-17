@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -14,7 +15,7 @@ import (
 
 // AddLocalRig registers a local git repository as a rig without a network clone.
 // Polecat worktrees later share objects from a local bare clone of srcRepo.
-func (m *Manager) AddLocalRig(name, srcRepo string) (*Rig, error) {
+func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, error) {
 	if m.RigExists(name) {
 		return nil, ErrRigExists
 	}
@@ -91,7 +92,7 @@ func (m *Manager) AddLocalRig(name, srcRepo string) (*Rig, error) {
 	}
 
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-	if err := m.git.CloneBareLocal(absSrc, bareRepoPath); err != nil {
+	if err := m.git.CloneBareLocal(ctx, absSrc, bareRepoPath); err != nil {
 		return nil, fmt.Errorf("sharing local git objects: %w", err)
 	}
 

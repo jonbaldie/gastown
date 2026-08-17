@@ -422,11 +422,7 @@ func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env ma
 // as the ready state. remain-on-exit stays on so a command that exits 0 still
 // leaves a session for attach.
 func (t *Tmux) NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error {
-	if err := t.newSessionWithCommandAndEnv(name, workDir, command, env, false); err != nil {
-		return err
-	}
-	_, _ = t.run("set-option", "-t", name, "remain-on-exit", "on")
-	return nil
+	return t.newSessionWithCommandAndEnv(name, workDir, command, env, false)
 }
 
 func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env map[string]string, waitReady bool) error {
@@ -479,9 +475,20 @@ func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env ma
 	}
 
 	if !waitReady {
+		if err := t.enableRemainOnExit(name); err != nil {
+			_ = t.KillSession(name)
+			return err
+		}
 		return nil
 	}
 	return t.checkSessionAfterCreate(name, command)
+}
+
+func (t *Tmux) enableRemainOnExit(name string) error {
+	if _, err := t.run("set-option", "-t", name, "remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("enabling remain-on-exit on %q: %w", name, err)
+	}
+	return nil
 }
 
 // checkSessionAfterCreate verifies that a newly created session's command didn't

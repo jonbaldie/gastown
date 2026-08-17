@@ -31,7 +31,9 @@ type Profile struct {
 
 // ParseProfile parses runtime[:model[:effort]].
 // An empty spec returns a profile with only defaultEffort set.
-func ParseProfile(spec, defaultEffort string, supportsEffort func(runtime, token string) bool) (Profile, error) {
+// A two-token spec treats a globally known effort level as effort even when
+// the runtime does not accept it; validateProfile rejects that later.
+func ParseProfile(spec, defaultEffort string) (Profile, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return Profile{Effort: defaultEffort}, nil
@@ -52,7 +54,7 @@ func ParseProfile(spec, defaultEffort string, supportsEffort func(runtime, token
 		if token == "" {
 			return Profile{}, fmt.Errorf("empty model or effort in %q", spec)
 		}
-		if supportsEffort != nil && supportsEffort(runtime, token) {
+		if config.IsValidEffortLevel(token) {
 			profile.Effort = token
 			return profile, nil
 		}
@@ -87,11 +89,11 @@ func SupportsEffort(runtime, token string) bool {
 
 // ResolveProfiles parses, detects, and validates --mayor and --workers specs.
 func ResolveProfiles(mayorSpec, workersSpec string) (Profile, Profile, error) {
-	mayorProfile, err := ParseProfile(mayorSpec, DefaultMayorEffort, SupportsEffort)
+	mayorProfile, err := ParseProfile(mayorSpec, DefaultMayorEffort)
 	if err != nil {
 		return Profile{}, Profile{}, fmt.Errorf("parsing --mayor: %w", err)
 	}
-	workersProfile, err := ParseProfile(workersSpec, DefaultWorkersEffort, SupportsEffort)
+	workersProfile, err := ParseProfile(workersSpec, DefaultWorkersEffort)
 	if err != nil {
 		return Profile{}, Profile{}, fmt.Errorf("parsing --workers: %w", err)
 	}
@@ -139,8 +141,7 @@ func validateProfile(profile Profile, flag string) error {
 	if !RuntimePresent(profile.Runtime) {
 		return fmt.Errorf("%s: %s not found on PATH", flag, RuntimeCommand(profile.Runtime))
 	}
-	rc := config.RuntimeConfigFromPreset(config.AgentPreset(profile.Runtime))
-	if !config.RuntimeSupportsEffort(rc, profile.Effort) {
+	if !SupportsEffort(profile.Runtime, profile.Effort) {
 		return fmt.Errorf("%s: invalid effort %q for runtime %s", flag, profile.Effort, profile.Runtime)
 	}
 	return nil

@@ -884,7 +884,10 @@ func (g *Git) CloneBareWithReferenceAndBranch(url, dest, reference, branch strin
 // CloneBareLocal clones a local repository as a bare repo using git --local.
 // The clone lands on the destination filesystem so hardlinks survive.
 // It does not fetch from the network.
-func (g *Git) CloneBareLocal(src, dest string) error {
+func (g *Git) CloneBareLocal(ctx context.Context, src, dest string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	src = gitPathAbs(src, "")
 	dest = gitPathAbs(dest, "")
 	if protectedTownRuntimePath(dest) {
@@ -904,7 +907,7 @@ func (g *Git) CloneBareLocal(src, dest string) error {
 
 	tmpDest := filepath.Join(tmpDir, filepath.Base(dest))
 	args := []string{"clone", "--bare", "--local", src, tmpDest}
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	util.SetDetachedProcessGroup(cmd)
 	cmd.Dir = tmpDir
 	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+tmpDir)
@@ -912,6 +915,9 @@ func (g *Git) CloneBareLocal(src, dest string) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return g.wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
@@ -921,16 +927,19 @@ func (g *Git) CloneBareLocal(src, dest string) error {
 		}
 	}
 
-	return configureLocalBareRefspec(dest)
+	return configureLocalBareRefspec(ctx, dest)
 }
 
-func configureLocalBareRefspec(repoPath string) error {
+func configureLocalBareRefspec(ctx context.Context, repoPath string) error {
 	gitDir := filepath.Clean(repoPath)
 	var stderr bytes.Buffer
-	configCmd := exec.Command("git", "--git-dir", gitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	configCmd := exec.CommandContext(ctx, "git", "--git-dir", gitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 	util.SetDetachedProcessGroup(configCmd)
 	configCmd.Stderr = &stderr
 	if err := configCmd.Run(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("configuring refspec: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return nil

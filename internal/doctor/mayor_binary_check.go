@@ -35,7 +35,15 @@ func (c *MayorBinaryCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(ctx.TownRoot))
-	if err != nil || settings == nil || settings.RoleAgents["mayor"] == "" {
+	if err != nil {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: fmt.Sprintf("could not load town settings: %v", err),
+			FixHint: "Fix settings/config.json, then rerun gt doctor",
+		}
+	}
+	if settings == nil || settings.RoleAgents["mayor"] == "" {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusOK,

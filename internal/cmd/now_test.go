@@ -337,6 +337,70 @@ func TestNowAcceptsPathArgument(t *testing.T) {
 	assertNoTownFilesInRepo(t, repo)
 }
 
+func TestNowRejectsTwoTokenInvalidEffort(t *testing.T) {
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	env := nowTestEnv(t, home, bin, "now-xhigh", true)
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:xhigh")
+	if err == nil {
+		t.Fatalf("cursor:xhigh succeeded:\n%s", out)
+	}
+	if !strings.Contains(out, "invalid effort") {
+		t.Fatalf("error should mention invalid effort:\n%s", out)
+	}
+	if _, statErr := os.Stat(town); !os.IsNotExist(statErr) {
+		t.Fatalf("town was created after invalid effort")
+	}
+	assertNoTownFilesInRepo(t, repo)
+}
+
+func TestNowStoresSlashInModel(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := "nowt-slash"
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:org/model:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("gt now with slash model failed: %v\n%s", err, out)
+	}
+	agentOut := runGTCmdOutput(t, gtBinary, town, env, "config", "agent", "get", "now-mayor")
+	if !strings.Contains(agentOut, "--model") || !strings.Contains(agentOut, "org/model") {
+		t.Fatalf("now-mayor alias missing --model org/model:\n%s", agentOut)
+	}
+}
+
+func TestNowRefusesConvertingRepoIntoTownHQ(t *testing.T) {
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	bin := nowAgentBin(t)
+	env := nowTestEnv(t, home, bin, "now-self-town", true)
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", repo, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err == nil {
+		t.Fatalf("gt now converted the project repo into a Town HQ:\n%s", out)
+	}
+	if !strings.Contains(out, "Town HQ") && !strings.Contains(out, "convert") {
+		t.Fatalf("error should refuse Town HQ conversion:\n%s", out)
+	}
+	assertNoTownFilesInRepo(t, repo)
+}
+
 func TestNowRefusesTownHQUnlessRegisteredRig(t *testing.T) {
 	requireNowStack(t)
 	home := t.TempDir()

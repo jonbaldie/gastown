@@ -1,6 +1,7 @@
 package now
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -25,7 +26,10 @@ import (
 	"github.com/jonbaldie/gastown/internal/workspace"
 )
 
-func startSessions(townRoot string, mayorChanged bool, opts Options, hooks Hooks) error {
+func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts Options, hooks Hooks) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := config.EnsureDaemonPatrolConfig(townRoot); err != nil {
 		return fmt.Errorf("ensuring daemon config: %w", err)
 	}
@@ -53,9 +57,17 @@ func startSessions(townRoot string, mayorChanged bool, opts Options, hooks Hooks
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if err := ctx.Err(); err != nil {
+			setErr(err)
+			return
+		}
 		mgr := mayor.NewManager(townRoot)
 		tm := tmux.NewTmux()
-		has, _ := tm.HasSession(mayor.SessionName())
+		has, err := tm.HasSession(mayor.SessionName())
+		if err != nil {
+			setErr(fmt.Errorf("checking Mayor session: %w", err))
+			return
+		}
 		if has && mayorChanged && opts.MayorSpec != "" {
 			if err := mgr.Stop(); err != nil && !errors.Is(err, mayor.ErrNotRunning) {
 				setErr(fmt.Errorf("stopping Mayor: %w", err))

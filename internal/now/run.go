@@ -87,15 +87,8 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 		return Result{}, err
 	}
 
-	repoIsTown, err := workspace.IsWorkspace(repoPath)
-	if err != nil {
+	if err := refuseTownHQConversion(repoPath, townRoot); err != nil {
 		return Result{}, err
-	}
-	if repoIsTown && !SamePath(repoPath, townRoot) {
-		return Result{}, fmt.Errorf("this directory is a Town HQ (%s); run gt now from a project git repository", repoPath)
-	}
-	if repoIsTown && SamePath(repoPath, townRoot) && !repoIsRegisteredRig(townRoot, repoPath) {
-		return Result{}, fmt.Errorf("this directory is a Town HQ; run gt now from a project git repository")
 	}
 
 	if err := ensureTown(ctx, townRoot, hooks); err != nil {
@@ -117,7 +110,7 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 	}
 
 	if err := session.InitRegistry(townRoot); err != nil {
-		fmt.Fprintf(opts.Stderr, "WARNING: failed to initialize town registry: %v\n", err)
+		return Result{}, fmt.Errorf("initializing town registry: %w", err)
 	}
 
 	var (
@@ -129,14 +122,26 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		doltErr = startDolt(townRoot, hooks)
+		if err := ctx.Err(); err != nil {
+			doltErr = err
+			return
+		}
+		doltErr = startDolt(ctx, townRoot, hooks)
 	}()
 	go func() {
 		defer wg.Done()
-		rigName, rigErr = ensureRig(townRoot, repoPath, opts.Name)
+		if err := ctx.Err(); err != nil {
+			rigErr = err
+			return
+		}
+		rigName, rigErr = ensureRig(ctx, townRoot, repoPath, opts.Name)
 	}()
 	go func() {
 		defer wg.Done()
+		if err := ctx.Err(); err != nil {
+			mixErr = err
+			return
+		}
 		mayorChanged, mixErr = ApplyMix(townRoot, opts.MayorSpec, opts.WorkersSpec, mayorProfile, workersProfile)
 	}()
 	wg.Wait()
@@ -147,7 +152,7 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 		return Result{}, err
 	}
 
-	if err := startSessions(townRoot, mayorChanged, opts, hooks); err != nil {
+	if err := startSessions(ctx, townRoot, mayorChanged, opts, hooks); err != nil {
 		return Result{}, err
 	}
 
@@ -187,6 +192,27 @@ func preflightRepo(repoPath string) error {
 	}
 	if empty {
 		return fmt.Errorf("repository %s is empty (no commits). Commit at least once before running gt now", repoPath)
+	}
+	return nil
+}
+
+func refuseTownHQConversion(repoPath, townRoot string) error {
+	repoIsTown, err := workspace.IsWorkspace(repoPath)
+	if err != nil {
+		return err
+	}
+	same := SamePath(repoPath, townRoot)
+	if repoIsTown && !same {
+		return fmt.Errorf("this directory is a Town HQ (%s); run gt now from a project git repository", repoPath)
+	}
+	if !same {
+		return nil
+	}
+	if !repoIsTown {
+		return fmt.Errorf("refusing to convert this git repository into a Town HQ; pass --town for a separate Town")
+	}
+	if !repoIsRegisteredRig(townRoot, repoPath) {
+		return fmt.Errorf("this directory is a Town HQ; run gt now from a project git repository")
 	}
 	return nil
 }

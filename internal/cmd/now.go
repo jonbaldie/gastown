@@ -97,6 +97,9 @@ func runNow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if err := tmux.NewTmux().AttachSession(mayor.SessionName()); err != nil {
+		return fmt.Errorf("attaching to Mayor session: %w", err)
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), "You are in the Mayor session.")
-	return tmux.NewTmux().AttachSession(mayor.SessionName())
+	return nil
 }

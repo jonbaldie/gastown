@@ -101,11 +101,17 @@ func gitOwnerEmail(ctx context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
-func startDolt(townRoot string, hooks Hooks) error {
+func startDolt(ctx context.Context, townRoot string, hooks Hooks) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := doltserver.Start(townRoot); err != nil {
 		if !strings.Contains(err.Error(), "already running") {
 			return fmt.Errorf("starting Dolt server: %w", err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if _, _, err := doltserver.InitRig(townRoot, "hq"); err != nil {
 		return fmt.Errorf("initializing HQ Dolt database: %w", err)
@@ -194,11 +200,14 @@ func repoIsRegisteredRig(townRoot, repoPath string) bool {
 	return ok
 }
 
-func ensureRig(townRoot, repoPath, nameFlag string) (string, error) {
+func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	rigsPath := constants.MayorRigsPath(townRoot)
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
-		rigsConfig = &config.RigsConfig{Version: config.CurrentRigsVersion, Rigs: map[string]config.RigEntry{}}
+		return "", fmt.Errorf("loading rigs.json: %w", err)
 	}
 	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
 
@@ -220,7 +229,7 @@ func ensureRig(townRoot, repoPath, nameFlag string) (string, error) {
 		return "", fmt.Errorf("rig %q already exists; pass --name for this repository", name)
 	}
 
-	if _, err := mgr.AddLocalRig(name, repoPath); err != nil {
+	if _, err := mgr.AddLocalRig(ctx, name, repoPath); err != nil {
 		return "", err
 	}
 	if err := config.AddRigToDaemonPatrols(townRoot, name); err != nil {

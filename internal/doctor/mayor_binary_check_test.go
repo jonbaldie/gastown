@@ -30,6 +30,26 @@ func TestMayorBinaryCheck_NoExplicitMix(t *testing.T) {
 	}
 }
 
+func TestMayorBinaryCheck_CorruptSettingsIsError(t *testing.T) {
+	town := t.TempDir()
+	settingsPath := config.TownSettingsPath(town)
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatalf("mkdir settings: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte("{not-json"), 0644); err != nil {
+		t.Fatalf("write corrupt settings: %v", err)
+	}
+
+	check := NewMayorBinaryCheck()
+	result := check.Run(&CheckContext{TownRoot: town})
+	if result.Status != StatusError {
+		t.Fatalf("status = %v (%s), want Error", result.Status, result.Message)
+	}
+	if !strings.Contains(strings.ToLower(result.Message), "settings") {
+		t.Fatalf("error should mention settings:\n%s", result.Message)
+	}
+}
+
 func TestMayorBinaryCheck_MissingBinaryIsError(t *testing.T) {
 	town := t.TempDir()
 	settingsPath := config.TownSettingsPath(town)
