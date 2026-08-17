@@ -629,6 +629,11 @@ func (g *Git) cloneInternal(url, dest string, opts cloneOptions) error {
 
 	// Build clone args
 	var args []string
+	// Git 2.38+ may refuse file:// clones unless the file protocol is allowed.
+	// Local --reference clones can also be rewritten onto file:// by insteadOf.
+	if strings.HasPrefix(url, "file://") || opts.reference != "" {
+		args = append(args, "-c", "protocol.file.allow=always")
+	}
 	// Windows symlink fix for non-bare reference clones
 	if opts.reference != "" && !opts.bare && runtime.GOOS == "windows" {
 		args = append(args, "-c", "core.symlinks=true")
@@ -1403,8 +1408,15 @@ func (g *Git) HasUncommittedChanges() (bool, error) {
 }
 
 // RemoteURL returns the URL for the given remote.
+// This applies url.*.insteadOf rewrites from Git config.
 func (g *Git) RemoteURL(remote string) (string, error) {
 	return g.run("remote", "get-url", remote)
+}
+
+// ConfiguredRemoteURL returns the remote URL stored in the repository config.
+// Unlike RemoteURL, this does not apply url.*.insteadOf rewrites.
+func (g *Git) ConfiguredRemoteURL(remote string) (string, error) {
+	return g.run("config", "--local", "--get", "remote."+remote+".url")
 }
 
 // AddRemote adds a new remote with the given name and URL.

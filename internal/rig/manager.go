@@ -38,6 +38,25 @@ var (
 // EnsureMetadata and dolt routing as the town-level beads alias.
 var reservedRigNames = []string{"hq"}
 
+// SanitizeName converts a folder name into a legal rig name.
+// Hyphen, dot, and space become underscore. This matches one-repo quick-add.
+func SanitizeName(name string) string {
+	name = strings.ReplaceAll(name, "-", "_")
+	name = strings.ReplaceAll(name, ".", "_")
+	name = strings.ReplaceAll(name, " ", "_")
+	return name
+}
+
+// IsReservedName reports whether name is reserved for town-level infrastructure.
+func IsReservedName(name string) bool {
+	for _, reserved := range reservedRigNames {
+		if strings.EqualFold(name, reserved) {
+			return true
+		}
+	}
+	return false
+}
+
 // wrapCloneError wraps clone errors with helpful suggestions.
 // Detects common auth failures and suggests SSH as an alternative.
 func wrapCloneError(err error, gitURL string) error {
@@ -293,7 +312,7 @@ func resolveLocalRepo(path, gitURL string) (string, string) {
 		return "", fmt.Sprintf("local repo is not a git repository: %s", absPath)
 	}
 
-	origin, err := repoGit.RemoteURL("origin")
+	origin, err := repoGit.ConfiguredRemoteURL("origin")
 	if err != nil {
 		return absPath, "local repo has no origin; using it anyway"
 	}
@@ -1331,8 +1350,13 @@ func (m *Manager) ensureGitignoreEntry(gitignorePath, entry string) error {
 	return err
 }
 
-// deriveBeadsPrefix generates a beads prefix from a rig name.
+// DeriveBeadsPrefix generates a beads prefix from a rig name.
 // Examples: "gastown" -> "gt", "my-project" -> "mp", "foo" -> "foo"
+func DeriveBeadsPrefix(name string) string {
+	return deriveBeadsPrefix(name)
+}
+
+// deriveBeadsPrefix generates a beads prefix from a rig name.
 func deriveBeadsPrefix(name string) string {
 	// Strip path separators — callers should validate names, but be defensive
 	name = filepath.Base(name)
