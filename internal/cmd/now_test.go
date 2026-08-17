@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/config"
+	"github.com/jonbaldie/gastown/internal/daemon"
 	"github.com/jonbaldie/gastown/internal/testutil"
 	"github.com/jonbaldie/gastown/internal/tmux"
 )
@@ -82,7 +83,7 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	socket := nowSocket("happy")
 	env := nowTestEnv(t, home, bin, socket, false)
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -200,7 +201,7 @@ func TestNowPicksFreeDoltPortWhenBusy(t *testing.T) {
 	socketA := nowSocket("porta")
 	envA := nowTestEnv(t, home, bin, socketA, false)
 	testutil.ReapOwnedDoltOnCleanup(t, townA)
-	testutil.StopDaemonOnCleanup(t, townA)
+	stopNowDaemonOnCleanup(t, townA)
 	t.Cleanup(func() { killNowTmux(t, socketA) })
 
 	gtBinary := buildGT(t)
@@ -216,7 +217,7 @@ func TestNowPicksFreeDoltPortWhenBusy(t *testing.T) {
 	socketB := nowSocket("portb")
 	envB := nowTestEnv(t, home, bin, socketB, false)
 	testutil.ReapOwnedDoltOnCleanup(t, townB)
-	testutil.StopDaemonOnCleanup(t, townB)
+	stopNowDaemonOnCleanup(t, townB)
 	t.Cleanup(func() { killNowTmux(t, socketB) })
 
 	outB, err := runGTCmdMayFail(t, gtBinary, repoB, envB, "now", "--town", townB, "--no-attach",
@@ -306,7 +307,7 @@ func TestNowNameSetsRigName(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -334,7 +335,7 @@ func TestNowAcceptsPathArgument(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -381,7 +382,7 @@ func TestNowStoresSlashInModel(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -442,7 +443,7 @@ func TestNowRefusesTownHQUnlessRegisteredRig(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -493,7 +494,7 @@ func TestNowDefaultRuntimeUsesFirstOnPATH(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -519,7 +520,7 @@ func TestNowMayorFlagsRestartMayorAndWorkersPersist(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -565,7 +566,7 @@ func TestNowRestartWorkersStartsWitness(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -596,7 +597,7 @@ func TestNowDoctorFailsWhenMayorBinaryMissing(t *testing.T) {
 	env := nowTestEnv(t, home, bin, socket, false)
 	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
 	testutil.ReapOwnedDoltOnCleanup(t, town)
-	testutil.StopDaemonOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
 	t.Cleanup(func() { killNowTmux(t, socket) })
 
 	gtBinary := buildGT(t)
@@ -636,6 +637,20 @@ func requireNowStack(t *testing.T) {
 // sessions: it would kill and respawn them under a shared socket name.
 func nowSocket(name string) string {
 	return fmt.Sprintf("nowt-%s-%d", name, os.Getpid())
+}
+
+// stopNowDaemonOnCleanup stops the town daemon that gt now started. A daemon
+// detaches from its caller, so without this it outlives the test and keeps
+// patrolling the town: it respawns and kills tmux sessions, and restarts Dolt,
+// long after the town directory is gone. It stops only the daemon that owns
+// townRoot, so a production daemon is never touched.
+func stopNowDaemonOnCleanup(t *testing.T, townRoot string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := daemon.StopDaemon(townRoot); err != nil {
+			t.Logf("town daemon cleanup skipped: %v", err)
+		}
+	})
 }
 
 func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string {
