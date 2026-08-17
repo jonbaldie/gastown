@@ -1739,6 +1739,15 @@ behavior:
 
 // Start starts the Dolt SQL server.
 func Start(townRoot string) error {
+	return StartContext(context.Background(), townRoot)
+}
+
+// StartContext starts the Dolt SQL server and honors ctx during lock wait and readiness polling.
+// The server process itself is not tied to ctx; cancel stops waiting, not a running server.
+func StartContext(ctx context.Context, townRoot string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	config := DefaultConfig(townRoot)
 
 	// Ensure daemon directory exists
@@ -1776,6 +1785,9 @@ func Start(townRoot string) error {
 		interval := 500 * time.Millisecond
 		deadline := time.Now().Add(lockTimeout)
 		for time.Now().Before(deadline) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			time.Sleep(interval)
 			locked, err = fileLock.TryLock()
 			if err == nil && locked {
@@ -1998,6 +2010,9 @@ func Start(townRoot string) error {
 	var lastErr error
 	tcpReachable := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !processIsAlive(cmd.Process.Pid) {
 			return fmt.Errorf("Dolt server process died during startup (check logs with 'gt dolt logs')")
 		}

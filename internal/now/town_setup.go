@@ -109,7 +109,7 @@ func startDolt(ctx context.Context, townRoot string, hooks Hooks) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := doltserver.Start(townRoot); err != nil {
+	if err := doltserver.StartContext(ctx, townRoot); err != nil {
 		if !strings.Contains(err.Error(), "already running") {
 			return fmt.Errorf("starting Dolt server: %w", err)
 		}

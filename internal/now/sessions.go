@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 
 	"github.com/jonbaldie/gastown/internal/config"
@@ -17,7 +16,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/mayor"
 	"github.com/jonbaldie/gastown/internal/refinery"
 	"github.com/jonbaldie/gastown/internal/rig"
-	"github.com/jonbaldie/gastown/internal/runtime"
 	"github.com/jonbaldie/gastown/internal/skills"
 	"github.com/jonbaldie/gastown/internal/templates"
 	"github.com/jonbaldie/gastown/internal/tmux"
@@ -187,14 +185,6 @@ func provisionTown(townRoot string, hooks Hooks) error {
 	}
 	if err := skills.ProvisionFor(townRoot, "claude"); err != nil {
 		errs = append(errs, fmt.Errorf("provisioning skills: %w", err))
-	}
-	mayorDir := filepath.Join(townRoot, "mayor")
-	if err := runtime.EnsureSettingsForRole(mayorDir, mayorDir, "mayor", config.ResolveRoleAgentConfig("mayor", townRoot, mayorDir)); err != nil {
-		errs = append(errs, fmt.Errorf("writing Mayor settings: %w", err))
-	}
-	deaconDir := filepath.Join(townRoot, "deacon")
-	if err := runtime.EnsureSettingsForRole(deaconDir, deaconDir, "deacon", config.ResolveRoleAgentConfig("deacon", townRoot, deaconDir)); err != nil {
-		errs = append(errs, fmt.Errorf("writing Deacon settings: %w", err))
 	}
 	if hooks.InitAgentBeads != nil {
 		if err := hooks.InitAgentBeads(townRoot); err != nil {

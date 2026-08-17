@@ -107,6 +107,9 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	if strings.Contains(out, "Attaching") && strings.Contains(strings.ToLower(out), "attach-session") {
 		t.Fatalf("--no-attach still looks like a tmux attach:\n%s", out)
 	}
+	if nowMayorHasClient(t, socket) {
+		t.Fatal("--no-attach attached a client to the Mayor session")
+	}
 	if _, err := os.Stat(filepath.Join(town, "mayor", "town.json")); err != nil {
 		t.Fatalf("town missing mayor/town.json: %v", err)
 	}
@@ -134,6 +137,9 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	assertRoleMix(t, mix, "crew", "now-workers", "low")
 	assertRoleMix(t, mix, "boot", "now-workers", "low")
 	assertRoleMix(t, mix, "dog", "now-workers", "low")
+	assertRoleProvider(t, mix, "mayor", "cursor")
+	assertRoleProvider(t, mix, "deacon", "cursor")
+	assertRoleProvider(t, mix, "witness", "cursor")
 	if mix.CostLikeClaudePreset {
 		t.Fatalf("gt now applied a cost-tier Claude preset:\n%+v", mix)
 	}
@@ -762,9 +768,32 @@ func assertRoleMix(t *testing.T, mix nowMixReport, role, agent, effort string) {
 	t.Fatalf("role %s missing from mix", role)
 }
 
+func assertRoleProvider(t *testing.T, mix nowMixReport, role, provider string) {
+	t.Helper()
+	for _, entry := range mix.Roles {
+		if entry.Name == role {
+			if entry.Provider != provider {
+				t.Fatalf("role %s provider = %q, want %q", role, entry.Provider, provider)
+			}
+			return
+		}
+	}
+	t.Fatalf("role %s missing from mix", role)
+}
+
 func nowMayorSessionExists(t *testing.T, socket string) bool {
 	t.Helper()
 	return nowSessionExists(t, socket, "hq-mayor")
+}
+
+func nowMayorHasClient(t *testing.T, socket string) bool {
+	t.Helper()
+	cmd := exec.Command("tmux", "-L", socket, "list-clients", "-t", "hq-mayor")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 func nowWitnessSessionExists(t *testing.T, socket string) bool {
