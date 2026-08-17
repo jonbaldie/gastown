@@ -38,7 +38,6 @@ type Rig struct {
 	SourcePath string
 	Name       string
 	GitURL     string
-	Branch     string
 	Prefix     string
 	Action     RigAction
 }
@@ -173,6 +172,7 @@ func discover(plan *Plan) error {
 	}
 
 	var children []string
+	sawGitChild := false
 	for _, entry := range entries {
 		name := entry.Name()
 		if !entry.IsDir() {
@@ -186,16 +186,18 @@ func discover(plan *Plan) error {
 		}
 		child := filepath.Join(plan.ParentAbs, name)
 		if looksLikeAssembledRig(child) {
+			sawGitChild = true
 			plan.Skipped = append(plan.Skipped, name+" (assembled Rig)")
 			continue
 		}
 		if isGitDirRepo(child) {
+			sawGitChild = true
 			children = append(children, child)
 		}
 	}
 
 	sources := children
-	if len(sources) == 0 && isGitDirRepo(plan.ParentAbs) {
+	if len(sources) == 0 && !sawGitChild && isGitDirRepo(plan.ParentAbs) {
 		sources = []string{plan.ParentAbs}
 	}
 	if len(sources) == 0 {
@@ -226,7 +228,6 @@ func planRig(source string) Rig {
 		SourcePath: source,
 		Name:       name,
 		GitURL:     gitURL,
-		Branch:     g.DefaultBranch(),
 		Prefix:     rig.DeriveBeadsPrefix(name),
 		Action:     ActionAdd,
 	}

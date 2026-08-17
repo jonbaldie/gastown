@@ -375,6 +375,30 @@ func TestFromSkipsAssembledRigDirectories(t *testing.T) {
 	}
 }
 
+func TestFromParentGitWithOnlyAssembledChildrenIsRefused(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "mono")
+	initGitRepoAt(t, parent)
+	assembled := filepath.Join(parent, "old_rig")
+	if err := os.MkdirAll(filepath.Join(assembled, ".repo.git"), 0755); err != nil {
+		t.Fatalf("mkdir assembled: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assembled, "config.json"), []byte(`{"type":"rig","name":"old_rig"}`), 0644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	err := runFromRequest(fromRequest{Parent: parent, DryRun: true})
+	if err == nil {
+		t.Fatal("expected error when the only Git children are assembled Rigs")
+	}
+	if !strings.Contains(err.Error(), "no Git repositories") {
+		t.Fatalf("error = %v, want no Git repositories (parent must not become a Rig)", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "mono.gt")); !os.IsNotExist(statErr) {
+		t.Fatal("assembled-only parent must not create a Town")
+	}
+}
+
 func TestFromPrefixCollisionFailsBeforeWrites(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "demo")

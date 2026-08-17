@@ -141,11 +141,10 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 			continue
 		}
 		if err := addRigToTown(plan.TownAbs, rig.AddRigOptions{
-			Name:          r.Name,
-			GitURL:        r.GitURL,
-			LocalRepo:     r.SourcePath,
-			BeadsPrefix:   r.Prefix,
-			DefaultBranch: r.Branch,
+			Name:        r.Name,
+			GitURL:      r.GitURL,
+			LocalRepo:   r.SourcePath,
+			BeadsPrefix: r.Prefix,
 		}); err != nil {
 			addErrs = append(addErrs, fmt.Errorf("%s: %w", r.Name, err))
 			continue
@@ -182,9 +181,6 @@ func ensureFromTownDolt(townRoot string) error {
 		return nil
 	}
 	if err := doltserver.Start(townRoot); err != nil {
-		if strings.Contains(err.Error(), "already running") {
-			return nil
-		}
 		return fmt.Errorf("starting Dolt server for Town %s: %w", townRoot, err)
 	}
 	return nil

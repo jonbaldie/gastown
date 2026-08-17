@@ -324,7 +324,7 @@ func TestCloneFileURLAllowsProtocol(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	// Git 2.38+ can refuse file:// clones when protocol.file.allow is never.
+	// Recent Git can refuse file:// clones when protocol.file.allow is never.
 	// The production clone helper must still succeed for local file URLs.
 	t.Setenv("GIT_CONFIG_COUNT", "1")
 	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
