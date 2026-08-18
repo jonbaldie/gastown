@@ -68,6 +68,9 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 
 	result := &SlingResult{BeadID: intent.BeadID}
 
+	intent.BeadID = followMovedBead(intent.BeadID, townRoot)
+	result.BeadID = intent.BeadID
+
 	if live, liveErr := worker.LiveRunFromStore(townRoot, intent.BeadID); liveErr == nil && live != nil {
 		result.ErrMsg = "live run"
 		return result, fmt.Errorf("%w: bead %s already has live run %s", worker.ErrLiveRun, intent.BeadID, live.RunID)

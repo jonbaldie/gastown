@@ -42,6 +42,10 @@ Create work in the target rig:
   and sling them to a rig.
 
   bd -C <town>/<rig> create --title=... --type=feature
+
+  That directory has its own .beads with the rig prefix (gt now and
+  gt rig add create it). If it is missing, bd walks up to town beads
+  and silently files hq-* work.
   gt convoy create "..." <rig-prefix-id>
   gt convoy add <convoy-id> <rig-prefix-id>
   gt sling <rig-prefix-id> <rig> --merge=local   # third-party remotes
@@ -665,7 +669,8 @@ func normalizeSlingTarget(target string) string {
 // rig's .beads dir shares the town-level database and prefix (gt-gbu). Blocking
 // here would silently swallow all polecat work for the affected rig.
 //
-// Truly unknown prefixes (not in routes.jsonl at all) are still hard-rejected.
+// Truly unknown prefixes (not in routes.jsonl and not the target rig's
+// configured prefix in rigs.json) are still hard-rejected.
 func checkCrossRigGuard(beadID, targetAgent, townRoot string) error {
 	beadPrefix := beads.ExtractPrefix(beadID)
 	if beadPrefix == "" {
@@ -679,6 +684,12 @@ func checkCrossRigGuard(beadID, targetAgent, townRoot string) error {
 	}
 
 	beadRig := beads.GetRigNameForPrefix(townRoot, beadPrefix)
+	// rigs.json is authoritative when routes.jsonl is stale or missing the
+	// rig prefix. A town-bead move can land as dm-* before routes catch up.
+	targetPrefix := beads.GetPrefixForRig(townRoot, targetRig)
+	if targetPrefix != "" && strings.TrimSuffix(beadPrefix, "-") == targetPrefix {
+		return nil
+	}
 
 	if beadRig != targetRig {
 		if beadRig == "" {
