@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/daemon"
 	"github.com/jonbaldie/gastown/internal/testutil"
@@ -324,6 +325,66 @@ func TestNowNameSetsRigName(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(town, "custom_rig", ".repo.git")); err != nil {
 		t.Fatalf("custom rig missing .repo.git: %v", err)
+	}
+}
+
+func TestNowRigHasBeadsDatabase(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := nowSocket("beads")
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("gt now failed: %v\n%s", err, out)
+	}
+
+	rigBeads := filepath.Join(town, "proj", ".beads")
+	if _, err := os.Stat(rigBeads); err != nil {
+		t.Fatalf("gt now rig has no Beads database at %s: %v", rigBeads, err)
+	}
+	if _, err := os.Stat(filepath.Join(town, ".dolt-data", "proj")); err != nil {
+		t.Fatalf("gt now rig has no Dolt database: %v", err)
+	}
+
+	resolved, ok := beads.ResolveRepoAliasBeadsDir(town, "proj")
+	if !ok {
+		t.Fatal("sling cannot resolve the gt now rig Beads database")
+	}
+	wantBeads, err := filepath.EvalSymlinks(rigBeads)
+	if err != nil {
+		wantBeads = rigBeads
+	}
+	gotBeads, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		gotBeads = resolved
+	}
+	if gotBeads != wantBeads {
+		t.Fatalf("resolved beads dir = %q, want %q", gotBeads, wantBeads)
+	}
+
+	mayorEnv := append(append([]string{}, env...),
+		"GT_TOWN_ROOT="+town,
+		"GT_ROLE=mayor",
+		"GT_AGENT=mayor",
+		"BD_ACTOR=mayor",
+	)
+	slingOut, slingErr := runGTCmdMayFail(t, gtBinary, town, mayorEnv, "sling", "hq-zzzzz", "proj")
+	combined := slingOut
+	if slingErr != nil {
+		combined += "\n" + slingErr.Error()
+	}
+	if strings.Contains(combined, "cannot resolve target rig") {
+		t.Fatalf("cannot sling into gt now rig: %s", combined)
 	}
 }
 

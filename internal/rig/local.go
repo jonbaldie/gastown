@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
+	"github.com/jonbaldie/gastown/internal/doltserver"
 	"github.com/jonbaldie/gastown/internal/git"
 )
 
@@ -114,6 +117,56 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 
 	success = true
 	return m.loadRig(name, m.config.Rigs[name])
+}
+
+// InitLocalRigBeads creates the Beads database, Dolt database, and town
+// route for a rig registered by AddLocalRig. gt now registers the rig in
+// parallel with Dolt start, then calls this after both complete so sling
+// can resolve the rig.
+func (m *Manager) InitLocalRigBeads(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("rig name cannot be empty")
+	}
+	rigPath := filepath.Join(m.townRoot, name)
+	cfg, err := LoadRigConfig(rigPath)
+	if err != nil {
+		return fmt.Errorf("loading rig config: %w", err)
+	}
+	prefix := ""
+	if cfg.Beads != nil {
+		prefix = strings.TrimSpace(cfg.Beads.Prefix)
+	}
+	if prefix == "" {
+		prefix = deriveBeadsPrefix(name)
+	}
+
+	if _, err := exec.LookPath("dolt"); err == nil {
+		if _, _, err := doltserver.InitRig(m.townRoot, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Could not create rig Dolt database: %v\n", err)
+		}
+	}
+
+	if err := m.InitBeads(rigPath, prefix, name); err != nil {
+		return fmt.Errorf("initializing beads: %w", err)
+	}
+	if err := doltserver.EnsureMetadata(m.townRoot, name); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not set Dolt server metadata: %v\n", err)
+	}
+	routePath := name
+	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
+	if _, err := os.Stat(mayorRigBeads); err == nil {
+		routePath = name + "/mayor/rig"
+	}
+	if err := beads.AppendRoute(m.townRoot, beads.Route{
+		Prefix: prefix + "-",
+		Path:   routePath,
+	}); err != nil {
+		return fmt.Errorf("registering beads route: %w", err)
+	}
+	if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not create agent beads: %v\n", err)
+	}
+	return nil
 }
 
 // FindByLocalRepo returns the registered rig whose LocalRepo matches srcRepo.

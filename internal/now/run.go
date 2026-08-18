@@ -152,6 +152,10 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 		return Result{}, err
 	}
 
+	if err := ensureRigBeads(townRoot, rigName); err != nil {
+		return Result{}, err
+	}
+
 	if err := startSessions(ctx, townRoot, mayorChanged, opts, hooks); err != nil {
 		return Result{}, err
 	}

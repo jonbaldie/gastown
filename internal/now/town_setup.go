@@ -241,3 +241,19 @@ func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string
 	}
 	return name, nil
 }
+
+func ensureRigBeads(townRoot, rigName string) error {
+	if strings.TrimSpace(rigName) == "" {
+		return fmt.Errorf("rig name is empty")
+	}
+	rigsPath := constants.MayorRigsPath(townRoot)
+	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	if err != nil {
+		return fmt.Errorf("loading rigs.json: %w", err)
+	}
+	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+	if err := mgr.InitLocalRigBeads(rigName); err != nil {
+		return fmt.Errorf("initializing rig beads: %w", err)
+	}
+	return nil
+}

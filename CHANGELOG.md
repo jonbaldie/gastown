@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gt now` initializes the Rig Beads database.** Local Rig registration used
+  to skip `InitBeads` and the town route, so `gt sling` failed with
+  "cannot resolve target rig beads database". After Dolt is up, `gt now`
+  now creates the Rig Dolt database, `.beads/`, and the town route.
+
 ## [1.3.0] - 2026-08-17
 
 ### Changed
