@@ -12,11 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Integration tests prefer a native Dolt SQL server and run in one process.**
   CI already installs Dolt 2.0.7; TestMain starts `dolt sql-server` instead of
   a Docker testcontainer, and the integration job compiles scheduler coverage
-  into the same `go test` invocation instead of four extra processes. The
-  integration binary still uses `--test.parallel=1` because those tests share
-  one sql-server. `gt now` tests skip in that suite (`GT_TEST_EXTERNAL_DOLT`);
-  they keep running in the unit job, including the five-second contract.
-  Assertions are unchanged.
+  into the same `go test` invocation instead of four extra processes. Native
+  `dolt init` passes `--name`/`--email` so a clean runner does not fall back
+  to Docker after `Author identity unknown`. The integration binary still uses
+  `--test.parallel=1` because those tests share one sql-server. `gt now` tests
+  skip in that suite (`GT_TEST_EXTERNAL_DOLT`); they keep running in the unit
+  job, including the five-second contract. Assertions are unchanged.
 
 ### Fixed
 

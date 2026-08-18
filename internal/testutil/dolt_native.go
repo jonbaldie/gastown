@@ -76,14 +76,16 @@ func startNativeDoltSQLServer() (*nativeDoltServer, error) {
 		return nil, fmt.Errorf("create dolt log: %w", err)
 	}
 
-	initCmd := exec.Command(dolt, "init") //nolint:gosec
+	// --name/--email keep init independent of ~/.dolt. CI installs Dolt but
+	// never sets user.name/user.email, and writing those globally from a
+	// temp dir can create .dolt before init.
+	initCmd := exec.Command(dolt, "init", "--name", "gt-test", "--email", "gt-test@localhost") //nolint:gosec
 	initCmd.Dir = dataDir
-	initCmd.Stdout = logFile
-	initCmd.Stderr = logFile
-	if err := initCmd.Run(); err != nil {
+	initOut, err := initCmd.CombinedOutput()
+	if err != nil {
 		_ = logFile.Close()
 		_ = os.RemoveAll(dataDir)
-		return nil, fmt.Errorf("dolt init in %s: %w", dataDir, err)
+		return nil, fmt.Errorf("dolt init in %s: %w\n%s", dataDir, err, initOut)
 	}
 
 	cmd := exec.Command(dolt, "sql-server", "--host", "127.0.0.1", "--port", port) //nolint:gosec
