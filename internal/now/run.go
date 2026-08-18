@@ -12,7 +12,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/mayor"
 	"github.com/jonbaldie/gastown/internal/session"
-	"github.com/jonbaldie/gastown/internal/tmux"
 	"github.com/jonbaldie/gastown/internal/workspace"
 )
 
@@ -179,13 +178,8 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 		fmt.Fprintf(opts.Stderr, "warning: deferred Town provision did not start: %v\n", err)
 	}
 
-	tm := tmux.NewTmux()
-	running, err := tm.HasSession(mayor.SessionName())
-	if err != nil || !running {
-		if err != nil {
-			return Result{}, fmt.Errorf("Mayor session is not running: %w", err)
-		}
-		return Result{}, fmt.Errorf("Mayor session is not running")
+	if err := requireLiveSession(mayor.SessionName()); err != nil {
+		return Result{}, err
 	}
 
 	result := Result{

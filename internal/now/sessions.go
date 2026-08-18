@@ -87,23 +87,47 @@ func reuseOrStartSession(ctx context.Context, name string, restart bool, stop, s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	has, err := tmux.NewTmux().HasSession(name)
+	live, err := sessionLive(name)
 	if err != nil {
 		return fmt.Errorf("checking %s session: %w", name, err)
 	}
-	if has && restart {
+	if live && restart {
 		if err := stop(); err != nil && !errors.Is(err, skipStop) {
 			return fmt.Errorf("stopping %s: %w", name, err)
 		}
-		has = false
+		live = false
 	}
-	if has {
+	if live {
 		return nil
 	}
 	if err := start(); err != nil && !ignoreStartConflict(err, skipStart...) {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
 	return nil
+}
+
+func requireLiveSession(name string) error {
+	live, err := sessionLive(name)
+	if err != nil {
+		return fmt.Errorf("Mayor session is not running: %w", err)
+	}
+	if !live {
+		return fmt.Errorf("Mayor session is not running")
+	}
+	return nil
+}
+
+func sessionLive(name string) (bool, error) {
+	tm := tmux.NewTmux()
+	has, err := tm.HasSession(name)
+	if err != nil || !has {
+		return false, err
+	}
+	dead, err := tm.IsPaneDead(name)
+	if err != nil {
+		return false, err
+	}
+	return !dead, nil
 }
 
 func ignoreStartConflict(err error, skipStart ...error) bool {

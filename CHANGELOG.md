@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to skip `InitBeads` and the town route, so `gt sling` failed with
   "cannot resolve target rig beads database". After Dolt is up, `gt now`
   now creates the Rig Dolt database, `.beads/`, and the town route.
+- **`gt now` no longer reports success over a dead Mayor.** SkipReady leaves
+  remain-on-exit on so attach can proceed, which also keeps a tmux session
+  after the Mayor command exits 0. The start path now requires a live pane
+  before printing success, and a later `gt now` restarts a dead pane instead
+  of reusing it.
 
 ## [1.3.0] - 2026-08-17
 
