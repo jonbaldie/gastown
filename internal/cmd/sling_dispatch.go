@@ -347,7 +347,7 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 	}
 
 	if err := ctx.Err(); err != nil {
-		compensate(beadToHook, "Sling cancelled")
+		compensate(beadToHook, "Sling canceled")
 		result.ErrMsg = err.Error()
 		return result, err
 	}
