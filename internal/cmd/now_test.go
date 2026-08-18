@@ -400,6 +400,39 @@ func TestNowStoresSlashInModel(t *testing.T) {
 	}
 }
 
+func TestNowFailsWhenMayorPaneDies(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBinExit(t) // exits 0 immediately — Mayor pane dies
+	socket := nowSocket("dead")
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	exists := nowMayorSessionExists(t, socket)
+	dead := nowMayorPaneDead(t, socket)
+	paneInfo := nowMayorPaneInfo(t, socket)
+	if err == nil && (dead || !exists) {
+		t.Fatalf("gt now reported success over a dead Mayor (session=%v pane_dead=%v %s):\n%s", exists, dead, paneInfo, out)
+	}
+	if err == nil {
+		t.Fatal("dying Mayor agent still produced a live pane; test setup is wrong")
+	}
+	if strings.Contains(out, "Mayor session is running") || strings.Contains(out, "You are in the Mayor session") {
+		t.Fatalf("gt now printed success over a dead Mayor:\n%s", out)
+	}
+	if !strings.Contains(out, "not running") && !strings.Contains(strings.ToLower(out), "dead") {
+		t.Fatalf("error should say the Mayor is not running:\n%s", out)
+	}
+}
+
 func TestNowPiMayorKeepsSessionAlive(t *testing.T) {
 	requireNowStack(t)
 	home := t.TempDir()
@@ -747,6 +780,20 @@ func nowAgentBinStay(t *testing.T) string {
 	return dir
 }
 
+func nowAgentBin(t *testing.T) string {
+	return nowAgentBinStay(t)
+}
+
+func nowAgentBinExit(t *testing.T) string {
+	t.Helper()
+	dir := nowToolBin(t)
+	script := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "cursor-agent"), []byte(script), 0755); err != nil {
+		t.Fatalf("write cursor-agent: %v", err)
+	}
+	return dir
+}
+
 func nowPiBinStay(t *testing.T) string {
 	t.Helper()
 	dir := nowToolBin(t)
@@ -767,16 +814,6 @@ exec sleep 3600
 `
 	if err := os.WriteFile(filepath.Join(dir, "pi"), []byte(script), 0755); err != nil {
 		t.Fatalf("write pi: %v", err)
-	}
-	return dir
-}
-
-func nowAgentBin(t *testing.T) string {
-	t.Helper()
-	dir := nowToolBin(t)
-	script := "#!/bin/sh\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "cursor-agent"), []byte(script), 0755); err != nil {
-		t.Fatalf("write cursor-agent: %v", err)
 	}
 	return dir
 }
@@ -896,6 +933,19 @@ func nowMayorPaneDead(t *testing.T, socket string) bool {
 		return true
 	}
 	return strings.TrimSpace(string(out)) == "1"
+}
+
+func nowMayorPaneInfo(t *testing.T, socket string) string {
+	t.Helper()
+	cmd := exec.Command("tmux", "-L", socket, "display-message", "-t", "hq-mayor", "-p",
+		"dead=#{pane_dead} status=#{pane_dead_status} pid=#{pane_pid} cmd=#{pane_current_command}")
+	out, err := cmd.CombinedOutput()
+	info := strings.TrimSpace(string(out))
+	if err != nil {
+		info = "pane-info-unavailable"
+	}
+	opt, _ := exec.Command("tmux", "-L", socket, "show-options", "-t", "hq-mayor", "remain-on-exit").CombinedOutput()
+	return info + " remain=" + strings.TrimSpace(string(opt))
 }
 
 func nowWitnessSessionExists(t *testing.T, socket string) bool {
