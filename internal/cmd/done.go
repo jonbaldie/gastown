@@ -396,11 +396,11 @@ func cleanupStatusAfterSuccessfulPush(status string) string {
 	return status
 }
 
-func cleanupStatusFromWorkState(workStatus *git.UncommittedWorkStatus, branchPushed bool, unpushedCount int, branchPushedErr error) string {
+func cleanupStatusFromWorkState(workStatus *git.UncommittedWorkStatus, workDir string, branchPushed bool, unpushedCount int, branchPushedErr error) string {
 	if workStatus == nil {
 		return "unknown"
 	}
-	if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
+	if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingSafetyNet(workDir) {
 		return "uncommitted"
 	}
 	if workStatus.StashCount > 0 {
@@ -736,7 +736,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			if pushErr != nil {
 				style.PrintWarning("could not check if branch is pushed: %v", pushErr)
 			}
-			doneCleanupStatus = cleanupStatusFromWorkState(workStatus, pushed, unpushedCount, pushErr)
+			doneCleanupStatus = cleanupStatusFromWorkState(workStatus, cwd, pushed, unpushedCount, pushErr)
 		}
 	}
 
@@ -809,7 +809,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	if doneCleanupStatus == "uncommitted" {
 		// Re-check to get file details (cleanup detection already confirmed uncommitted changes)
 		workStatus, err := g.CheckUncommittedWork()
-		if err == nil && workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
+		if err == nil && workStatus.HasUncommittedChanges && !workStatus.CleanExcludingSafetyNet(cwd) {
 			if len(workStatus.UnmergedFiles) > 0 {
 				return fmt.Errorf("cannot auto-save unmerged conflicts: %s\nResolve conflicts first, or use --status DEFERRED to exit without completing", strings.Join(workStatus.UnmergedFiles, ", "))
 			}
@@ -817,13 +817,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			fmt.Printf("\n%s Uncommitted changes detected — auto-saving to prevent work loss\n", style.Bold.Render("⚠"))
 			fmt.Printf("  Files: %s\n\n", workStatus.String())
 
-			// Stage all changes (git add -A), then unstage overlay/runtime files (gt-p35)
-			// and any deletions of tracked files (gt-pvx safety: never commit deletions).
-			if addErr := g.Add("-A"); addErr != nil {
+			// Stage recoverable source changes only. Do not use git add -A:
+			// that command commits untracked binaries that gitignore does not name.
+			if addErr := g.StageSafetyNet(); addErr != nil {
 				style.PrintWarning("auto-commit: git add failed: %v — uncommitted work may be at risk", addErr)
 			} else {
-				// Unstage Gas Town overlay files that git add -A picked up.
-				// These are runtime artifacts that must not be committed to repos.
+				// Unstage Gas Town overlay files if a tracked overlay was modified.
 				_ = g.ResetFiles("CLAUDE.local.md")
 				_ = g.ResetFiles("AGENTS.local.md")
 				for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
@@ -833,24 +832,17 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 						}
 					}
 				}
-				// Unstage runtime/ephemeral artifacts using the centralized git policy.
-				for _, path := range workStatus.RuntimeArtifactPaths() {
-					_ = g.ResetFiles(path)
-				}
-				// Unstage deletions of tracked files. A safety-net auto-commit should
-				// preserve work (additions + modifications), never destroy it (deletions).
-				// This prevents the bug where a polecat's working tree has a missing
-				// tracked file (e.g. .beads/metadata.json) and the auto-save commits
-				// the deletion, breaking infrastructure for subsequent sessions.
-				if stagedDeletions, delErr := g.StagedDeletions(); delErr == nil && len(stagedDeletions) > 0 {
-					_ = g.ResetFiles(stagedDeletions...)
-				}
 				// Build a descriptive commit message
 				autoMsg := "fix: auto-save uncommitted implementation work (gt-pvx safety net)"
 				if issueFromBranch := parseBranchName(branch).Issue; issueFromBranch != "" {
 					autoMsg = fmt.Sprintf("fix: auto-save uncommitted implementation work (%s, gt-pvx safety net)", issueFromBranch)
 				}
-				if commitErr := g.Commit(autoMsg); commitErr != nil {
+				staged, stagedErr := g.HasStagedChanges()
+				if stagedErr != nil {
+					style.PrintWarning("auto-commit: checking staged changes failed: %v — uncommitted work may be at risk", stagedErr)
+				} else if !staged {
+					fmt.Printf("  No source changes to auto-save (binaries and runtime artifacts stay uncommitted).\n\n")
+				} else if commitErr := g.Commit(autoMsg); commitErr != nil {
 					style.PrintWarning("auto-commit: git commit failed: %v — uncommitted work may be at risk", commitErr)
 				} else {
 					fmt.Printf("%s Auto-committed uncommitted work (safety net)\n", style.Bold.Render("✓"))
@@ -997,7 +989,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		if err != nil {
 			return fmt.Errorf("checking git status: %w", err)
 		}
-		if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
+		if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingSafetyNet(cwd) {
 			return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
 		}
 

@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does, so doctor and polecat spawn can resolve `origin/<branch>`.
   `gt doctor --fix` fetches those tracking refs on existing Towns.
 
+- **Auto-save safety net no longer commits untracked binaries.** `gt done`
+  and checkpoint_dog staged with `git add -A`, which committed a 2.3MB
+  locally built executable when `.gitignore` did not name it. Safety-net
+  staging now adds source files only and leaves binaries untracked.
+
 - **`gt now` no longer reports success over a dead Mayor.** SkipReady leaves
   remain-on-exit on so attach can proceed, which also keeps a tmux session
   after the Mayor command exits 0. The start path now requires a live pane

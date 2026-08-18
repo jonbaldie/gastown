@@ -287,6 +287,46 @@ func TestCheckpointWorktreeSkipsRuntimeOnlyNestedArtifacts(t *testing.T) {
 	}
 }
 
+func TestCheckpointWorktreeSkipsUntrackedBinary(t *testing.T) {
+	workDir := t.TempDir()
+	mustRunGit(t, workDir, "init")
+	mustRunGit(t, workDir, "config", "user.name", "Checkpoint Dog")
+	mustRunGit(t, workDir, "config", "user.email", "checkpoint@example.com")
+
+	if err := os.MkdirAll(filepath.Join(workDir, "src"), 0o755); err != nil {
+		t.Fatalf("setup src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "src", "app.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	mustRunGit(t, workDir, "add", "src/app.go")
+	mustRunGit(t, workDir, "commit", "-m", "initial")
+
+	if err := os.WriteFile(filepath.Join(workDir, "src", "app.go"), []byte("package main\n// checkpoint me\n"), 0o644); err != nil {
+		t.Fatalf("modify source: %v", err)
+	}
+	blob := make([]byte, 2_300_000)
+	copy(blob, []byte{0x7f, 'E', 'L', 'F'})
+	if err := os.WriteFile(filepath.Join(workDir, "myapp"), blob, 0755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	d := &Daemon{logger: log.New(io.Discard, "", 0)}
+	if !d.checkpointWorktree(workDir, "rig", "polecat") {
+		t.Fatal("checkpointWorktree did not create a checkpoint commit")
+	}
+
+	if got := strings.TrimSpace(mustRunGit(t, workDir, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")); got != "src/app.go" {
+		t.Fatalf("checkpoint commit changed %q, want only src/app.go", got)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "myapp")); err != nil {
+		t.Fatalf("binary should remain in the worktree: %v", err)
+	}
+	if got := strings.TrimSpace(mustRunGit(t, workDir, "status", "--porcelain", "--", "myapp")); !strings.Contains(got, "myapp") {
+		t.Fatalf("binary status = %q, want untracked myapp", got)
+	}
+}
+
 func mustRunGit(t *testing.T, workDir string, args ...string) string {
 	t.Helper()
 	out, err := runGitCmd(workDir, args...)
