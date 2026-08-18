@@ -986,7 +986,7 @@ exit /b 0
 	prevSpawn := spawnPolecatForSling
 	prevResolveTargetAgent := resolveTargetAgentFn
 	prevRollback := rollbackSlingArtifactsFn
-	prevHook := hookBeadWithRetryFn
+	prevHook := hookBeadWithRetryWithTownRootFn
 	t.Cleanup(func() {
 		slingNoConvoy = prevNoConvoy
 		slingNoBoot = prevNoBoot
@@ -994,7 +994,7 @@ exit /b 0
 		spawnPolecatForSling = prevSpawn
 		resolveTargetAgentFn = prevResolveTargetAgent
 		rollbackSlingArtifactsFn = prevRollback
-		hookBeadWithRetryFn = prevHook
+		hookBeadWithRetryWithTownRootFn = prevHook
 	})
 	slingNoConvoy = true
 	slingNoBoot = true
@@ -1006,7 +1006,7 @@ exit /b 0
 	resolveTargetAgentFn = func(target string) (agentID string, pane string, hookRoot string, err error) {
 		return "", "", "", errors.New("simulated dead target")
 	}
-	hookBeadWithRetryFn = func(beadID, targetAgent, hookDir string) error {
+	hookBeadWithRetryWithTownRootFn = func(beadID, targetAgent, hookDir, townRoot string) error {
 		return errors.New("simulated hook failure")
 	}
 
@@ -2020,7 +2020,7 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 	prevNoConvoy := slingNoConvoy
 	prevDryRun := slingDryRun
 	prevResolve := resolveTargetAgentFn
-	prevHook := hookBeadWithRetryFn
+	prevHook := hookBeadWithRetryWithTownRootFn
 	t.Cleanup(func() {
 		slingHookRawBead = prevHookRaw
 		slingNoMerge = prevNoMerge
@@ -2028,7 +2028,7 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 		slingNoConvoy = prevNoConvoy
 		slingDryRun = prevDryRun
 		resolveTargetAgentFn = prevResolve
-		hookBeadWithRetryFn = prevHook
+		hookBeadWithRetryWithTownRootFn = prevHook
 	})
 	slingHookRawBead = true
 	slingNoMerge = true
@@ -2038,7 +2038,7 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 	resolveTargetAgentFn = func(target string) (string, string, string, error) {
 		return "gastown/crew/toast", "", workDir, nil
 	}
-	hookBeadWithRetryFn = func(beadID, targetAgent, hookDir string) error {
+	hookBeadWithRetryWithTownRootFn = func(beadID, targetAgent, hookDir, townRoot string) error {
 		assertHasRawReviewMetadata(t, readMutableBDDescription(t, descPath))
 		return errors.New("forced hook failure")
 	}
