@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto-save safety net no longer commits untracked binaries.** `gt done`
+  and checkpoint_dog staged with `git add -A`, which committed a 2.3MB
+  locally built executable when `.gitignore` did not name it. Safety-net
+  staging now adds source files only and leaves binaries untracked.
+
 ## [1.3.0] - 2026-08-17
 
 ### Changed

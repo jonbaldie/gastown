@@ -2536,6 +2536,120 @@ func TestRuntimeArtifactPathspecs(t *testing.T) {
 	}
 }
 
+func TestStageSafetyNetSkipsUntrackedBinary(t *testing.T) {
+	dir := initTestRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "src.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	blob := make([]byte, 2_300_000)
+	copy(blob, []byte{0x7f, 'E', 'L', 'F'})
+	if err := os.WriteFile(filepath.Join(dir, "myapp"), blob, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".beads", "state.json"), []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := NewGit(dir)
+	if err := g.StageSafetyNet(); err != nil {
+		t.Fatalf("StageSafetyNet: %v", err)
+	}
+	if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	changed, err := g.DiffNameOnly("HEAD~1", "HEAD")
+	if err != nil {
+		t.Fatalf("DiffNameOnly: %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "src.go" {
+		t.Fatalf("safety-net commit changed %v, want only src.go (2.3MB binary must not be committed)", changed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "myapp")); err != nil {
+		t.Fatalf("binary should remain in the worktree: %v", err)
+	}
+	status, err := g.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	foundBinary := false
+	for _, p := range status.Untracked {
+		if p == "myapp" {
+			foundBinary = true
+		}
+	}
+	if !foundBinary {
+		t.Fatalf("untracked=%v, want myapp left untracked", status.Untracked)
+	}
+}
+
+func TestStageSafetyNetBinaryOnlyStagesNothing(t *testing.T) {
+	dir := initTestRepo(t)
+	blob := make([]byte, 2_300_000)
+	copy(blob, []byte{0x7f, 'E', 'L', 'F'})
+	if err := os.WriteFile(filepath.Join(dir, "myapp"), blob, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	g := NewGit(dir)
+	if err := g.StageSafetyNet(); err != nil {
+		t.Fatalf("StageSafetyNet: %v", err)
+	}
+	staged, err := g.HasStagedChanges()
+	if err != nil {
+		t.Fatalf("HasStagedChanges: %v", err)
+	}
+	if staged {
+		t.Fatal("binary-only work must not be staged")
+	}
+	ws, err := g.CheckUncommittedWork()
+	if err != nil {
+		t.Fatalf("CheckUncommittedWork: %v", err)
+	}
+	if !ws.CleanExcludingSafetyNet(dir) {
+		t.Fatal("binary-only dirt must be safety-net clean so gt done can complete")
+	}
+}
+
+func TestStatusUnstagedModificationKeepsPath(t *testing.T) {
+	dir := initTestRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# edited\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	status, err := NewGit(dir).Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(status.Modified) != 1 || status.Modified[0] != "README.md" {
+		t.Fatalf("Modified = %v, want [README.md] (leading porcelain space must be preserved)", status.Modified)
+	}
+}
+
+func TestLooksBinary(t *testing.T) {
+	tests := []struct {
+		name string
+		buf  []byte
+		want bool
+	}{
+		{name: "elf", buf: []byte{0x7f, 'E', 'L', 'F', 0, 1, 2, 3}, want: true},
+		{name: "nul", buf: []byte("hello\x00world"), want: true},
+		{name: "mz", buf: []byte{'M', 'Z', 0x90, 0x00}, want: true},
+		{name: "wasm", buf: []byte{0x00, 'a', 's', 'm', 0x01, 0x00, 0x00, 0x00}, want: true},
+		{name: "go source", buf: []byte("package main\nfunc main() {}\n"), want: false},
+		{name: "empty", buf: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksBinary(tt.buf); got != tt.want {
+				t.Fatalf("looksBinary(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParsePorcelainStatusEntryPreservesRenameCopySourceAndConflict(t *testing.T) {
 	tests := []struct {
 		name       string

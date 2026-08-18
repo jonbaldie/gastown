@@ -1095,7 +1095,7 @@ func TestCleanupStatusFromWorkState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cleanupStatusFromWorkState(tt.status, tt.branchPushed, tt.unpushedCount, tt.pushErr); got != tt.want {
+			if got := cleanupStatusFromWorkState(tt.status, "", tt.branchPushed, tt.unpushedCount, tt.pushErr); got != tt.want {
 				t.Fatalf("cleanupStatusFromWorkState() = %q, want %q", got, tt.want)
 			}
 		})
@@ -1537,8 +1537,8 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		// Simulate the auto-commit safety net
-		if err := g.Add("-A"); err != nil {
-			t.Fatalf("git add: %v", err)
+		if err := g.StageSafetyNet(); err != nil {
+			t.Fatalf("StageSafetyNet: %v", err)
 		}
 		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
@@ -1617,13 +1617,8 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatal("expected mixed source and runtime changes")
 		}
 
-		if err := g.Add("-A"); err != nil {
-			t.Fatalf("git add: %v", err)
-		}
-		if runtimePaths := ws.RuntimeArtifactPaths(); len(runtimePaths) > 0 {
-			if err := g.ResetFiles(runtimePaths...); err != nil {
-				t.Fatalf("reset runtime artifacts: %v", err)
-			}
+		if err := g.StageSafetyNet(); err != nil {
+			t.Fatalf("StageSafetyNet: %v", err)
 		}
 		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
@@ -1643,6 +1638,62 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 		if !wsAfter.HasUncommittedChanges || !wsAfter.CleanExcludingRuntime() {
 			t.Fatalf("runtime artifacts should remain uncommitted and clean-excluded, got %#v", wsAfter)
+		}
+	})
+
+	t.Run("auto-commit skips untracked 2.3MB binary", func(t *testing.T) {
+		repo := t.TempDir()
+		testRunGit(t, repo, "init")
+		testRunGit(t, repo, "config", "user.email", "test@test.com")
+		testRunGit(t, repo, "config", "user.name", "Test")
+		if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# Test\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		testRunGit(t, repo, "add", "README.md")
+		testRunGit(t, repo, "commit", "-m", "initial commit")
+
+		if err := os.WriteFile(filepath.Join(repo, "src.go"), []byte("package main\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		blob := make([]byte, 2_300_000)
+		copy(blob, []byte{0x7f, 'E', 'L', 'F'})
+		if err := os.WriteFile(filepath.Join(repo, "myapp"), blob, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		g := gitpkg.NewGit(repo)
+		ws, err := g.CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		if ws.CleanExcludingSafetyNet(repo) {
+			t.Fatal("source plus binary should not be safety-net clean before auto-save")
+		}
+
+		if err := g.StageSafetyNet(); err != nil {
+			t.Fatalf("StageSafetyNet: %v", err)
+		}
+		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+			t.Fatalf("git commit: %v", err)
+		}
+
+		changed, err := g.DiffNameOnly("HEAD~1", "HEAD")
+		if err != nil {
+			t.Fatalf("DiffNameOnly: %v", err)
+		}
+		if len(changed) != 1 || changed[0] != "src.go" {
+			t.Fatalf("auto-save committed %v, want only src.go", changed)
+		}
+
+		wsAfter, err := g.CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork after commit: %v", err)
+		}
+		if !wsAfter.HasUncommittedChanges {
+			t.Fatal("binary should remain untracked")
+		}
+		if !wsAfter.CleanExcludingSafetyNet(repo) {
+			t.Fatalf("leftover binary must not block gt done, got %#v", wsAfter)
 		}
 	})
 }
