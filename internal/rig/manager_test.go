@@ -837,6 +837,28 @@ exit 0
 	}
 }
 
+func TestDoltCommitHasNoChanges(t *testing.T) {
+	if !doltCommitHasNoChanges("Nothing to commit, working tree clean") {
+		t.Fatal("clean working tree should be treated as success")
+	}
+	if doltCommitHasNoChanges("schema migration: pending schema migrations alter pre-existing dirty tables: issues") {
+		t.Fatal("dirty-table migration error should not look like a clean commit")
+	}
+}
+
+func TestMarkRigBeadsReady(t *testing.T) {
+	rigPath := t.TempDir()
+	if rigBeadsReady(rigPath) {
+		t.Fatal("missing ready file should not look ready")
+	}
+	if err := markRigBeadsReady(rigPath); err != nil {
+		t.Fatalf("markRigBeadsReady: %v", err)
+	}
+	if !rigBeadsReady(rigPath) {
+		t.Fatal("expected gt-ready after markRigBeadsReady")
+	}
+}
+
 func TestBdSubprocessEnvUsesHardenedBDEnv(t *testing.T) {
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 	if err := os.MkdirAll(beadsDir, 0755); err != nil {

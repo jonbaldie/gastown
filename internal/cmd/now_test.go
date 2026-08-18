@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -192,6 +193,225 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	}
 	mixAfter := readNowMix(t, gtBinary, town, env)
 	assertRoleMix(t, mixAfter, "mayor", "now-mayor", "high")
+}
+
+// TestNowDocumentedBdCreateUsesRigPrefix is the feedback loop for the
+// documented rig-create recipe. `gt sling help` and town identity files tell
+// operators to run `bd -C <town>/<rig> create`. In a gt now Town that must
+// file a rig-prefixed bead (demo → de-), not a silent hq-* town bead.
+func TestNowDocumentedBdCreateUsesRigPrefix(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "demo"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := nowSocket("bdcreate")
+	env := nowTestEnv(t, home, bin, socket, false)
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--name", "demo", "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("gt now failed: %v\n%s", err, out)
+	}
+	env = append(append([]string{}, env...), "GT_TOWN_ROOT="+town)
+
+	rigDir := filepath.Join(town, "demo")
+	waitNowRigBeadsReady(t, town, rigDir, env, out)
+	var id, createOut string
+	var createErr error
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		id, createOut, createErr = documentedRigBdCreate(t, rigDir, env)
+		if createErr == nil && strings.HasPrefix(id, "de-") {
+			break
+		}
+		if strings.HasPrefix(id, "hq-") {
+			break
+		}
+		if strings.Contains(createOut, "dirty tables") {
+			commitNowRigBeads(t, rigDir, env)
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	listing := listNowRigBeads(t, town, rigDir)
+	if strings.HasPrefix(id, "hq-") {
+		t.Fatalf("documented bd -C <town>/<rig> create filed a town hq-* bead (id=%q) with no warning; want de-\noutput:\n%s\nrig listing:\n%s",
+			id, createOut, listing)
+	}
+	if !strings.HasPrefix(id, "de-") {
+		t.Fatalf("documented bd -C <town>/<rig> create filed %q, want de- prefix\noutput:\n%s\nrig listing:\n%s",
+			id, createOut, listing)
+	}
+	if createErr != nil && !strings.Contains(createOut, "record event") {
+		t.Fatalf("documented bd -C <town>/<rig> create failed: %v\n%s\nrig listing:\n%s",
+			createErr, createOut, listing)
+	}
+	if createErr != nil {
+		t.Logf("create exited %v after allocating %s (events table); checking the bead persisted", createErr, id)
+	}
+	showOut, showErr := showNowRigBead(t, rigDir, env, id)
+	if showErr != nil || !strings.Contains(showOut, id) {
+		t.Fatalf("rig bead %s did not persist after documented create\nshow err: %v\nshow out:\n%s\ncreate out:\n%s",
+			id, showErr, showOut, createOut)
+	}
+}
+
+func waitNowRigBeadsReady(t *testing.T, town, rigDir string, env []string, nowOut string) {
+	t.Helper()
+	ready := filepath.Join(rigDir, ".beads", "gt-ready")
+	bdPath, err := lookPathExtra("bd")
+	if err != nil {
+		t.Fatalf("bd not found: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	var lastPrefix string
+	for {
+		if _, statErr := os.Stat(ready); statErr == nil {
+			cmd := exec.Command(bdPath, "-C", rigDir, "config", "get", "issue_prefix")
+			cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+			out, getErr := cmd.CombinedOutput()
+			lastPrefix = string(out)
+			if getErr == nil && strings.Contains(lastPrefix, "de") {
+				return
+			}
+			if strings.Contains(lastPrefix, "dirty tables") {
+				commitNowRigBeads(t, rigDir, env)
+			}
+		}
+		if time.Now().After(deadline) {
+			provLog := ""
+			if data, readErr := os.ReadFile(filepath.Join(town, "mayor", "provision.log")); readErr == nil {
+				provLog = string(data)
+			}
+			t.Fatalf("rig beads not ready at %s\nlast issue_prefix:\n%s\ngt now output:\n%s\n%s\nprovision.log:\n%s",
+				ready, lastPrefix, nowOut, listNowRigBeads(t, town, rigDir), provLog)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func commitNowRigBeads(t *testing.T, rigDir string, env []string) {
+	t.Helper()
+	bdPath, err := lookPathExtra("bd")
+	if err != nil {
+		t.Fatalf("bd not found: %v", err)
+	}
+	cmd := exec.Command(bdPath, "-C", rigDir, "dolt", "commit", "-m", "test: commit dirty rig beads")
+	cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+	out, err := cmd.CombinedOutput()
+	t.Logf("bd dolt commit: err=%v out=%s", err, out)
+}
+
+func documentedRigBdCreate(t *testing.T, rigDir string, env []string) (id, output string, err error) {
+	t.Helper()
+	bdPath, lookErr := lookPathExtra("bd")
+	if lookErr != nil {
+		t.Fatalf("bd not found: %v", lookErr)
+	}
+	cmd := exec.Command(bdPath, "-C", rigDir, "create", "--title=documented-rig-create", "--type=feature", "--silent")
+	cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+	out, runErr := cmd.CombinedOutput()
+	output = string(out)
+	id = beadIDFromCreateOutput(output)
+	if runErr != nil {
+		return id, output, runErr
+	}
+	if id == "" {
+		return "", output, fmt.Errorf("empty bead id")
+	}
+	return id, output, nil
+}
+
+func beadIDFromCreateOutput(output string) string {
+	re := regexp.MustCompile(`\b([a-z]{1,8}-[a-z0-9]*[0-9][a-z0-9]*)\b`)
+	var last string
+	for _, m := range re.FindAllStringSubmatch(output, -1) {
+		last = m[1]
+	}
+	return last
+}
+
+func listNowRigBeads(t *testing.T, town, rigDir string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, p := range []string{
+		filepath.Join(town, ".beads"),
+		filepath.Join(rigDir, ".beads"),
+		filepath.Join(rigDir, "mayor", "rig", ".beads"),
+	} {
+		_, err := os.Stat(p)
+		fmt.Fprintf(&b, "  %s exists=%v\n", p, err == nil)
+	}
+	if data, err := os.ReadFile(filepath.Join(town, ".beads", "config.yaml")); err == nil {
+		fmt.Fprintf(&b, "  town config.yaml:\n%s\n", data)
+	}
+	if data, err := os.ReadFile(filepath.Join(rigDir, ".beads", "config.yaml")); err == nil {
+		fmt.Fprintf(&b, "  rig config.yaml:\n%s\n", data)
+	}
+	return b.String()
+}
+
+func showNowRigBead(t *testing.T, rigDir string, env []string, id string) (string, error) {
+	t.Helper()
+	bdPath, err := lookPathExtra("bd")
+	if err != nil {
+		t.Fatalf("bd not found: %v", err)
+	}
+	cmd := exec.Command(bdPath, "-C", rigDir, "--ignore-schema-skew", "show", id, "--json")
+	cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+	out, runErr := cmd.CombinedOutput()
+	return string(out), runErr
+}
+
+func TestBeadIDFromCreateOutput(t *testing.T) {
+	got := beadIDFromCreateOutput("Error: failed to record event for de-78d: record event in events")
+	if got != "de-78d" {
+		t.Fatalf("beadIDFromCreateOutput = %q, want de-78d", got)
+	}
+	got = beadIDFromCreateOutput("hq-kv0\n")
+	if got != "hq-kv0" {
+		t.Fatalf("beadIDFromCreateOutput = %q, want hq-kv0", got)
+	}
+	got = beadIDFromCreateOutput("then re-run the migration")
+	if got != "" {
+		t.Fatalf("beadIDFromCreateOutput = %q, want empty", got)
+	}
+}
+
+func TestNowTestEnvStripsSharedDoltContainerPort(t *testing.T) {
+	t.Setenv("BEADS_DOLT_PORT", "32769")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "dockerdb")
+	env := nowTestEnv(t, t.TempDir(), t.TempDir(), "now-env", true)
+	for _, entry := range env {
+		key, val, _ := strings.Cut(entry, "=")
+		if key == "BEADS_DOLT_PORT" || key == "BEADS_DOLT_SERVER_DATABASE" {
+			t.Fatalf("nowTestEnv leaked %s=%s from the shared integration container", key, val)
+		}
+	}
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	drop := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		drop[k] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, ok := drop[key]; ok {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func TestNowPicksFreeDoltPortWhenBusy(t *testing.T) {
@@ -734,7 +954,12 @@ func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string 
 	for _, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
-		case "HOME", "PATH", "GT_TMUX_SOCKET", "BEADS_DOLT_AUTO_START", "GT_DOLT_PORT", "GT_TOWN_ROOT", "GT_ROOT":
+		case "HOME", "PATH", "GT_TMUX_SOCKET", "BEADS_DOLT_AUTO_START", "GT_DOLT_PORT", "GT_TOWN_ROOT", "GT_ROOT",
+			// Integration TestMain pins a shared Docker Dolt via BEADS_DOLT_PORT.
+			// gt now tests start a per-town server on GT_DOLT_PORT; leaking the
+			// container port makes `bd -C` look at the wrong server (no rig DB).
+			"BEADS_DOLT_PORT", "BEADS_DOLT_SERVER_PORT", "BEADS_DOLT_SERVER_HOST",
+			"BEADS_DOLT_SERVER_DATABASE", "BEADS_DIR", "BEADS_DB", "BD_DIR":
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -749,7 +974,7 @@ func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string 
 
 func writeNowHomeGitConfig(t *testing.T, home string) {
 	t.Helper()
-	content := "[user]\n\tname = Test User\n\temail = test@test.com\n"
+	content := "[user]\n\tname = Test User\n\temail = test@test.com\n[beads]\n\trole = maintainer\n"
 	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(content), 0644); err != nil {
 		t.Fatalf("write gitconfig: %v", err)
 	}

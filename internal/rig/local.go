@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/git"
 )
@@ -79,6 +80,9 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 	}
 	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
 		return nil, fmt.Errorf("saving rig config: %w", err)
+	}
+	if err := fenceRigBeadsWalkUp(rigPath, prefix); err != nil {
+		return nil, err
 	}
 
 	if err := os.MkdirAll(filepath.Join(rigPath, "polecats"), 0755); err != nil {
@@ -151,4 +155,18 @@ func canonicalRepoPath(path string) (string, error) {
 func fileURL(absPath string) string {
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}
 	return u.String()
+}
+
+// fenceRigBeadsWalkUp writes a rig-local .beads config so `bd -C <town>/<rig>`
+// cannot walk up to town hq-* beads. Full Dolt init happens later in
+// InitializeRigBeads once the town Dolt server is running.
+func fenceRigBeadsWalkUp(rigPath, prefix string) error {
+	beadsDir := filepath.Join(rigPath, ".beads")
+	if err := beads.EnsureDir(beadsDir); err != nil {
+		return err
+	}
+	if err := beads.EnsureConfigYAML(beadsDir, prefix); err != nil {
+		return fmt.Errorf("writing rig beads prefix fence: %w", err)
+	}
+	return nil
 }

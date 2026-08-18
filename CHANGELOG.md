@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the Mayor command exits 0. The start path now requires a live pane
   before printing success, and a later `gt now` restarts a dead pane instead
   of reusing it.
+- **`gt now` local rigs initialize beads at `<town>/<rig>`.** `AddLocalRig`
+  registered the rig but never created a rig beads database, so the documented
+  `bd -C <town>/<rig> create` recipe walked up to town `.beads` and silently
+  filed `hq-*` work instead of a rig prefix such as `de-`. `gt now` now fences
+  that directory with the rig prefix and initializes the rig database from
+  detached Town provision (not an in-process goroutine that dies when
+  `gt now` returns). Init commits so `bd create` is not blocked by a dirty
+  `issues` table. Witness/Refinery beads are filled in after that.
+  Sling/prime help warn that a missing rig `.beads` files town work.
 
 ## [1.3.0] - 2026-08-17
 
