@@ -230,6 +230,7 @@ func outputMayorContext(ctx RoleContext) {
 	fmt.Println()
 	fmt.Println("```bash")
 	fmt.Println("bd -C <town>/<rig> create --title=... --type=feature")
+	fmt.Println("# that path must have its own .beads; otherwise bd files hq-* town beads")
 	fmt.Println(cli.Name() + " convoy create \"...\" <rig-prefix-id>")
 	fmt.Println(cli.Name() + " convoy add <convoy-id> <rig-prefix-id>")
 	fmt.Println(cli.Name() + " sling <rig-prefix-id> <rig> --merge=local")

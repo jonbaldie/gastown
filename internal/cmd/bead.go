@@ -104,6 +104,7 @@ type moveBeadInfo struct {
 	Labels      []string `json:"labels"`
 	Assignee    string   `json:"assignee"`
 	Status      string   `json:"status"`
+	CloseReason string   `json:"close_reason,omitempty"`
 }
 
 func runBeadMove(cmd *cobra.Command, args []string) error {
@@ -152,6 +153,24 @@ func previewBeadMove(sourceID, targetPrefix, townRoot string) error {
 }
 
 func loadMoveBeadInfo(sourceID, townRoot string) (*moveBeadInfo, error) {
+	source, err := showMoveBeadInfo(sourceID, townRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	// Don't move closed beads
+	if source.Status == "closed" {
+		return nil, fmt.Errorf("cannot move closed bead %s", sourceID)
+	}
+
+	// Guard against flag-like titles propagating during move (gt-e0kx5)
+	if beads.IsFlagLikeTitle(source.Title) {
+		return nil, fmt.Errorf("refusing to move bead: title %q looks like a CLI flag", source.Title)
+	}
+	return source, nil
+}
+
+func showMoveBeadInfo(sourceID, townRoot string) (*moveBeadInfo, error) {
 	sourceDir := resolveBeadDir(sourceID)
 	if townRoot != "" {
 		sourceDir = resolveBeadDirFromTownRoot(townRoot, sourceID)
@@ -175,23 +194,66 @@ func loadMoveBeadInfo(sourceID, townRoot string) (*moveBeadInfo, error) {
 		return nil, fmt.Errorf("bead %s not found", sourceID)
 	}
 	source := sources[0]
-
-	// Don't move closed beads
-	if source.Status == "closed" {
-		return nil, fmt.Errorf("cannot move closed bead %s", sourceID)
-	}
-
-	// Guard against flag-like titles propagating during move (gt-e0kx5)
-	if beads.IsFlagLikeTitle(source.Title) {
-		return nil, fmt.Errorf("refusing to move bead: title %q looks like a CLI flag", source.Title)
-	}
 	return &source, nil
+}
+
+const movedToCloseReasonPrefix = "Moved to "
+
+func parseMovedToDestination(closeReason string) string {
+	if !strings.HasPrefix(closeReason, movedToCloseReasonPrefix) {
+		return ""
+	}
+	dest := strings.TrimSpace(strings.TrimPrefix(closeReason, movedToCloseReasonPrefix))
+	if dest == "" {
+		return ""
+	}
+	if fields := strings.Fields(dest); len(fields) > 0 {
+		return fields[0]
+	}
+	return dest
+}
+
+func followMovedBead(beadID, townRoot string) string {
+	seen := map[string]struct{}{}
+	for beadID != "" {
+		if _, dup := seen[beadID]; dup {
+			return beadID
+		}
+		seen[beadID] = struct{}{}
+		info, err := showMoveBeadInfo(beadID, townRoot)
+		if err != nil || info.Status != "closed" {
+			return beadID
+		}
+		dest := parseMovedToDestination(info.CloseReason)
+		if dest == "" || dest == beadID {
+			return beadID
+		}
+		beadID = dest
+	}
+	return beadID
+}
+
+func closeMovedBead(beadID, townRoot, dir, reason string) error {
+	if townRoot != "" {
+		return BdCmd("close", beadID, "--reason", reason).
+			Dir(dir).
+			StripBeadsDir().
+			WithAutoCommit().
+			Run()
+	}
+	cmd := beads.Spawn("close", beadID, "--reason", reason)
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // moveBeadToPrefix copies sourceID into the repository that owns targetPrefix
 // and closes the source with a pointer to the new ID. When townRoot is set,
 // create/close are pinned to the resolved town/rig beads directories.
 func moveBeadToPrefix(sourceID, targetPrefix, townRoot string) (string, error) {
+	return moveBeadToPrefixChecked(sourceID, targetPrefix, townRoot, "", nil)
+}
+
+func moveBeadToPrefixChecked(sourceID, targetPrefix, townRoot, targetDir string, accept func(newID string) error) (string, error) {
 	source, err := loadMoveBeadInfo(sourceID, townRoot)
 	if err != nil {
 		return "", err
@@ -223,10 +285,11 @@ func moveBeadToPrefix(sourceID, targetPrefix, townRoot string) (string, error) {
 		createArgs = append(createArgs, "--label", label)
 	}
 
-	var newID string
-	targetDir := resolveBeadDir(targetPrefix + "x")
-	if townRoot != "" {
-		targetDir = resolveBeadDirFromTownRoot(townRoot, targetPrefix+"x")
+	if targetDir == "" {
+		targetDir = resolveBeadDir(targetPrefix + "x")
+		if townRoot != "" {
+			targetDir = resolveBeadDirFromTownRoot(townRoot, targetPrefix+"x")
+		}
 	}
 	out, err := BdCmd(createArgs...).
 		Dir(targetDir).
@@ -236,14 +299,23 @@ func moveBeadToPrefix(sourceID, targetPrefix, townRoot string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("creating new bead: %w", err)
 	}
-	newID = strings.TrimSpace(string(out))
+	newID := strings.TrimSpace(string(out))
 	if newID == "" {
 		return "", fmt.Errorf("creating new bead: empty ID")
 	}
 
 	fmt.Printf("%s Created %s\n", style.Bold.Render("✓"), newID)
 
-	closeReason := fmt.Sprintf("Moved to %s", newID)
+	if accept != nil {
+		if err := accept(newID); err != nil {
+			if cleanupErr := closeMovedBead(newID, townRoot, targetDir, "Cleanup: town-bead sling failed the target-rig dispatch check"); cleanupErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to clean up new bead %s: %v\n", newID, cleanupErr)
+			}
+			return "", err
+		}
+	}
+
+	closeReason := fmt.Sprintf("%s%s", movedToCloseReasonPrefix, newID)
 	if townRoot != "" {
 		sourceDir := resolveBeadDirFromTownRoot(townRoot, sourceID)
 		if err := BdCmd("close", sourceID, "--reason", closeReason).

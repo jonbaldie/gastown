@@ -11,7 +11,6 @@ import (
 
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
-	"github.com/jonbaldie/gastown/internal/doltserver"
 	"github.com/jonbaldie/gastown/internal/git"
 )
 
@@ -82,6 +81,9 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
 		return nil, fmt.Errorf("saving rig config: %w", err)
 	}
+	if err := fenceRigBeadsWalkUp(rigPath, prefix); err != nil {
+		return nil, err
+	}
 
 	if err := os.MkdirAll(filepath.Join(rigPath, "polecats"), 0755); err != nil {
 		return nil, fmt.Errorf("creating polecats dir: %w", err)
@@ -116,67 +118,6 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 
 	success = true
 	return m.loadRig(name, m.config.Rigs[name])
-}
-
-// InitLocalRigBeads creates the Beads database, Dolt database, and town
-// route for a rig registered by AddLocalRig. gt now registers the rig in
-// parallel with Dolt start, then calls this after both complete so sling
-// can resolve the rig.
-func (m *Manager) InitLocalRigBeads(name string) error {
-	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("rig name cannot be empty")
-	}
-	rigPath := filepath.Join(m.townRoot, name)
-	prefix, err := localRigBeadsPrefix(rigPath, name)
-	if err != nil {
-		return fmt.Errorf("loading rig prefix: %w", err)
-	}
-
-	if err := m.InitBeads(rigPath, prefix, name); err != nil {
-		return fmt.Errorf("initializing beads: %w", err)
-	}
-	if err := doltserver.EnsureMetadata(m.townRoot, name); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not set Dolt server metadata: %v\n", err)
-	}
-	routePath := name
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
-	if _, err := os.Stat(mayorRigBeads); err == nil {
-		routePath = name + "/mayor/rig"
-	}
-	if err := beads.AppendRoute(m.townRoot, beads.Route{
-		Prefix: prefix + "-",
-		Path:   routePath,
-	}); err != nil {
-		return fmt.Errorf("registering beads route: %w", err)
-	}
-	return nil
-}
-
-func localRigBeadsPrefix(rigPath, name string) (string, error) {
-	cfg, err := LoadRigConfig(rigPath)
-	if err != nil {
-		return "", err
-	}
-	if cfg.Beads != nil {
-		if prefix := strings.TrimSpace(cfg.Beads.Prefix); prefix != "" {
-			return prefix, nil
-		}
-	}
-	return deriveBeadsPrefix(name), nil
-}
-
-// InitRigAgentBeads creates Witness and Refinery Beads for a local Rig.
-// gt now defers this so the five-second Mayor path can sling first.
-func (m *Manager) InitRigAgentBeads(name string) error {
-	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("rig name cannot be empty")
-	}
-	rigPath := filepath.Join(m.townRoot, name)
-	prefix, err := localRigBeadsPrefix(rigPath, name)
-	if err != nil {
-		return fmt.Errorf("loading rig config: %w", err)
-	}
-	return m.initAgentBeads(rigPath, name, prefix)
 }
 
 // FindByLocalRepo returns the registered rig whose LocalRepo matches srcRepo.
@@ -214,4 +155,18 @@ func canonicalRepoPath(path string) (string, error) {
 func fileURL(absPath string) string {
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}
 	return u.String()
+}
+
+// fenceRigBeadsWalkUp writes a rig-local .beads config so `bd -C <town>/<rig>`
+// cannot walk up to town hq-* beads. Full Dolt init happens later in
+// InitializeRigBeads once the town Dolt server is running.
+func fenceRigBeadsWalkUp(rigPath, prefix string) error {
+	beadsDir := filepath.Join(rigPath, ".beads")
+	if err := beads.EnsureDir(beadsDir); err != nil {
+		return err
+	}
+	if err := beads.EnsureConfigYAML(beadsDir, prefix); err != nil {
+		return fmt.Errorf("writing rig beads prefix fence: %w", err)
+	}
+	return nil
 }

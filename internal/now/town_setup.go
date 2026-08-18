@@ -3,6 +3,7 @@ package now
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -242,18 +243,68 @@ func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string
 	return name, nil
 }
 
-func ensureRigBeads(townRoot, rigName string) error {
-	if strings.TrimSpace(rigName) == "" {
-		return fmt.Errorf("rig name is empty")
+func ensureLocalRigBeads(townRoot, name string) error {
+	if name == "" {
+		return nil
 	}
-	rigsPath := constants.MayorRigsPath(townRoot)
-	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	rigsConfig, err := config.LoadRigsConfig(constants.MayorRigsPath(townRoot))
 	if err != nil {
 		return fmt.Errorf("loading rigs.json: %w", err)
 	}
 	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
-	if err := mgr.InitLocalRigBeads(rigName); err != nil {
-		return fmt.Errorf("initializing rig beads: %w", err)
+	loaded, err := mgr.GetRig(name)
+	if err != nil {
+		return fmt.Errorf("loading rig %q: %w", name, err)
+	}
+	prefix := ""
+	if loaded.Config != nil {
+		prefix = loaded.Config.Prefix
+	}
+	if prefix == "" {
+		return fmt.Errorf("rig %q has no beads prefix", name)
+	}
+	if err := mgr.InitializeRigBeads(loaded.Path, name, prefix, rig.RigBeadsInitOptions{
+		RequireDolt:    true,
+		SkipAgentBeads: true,
+		Quiet:          true,
+	}); err != nil {
+		return fmt.Errorf("initializing beads for rig %q: %w\n`bd -C %s create` would file hq-* town beads until this database exists", name, err, loaded.Path)
 	}
 	return nil
+}
+
+func ensureAllLocalRigBeads(townRoot string) error {
+	rigsConfig, err := config.LoadRigsConfig(constants.MayorRigsPath(townRoot))
+	if err != nil {
+		return fmt.Errorf("loading rigs.json: %w", err)
+	}
+	var errs []error
+	for name := range rigsConfig.Rigs {
+		if err := ensureLocalRigBeads(townRoot, name); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func ensureAllRigAgentBeads(townRoot string) error {
+	rigsConfig, err := config.LoadRigsConfig(constants.MayorRigsPath(townRoot))
+	if err != nil {
+		return fmt.Errorf("loading rigs.json: %w", err)
+	}
+	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+	var errs []error
+	for name, entry := range rigsConfig.Rigs {
+		prefix := ""
+		if entry.BeadsConfig != nil {
+			prefix = entry.BeadsConfig.Prefix
+		}
+		if prefix == "" {
+			continue
+		}
+		if err := mgr.EnsureAgentBeads(filepath.Join(townRoot, name), name, prefix); err != nil {
+			errs = append(errs, fmt.Errorf("rig %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }

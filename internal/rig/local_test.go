@@ -5,65 +5,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/jonbaldie/gastown/internal/beads"
-	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/git"
 )
 
-func TestAddLocalRigCreatesBeadsDatabase(t *testing.T) {
-	root, rigsConfig := setupLocalRigTown(t)
-	script := `#!/usr/bin/env bash
-set -e
-if [[ "$1" == "init" ]]; then
-  mkdir -p .beads
-  exit 0
-fi
-exit 0
-`
-	binDir := writeFakeBD(t, script, "@echo off\r\nexit /b 0\r\n")
-
-	repo := createLocalGitRepo(t, filepath.Join(t.TempDir(), "proj"))
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
-	if _, err := manager.AddLocalRig(context.Background(), "proj", repo); err != nil {
-		t.Fatalf("AddLocalRig: %v", err)
-	}
-	t.Setenv("PATH", binDir)
-	if err := manager.InitLocalRigBeads("proj"); err != nil {
-		t.Fatalf("InitLocalRigBeads: %v", err)
-	}
-
-	rigBeads := filepath.Join(root, "proj", ".beads")
-	if _, err := os.Stat(rigBeads); err != nil {
-		t.Fatalf("local rig has no Beads database: %v", err)
-	}
-	if _, ok := beads.ResolveRepoAliasBeadsDir(root, "proj"); !ok {
-		t.Fatal("sling cannot resolve the local rig Beads database")
-	}
-}
-
-func TestInitLocalRigBeadsRejectsEmptyName(t *testing.T) {
-	root, rigsConfig := setupLocalRigTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
-	if err := manager.InitLocalRigBeads("  "); err == nil {
-		t.Fatal("InitLocalRigBeads accepted an empty name")
-	}
-}
-
-func setupLocalRigTown(t *testing.T) (string, *config.RigsConfig) {
-	t.Helper()
-	root, rigsConfig := setupTestTown(t)
-	if err := os.MkdirAll(filepath.Join(root, "mayor"), 0755); err != nil {
+func TestAddLocalRigFencesTownBeadWalkUp(t *testing.T) {
+	town, cfg := setupTestTown(t)
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0755); err != nil {
 		t.Fatalf("mkdir mayor: %v", err)
 	}
-	if err := config.SaveRigsConfig(filepath.Join(root, "mayor", "rigs.json"), rigsConfig); err != nil {
-		t.Fatalf("save rigs.json: %v", err)
+
+	repo := createLocalGitRepo(t, filepath.Join(t.TempDir(), "demo"))
+	mgr := NewManager(town, cfg, git.NewGit(town))
+	if _, err := mgr.AddLocalRig(context.Background(), "demo", repo); err != nil {
+		t.Fatalf("AddLocalRig: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, ".beads"), 0755); err != nil {
-		t.Fatalf("mkdir town beads: %v", err)
+
+	configPath := filepath.Join(town, "demo", ".beads", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("reading rig beads fence: %v", err)
 	}
-	return root, rigsConfig
+	text := string(data)
+	if !strings.Contains(text, "prefix: de") && !strings.Contains(text, "issue-prefix: de") {
+		t.Fatalf("rig beads fence missing prefix de:\n%s", text)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".beads")); !os.IsNotExist(err) {
+		t.Fatal("AddLocalRig wrote .beads into the source repository")
+	}
 }
 
 func createLocalGitRepo(t *testing.T, repoDir string) string {
@@ -83,7 +54,7 @@ func createLocalGitRepo(t *testing.T, repoDir string) string {
 			t.Fatalf("git %v: %v\n%s", args[1:], err, out)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# proj\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# demo\n"), 0644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
 	for _, args := range [][]string{{"git", "add", "."}, {"git", "commit", "-m", "init"}} {

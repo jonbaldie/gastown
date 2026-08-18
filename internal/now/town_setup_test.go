@@ -58,9 +58,3 @@ func TestEnsureRigRespectsCanceledContext(t *testing.T) {
 		t.Fatal("ensureRig ignored canceled context")
 	}
 }
-
-func TestEnsureRigBeadsRejectsEmptyName(t *testing.T) {
-	if err := ensureRigBeads(t.TempDir(), "  "); err == nil {
-		t.Fatal("ensureRigBeads accepted an empty name")
-	}
-}
