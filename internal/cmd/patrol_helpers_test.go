@@ -811,6 +811,8 @@ func requireBd(t *testing.T) {
 
 func setupPatrolTestDB(t *testing.T) (string, *beads.Beads) {
 	t.Helper()
+	// Callers must not use t.Parallel(): these tests share TestMain's
+	// sql-server, and concurrent bd init takes that server down.
 	testutil.RequireDoltContainer(t)
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	tmpDir := t.TempDir()
@@ -881,7 +883,6 @@ func createHookedPatrol(t *testing.T, b *beads.Beads, molName, assignee string, 
 }
 
 func TestFindActivePatrolHooked(t *testing.T) {
-	t.Parallel()
 	requireBd(t)
 	tmpDir, b := setupPatrolTestDB(t)
 
@@ -919,7 +920,6 @@ func TestFindActivePatrolHooked(t *testing.T) {
 }
 
 func TestFindActivePatrolStale(t *testing.T) {
-	t.Parallel()
 	requireBd(t)
 	tmpDir, b := setupPatrolTestDB(t)
 
@@ -966,7 +966,6 @@ func TestFindActivePatrolStale(t *testing.T) {
 }
 
 func TestFindActivePatrolZeroChildren(t *testing.T) {
-	t.Parallel()
 	requireBd(t)
 	tmpDir, b := setupPatrolTestDB(t)
 
@@ -1007,7 +1006,6 @@ func TestFindActivePatrolZeroChildren(t *testing.T) {
 }
 
 func TestFindActivePatrolMultiple(t *testing.T) {
-	t.Parallel()
 	requireBd(t)
 	tmpDir, b := setupPatrolTestDB(t)
 
@@ -1079,7 +1077,6 @@ func TestFindActivePatrolMultiple(t *testing.T) {
 // accumulate with no active patrol, cleanup is capped at maxStalePurgePerRun per call
 // to prevent overwhelming Dolt with sequential write queries (gt-18dzn6p).
 func TestFindActivePatrol_StaleCleanupCapped(t *testing.T) {
-	t.Parallel()
 	requireBd(t)
 	tmpDir, b := setupPatrolTestDB(t)
 
@@ -1154,7 +1151,6 @@ func TestFindActivePatrol_StaleCleanupCapped(t *testing.T) {
 }
 
 func TestBurnPreviousPatrolWisps(t *testing.T) {
-	t.Parallel()
 	requireBd(t)
 	tmpDir, b := setupPatrolTestDB(t)
 
@@ -1188,7 +1184,6 @@ func TestBurnPreviousPatrolWisps(t *testing.T) {
 }
 
 func TestBurnPreviousPatrolWisps_IgnoresOtherBeads(t *testing.T) {
-	t.Parallel()
 	requireBd(t)
 	tmpDir, b := setupPatrolTestDB(t)
 

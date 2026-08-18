@@ -125,7 +125,6 @@ func createTrackedBeadsRepoWithIssues(t *testing.T, path, prefix string, numIssu
 // TestBeadsDbInitAfterClone tests that when a tracked beads repo is added as a rig,
 // the beads database is properly initialized even though database files don't exist.
 func TestBeadsDbInitAfterClone(t *testing.T) {
-	t.Parallel()
 	// Skip if bd is not available
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")

@@ -15,10 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows file-lock constraint, then restarted Dolt four more times for
   scheduler shards. TestMain now serializes only on Windows, prefers
   `dolt sql-server` over Docker testcontainers, and CI compiles scheduler
-  coverage into the same `go test` invocation.   Isolated Dolt-backed tests
-  call `t.Parallel()` except where they use `t.Setenv` (Go 1.26 panics if a
-  test uses both). Assertions are unchanged. CI runs the `gt now` five-second
-  contract before the race suite so a hot runner cannot miss the budget.
+  coverage into the same `go test` invocation. Tests that share that
+  sql-server stay sequential: concurrent `bd init` takes the native server
+  down. Assertions are unchanged. CI runs the `gt now` five-second contract
+  before the race suite so a hot runner cannot miss the budget.
 
 ### Fixed
 
