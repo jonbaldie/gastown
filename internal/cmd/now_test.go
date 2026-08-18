@@ -1029,10 +1029,14 @@ func stopNowDaemonOnCleanup(t *testing.T, townRoot string) {
 // production provision is never touched.
 func waitNowProvisionExit(t *testing.T, townRoot string) {
 	t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
+	start := time.Now()
+	deadline := start.Add(30 * time.Second)
 	for {
 		pids := nowProvisionPIDs(t, townRoot)
 		if len(pids) == 0 {
+			if waited := time.Since(start); waited > 5*time.Second {
+				t.Logf("waited %s for deferred provision to finish", waited)
+			}
 			return
 		}
 		if time.Now().After(deadline) {
