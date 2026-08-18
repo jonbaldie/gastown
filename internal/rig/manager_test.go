@@ -846,6 +846,19 @@ func TestDoltCommitHasNoChanges(t *testing.T) {
 	}
 }
 
+func TestMarkRigBeadsReady(t *testing.T) {
+	rigPath := t.TempDir()
+	if rigBeadsReady(rigPath) {
+		t.Fatal("missing ready file should not look ready")
+	}
+	if err := markRigBeadsReady(rigPath); err != nil {
+		t.Fatalf("markRigBeadsReady: %v", err)
+	}
+	if !rigBeadsReady(rigPath) {
+		t.Fatal("expected gt-ready after markRigBeadsReady")
+	}
+}
+
 func TestBdSubprocessEnvUsesHardenedBDEnv(t *testing.T) {
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 	if err := os.MkdirAll(beadsDir, 0755); err != nil {

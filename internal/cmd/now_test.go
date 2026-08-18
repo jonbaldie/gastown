@@ -266,28 +266,28 @@ func TestNowDocumentedBdCreateUsesRigPrefix(t *testing.T) {
 
 func waitNowRigBeadsReady(t *testing.T, rigDir string, env []string) {
 	t.Helper()
-	meta := filepath.Join(rigDir, ".beads", "metadata.json")
+	ready := filepath.Join(rigDir, ".beads", "gt-ready")
 	bdPath, err := lookPathExtra("bd")
 	if err != nil {
 		t.Fatalf("bd not found: %v", err)
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	var lastList string
+	deadline := time.Now().Add(30 * time.Second)
+	var lastPrefix string
 	for {
-		if _, statErr := os.Stat(meta); statErr == nil {
-			listCmd := exec.Command(bdPath, "-C", rigDir, "list", "--limit", "1")
-			listCmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
-			out, listErr := listCmd.CombinedOutput()
-			lastList = string(out)
-			if listErr == nil {
+		if _, statErr := os.Stat(ready); statErr == nil {
+			cmd := exec.Command(bdPath, "-C", rigDir, "config", "get", "issue_prefix")
+			cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+			out, getErr := cmd.CombinedOutput()
+			lastPrefix = string(out)
+			if getErr == nil && strings.Contains(lastPrefix, "de") {
 				return
 			}
-			if strings.Contains(lastList, "dirty tables") {
+			if strings.Contains(lastPrefix, "dirty tables") {
 				commitNowRigBeads(t, rigDir, env)
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("rig beads not ready at %s\nlast bd list:\n%s", meta, lastList)
+			t.Fatalf("rig beads not ready at %s\nlast issue_prefix:\n%s", ready, lastPrefix)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

@@ -1091,6 +1091,20 @@ func rigBeadsInitialized(rigPath string) bool {
 	return err == nil
 }
 
+const rigBeadsReadyFile = "gt-ready"
+
+func rigBeadsReady(rigPath string) bool {
+	_, err := os.Stat(filepath.Join(rigPath, ".beads", rigBeadsReadyFile))
+	return err == nil
+}
+
+func markRigBeadsReady(rigPath string) error {
+	if err := beads.EnsureDir(filepath.Join(rigPath, ".beads")); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(rigPath, ".beads", rigBeadsReadyFile), []byte("ok\n"), 0644)
+}
+
 // InitializeRigBeads creates the rig Dolt database, local .beads, issue prefix,
 // town route, and PRIME.md. Clone-based Add() and local gt now rigs share this
 // so `bd -C <town>/<rig> create` files a rig-prefixed bead instead of hq-*.
@@ -1112,11 +1126,12 @@ func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeads
 		return fmt.Errorf("locking rig beads init for %s: %w", name, err)
 	}
 	defer func() { _ = fl.Unlock() }()
-	if rigBeadsInitialized(rigPath) {
+	already := rigBeadsInitialized(rigPath)
+	if already && (!opts.RequireDolt || rigBeadsReady(rigPath)) {
 		return m.appendRigRoute(rigPath, name, prefix, opts)
 	}
 
-	if !opts.SkipDoltCheck {
+	if !already && !opts.SkipDoltCheck {
 		if _, err := exec.LookPath("dolt"); err != nil {
 			if opts.RequireDolt {
 				return fmt.Errorf("dolt is required to initialize rig beads for %s: %w", name, err)
@@ -1129,18 +1144,20 @@ func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeads
 		}
 	}
 
-	printfBeads(opts, "  Initializing beads database...\n")
-	if err := m.InitBeads(rigPath, prefix, name); err != nil {
-		return fmt.Errorf("initializing beads: %w", err)
-	}
-	printfBeads(opts, "   ✓ Initialized beads (prefix: %s)\n", prefix)
-
-	if err := doltserver.EnsureMetadata(m.townRoot, name); err != nil {
-		if opts.RequireDolt {
-			return fmt.Errorf("setting Dolt server metadata for %s: %w", name, err)
+	if !already {
+		printfBeads(opts, "  Initializing beads database...\n")
+		if err := m.InitBeads(rigPath, prefix, name); err != nil {
+			return fmt.Errorf("initializing beads: %w", err)
 		}
-		warnBeads("  Warning: Could not set Dolt server metadata: %v\n", err)
-		warnBeads("  Run 'gt doctor --fix' to repair, or it will self-heal on next daemon start.\n")
+		printfBeads(opts, "   ✓ Initialized beads (prefix: %s)\n", prefix)
+
+		if err := doltserver.EnsureMetadata(m.townRoot, name); err != nil {
+			if opts.RequireDolt {
+				return fmt.Errorf("setting Dolt server metadata for %s: %w", name, err)
+			}
+			warnBeads("  Warning: Could not set Dolt server metadata: %v\n", err)
+			warnBeads("  Run 'gt doctor --fix' to repair, or it will self-heal on next daemon start.\n")
+		}
 	}
 
 	rigRootBeadsDir := filepath.Join(rigPath, ".beads")
@@ -1185,6 +1202,9 @@ func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeads
 		if err := commitRigBeads(rigPath, resolvedBeadsPath, name, "initialize "+name+" rig beads"); err != nil {
 			return fmt.Errorf("committing rig beads for %s: %w", name, err)
 		}
+	}
+	if err := markRigBeadsReady(rigPath); err != nil {
+		return fmt.Errorf("marking rig beads ready for %s: %w", name, err)
 	}
 	return nil
 }
