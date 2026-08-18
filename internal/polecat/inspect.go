@@ -52,12 +52,18 @@ func gatherWorkstateInput(name string, bd *beads.Beads, clonePath string, state 
 	hookTerminal := false
 	if err != nil {
 		input.GitCheckFailed = true
+		input.GitCheckFailedReason = fmt.Sprintf("agent bead lookup: %v", err)
 	}
 
 	activeMR := ""
 	sourceHint := ""
 	if err == nil && fields != nil {
-		hookSafe, hookTerminal = hookBeadSafeForWorkstate(bd, fields.HookBead)
+		var hookErr error
+		hookSafe, hookTerminal, hookErr = hookBeadSafeForWorkstate(bd, fields.HookBead)
+		if hookErr != nil {
+			input.GitCheckFailed = true
+			input.GitCheckFailedReason = fmt.Sprintf("hook bead lookup: %v", hookErr)
+		}
 		if !hookSafe {
 			input.HookBead = fields.HookBead
 		}
@@ -85,6 +91,7 @@ func gatherWorkstateInput(name string, bd *beads.Beads, clonePath string, state 
 	branch, branchErr := g.CurrentBranch()
 	if branchErr != nil {
 		input.GitCheckFailed = true
+		input.GitCheckFailedReason = fmt.Sprintf("git branch: %v", branchErr)
 	} else {
 		input.Branch = branch
 	}
@@ -98,12 +105,14 @@ func gatherWorkstateInput(name string, bd *beads.Beads, clonePath string, state 
 		input.UnpushedCommits = status.UnpushedCommits
 	} else {
 		input.GitCheckFailed = true
+		input.GitCheckFailedReason = fmt.Sprintf("git worktree: %v", err)
 	}
 	if branch != "" {
 		if preservation, err := g.BranchPreservationStatus(branch, "origin", targetRefs); err == nil {
 			input.UnpushedCommits = preservation.UnpreservedPatchCount
 		} else {
 			input.GitCheckFailed = true
+			input.GitCheckFailedReason = fmt.Sprintf("git preservation: %v", err)
 		}
 	}
 
@@ -115,7 +124,7 @@ func gatherWorkstateInput(name string, bd *beads.Beads, clonePath string, state 
 	activeMRSafe := true
 	sourceTerminal := sourceHint != "" && assignedBeadTerminal(bd, sourceHint)
 	if activeMR != "" {
-		assessment := AssessActiveMR(agentBD, ActiveMRInput{ActiveMR: activeMR, SourceIssueHint: sourceHint, RequireGitSafe: true, GitSafe: gitSafe})
+		assessment := AssessActiveMR(bd, ActiveMRInput{ActiveMR: activeMR, SourceIssueHint: sourceHint, RequireGitSafe: true, GitSafe: gitSafe})
 		if assessment.Pending {
 			input.ActiveMRBlocker = assessment.Reason
 		}
@@ -125,19 +134,19 @@ func gatherWorkstateInput(name string, bd *beads.Beads, clonePath string, state 
 		}
 	}
 
-	workIssue := beadID
-	if workIssue == "" {
-		workIssue = sourceHint
+	assignedBeadID := beadID
+	if assignedBeadID == "" {
+		assignedBeadID = sourceHint
 	}
-	applyAssignedWorkBlocker(&input, bd, workIssue)
+	applyAssignedWorkBlocker(&input, bd, assignedBeadID)
 	input.MQCheckRequired = input.Branch != ""
 	input.HasSubmittableWork = hasSubmittableWorkForWorkstate(clonePath, targetRefs)
-	input.AssignedBeadTerminal = assignedBeadTerminal(bd, workIssue)
+	input.AssignedBeadTerminal = assignedBeadTerminal(bd, assignedBeadID)
 	workTerminal := input.AssignedBeadTerminal || sourceTerminal || hookTerminal
 	if CanIgnoreStaleCleanupStatus(input.CleanupStatus, workTerminal, hookSafe, activeMRSafe, gitSafe) {
 		input.IgnoreCleanupStatus = true
 	}
-	input.MQNotRequired = mqNotRequiredSource(bd, workIssue)
+	input.MQNotRequired = mqNotRequiredSource(bd, assignedBeadID)
 	if input.MQCheckRequired && input.HasSubmittableWork && !input.AssignedBeadTerminal && !input.MQNotRequired {
 		mr, err := bd.FindMRForBranchAny(input.Branch)
 		if err != nil {
@@ -149,23 +158,23 @@ func gatherWorkstateInput(name string, bd *beads.Beads, clonePath string, state 
 	return input
 }
 
-func applyAssignedWorkBlocker(input *WorkstateInput, bd *beads.Beads, issueID string) {
-	if input == nil || issueID == "" || input.ActiveWorkBlocker != "" {
+func applyAssignedWorkBlocker(input *WorkstateInput, bd *beads.Beads, beadID string) {
+	if input == nil || beadID == "" || input.ActiveWorkBlocker != "" {
 		return
 	}
-	issue, err := bd.Show(issueID)
-	if err != nil || issue == nil {
+	bead, err := bd.Show(beadID)
+	if err != nil || bead == nil {
 		if err != nil && !errors.Is(err, beads.ErrNotFound) {
 			input.ActiveWorkBlocker = fmt.Sprintf("assigned_work status=lookup_error: %v", err)
 			input.ActiveWorkCountsTowardCapacity = true
 		}
 		return
 	}
-	if beads.IsAgentBead(issue) || beads.IsProtectedBead(issue) || beads.IssueStatus(issue.Status).IsTerminal() {
+	if beads.IsAgentBead(bead) || beads.IsProtectedBead(bead) || beads.IssueStatus(bead.Status).IsTerminal() {
 		return
 	}
-	input.ActiveWorkBlocker = fmt.Sprintf("assigned_work=%s status=%s", issue.ID, issue.Status)
-	switch beads.IssueStatus(issue.Status) {
+	input.ActiveWorkBlocker = fmt.Sprintf("assigned_work=%s status=%s", bead.ID, bead.Status)
+	switch beads.IssueStatus(bead.Status) {
 	case beads.IssueStatusHooked, beads.StatusInProgress, beads.StatusOpen:
 		input.ActiveWorkCountsTowardCapacity = true
 	}
@@ -214,40 +223,43 @@ func inferTownAndRig(name, clonePath string) (townRoot, rigName string) {
 	return "", ""
 }
 
-func hookBeadSafeForWorkstate(bd *beads.Beads, hookBead string) (safe bool, terminal bool) {
+func hookBeadSafeForWorkstate(bd *beads.Beads, hookBead string) (safe bool, terminal bool, err error) {
 	if hookBead == "" {
-		return true, false
+		return true, false, nil
 	}
 	if bd == nil {
-		return false, false
+		return false, false, fmt.Errorf("beads unavailable")
 	}
-	issue, err := bd.Show(hookBead)
-	if err != nil || issue == nil {
-		return false, false
+	bead, err := bd.Show(hookBead)
+	if err != nil {
+		return false, false, err
 	}
-	if beads.IssueStatus(issue.Status).IsTerminal() {
-		return true, true
+	if bead == nil {
+		return false, false, fmt.Errorf("hook bead %s missing", hookBead)
 	}
-	return false, false
+	if beads.IssueStatus(bead.Status).IsTerminal() {
+		return true, true, nil
+	}
+	return false, false, nil
 }
 
-func assignedBeadTerminal(bd *beads.Beads, issueID string) bool {
-	if issueID == "" || bd == nil {
+func assignedBeadTerminal(bd *beads.Beads, beadID string) bool {
+	if beadID == "" || bd == nil {
 		return false
 	}
-	issue, err := bd.Show(issueID)
-	return err == nil && issue != nil && beads.IssueStatus(issue.Status).IsTerminal()
+	bead, err := bd.Show(beadID)
+	return err == nil && bead != nil && beads.IssueStatus(bead.Status).IsTerminal()
 }
 
-func mqNotRequiredSource(bd *beads.Beads, issueID string) bool {
-	if issueID == "" || bd == nil {
+func mqNotRequiredSource(bd *beads.Beads, beadID string) bool {
+	if beadID == "" || bd == nil {
 		return false
 	}
-	issue, err := bd.Show(issueID)
-	if err != nil || issue == nil {
+	bead, err := bd.Show(beadID)
+	if err != nil || bead == nil {
 		return false
 	}
-	attachment := beads.ParseAttachmentFields(issue)
+	attachment := beads.ParseAttachmentFields(bead)
 	if attachment == nil {
 		return false
 	}
@@ -278,19 +290,20 @@ func reuseTargetRefs(bd *beads.Beads, fields *beads.AgentFields, branch string) 
 			lookupFailed = true
 		}
 	}
+	var sourceBeadIDs []string
 	if fields.LastSourceIssue != "" && fields.LastSourceIssue != fields.HookBead {
-		if issue, err := bd.Show(fields.LastSourceIssue); err == nil {
-			refs = append(refs, attachmentTargetRefs(bd, issue)...)
-		} else {
-			lookupFailed = true
-		}
+		sourceBeadIDs = append(sourceBeadIDs, fields.LastSourceIssue)
 	}
 	if fields.HookBead != "" {
-		if issue, err := bd.Show(fields.HookBead); err == nil {
-			refs = append(refs, attachmentTargetRefs(bd, issue)...)
-		} else {
+		sourceBeadIDs = append(sourceBeadIDs, fields.HookBead)
+	}
+	for _, sourceBeadID := range sourceBeadIDs {
+		bead, err := bd.Show(sourceBeadID)
+		if err != nil {
 			lookupFailed = true
+			continue
 		}
+		refs = append(refs, attachmentTargetRefs(bd, bead)...)
 	}
 	return uniqueRefs(refs), lookupFailed
 }

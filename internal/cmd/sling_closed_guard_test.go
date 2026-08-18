@@ -45,7 +45,7 @@ exit 0
 		TownRoot: townRoot,
 	}
 
-	result, err := executeSling(context.Background(), params)
+	result, err := runTownSling(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected error when slinging closed bead, got nil")
 	}
@@ -93,7 +93,7 @@ exit 0
 		TownRoot: townRoot,
 	}
 
-	result, err := executeSling(context.Background(), params)
+	result, err := runTownSling(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected error when slinging tombstone bead, got nil")
 	}
@@ -143,7 +143,7 @@ exit 0
 		Force:    true, // --force should NOT bypass closed guard
 	}
 
-	_, err := executeSling(context.Background(), params)
+	_, err := runTownSling(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected error when slinging closed bead with --force, got nil")
 	}

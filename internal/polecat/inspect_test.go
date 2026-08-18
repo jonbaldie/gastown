@@ -52,6 +52,7 @@ func TestInspectWorkstateActiveMRBlocksReuse(t *testing.T) {
 		shows: map[string]string{
 			"gt-mr": `[{"id":"gt-mr","title":"MR","status":"open","issue_type":"task","labels":["gt:merge-request"],"description":"branch: polecat/toast\ntarget: main\n"}]`,
 		},
+		rigOnlyShows: map[string]bool{"gt-mr": true},
 	})
 	got := InspectWorkstate("toast", env.bd, env.clone, StateIdle, "")
 	if got.Reusable || got.Verdict != WorkstateVerdictPendingMR {
@@ -60,9 +61,10 @@ func TestInspectWorkstateActiveMRBlocksReuse(t *testing.T) {
 }
 
 type inspectWorkstateFixture struct {
-	agentDesc string
-	shows     map[string]string
-	dirtyGit  bool
+	agentDesc    string
+	shows        map[string]string
+	rigOnlyShows map[string]bool
+	dirtyGit     bool
 }
 
 type inspectWorkstateEnv struct {
@@ -77,7 +79,19 @@ func setupInspectWorkstateEnv(t *testing.T, fx inspectWorkstateFixture) inspectW
 	}
 
 	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {
+		t.Fatalf("mkdir mayor: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "town.json"), []byte(`{"version":1}`), 0644); err != nil {
+		t.Fatalf("write town marker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir town beads: %v", err)
+	}
 	rigPath := filepath.Join(townRoot, "testrig")
+	if err := os.MkdirAll(filepath.Join(rigPath, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir rig beads: %v", err)
+	}
 	clone := filepath.Join(rigPath, "polecats", "toast", "testrig")
 	if err := os.MkdirAll(clone, 0755); err != nil {
 		t.Fatalf("mkdir clone: %v", err)
@@ -90,7 +104,7 @@ func setupInspectWorkstateEnv(t *testing.T, fx inspectWorkstateFixture) inspectW
 	}
 	agentJSON := `[{"id":"gt-testrig-polecat-toast","title":"agent","issue_type":"agent","status":"open","description":` + jsonString(fx.agentDesc) + `}]`
 	binDir := t.TempDir()
-	script := inspectBdStub(agentJSON, shows)
+	script := inspectBdStub(agentJSON, shows, fx.rigOnlyShows)
 	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0755); err != nil {
 		t.Fatalf("write bd stub: %v", err)
 	}
@@ -133,11 +147,16 @@ func initInspectGitClone(t *testing.T, clone string, dirty bool) {
 	_ = git.NewGit(clone)
 }
 
-func inspectBdStub(agentJSON string, shows map[string]string) string {
+func inspectBdStub(agentJSON string, shows map[string]string, rigOnlyShows map[string]bool) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\ncmd=\"\"\nid=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --*) ;;\n    *)\n      if [ -z \"$cmd\" ]; then cmd=\"$arg\"; fi\n      if [ \"$prev\" = \"show\" ]; then id=\"$arg\"; fi\n      prev=\"$arg\"\n      ;;\n  esac\ndone\ncase \"$cmd\" in\n  list)\n    echo '[]'\n    ;;\n  show)\n    case \"$id\" in\n")
 	for id, payload := range shows {
-		b.WriteString("      " + id + ")\n        printf '%s\\n' '" + strings.ReplaceAll(payload, "'", "'\"'\"'") + "'\n        ;;\n")
+		b.WriteString("      " + id + ")\n")
+		if rigOnlyShows[id] {
+			b.WriteString("        case \"$BEADS_DIR\" in\n          *testrig/.beads*)\n            printf '%s\\n' '" + strings.ReplaceAll(payload, "'", "'\"'\"'") + "'\n            ;;\n          *)\n            echo '[]'\n            ;;\n        esac\n        ;;\n")
+		} else {
+			b.WriteString("        printf '%s\\n' '" + strings.ReplaceAll(payload, "'", "'\"'\"'") + "'\n        ;;\n")
+		}
 	}
 	b.WriteString("      *)\n        printf '%s\\n' '" + strings.ReplaceAll(agentJSON, "'", "'\"'\"'") + "'\n        ;;\n    esac\n    ;;\n  *)\n    echo '[]'\n    ;;\nesac\n")
 	return b.String()

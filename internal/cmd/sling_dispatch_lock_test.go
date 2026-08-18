@@ -51,7 +51,7 @@ exit 0
 		TownRoot: townRoot,
 	}
 
-	_, err = executeSling(context.Background(), params)
+	_, err = runTownSling(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected executeSling to fail when lock is held, got nil error")
 	}
@@ -93,13 +93,13 @@ exit 0
 	}
 
 	// First call — acquires lock, fails on closed guard, releases lock
-	_, err := executeSling(context.Background(), params)
+	_, err := runTownSling(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected closed guard error")
 	}
 
 	// Second call — should acquire the lock (not contention error)
-	_, err = executeSling(context.Background(), params)
+	_, err = runTownSling(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected closed guard error on second call")
 	}

@@ -17,11 +17,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/workspace"
 )
 
-// executeSling is the test adapter around Lifecycle.Execute's one sequence.
-func executeSling(ctx context.Context, intent sling.Intent) (*SlingResult, error) {
-	return runTownSling(ctx, intent)
-}
-
 // SlingResult captures the outcome of one Lifecycle attempt for caller-level tracking.
 type SlingResult struct {
 	BeadID           string
@@ -115,7 +110,11 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 	originalStatus := info.Status
 	originalAssignee := info.Assignee
 
-	dest, movedID, err := resolveSlingDestination(intent, townRoot, explicitForce)
+	if err := ctx.Err(); err != nil {
+		result.ErrMsg = err.Error()
+		return result, err
+	}
+	dest, movedID, err := resolveSlingDestination(ctx, intent, townRoot, explicitForce)
 	if err != nil {
 		result.ErrMsg = err.Error()
 		return result, err
@@ -180,7 +179,11 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 		}
 	}
 
-	if err := forceClearOldHook(intent, info, targetAgent, townRoot); err != nil {
+	if err := ctx.Err(); err != nil {
+		result.ErrMsg = err.Error()
+		return result, err
+	}
+	if err := forceClearOldHook(ctx, intent, info, targetAgent, townRoot); err != nil {
 		result.ErrMsg = err.Error()
 		return result, err
 	}
@@ -343,6 +346,11 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		compensate(beadToHook, "Sling cancelled")
+		result.ErrMsg = err.Error()
+		return result, err
+	}
 	hookDir := beads.ResolveHookDir(townRoot, beadToHook, hookWorkDir)
 	if err := hookBeadWithRetryWithTownRootFn(beadToHook, targetAgent, hookDir, townRoot); err != nil {
 		compensate(beadToHook, "Hook failed")
@@ -351,7 +359,9 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 	}
 
 	if targetAgent == "mayor/" {
-		nudgeMayorHook(townRoot, beadToHook)
+		if err := nudgeMayorHook(townRoot, beadToHook); err != nil {
+			fmt.Printf("%s Could not nudge Mayor after Hook: %v\n", style.Dim.Render("Warning:"), err)
+		}
 	}
 
 	if spawnInfo != nil {
@@ -360,7 +370,9 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 		fmt.Printf("%s Work attached to hook (status=hooked)\n", style.Bold.Render("✓"))
 	}
 
-	_ = events.LogFeed(events.TypeSling, actor, events.SlingPayload(beadToHook, targetAgent))
+	if err := events.LogFeed(events.TypeSling, actor, events.SlingPayload(beadToHook, targetAgent)); err != nil {
+		fmt.Printf("%s Could not record sling event: %v\n", style.Dim.Render("Warning:"), err)
+	}
 
 	if !dest.HookSetAtomically {
 		if err := updateAgentHookBead(targetAgent, beadToHook, hookWorkDir, beadsDir); err != nil {
@@ -480,7 +492,10 @@ func slingSameTarget(intent sling.Intent, info *beadInfo, townRoot string) (same
 	return matchesSlingTarget(intent.Target, info.Assignee, ""), formulaRefresh
 }
 
-func resolveSlingDestination(intent sling.Intent, townRoot string, explicitForce bool) (slingDestination, string, error) {
+func resolveSlingDestination(ctx context.Context, intent sling.Intent, townRoot string, explicitForce bool) (slingDestination, string, error) {
+	if err := ctx.Err(); err != nil {
+		return slingDestination{}, "", err
+	}
 	if intent.RigName != "" {
 		movedID, err := ensureBeadInTargetRig(intent.BeadID, intent.RigName, townRoot, intent.DryRun)
 		if err != nil {
@@ -560,7 +575,7 @@ func resolveSlingDestination(intent sling.Intent, townRoot string, explicitForce
 	return dest, "", nil
 }
 
-func forceClearOldHook(intent sling.Intent, info *beadInfo, targetAgent, townRoot string) error {
+func forceClearOldHook(ctx context.Context, intent sling.Intent, info *beadInfo, targetAgent, townRoot string) error {
 	if info == nil || (info.Status != "hooked" && info.Status != "in_progress") || !intent.Force || info.Assignee == "" {
 		return nil
 	}
@@ -622,8 +637,9 @@ func forceClearOldHook(intent sling.Intent, info *beadInfo, targetAgent, townRoo
 	if err := BdCmd("update", intent.BeadID, "--status=open", "--assignee=").
 		Dir(unhookDir).
 		WithAutoCommit().
+		WithContext(ctx).
 		Run(); err != nil {
-		fmt.Printf("%s Could not unhook bead from old owner: %v\n", style.Dim.Render("Warning:"), err)
+		return fmt.Errorf("unhook bead %s from old owner: %w", intent.BeadID, err)
 	}
 	return nil
 }
@@ -674,23 +690,23 @@ func printSlingDryRun(intent sling.Intent, info *beadInfo, formulaName, targetAg
 	fmt.Printf("Would inject start prompt to pane: %s\n", targetPane)
 }
 
-func nudgeMayorHook(townRoot, beadID string) {
+func nudgeMayorHook(townRoot, beadID string) error {
 	message := fmt.Sprintf("Hook updated: attached bead %s", beadID)
 	if root, err := workspace.FindFromCwd(); err == nil && root != "" {
-		_ = nudge.Enqueue(root, "hq-mayor", nudge.QueuedNudge{
+		return nudge.Enqueue(root, "hq-mayor", nudge.QueuedNudge{
 			Sender:   "sling",
 			Message:  message,
 			Priority: nudge.PriorityNormal,
 		})
-		return
 	}
 	if townRoot != "" {
-		_ = nudge.Enqueue(townRoot, "hq-mayor", nudge.QueuedNudge{
+		return nudge.Enqueue(townRoot, "hq-mayor", nudge.QueuedNudge{
 			Sender:   "sling",
 			Message:  message,
 			Priority: nudge.PriorityNormal,
 		})
 	}
+	return fmt.Errorf("mayor nudge has no town root")
 }
 
 // isDefaultRigSlingNoop reports whether this rig dispatch would only repeat
