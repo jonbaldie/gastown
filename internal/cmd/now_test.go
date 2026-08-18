@@ -386,6 +386,18 @@ func TestBeadIDFromCreateOutput(t *testing.T) {
 	}
 }
 
+func TestNowTestEnvStripsSharedDoltContainerPort(t *testing.T) {
+	t.Setenv("BEADS_DOLT_PORT", "32769")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "dockerdb")
+	env := nowTestEnv(t, t.TempDir(), t.TempDir(), "now-env", true)
+	for _, entry := range env {
+		key, val, _ := strings.Cut(entry, "=")
+		if key == "BEADS_DOLT_PORT" || key == "BEADS_DOLT_SERVER_DATABASE" {
+			t.Fatalf("nowTestEnv leaked %s=%s from the shared integration container", key, val)
+		}
+	}
+}
+
 func withoutEnvKeys(env []string, keys ...string) []string {
 	drop := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
@@ -942,7 +954,12 @@ func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string 
 	for _, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
-		case "HOME", "PATH", "GT_TMUX_SOCKET", "BEADS_DOLT_AUTO_START", "GT_DOLT_PORT", "GT_TOWN_ROOT", "GT_ROOT":
+		case "HOME", "PATH", "GT_TMUX_SOCKET", "BEADS_DOLT_AUTO_START", "GT_DOLT_PORT", "GT_TOWN_ROOT", "GT_ROOT",
+			// Integration TestMain pins a shared Docker Dolt via BEADS_DOLT_PORT.
+			// gt now tests start a per-town server on GT_DOLT_PORT; leaking the
+			// container port makes `bd -C` look at the wrong server (no rig DB).
+			"BEADS_DOLT_PORT", "BEADS_DOLT_SERVER_PORT", "BEADS_DOLT_SERVER_HOST",
+			"BEADS_DOLT_SERVER_DATABASE", "BEADS_DIR", "BEADS_DB", "BD_DIR":
 			continue
 		}
 		filtered = append(filtered, entry)
