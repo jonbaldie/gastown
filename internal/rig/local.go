@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -128,22 +127,9 @@ func (m *Manager) InitLocalRigBeads(name string) error {
 		return fmt.Errorf("rig name cannot be empty")
 	}
 	rigPath := filepath.Join(m.townRoot, name)
-	cfg, err := LoadRigConfig(rigPath)
+	prefix, err := localRigBeadsPrefix(rigPath, name)
 	if err != nil {
-		return fmt.Errorf("loading rig config: %w", err)
-	}
-	prefix := ""
-	if cfg.Beads != nil {
-		prefix = strings.TrimSpace(cfg.Beads.Prefix)
-	}
-	if prefix == "" {
-		prefix = deriveBeadsPrefix(name)
-	}
-
-	if _, err := exec.LookPath("dolt"); err == nil {
-		if _, _, err := doltserver.InitRig(m.townRoot, name); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Could not create rig Dolt database: %v\n", err)
-		}
+		return fmt.Errorf("loading rig prefix: %w", err)
 	}
 
 	if err := m.InitBeads(rigPath, prefix, name); err != nil {
@@ -163,10 +149,34 @@ func (m *Manager) InitLocalRigBeads(name string) error {
 	}); err != nil {
 		return fmt.Errorf("registering beads route: %w", err)
 	}
-	if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not create agent beads: %v\n", err)
-	}
 	return nil
+}
+
+func localRigBeadsPrefix(rigPath, name string) (string, error) {
+	cfg, err := LoadRigConfig(rigPath)
+	if err != nil {
+		return "", err
+	}
+	if cfg.Beads != nil {
+		if prefix := strings.TrimSpace(cfg.Beads.Prefix); prefix != "" {
+			return prefix, nil
+		}
+	}
+	return deriveBeadsPrefix(name), nil
+}
+
+// InitRigAgentBeads creates Witness and Refinery Beads for a local Rig.
+// gt now defers this so the five-second Mayor path can sling first.
+func (m *Manager) InitRigAgentBeads(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("rig name cannot be empty")
+	}
+	rigPath := filepath.Join(m.townRoot, name)
+	prefix, err := localRigBeadsPrefix(rigPath, name)
+	if err != nil {
+		return fmt.Errorf("loading rig config: %w", err)
+	}
+	return m.initAgentBeads(rigPath, name, prefix)
 }
 
 // FindByLocalRepo returns the registered rig whose LocalRepo matches srcRepo.

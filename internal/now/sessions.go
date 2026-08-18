@@ -191,5 +191,24 @@ func provisionTown(townRoot string, hooks Hooks) error {
 			errs = append(errs, fmt.Errorf("initializing agent beads: %w", err))
 		}
 	}
+	if err := initAllRigAgentBeads(townRoot); err != nil {
+		errs = append(errs, fmt.Errorf("initializing rig agent beads: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func initAllRigAgentBeads(townRoot string) error {
+	rigsPath := constants.MayorRigsPath(townRoot)
+	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	if err != nil {
+		return fmt.Errorf("loading rigs.json: %w", err)
+	}
+	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+	var errs []error
+	for name := range rigsConfig.Rigs {
+		if err := mgr.InitRigAgentBeads(name); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+		}
+	}
 	return errors.Join(errs...)
 }
