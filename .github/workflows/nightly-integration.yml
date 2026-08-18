@@ -53,5 +53,13 @@ jobs:
 
       - name: Run all integration tests
         run: |
+          status=0
+
           gotestsum --format testname --junitfile junit.xml -- \
-            -tags='integration scheduler_integration' -timeout=30m ./...
+            -tags=integration -timeout=20m ./... || status=1
+
+          gotestsum --format testname --junitfile junit-scheduler.xml -- \
+            -tags='integration scheduler_integration' -timeout=20m \
+            -run '^(TestScheduler|TestScheduleBead_)' ./internal/cmd || status=1
+
+          exit "$status"

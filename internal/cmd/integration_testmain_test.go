@@ -12,9 +12,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// This package mixes Dolt-backed tests that share one sql-server with
-	// unit tests that call t.Parallel(). Concurrent bd init takes that
-	// server down, so the integration binary stays serial on every OS.
+	// Force sequential execution. Shared-Dolt tests must not overlap
+	// (concurrent bd init takes the sql-server down), and Windows hits
+	// bd file locks when the binary is parallel.
 	_ = flag.Set("test.parallel", "1")
 	flag.Parse()
 

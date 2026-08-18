@@ -199,8 +199,19 @@ jobs:
 
       - name: Integration Tests
         run: |
+          status=0
+
           gotestsum --format testname --junitfile junit-integration.xml -- \
-            -tags='integration scheduler_integration' -timeout=30m ./internal/cmd/...
+            -tags=integration -timeout=30m ./internal/cmd/... || status=1
+
+          # Separate process so scheduler coverage does not share the 30m
+          # integration budget. One invocation covers every TestScheduler*
+          # / TestScheduleBead_* name; native Dolt start is cheap.
+          gotestsum --format testname --junitfile junit-scheduler.xml -- \
+            -tags='integration scheduler_integration' -timeout=20m \
+            -run '^(TestScheduler|TestScheduleBead_)' ./internal/cmd || status=1
+
+          exit "$status"
 
       - name: Test Report
         if: always()
@@ -208,7 +219,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          python3 .github/scripts/junit-report.py junit-integration.xml "Integration Test Failures"
+          status=0
+          python3 .github/scripts/junit-report.py junit-integration.xml "Integration Test Failures" || status=1
+          python3 .github/scripts/junit-report.py junit-scheduler.xml "Scheduler Integration Failures" || status=1
+          exit "$status"
 
   go-install:
     name: Public go install
