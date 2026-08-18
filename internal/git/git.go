@@ -97,8 +97,20 @@ func (g *Git) IsRepo() bool {
 	return err == nil
 }
 
-// run executes a git command and returns stdout.
+// run executes a git command and returns trimmed stdout.
 func (g *Git) run(args ...string) (string, error) {
+	out, err := g.runOutput(args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// runOutput executes a git command and returns stdout without trimming.
+// Porcelain status lines start with a space for unstaged worktree edits
+// (" M file"). TrimSpace would turn that into "M file" and drop the first
+// path character during parse.
+func (g *Git) runOutput(args ...string) (string, error) {
 	if err := g.guardUnsafeTownRootMutation(args); err != nil {
 		return "", err
 	}
@@ -123,7 +135,7 @@ func (g *Git) run(args ...string) (string, error) {
 		return "", g.wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }
 
 // pushTimeout is the maximum time a git push is allowed to run before being
@@ -1202,11 +1214,51 @@ func (g *Git) PushWithEnv(remote, branch string, force bool, env []string) error
 	return err
 }
 
-// Add stages files for commit.
+// Add stages files for commit. Paths are passed after `--` so a filename
+// cannot be interpreted as a git-add flag.
 func (g *Git) Add(paths ...string) error {
-	args := append([]string{"add"}, paths...)
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"add", "--"}, paths...)
 	_, err := g.run(args...)
 	return err
+}
+
+// StageSafetyNet stages recoverable implementation work for a safety-net commit.
+// It does not run git add -A. It skips runtime artifacts, tracked-file
+// deletions, and binary files such as a locally built gt executable.
+func (g *Git) StageSafetyNet() error {
+	status, err := g.Status()
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for _, p := range append(append([]string{}, status.Modified...), status.Added...) {
+		if isSafetyNetSkipped(g.workDir, p) {
+			continue
+		}
+		paths = append(paths, p)
+	}
+	for _, p := range status.Untracked {
+		if isSafetyNetSkipped(g.workDir, p) {
+			continue
+		}
+		paths = append(paths, p)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	return g.Add(paths...)
+}
+
+// HasStagedChanges reports whether the index has a staged diff.
+func (g *Git) HasStagedChanges() (bool, error) {
+	out, err := g.run("diff", "--cached", "--name-only")
+	if err != nil {
+		return false, err
+	}
+	return out != "", nil
 }
 
 // Commit creates a commit with the given message.
@@ -1302,10 +1354,11 @@ type porcelainStatusEntry struct {
 
 // Status returns the current git status.
 func (g *Git) Status() (*GitStatus, error) {
-	out, err := g.run("status", "--porcelain", "-uall")
+	out, err := g.runOutput("status", "--porcelain", "-uall")
 	if err != nil {
 		return nil, err
 	}
+	out = strings.TrimRight(out, "\n")
 
 	status := &GitStatus{Clean: true}
 	if out == "" {
@@ -3198,6 +3251,58 @@ func isGasTownRuntimePath(path string) bool {
 	return ok
 }
 
+// gitBinarySniffBytes is git's binary heuristic window: a NUL in the first
+// 8000 bytes marks the file as binary.
+const gitBinarySniffBytes = 8000
+
+func isSafetyNetSkipped(workDir, path string) bool {
+	if isGasTownRuntimePath(path) {
+		return true
+	}
+	if workDir == "" {
+		return false
+	}
+	return fileLooksBinary(filepath.Join(workDir, path))
+}
+
+func fileLooksBinary(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	f, err := os.Open(path) //nolint:gosec // G304: path is a git worktree relative file
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, gitBinarySniffBytes)
+	n, _ := f.Read(buf)
+	if n == 0 {
+		return false
+	}
+	return looksBinary(buf[:n])
+}
+
+func looksBinary(buf []byte) bool {
+	if hasExecutableMagic(buf) {
+		return true
+	}
+	return bytes.IndexByte(buf, 0) >= 0
+}
+
+func hasExecutableMagic(buf []byte) bool {
+	if len(buf) >= 4 && buf[0] == 0x7f && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'F' {
+		return true
+	}
+	if len(buf) >= 4 && buf[0] == 0x00 && buf[1] == 'a' && buf[2] == 's' && buf[3] == 'm' {
+		return true
+	}
+	if len(buf) >= 2 && buf[0] == 'M' && buf[1] == 'Z' {
+		return true
+	}
+	return false
+}
+
 // RuntimeArtifactPathspecs returns deduplicated git pathspecs for runtime
 // artifacts in paths. Callers can pass the result to git reset after git add
 // to keep generated state out of safety-net commits.
@@ -3259,6 +3364,29 @@ func (s *UncommittedWorkStatus) CleanExcludingRuntime() bool {
 
 	for _, f := range s.UntrackedFiles {
 		if !isGasTownRuntimePath(f) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// CleanExcludingSafetyNet returns true when the only uncommitted file changes
+// are runtime artifacts or binary files. Safety-net auto-save must not commit
+// those, and gt done must not block on them after a source-only auto-save.
+func (s *UncommittedWorkStatus) CleanExcludingSafetyNet(workDir string) bool {
+	if len(s.UnmergedFiles) > 0 {
+		return false
+	}
+
+	for _, f := range s.ModifiedFiles {
+		if !isSafetyNetSkipped(workDir, f) {
+			return false
+		}
+	}
+
+	for _, f := range s.UntrackedFiles {
+		if !isSafetyNetSkipped(workDir, f) {
 			return false
 		}
 	}
