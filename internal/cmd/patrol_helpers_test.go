@@ -811,6 +811,8 @@ func requireBd(t *testing.T) {
 
 func setupPatrolTestDB(t *testing.T) (string, *beads.Beads) {
 	t.Helper()
+	// Callers must not use t.Parallel(): these tests share TestMain's
+	// sql-server, and concurrent bd init takes that server down.
 	testutil.RequireDoltContainer(t)
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	tmpDir := t.TempDir()

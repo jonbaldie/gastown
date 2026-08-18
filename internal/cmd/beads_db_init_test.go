@@ -79,9 +79,9 @@ func createTrackedBeadsRepoWithIssues(t *testing.T, path, prefix string, numIssu
 	}
 
 	// Run bd init (pass --server for bd v1.0.0+ which defaults to embedded mode)
-	bdInitArgs := []string{"init", "--prefix", prefix}
+	bdInitArgs := []string{"init", "--prefix", prefix, "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"}
 	if p := os.Getenv("GT_DOLT_PORT"); p != "" {
-		bdInitArgs = append(bdInitArgs, "--server", "--server-port", p)
+		bdInitArgs = append(bdInitArgs, "--server", "--external", "--server-port", p)
 	}
 	cmd := exec.Command("bd", bdInitArgs...)
 	cmd.Dir = path

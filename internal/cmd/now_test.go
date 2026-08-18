@@ -1033,6 +1033,13 @@ func TestNowDoctorFailsWhenMayorBinaryMissing(t *testing.T) {
 
 func requireNowStack(t *testing.T) {
 	t.Helper()
+	// Integration TestMain publishes a shared sql-server through this env.
+	// gt now starts its own Dolt, daemon, and tmux; those tests already run
+	// in the unit job. Running them here races the shared server and the
+	// five-second contract (main's integration job failed both after #72).
+	if os.Getenv("GT_TEST_EXTERNAL_DOLT") == "1" {
+		t.Skip("gt now tests start their own Dolt; skip in the integration TestMain suite")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}

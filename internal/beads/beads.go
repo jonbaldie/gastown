@@ -719,8 +719,8 @@ func (b *Beads) forIssueID(id string) *Beads {
 
 // Init initializes a new beads database in the working directory.
 // This uses the same environment isolation as other commands.
-// If ServerPort is set (via NewIsolatedWithPort), passes --server-port to bd init
-// so the database is created on the test Dolt server.
+// If ServerPort is set (via NewIsolatedWithPort), bd init targets that
+// external Dolt SQL server and skips hooks/agent-file generation.
 func (b *Beads) Init(prefix string) error {
 	args := []string{"init"}
 	if prefix != "" {
@@ -728,7 +728,14 @@ func (b *Beads) Init(prefix string) error {
 	}
 	args = append(args, "--quiet")
 	if b.serverPort > 0 {
-		args = append(args, "--server", "--server-port", fmt.Sprintf("%d", b.serverPort))
+		args = append(args,
+			"--server",
+			"--server-port", fmt.Sprintf("%d", b.serverPort),
+			"--external",
+			"--non-interactive",
+			"--skip-hooks",
+			"--skip-agents",
+		)
 	}
 	_, err := b.run(args...)
 	return err

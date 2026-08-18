@@ -112,7 +112,7 @@ func initBeadsDB(t *testing.T, dir string) {
 	t.Helper()
 	testutil.RequireDoltContainer(t)
 
-	cmd := exec.Command("bd", "init", "--server", "--server-port", testutil.DoltContainerPort())
+	cmd := exec.Command("bd", "init", "--server", "--external", "--non-interactive", "--skip-hooks", "--skip-agents", "--server-port", testutil.DoltContainerPort())
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bd init failed: %v\n%s", err, output)

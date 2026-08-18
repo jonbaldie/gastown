@@ -41,6 +41,8 @@ var schedulerTestCounter atomic.Int32
 // metadata.json so subsequent bd commands reach the test server.
 func initBeadsDBForServer(t *testing.T, dir, prefix, homeDir string) {
 	t.Helper()
+	// Callers must not use t.Parallel(): these tests share TestMain's
+	// sql-server, and concurrent bd init takes that server down.
 	initSchedulerGitRepo(t, dir, homeDir)
 
 	args := []string{"init", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents", "--prefix", prefix}

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **Integration tests prefer a native Dolt SQL server.** CI already installs
+  Dolt 2.0.7; TestMain starts `dolt sql-server` instead of a Docker
+  testcontainer. Native `dolt init` passes `--name`/`--email` so a clean
+  runner does not fall back to Docker after `Author identity unknown`.
+  Scheduler coverage stays a second `go test` process so it does not share
+  the 30m integration budget. The integration binary still uses
+  `--test.parallel=1` because those tests share one sql-server. `gt now`
+  tests skip in that suite (`GT_TEST_EXTERNAL_DOLT`); they keep running in
+  the unit job, including the five-second contract. Assertions are unchanged.
+
 ### Fixed
 
 - **`gt prime` standing skill lines survive Claude Code's SessionStart preview.**

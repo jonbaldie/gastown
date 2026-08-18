@@ -18,12 +18,14 @@ import (
 )
 
 var (
-	doltCtr     *dolt.DoltContainer
-	doltCtrOnce sync.Once
-	doltCtrErr  error
-	doltCtrPort string
-	dockerOnce  sync.Once
-	dockerAvail bool
+	doltCtr      *dolt.DoltContainer
+	doltNative   *nativeDoltServer
+	doltAttached bool
+	doltCtrOnce  sync.Once
+	doltCtrErr   error
+	doltCtrPort  string
+	dockerOnce   sync.Once
+	dockerAvail  bool
 )
 
 // isDockerAvailable returns true if the Docker daemon is reachable.
@@ -89,9 +91,14 @@ func runDoltContainerWithRetry(ctx context.Context) (*dolt.DoltContainer, error)
 	return nil, lastErr
 }
 
-// startSharedDoltContainer starts the shared Dolt container and sets
-// GT_DOLT_PORT and BEADS_DOLT_PORT process-wide.
-func startSharedDoltContainer() {
+func publishDoltPort(port string) {
+	doltCtrPort = port
+	os.Setenv("GT_DOLT_PORT", port)         //nolint:tenv // intentional process-wide env
+	os.Setenv("BEADS_DOLT_PORT", port)      //nolint:tenv // intentional process-wide env
+	os.Setenv("GT_TEST_EXTERNAL_DOLT", "1") //nolint:tenv // tests reuse this sql-server
+}
+
+func startSharedDockerDoltContainer() {
 	ctx := context.Background()
 	ctr, err := runDoltContainerWithRetry(ctx)
 	if err != nil {
@@ -107,19 +114,65 @@ func startSharedDoltContainer() {
 	}
 
 	doltCtr = ctr
-	doltCtrPort = p.Port()
-	os.Setenv("GT_DOLT_PORT", doltCtrPort)    //nolint:tenv // intentional process-wide env
-	os.Setenv("BEADS_DOLT_PORT", doltCtrPort) //nolint:tenv // intentional process-wide env
-	os.Setenv("GT_TEST_EXTERNAL_DOLT", "1")   //nolint:tenv // integration tests reuse this container
+	publishDoltPort(p.Port())
 }
 
-// StartIsolatedDoltContainer starts a per-test Dolt container and returns the
+// startSharedDoltContainer starts one shared Dolt SQL server for the test
+// process. Native `dolt sql-server` is preferred over Docker because CI already
+// installs that binary and container boot is the expensive part of the suite.
+func startSharedDoltContainer() {
+	port := envDoltPort()
+	portOK := port != "" && portListening("127.0.0.1", port)
+	backend := selectSharedDoltBackend(port, portOK, lookPathDolt(), false)
+	if backend == "none" && isDockerAvailable() {
+		backend = "docker"
+	}
+	switch backend {
+	case "attached":
+		doltAttached = true
+		publishDoltPort(port)
+		return
+	case "native":
+		srv, err := startNativeDoltSQLServer()
+		if err == nil {
+			doltNative = srv
+			publishDoltPort(srv.port)
+			return
+		}
+		if !isDockerAvailable() {
+			doltCtrErr = fmt.Errorf("starting native Dolt sql-server: %w", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "testutil: native dolt sql-server failed (%v); trying Docker\n", err)
+		startSharedDockerDoltContainer()
+	case "docker":
+		startSharedDockerDoltContainer()
+	default:
+		doltCtrErr = fmt.Errorf("no Dolt sql-server available: install the dolt binary or Docker")
+	}
+}
+
+// StartIsolatedDoltContainer starts a per-test Dolt SQL server and returns the
 // mapped host port. GT_DOLT_PORT is set via t.Setenv (scoped to the test).
-// The container is terminated automatically when the test finishes.
+// The server is terminated automatically when the test finishes.
 func StartIsolatedDoltContainer(t *testing.T) string {
 	t.Helper()
+	if lookPathDolt() != "" {
+		srv, err := startNativeDoltSQLServer()
+		if err != nil {
+			t.Fatalf("starting isolated Dolt sql-server: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := stopNativeDoltSQLServer(srv); err != nil {
+				t.Logf("stopping isolated Dolt sql-server: %v", err)
+			}
+		})
+		t.Setenv("GT_DOLT_PORT", srv.port)
+		return srv.port
+	}
+
 	if !isDockerAvailable() {
-		t.Skip("Docker not available, skipping test")
+		t.Skip("dolt binary and Docker are unavailable, skipping test")
 	}
 
 	ctx := context.Background()
@@ -146,32 +199,27 @@ func StartIsolatedDoltContainer(t *testing.T) string {
 	return portStr
 }
 
-// EnsureDoltContainerForTestMain starts a shared Dolt container for use in
-// TestMain functions. Call TerminateDoltContainer() after m.Run() to clean up.
-// Sets both GT_DOLT_PORT and BEADS_DOLT_PORT process-wide.
+// EnsureDoltContainerForTestMain starts a shared Dolt SQL server for TestMain.
+// Call TerminateDoltContainer() after m.Run() to clean up servers this package
+// started. Sets both GT_DOLT_PORT and BEADS_DOLT_PORT process-wide.
 func EnsureDoltContainerForTestMain() error {
-	if !isDockerAvailable() {
-		return fmt.Errorf("Docker not available")
-	}
-
 	doltCtrOnce.Do(startSharedDoltContainer)
 	return doltCtrErr
 }
 
-// RequireDoltContainer ensures a shared Dolt container is running. Skips the
-// test if Docker is not available.
+// RequireDoltContainer ensures a shared Dolt SQL server is running. Skips the
+// test if neither a dolt binary nor Docker can provide one.
 func RequireDoltContainer(t *testing.T) {
 	t.Helper()
-	if !isDockerAvailable() {
-		t.Skip("Docker not available, skipping test")
-	}
-
 	doltCtrOnce.Do(startSharedDoltContainer)
 	if doltCtrErr != nil {
 		if isDockerUnavailableErr(doltCtrErr) {
-			t.Skipf("Dolt container unavailable: %v", doltCtrErr)
+			t.Skipf("Dolt sql-server unavailable: %v", doltCtrErr)
 		}
-		t.Fatalf("Dolt container setup failed: %v", doltCtrErr)
+		if lookPathDolt() == "" && !isDockerAvailable() {
+			t.Skipf("Dolt sql-server unavailable: %v", doltCtrErr)
+		}
+		t.Fatalf("Dolt sql-server setup failed: %v", doltCtrErr)
 	}
 }
 
@@ -185,16 +233,28 @@ func DoltContainerPort() string {
 	return doltCtrPort
 }
 
-// TerminateDoltContainer stops and removes the shared Dolt container.
-// Called from TestMain after m.Run().
+// TerminateDoltContainer stops a Dolt SQL server that this package started.
+// Attached servers (GT_DOLT_PORT already live) are left running.
 func TerminateDoltContainer() {
+	if doltAttached {
+		doltAttached = false
+		doltCtrPort = ""
+		return
+	}
+	if doltNative != nil {
+		_ = stopNativeDoltSQLServer(doltNative)
+		doltNative = nil
+		doltCtrPort = ""
+		return
+	}
 	if doltCtr != nil {
 		_ = testcontainers.TerminateContainer(doltCtr)
 		doltCtr = nil
+		doltCtrPort = ""
 	}
 }
 
-// DoltContainersEnabled reports whether TestMain started a usable Dolt container.
+// DoltContainersEnabled reports whether TestMain has a usable Dolt SQL server.
 func DoltContainersEnabled() bool {
-	return doltCtr != nil && doltCtrErr == nil
+	return doltCtrPort != "" && doltCtrErr == nil
 }
