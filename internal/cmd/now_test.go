@@ -266,6 +266,52 @@ func TestNowDocumentedBdCreateUsesRigPrefix(t *testing.T) {
 	}
 }
 
+func TestNowRejectsPrefixCollisionDemoDesk(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	demoRepo := createNowGitRepo(t, filepath.Join(t.TempDir(), "demo"))
+	deskRepo := createNowGitRepo(t, filepath.Join(t.TempDir(), "desk"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := nowSocket("prefix")
+	env := nowTestEnv(t, home, bin, socket, false)
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	out, err := runGTCmdMayFail(t, gtBinary, demoRepo, env, "now", "--town", town, "--name", "demo", "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("gt now demo failed: %v\n%s", err, out)
+	}
+
+	deskOut, deskErr := runGTCmdMayFail(t, gtBinary, deskRepo, env, "now", "--town", town, "--name", "desk", "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if deskErr == nil {
+		t.Fatalf("gt now desk succeeded; demo and desk both derive prefix de:\n%s", deskOut)
+	}
+	if !strings.Contains(deskOut, "prefix") {
+		t.Fatalf("gt now desk error should name the prefix collision:\n%s", deskOut)
+	}
+
+	rigsJSON, readErr := os.ReadFile(filepath.Join(town, "mayor", "rigs.json"))
+	if readErr != nil {
+		t.Fatalf("reading mayor/rigs.json: %v", readErr)
+	}
+	text := string(rigsJSON)
+	if !strings.Contains(text, "demo") {
+		t.Fatalf("demo missing from rigs.json:\n%s", text)
+	}
+	if strings.Contains(text, "desk") {
+		t.Fatalf("failed gt now left desk in rigs.json:\n%s", text)
+	}
+	if _, statErr := os.Stat(filepath.Join(town, "desk")); !os.IsNotExist(statErr) {
+		t.Fatal("failed gt now left a half-made desk rig directory")
+	}
+}
+
 func waitNowRigBeadsReady(t *testing.T, town, rigDir string, env []string, nowOut string) {
 	t.Helper()
 	ready := filepath.Join(rigDir, ".beads", "gt-ready")

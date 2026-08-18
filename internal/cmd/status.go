@@ -126,6 +126,8 @@ type AgentRuntime struct {
 	Session           string `json:"session"`                      // tmux session name
 	Role              string `json:"role"`                         // Role type
 	Running           bool   `json:"running"`                      // Is tmux session running?
+	Blocked           bool   `json:"blocked,omitempty"`            // Pane is fully blocked on an interactive dialog
+	BlockReason       string `json:"block_reason,omitempty"`       // Why the pane is blocked (e.g. model picker)
 	ACP               bool   `json:"acp"`                          // Is ACP session active?
 	HasWork           bool   `json:"has_work"`                     // Has pinned work?
 	WorkTitle         string `json:"work_title,omitempty"`         // Title of pinned work
@@ -1535,6 +1537,20 @@ func renderAgentCompact(w io.Writer, agent AgentRuntime, indent string, hooks []
 	fmt.Fprintf(w, "%s%-12s %s%s%s%s\n", indent, agent.Name, statusIndicator, agentSuffix, hookSuffix, mailSuffix)
 }
 
+func applyPaneBlock(agent *AgentRuntime) {
+	if agent == nil || !agent.Running || agent.Session == "" {
+		return
+	}
+	content, err := tmux.NewTmux().CapturePane(agent.Session, 80)
+	if err != nil {
+		return
+	}
+	if name, ok := tmux.ContainsBlockingPane(content); ok {
+		agent.Blocked = true
+		agent.BlockReason = name
+	}
+}
+
 // buildStatusIndicator creates the visual status indicator for an agent.
 // Per gt-zecmc: uses tmux state (observable reality), not bead state.
 // Non-observable states (stuck, awaiting-gate, muted, etc.) are shown as suffixes.
@@ -1543,7 +1559,9 @@ func buildStatusIndicator(agent AgentRuntime) string {
 
 	// Base indicator from tmux state or ACP state
 	var indicator string
-	if sessionExists {
+	if agent.Blocked {
+		indicator = style.Warning.Render("●") + style.Warning.Render(" blocked")
+	} else if sessionExists {
 		indicator = style.Success.Render("●")
 	} else {
 		indicator = style.Error.Render("○")
@@ -1724,6 +1742,7 @@ func discoverGlobalAgents(townRoot string, allSessions map[string]bool, allAgent
 					agent.Running = true
 				}
 			}
+			applyPaneBlock(&agent)
 
 			// Look up agent bead from preloaded map (O(1))
 			if issue, ok := allAgentBeads[d.beadID]; ok {
@@ -1907,6 +1926,7 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 
 			// Check tmux session from preloaded map (O(1))
 			agent.Running = allSessions[d.session]
+			applyPaneBlock(&agent)
 
 			// Look up agent bead from preloaded map (O(1))
 			if issue, ok := allAgentBeads[d.beadID]; ok {

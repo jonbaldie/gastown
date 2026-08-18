@@ -242,6 +242,7 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 	d.Register(doctor.NewMalformedSessionNameCheck())
 	d.Register(doctor.NewOrphanSessionCheck())
 	d.Register(doctor.NewZombieSessionCheck())
+	d.Register(doctor.NewBlockedPaneCheck())
 	d.Register(doctor.NewStalledPolecatCheck())
 	d.Register(doctor.NewOrphanProcessCheck())
 	d.Register(doctor.NewWispGCCheck())
