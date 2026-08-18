@@ -116,9 +116,31 @@ const (
 	primeToSpecDirective             = "If you need to make a bead epic: use /to-spec's SKILL.md rigorously."
 	primeToTicketsDirective          = "If you need to make bead children or individual beads: use /to-tickets's SKILL.md rigorously."
 	primeConflictResolutionDirective = "Conflict-resolution beads: use /resolving-merge-conflicts's SKILL.md rigorously."
+
+	// Claude Code SessionStart persistHookOutput (anthropics/claude-code#44086):
+	// stdout over claudeHookInlineCap is not trimmed to the cap. It is replaced
+	// with a claudeHookPreviewCap preview plus a persisted-file path the model
+	// often ignores. Role formulas are 12–23KiB, so they always trip this cliff
+	// and standing skill lines at the tail never reach the agent.
+	claudeHookInlineCap  = 10000
+	claudeHookPreviewCap = 2000
+
+	primeHookTruncationNotice = "Role formula follows. If this SessionStart hook output was truncated to a preview, Read the persisted full file before continuing."
 )
 
+func standingSkillDirectives() []string {
+	return []string{
+		primeImplementDirective,
+		primeDiagnosingBugsDirective,
+		primeToSpecDirective,
+		primeToTicketsDirective,
+		primeConflictResolutionDirective,
+	}
+}
+
 // outputSkillDirectives emits the standing skill-use rules for every role session.
+// Callers must emit these before the role formula so they survive Claude Code's
+// SessionStart 2_000-character preview (see claudeHookPreviewCap).
 func outputSkillDirectives(w io.Writer) {
 	fmt.Fprintln(w, primeImplementDirective)
 	fmt.Fprintln(w, primeDiagnosingBugsDirective)
