@@ -52,7 +52,7 @@ func TestExecuteSling_ParkedRig(t *testing.T) {
 		TownRoot: townRoot,
 	}
 
-	result, err := executeSling(context.Background(), params)
+	result, err := runTownSling(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected error when slinging to parked rig, got nil")
 	}

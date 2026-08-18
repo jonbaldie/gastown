@@ -29,6 +29,7 @@ type bdCmd struct {
 	gtRoot     string
 	beadsDir   string
 	routing    bool
+	ctx        context.Context
 }
 
 // BdCmd creates a new bd command builder with the given arguments.
@@ -102,6 +103,12 @@ func (b *bdCmd) StripBeadsDir() *bdCmd {
 func (b *bdCmd) WithRouting() *bdCmd {
 	b.routing = true
 	b.env = filterEnvKey(b.env, "BEADS_DIR")
+	return b
+}
+
+// WithContext cancels the bd subprocess when ctx is done.
+func (b *bdCmd) WithContext(ctx context.Context) *bdCmd {
+	b.ctx = ctx
 	return b
 }
 
@@ -279,7 +286,7 @@ func (b *bdCmd) resolvedArgs() []string {
 // This is a convenience method equivalent to Build().Run().
 func (b *bdCmd) Run() error {
 	deadline := resolveBdCmdTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(b.parentContext(), deadline)
 	defer cancel()
 	return b.wrapCommandError(ctx, b.buildContextCommand(ctx).Run(), deadline)
 }
@@ -290,7 +297,7 @@ func (b *bdCmd) Run() error {
 // separately if you want to capture stderr instead of it going to os.Stderr.
 func (b *bdCmd) Output() ([]byte, error) {
 	deadline := resolveBdCmdTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(b.parentContext(), deadline)
 	defer cancel()
 	out, err := b.buildContextCommand(ctx).Output()
 	return out, b.wrapCommandError(ctx, err, deadline)
@@ -301,10 +308,17 @@ func (b *bdCmd) Output() ([]byte, error) {
 // Useful for including command output in error messages.
 func (b *bdCmd) CombinedOutput() ([]byte, error) {
 	deadline := resolveBdCmdTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(b.parentContext(), deadline)
 	defer cancel()
 	cmd := b.buildContextCommand(ctx)
 	cmd.Stderr = nil
 	out, err := cmd.CombinedOutput()
 	return out, b.wrapCommandError(ctx, err, deadline)
+}
+
+func (b *bdCmd) parentContext() context.Context {
+	if b != nil && b.ctx != nil {
+		return b.ctx
+	}
+	return context.Background()
 }

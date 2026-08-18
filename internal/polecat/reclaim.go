@@ -12,7 +12,10 @@ func brokenIdleReclaimDispositionBlocker(d WorkstateDisposition) string {
 	if d.Reason != "git-check-failed" {
 		return fmt.Sprintf("workstate=%s reason=%s", d.Verdict, d.Reason)
 	}
-	if len(d.Blockers) != 1 || d.Blockers[0] != "git_state=unknown" {
+	// Structural reclaim already proved the worktree is damaged. A single
+	// git-check-failed blocker is the expected Workstate for that clone,
+	// including the detailed git error InspectWorkstate now records.
+	if len(d.Blockers) != 1 {
 		return fmt.Sprintf("workstate blockers=%s", strings.Join(d.Blockers, ","))
 	}
 	return ""

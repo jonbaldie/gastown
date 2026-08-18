@@ -133,6 +133,11 @@ case "$cmd" in
       done
     fi
     ;;
+  close)
+    if [ -n "${BD_CLOSED_FILE:-}" ]; then
+      printf '%s\n' "${1:-}" >> "$BD_CLOSED_FILE"
+    fi
+    ;;
   version)
     echo "bd test"
     ;;
@@ -981,7 +986,7 @@ exit /b 0
 	prevSpawn := spawnPolecatForSling
 	prevResolveTargetAgent := resolveTargetAgentFn
 	prevRollback := rollbackSlingArtifactsFn
-	prevHook := hookBeadWithRetryFn
+	prevHook := hookBeadWithRetryWithTownRootFn
 	t.Cleanup(func() {
 		slingNoConvoy = prevNoConvoy
 		slingNoBoot = prevNoBoot
@@ -989,7 +994,7 @@ exit /b 0
 		spawnPolecatForSling = prevSpawn
 		resolveTargetAgentFn = prevResolveTargetAgent
 		rollbackSlingArtifactsFn = prevRollback
-		hookBeadWithRetryFn = prevHook
+		hookBeadWithRetryWithTownRootFn = prevHook
 	})
 	slingNoConvoy = true
 	slingNoBoot = true
@@ -1001,7 +1006,7 @@ exit /b 0
 	resolveTargetAgentFn = func(target string) (agentID string, pane string, hookRoot string, err error) {
 		return "", "", "", errors.New("simulated dead target")
 	}
-	hookBeadWithRetryFn = func(beadID, targetAgent, hookDir string) error {
+	hookBeadWithRetryWithTownRootFn = func(beadID, targetAgent, hookDir, townRoot string) error {
 		return errors.New("simulated hook failure")
 	}
 
@@ -1304,7 +1309,7 @@ exit 0
 		return nil
 	}
 
-	result, err := executeSling(context.Background(), sling.Intent{
+	result, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "hq-0yt",
 		RigName:     "clock",
 		TownRoot:    townRoot,
@@ -1617,7 +1622,7 @@ func TestExecuteSlingRejectsMissingTargetRigDatabaseBeforeSpawn(t *testing.T) {
 		return &SpawnedPolecatInfo{RigName: rigName, PolecatName: "toast", ClonePath: filepath.Join(townRoot, "fake-polecat")}, nil
 	}
 
-	_, err := executeSling(context.Background(), sling.Intent{
+	_, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:   "gt-r2405",
 		RigName:  "gastown",
 		TownRoot: townRoot,
@@ -2015,7 +2020,7 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 	prevNoConvoy := slingNoConvoy
 	prevDryRun := slingDryRun
 	prevResolve := resolveTargetAgentFn
-	prevHook := hookBeadWithRetryFn
+	prevHook := hookBeadWithRetryWithTownRootFn
 	t.Cleanup(func() {
 		slingHookRawBead = prevHookRaw
 		slingNoMerge = prevNoMerge
@@ -2023,7 +2028,7 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 		slingNoConvoy = prevNoConvoy
 		slingDryRun = prevDryRun
 		resolveTargetAgentFn = prevResolve
-		hookBeadWithRetryFn = prevHook
+		hookBeadWithRetryWithTownRootFn = prevHook
 	})
 	slingHookRawBead = true
 	slingNoMerge = true
@@ -2033,7 +2038,7 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 	resolveTargetAgentFn = func(target string) (string, string, string, error) {
 		return "gastown/crew/toast", "", workDir, nil
 	}
-	hookBeadWithRetryFn = func(beadID, targetAgent, hookDir string) error {
+	hookBeadWithRetryWithTownRootFn = func(beadID, targetAgent, hookDir, townRoot string) error {
 		assertHasRawReviewMetadata(t, readMutableBDDescription(t, descPath))
 		return errors.New("forced hook failure")
 	}
@@ -2070,7 +2075,7 @@ func TestExecuteSlingRawReviewOnlyHookFailureClearsPreHookMetadata(t *testing.T)
 		return errors.New("forced hook failure")
 	}
 
-	_, err := executeSling(context.Background(), sling.Intent{
+	_, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "gt-rawrollback",
 		RigName:     "gastown",
 		TownRoot:    townRoot,
@@ -2113,7 +2118,7 @@ func TestExecuteSlingRawReviewOnlyHookFailureRestoresOriginalMetadata(t *testing
 		return errors.New("forced hook failure")
 	}
 
-	_, err := executeSling(context.Background(), sling.Intent{
+	_, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "gt-rawrollback",
 		RigName:     "gastown",
 		TownRoot:    townRoot,
@@ -2159,7 +2164,7 @@ func TestExecuteSlingRawReviewOnlySuccessKeepsMetadata(t *testing.T) {
 		return nil
 	}
 
-	result, err := executeSling(context.Background(), sling.Intent{
+	result, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "gt-rawrollback",
 		RigName:     "gastown",
 		TownRoot:    townRoot,
@@ -2216,7 +2221,7 @@ func TestExecuteSlingStoresLocalMergeStrategyOnIssue(t *testing.T) {
 		return nil
 	}
 
-	result, err := executeSling(context.Background(), sling.Intent{
+	result, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "gt-rawrollback",
 		RigName:     "gastown",
 		TownRoot:    townRoot,

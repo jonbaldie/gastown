@@ -43,7 +43,7 @@ exit 0
 		return nil, nil
 	}
 
-	_, err := executeSling(context.Background(), sling.Intent{
+	_, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:   "gt-flaglike",
 		RigName:  "gastown",
 		TownRoot: townRoot,
@@ -95,7 +95,7 @@ exit 0
 		return nil, nil
 	}
 
-	result, err := executeSling(context.Background(), sling.Intent{
+	result, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:   "gt-abc",
 		RigName:  "gastown",
 		Formula:  "mol-polecat-work",
@@ -141,7 +141,7 @@ exit 0
 	t.Cleanup(func() { isHookedAgentDeadFn = prevDead })
 	isHookedAgentDeadFn = func(string) bool { return false }
 
-	_, err := executeSling(context.Background(), sling.Intent{
+	_, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:   "gt-abc",
 		RigName:  "gastown",
 		Formula:  "mol-review",

@@ -34,7 +34,7 @@ func stubSlingSpawnAndHook(t *testing.T, townRoot string) {
 
 func executeRawSling(t *testing.T, townRoot, rigPath string, merge string) *SlingResult {
 	t.Helper()
-	result, err := executeSling(context.Background(), sling.Intent{
+	result, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "gt-rawrollback",
 		RigName:     "gastown",
 		TownRoot:    townRoot,
@@ -102,7 +102,7 @@ func TestExecuteSlingAppliesStoredLocalMergeToNewConvoy(t *testing.T) {
 		return nil
 	}
 
-	result, err := executeSling(context.Background(), sling.Intent{
+	result, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "gt-rawrollback",
 		RigName:     "gastown",
 		TownRoot:    townRoot,
@@ -131,7 +131,7 @@ func TestExecuteSlingFailsClosedWhenLocalMergePersistFails(t *testing.T) {
 	stubSlingSpawnAndHook(t, townRoot)
 	t.Setenv("BD_FAIL_DESCRIPTION_UPDATE", "1")
 
-	result, err := executeSling(context.Background(), sling.Intent{
+	result, err := runTownSling(context.Background(), sling.Intent{
 		BeadID:      "gt-rawrollback",
 		RigName:     "gastown",
 		TownRoot:    townRoot,
