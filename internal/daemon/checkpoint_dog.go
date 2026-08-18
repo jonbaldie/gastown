@@ -138,45 +138,17 @@ func (d *Daemon) checkpointWorktree(workDir, rigName, polecatName string) bool {
 		return false // Clean worktree
 	}
 
-	// Stage everything
-	if _, err := runGitCmd(workDir, "add", "-A"); err != nil {
-		d.logger.Printf("checkpoint_dog: git add -A failed in %s/%s: %v", rigName, polecatName, err)
+	g := gtgit.NewGit(workDir)
+	if err := g.StageSafetyNet(); err != nil {
+		d.logger.Printf("checkpoint_dog: staging safety-net changes failed in %s/%s: %v", rigName, polecatName, err)
 		return false
 	}
-
-	// Unstage runtime/ephemeral artifacts using the same centralized policy as
-	// gt done. Scanning staged paths catches tracked nested runtime dirs that
-	// git add -A can restage despite ignore rules.
-	stagedOut, err := runGitCmdRaw(workDir, "diff", "--cached", "--name-only", "-z")
+	staged, err := g.HasStagedChanges()
 	if err != nil {
-		d.logger.Printf("checkpoint_dog: git diff --cached failed in %s/%s: %v", rigName, polecatName, err)
+		d.logger.Printf("checkpoint_dog: checking staged changes failed in %s/%s: %v", rigName, polecatName, err)
 		return false
 	}
-	for _, pathspec := range gtgit.RuntimeArtifactPathspecs(splitNullSeparatedPaths(stagedOut)) {
-		if _, err := runGitCmd(workDir, "reset", "HEAD", "--", pathspec); err != nil {
-			d.logger.Printf("checkpoint_dog: git reset runtime artifact %q failed in %s/%s: %v", pathspec, rigName, polecatName, err)
-			return false
-		}
-	}
-
-	// Unstage deletions of tracked files. A checkpoint should preserve work
-	// (additions + modifications), never commit deletions of tracked files.
-	// This prevents the bug where a polecat's working tree has a missing
-	// tracked file and the checkpoint commits the deletion (gt-pvx fix).
-	if delOut, err := runGitCmd(workDir, "diff", "--cached", "--name-only", "--diff-filter=D"); err == nil {
-		if dels := strings.TrimSpace(delOut); dels != "" {
-			for _, f := range strings.Split(dels, "\n") {
-				if f != "" {
-					_, _ = runGitCmd(workDir, "reset", "HEAD", "--", f)
-				}
-			}
-		}
-	}
-
-	// Check if anything is staged after exclusions
-	diffOut, err := runGitCmd(workDir, "diff", "--cached", "--quiet")
-	if err == nil && strings.TrimSpace(diffOut) == "" {
-		// --quiet exits 0 if no diff → nothing staged
+	if !staged {
 		return false
 	}
 
@@ -248,18 +220,4 @@ func runGitCmdRaw(workDir string, args ...string) (string, error) {
 	}
 
 	return stdout.String(), nil
-}
-
-func splitNullSeparatedPaths(out string) []string {
-	if out == "" {
-		return nil
-	}
-	parts := strings.Split(out, "\x00")
-	paths := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part != "" {
-			paths = append(paths, part)
-		}
-	}
-	return paths
 }

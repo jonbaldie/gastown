@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to skip `InitBeads` and the town route, so `gt sling` failed with
   "cannot resolve target rig beads database". After Dolt is up, `gt now`
   now creates the Rig Dolt database, `.beads/`, and the town route.
+- **Auto-save safety net no longer commits untracked binaries.** `gt done`
+  and checkpoint_dog staged with `git add -A`, which committed a 2.3MB
+  locally built executable when `.gitignore` did not name it. Safety-net
+  staging now adds source files only and leaves binaries untracked.
 - **`gt now` no longer reports success over a dead Mayor.** SkipReady leaves
   remain-on-exit on so attach can proceed, which also keeps a tmux session
   after the Mayor command exits 0. The start path now requires a live pane
