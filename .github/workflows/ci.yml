@@ -100,11 +100,9 @@ jobs:
       - name: Build
         run: CGO_ENABLED=0 go build -v ./cmd/gt
 
-      - name: Test with Coverage
-        run: |
-          set -o pipefail
-          gotestsum --format testname --junitfile junit.xml -- -race -short -timeout=10m -coverprofile=coverage.out ./... 2>&1 | tee test-output.txt
-
+      # Run the latency contract before `go test -race ./...`. That suite
+      # leaves the runner hot (and can leave Dolt/tmux residue), which pushed
+      # a successful `gt now` to 6–7s and failed this 5s gate three times.
       - name: Test gt now five-second path
         run: |
           for attempt in 1 2 3; do
@@ -112,6 +110,11 @@ jobs:
             echo "gt now latency attempt $attempt failed; retrying" >&2
           done
           exit 1
+
+      - name: Test with Coverage
+        run: |
+          set -o pipefail
+          gotestsum --format testname --junitfile junit.xml -- -race -short -timeout=10m -coverprofile=coverage.out ./... 2>&1 | tee test-output.txt
 
       - name: Test Report
         if: always()
