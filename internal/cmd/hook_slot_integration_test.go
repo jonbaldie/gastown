@@ -112,7 +112,7 @@ func initBeadsDB(t *testing.T, dir string) {
 	t.Helper()
 	testutil.RequireDoltContainer(t)
 
-	cmd := exec.Command("bd", "init", "--server", "--server-port", testutil.DoltContainerPort())
+	cmd := exec.Command("bd", "init", "--server", "--external", "--non-interactive", "--skip-hooks", "--skip-agents", "--server-port", testutil.DoltContainerPort())
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bd init failed: %v\n%s", err, output)
@@ -121,6 +121,7 @@ func initBeadsDB(t *testing.T, dir string) {
 
 // TestHookSlot_BasicHook verifies that a bead can be hooked to an agent.
 func TestHookSlot_BasicHook(t *testing.T) {
+	t.Parallel()
 	// Skip if bd is not available
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")
@@ -177,6 +178,7 @@ func TestHookSlot_BasicHook(t *testing.T) {
 
 // TestHookSlot_Singleton verifies that only one bead can be hooked per agent.
 func TestHookSlot_Singleton(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")
 	}
@@ -251,6 +253,7 @@ func TestHookSlot_Singleton(t *testing.T) {
 
 // TestHookSlot_Unhook verifies that a bead can be unhooked by changing status.
 func TestHookSlot_Unhook(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")
 	}
@@ -307,6 +310,7 @@ func TestHookSlot_Unhook(t *testing.T) {
 
 // TestHookSlot_DifferentAgents verifies that different agents can have different hooks.
 func TestHookSlot_DifferentAgents(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")
 	}
@@ -398,6 +402,7 @@ func TestHookSlot_DifferentAgents(t *testing.T) {
 
 // TestHookSlot_HookPersistence verifies that hooks persist across beads object recreation.
 func TestHookSlot_HookPersistence(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")
 	}
@@ -453,6 +458,7 @@ func TestHookSlot_HookPersistence(t *testing.T) {
 
 // TestHookSlot_StatusTransitions tests valid status transitions for hooked beads.
 func TestHookSlot_StatusTransitions(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")
 	}

@@ -199,7 +199,7 @@ clean:
 test: test-makefile
 	go test ./...
 
-# Compiles testcontainers Dolt helpers. Use this for Docker-backed tests.
+# Compiles Dolt SQL server helpers (native dolt preferred, Docker fallback).
 test-integration:
 	go test -tags=integration ./...
 

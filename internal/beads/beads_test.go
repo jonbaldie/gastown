@@ -4884,7 +4884,7 @@ exit 0
 	}
 	log := string(data)
 	checks := []string{
-		"args=init --prefix covertest --quiet --server --server-port 19999",
+		"args=init --prefix covertest --quiet --server --server-port 19999 --external --non-interactive --skip-hooks --skip-agents",
 		"BEADS_DIR=" + filepath.Join(workDir, ".beads"),
 		"GT_DOLT_PORT=19999",
 		"BEADS_DOLT_SERVER_PORT=19999",

@@ -341,6 +341,7 @@ esac
 // TestRigAddCreatesCorrectStructure verifies that gt rig add creates
 // the expected directory structure.
 func TestRigAddCreatesCorrectStructure(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -509,6 +510,7 @@ func TestRigAddCreatesCorrectStructure(t *testing.T) {
 // TestRigAddRespectsDefaultAgent verifies that gt rig add scaffolds the polecat
 // config directory matching the town's default_agent setting (gt-vdx).
 func TestRigAddRespectsDefaultAgent(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -562,6 +564,7 @@ func TestRigAddRespectsDefaultAgent(t *testing.T) {
 // TestRigAddInitializesBeads verifies that beads is initialized with
 // the correct prefix.
 func TestRigAddInitializesBeads(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -631,6 +634,7 @@ func TestRigAddInitializesBeads(t *testing.T) {
 // TestRigAddUpdatesRoutes verifies that routes.jsonl is updated
 // with the new rig's route.
 func TestRigAddUpdatesRoutes(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -702,6 +706,7 @@ func TestRigAddUpdatesRoutes(t *testing.T) {
 // TestRigAddUpdatesRigsJson verifies that rigs.json is updated
 // with the new rig entry.
 func TestRigAddUpdatesRigsJson(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -753,6 +758,7 @@ func TestRigAddUpdatesRigsJson(t *testing.T) {
 // TestRigAddDerivesPrefix verifies that when no prefix is specified,
 // one is derived from the rig name.
 func TestRigAddDerivesPrefix(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -786,6 +792,7 @@ func TestRigAddDerivesPrefix(t *testing.T) {
 // TestRigAddCreatesRigConfig verifies that config.json contains
 // the correct rig configuration.
 func TestRigAddCreatesRigConfig(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -845,6 +852,7 @@ func TestRigAddCreatesRigConfig(t *testing.T) {
 // configures the upstream remote on both the bare repo and mayor clone,
 // and persists the URL to config.json and rigs.json.
 func TestRigAddWithUpstreamURL(t *testing.T) {
+	t.Parallel()
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
 
@@ -929,6 +937,7 @@ func TestRigAddWithUpstreamURL(t *testing.T) {
 
 // TestRigAddCreatesAgentDirs verifies that agent state files are created.
 func TestRigAddCreatesAgentDirs(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
@@ -976,6 +985,7 @@ func TestRigAddCreatesAgentDirs(t *testing.T) {
 // TestRigAddRejectsInvalidNames verifies that rig names with invalid
 // characters are rejected.
 func TestRigAddRejectsInvalidNames(t *testing.T) {
+	t.Parallel()
 	_ = mockBdCommand(t)
 	townRoot := setupTestTown(t)
 	gitURL := createTestGitRepo(t, "validname")
@@ -1016,6 +1026,7 @@ func TestRigAddRejectsInvalidNames(t *testing.T) {
 // TestRigAddCreatesAgentBeads verifies that gt rig add creates
 // witness and refinery agent beads via the manager's initAgentBeads.
 func TestRigAddCreatesAgentBeads(t *testing.T) {
+	t.Parallel()
 	requireDoltServer(t)
 	townRoot := setupTestTown(t)
 	bridgeDoltPidToTown(t, townRoot)

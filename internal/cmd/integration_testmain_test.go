@@ -12,16 +12,18 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Force sequential test execution to avoid bd file locks on Windows.
-	_ = flag.Set("test.parallel", "1")
+	// Windows bd file locks need serialized tests. Linux/macOS CI must not:
+	// this package mixes unit tests that call t.Parallel with Dolt-backed
+	// integration tests, and forcing parallel=1 made the whole job sequential.
+	if shouldSerializePackageTests() {
+		_ = flag.Set("test.parallel", "1")
+	}
 	flag.Parse()
 
-	// Start an ephemeral Dolt container for this package's integration tests.
+	// Start an ephemeral Dolt SQL server for this package's integration tests.
 	// Tests like TestAgentWorktreesStayClean and TestBeadsRoutingFromTownRoot
 	// spawn gt/bd subprocesses that create databases (e.g., "tr", "hq").
-	// By routing to an isolated container (via GT_DOLT_PORT), those databases
-	// are destroyed when the container is terminated at cleanup —
-	// preventing orphan accumulation in the shared production Dolt data dir.
+	// Routing those to GT_DOLT_PORT keeps them off the developer's town Dolt.
 	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "integration TestMain: dolt setup: %v\n", err)
 		os.Exit(1)
@@ -29,7 +31,6 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	// Clean up the shared Dolt container.
 	testutil.TerminateDoltContainer()
 	os.Exit(code)
 }

@@ -208,7 +208,7 @@ update script runs `go mod download` to refresh module deps after a pull.
 - Test (unit): `go test -short ./...`. Full suite is slow (~15-20 min) because many packages spawn
   real `git`/`tmux` subprocesses.
 - Integration tests are build-tagged and need Dolt: `go test -tags=integration ./internal/cmd/...`.
-  Dolt Docker helpers in `internal/testutil` compile only with `-tags=integration`.
+  Dolt helpers in `internal/testutil` compile only with `-tags=integration` and prefer a native `dolt sql-server`.
   Default `go test` uses skip stubs so unit compiles do not pull testcontainers.
 - Run the app: from a project git repository, `gt now` starts a town and attaches to the Mayor.
   `gt install <path>` still creates a dedicated HQ. Then `gt status`, `bd create/list/update/close`,

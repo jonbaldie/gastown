@@ -199,32 +199,8 @@ jobs:
 
       - name: Integration Tests
         run: |
-          status=0
-
           gotestsum --format testname --junitfile junit-integration.xml -- \
-            -tags=integration -timeout=30m -v ./internal/cmd/... || status=1
-
-          gotestsum --format testname --junitfile junit-scheduler-1.xml -- \
-            -tags='integration scheduler_integration' -timeout=15m -v \
-            -run '^(TestScheduler(CircuitBreakerExclusion|AutoConvoyCreation|BlockedStatusReporting|SlingDryRun|SlingContextIdempotency|SlingContextWorkBeadPristine))$' \
-            ./internal/cmd || status=1
-
-          gotestsum --format testname --junitfile junit-scheduler-2.xml -- \
-            -tags='integration scheduler_integration' -timeout=15m -v \
-            -run '^(TestScheduler(MultiRigDispatch|MultiRigEpicAutoResolve|ConvoyFlagRejection|EpicFlagRejection|EpicDetection|MixedBatchRejection|MultiRigConvoyAutoResolve))$' \
-            ./internal/cmd || status=1
-
-          gotestsum --format testname --junitfile junit-scheduler-3.xml -- \
-            -tags='integration scheduler_integration' -timeout=15m -v \
-            -run '^(TestScheduler(DisabledMode|DirectModeNoQueue|DeferredTaskWithoutRig|DeferredNonRigRejection|DeferredAcceptsDogTarget|DirectEpicDispatch|BatchEpicRejection))$' \
-            ./internal/cmd || status=1
-
-          gotestsum --format testname --junitfile junit-scheduler-4.xml -- \
-            -tags='integration scheduler_integration' -timeout=15m -v \
-            -run '^(TestScheduler(InvalidJSONContextCleanup|ActualDispatchRoutesPollutedEnvToTargetRig|FormulaDispatchRoutesPollutedEnvToTargetRig|DispatchFailureRecordedInContextSourceDB|DirectConvoyDispatch)|TestScheduleBead_(RefusesClosed|RefusesTombstone|ClosedForceDoesNotBypass))$' \
-            ./internal/cmd || status=1
-
-          exit "$status"
+            -tags='integration scheduler_integration' -timeout=30m ./internal/cmd/...
 
       - name: Test Report
         if: always()
@@ -232,13 +208,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          status=0
-          python3 .github/scripts/junit-report.py junit-integration.xml "Integration Test Failures" || status=1
-          python3 .github/scripts/junit-report.py junit-scheduler-1.xml "Scheduler Integration Failures 1" || status=1
-          python3 .github/scripts/junit-report.py junit-scheduler-2.xml "Scheduler Integration Failures 2" || status=1
-          python3 .github/scripts/junit-report.py junit-scheduler-3.xml "Scheduler Integration Failures 3" || status=1
-          python3 .github/scripts/junit-report.py junit-scheduler-4.xml "Scheduler Integration Failures 4" || status=1
-          exit "$status"
+          python3 .github/scripts/junit-report.py junit-integration.xml "Integration Test Failures"
 
   go-install:
     name: Public go install

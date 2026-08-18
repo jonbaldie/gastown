@@ -69,6 +69,7 @@ func setupRigBeadsDB(t *testing.T, rigPath, prefix string) *beads.Beads {
 // Regression test for gt-6ju:
 // Parked state should survive wisp cleanup when persisted in bead layer.
 func TestIsRigParked_WhenOnlyBeadLabelPresent(t *testing.T) {
+	t.Parallel()
 	townRoot := t.TempDir()
 	rigName := "testrig"
 	rigPath := filepath.Join(townRoot, rigName)

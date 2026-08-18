@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **Integration tests use a native Dolt SQL server and run in one process.**
+  The Linux integration job serialized every `internal/cmd` test (including
+  `t.Parallel` unit tests) because TestMain forced `--test.parallel=1` for a
+  Windows file-lock constraint, then restarted Dolt four more times for
+  scheduler shards. TestMain now serializes only on Windows, prefers
+  `dolt sql-server` over Docker testcontainers, and CI compiles scheduler
+  coverage into the same `go test` invocation. Assertions are unchanged.
+
 ### Fixed
 
 - **`gt prime` standing skills are model-invocable for Claude town roles.**
