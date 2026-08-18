@@ -1,11 +1,17 @@
 package doctor
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jonbaldie/gastown/internal/config"
+	"github.com/jonbaldie/gastown/internal/git"
+	"github.com/jonbaldie/gastown/internal/rig"
 )
 
 func installMockBdInitOnly(t *testing.T) {
@@ -565,11 +571,153 @@ func TestDefaultBranchExistsCheck_NoBareRepo(t *testing.T) {
 	}
 }
 
-func TestDefaultBranchExistsCheck_NotFixable(t *testing.T) {
+func TestDefaultBranchExistsCheck_Fixable(t *testing.T) {
 	check := NewDefaultBranchExistsCheck()
-	if check.CanFix() {
-		t.Error("DefaultBranchExistsCheck should not be fixable")
+	if !check.CanFix() {
+		t.Error("DefaultBranchExistsCheck should fetch origin tracking refs")
 	}
+}
+
+func TestDefaultBranchAllRigsCheck_Fixable(t *testing.T) {
+	check := NewDefaultBranchAllRigsCheck()
+	if !check.CanFix() {
+		t.Error("DefaultBranchAllRigsCheck should fetch origin tracking refs")
+	}
+}
+
+// TestDefaultBranchAllRigsCheck_LocalNowRigIsHealthy is the feedback loop for
+// the gt now false positive: AddLocalRig clones --bare --local and must
+// materialize refs/remotes/origin/<default_branch> so doctor and polecats
+// can resolve origin/<branch>.
+func TestDefaultBranchAllRigsCheck_LocalNowRigIsHealthy(t *testing.T) {
+	townRoot, rigName, bareRepo := registerLocalNowRig(t)
+
+	refs := listGitRefs(t, bareRepo)
+	t.Logf("bare repo refs:\n%s", refs)
+
+	check := NewDefaultBranchAllRigsCheck()
+	result := check.Run(&CheckContext{TownRoot: townRoot})
+	if result.Status != StatusOK {
+		t.Fatalf("default-branch-all-rigs on a gt now local rig: status=%v message=%q details=%v\nrefs:\n%s",
+			result.Status, result.Message, result.Details, refs)
+	}
+
+	exists := NewDefaultBranchExistsCheck()
+	existsResult := exists.Run(&CheckContext{TownRoot: townRoot, RigName: rigName})
+	if existsResult.Status != StatusOK {
+		t.Fatalf("default-branch-exists on a gt now local rig: status=%v message=%q details=%v\nrefs:\n%s",
+			existsResult.Status, existsResult.Message, existsResult.Details, refs)
+	}
+}
+
+func TestDefaultBranchAllRigsCheck_FixFetchesLocalOrigin(t *testing.T) {
+	townRoot, rigName, bareRepo := registerBareLocalRigWithoutOriginTracking(t)
+
+	check := NewDefaultBranchAllRigsCheck()
+	before := check.Run(&CheckContext{TownRoot: townRoot})
+	if before.Status != StatusError {
+		t.Fatalf("expected StatusError before fix, got %v (%q)", before.Status, before.Message)
+	}
+
+	if err := check.Fix(&CheckContext{TownRoot: townRoot}); err != nil {
+		t.Fatalf("Fix: %v", err)
+	}
+
+	refs := listGitRefs(t, bareRepo)
+	if !strings.Contains(refs, "refs/remotes/origin/main") {
+		t.Fatalf("expected origin/main after fix, got:\n%s", refs)
+	}
+
+	after := check.Run(&CheckContext{TownRoot: townRoot})
+	if after.Status != StatusOK {
+		t.Fatalf("expected StatusOK after fix, got %v (%q) details=%v", after.Status, after.Message, after.Details)
+	}
+
+	exists := NewDefaultBranchExistsCheck()
+	if err := exists.Fix(&CheckContext{TownRoot: townRoot, RigName: rigName}); err != nil {
+		t.Fatalf("exists Fix: %v", err)
+	}
+	existsResult := exists.Run(&CheckContext{TownRoot: townRoot, RigName: rigName})
+	if existsResult.Status != StatusOK {
+		t.Fatalf("default-branch-exists after fix: status=%v message=%q", existsResult.Status, existsResult.Message)
+	}
+}
+
+func TestDefaultBranchAllRigsCheck_MissingBranchStillErrors(t *testing.T) {
+	townRoot, _, _ := registerLocalNowRig(t)
+	rigDir := filepath.Join(townRoot, "proj")
+	if err := os.WriteFile(filepath.Join(rigDir, "config.json"), []byte(`{"default_branch":"develop"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := NewDefaultBranchAllRigsCheck().Run(&CheckContext{TownRoot: townRoot})
+	if result.Status != StatusError {
+		t.Fatalf("expected StatusError for missing develop, got %v (%q)", result.Status, result.Message)
+	}
+	if !strings.Contains(strings.Join(result.Details, "\n"), `default_branch "develop" not found`) {
+		t.Fatalf("details=%v", result.Details)
+	}
+}
+
+func registerLocalNowRig(t *testing.T) (townRoot, rigName, bareRepo string) {
+	t.Helper()
+
+	src := t.TempDir()
+	runGit(t, src, "init", "--initial-branch=main")
+	runGit(t, src, "config", "user.email", "test@test.com")
+	runGit(t, src, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# proj\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, src, "add", ".")
+	runGit(t, src, "commit", "-m", "init")
+
+	townRoot = t.TempDir()
+	rigsConfig := &config.RigsConfig{Version: 1, Rigs: map[string]config.RigEntry{}}
+	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+	rigName = "proj"
+	if _, err := mgr.AddLocalRig(context.Background(), rigName, src); err != nil {
+		t.Fatalf("AddLocalRig: %v", err)
+	}
+	return townRoot, rigName, filepath.Join(townRoot, rigName, ".repo.git")
+}
+
+func registerBareLocalRigWithoutOriginTracking(t *testing.T) (townRoot, rigName, bareRepo string) {
+	t.Helper()
+
+	src := t.TempDir()
+	runGit(t, src, "init", "--initial-branch=main")
+	runGit(t, src, "config", "user.email", "test@test.com")
+	runGit(t, src, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# proj\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, src, "add", ".")
+	runGit(t, src, "commit", "-m", "init")
+
+	townRoot = t.TempDir()
+	rigName = "proj"
+	rigDir := filepath.Join(townRoot, rigName)
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rigDir, "config.json"), []byte(`{"default_branch":"main"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bareRepo = filepath.Join(rigDir, ".repo.git")
+	runGit(t, "", "clone", "--bare", "--local", src, bareRepo)
+	runGit(t, "", "--git-dir", bareRepo, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	return townRoot, rigName, bareRepo
+}
+
+func listGitRefs(t *testing.T, gitDir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "--git-dir", gitDir, "show-ref")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(out)) + "\n" + err.Error()
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestBeadsRedirectCheck_FixConflictingLocalBeads(t *testing.T) {

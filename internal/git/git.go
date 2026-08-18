@@ -883,7 +883,9 @@ func (g *Git) CloneBareWithReferenceAndBranch(url, dest, reference, branch strin
 
 // CloneBareLocal clones a local repository as a bare repo using git --local.
 // The clone lands on the destination filesystem so hardlinks survive.
-// It does not fetch from the network.
+// It does not fetch from the network. After the clone it materializes
+// refs/remotes/origin/* from the local origin so polecats and doctor can
+// resolve origin/<default-branch> the same way a network CloneBare does.
 func (g *Git) CloneBareLocal(ctx context.Context, src, dest string) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -941,6 +943,36 @@ func configureLocalBareRefspec(ctx context.Context, repoPath string) error {
 			return err
 		}
 		return fmt.Errorf("configuring refspec: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+
+	// git clone --bare --local copies refs/heads but never creates
+	// refs/remotes/origin/<branch>. Polecats start from origin/<default-branch>
+	// and default-branch-all-rigs looks for that tracking ref. A local fetch
+	// of origin (the source path) is not a network fetch.
+	var refsStderr bytes.Buffer
+	refsCmd := exec.CommandContext(ctx, "git", "--git-dir", gitDir, "show-ref", "--quiet")
+	util.SetDetachedProcessGroup(refsCmd)
+	refsCmd.Stderr = &refsStderr
+	if err := refsCmd.Run(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("checking refs: %s: %w", strings.TrimSpace(refsStderr.String()), err)
+	}
+
+	fetchCmd := exec.CommandContext(ctx, "git", "-c", "protocol.file.allow=always", "--git-dir", gitDir, "fetch", "origin")
+	util.SetDetachedProcessGroup(fetchCmd)
+	stderr.Reset()
+	fetchCmd.Stderr = &stderr
+	if err := fetchCmd.Run(); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("fetching origin: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return nil
 }

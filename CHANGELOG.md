@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gt now` rigs no longer fail `default-branch-all-rigs`.** Local
+  registration clones `--bare --local` and now materializes
+  `refs/remotes/origin/<default_branch>` the same way a network clone
+  does, so doctor and polecat spawn can resolve `origin/<branch>`.
+  `gt doctor --fix` fetches those tracking refs on existing Towns.
+
 ## [1.3.0] - 2026-08-17
 
 ### Changed
