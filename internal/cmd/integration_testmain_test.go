@@ -12,14 +12,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Windows bd file locks need serialized tests. Linux/macOS CI must not
-	// force --test.parallel=1: unit tests that already call t.Parallel()
-	// can overlap. Dolt-backed tests that share TestMain's sql-server must
-	// still omit t.Parallel(); a concurrent bd-init stampede takes the
-	// native server down.
-	if shouldSerializePackageTests() {
-		_ = flag.Set("test.parallel", "1")
-	}
+	// This package mixes Dolt-backed tests that share one sql-server with
+	// unit tests that call t.Parallel(). Concurrent bd init takes that
+	// server down, so the integration binary stays serial on every OS.
+	_ = flag.Set("test.parallel", "1")
 	flag.Parse()
 
 	// Start an ephemeral Dolt SQL server for this package's integration tests.

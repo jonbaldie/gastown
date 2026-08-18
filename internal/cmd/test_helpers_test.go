@@ -9,25 +9,6 @@ import (
 	"testing"
 )
 
-// shouldSerializePackageTests reports whether this OS needs --test.parallel=1.
-// Windows bd file locks historically required that. Linux/macOS CI does not:
-// the integration TestMain used to serialize every test in this package,
-// including hundreds of t.Parallel unit tests, for a Windows-only constraint.
-func shouldSerializePackageTests() bool {
-	return runtime.GOOS == "windows"
-}
-
-func TestShouldSerializePackageTestsWindowsOnly(t *testing.T) {
-	t.Parallel()
-	got := shouldSerializePackageTests()
-	if runtime.GOOS == "windows" && !got {
-		t.Fatal("Windows must serialize package tests to avoid bd file locks")
-	}
-	if runtime.GOOS != "windows" && got {
-		t.Fatal("non-Windows must not force --test.parallel=1")
-	}
-}
-
 // buildGT builds the gt binary and returns its path.
 // It caches the build across tests in the same run, including parallel tests.
 var (

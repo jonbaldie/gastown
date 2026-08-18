@@ -9,17 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- **Integration tests use a native Dolt SQL server and run in one process.**
-  The Linux integration job serialized every `internal/cmd` test (including
-  `t.Parallel` unit tests) because TestMain forced `--test.parallel=1` for a
-  Windows file-lock constraint, then restarted Dolt four more times for
-  scheduler shards. TestMain now serializes only on Windows, prefers
-  `dolt sql-server` over Docker testcontainers, and CI compiles scheduler
-  coverage into the same `go test` invocation. Tests that share that
-  sql-server stay sequential: concurrent `bd init` takes the native server
-  down. Assertions are unchanged. The `gt now` five-second contract runs on
-  its own CI job so a hot race-suite runner cannot miss the budget and so
-  leftover tmux state cannot break unit tests.
+- **Integration tests prefer a native Dolt SQL server and run in one process.**
+  CI already installs Dolt 2.0.7; TestMain starts `dolt sql-server` instead of
+  a Docker testcontainer, and the integration job compiles scheduler coverage
+  into the same `go test` invocation instead of four extra processes. The
+  integration binary still uses `--test.parallel=1` because those tests share
+  one sql-server. `gt now` tests skip in that suite (`GT_TEST_EXTERNAL_DOLT`);
+  they keep running in the unit job, including the five-second contract.
+  Assertions are unchanged.
 
 ### Fixed
 

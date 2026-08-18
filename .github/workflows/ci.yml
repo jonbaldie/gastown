@@ -105,6 +105,14 @@ jobs:
           set -o pipefail
           gotestsum --format testname --junitfile junit.xml -- -race -short -timeout=10m -coverprofile=coverage.out ./... 2>&1 | tee test-output.txt
 
+      - name: Test gt now five-second path
+        run: |
+          for attempt in 1 2 3; do
+            CGO_ENABLED=0 go test -short -run '^TestNowStartsTownInFiveSeconds$' -count=1 ./internal/cmd && exit 0
+            echo "gt now latency attempt $attempt failed; retrying" >&2
+          done
+          exit 1
+
       - name: Test Report
         if: always()
         env:
@@ -129,46 +137,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: test_results
           fail_ci_if_error: false
-
-  # Dedicated runner: a successful `gt now` on a runner that just finished
-  # `go test -race ./...` took 6–7s and missed the 5s budget. Running this
-  # in the Test job also left tmux state that broke TestGetKeyBinding.
-  now-latency:
-    name: Test gt now five-second path
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install ICU4C development headers
-        run: sudo apt-get install -y libicu-dev tmux
-
-      - name: Configure Git
-        run: |
-          git config --global user.name "CI Bot"
-          git config --global user.email "ci@gastown.test"
-
-      - name: Install Dolt
-        run: |
-          curl -L https://github.com/dolthub/dolt/releases/download/v2.0.7/install.sh | sudo bash
-
-      - name: Set up beads (bd)
-        uses: ./.github/actions/setup-bd
-
-      - name: Test gt now five-second path
-        run: |
-          for attempt in 1 2 3; do
-            CGO_ENABLED=0 go test -short -run '^TestNowStartsTownInFiveSeconds$' -count=1 ./internal/cmd && exit 0
-            echo "gt now latency attempt $attempt failed; retrying" >&2
-          done
-          exit 1
 
   lint:
     name: Lint
