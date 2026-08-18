@@ -1527,7 +1527,6 @@ func TestSchedulerInvalidJSONContextCleanup(t *testing.T) {
 // process is poisoned with HQ BEADS_* selectors; dispatch must still hook and
 // update the rig-owned work bead in the target rig database.
 func TestSchedulerActualDispatchRoutesPollutedEnvToTargetRig(t *testing.T) {
-	t.Parallel()
 	hqPath, rigPath, _, _ := setupSchedulerIntegrationTown(t)
 
 	beadID := createTestBead(t, rigPath, "Polluted env actual dispatch")
@@ -1589,7 +1588,6 @@ func TestSchedulerActualDispatchRoutesPollutedEnvToTargetRig(t *testing.T) {
 }
 
 func TestSchedulerFormulaDispatchRoutesPollutedEnvToTargetRig(t *testing.T) {
-	t.Parallel()
 	hqPath, rigPath, _, _ := setupSchedulerIntegrationTown(t)
 
 	beadID := createTestBead(t, rigPath, "Polluted env formula dispatch")

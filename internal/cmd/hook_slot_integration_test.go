@@ -458,7 +458,6 @@ func TestHookSlot_HookPersistence(t *testing.T) {
 
 // TestHookSlot_StatusTransitions tests valid status transitions for hooked beads.
 func TestHookSlot_StatusTransitions(t *testing.T) {
-	t.Parallel()
 	if _, err := exec.LookPath("bd"); err != nil {
 		t.Skip("bd not installed, skipping test")
 	}
