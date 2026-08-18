@@ -1154,6 +1154,16 @@ func (t *Tmux) HasSession(name string) (bool, error) {
 	return true, nil
 }
 
+// IsPaneDead reports whether the session's current pane has exited.
+// HasSession can still be true when remain-on-exit keeps a dead pane.
+func (t *Tmux) IsPaneDead(name string) (bool, error) {
+	out, err := t.run("display-message", "-p", "-t", name, "#{pane_dead}")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "1", nil
+}
+
 // ListSessions returns all session names.
 func (t *Tmux) ListSessions() ([]string, error) {
 	out, err := t.run("list-sessions", "-F", "#{session_name}")

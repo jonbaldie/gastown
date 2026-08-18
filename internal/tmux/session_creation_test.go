@@ -248,3 +248,54 @@ func TestSendMessageToTarget_Chunking(t *testing.T) {
 		t.Errorf("expected ~600 A's in output, got %d (message may have been truncated)", count)
 	}
 }
+
+func TestIsPaneDead_NoWaitCleanExitKeepsSession(t *testing.T) {
+	tm := newTestTmux(t)
+	session := "gt-test-panedead-" + t.Name()
+	_ = tm.KillSession(session)
+	defer func() { _ = tm.KillSession(session) }()
+
+	if err := tm.NewSessionWithCommandAndEnvNoWait(session, "", "/bin/true", nil); err != nil {
+		t.Fatalf("NoWait create: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		dead, err := tm.IsPaneDead(session)
+		if err != nil {
+			t.Fatalf("IsPaneDead: %v", err)
+		}
+		if dead {
+			has, err := tm.HasSession(session)
+			if err != nil {
+				t.Fatalf("HasSession: %v", err)
+			}
+			if !has {
+				t.Fatal("dead pane dropped the session; remain-on-exit should keep it")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pane never went dead after /bin/true")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestIsPaneDead_LiveCommand(t *testing.T) {
+	tm := newTestTmux(t)
+	session := "gt-test-panelive-" + t.Name()
+	_ = tm.KillSession(session)
+	defer func() { _ = tm.KillSession(session) }()
+
+	if err := tm.NewSessionWithCommand(session, "", "sleep 30"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	dead, err := tm.IsPaneDead(session)
+	if err != nil {
+		t.Fatalf("IsPaneDead: %v", err)
+	}
+	if dead {
+		t.Fatal("live pane reported dead")
+	}
+}
