@@ -41,6 +41,41 @@ func TestAddLocalRigFencesTownBeadWalkUp(t *testing.T) {
 	}
 }
 
+func TestAddLocalRigRejectsPrefixCollision(t *testing.T) {
+	town, cfg := setupTestTown(t)
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0755); err != nil {
+		t.Fatalf("mkdir mayor: %v", err)
+	}
+
+	demoRepo := createLocalGitRepo(t, filepath.Join(t.TempDir(), "demo"))
+	deskRepo := createLocalGitRepo(t, filepath.Join(t.TempDir(), "desk"))
+	mgr := NewManager(town, cfg, git.NewGit(town))
+	if _, err := mgr.AddLocalRig(context.Background(), "demo", demoRepo); err != nil {
+		t.Fatalf("AddLocalRig demo: %v", err)
+	}
+
+	_, err := mgr.AddLocalRig(context.Background(), "desk", deskRepo)
+	if err == nil {
+		t.Fatal("AddLocalRig(desk) succeeded; demo and desk both derive prefix de")
+	}
+	if !strings.Contains(err.Error(), "prefix") {
+		t.Fatalf("error = %v, want prefix collision", err)
+	}
+
+	rigsPath := filepath.Join(town, "mayor", "rigs.json")
+	data, readErr := os.ReadFile(rigsPath)
+	if readErr != nil {
+		t.Fatalf("reading rigs.json: %v", readErr)
+	}
+	text := string(data)
+	if !strings.Contains(text, "demo") {
+		t.Fatalf("demo missing from rigs.json after collision:\n%s", text)
+	}
+	if strings.Contains(text, "desk") {
+		t.Fatalf("failed AddLocalRig left desk in rigs.json:\n%s", text)
+	}
+}
+
 func createLocalGitRepo(t *testing.T, repoDir string) string {
 	t.Helper()
 	if err := os.MkdirAll(repoDir, 0755); err != nil {

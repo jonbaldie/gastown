@@ -506,10 +506,13 @@ func discoverAllRigs(townRoot string) ([]*rig.Rig, error) {
 }
 
 func runShutdown(cmd *cobra.Command, args []string) error {
+	// Prefer the town under CWD, then GT_TOWN_ROOT, so we bind the town socket
+	// before listing sessions. Listing first can miss a running town.
+	townRoot, _ := workspace.FindFromCwdOrError()
+	if townRoot != "" {
+		_ = session.InitRegistry(townRoot)
+	}
 	t := tmux.NewTmux()
-
-	// Find workspace root for polecat cleanup
-	townRoot, _ := workspace.FindFromCwd()
 
 	// Collect sessions to show what will be stopped
 	sessions, err := t.ListSessions()
@@ -520,7 +523,11 @@ func runShutdown(cmd *cobra.Command, args []string) error {
 	toStop, preserved := categorizeSessions(sessions)
 
 	if len(toStop) == 0 {
-		fmt.Printf("%s Gas Town was not running\n", style.Dim.Render("○"))
+		if townRoot != "" && townInfraRunning(townRoot) {
+			fmt.Println("No agent sessions to stop")
+		} else {
+			fmt.Printf("%s Gas Town was not running\n", style.Dim.Render("○"))
+		}
 
 		// Still stop town-scoped infrastructure even if no sessions are running.
 		// --polecats-only leaves Dolt and worker serve running.
@@ -984,6 +991,16 @@ func cleanupPolecats(townRoot string) {
 	} else {
 		fmt.Printf("  %s No polecats to clean up\n", style.Dim.Render("○"))
 	}
+}
+
+func townInfraRunning(townRoot string) bool {
+	if running, _, err := doltserver.IsRunning(townRoot); err == nil && running {
+		return true
+	}
+	if running, _, err := daemon.IsRunning(townRoot); err == nil && running {
+		return true
+	}
+	return false
 }
 
 // stopDaemonIfRunning stops the daemon if it is running.

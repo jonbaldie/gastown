@@ -2,6 +2,7 @@ package rig
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -50,6 +51,11 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 	}
 
 	gitURL := fileURL(absSrc)
+	prefix := deriveBeadsPrefix(name)
+	if err := m.checkLocalRigPrefix(prefix, name); err != nil {
+		return nil, err
+	}
+
 	rigPath := filepath.Join(m.townRoot, name)
 	if _, err := os.Stat(rigPath); err == nil {
 		return nil, fmt.Errorf("directory already exists: %s", rigPath)
@@ -60,12 +66,15 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 	}
 	success := false
 	defer func() {
-		if !success {
-			_ = os.RemoveAll(rigPath)
+		if success {
+			return
+		}
+		_ = os.RemoveAll(rigPath)
+		if _, ok := m.config.Rigs[name]; ok {
+			delete(m.config.Rigs, name)
+			_ = config.SaveRigsConfig(filepath.Join(m.townRoot, "mayor", "rigs.json"), m.config)
 		}
 	}()
-
-	prefix := deriveBeadsPrefix(name)
 	rigConfig := &RigConfig{
 		Type:      "rig",
 		Version:   CurrentRigConfigVersion,
@@ -157,6 +166,27 @@ func canonicalRepoPath(path string) (string, error) {
 		return resolved, nil
 	}
 	return abs, nil
+}
+
+func (m *Manager) checkLocalRigPrefix(prefix, name string) error {
+	if prefix == "" {
+		return nil
+	}
+	if err := beads.CheckPrefixAvailable(m.townRoot, prefix+"-", name); err != nil {
+		if errors.Is(err, beads.ErrPrefixInUse) {
+			return fmt.Errorf("prefix collision (derived prefix %q): %w; choose a different --name or add the rig with 'gt rig add --prefix'", prefix, err)
+		}
+		return fmt.Errorf("prefix collision (derived prefix %q): %w", prefix, err)
+	}
+	for existing, entry := range m.config.Rigs {
+		if existing == name || entry.BeadsConfig == nil {
+			continue
+		}
+		if entry.BeadsConfig.Prefix == prefix {
+			return fmt.Errorf("prefix collision (derived prefix %q): prefix already in use by rig %q; choose a different --name or add the rig with 'gt rig add --prefix'", prefix, existing)
+		}
+	}
+	return nil
 }
 
 func fileURL(absPath string) string {

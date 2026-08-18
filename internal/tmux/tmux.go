@@ -2128,6 +2128,35 @@ func containsWorkspaceTrustDialog(content string) bool {
 		strings.Contains(content, "Do you trust the contents of this directory?")
 }
 
+// ContainsBlockingPane reports a visible interactive dialog that fully blocks
+// an agent pane, including startup trust/update prompts and a /model picker.
+func ContainsBlockingPane(content string) (string, bool) {
+	if name, ok := containsModelPickerDialog(content); ok {
+		return name, true
+	}
+	return containsBlockingStartupDialog(content)
+}
+
+func containsModelPickerDialog(content string) (string, bool) {
+	lower := strings.ToLower(content)
+	hasSelect := strings.Contains(lower, "select model") ||
+		strings.Contains(lower, "select a model") ||
+		strings.Contains(lower, "choose a model") ||
+		strings.Contains(lower, "switch model")
+	if !hasSelect {
+		return "", false
+	}
+	hasUI := strings.Contains(content, "❯") ||
+		strings.Contains(content, "Enter to confirm") ||
+		strings.Contains(lower, "esc to exit") ||
+		strings.Contains(lower, "type to filter") ||
+		strings.Contains(content, "Default (recommended)")
+	if !hasUI {
+		return "", false
+	}
+	return "model picker", true
+}
+
 func containsBlockingStartupDialog(content string) (string, bool) {
 	if promptAppearsAfterStartupBlocker(content) {
 		return "", false

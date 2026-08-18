@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -239,6 +240,60 @@ func TestWorkspaceTrustPollAction_ClaudeReadyIsReady(t *testing.T) {
 	got := workspaceTrustPollAction("Hello! How can I help?\n>")
 	if got != workspaceTrustReady {
 		t.Fatalf("workspaceTrustPollAction(claude ready) = %v, want ready", got)
+	}
+}
+
+func TestContainsBlockingPane_ModelPicker(t *testing.T) {
+	t.Parallel()
+	fixtures := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "claude /model picker",
+			content: `Select model
+❯ Default (recommended)
+  Opus
+  Sonnet
+  Haiku
+
+  Enter to confirm · Esc to exit`,
+		},
+		{
+			name: "pi /model picker",
+			content: `Select a model
+❯ ollama / gemma4:latest
+  xai / grok-4.6
+
+Type to filter`,
+		},
+		{
+			name: "claude code live /model picker",
+			content: `   Select model
+   Switch between Claude models. Your pick becomes the default for new
+   sessions. For other/previous model names, specify with --model.
+
+     1. Default (recommended)  Sonnet 5 · Efficient for routine tasks
+     2. Sonnet                 Sonnet 5 · Efficient for routine tasks
+     3. Fable                  Fable 5 · Most capable for your hardest and
+                               longest-running tasks · Requires usage credits
+     4. Opus                   Opus 5 · Best for everyday, complex tasks ·
+                               ~2× usage vs Sonnet
+   ❯ 5. Haiku ✔                Haiku 4.5 · Fastest for quick answers
+
+   Enter to set as default · s to use this session only · Esc to cancel`,
+		},
+	}
+	for _, tt := range fixtures {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, blocked := ContainsBlockingPane(tt.content)
+			if !blocked {
+				t.Fatalf("model picker was not detected as a blocking pane (name=%q)", gotName)
+			}
+			if !strings.Contains(gotName, "model") {
+				t.Fatalf("blocker name %q should mention model picker", gotName)
+			}
+		})
 	}
 }
 

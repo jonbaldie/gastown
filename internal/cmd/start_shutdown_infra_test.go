@@ -221,3 +221,139 @@ func TestImmediateShutdownKillsLatePolecatSession(t *testing.T) {
 		t.Fatalf("gt shutdown left late polecat session %s running", late)
 	}
 }
+
+func TestShutdownDoesNotClaimIdleWhenSessionsExist(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts tmux sessions")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+
+	town := writeTownMarker(t)
+	t.Chdir(town)
+
+	socket := fmt.Sprintf("gt-shutmsg-%d", time.Now().UnixNano())
+	prevSock := tmux.GetDefaultSocket()
+	tmux.SetDefaultSocket(socket)
+	t.Cleanup(func() { tmux.SetDefaultSocket(prevSock) })
+	if err := session.InitRegistry(town); err != nil {
+		t.Fatalf("InitRegistry: %v", err)
+	}
+
+	tm := tmux.NewTmux()
+	t.Cleanup(func() { _ = tm.KillServer() })
+	for _, name := range []string{"hq-mayor", "hq-deacon", "hq-boot"} {
+		if err := tm.NewSession(name, ""); err != nil {
+			t.Fatalf("NewSession %s: %v", name, err)
+		}
+	}
+
+	oldYes, oldForce := shutdownYes, shutdownForce
+	shutdownYes, shutdownForce = true, true
+	t.Cleanup(func() {
+		shutdownYes, shutdownForce = oldYes, oldForce
+	})
+
+	out := captureStdout(t, func() {
+		if err := runShutdown(shutdownCmd, nil); err != nil {
+			t.Fatalf("runShutdown: %v", err)
+		}
+	})
+	if strings.Contains(out, "was not running") || strings.Contains(out, "is not running") {
+		t.Fatalf("shutdown claimed Gas Town was not running while sessions existed:\n%s", out)
+	}
+	for _, name := range []string{"hq-mayor", "hq-deacon", "hq-boot"} {
+		ok, err := tm.HasSession(name)
+		if err != nil {
+			t.Fatalf("HasSession %s: %v", name, err)
+		}
+		if ok {
+			t.Errorf("shutdown left session %s running", name)
+		}
+	}
+}
+
+func TestShutdownDoesNotClaimIdleWhenOnlyInfraIsUp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts local stand-in processes")
+	}
+
+	town := writeTownMarker(t)
+	t.Chdir(town)
+	dataDir := filepath.Join(town, ".dolt-data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(town, "daemon"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dataDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("listener: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	port := doltserver.FindFreePort(3348)
+	if port == 0 {
+		t.Fatal("no free port from 3348")
+	}
+	t.Setenv("GT_DOLT_PORT", strconv.Itoa(port))
+
+	doltCmd := exec.Command("python3", "-c", `
+import socket, sys, time
+port = int(sys.argv[1])
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(1)
+while True:
+    time.sleep(1)
+`, strconv.Itoa(port), "--config", configPath)
+	doltCmd.Dir = dataDir
+	if err := doltCmd.Start(); err != nil {
+		t.Fatalf("start dolt stand-in: %v", err)
+	}
+	t.Cleanup(func() { _ = doltCmd.Process.Kill(); _, _ = doltCmd.Process.Wait() })
+
+	waitUntil(t, func() bool {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 50*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	})
+	if err := os.WriteFile(filepath.Join(town, "daemon", "dolt.pid"), []byte(strconv.Itoa(doltCmd.Process.Pid)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	socket := fmt.Sprintf("gt-shutidle-%d", time.Now().UnixNano())
+	prevSock := tmux.GetDefaultSocket()
+	tmux.SetDefaultSocket(socket)
+	t.Cleanup(func() { tmux.SetDefaultSocket(prevSock) })
+	if err := session.InitRegistry(town); err != nil {
+		t.Fatalf("InitRegistry: %v", err)
+	}
+
+	oldYes, oldForce := shutdownYes, shutdownForce
+	shutdownYes, shutdownForce = true, true
+	t.Cleanup(func() {
+		shutdownYes, shutdownForce = oldYes, oldForce
+	})
+
+	out := captureStdout(t, func() {
+		if err := runShutdown(shutdownCmd, nil); err != nil {
+			t.Fatalf("runShutdown: %v", err)
+		}
+	})
+	if strings.Contains(out, "was not running") || strings.Contains(out, "is not running") {
+		t.Fatalf("shutdown claimed Gas Town was not running while town Dolt was up:\n%s", out)
+	}
+	running, _, err := doltserver.IsRunning(town)
+	if err != nil {
+		t.Fatalf("dolt status: %v", err)
+	}
+	if running {
+		t.Fatal("shutdown left town Dolt running")
+	}
+}

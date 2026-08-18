@@ -178,6 +178,17 @@ func TestBuildStatusIndicator_AliveShowsRunning(t *testing.T) {
 	}
 }
 
+func TestBuildStatusIndicator_BlockedPaneNotGreen(t *testing.T) {
+	agent := AgentRuntime{Running: true, Blocked: true, BlockReason: "model picker"}
+	indicator := buildStatusIndicator(agent)
+	if !strings.Contains(indicator, "blocked") {
+		t.Fatalf("blocked pane should be labeled blocked, got %q", indicator)
+	}
+	if strings.Contains(indicator, "●") && !strings.Contains(indicator, "blocked") {
+		t.Fatalf("blocked pane must not look like a healthy green dot: %q", indicator)
+	}
+}
+
 func TestBuildStatusIndicator_DNDMutedShowsBadge(t *testing.T) {
 	agent := AgentRuntime{Running: true, NotificationLevel: beads.NotifyMuted}
 	indicator := buildStatusIndicator(agent)
