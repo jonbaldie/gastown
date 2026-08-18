@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gt prime` standing skill lines survive Claude Code's SessionStart preview.**
+  Role formulas are 12–23KiB. Claude Code's persistHookOutput does not trim
+  SessionStart stdout to the documented 10,000-character cap: once that cap
+  is crossed, the model sees only the first ~2,000 characters
+  ([anthropics/claude-code#44086](https://github.com/anthropics/claude-code/issues/44086)).
+  The five standing skill rules (`/implement`, `/diagnosing-bugs`, `/to-spec`,
+  `/to-tickets`, `/resolving-merge-conflicts`) were printed after the formula,
+  so they sat near character 15,000 and never reached the agent. They now
+  print immediately after the session metadata line, with a one-line note to
+  Read the persisted full file if the hook was truncated to a preview.
 - **`gt prime` standing skills are model-invocable for Claude town roles.**
   Upstream ships `/implement`, `/to-spec`, and `/to-tickets` with
   `disable-model-invocation: true`. Provision copied that flag verbatim, so

@@ -378,12 +378,17 @@ reads the same text.
 Full role context (~300-500 lines per role) is injected ephemerally by `gt prime`
 via the SessionStart hook. `gt prime` also provisions the mattpocock/skills
 collection into `.agents/skills` (and the active agent's skills directory) and
-prints five standing lines: production code must follow `/implement`'s SKILL.md
-rigorously, bug work must follow `/diagnosing-bugs`'s SKILL.md rigorously,
-making a bead epic must follow `/to-spec`'s SKILL.md rigorously, making bead
-children or individual beads must follow `/to-tickets`'s SKILL.md rigorously,
-and conflict-resolution beads must follow `/resolving-merge-conflicts`'s
-SKILL.md rigorously. Those five skills are rewritten as model-invocable on
+prints five standing lines **before** the role formula: production code must
+follow `/implement`'s SKILL.md rigorously, bug work must follow
+`/diagnosing-bugs`'s SKILL.md rigorously, making a bead epic must follow
+`/to-spec`'s SKILL.md rigorously, making bead children or individual beads
+must follow `/to-tickets`'s SKILL.md rigorously, and conflict-resolution beads
+must follow `/resolving-merge-conflicts`'s SKILL.md rigorously. Those lines
+lead the payload because Claude Code's SessionStart hook drops stdout over
+10,000 characters to a ~2,000-character preview
+([anthropics/claude-code#44086](https://github.com/anthropics/claude-code/issues/44086));
+role formulas are 12–23KiB, so skill rules at the tail never reached the
+model. Those five skills are rewritten as model-invocable on
 inject (`disable-model-invocation` stripped) so Claude town roles can see
 them; the upstream collection ships several as user-invoked slash commands.
 No per-Role-home instruction files are created. Polecat worktrees get a Gas Town

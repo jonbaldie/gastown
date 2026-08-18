@@ -211,16 +211,69 @@ func TestOutputRoleContext_IncludesSkillDirectives(t *testing.T) {
 		}
 	})
 
-	for _, want := range []string{
-		"Working on production code: use /implement's SKILL.md rigorously.",
-		"Looking at a bug: use /diagnosing-bugs's SKILL.md rigorously.",
-		"If you need to make a bead epic: use /to-spec's SKILL.md rigorously.",
-		"If you need to make bead children or individual beads: use /to-tickets's SKILL.md rigorously.",
-		"Conflict-resolution beads: use /resolving-merge-conflicts's SKILL.md rigorously.",
-	} {
+	for _, want := range standingSkillDirectives() {
 		if !strings.Contains(output, want) {
 			t.Fatalf("role context missing %q:\n%s", want, output)
 		}
+	}
+	if !strings.Contains(output, primeHookTruncationNotice) {
+		t.Fatalf("role context missing truncation notice %q:\n%s", primeHookTruncationNotice, output)
+	}
+}
+
+// Claude Code persistHookOutput: SessionStart stdout over 10_000 chars is
+// replaced with a ~2_000-char preview. Skill lines after a 15k role formula
+// are invisible. This is the user-reported symptom.
+func TestOutputRoleContext_SkillDirectivesSurviveHookPreview(t *testing.T) {
+	roles := []struct {
+		role    Role
+		polecat string
+	}{
+		{RoleMayor, ""},
+		{RoleCrew, "joe"},
+		{RolePolecat, "toast"},
+		{RoleWitness, ""},
+		{RoleRefinery, ""},
+		{RoleDeacon, ""},
+	}
+
+	for _, tc := range roles {
+		t.Run(string(tc.role), func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if _, err := outputRoleContext(RoleContext{
+					Role:     tc.role,
+					TownRoot: t.TempDir(),
+					Rig:      "testrig",
+					Polecat:  tc.polecat,
+				}); err != nil {
+					t.Fatalf("outputRoleContext: %v", err)
+				}
+			})
+
+			if len(output) <= claudeHookInlineCap {
+				t.Logf("%s prime is %d chars (under the %d inline cap; preview cliff does not fire)",
+					tc.role, len(output), claudeHookInlineCap)
+			} else {
+				t.Logf("%s prime is %d chars (over the %d inline cap; Claude shows only first %d)",
+					tc.role, len(output), claudeHookInlineCap, claudeHookPreviewCap)
+			}
+			t.Logf("%s first skill directive at byte %d", tc.role, strings.Index(output, standingSkillDirectives()[0]))
+
+			preview := output
+			if len(preview) > claudeHookPreviewCap {
+				preview = preview[:claudeHookPreviewCap]
+			}
+			for _, want := range append(standingSkillDirectives(), primeHookTruncationNotice) {
+				idx := strings.Index(output, want)
+				if idx < 0 {
+					t.Fatalf("role context missing %q", want)
+				}
+				if !strings.Contains(preview, want) {
+					t.Fatalf("load-bearing prime line %q starts at byte %d of %d; Claude Code SessionStart preview is only the first %d bytes after the %d-char persistHookOutput cliff",
+						want, idx, len(output), claudeHookPreviewCap, claudeHookInlineCap)
+				}
+			}
+		})
 	}
 }
 
@@ -231,13 +284,7 @@ func TestOutputSkillDirectives_FiveBluntLines(t *testing.T) {
 	outputSkillDirectives(&buf)
 	got := buf.String()
 
-	want := []string{
-		"Working on production code: use /implement's SKILL.md rigorously.",
-		"Looking at a bug: use /diagnosing-bugs's SKILL.md rigorously.",
-		"If you need to make a bead epic: use /to-spec's SKILL.md rigorously.",
-		"If you need to make bead children or individual beads: use /to-tickets's SKILL.md rigorously.",
-		"Conflict-resolution beads: use /resolving-merge-conflicts's SKILL.md rigorously.",
-	}
+	want := standingSkillDirectives()
 	for _, line := range want {
 		if !strings.Contains(got, line) {
 			t.Fatalf("missing %q in:\n%s", line, got)

@@ -565,13 +565,19 @@ func outputRoleContext(ctx RoleContext) (string, error) {
 	explain(true, "Session metadata: always included for seance discovery")
 	outputSessionMetadata(ctx)
 
+	// Standing skill lines must precede the role formula. Claude Code's
+	// persistHookOutput drops SessionStart stdout over claudeHookInlineCap
+	// characters to a claudeHookPreviewCap preview (anthropics/claude-code#44086).
+	// Role formulas are 12–23KiB, so anything after them never reaches the agent.
+	outputSkillDirectives(os.Stdout)
+	fmt.Fprintln(os.Stdout, primeHookTruncationNotice)
+
 	explain(true, fmt.Sprintf("Role context: detected role is %s", ctx.Role))
 	formula, err := outputPrimeContext(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	outputSkillDirectives(os.Stdout)
 	outputRoleDirectives(ctx, os.Stdout, primeExplain)
 	outputContextFile(ctx)
 	outputHandoffContent(ctx)

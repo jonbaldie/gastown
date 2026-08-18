@@ -1110,13 +1110,7 @@ func TestCompactResumeReminder_IncludesSkillDirectives(t *testing.T) {
 		runPrimeCompactResume(ctx)
 	})
 
-	for _, want := range []string{
-		"Working on production code: use /implement's SKILL.md rigorously.",
-		"Looking at a bug: use /diagnosing-bugs's SKILL.md rigorously.",
-		"If you need to make a bead epic: use /to-spec's SKILL.md rigorously.",
-		"If you need to make bead children or individual beads: use /to-tickets's SKILL.md rigorously.",
-		"Conflict-resolution beads: use /resolving-merge-conflicts's SKILL.md rigorously.",
-	} {
+	for _, want := range standingSkillDirectives() {
 		if !strings.Contains(output, want) {
 			t.Fatalf("compact/resume missing skill directive %q:\n%s", want, output)
 		}
@@ -1137,15 +1131,18 @@ func TestPrimeDryRun_PrintsStandingSkillDirectives(t *testing.T) {
 	}
 
 	got := string(output)
-	for _, want := range []string{
-		"Working on production code: use /implement's SKILL.md rigorously.",
-		"Looking at a bug: use /diagnosing-bugs's SKILL.md rigorously.",
-		"If you need to make a bead epic: use /to-spec's SKILL.md rigorously.",
-		"If you need to make bead children or individual beads: use /to-tickets's SKILL.md rigorously.",
-		"Conflict-resolution beads: use /resolving-merge-conflicts's SKILL.md rigorously.",
-	} {
+	for _, want := range standingSkillDirectives() {
 		if !strings.Contains(got, want) {
 			t.Fatalf("gt prime missing %q:\n%s", want, got)
+		}
+	}
+	preview := got
+	if len(preview) > claudeHookPreviewCap {
+		preview = preview[:claudeHookPreviewCap]
+	}
+	for _, want := range standingSkillDirectives() {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("gt prime skill directive %q is outside the first %d bytes of %d-byte output", want, claudeHookPreviewCap, len(got))
 		}
 	}
 	if strings.Contains(got, "Do NOT interview the user") || strings.Contains(got, "Quiz the user") || strings.Contains(got, "never `--abort`") {
