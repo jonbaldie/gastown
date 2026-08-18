@@ -19,6 +19,11 @@ func TestBrokenIdleReclaimDispositionBlocker(t *testing.T) {
 			want: "",
 		},
 		{
+			name: "detailed git error passes",
+			d:    WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "git-check-failed", Blockers: []string{"git worktree: fatal: not a git repository"}},
+			want: "",
+		},
+		{
 			name: "wrong reason blocks",
 			d:    WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "cleanup-unknown", Blockers: []string{"cleanup_status=<missing>"}},
 			want: "workstate=NEEDS_RECOVERY reason=cleanup-unknown",
