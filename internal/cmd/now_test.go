@@ -8,11 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/daemon"
 	"github.com/jonbaldie/gastown/internal/testutil"
@@ -547,6 +549,85 @@ func TestNowNameSetsRigName(t *testing.T) {
 	}
 }
 
+// TestNowRigHasBeadsDatabase is the sling feedback loop for a gt now Rig.
+// Fence must exist when gt now returns so ResolveRepoAliasBeadsDir succeeds;
+// the Dolt database may still be filling in from detached provision.
+func TestNowRigHasBeadsDatabase(t *testing.T) {
+	requireNowStack(t)
+	home := t.TempDir()
+	repo := createNowGitRepo(t, filepath.Join(t.TempDir(), "proj"))
+	town := filepath.Join(t.TempDir(), "town")
+	bin := nowAgentBin(t)
+	socket := nowSocket("beads")
+	env := nowTestEnv(t, home, bin, socket, false)
+	env = append(env, "GT_DOLT_PORT="+strconv.Itoa(nowFreeTCPPort(t)))
+	testutil.ReapOwnedDoltOnCleanup(t, town)
+	stopNowDaemonOnCleanup(t, town)
+	t.Cleanup(func() { killNowTmux(t, socket) })
+
+	gtBinary := buildGT(t)
+	out, err := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
+		"--mayor", "cursor:high", "--workers", "cursor:low")
+	if err != nil {
+		t.Fatalf("gt now failed: %v\n%s", err, out)
+	}
+
+	// The prefix fence is on the start path so sling can resolve immediately.
+	rigBeads := filepath.Join(town, "proj", ".beads")
+	if _, err := os.Stat(rigBeads); err != nil {
+		t.Fatalf("gt now rig has no Beads database at %s: %v", rigBeads, err)
+	}
+
+	resolved, ok := beads.ResolveRepoAliasBeadsDir(town, "proj")
+	if !ok {
+		t.Fatal("sling cannot resolve the gt now rig Beads database")
+	}
+	wantBeads, err := filepath.EvalSymlinks(rigBeads)
+	if err != nil {
+		wantBeads = rigBeads
+	}
+	gotBeads, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		gotBeads = resolved
+	}
+	if gotBeads != wantBeads {
+		t.Fatalf("resolved beads dir = %q, want %q", gotBeads, wantBeads)
+	}
+
+	mayorEnv := append(append([]string{}, env...),
+		"GT_TOWN_ROOT="+town,
+		"GT_ROLE=mayor",
+		"GT_AGENT=mayor",
+		"BD_ACTOR=mayor",
+	)
+	slingOut, slingErr := runGTCmdMayFail(t, gtBinary, town, mayorEnv, "sling", "hq-zzzzz", "proj")
+	combined := slingOut
+	if slingErr != nil {
+		combined += "\n" + slingErr.Error()
+	}
+	if strings.Contains(combined, "cannot resolve target rig") {
+		t.Fatalf("cannot sling into gt now rig: %s", combined)
+	}
+
+	// Full Dolt init is detached so the five-second Mayor path stays intact.
+	doltDB := filepath.Join(town, ".dolt-data", "proj")
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(doltDB); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			provLog := ""
+			if data, readErr := os.ReadFile(filepath.Join(town, "mayor", "provision.log")); readErr == nil {
+				provLog = string(data)
+			}
+			t.Fatalf("gt now rig has no Dolt database at %s\ngt now output:\n%s\nprovision.log:\n%s",
+				doltDB, out, provLog)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func TestNowAcceptsPathArgument(t *testing.T) {
 	requireNowStack(t)
 	home := t.TempDir()
@@ -934,10 +1015,71 @@ func nowSocket(name string) string {
 func stopNowDaemonOnCleanup(t *testing.T, townRoot string) {
 	t.Helper()
 	t.Cleanup(func() {
+		waitNowProvisionExit(t, townRoot)
 		if err := daemon.StopDaemon(townRoot); err != nil {
 			t.Logf("town daemon cleanup skipped: %v", err)
 		}
 	})
+}
+
+// waitNowProvisionExit waits for the detached `gt now --provision-only` process
+// that owns townRoot. Provision initializes rig beads, so it writes under the
+// town after the test body returns; t.TempDir removal then races it and fails
+// with "directory not empty". Only processes naming this town are matched, so a
+// production provision is never touched.
+func waitNowProvisionExit(t *testing.T, townRoot string) {
+	t.Helper()
+	start := time.Now()
+	deadline := start.Add(30 * time.Second)
+	for {
+		pids := nowProvisionPIDs(t, townRoot)
+		if len(pids) == 0 {
+			if waited := time.Since(start); waited > 5*time.Second {
+				t.Logf("waited %s for deferred provision to finish", waited)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			for _, pid := range pids {
+				proc, err := os.FindProcess(pid)
+				if err != nil {
+					continue
+				}
+				_ = proc.Kill()
+			}
+			t.Logf("killed %d deferred provision process(es) still writing to %s", len(pids), townRoot)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func nowProvisionPIDs(t *testing.T, townRoot string) []int {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	out, err := exec.Command("ps", "-eo", "pid=,args=").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		args := strings.Join(fields[1:], " ")
+		if !strings.Contains(args, "--provision-only") || !strings.Contains(args, townRoot) {
+			continue
+		}
+		pid, convErr := strconv.Atoi(fields[0])
+		if convErr != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids
 }
 
 func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string {

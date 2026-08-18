@@ -116,6 +116,13 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 		return nil, fmt.Errorf("registering rig in rigs.json: %w", err)
 	}
 
+	// Sling resolves rig aliases through town routes.jsonl. The prefix fence
+	// stops bd -C walk-up; without this route, ResolveRepoAliasBeadsDir still
+	// fails until detached provision finishes InitializeRigBeads.
+	if err := m.appendRigRoute(rigPath, name, prefix, RigBeadsInitOptions{RequireDolt: true}); err != nil {
+		return nil, err
+	}
+
 	success = true
 	return m.loadRig(name, m.config.Rigs[name])
 }

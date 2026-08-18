@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gt now` returns). Init commits so `bd create` is not blocked by a dirty
   `issues` table. Witness/Refinery beads are filled in after that.
   Sling/prime help warn that a missing rig `.beads` files town work.
+  `AddLocalRig` also writes the town `routes.jsonl` entry during registration
+  so `gt sling` can resolve the Rig as soon as `gt now` returns, instead of
+  waiting for detached provision to call `InitializeRigBeads`.
 
 ## [1.3.0] - 2026-08-17
 

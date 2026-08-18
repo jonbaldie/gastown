@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/git"
 )
 
@@ -34,6 +35,9 @@ func TestAddLocalRigFencesTownBeadWalkUp(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".beads")); !os.IsNotExist(err) {
 		t.Fatal("AddLocalRig wrote .beads into the source repository")
+	}
+	if _, ok := beads.ResolveRepoAliasBeadsDir(town, "demo"); !ok {
+		t.Fatal("sling cannot resolve the local rig Beads database")
 	}
 }
 
