@@ -241,3 +241,32 @@ func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string
 	}
 	return name, nil
 }
+
+func ensureLocalRigBeads(townRoot, name string) error {
+	if name == "" {
+		return nil
+	}
+	rigsConfig, err := config.LoadRigsConfig(constants.MayorRigsPath(townRoot))
+	if err != nil {
+		return fmt.Errorf("loading rigs.json: %w", err)
+	}
+	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+	loaded, err := mgr.GetRig(name)
+	if err != nil {
+		return fmt.Errorf("loading rig %q: %w", name, err)
+	}
+	prefix := ""
+	if loaded.Config != nil {
+		prefix = loaded.Config.Prefix
+	}
+	if prefix == "" {
+		return fmt.Errorf("rig %q has no beads prefix", name)
+	}
+	if err := mgr.InitializeRigBeads(loaded.Path, name, prefix, rig.RigBeadsInitOptions{
+		RequireDolt: true,
+		Quiet:       true,
+	}); err != nil {
+		return fmt.Errorf("initializing beads for rig %q: %w\n`bd -C %s create` would file hq-* town beads until this database exists", name, err, loaded.Path)
+	}
+	return nil
+}

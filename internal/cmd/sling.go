@@ -42,6 +42,10 @@ Create work in the target rig:
   and sling them to a rig.
 
   bd -C <town>/<rig> create --title=... --type=feature
+
+  That directory has its own .beads with the rig prefix (gt now and
+  gt rig add create it). If it is missing, bd walks up to town beads
+  and silently files hq-* work.
   gt convoy create "..." <rig-prefix-id>
   gt convoy add <convoy-id> <rig-prefix-id>
   gt sling <rig-prefix-id> <rig> --merge=local   # third-party remotes

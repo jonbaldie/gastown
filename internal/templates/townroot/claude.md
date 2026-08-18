@@ -84,6 +84,9 @@ that cannot be slung to a rig.
 # 1. File the bead in the rig that owns the code
 bd -C <town>/<rig> create --title="..." --type=feature
 
+# That path has its own .beads with the rig prefix. If it is missing,
+# bd walks up to town beads and silently files hq-* work.
+
 # 2. Track it
 {{cmd}} convoy create "..." <rig-prefix-id>
 {{cmd}} convoy add <convoy-id> <rig-prefix-id>

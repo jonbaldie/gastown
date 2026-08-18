@@ -681,62 +681,12 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Only ~/gt/CLAUDE.md (town-root identity anchor) exists on disk.
 	// Full context is injected ephemerally by `gt prime` at session start.
 
-	// Create server-side database for this rig BEFORE initializing beads.
-	// InitBeads runs bd init --server which writes metadata.json, but the actual
-	// database in .dolt-data/ must exist first for bd config commands to work.
-	if !opts.SkipDoltCheck {
-		if _, err := exec.LookPath("dolt"); err == nil {
-			if _, _, err := doltserver.InitRig(m.townRoot, opts.Name); err != nil {
-				fmt.Printf("  Warning: Could not create rig database: %v\n", err)
-			}
-		}
-	}
-
 	// Initialize beads at rig level BEFORE creating worktrees.
 	// This ensures rig/.beads exists so worktree redirects can point to it.
-	fmt.Printf("  Initializing beads database...\n")
-	if err := m.InitBeads(rigPath, opts.BeadsPrefix, opts.Name); err != nil {
-		return nil, fmt.Errorf("initializing beads: %w", err)
-	}
-	fmt.Printf("   ✓ Initialized beads (prefix: %s)\n", opts.BeadsPrefix)
-
-	// Ensure metadata.json has dolt_mode=server and dolt_database=<rigName>.
-	// bd init --server sets dolt_mode but not dolt_database. EnsureMetadata
-	// writes both fields so bd connects to the correct centralized database.
-	// This must happen BEFORE setting issue_prefix below, so bd connects to
-	// the correct server-side database (rigName, not beads_<prefix>).
-	if err := doltserver.EnsureMetadata(m.townRoot, opts.Name); err != nil {
-		// Non-fatal: daemon's EnsureAllMetadata self-heals on next startup,
-		// or user can run gt doctor --fix to repair manually.
-		fmt.Printf("  Warning: Could not set Dolt server metadata: %v\n", err)
-		fmt.Printf("  Run 'gt doctor --fix' to repair, or it will self-heal on next daemon start.\n")
-	}
-
-	// Safety-net: drop orphan databases that may have been created by bd init.
-	// InitBeads already does this, but repeat here in case EnsureMetadata path
-	// diverges, and verify post-condition: no orphan should remain (gh#3562).
-	if err := dropRigOrphanDBs(m.townRoot, opts.BeadsPrefix, opts.Name); err != nil {
-		return nil, fmt.Errorf("rig init left a duplicate Dolt database: %w", err)
-	}
-
-	// Set issue_prefix on the correct server-side database. bd 1.0+ rejects
-	// `bd config set issue_prefix`, so write both config.yaml and Dolt config
-	// directly after metadata points at the canonical rig database.
-	{
-		rigRootBeadsDir := filepath.Join(rigPath, ".beads")
-		resolvedBeadsDir := beads.ResolveBeadsDir(rigRootBeadsDir)
-		if _, err := os.Stat(filepath.Join(rigRootBeadsDir, "redirect")); os.IsNotExist(err) {
-			if err := beads.EnsureConfigYAMLValue(resolvedBeadsDir, "issue-prefix", opts.BeadsPrefix); err != nil {
-				fmt.Printf("  Warning: Could not set issue-prefix in config.yaml: %v\n", err)
-			}
-			_ = beads.EnsureConfigYAMLValue(resolvedBeadsDir, "types.custom", constants.BeadsCustomTypes)
-			_ = beads.EnsureConfigYAMLValue(resolvedBeadsDir, "types.infra", constants.BeadsInfraTypes)
-		}
-		if err := beads.EnsureDoltConfigValue(resolvedBeadsDir, "issue_prefix", opts.BeadsPrefix); err != nil {
-			fmt.Printf("  Warning: Could not set issue_prefix in rig database: %v\n", err)
-		}
-		_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.custom", constants.BeadsCustomTypes)
-		_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.infra", constants.BeadsInfraTypes)
+	if err := m.InitializeRigBeads(rigPath, opts.Name, opts.BeadsPrefix, RigBeadsInitOptions{
+		SkipDoltCheck: opts.SkipDoltCheck,
+	}); err != nil {
+		return nil, err
 	}
 
 	// Auto-create DoltHub remote for the rig's beads database.
@@ -756,11 +706,6 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		}
 	}
 
-	// Provision PRIME.md with Gas Town context for all workers in this rig.
-	// This is the fallback if SessionStart hook fails - ensures ALL workers
-	// (crew, polecats, refinery, witness) have GUPP and essential Gas Town context.
-	// PRIME.md is read by bd prime and output to the agent.
-	// Use ResolveBeadsDir to follow redirect (writes to mayor/rig/.beads/ if tracked).
 	resolvedBeadsPath := beads.ResolveBeadsDir(rigPath)
 	if err := beads.ProvisionPrimeMD(resolvedBeadsPath); err != nil {
 		fmt.Printf("  Warning: Could not provision PRIME.md: %v\n", err)
@@ -1109,6 +1054,133 @@ func dropRigOrphanDBs(townRoot, prefix, rigName string) error {
 	if len(failures) > 0 {
 		return fmt.Errorf("orphan database(s) for rig %q (prefix %q) could not be removed: %s — run `gt dolt cleanup --force` to resolve",
 			rigName, prefix, strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// RigBeadsInitOptions controls InitializeRigBeads.
+type RigBeadsInitOptions struct {
+	// SkipDoltCheck skips creating the server-side Dolt database. Tests use this
+	// when a fake bd is on PATH.
+	SkipDoltCheck bool
+	// RequireDolt treats a missing Dolt binary or InitRig failure as an error.
+	// Clone-based Add() warns and continues; gt now requires Dolt so `bd -C <rig> create`
+	// cannot silently walk up to town hq-* beads.
+	RequireDolt bool
+	// Quiet suppresses progress prints. Warnings still go to stderr.
+	Quiet bool
+}
+
+func printfBeads(opts RigBeadsInitOptions, format string, args ...any) {
+	if opts.Quiet {
+		return
+	}
+	fmt.Printf(format, args...)
+}
+
+func warnBeads(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
+}
+
+func rigBeadsInitialized(rigPath string) bool {
+	_, err := os.Stat(filepath.Join(beads.ResolveBeadsDir(rigPath), "metadata.json"))
+	return err == nil
+}
+
+// InitializeRigBeads creates the rig Dolt database, local .beads, issue prefix,
+// town route, and PRIME.md. Clone-based Add() and local gt now rigs share this
+// so `bd -C <town>/<rig> create` files a rig-prefixed bead instead of hq-*.
+func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeadsInitOptions) error {
+	if prefix != "" {
+		if err := beads.CheckPrefixAvailable(m.townRoot, prefix+"-", name); err != nil {
+			if errors.Is(err, beads.ErrPrefixInUse) {
+				return fmt.Errorf("prefix collision (derived prefix %q): %w; use --prefix to specify a different prefix", prefix, err)
+			}
+			return fmt.Errorf("prefix collision (derived prefix %q): %w", prefix, err)
+		}
+	}
+	if rigBeadsInitialized(rigPath) {
+		return m.appendRigRoute(rigPath, name, prefix, opts)
+	}
+
+	if !opts.SkipDoltCheck {
+		if _, err := exec.LookPath("dolt"); err != nil {
+			if opts.RequireDolt {
+				return fmt.Errorf("dolt is required to initialize rig beads for %s: %w", name, err)
+			}
+		} else if _, _, err := doltserver.InitRig(m.townRoot, name); err != nil {
+			if opts.RequireDolt {
+				return fmt.Errorf("creating rig database %s: %w", name, err)
+			}
+			warnBeads("  Warning: Could not create rig database: %v\n", err)
+		}
+	}
+
+	printfBeads(opts, "  Initializing beads database...\n")
+	if err := m.InitBeads(rigPath, prefix, name); err != nil {
+		return fmt.Errorf("initializing beads: %w", err)
+	}
+	printfBeads(opts, "   ✓ Initialized beads (prefix: %s)\n", prefix)
+
+	if err := doltserver.EnsureMetadata(m.townRoot, name); err != nil {
+		if opts.RequireDolt {
+			return fmt.Errorf("setting Dolt server metadata for %s: %w", name, err)
+		}
+		warnBeads("  Warning: Could not set Dolt server metadata: %v\n", err)
+		warnBeads("  Run 'gt doctor --fix' to repair, or it will self-heal on next daemon start.\n")
+	}
+
+	if err := dropRigOrphanDBs(m.townRoot, prefix, name); err != nil {
+		return fmt.Errorf("rig init left a duplicate Dolt database: %w", err)
+	}
+
+	rigRootBeadsDir := filepath.Join(rigPath, ".beads")
+	resolvedBeadsDir := beads.ResolveBeadsDir(rigRootBeadsDir)
+	if _, err := os.Stat(filepath.Join(rigRootBeadsDir, "redirect")); os.IsNotExist(err) {
+		if err := beads.EnsureConfigYAMLValue(resolvedBeadsDir, "issue-prefix", prefix); err != nil {
+			warnBeads("  Warning: Could not set issue-prefix in config.yaml: %v\n", err)
+		}
+		_ = beads.EnsureConfigYAMLValue(resolvedBeadsDir, "types.custom", constants.BeadsCustomTypes)
+		_ = beads.EnsureConfigYAMLValue(resolvedBeadsDir, "types.infra", constants.BeadsInfraTypes)
+	}
+	if err := beads.EnsureDoltConfigValue(resolvedBeadsDir, "issue_prefix", prefix); err != nil {
+		warnBeads("  Warning: Could not set issue_prefix in rig database: %v\n", err)
+	}
+	_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.custom", constants.BeadsCustomTypes)
+	_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.infra", constants.BeadsInfraTypes)
+
+	resolvedBeadsPath := beads.ResolveBeadsDir(rigPath)
+	if err := beads.ProvisionPrimeMD(resolvedBeadsPath); err != nil {
+		warnBeads("  Warning: Could not provision PRIME.md: %v\n", err)
+	}
+
+	if err := m.appendRigRoute(rigPath, name, prefix, opts); err != nil {
+		return err
+	}
+
+	if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
+		warnBeads("  Warning: Could not create agent beads: %v\n", err)
+	}
+	return nil
+}
+
+func (m *Manager) appendRigRoute(rigPath, name, prefix string, opts RigBeadsInitOptions) error {
+	if prefix == "" {
+		return nil
+	}
+	routePath := name
+	if _, err := os.Stat(filepath.Join(rigPath, "mayor", "rig", ".beads")); err == nil {
+		routePath = name + "/mayor/rig"
+	}
+	route := beads.Route{
+		Prefix: prefix + "-",
+		Path:   routePath,
+	}
+	if err := beads.AppendRoute(m.townRoot, route); err != nil {
+		if opts.RequireDolt {
+			return fmt.Errorf("updating routes.jsonl for %s: %w", name, err)
+		}
+		warnBeads("  Warning: Could not update routes.jsonl: %v\n", err)
 	}
 	return nil
 }
