@@ -3,9 +3,12 @@
 // Role sessions discover skills from project trees (.agents/skills and
 // <agent-config>/skills) and from isolated account config dirs (skills/).
 // This package embeds the collection and writes or links it into those paths.
+// Skills that gt prime recommends are rewritten as model-invocable on inject
+// so Claude town roles can see them without a human typing /slash names.
 package skills
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -20,6 +23,17 @@ const (
 	universalSkillsRel = ".agents/skills"
 	userSkillsRel      = "skills"
 )
+
+// StandingNames are the skills gt prime tells every town role to follow.
+// Upstream ships several as user-invoked; town Claude sessions have no human
+// to type /slash names, so provision makes these model-invocable.
+var StandingNames = []string{
+	"implement",
+	"diagnosing-bugs",
+	"to-spec",
+	"to-tickets",
+	"resolving-merge-conflicts",
+}
 
 var embeddedNames = mustEmbeddedNames()
 
@@ -116,7 +130,7 @@ func writeEmbeddedTree(destDir string) error {
 		return fmt.Errorf("creating %s: %w", destDir, err)
 	}
 
-	return fs.WalkDir(embeddedFS, "embedded", func(path string, d fs.DirEntry, err error) error {
+	if err := fs.WalkDir(embeddedFS, "embedded", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("walking embedded skills: %w", err)
 		}
@@ -150,7 +164,62 @@ func writeEmbeddedTree(destDir string) error {
 			return fmt.Errorf("writing %s: %w", target, err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return enableStandingSkillModelInvocation(destDir)
+}
+
+func enableStandingSkillModelInvocation(destDir string) error {
+	for _, name := range StandingNames {
+		path := filepath.Join(destDir, name, "SKILL.md")
+		data, err := os.ReadFile(path) //nolint:gosec // G304: destDir is a provision target we created
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+		updated := stripDisableModelInvocation(data)
+		if bytes.Equal(data, updated) {
+			continue
+		}
+		if err := os.WriteFile(path, updated, 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// stripDisableModelInvocation removes disable-model-invocation from YAML
+// frontmatter so Claude injects the skill into the model's available-skills
+// list. Town roles have no human to type /slash names.
+func stripDisableModelInvocation(content []byte) []byte {
+	text := string(content)
+	rest, ok := strings.CutPrefix(text, "---\n")
+	if !ok {
+		rest, ok = strings.CutPrefix(text, "---\r\n")
+		if !ok {
+			return content
+		}
+	}
+	closeIdx := strings.Index(rest, "\n---")
+	if closeIdx < 0 {
+		return content
+	}
+	fm := rest[:closeIdx]
+	after := rest[closeIdx:]
+
+	lines := strings.Split(fm, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		key := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(key, "disable-model-invocation:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return []byte("---\n" + strings.Join(kept, "\n") + after)
 }
 
 func linkOrWrite(destDir, sourceDir string) error {

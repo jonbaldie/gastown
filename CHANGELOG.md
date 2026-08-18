@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gt prime` standing skills are model-invocable for Claude town roles.**
+  Upstream ships `/implement`, `/to-spec`, and `/to-tickets` with
+  `disable-model-invocation: true`. Provision copied that flag verbatim, so
+  Claude hid those skills from town-role models. Town sessions have no human
+  to type those `/slash` names. Provision now strips the flag from the five
+  standing skills (including already-injected copies) and leaves other
+  skills user-invoked.
 - **`gt now` rigs no longer fail `default-branch-all-rigs`.** Local
   registration clones `--bare --local` and now materializes
   `refs/remotes/origin/<default_branch>` the same way a network clone

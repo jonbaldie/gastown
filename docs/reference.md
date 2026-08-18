@@ -383,7 +383,9 @@ rigorously, bug work must follow `/diagnosing-bugs`'s SKILL.md rigorously,
 making a bead epic must follow `/to-spec`'s SKILL.md rigorously, making bead
 children or individual beads must follow `/to-tickets`'s SKILL.md rigorously,
 and conflict-resolution beads must follow `/resolving-merge-conflicts`'s
-SKILL.md rigorously.
+SKILL.md rigorously. Those five skills are rewritten as model-invocable on
+inject (`disable-model-invocation` stripped) so Claude town roles can see
+them; the upstream collection ships several as user-invoked slash commands.
 No per-Role-home instruction files are created. Polecat worktrees get a Gas Town
 overlay pair (`AGENTS.md` with a `CLAUDE.md` symlink, or the `.local` pair when
 the Rig already has a constitution file).
