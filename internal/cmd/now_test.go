@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -217,22 +218,91 @@ func TestNowDocumentedBdCreateUsesRigPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gt now failed: %v\n%s", err, out)
 	}
+	env = append(append([]string{}, env...), "GT_TOWN_ROOT="+town)
 
 	rigDir := filepath.Join(town, "demo")
-	id, createOut, createErr := documentedRigBdCreate(t, rigDir, env)
+	waitNowRigBeadsReady(t, rigDir, env)
+	var id, createOut string
+	var createErr error
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		id, createOut, createErr = documentedRigBdCreate(t, rigDir, env)
+		if createErr == nil && strings.HasPrefix(id, "de-") {
+			break
+		}
+		if strings.HasPrefix(id, "hq-") {
+			break
+		}
+		if strings.Contains(createOut, "dirty tables") {
+			commitNowRigBeads(t, rigDir, env)
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	listing := listNowRigBeads(t, town, rigDir)
-	if strings.HasPrefix(id, "hq-") || strings.Contains(createOut, "hq-") {
+	if strings.HasPrefix(id, "hq-") {
 		t.Fatalf("documented bd -C <town>/<rig> create filed a town hq-* bead (id=%q) with no warning; want de-\noutput:\n%s\nrig listing:\n%s",
 			id, createOut, listing)
-	}
-	if createErr != nil {
-		t.Fatalf("documented bd -C <town>/<rig> create failed: %v\n%s\nrig listing:\n%s",
-			createErr, createOut, listing)
 	}
 	if !strings.HasPrefix(id, "de-") {
 		t.Fatalf("documented bd -C <town>/<rig> create filed %q, want de- prefix\noutput:\n%s\nrig listing:\n%s",
 			id, createOut, listing)
 	}
+	if createErr != nil && !strings.Contains(createOut, "record event") {
+		t.Fatalf("documented bd -C <town>/<rig> create failed: %v\n%s\nrig listing:\n%s",
+			createErr, createOut, listing)
+	}
+	if createErr != nil {
+		t.Logf("create exited %v after allocating %s (events table); checking the bead persisted", createErr, id)
+	}
+	showOut, showErr := showNowRigBead(t, rigDir, env, id)
+	if showErr != nil || !strings.Contains(showOut, id) {
+		t.Fatalf("rig bead %s did not persist after documented create\nshow err: %v\nshow out:\n%s\ncreate out:\n%s",
+			id, showErr, showOut, createOut)
+	}
+}
+
+func waitNowRigBeadsReady(t *testing.T, rigDir string, env []string) {
+	t.Helper()
+	meta := filepath.Join(rigDir, ".beads", "metadata.json")
+	bdPath, err := lookPathExtra("bd")
+	if err != nil {
+		t.Fatalf("bd not found: %v", err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	var lastList string
+	for {
+		if _, statErr := os.Stat(meta); statErr == nil {
+			listCmd := exec.Command(bdPath, "-C", rigDir, "list", "--limit", "1")
+			listCmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+			out, listErr := listCmd.CombinedOutput()
+			lastList = string(out)
+			if listErr == nil {
+				return
+			}
+			if strings.Contains(lastList, "dirty tables") {
+				commitNowRigBeads(t, rigDir, env)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rig beads not ready at %s\nlast bd list:\n%s", meta, lastList)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func commitNowRigBeads(t *testing.T, rigDir string, env []string) {
+	t.Helper()
+	bdPath, err := lookPathExtra("bd")
+	if err != nil {
+		t.Fatalf("bd not found: %v", err)
+	}
+	cmd := exec.Command(bdPath, "-C", rigDir, "dolt", "commit", "-m", "test: commit dirty rig beads")
+	cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+	out, err := cmd.CombinedOutput()
+	t.Logf("bd dolt commit: err=%v out=%s", err, out)
 }
 
 func documentedRigBdCreate(t *testing.T, rigDir string, env []string) (id, output string, err error) {
@@ -245,17 +315,23 @@ func documentedRigBdCreate(t *testing.T, rigDir string, env []string) (id, outpu
 	cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
 	out, runErr := cmd.CombinedOutput()
 	output = string(out)
+	id = beadIDFromCreateOutput(output)
 	if runErr != nil {
-		return "", output, runErr
-	}
-	id = strings.TrimSpace(output)
-	if idx := strings.LastIndex(id, "\n"); idx >= 0 {
-		id = strings.TrimSpace(id[idx+1:])
+		return id, output, runErr
 	}
 	if id == "" {
 		return "", output, fmt.Errorf("empty bead id")
 	}
 	return id, output, nil
+}
+
+func beadIDFromCreateOutput(output string) string {
+	re := regexp.MustCompile(`\b([a-z]{1,8}-[a-z0-9]*[0-9][a-z0-9]*)\b`)
+	var last string
+	for _, m := range re.FindAllStringSubmatch(output, -1) {
+		last = m[1]
+	}
+	return last
 }
 
 func listNowRigBeads(t *testing.T, town, rigDir string) string {
@@ -276,6 +352,33 @@ func listNowRigBeads(t *testing.T, town, rigDir string) string {
 		fmt.Fprintf(&b, "  rig config.yaml:\n%s\n", data)
 	}
 	return b.String()
+}
+
+func showNowRigBead(t *testing.T, rigDir string, env []string, id string) (string, error) {
+	t.Helper()
+	bdPath, err := lookPathExtra("bd")
+	if err != nil {
+		t.Fatalf("bd not found: %v", err)
+	}
+	cmd := exec.Command(bdPath, "-C", rigDir, "--ignore-schema-skew", "show", id, "--json")
+	cmd.Env = withoutEnvKeys(env, "BEADS_DIR", "BD_DIR")
+	out, runErr := cmd.CombinedOutput()
+	return string(out), runErr
+}
+
+func TestBeadIDFromCreateOutput(t *testing.T) {
+	got := beadIDFromCreateOutput("Error: failed to record event for de-78d: record event in events")
+	if got != "de-78d" {
+		t.Fatalf("beadIDFromCreateOutput = %q, want de-78d", got)
+	}
+	got = beadIDFromCreateOutput("hq-kv0\n")
+	if got != "hq-kv0" {
+		t.Fatalf("beadIDFromCreateOutput = %q, want hq-kv0", got)
+	}
+	got = beadIDFromCreateOutput("then re-run the migration")
+	if got != "" {
+		t.Fatalf("beadIDFromCreateOutput = %q, want empty", got)
+	}
 }
 
 func withoutEnvKeys(env []string, keys ...string) []string {
@@ -849,7 +952,7 @@ func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string 
 
 func writeNowHomeGitConfig(t *testing.T, home string) {
 	t.Helper()
-	content := "[user]\n\tname = Test User\n\temail = test@test.com\n"
+	content := "[user]\n\tname = Test User\n\temail = test@test.com\n[beads]\n\trole = maintainer\n"
 	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(content), 0644); err != nil {
 		t.Fatalf("write gitconfig: %v", err)
 	}

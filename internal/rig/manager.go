@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gofrs/flock"
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/constants"
@@ -1067,6 +1068,9 @@ type RigBeadsInitOptions struct {
 	// Clone-based Add() warns and continues; gt now requires Dolt so `bd -C <rig> create`
 	// cannot silently walk up to town hq-* beads.
 	RequireDolt bool
+	// SkipAgentBeads leaves Witness/Refinery beads to a later EnsureAgentBeads call.
+	// gt now uses this so documented `bd create` is not blocked by a dirty issues table.
+	SkipAgentBeads bool
 	// Quiet suppresses progress prints. Warnings still go to stderr.
 	Quiet bool
 }
@@ -1099,6 +1103,15 @@ func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeads
 			return fmt.Errorf("prefix collision (derived prefix %q): %w", prefix, err)
 		}
 	}
+	beadsDir := filepath.Join(rigPath, ".beads")
+	if err := beads.EnsureDir(beadsDir); err != nil {
+		return err
+	}
+	fl := flock.New(filepath.Join(beadsDir, "init.lock"))
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("locking rig beads init for %s: %w", name, err)
+	}
+	defer func() { _ = fl.Unlock() }()
 	if rigBeadsInitialized(rigPath) {
 		return m.appendRigRoute(rigPath, name, prefix, opts)
 	}
@@ -1130,10 +1143,6 @@ func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeads
 		warnBeads("  Run 'gt doctor --fix' to repair, or it will self-heal on next daemon start.\n")
 	}
 
-	if err := dropRigOrphanDBs(m.townRoot, prefix, name); err != nil {
-		return fmt.Errorf("rig init left a duplicate Dolt database: %w", err)
-	}
-
 	rigRootBeadsDir := filepath.Join(rigPath, ".beads")
 	resolvedBeadsDir := beads.ResolveBeadsDir(rigRootBeadsDir)
 	if _, err := os.Stat(filepath.Join(rigRootBeadsDir, "redirect")); os.IsNotExist(err) {
@@ -1142,12 +1151,22 @@ func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeads
 		}
 		_ = beads.EnsureConfigYAMLValue(resolvedBeadsDir, "types.custom", constants.BeadsCustomTypes)
 		_ = beads.EnsureConfigYAMLValue(resolvedBeadsDir, "types.infra", constants.BeadsInfraTypes)
+		if err := beads.EnsureConfigYAMLValue(resolvedBeadsDir, "beads.role", "maintainer"); err != nil {
+			warnBeads("  Warning: Could not set beads.role in config.yaml: %v\n", err)
+		}
 	}
 	if err := beads.EnsureDoltConfigValue(resolvedBeadsDir, "issue_prefix", prefix); err != nil {
+		if opts.RequireDolt {
+			return fmt.Errorf("setting issue_prefix in rig database %s: %w", name, err)
+		}
 		warnBeads("  Warning: Could not set issue_prefix in rig database: %v\n", err)
 	}
 	_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.custom", constants.BeadsCustomTypes)
 	_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.infra", constants.BeadsInfraTypes)
+
+	if err := dropRigOrphanDBs(m.townRoot, prefix, name); err != nil {
+		return fmt.Errorf("rig init left a duplicate Dolt database: %w", err)
+	}
 
 	resolvedBeadsPath := beads.ResolveBeadsDir(rigPath)
 	if err := beads.ProvisionPrimeMD(resolvedBeadsPath); err != nil {
@@ -1157,9 +1176,15 @@ func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeads
 	if err := m.appendRigRoute(rigPath, name, prefix, opts); err != nil {
 		return err
 	}
-
-	if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
-		warnBeads("  Warning: Could not create agent beads: %v\n", err)
+	if !opts.SkipAgentBeads {
+		if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
+			warnBeads("  Warning: Could not create agent beads: %v\n", err)
+		}
+	}
+	if opts.RequireDolt {
+		if err := commitRigBeads(rigPath, resolvedBeadsPath, name, "initialize "+name+" rig beads"); err != nil {
+			return fmt.Errorf("committing rig beads for %s: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -1183,6 +1208,37 @@ func (m *Manager) appendRigRoute(rigPath, name, prefix string, opts RigBeadsInit
 		warnBeads("  Warning: Could not update routes.jsonl: %v\n", err)
 	}
 	return nil
+}
+
+// EnsureAgentBeads creates Witness and Refinery agent beads in the rig database.
+func (m *Manager) EnsureAgentBeads(rigPath, name, prefix string) error {
+	if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
+		return err
+	}
+	if err := commitRigBeads(rigPath, beads.ResolveBeadsDir(rigPath), name, "create "+name+" agent beads"); err != nil {
+		warnBeads("  Warning: bd dolt commit after agent beads for %s: %v\n", name, err)
+	}
+	return nil
+}
+
+func commitRigBeads(rigPath, beadsDir, name, message string) error {
+	commitCmd := beads.Spawn("dolt", "commit", "-m", message)
+	commitCmd.Dir = rigPath
+	commitCmd.Env = bdSubprocessEnv(beadsDir, name)
+	out, err := commitCmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err == nil || doltCommitHasNoChanges(text) {
+		return nil
+	}
+	return fmt.Errorf("%w (%s)", err, text)
+}
+
+func doltCommitHasNoChanges(out string) bool {
+	low := strings.ToLower(out)
+	return strings.Contains(low, "nothing to commit") ||
+		strings.Contains(low, "no changes") ||
+		strings.Contains(low, "working set is clean") ||
+		strings.Contains(low, "working tree clean")
 }
 
 // InitBeads initializes the beads database at rig level.

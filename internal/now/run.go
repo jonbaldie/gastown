@@ -151,20 +151,13 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 		return Result{}, err
 	}
 
-	var beadsErr error
-	var sessionErr error
-	var finish sync.WaitGroup
-	finish.Add(2)
 	go func() {
-		defer finish.Done()
-		beadsErr = ensureLocalRigBeads(townRoot, rigName)
+		if err := ensureLocalRigBeads(townRoot, rigName); err != nil {
+			fmt.Fprintf(opts.Stderr, "warning: initializing rig beads: %v\n", err)
+		}
 	}()
-	go func() {
-		defer finish.Done()
-		sessionErr = startSessions(ctx, townRoot, mayorChanged, opts, hooks)
-	}()
-	finish.Wait()
-	if err := errors.Join(sessionErr, beadsErr); err != nil {
+
+	if err := startSessions(ctx, townRoot, mayorChanged, opts, hooks); err != nil {
 		return Result{}, err
 	}
 

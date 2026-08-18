@@ -837,6 +837,15 @@ exit 0
 	}
 }
 
+func TestDoltCommitHasNoChanges(t *testing.T) {
+	if !doltCommitHasNoChanges("Nothing to commit, working tree clean") {
+		t.Fatal("clean working tree should be treated as success")
+	}
+	if doltCommitHasNoChanges("schema migration: pending schema migrations alter pre-existing dirty tables: issues") {
+		t.Fatal("dirty-table migration error should not look like a clean commit")
+	}
+}
+
 func TestBdSubprocessEnvUsesHardenedBDEnv(t *testing.T) {
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 	if err := os.MkdirAll(beadsDir, 0755); err != nil {

@@ -215,5 +215,11 @@ func provisionTown(townRoot string, hooks Hooks) error {
 			errs = append(errs, fmt.Errorf("initializing agent beads: %w", err))
 		}
 	}
+	if err := ensureAllLocalRigBeads(townRoot); err != nil {
+		errs = append(errs, fmt.Errorf("initializing rig beads: %w", err))
+	}
+	if err := ensureAllRigAgentBeads(townRoot); err != nil {
+		errs = append(errs, fmt.Errorf("initializing rig agent beads: %w", err))
+	}
 	return errors.Join(errs...)
 }

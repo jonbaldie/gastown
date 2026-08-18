@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bd -C <town>/<rig> create` recipe walked up to town `.beads` and silently
   filed `hq-*` work instead of a rig prefix such as `de-`. `gt now` now fences
   that directory with the rig prefix and initializes the rig database after
-  Dolt is up. Sling/prime help warn that a missing rig `.beads` files town work.
+  Dolt is up, then commits so `bd create` is not blocked by a dirty `issues`
+  table. Witness/Refinery beads are filled in by deferred Town provision.
+  Sling/prime help warn that a missing rig `.beads` files town work.
 
 ## [1.3.0] - 2026-08-17
 
