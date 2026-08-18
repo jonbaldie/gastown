@@ -1296,16 +1296,18 @@ func (c *BareRepoRefspecCheck) Fix(ctx *CheckContext) error {
 // DefaultBranchExistsCheck verifies that the configured default_branch exists
 // as a remote tracking ref in the bare repo.
 type DefaultBranchExistsCheck struct {
-	BaseCheck
+	FixableCheck
 }
 
 // NewDefaultBranchExistsCheck creates a new default branch exists check.
 func NewDefaultBranchExistsCheck() *DefaultBranchExistsCheck {
 	return &DefaultBranchExistsCheck{
-		BaseCheck: BaseCheck{
-			CheckName:        "default-branch-exists",
-			CheckDescription: "Verify configured default_branch exists on remote",
-			CheckCategory:    CategoryRig,
+		FixableCheck: FixableCheck{
+			BaseCheck: BaseCheck{
+				CheckName:        "default-branch-exists",
+				CheckDescription: "Verify configured default_branch exists on remote",
+				CheckCategory:    CategoryRig,
+			},
 		},
 	}
 }
@@ -1370,9 +1372,8 @@ func (c *DefaultBranchExistsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	ref := fmt.Sprintf("refs/remotes/origin/%s", cfg.DefaultBranch)
-	cmd := exec.Command("git", "-C", bareRepoPath, "rev-parse", "--verify", ref)
-	if err := cmd.Run(); err != nil {
+	ref := originTrackingRef(cfg.DefaultBranch)
+	if !gitRefExists(bareRepoPath, ref) {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusError,
@@ -1381,7 +1382,7 @@ func (c *DefaultBranchExistsCheck) Run(ctx *CheckContext) *CheckResult {
 				fmt.Sprintf("Ref %s does not exist in bare repo", ref),
 				"Polecat spawn will fail with a cryptic git error",
 			},
-			FixHint: fmt.Sprintf("Fix the branch name in %s/config.json, or create the branch on the remote", rigPath),
+			FixHint: fmt.Sprintf("Run 'gt doctor --fix --rig %s' to fetch origin tracking refs, or fix the branch name in %s/config.json", ctx.RigName, rigPath),
 		}
 	}
 
@@ -1392,19 +1393,53 @@ func (c *DefaultBranchExistsCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
+// Fix fetches origin tracking refs in the rig's bare repo so origin/<default_branch>
+// exists after a local gt now clone.
+func (c *DefaultBranchExistsCheck) Fix(ctx *CheckContext) error {
+	if ctx.RigName == "" {
+		return nil
+	}
+	bareRepoPath := filepath.Join(ctx.RigPath(), ".repo.git")
+	if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
+		return nil
+	}
+	return fetchOriginTrackingRefs(bareRepoPath)
+}
+
+func originTrackingRef(branch string) string {
+	return fmt.Sprintf("refs/remotes/origin/%s", branch)
+}
+
+func gitRefExists(repoPath, ref string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "--quiet", ref)
+	return cmd.Run() == nil
+}
+
+func fetchOriginTrackingRefs(repoPath string) error {
+	cmd := exec.Command("git", "-c", "protocol.file.allow=always", "-C", repoPath, "fetch", "origin")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("fetching origin: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 // DefaultBranchAllRigsCheck validates default_branch for all rigs in the workspace.
 // Unlike DefaultBranchExistsCheck (which requires --rig), this runs globally.
 type DefaultBranchAllRigsCheck struct {
-	BaseCheck
+	FixableCheck
 }
 
 // NewDefaultBranchAllRigsCheck creates a new global default branch check.
 func NewDefaultBranchAllRigsCheck() *DefaultBranchAllRigsCheck {
 	return &DefaultBranchAllRigsCheck{
-		BaseCheck: BaseCheck{
-			CheckName:        "default-branch-all-rigs",
-			CheckDescription: "Verify default_branch exists on remote for all rigs",
-			CheckCategory:    CategoryRig,
+		FixableCheck: FixableCheck{
+			BaseCheck: BaseCheck{
+				CheckName:        "default-branch-all-rigs",
+				CheckDescription: "Verify default_branch exists on remote for all rigs",
+				CheckCategory:    CategoryRig,
+			},
 		},
 	}
 }
@@ -1456,9 +1491,8 @@ func (c *DefaultBranchAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 			continue // No bare repo, skip
 		}
 
-		ref := fmt.Sprintf("refs/remotes/origin/%s", cfg.DefaultBranch)
-		cmd := exec.Command("git", "-C", bareRepoPath, "rev-parse", "--verify", ref)
-		if err := cmd.Run(); err != nil {
+		ref := originTrackingRef(cfg.DefaultBranch)
+		if !gitRefExists(bareRepoPath, ref) {
 			errors = append(errors, fmt.Sprintf("%s: default_branch %q not found on remote", entry.Name(), cfg.DefaultBranch))
 		}
 	}
@@ -1469,7 +1503,7 @@ func (c *DefaultBranchAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 			Status:  StatusError,
 			Message: fmt.Sprintf("%d rig(s) with invalid default_branch", len(errors)),
 			Details: errors,
-			FixHint: "Fix the branch name in <rig>/config.json, or create the branch on the remote",
+			FixHint: "Run 'gt doctor --fix' to fetch origin tracking refs, or fix the branch name in <rig>/config.json",
 		}
 	}
 
@@ -1486,6 +1520,56 @@ func (c *DefaultBranchAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 		Status:  StatusOK,
 		Message: fmt.Sprintf("All %d rig(s) with custom default_branch validated", rigsChecked),
 	}
+}
+
+// Fix fetches origin tracking refs for every rig whose default_branch is missing
+// as refs/remotes/origin/<branch>. Local gt now clones have the branch as
+// refs/heads/<branch> but never materialized the tracking ref.
+func (c *DefaultBranchAllRigsCheck) Fix(ctx *CheckContext) error {
+	entries, err := os.ReadDir(ctx.TownRoot)
+	if err != nil {
+		return fmt.Errorf("reading town root: %w", err)
+	}
+
+	var failed []string
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "mayor" || entry.Name() == "docs" || entry.Name() == "scripts" {
+			continue
+		}
+
+		rigPath := filepath.Join(ctx.TownRoot, entry.Name())
+		data, err := os.ReadFile(filepath.Join(rigPath, "config.json"))
+		if err != nil {
+			continue
+		}
+
+		type rigConfig struct {
+			DefaultBranch string `json:"default_branch"`
+		}
+		var cfg rigConfig
+		if err := json.Unmarshal(data, &cfg); err != nil || cfg.DefaultBranch == "" {
+			continue
+		}
+
+		bareRepoPath := filepath.Join(rigPath, ".repo.git")
+		if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
+			continue
+		}
+		if gitRefExists(bareRepoPath, originTrackingRef(cfg.DefaultBranch)) {
+			continue
+		}
+		if err := fetchOriginTrackingRefs(bareRepoPath); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", entry.Name(), err))
+			continue
+		}
+		if !gitRefExists(bareRepoPath, originTrackingRef(cfg.DefaultBranch)) {
+			failed = append(failed, fmt.Sprintf("%s: default_branch %q still missing after fetch", entry.Name(), cfg.DefaultBranch))
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("could not restore origin tracking refs: %s", strings.Join(failed, "; "))
+	}
+	return nil
 }
 
 // BareRepoExistsCheck verifies that .repo.git exists when worktrees depend on it.

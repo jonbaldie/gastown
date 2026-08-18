@@ -64,7 +64,7 @@ Cleanup checks (fixable):
 Clone divergence checks:
   - persistent-role-branches Detect witness/refinery not on main (excludes crew)
   - clone-divergence         Detect clones significantly behind origin/main
-  - default-branch-all-rigs  Verify default_branch exists on remote for all rigs
+  - default-branch-all-rigs  Verify default_branch exists on remote for all rigs (fixable)
   - worktree-gitdir-valid    Verify worktree .git files reference existing paths (fixable)
 
 Crew workspace checks:
