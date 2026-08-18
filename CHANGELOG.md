@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and checkpoint_dog staged with `git add -A`, which committed a 2.3MB
   locally built executable when `.gitignore` did not name it. Safety-net
   staging now adds source files only and leaves binaries untracked.
+- **Slinging a town bead is idempotent.** `gt sling hq-* <rig>` used to
+  copy the bead (and close the original) before the target-rig dispatch
+  check. When that check failed, a retry minted another `hq-*` ID and
+  left a closed orphan. Sling now resolves the rig database first, lands
+  the copy there, verifies it, then closes the source. A retry of a
+  closed "Moved to …" bead follows the destination instead of failing on
+  the old ID.
 - **`gt now` no longer reports success over a dead Mayor.** SkipReady leaves
   remain-on-exit on so attach can proceed, which also keeps a tmux session
   after the Mayor command exits 0. The start path now requires a live pane

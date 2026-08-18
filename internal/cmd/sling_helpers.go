@@ -427,8 +427,16 @@ func isTownWorkBead(beadID string) bool {
 // then sling to a rig"; polecats can only execute beads that live in the
 // target rig database. dryRun previews the move without creating or closing beads.
 func prepareTownBeadForRigSling(beadID, targetRig, townRoot string, dryRun bool) (string, error) {
-	if !isTownWorkBead(beadID) || targetRig == "" || townRoot == "" {
+	if targetRig == "" || townRoot == "" {
 		return beadID, nil
+	}
+	beadID = followMovedBead(beadID, townRoot)
+	if !isTownWorkBead(beadID) {
+		return beadID, nil
+	}
+	targetBeadsDir, ok := resolveTargetRigBeadsDir(townRoot, targetRig)
+	if !ok {
+		return "", fmt.Errorf("cannot resolve target rig %q beads database for bead %s; refusing to sling before creating hooks or molecule side effects", targetRig, beadID)
 	}
 	if err := verifyBeadExistsInTargetRigDatabase(beadID, targetRig, townRoot); err == nil {
 		return beadID, nil
@@ -444,12 +452,35 @@ func prepareTownBeadForRigSling(beadID, targetRig, townRoot string, dryRun bool)
 		fmt.Printf("Would move town bead %s into rig %s (prefix %s)\n", beadID, targetRig, normalizeBeadPrefix(targetPrefix))
 		return beadID, nil
 	}
-	newID, err := moveBeadToPrefix(beadID, targetPrefix, townRoot)
+	newID, err := moveBeadToPrefixChecked(beadID, targetPrefix, townRoot, filepath.Dir(targetBeadsDir), func(landedID string) error {
+		if isTownWorkBead(landedID) {
+			return fmt.Errorf("moving town bead %s into rig %q created %s (town prefix); refusing to close the source", beadID, targetRig, landedID)
+		}
+		return verifyBeadExistsInTargetRigDatabase(landedID, targetRig, townRoot)
+	})
 	if err != nil {
 		return "", fmt.Errorf("moving town bead %s into rig %q: %w\nCreate the work in the target rig first:\n  bd -C %s create --title=...\nor move it explicitly:\n  gt bead move %s %s-", beadID, targetRig, err, targetRig, beadID, targetPrefix)
 	}
 	fmt.Printf("%s Moved town bead %s → %s for rig %s\n", style.Bold.Render("→"), beadID, newID, targetRig)
 	return newID, nil
+}
+
+// resolveTargetRigBeadsDir finds the target rig's .beads directory from routes
+// first, then the conventional on-disk layout. Prefix-only routing can miss a
+// rig that is registered in rigs.json but absent from routes.jsonl.
+func resolveTargetRigBeadsDir(townRoot, targetRig string) (string, bool) {
+	if dir, ok := beads.ResolveRepoAliasBeadsDir(townRoot, targetRig); ok {
+		return dir, true
+	}
+	for _, dir := range []string{
+		filepath.Join(townRoot, targetRig, "mayor", "rig", ".beads"),
+		filepath.Join(townRoot, targetRig, ".beads"),
+	} {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir, true
+		}
+	}
+	return "", false
 }
 
 // ensureBeadInTargetRig moves a town work bead into the target rig when needed,
@@ -484,7 +515,7 @@ func verifyBeadExistsInTargetRigDatabase(beadID, targetRig, townRoot string) err
 		return fmt.Errorf("cannot verify bead %s in target rig %q: town root is unavailable; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
 	}
 
-	targetBeadsDir, ok := beads.ResolveRepoAliasBeadsDir(townRoot, targetRig)
+	targetBeadsDir, ok := resolveTargetRigBeadsDir(townRoot, targetRig)
 	if !ok {
 		return fmt.Errorf("cannot resolve target rig %q beads database for bead %s; refusing to sling before creating hooks or molecule side effects", targetRig, beadID)
 	}
