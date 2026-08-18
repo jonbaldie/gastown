@@ -221,7 +221,7 @@ func TestNowDocumentedBdCreateUsesRigPrefix(t *testing.T) {
 	env = append(append([]string{}, env...), "GT_TOWN_ROOT="+town)
 
 	rigDir := filepath.Join(town, "demo")
-	waitNowRigBeadsReady(t, rigDir, env)
+	waitNowRigBeadsReady(t, town, rigDir, env, out)
 	var id, createOut string
 	var createErr error
 	deadline := time.Now().Add(20 * time.Second)
@@ -264,7 +264,7 @@ func TestNowDocumentedBdCreateUsesRigPrefix(t *testing.T) {
 	}
 }
 
-func waitNowRigBeadsReady(t *testing.T, rigDir string, env []string) {
+func waitNowRigBeadsReady(t *testing.T, town, rigDir string, env []string, nowOut string) {
 	t.Helper()
 	ready := filepath.Join(rigDir, ".beads", "gt-ready")
 	bdPath, err := lookPathExtra("bd")
@@ -287,7 +287,12 @@ func waitNowRigBeadsReady(t *testing.T, rigDir string, env []string) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("rig beads not ready at %s\nlast issue_prefix:\n%s", ready, lastPrefix)
+			provLog := ""
+			if data, readErr := os.ReadFile(filepath.Join(town, "mayor", "provision.log")); readErr == nil {
+				provLog = string(data)
+			}
+			t.Fatalf("rig beads not ready at %s\nlast issue_prefix:\n%s\ngt now output:\n%s\n%s\nprovision.log:\n%s",
+				ready, lastPrefix, nowOut, listNowRigBeads(t, town, rigDir), provLog)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

@@ -151,18 +151,12 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 		return Result{}, err
 	}
 
-	go func() {
-		if err := ensureLocalRigBeads(townRoot, rigName); err != nil {
-			fmt.Fprintf(opts.Stderr, "warning: initializing rig beads: %v\n", err)
-		}
-	}()
+	if err := startDeferredProvision(opts.Executable, townRoot); err != nil {
+		fmt.Fprintf(opts.Stderr, "warning: deferred Town provision did not start: %v\n", err)
+	}
 
 	if err := startSessions(ctx, townRoot, mayorChanged, opts, hooks); err != nil {
 		return Result{}, err
-	}
-
-	if err := startDeferredProvision(opts.Executable, townRoot); err != nil {
-		fmt.Fprintf(opts.Stderr, "warning: deferred Town provision did not start: %v\n", err)
 	}
 
 	if err := requireLiveSession(mayor.SessionName()); err != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 
 	"github.com/jonbaldie/gastown/internal/config"
@@ -180,8 +181,11 @@ func startDeferredProvision(executable, townRoot string) error {
 	cmd.Dir = townRoot
 	cmd.Env = append(os.Environ(), "GT_TOWN_ROOT="+townRoot)
 	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	if logFile, err := os.OpenFile(filepath.Join(townRoot, "mayor", "provision.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		defer logFile.Close()
+	}
 	util.SetDetachedProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting deferred provision: %w", err)
@@ -198,6 +202,9 @@ func provisionTown(townRoot string, hooks Hooks) error {
 		return fmt.Errorf("not a Gas Town HQ: %s", townRoot)
 	}
 	var errs []error
+	if err := ensureAllLocalRigBeads(townRoot); err != nil {
+		errs = append(errs, fmt.Errorf("initializing rig beads: %w", err))
+	}
 	count, err := formula.ProvisionFormulas(townRoot)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("provisioning formulas: %w", err))
@@ -214,9 +221,6 @@ func provisionTown(townRoot string, hooks Hooks) error {
 		if err := hooks.InitAgentBeads(townRoot); err != nil {
 			errs = append(errs, fmt.Errorf("initializing agent beads: %w", err))
 		}
-	}
-	if err := ensureAllLocalRigBeads(townRoot); err != nil {
-		errs = append(errs, fmt.Errorf("initializing rig beads: %w", err))
 	}
 	if err := ensureAllRigAgentBeads(townRoot); err != nil {
 		errs = append(errs, fmt.Errorf("initializing rig agent beads: %w", err))
