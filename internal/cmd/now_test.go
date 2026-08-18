@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1014,10 +1015,67 @@ func nowSocket(name string) string {
 func stopNowDaemonOnCleanup(t *testing.T, townRoot string) {
 	t.Helper()
 	t.Cleanup(func() {
+		waitNowProvisionExit(t, townRoot)
 		if err := daemon.StopDaemon(townRoot); err != nil {
 			t.Logf("town daemon cleanup skipped: %v", err)
 		}
 	})
+}
+
+// waitNowProvisionExit waits for the detached `gt now --provision-only` process
+// that owns townRoot. Provision initializes rig beads, so it writes under the
+// town after the test body returns; t.TempDir removal then races it and fails
+// with "directory not empty". Only processes naming this town are matched, so a
+// production provision is never touched.
+func waitNowProvisionExit(t *testing.T, townRoot string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		pids := nowProvisionPIDs(t, townRoot)
+		if len(pids) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			for _, pid := range pids {
+				proc, err := os.FindProcess(pid)
+				if err != nil {
+					continue
+				}
+				_ = proc.Kill()
+			}
+			t.Logf("killed %d deferred provision process(es) still writing to %s", len(pids), townRoot)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func nowProvisionPIDs(t *testing.T, townRoot string) []int {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	out, err := exec.Command("ps", "-eo", "pid=,args=").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		args := strings.Join(fields[1:], " ")
+		if !strings.Contains(args, "--provision-only") || !strings.Contains(args, townRoot) {
+			continue
+		}
+		pid, convErr := strconv.Atoi(fields[0])
+		if convErr != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids
 }
 
 func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string {
