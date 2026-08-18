@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	beadsdk "github.com/steveyegge/beads"
+	beadsdk "github.com/jonbaldie/beads"
 )
 
 type metadataWriter interface {

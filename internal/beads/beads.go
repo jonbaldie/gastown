@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
+	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/runtime"
 	"github.com/jonbaldie/gastown/internal/telemetry"
 	"github.com/jonbaldie/gastown/internal/util"
-	beadsdk "github.com/steveyegge/beads"
 )
 
 // Common errors

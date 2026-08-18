@@ -42,7 +42,7 @@ To use NOS Town with this Gas Town fork:
 ```bash
 # Gas Town deps (same as standard install)
 go install github.com/kab0rn/gastown/cmd/gt@latest
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 
 # NOS Town CLI
 go install github.com/kab0rn/nostown/cmd/nos@latest
@@ -50,6 +50,8 @@ go install github.com/kab0rn/nostown/cmd/nos@latest
 # Set Groq API key
 export GROQ_API_KEY="your-api-key"
 ```
+
+The Beads `@main` target is intentional. Before changing it to `@latest`, inspect the `GoMod` file reported by `go mod download -json github.com/jonbaldie/beads@latest` and confirm it declares `module github.com/jonbaldie/beads`; Go rejects a selected version that declares a different module path.
 
 ### 2. Initialize Workspace
 

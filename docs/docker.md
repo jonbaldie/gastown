@@ -63,9 +63,9 @@ A single `apt-get install` adds the tooling Gas Town uses at runtime: `build-ess
 
 ### Language runtimes and gt dependencies
 
-Go installs from the official tarball because the Debian-packaged version lags. The Go version is controlled by `ARG GO_VERSION` (currently `1.26.2`). The Dockerfile detects the host architecture at build time, which lets the same Dockerfile produce working images on amd64 and arm64. The architecture-detection change came from commit `ac4b65d1`.
+Go installs from the official tarball because the Debian-packaged version lags. The `GO_VERSION` build argument selects the tarball. The Dockerfile detects the host architecture at build time, which lets the same Dockerfile produce working images on amd64 and arm64. The architecture-detection change came from commit `ac4b65d1`.
 
-`bd` and `dolt` install via the upstream `curl | bash` install scripts. In this image, the scripts place binaries in `/usr/local/bin`, which remains on `$PATH` for the `agent` user.
+`bd` installs from the fork revision selected by `BD_VERSION`, with `GOBIN=/usr/local/bin`. Dolt uses its release install script. Both binaries remain on `$PATH` for the `agent` user.
 
 The image-level `ENV PATH` prepends `/app/gastown` (where the freshly built `gt` binary lives), `/usr/local/go/bin`, and `/home/agent/go/bin`. The shell profile snippets in `/etc/profile.d/gastown.sh` and `/etc/zsh/zshenv` only re-prepend `/app/gastown` so interactive bash and zsh sessions keep `/app/gastown/gt` ahead of any other `gt` without duplicating every image-level path entry.
 
@@ -281,7 +281,7 @@ docker build -f Dockerfile.e2e -t gastown-test .
 docker run --rm gastown-test
 ```
 
-The e2e image installs Go 1.26, a pinned Dolt version (built from source for reproducibility), a pinned `bd` version, and the system tools needed by `gt install` and `gt dolt start` — notably `procps` and `lsof`. The default `CMD` runs `go test -tags=e2e -run TestInstall ./internal/cmd/...` against the integration tests, with `-count=1 -parallel 1` to disable caching and avoid concurrency surprises.
+The e2e image starts from a pinned Go Alpine image and installs a pinned Dolt version (built from source for reproducibility), a pinned `bd` version, and the system tools needed by `gt install` and `gt dolt start` — notably `procps` and `lsof`. The default `CMD` runs `go test -tags=e2e -run TestInstall ./internal/cmd/...` against the integration tests, with `-count=1 -parallel 1` to disable caching and avoid concurrency surprises.
 
 Common use cases for the e2e image:
 

@@ -129,7 +129,7 @@ Native installs require the host tools below. Docker installs only require Docke
 | Tool | Version | Notes |
 |---|---|---|
 | Git | 2.20+ | Worktree support |
-| Go | 1.26.2+ (see `go.mod`) | Required for the Go install and source paths. Not needed for Docker setup. |
+| Go | 1.26.5+ (see `go.mod`) | Required for the Go install and source paths. Not needed for Docker setup. |
 | Beads (`bd`) | 0.57.0+ | Required for native installs. Install it with `go install`. |
 | sqlite3 | any | Used by convoy database queries. Usually pre-installed on macOS and Linux. |
 | ICU4C dev headers | varies | Required only for `make build-cgo`, which compiles the optional embedded query layer. |
@@ -147,8 +147,10 @@ CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest
 The binary lands in `$GOBIN`, or `$GOPATH/bin` when `GOBIN` is unset. Put that directory before older `gt` installations on `PATH`. Native installs also require `bd` and Dolt:
 
 ```bash
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 ```
+
+The `@main` target is intentional. Before changing it to `@latest`, inspect the `GoMod` file reported by `go mod download -json github.com/jonbaldie/beads@latest` and confirm it declares `module github.com/jonbaldie/beads`; Go rejects a selected version that declares a different module path.
 
 On macOS, install Dolt with `brew install dolt`. On Linux and Windows, follow the [Dolt installation guide](https://github.com/dolthub/dolt#installation).
 
@@ -157,7 +159,7 @@ On Windows PowerShell, set the CGO environment variable before installing:
 ```powershell
 $env:CGO_ENABLED = "0"
 go install github.com/jonbaldie/gastown/cmd/gt@latest
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 ```
 
 For full tmux-backed workflows on Windows, use WSL or another Linux environment. Native Windows shells are best treated as minimal CLI-only environments.

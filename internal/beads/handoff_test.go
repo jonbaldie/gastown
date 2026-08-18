@@ -3,7 +3,7 @@ package beads
 import (
 	"testing"
 
-	beadsdk "github.com/steveyegge/beads"
+	beadsdk "github.com/jonbaldie/beads"
 )
 
 func TestHandoffBeadTitle(t *testing.T) {

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	beadsdk "github.com/steveyegge/beads"
+	beadsdk "github.com/jonbaldie/beads"
 )
 
 var beadsOpenEnvMu sync.Mutex

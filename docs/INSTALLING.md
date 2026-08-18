@@ -2,7 +2,7 @@
 
 Complete setup guide for Gas Town multi-agent orchestrator.
 
-For the shortest native path, install `gt` globally with `CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest`. From a project git repository, run `gt now`. Install `bd` and Dolt separately as described below. Docker supplies the runtime tools inside the container. Use `@main` only when you want the unreleased tip.
+For the shortest native path, install `gt` globally with `CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest`. From a project git repository, run `gt now`. Install `bd` and Dolt separately as described below. Docker supplies the runtime tools inside the container. The Beads `@main` target is intentional. Before changing it to `@latest`, inspect the `GoMod` file reported by `go mod download -json github.com/jonbaldie/beads@latest` and confirm it declares `module github.com/jonbaldie/beads`; Go rejects a selected version that declares a different module path.
 
 ## Prerequisites
 
@@ -12,12 +12,12 @@ Native source installs require these host tools. Docker installs only require Do
 
 | Tool | Version | Check | Install |
 |------|---------|-------|---------|
-| **Go** | 1.26.2+ | `go version` | See [golang.org](https://go.dev/doc/install) |
+| **Go** | 1.26.5+ | `go version` | See [golang.org](https://go.dev/doc/install) |
 | **Git** | 2.20+ | `git --version` | See below |
 | **sqlite3** | any | `sqlite3 --version` | Usually pre-installed on macOS; Linux packages are commonly named `sqlite3` |
 | **ICU4C dev headers** | varies | `pkg-config --modversion icu-uc`, `dpkg -l libicu-dev`, `rpm -q libicu-devel`, or `brew --prefix icu4c` | Required only for `make build-cgo`, which compiles the optional embedded query layer |
 | **Dolt** | >= 2.0.7 | `dolt version` | macOS: `brew install dolt`; other platforms: see [dolthub/dolt](https://github.com/dolthub/dolt?tab=readme-ov-file#installation) |
-| **Beads** | >= 0.57.0 | `bd version` | `go install github.com/steveyegge/beads/cmd/bd@latest` |
+| **Beads** | >= 0.57.0 | `bd version` | `go install github.com/jonbaldie/beads/cmd/bd@main` |
 | **Docker Compose** | v2+ | `docker compose version` | Docker setup only. Install Docker Desktop or Docker Engine with the Compose plugin. |
 
 ### Optional (for Full Stack Mode)
@@ -41,7 +41,7 @@ Install Go and Dolt with Homebrew, then install `gt` and `bd` with Go.
 ```bash
 brew install go dolt
 CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 
 # Optional: Docker setup only
 # Install Docker Desktop or another Docker Engine with Compose v2.
@@ -58,8 +58,8 @@ sudo apt update
 sudo apt install -y git sqlite3
 
 # Install Go (apt version may be outdated, use official installer)
-wget https://go.dev/dl/go1.26.2.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.2.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.26.5.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.5.linux-amd64.tar.gz
 echo 'export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH' >> ~/.bashrc
 source ~/.bashrc
 
@@ -76,7 +76,7 @@ sudo apt install -y tmux
 ```bash
 # Required
 sudo dnf install -y git sqlite
-# Install Go 1.26.2+ from your distro if available, otherwise use the official Go installer.
+# Install Go 1.26.5+ from your distro if available, otherwise use the official Go installer.
 # Install Dolt: see https://github.com/dolthub/dolt?tab=readme-ov-file#installation
 # Docker setup only: install Docker Engine with the Compose plugin.
 
@@ -93,7 +93,7 @@ Install Go and Dolt first, then install `gt` and `bd` with Go. The binaries land
 ```powershell
 $env:CGO_ENABLED = "0"
 go install github.com/jonbaldie/gastown/cmd/gt@latest
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 ```
 
 Use WSL or another Linux environment for tmux-backed workflows. Native Windows shells are best suited to minimal CLI-only use.
@@ -102,7 +102,7 @@ Use WSL or another Linux environment for tmux-backed workflows. Native Windows s
 
 ```bash
 # Check all prerequisites
-go version        # Should show go1.26.2 or higher
+go version        # Should show go1.26.5 or higher
 git --version     # Should show 2.20 or higher
 dolt version      # Should show 2.0.7 or higher
 tmux -V           # (Optional) Should show 3.0 or higher
@@ -116,7 +116,7 @@ On macOS and Linux, install `gt` and Beads with Go after installing Dolt separat
 
 ```bash
 CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 ```
 
 The binaries land in `$GOBIN`, or `$GOPATH/bin` (usually `~/go/bin`) when `GOBIN` is unset. Put that directory before older install locations on `PATH`, then verify the native dependencies:
@@ -320,7 +320,7 @@ source ~/.bashrc  # or restart terminal
 Beads CLI not installed:
 
 ```bash
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 ```
 
 ### `gt doctor` shows errors
@@ -382,7 +382,7 @@ gt doctor --fix            # Fix any post-update issues
 Update Beads the same way:
 
 ```bash
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 ```
 
 Run the `command -v gt` and `gt version` checks before `gt doctor --fix` so a

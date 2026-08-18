@@ -317,7 +317,7 @@ func getEpicChildren(epicID string) ([]epicChild, error) {
 
 	// Prefer raw SQL — handles cross-database deps. Falls back to bd dep list
 	// if bd sql is not available (older bd versions).
-	childIDs, err := bdDepListRawIDs(sqlDir, epicID, "down", "depends_on")
+	childIDs, err := bdDepListRawIDs(sqlDir, epicID, "down", "tracks")
 	if err != nil {
 		// bd sql not supported — fall back to bd dep list.
 		childIDs, err = bdDepListFallback(dir, epicID)
@@ -353,7 +353,7 @@ func getEpicChildren(epicID string) ([]epicChild, error) {
 // is not available.
 func bdDepListFallback(dir, epicID string) ([]string, error) {
 	stdout, err := BdCmd("dep", "list", epicID,
-		"--direction=down", "--type=depends_on", "--json").
+		"--direction=down", "--type=tracks", "--json").
 		AllowStale().
 		Dir(dir).
 		StripBeadsDir().

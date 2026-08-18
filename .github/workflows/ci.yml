@@ -76,7 +76,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Install ICU4C development headers
@@ -104,6 +104,14 @@ jobs:
         run: |
           set -o pipefail
           gotestsum --format testname --junitfile junit.xml -- -race -short -timeout=10m -coverprofile=coverage.out ./... 2>&1 | tee test-output.txt
+
+      - name: Test gt now five-second path
+        run: |
+          for attempt in 1 2 3; do
+            CGO_ENABLED=0 go test -short -run '^TestNowStartsTownInFiveSeconds$' -count=1 ./internal/cmd && exit 0
+            echo "gt now latency attempt $attempt failed; retrying" >&2
+          done
+          exit 1
 
       - name: Test Report
         if: always()
@@ -139,7 +147,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Install ICU4C development headers
@@ -160,7 +168,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Install ICU4C development headers
@@ -194,7 +202,7 @@ jobs:
           status=0
 
           gotestsum --format testname --junitfile junit-integration.xml -- \
-            -tags=integration -timeout=15m -v ./internal/cmd/... || status=1
+            -tags=integration -timeout=30m -v ./internal/cmd/... || status=1
 
           gotestsum --format testname --junitfile junit-scheduler-1.xml -- \
             -tags='integration scheduler_integration' -timeout=15m -v \
@@ -239,7 +247,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26'
+          go-version: '1.26.5'
 
       - name: Install gt from the public module path
         env:

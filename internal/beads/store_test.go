@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	beadsdk "github.com/steveyegge/beads"
+	beadsdk "github.com/jonbaldie/beads"
 )
 
 // mockStorage implements beadsdk.Storage for unit testing the store integration layer.

@@ -1,6 +1,9 @@
 package deps
 
-import "testing"
+import (
+	"runtime/debug"
+	"testing"
+)
 
 func TestParseBeadsVersion(t *testing.T) {
 	tests := []struct {
@@ -20,6 +23,42 @@ func TestParseBeadsVersion(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("parseBeadsVersion(%q) = %q, want %q", tt.input, result, tt.expected)
 		}
+	}
+}
+
+func TestBeadsVersionFromBuildInfo(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     *debug.BuildInfo
+		expected string
+	}{
+		{
+			name:     "tagged fork binary",
+			info:     &debug.BuildInfo{Main: debug.Module{Path: beadsMainPackage, Version: "v1.3.0"}},
+			expected: "1.3.0",
+		},
+		{
+			name:     "pseudo-version fork binary",
+			info:     &debug.BuildInfo{Main: debug.Module{Path: beadsMainPackage, Version: "v1.2.2-0.20260817230026-3e7110daa8e3"}},
+			expected: "1.2.2",
+		},
+		{
+			name: "development binary falls back",
+			info: &debug.BuildInfo{Main: debug.Module{Path: beadsMainPackage, Version: "(devel)"}},
+		},
+		{
+			name: "different binary falls back",
+			info: &debug.BuildInfo{Main: debug.Module{Path: "example.com/not-bd", Version: "v1.3.0"}},
+		},
+		{name: "missing build info falls back"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := beadsVersionFromBuildInfo(tt.info); got != tt.expected {
+				t.Fatalf("beadsVersionFromBuildInfo() = %q, want %q", got, tt.expected)
+			}
+		})
 	}
 }
 

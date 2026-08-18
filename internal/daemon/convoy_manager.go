@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/convoy"
 	"github.com/jonbaldie/gastown/internal/util"
-	beadsdk "github.com/steveyegge/beads"
 )
 
 const (

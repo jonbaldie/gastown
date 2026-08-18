@@ -14,7 +14,7 @@ Full context is injected by `gt prime` at session start.
 
 ## Beads Workflow Integration
 
-This project uses [beads](https://github.com/steveyegge/beads) for issue tracking. Issues live in `.beads/` and are tracked in git.
+This project uses [beads](https://github.com/jonbaldie/beads) for issue tracking. Issues live in `.beads/` and are tracked in git.
 
 Two CLIs: **bd** (issue CRUD) and **bv** (graph-aware triage, read-only).
 
@@ -189,7 +189,7 @@ bd close <id>         # Complete work
 ## Cursor Cloud specific instructions
 
 Gas Town is a Go CLI (`gt`). The environment build already has: Go (base `go1.22.2`, but
-`go.mod` pins `go 1.26.2`, auto-fetched via `GOTOOLCHAIN=auto`), `libicu-dev` (required for the
+`go.mod` pins `go 1.26.5`, auto-fetched via `GOTOOLCHAIN=auto`), `libicu-dev` (required for the
 `go-icu-regex` CGo dependency), `golangci-lint` v2.11.4, `bd` (beads), and `dolt` v2.0.7. The
 update script runs `go mod download` to refresh module deps after a pull.
 
@@ -201,9 +201,9 @@ update script runs `go mod download` to refresh module deps after a pull.
   Bare `go build` / `go run` do not set `CGO_ENABLED`; use `make` or `CGO_ENABLED=0`.
 - Lint: `golangci-lint run --timeout=5m` (installed at `~/go/bin`).
   - GOTCHA: `golangci-lint` refuses to run if it was built with an older Go than `go.mod`'s
-    `1.26.2` ("the Go language version go1.25 ... is lower than the targeted Go version 1.26.2").
+    `1.26.5` ("the Go language version go1.25 ... is lower than the targeted Go version 1.26.5").
     `go install ...@v2.11.4` picks the tool's own toolchain (1.25). It must be built with
-    `GOTOOLCHAIN=go1.26.2 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4`.
+    `GOTOOLCHAIN=go1.26.5 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4`.
     The prebuilt binary in the snapshot is already correct.
 - Test (unit): `go test -short ./...`. Full suite is slow (~15-20 min) because many packages spawn
   real `git`/`tmux` subprocesses.

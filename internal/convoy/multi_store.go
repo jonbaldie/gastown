@@ -5,8 +5,8 @@ import (
 	"context"
 	"strings"
 
+	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/beads"
-	beadsdk "github.com/steveyegge/beads"
 )
 
 // StoreResolver resolves beads issues across multiple stores using prefix-based

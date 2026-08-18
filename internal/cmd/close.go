@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/convoy"
 	"github.com/jonbaldie/gastown/internal/workspace"
-	beadsdk "github.com/steveyegge/beads"
 
 	"github.com/spf13/cobra"
 )

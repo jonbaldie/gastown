@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	beadsdk "github.com/steveyegge/beads"
+	beadsdk "github.com/jonbaldie/beads"
 )
 
 func TestAuthorityForBeadRoutesByPrefix(t *testing.T) {

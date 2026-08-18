@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/beads"
 	gitpkg "github.com/jonbaldie/gastown/internal/git"
-	beadsdk "github.com/steveyegge/beads"
 )
 
 type prepushStore struct {

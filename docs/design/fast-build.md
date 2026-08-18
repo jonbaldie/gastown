@@ -7,7 +7,7 @@ Daily `make build` must not compile the Dolt engine.
 `CGO_ENABLED=1 go list -deps ./cmd/gt` pulls in beads' unused embedded Dolt
 engine. The extra cost is one import path:
 
-`github.com/steveyegge/beads` + CGO → `internal/storage/embeddeddolt` →
+`github.com/jonbaldie/beads` + CGO → `internal/storage/embeddeddolt` →
 `github.com/dolthub/driver` → the Dolt engine, ICU (C), and cloud SDKs.
 
 `internal/buildgraph` records the forbidden prefixes. Run
@@ -44,7 +44,7 @@ constraint, not a Gas Town one.
 1. **Shatter `internal/cmd`.** Move each command to its own package and keep
    `internal/cmd` as a thin Cobra registrar. Incremental `go build` then
    recompiles one command plus the link step.
-2. **A beads client-only module.** As long as `import "github.com/steveyegge/beads"`
+2. **A beads client-only module.** As long as `import "github.com/jonbaldie/beads"`
    compiles `storage/dolt` + CGO `embeddeddolt`, race tests and CGO release
    builds stay expensive. Types and `OpenFromConfig` should live in a module
    that does not import `dolthub/driver`.

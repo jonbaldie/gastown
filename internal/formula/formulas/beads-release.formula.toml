@@ -222,7 +222,7 @@ needs = ["push-tag"]
 description = """
 Monitor GitHub Actions for release completion.
 
-https://github.com/steveyegge/beads/actions
+https://github.com/jonbaldie/beads/actions
 
 Expected time: 5-10 minutes
 
@@ -240,7 +240,7 @@ needs = ["wait-ci"]
 description = """
 Check the GitHub releases page.
 
-https://github.com/steveyegge/beads/releases/tag/v{{version}}
+https://github.com/jonbaldie/beads/releases/tag/v{{version}}
 
 Verify:
 - Release created
@@ -292,9 +292,9 @@ Option 1 - Homebrew:
 brew upgrade bd
 ```
 
-Option 2 - Install script:
+Option 2 - Install with Go:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+go install github.com/jonbaldie/beads/cmd/bd@v{{version}}
 ```
 
 Verify:

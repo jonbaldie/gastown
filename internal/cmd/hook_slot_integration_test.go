@@ -510,7 +510,8 @@ func TestHookSlot_StatusTransitions(t *testing.T) {
 		})
 	}
 
-	// Finally close the bead
+	// Finally close the bead as its assigned polecat.
+	t.Setenv("BEADS_ACTOR", agentID)
 	if err := b.Close(issue.ID); err != nil {
 		t.Errorf("close hooked bead: %v", err)
 	}
