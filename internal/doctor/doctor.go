@@ -146,21 +146,16 @@ func (d *Doctor) FixStreaming(ctx *CheckContext, w io.Writer, slowThreshold time
 		}
 
 		// Attempt fix if check failed and is fixable
+		committedFixingLine := false
 		if result.Status != StatusOK && check.CanFix() {
-			// Stream: show the problem with fixing indicator (all on same line)
 			if w != nil {
-				var problemIcon string
-				if result.Status == StatusError {
-					problemIcon = ui.RenderFailIcon()
-				} else {
-					problemIcon = ui.RenderWarnIcon()
-				}
-				// Overwrite the "checking" line with problem status + fixing indicator
-				fmt.Fprintf(w, "\r  %s  %s", problemIcon, check.Name())
-				if result.Message != "" {
-					fmt.Fprintf(w, "%s", ui.RenderMuted(" "+result.Message))
-				}
-				fmt.Fprintf(w, "%s", ui.RenderMuted(" (fixing)..."))
+				// Commit a "(fixing)..." line without the pre-fix fail/warn status.
+				// Check.Fix commonly writes to stdout (fmt.Printf). Those newlines
+				// would pin a \r-overwritten pre-fix fail line on screen, so
+				// `gt doctor --fix` reported claude-settings as failed after
+				// the files were already repaired.
+				fmt.Fprintf(w, "\r  %s %s%s\n", ui.RenderFixIcon(), check.Name(), ui.RenderMuted(" (fixing)..."))
+				committedFixingLine = true
 			}
 
 			err := safeFixCheck(check, ctx)
@@ -191,7 +186,8 @@ func (d *Doctor) FixStreaming(ctx *CheckContext, w io.Writer, slowThreshold time
 		// Record total elapsed time including any fix attempts
 		result.Elapsed = time.Since(start)
 
-		// Stream: overwrite line with final result
+		// Stream: print final result (overwrite the checking line, or a new
+		// line when Fix() already wrote past it).
 		if w != nil {
 			var statusIcon string
 			if result.Fixed {
@@ -217,7 +213,12 @@ func (d *Doctor) FixStreaming(ctx *CheckContext, w io.Writer, slowThreshold time
 				report.Summary.Slow++
 				slowIndicator = "⏳"
 			}
-			fmt.Fprintf(w, "\r  %s%s%s", statusIcon, slowIndicator, result.Name)
+			if committedFixingLine {
+				// Fix() already advanced stdout; do not \r-overwrite its last line.
+				fmt.Fprintf(w, "  %s%s%s", statusIcon, slowIndicator, result.Name)
+			} else {
+				fmt.Fprintf(w, "\r  %s%s%s", statusIcon, slowIndicator, result.Name)
+			}
 			if result.Message != "" {
 				fmt.Fprintf(w, "%s", ui.RenderMuted(" "+result.Message))
 			}
