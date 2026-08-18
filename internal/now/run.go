@@ -151,26 +151,10 @@ func Run(ctx context.Context, opts Options, hooks Hooks) (Result, error) {
 		return Result{}, err
 	}
 
-	var beadsErr, sessionErr error
-	var ready sync.WaitGroup
-	ready.Add(2)
-	go func() {
-		defer ready.Done()
-		if err := ctx.Err(); err != nil {
-			beadsErr = err
-			return
-		}
-		beadsErr = ensureRigBeads(townRoot, rigName)
-	}()
-	go func() {
-		defer ready.Done()
-		sessionErr = startSessions(ctx, townRoot, mayorChanged, opts, hooks)
-	}()
-	ready.Wait()
-	if err := ctx.Err(); err != nil {
+	if err := ensureRigBeads(townRoot, rigName); err != nil {
 		return Result{}, err
 	}
-	if err := errors.Join(beadsErr, sessionErr); err != nil {
+	if err := startSessions(ctx, townRoot, mayorChanged, opts, hooks); err != nil {
 		return Result{}, err
 	}
 

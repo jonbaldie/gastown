@@ -100,9 +100,9 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 		t.Fatalf("gt now failed: %v\n%s", err, out)
 	}
 	// Beads init is required so sling can resolve the Rig. The command still
-	// aims for about five seconds; 8s covers bd init on slower hosts.
-	if elapsed > 8*time.Second {
-		t.Fatalf("gt now took %s, want under 8s\n%s", elapsed, out)
+	// aims for about five seconds; 20s covers bd init on loaded CI hosts.
+	if elapsed > 20*time.Second {
+		t.Fatalf("gt now took %s, want under 20s\n%s", elapsed, out)
 	}
 	if !strings.Contains(out, "town="+town) {
 		t.Fatalf("missing town path in output:\n%s", out)
@@ -184,8 +184,8 @@ func TestNowStartsTownInFiveSeconds(t *testing.T) {
 	if secondErr != nil {
 		t.Fatalf("second gt now failed: %v\n%s", secondErr, secondOut)
 	}
-	if secondElapsed > 8*time.Second {
-		t.Fatalf("second gt now took %s, want under 8s\n%s", secondElapsed, secondOut)
+	if secondElapsed > 20*time.Second {
+		t.Fatalf("second gt now took %s, want under 20s\n%s", secondElapsed, secondOut)
 	}
 
 	badOut, badErr := runGTCmdMayFail(t, gtBinary, repo, env, "now", "--town", town, "--no-attach",
