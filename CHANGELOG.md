@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dolt sql-server` over Docker testcontainers, and CI compiles scheduler
   coverage into the same `go test` invocation. Tests that share that
   sql-server stay sequential: concurrent `bd init` takes the native server
-  down. Assertions are unchanged. CI runs the `gt now` five-second contract
-  before the race suite so a hot runner cannot miss the budget.
+  down. Assertions are unchanged. The `gt now` five-second contract runs on
+  its own CI job so a hot race-suite runner cannot miss the budget and so
+  leftover tmux state cannot break unit tests.
 
 ### Fixed
 
