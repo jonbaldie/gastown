@@ -40,6 +40,18 @@ func TestBuildStartupCommandAppliesPiRoleEffort(t *testing.T) {
 			effort:   "xhigh",
 			want:     "--model openai-codex/gpt-5.6-luna --thinking xhigh",
 		},
+		{
+			name:     "does not swallow following flag when thinking has no argument",
+			baseArgs: []string{"--thinking", "--model", "openai-codex/gpt-5.6-luna"},
+			effort:   "high",
+			want:     "--model openai-codex/gpt-5.6-luna --thinking high",
+		},
+		{
+			name:     "does not swallow following flag when thinking is in middle without argument",
+			baseArgs: []string{"--verbose", "--thinking", "--model", "openai-codex/gpt-5.6-luna"},
+			effort:   "low",
+			want:     "--verbose --model openai-codex/gpt-5.6-luna --thinking low",
+		},
 	}
 
 	for _, tt := range tests {

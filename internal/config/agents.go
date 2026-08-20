@@ -439,11 +439,12 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		ConfigDir:          ".copilot",
 		HooksProvider:      "copilot",
 		HooksDir:           ".github/hooks",
-		HooksSettingsFile:  "gastown.json",
-		HooksInformational: false,
-		ReadyPromptPrefix:  "",   // GA: no ❯ prompt; Copilot uses hint text, not a detectable prefix
-		ReadyDelayMs:       5000, // Delay-based readiness detection (no prompt prefix)
-		InstructionsFile:   "AGENTS.md",
+		HooksSettingsFile:    "gastown.json",
+		HooksInformational:   false,
+		ReadyPromptPrefix:    "",   // GA: no ❯ prompt; Copilot uses hint text, not a detectable prefix
+		ReadyDelayMs:         5000, // Delay-based readiness detection (no prompt prefix)
+		InstructionsFile:     "AGENTS.md",
+		EscapeCancelsRequest: true,
 	},
 	AgentPi: {
 		Name:                AgentPi,

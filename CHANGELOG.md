@@ -21,6 +21,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preserve flags following `--thinking` when applying role effort.** When
+  stripping `--thinking` flags from base arguments, the argument parser now
+  verifies the subsequent token is not a flag before skipping it, preventing
+  flags like `--model` from being dropped.
+- **Substitute `{{GT_BIN}}` in Oh-My-Pi (`omp`) hook templates.** Replaced
+  bare `"gt"` calls in `omp/gastown-hook.ts` with `{{GT_BIN}}` so installed hooks
+  execute the absolute binary path.
+- **Discover and synchronize hooks for custom agent profiles.** `gt doctor`
+  and `gt hooks sync` now resolve agent presets via `config.ResolveAgentPreset`
+  using town and rig configurations, discovering lifecycle hooks for custom
+  profiles (e.g. `pi-luna`).
+- **Recognize `gt-codex` wrappers and `.exe` binary paths.** Stripped wrapper
+  prefixes and file extensions before checking the Codex runtime, ensuring
+  automation arguments are injected.
+- **Support empty prompt prefix for promptless agent presets.**
+  `readyPromptPrefixForSession` returns the configured empty prefix for agents
+  like Pi, Gemini, and Copilot rather than falling back to Claude's `"❯ "`.
+- **Set `EscapeCancelsRequest` on Copilot agent preset.** Aligned Copilot
+  preset configuration to prevent in-flight request cancellation during nudges.
+- **Inspect worker protocol health before tmux session queries in `DetectStalledPolecats`.**
+  File-backed worker health states (such as `HealthUnhealthy`) are detected even
+  when tmux session queries report an error.
+
 - **`gt prime` standing skill lines survive Claude Code's SessionStart preview.**
   Role formulas are 12–23KiB. Claude Code's persistHookOutput does not trim
   SessionStart stdout to the documented 10,000-character cap: once that cap

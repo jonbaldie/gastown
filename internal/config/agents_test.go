@@ -1354,8 +1354,8 @@ func TestCopilotAgentPreset(t *testing.T) {
 	if info.NonInteractive == nil {
 		t.Fatal("copilot NonInteractive is nil")
 	}
-	if info.NonInteractive.PromptFlag != "-p" {
-		t.Errorf("copilot NonInteractive.PromptFlag = %q, want -p", info.NonInteractive.PromptFlag)
+	if !info.EscapeCancelsRequest {
+		t.Error("copilot should have EscapeCancelsRequest = true")
 	}
 }
 

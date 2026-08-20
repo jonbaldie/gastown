@@ -2069,13 +2069,6 @@ func DetectStalledPolecats(workDir, rigName string) *DetectStalledPolecatsResult
 		sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
 		result.Checked++
 
-		// Only check live sessions with alive agents (the opposite of zombie detection)
-		sessionAlive, err := t.HasSession(sessionName)
-		if err != nil {
-			result.Errors = append(result.Errors,
-				fmt.Errorf("checking session %s: %w", sessionName, err))
-			continue
-		}
 		if run, err := worker.LatestRunForSession(townRoot, sessionName); err == nil && run != nil {
 			if h, herr := worker.StoreHealth(townRoot, sessionName, 0); herr == nil && h.Status == worker.HealthUnhealthy {
 				stalled := StalledResult{
@@ -2095,6 +2088,14 @@ func DetectStalledPolecats(workDir, rigName string) *DetectStalledPolecatsResult
 			if run.Adapter == worker.AdapterProtocol {
 				continue
 			}
+		}
+
+		// Only check live sessions with alive agents (the opposite of zombie detection)
+		sessionAlive, err := t.HasSession(sessionName)
+		if err != nil {
+			result.Errors = append(result.Errors,
+				fmt.Errorf("checking session %s: %w", sessionName, err))
+			continue
 		}
 		if !sessionAlive {
 			continue // Dead session — zombie detection handles this

@@ -1122,7 +1122,10 @@ func ensureCodexAutomationArgs(command string, args []string) []string {
 }
 
 func isCodexRuntime(command string) bool {
-	return filepath.Base(command) == string(AgentCodex)
+	base := filepath.Base(command)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.TrimPrefix(base, "gt-")
+	return base == string(AgentCodex)
 }
 
 func hasCodexUpdateCheckConfig(args []string) bool {

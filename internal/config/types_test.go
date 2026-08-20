@@ -268,6 +268,29 @@ func TestGeminiProviderDefaults(t *testing.T) {
 			t.Errorf("defaultInstructionsFile(gemini) = %q, want %q", file, "AGENTS.md")
 		}
 	})
+
+	t.Run("isCodexRuntime", func(t *testing.T) {
+		tests := []struct {
+			cmd  string
+			want bool
+		}{
+			{"codex", true},
+			{"/usr/local/bin/codex", true},
+			{"codex.exe", true},
+			{"/opt/bin/codex.exe", true},
+			{"gt-codex", true},
+			{"/home/user/bin/gt-codex", true},
+			{"gt-codex.exe", true},
+			{"claude", false},
+			{"pi", false},
+			{"gt-gemini", false},
+		}
+		for _, tt := range tests {
+			if got := isCodexRuntime(tt.cmd); got != tt.want {
+				t.Errorf("isCodexRuntime(%q) = %v, want %v", tt.cmd, got, tt.want)
+			}
+		}
+	})
 }
 
 func TestTownSettings_WithoutNewFields_LoadsDefaults(t *testing.T) {

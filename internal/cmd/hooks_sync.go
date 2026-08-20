@@ -117,6 +117,8 @@ func runHooksSync(cmd *cobra.Command, args []string) error {
 	// Sync template-based (non-Claude) agents at each role location.
 	// These agents use SyncForRole (content-aware comparison) instead of the
 	// JSON merge path used for Claude targets above.
+	townSettings, _ := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
+
 	locations, locErr := hooks.DiscoverRoleLocations(townRoot)
 	if locErr != nil {
 		fmt.Printf("  %s discovering role locations: %v\n", style.Error.Render("✖"), locErr)
@@ -124,8 +126,10 @@ func runHooksSync(cmd *cobra.Command, args []string) error {
 	} else {
 		for _, loc := range locations {
 			rigPath := ""
+			var rigSettings *config.RigSettings
 			if loc.Rig != "" {
 				rigPath = filepath.Join(townRoot, loc.Rig)
+				rigSettings, _ = config.LoadRigSettings(config.RigSettingsPath(rigPath))
 			}
 
 			// Use ResolveRoleAgentName (not ResolveRoleAgentConfig) so that hooks are
@@ -138,14 +142,14 @@ func runHooksSync(cmd *cobra.Command, args []string) error {
 				continue
 			}
 
-			preset := config.GetAgentPresetByName(agentName)
+			preset := config.ResolveAgentPreset(agentName, townSettings, rigSettings)
 			if preset == nil || preset.HooksDir == "" || preset.HooksSettingsFile == "" {
 				continue
 			}
 
 			hooksProvider := preset.HooksProvider
 			if hooksProvider == "" {
-				hooksProvider = agentName
+				hooksProvider = string(preset.Name)
 			}
 
 			// Claude targets are already handled by DiscoverTargets + syncTarget above.

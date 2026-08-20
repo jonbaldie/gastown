@@ -333,6 +333,59 @@ func TestHooksSyncCheck_PolecatNestedWorktree_InSync(t *testing.T) {
 	}
 }
 
+func TestHooksSyncCheck_CustomProfile_PiLuna(t *testing.T) {
+	townRoot := scaffoldWorkspace(t, map[string]string{"polecat": "pi-luna"})
+
+	// Configure pi-luna custom agent with provider: pi
+	townSettings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	townSettings.Agents = map[string]*config.RuntimeConfig{
+		"pi-luna": {
+			Provider: "pi",
+			Command:  "pi",
+			Args:     []string{"--model", "openai-codex/gpt-5.6-luna"},
+		},
+	}
+	if err := config.SaveTownSettings(config.TownSettingsPath(townRoot), townSettings); err != nil {
+		t.Fatal(err)
+	}
+
+	worktree := filepath.Join(townRoot, "myrig", "polecats", "fury", "gastown")
+	if err := os.MkdirAll(filepath.Join(worktree, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	syncAllClaudeTargets(t, townRoot)
+
+	// pi extension missing -> should report warning
+	check := NewHooksSyncCheck()
+	ctx := &CheckContext{TownRoot: townRoot}
+	result := check.Run(ctx)
+
+	if result.Status != StatusWarning {
+		t.Fatalf("expected StatusWarning for missing custom agent hooks, got %v: %s", result.Status, result.Message)
+	}
+
+	// Fix should install .pi/extensions/gastown-hooks.js
+	if err := check.Fix(ctx); err != nil {
+		t.Fatalf("Fix: %v", err)
+	}
+
+	targetPath := filepath.Join(worktree, ".pi", "extensions", "gastown-hooks.js")
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		t.Fatalf("Fix did not create %s for custom profile pi-luna", targetPath)
+	}
+
+	// Re-run check should be OK
+	check2 := NewHooksSyncCheck()
+	result2 := check2.Run(ctx)
+	if result2.Status != StatusOK {
+		t.Errorf("expected StatusOK after Fix, got %v: %s", result2.Status, result2.Message)
+	}
+}
+
 func TestHooksSyncCheck_Fix_PreservesClaudePath(t *testing.T) {
 	townRoot := scaffoldWorkspace(t, nil)
 

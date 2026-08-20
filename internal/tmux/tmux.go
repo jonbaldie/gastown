@@ -3462,14 +3462,13 @@ func (t *Tmux) shouldSendEscape(target string) bool {
 }
 
 func readyPromptPrefixForSession(t *Tmux, session string) string {
-	promptPrefix := DefaultReadyPromptPrefix
 	agentName, err := t.GetEnvironment(session, "GT_AGENT")
 	if err != nil || agentName == "" {
-		return promptPrefix
+		return DefaultReadyPromptPrefix
 	}
 	preset := config.GetAgentPresetByName(agentName)
-	if preset == nil || preset.ReadyPromptPrefix == "" {
-		return promptPrefix
+	if preset == nil {
+		return DefaultReadyPromptPrefix
 	}
 	return preset.ReadyPromptPrefix
 }
