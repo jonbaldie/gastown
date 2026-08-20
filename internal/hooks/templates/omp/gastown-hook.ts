@@ -20,10 +20,28 @@ export default function (pi) {
   let contextInjected = false;
   let lastMailCheck = 0;
 
+  // Forward session ID and execute gt binary via resolved template path.
+  const runGT = async (ctx, args) => {
+    const previousSessionId = process.env.GT_SESSION_ID;
+    const sessionId = ctx?.sessionManager?.getSessionId?.() || ctx?.sessionId;
+    if (sessionId) {
+      process.env.GT_SESSION_ID = sessionId;
+    }
+    try {
+      return await pi.exec("{{GT_BIN}}", args);
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.GT_SESSION_ID;
+      } else {
+        process.env.GT_SESSION_ID = previousSessionId;
+      }
+    }
+  };
+
   // SessionStart — run gt prime and capture context for injection.
   pi.on("session_start", async (event, ctx) => {
     try {
-      const result = await pi.exec("gt", ["prime", "--hook"]);
+      const result = await runGT(ctx, ["prime", "--hook"]);
       if (result.code === 0 && result.stdout?.trim()) {
         primeContext = result.stdout.trim();
         console.error("[gastown] gt prime captured (" + primeContext.length + " chars)");
@@ -46,7 +64,7 @@ export default function (pi) {
       if (now - lastMailCheck >= 30000) {
         lastMailCheck = now;
         try {
-          const mailResult = await pi.exec("gt", ["mail", "check", "--inject"]);
+          const mailResult = await runGT(ctx, ["mail", "check", "--inject"]);
           if (mailResult.code === 0 && mailResult.stdout?.trim()) {
             mailContext = mailResult.stdout.trim();
             console.error("[gastown] mail check: new mail found");
@@ -94,7 +112,7 @@ export default function (pi) {
     contextInjected = false;
     primeContext = null;
     try {
-      const result = await pi.exec("gt", ["prime", "--hook"]);
+      const result = await runGT(ctx, ["prime", "--hook"]);
       if (result.code === 0 && result.stdout?.trim()) {
         primeContext = result.stdout.trim();
         console.error("[gastown] prime context refreshed after compaction");
@@ -114,7 +132,7 @@ export default function (pi) {
         cmd.includes("git checkout -b")
       ) {
         try {
-          const result = await pi.exec("gt", ["tap", "guard", "pr-workflow"]);
+          const result = await runGT(ctx, ["tap", "guard", "pr-workflow"]);
           if (result.code !== 0) {
             return { block: true, reason: result.stderr || "gt tap guard rejected this operation" };
           }
@@ -128,7 +146,7 @@ export default function (pi) {
   // Shutdown — record API costs.
   pi.on("session_shutdown", async (event, ctx) => {
     try {
-      await pi.exec("gt", ["costs", "record"]);
+      await runGT(ctx, ["costs", "record"]);
     } catch (e) {
       console.error("[gastown] gt costs record failed:", e.message);
     }

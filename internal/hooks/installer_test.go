@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -236,6 +237,21 @@ func TestInstallForRole_RoleAgnostic(t *testing.T) {
 				t.Fatalf("%s not created", tt.hooksFile)
 			}
 		})
+	}
+}
+
+func TestOmpHookTemplateSubstitutesGTBinary(t *testing.T) {
+	content, err := resolveAndSubstitute("omp", "gastown-hook.ts", "polecat")
+	if err != nil {
+		t.Fatalf("resolveAndSubstitute(omp): %v", err)
+	}
+	// The template must not use hardcoded bare "gt" in exec calls
+	if bytes.Contains(content, []byte(`pi.exec("gt"`)) || bytes.Contains(content, []byte(`pi.exec('gt'`)) {
+		t.Error("omp/gastown-hook.ts contains hardcoded pi.exec(\"gt\"), should use {{GT_BIN}}")
+	}
+	gtBin := resolveGTBinary()
+	if !bytes.Contains(content, []byte(gtBin)) {
+		t.Errorf("omp/gastown-hook.ts does not contain resolved gt binary %q", gtBin)
 	}
 }
 

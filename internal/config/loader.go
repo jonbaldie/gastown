@@ -1513,7 +1513,9 @@ func applyRoleEffortToRuntime(rc *RuntimeConfig, effort string) {
 	for i := 0; i < argCount; i++ {
 		arg := rc.Args[i]
 		if arg == "--thinking" {
-			i++
+			if i+1 < argCount && !strings.HasPrefix(rc.Args[i+1], "-") {
+				i++
+			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--thinking=") {

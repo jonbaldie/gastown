@@ -91,6 +91,8 @@ func (c *HooksSyncCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	townSettings, _ := config.LoadOrCreateTownSettings(config.TownSettingsPath(ctx.TownRoot))
+
 	// Loop 2: Non-Claude template-based agents — use DiscoverRoleLocations + SyncForRole comparison.
 	locations, locErr := hooks.DiscoverRoleLocations(ctx.TownRoot)
 	if locErr != nil {
@@ -98,8 +100,10 @@ func (c *HooksSyncCheck) Run(ctx *CheckContext) *CheckResult {
 	} else {
 		for _, loc := range locations {
 			rigPath := ""
+			var rigSettings *config.RigSettings
 			if loc.Rig != "" {
 				rigPath = filepath.Join(ctx.TownRoot, loc.Rig)
+				rigSettings, _ = config.LoadRigSettings(config.RigSettingsPath(rigPath))
 			}
 			// Use ResolveRoleAgentName (not ResolveRoleAgentConfig) so that checks are
 			// based on the *configured* agent, not the *resolved* one.
@@ -109,13 +113,13 @@ func (c *HooksSyncCheck) Run(ctx *CheckContext) *CheckResult {
 			if agentName == "" {
 				continue
 			}
-			preset := config.GetAgentPresetByName(agentName)
+			preset := config.ResolveAgentPreset(agentName, townSettings, rigSettings)
 			if preset == nil || preset.HooksDir == "" || preset.HooksSettingsFile == "" {
 				continue
 			}
 			hooksProvider := preset.HooksProvider
 			if hooksProvider == "" {
-				hooksProvider = agentName
+				hooksProvider = string(preset.Name)
 			}
 			// Claude targets are handled by Loop 1.
 			if hooksProvider == "claude" {

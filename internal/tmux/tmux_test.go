@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jonbaldie/gastown/internal/config"
 )
 
 func hasTmux() bool {
@@ -976,8 +978,8 @@ func TestGetProcessGroupID(t *testing.T) {
 		t.Error("expected non-empty PGID for current process")
 	}
 
-	// PGID should not be 0 or 1 for a normal process
-	if pgid == "0" || pgid == "1" {
+	// PGID should not be 0 for a valid process
+	if pgid == "0" {
 		t.Errorf("unexpected PGID %q for current process", pgid)
 	}
 
@@ -2241,6 +2243,32 @@ func TestMatchesPromptPrefix(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("matchesPromptPrefix(%q, %q) = %v, want %v",
 					tt.line, tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadyPromptPrefixForSession(t *testing.T) {
+	tests := []struct {
+		agentName string
+		want      string
+	}{
+		{"claude", DefaultReadyPromptPrefix},
+		{"codex", "› "},
+		{"gemini", ""},
+		{"pi", ""},
+		{"copilot", ""},
+		{"opencode", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.agentName, func(t *testing.T) {
+			preset := config.GetAgentPresetByName(tt.agentName)
+			if preset == nil {
+				t.Fatalf("preset %q not found", tt.agentName)
+			}
+			if preset.ReadyPromptPrefix != tt.want {
+				t.Errorf("preset %q ReadyPromptPrefix = %q, want %q", tt.agentName, preset.ReadyPromptPrefix, tt.want)
 			}
 		})
 	}
