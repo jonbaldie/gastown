@@ -33,7 +33,15 @@ type Profile struct {
 // An empty spec returns a profile with only defaultEffort set.
 // A two-token spec treats a globally known effort level as effort even when
 // the runtime does not accept it; validateProfile rejects that later.
+//
+// defaultEffort must be a recognized effort level: Format() encodes a
+// Model-less profile as "runtime:effort", and re-parsing that string only
+// recognizes the second token as an effort when it is a known level. An
+// unrecognized defaultEffort would silently round-trip into a Model instead.
 func ParseProfile(spec, defaultEffort string) (Profile, error) {
+	if !config.IsValidEffortLevel(defaultEffort) {
+		return Profile{}, fmt.Errorf("invalid default effort %q", defaultEffort)
+	}
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return Profile{Effort: defaultEffort}, nil
