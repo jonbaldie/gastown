@@ -7,10 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-08-21
+
 ## [1.3.2] - 2026-08-20
 
 ### Performance
 
+- **`gt help` and the tmux status bar do less work per render.**
+  `colorizeHelpOutput` recompiled its regexes on every call; they are now
+  package-level vars compiled once (~29% latency, ~81% memory, ~78% fewer
+  allocations on a full-tree help render). `runMayorStatusLine` — tmux's
+  `status-right` handler, redrawn every 60s `status-interval` tick — checked
+  `isSessionWorking` serially, one `tmux capture-pane` subprocess spawn per
+  witness/refinery session; it now fans the checks out across a bounded
+  8-way goroutine pool (~4.3x faster against 16 real tmux sessions,
+  negligible memory/alloc overhead, verified to count identical results to
+  the serial path).
 - **Integration tests prefer a native Dolt SQL server.** CI already installs
   Dolt 2.0.7; TestMain starts `dolt sql-server` instead of a Docker
   testcontainer. Native `dolt init` passes `--name`/`--email` so a clean
