@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/estop"
@@ -14,6 +15,13 @@ import (
 	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
 )
+
+// maxConcurrentWorkingChecks bounds how many isSessionWorking checks (each a
+// `tmux capture-pane` subprocess) run at once. Status-line is a tmux hot
+// path — redrawn every status-interval tick — so these run concurrently
+// rather than serially, but capped to avoid a subprocess storm on towns
+// with many rigs.
+const maxConcurrentWorkingChecks = 8
 
 var (
 	statusLineSession string
@@ -193,7 +201,15 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 	// Track deacon presence (just icon, no count)
 	hasDeacon := false
 
-	// Single pass: track rig status AND agent health
+	// First pass: categorize sessions and build rig status. This is cheap
+	// (no subprocesses) so it stays a single sequential pass; only the
+	// working-state check below needs to fan out.
+	type pendingCheck struct {
+		session string
+		health  *agentHealth
+	}
+	var pending []pendingCheck
+
 	for _, s := range sessions {
 		agent := categorizeSession(s)
 		if agent == nil {
@@ -217,10 +233,7 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		// Track agent health (skip Mayor and Crew)
 		if health := healthByType[agent.Type]; health != nil {
 			health.total++
-			// Detect working state via ✻ symbol
-			if isSessionWorking(t, s) {
-				health.working++
-			}
+			pending = append(pending, pendingCheck{session: s, health: health})
 		}
 
 		// Track deacon presence (just the icon, no count)
@@ -228,6 +241,29 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 			hasDeacon = true
 		}
 	}
+
+	// Second pass: detect working state (✻ symbol) concurrently. Each check
+	// is an independent `tmux capture-pane` subprocess call; run serially
+	// this scales status-line latency linearly with agent count, which is
+	// directly visible as tmux status-bar redraw lag on towns with many rigs.
+	sem := make(chan struct{}, maxConcurrentWorkingChecks)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for _, c := range pending {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c pendingCheck) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			working := isSessionWorking(t, c.session)
+			if working {
+				mu.Lock()
+				c.health.working++
+				mu.Unlock()
+			}
+		}(c)
+	}
+	wg.Wait()
 
 	// Status-line is a tmux hot path. Do not query beads for dock/park state here;
 	// `gt rig list/status` remains the authoritative live status view.
