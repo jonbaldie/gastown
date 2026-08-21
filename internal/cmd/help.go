@@ -32,6 +32,21 @@ func colorizedHelpFunc(cmd *cobra.Command, args []string) {
 	fmt.Print(result)
 }
 
+// Regexes used by colorizeHelpOutput and its helpers, compiled once at
+// package init rather than on every call (colorizeHelpOutput runs once per
+// `gt help` invocation, but its ReplaceAllStringFunc callbacks run once per
+// matched line, so per-call compilation multiplied out across every command
+// and flag line in the output).
+var (
+	groupHeaderRE   = regexp.MustCompile(`(?m)^([A-Z][A-Za-z &]+:)\s*$`)
+	sectionHeaderRE = regexp.MustCompile(`(?m)^(Examples|Flags|Usage|Global Flags|Aliases|Available Commands):`)
+	cmdLineRE       = regexp.MustCompile(`(?m)^(  )([a-z][a-z0-9]*(?:-[a-z0-9]+)*)(\s{2,})(.*)$`)
+	flagLineRE      = regexp.MustCompile(`(?m)^(\s+)(-\w,\s+--[\w-]+|--[\w-]+)(\s+)(string|int|duration|bool)?(\s*.*)$`)
+	defaultRE       = regexp.MustCompile(`(\(default[^)]*\))`)
+	entryRE         = regexp.MustCompile(`(\(start here\))`)
+	cmdRefRE        = regexp.MustCompile(`'([a-z][a-z0-9 -]+)'`)
+)
+
 // colorizeHelpOutput applies semantic colors to help text
 // - Group headers get accent color for visual hierarchy
 // - Section headers (Examples:, Flags:) get accent color
@@ -41,8 +56,6 @@ func colorizedHelpFunc(cmd *cobra.Command, args []string) {
 func colorizeHelpOutput(help string) string {
 	// match group header lines (e.g., "Working With Issues:")
 	// these are standalone lines ending with ":" and followed by commands
-	groupHeaderRE := regexp.MustCompile(`(?m)^([A-Z][A-Za-z &]+:)\s*$`)
-
 	result := groupHeaderRE.ReplaceAllStringFunc(help, func(match string) string {
 		// trim whitespace, colorize, then restore
 		trimmed := strings.TrimSpace(match)
@@ -50,7 +63,6 @@ func colorizeHelpOutput(help string) string {
 	})
 
 	// match section headers in subcommand help (Examples:, Flags:, etc.)
-	sectionHeaderRE := regexp.MustCompile(`(?m)^(Examples|Flags|Usage|Global Flags|Aliases|Available Commands):`)
 	result = sectionHeaderRE.ReplaceAllStringFunc(result, func(match string) string {
 		return ui.RenderAccent(match)
 	})
@@ -58,8 +70,6 @@ func colorizeHelpOutput(help string) string {
 	// match command lines: "  command   Description text"
 	// commands are indented with 2 spaces, followed by spaces, then description
 	// pattern matches: indent + command-name (with hyphens) + spacing + description
-	cmdLineRE := regexp.MustCompile(`(?m)^(  )([a-z][a-z0-9]*(?:-[a-z0-9]+)*)(\s{2,})(.*)$`)
-
 	result = cmdLineRE.ReplaceAllStringFunc(result, func(match string) string {
 		parts := cmdLineRE.FindStringSubmatch(match)
 		if len(parts) != 5 {
@@ -82,7 +92,6 @@ func colorizeHelpOutput(help string) string {
 
 	// match flag lines: "  -f, --file string   Description"
 	// pattern: indent + flags + spacing + optional type + description
-	flagLineRE := regexp.MustCompile(`(?m)^(\s+)(-\w,\s+--[\w-]+|--[\w-]+)(\s+)(string|int|duration|bool)?(\s*.*)$`)
 	result = flagLineRE.ReplaceAllStringFunc(result, func(match string) string {
 		parts := flagLineRE.FindStringSubmatch(match)
 		if len(parts) < 6 {
@@ -108,7 +117,6 @@ func colorizeHelpOutput(help string) string {
 
 // muteDefaults applies muted styling to default value annotations
 func muteDefaults(text string) string {
-	defaultRE := regexp.MustCompile(`(\(default[^)]*\))`)
 	return defaultRE.ReplaceAllStringFunc(text, func(match string) string {
 		return ui.RenderMuted(match)
 	})
@@ -116,7 +124,6 @@ func muteDefaults(text string) string {
 
 // highlightEntryPoints applies accent styling to entry point hints like "(start here)"
 func highlightEntryPoints(text string) string {
-	entryRE := regexp.MustCompile(`(\(start here\))`)
 	return entryRE.ReplaceAllStringFunc(text, func(match string) string {
 		return ui.RenderAccent(match)
 	})
@@ -126,8 +133,6 @@ func highlightEntryPoints(text string) string {
 // Matches patterns like 'command name' or 'bd command'
 func colorizeCommandRefs(text string) string {
 	// match 'command words' in single quotes (e.g., 'comments add')
-	cmdRefRE := regexp.MustCompile(`'([a-z][a-z0-9 -]+)'`)
-
 	return cmdRefRE.ReplaceAllStringFunc(text, func(match string) string {
 		// extract the command name without quotes
 		inner := match[1 : len(match)-1]
