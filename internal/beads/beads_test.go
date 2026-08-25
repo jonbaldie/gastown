@@ -3177,9 +3177,11 @@ func TestParseAgentBeadID(t *testing.T) {
 		{"bd-beads-witness", "beads", "witness", "", true},            // bd prefix rig-level singleton
 		{"bd-beads-polecat-pearl", "beads", "polecat", "pearl", true}, // bd prefix rig-level named
 		{"hq-mayor", "", "mayor", "", true},                           // hq prefix town-level
-		// Truly invalid patterns
-		{"x-mayor", "", "", "", false},    // Prefix too short (1 char)
-		{"abcd-mayor", "", "", "", false}, // Prefix too long (4 chars)
+		// Prefix length is not restricted (beads prefixes may be 1-20 chars)
+		{"x-mayor", "", "mayor", "", true},
+		{"abcd-mayor", "", "mayor", "", true},
+		{"gthq-deacon", "", "deacon", "", true},
+		{"nrpk-gastown-witness", "gastown", "witness", "", true},
 		{"", "", "", "", false},
 	}
 
@@ -3227,6 +3229,10 @@ func TestIsAgentSessionBead(t *testing.T) {
 		{"gt-sb6m4", false},
 		{"gt-u7dxq", false},
 		{"bd-abc123", false},
+		// Prefix lengths previously rejected by ParseAgentBeadID
+		{"x-mayor", true},
+		{"gthq-deacon", true},
+		{"nrpk-gastown-witness", true},
 		// Invalid beads
 		{"", false},
 	}

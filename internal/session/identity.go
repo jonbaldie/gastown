@@ -68,6 +68,9 @@ func ParseAddress(address string) (*AgentIdentity, error) {
 			return &AgentIdentity{Role: RoleRefinery, Rig: rig, Prefix: prefix}, nil
 		case string(RoleCrew), "polecats":
 			return nil, fmt.Errorf("invalid address %q", address)
+		case "dogs":
+			// Canonical dog addresses are deacon/dogs/<name>. The pool path is invalid.
+			return nil, fmt.Errorf("invalid address %q", address)
 		default:
 			return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, nil
 		}
@@ -79,12 +82,25 @@ func ParseAddress(address string) (*AgentIdentity, error) {
 			return &AgentIdentity{Role: RoleCrew, Rig: rig, Name: name, Prefix: prefix}, nil
 		case "polecats":
 			return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, nil
+		case "dogs":
+			if rig != string(RoleDeacon) || !safeDogName(name) {
+				return nil, fmt.Errorf("invalid address %q", address)
+			}
+			return &AgentIdentity{Role: RoleDog, Name: name}, nil
 		default:
 			return nil, fmt.Errorf("invalid address %q", address)
 		}
 	default:
 		return nil, fmt.Errorf("invalid address %q", address)
 	}
+}
+
+func safeDogName(name string) bool {
+	return name != "" &&
+		name != "." &&
+		name != ".." &&
+		!strings.ContainsAny(name, `/\\`) &&
+		!strings.Contains(name, "..")
 }
 
 // ParseSessionName parses a tmux session name into an AgentIdentity.

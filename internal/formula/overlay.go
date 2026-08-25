@@ -131,21 +131,29 @@ func ApplyOverlays(f *Formula, overlay *FormulaOverlay) []string {
 			f.Steps = append(f.Steps[:idx], f.Steps[idx+1:]...)
 
 			// Steps that depended on the skipped step inherit the skipped step's needs.
+			// Replace every occurrence. A single replacement leaves dangling IDs when
+			// a step lists the skipped ID more than once (diamonds, duplicate needs).
 			for i := range f.Steps {
-				for j, need := range f.Steps[i].Needs {
-					if need == removedID {
-						// Replace with the skipped step's needs.
-						newNeeds := make([]string, 0, len(f.Steps[i].Needs)-1+len(removedNeeds))
-						newNeeds = append(newNeeds, f.Steps[i].Needs[:j]...)
-						newNeeds = append(newNeeds, removedNeeds...)
-						newNeeds = append(newNeeds, f.Steps[i].Needs[j+1:]...)
-						f.Steps[i].Needs = newNeeds
-						break
-					}
-				}
+				f.Steps[i].Needs = rewriteSkippedNeeds(f.Steps[i].Needs, removedID, removedNeeds)
 			}
 		}
 	}
 
 	return warnings
+}
+
+// rewriteSkippedNeeds replaces every occurrence of removedID with replacement.
+func rewriteSkippedNeeds(needs []string, removedID string, replacement []string) []string {
+	if len(needs) == 0 {
+		return needs
+	}
+	out := make([]string, 0, len(needs))
+	for _, need := range needs {
+		if need == removedID {
+			out = append(out, replacement...)
+			continue
+		}
+		out = append(out, need)
+	}
+	return out
 }

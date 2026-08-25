@@ -485,6 +485,26 @@ func TestParseAddress(t *testing.T) {
 			address: "gastown/polecats/..",
 			wantErr: true,
 		},
+		{
+			name:    "dog",
+			address: "deacon/dogs/alpha",
+			want:    AgentIdentity{Role: RoleDog, Name: "alpha"},
+		},
+		{
+			name:    "dog trailing slash",
+			address: "deacon/dogs/war-boy/",
+			want:    AgentIdentity{Role: RoleDog, Name: "war-boy"},
+		},
+		{
+			name:    "dog pool",
+			address: "deacon/dogs",
+			wantErr: true,
+		},
+		{
+			name:    "dog empty name",
+			address: "deacon/dogs/",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

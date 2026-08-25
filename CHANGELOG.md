@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Parse dog mail addresses.** `session.ParseAddress` now accepts
+  `deacon/dogs/<name>`, the address `AgentIdentity.Address()` already produced
+  for dogs. `gt peek`, `gt mail archive-stale`, hook show, and Deacon stale-hook
+  recovery can resolve dog sessions.
+- **Parse agent bead IDs with 1-character and 4+ character prefixes.**
+  `ParseAgentBeadID` required a 2–3 character prefix, so IDs like `g-mayor`,
+  `gthq-deacon`, and `nrpk-gastown-witness` validated but did not parse.
+  `IsAgentSessionBead` and callers (daemon, doctor, convoy, TUI) missed those
+  agents.
+- **Convert non-`gt`/`hq` agent bead IDs to mail addresses.**
+  `AgentBeadIDToAddress` only handled `gt-` and `hq-`. `gt mail directory` and
+  mail resolve now map `bd-`, `ff-`, `gthq-`, and other beads prefixes, and
+  collapsed IDs such as `gt-witness` become `gt/witness`.
+- **Formula overlay skip no longer leaves dangling needs.** Skipping a step
+  now replaces every `needs` reference, so diamond graphs and duplicate needs
+  cannot stick `ReadySteps` on a removed ID.
+- **Reject polecat names that collide with other session types.** Name pool
+  reservation now includes `overseer`, `boot`, `dog`, and names starting with
+  `crew-` or `dog-`, so sessions such as `gt-crew-max` and `hq-overseer` cannot
+  be allocated to polecats.
+
 ## [1.3.3] - 2026-08-21
 
 ## [1.3.2] - 2026-08-20

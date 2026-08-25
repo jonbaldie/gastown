@@ -843,8 +843,12 @@ func TestValidatePoolName(t *testing.T) {
 		{"", true},      // empty
 		{"UPPER", true}, // uppercase
 		{"has space", true},
-		{"witness", true},  // reserved
-		{"refinery", true}, // reserved
+		{"witness", true},   // reserved
+		{"refinery", true},  // reserved
+		{"overseer", true},  // reserved: hq-overseer is the overseer session
+		{"boot", true},      // reserved: hq-boot is the boot watchdog
+		{"crew-max", true},  // reserved: <prefix>-crew-max parses as crew
+		{"dog-alpha", true}, // reserved: hq-dog-alpha parses as a dog
 		{"valid-name", false},
 	}
 	for _, tc := range tests {

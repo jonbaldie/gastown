@@ -215,6 +215,47 @@ func TestApplyOverlays_Skip(t *testing.T) {
 	assert.Equal(t, []string{"step-1"}, f.Steps[1].Needs)
 }
 
+func TestApplyOverlays_SkipDiamondNeeds(t *testing.T) {
+	// C needs both B and A. Skipping B then A must not leave C waiting on A.
+	f := &Formula{
+		Steps: []Step{
+			{ID: "a", Description: "A"},
+			{ID: "b", Description: "B", Needs: []string{"a"}},
+			{ID: "c", Description: "C", Needs: []string{"b", "a"}},
+		},
+	}
+	warnings := ApplyOverlays(f, &FormulaOverlay{
+		StepOverrides: []StepOverride{
+			{StepID: "b", Mode: ModeSkip},
+			{StepID: "a", Mode: ModeSkip},
+		},
+	})
+	assert.Empty(t, warnings)
+	require.Len(t, f.Steps, 1)
+	assert.Equal(t, "c", f.Steps[0].ID)
+	for _, dep := range f.Steps[0].Needs {
+		assert.NotEqual(t, "a", dep)
+		assert.NotEqual(t, "b", dep)
+	}
+}
+
+func TestApplyOverlays_SkipDuplicateNeeds(t *testing.T) {
+	f := &Formula{
+		Steps: []Step{
+			{ID: "a", Description: "A"},
+			{ID: "b", Description: "B", Needs: []string{"a", "a"}},
+		},
+	}
+	warnings := ApplyOverlays(f, &FormulaOverlay{
+		StepOverrides: []StepOverride{
+			{StepID: "a", Mode: ModeSkip},
+		},
+	})
+	assert.Empty(t, warnings)
+	require.Len(t, f.Steps, 1)
+	assert.Empty(t, f.Steps[0].Needs)
+}
+
 func TestApplyOverlays_SkipFirstStep(t *testing.T) {
 	f := &Formula{
 		Steps: []Step{

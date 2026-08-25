@@ -77,6 +77,19 @@ func TestAgentBeadIDToAddress(t *testing.T) {
 		{"gt-gastown-crew-max-v2", "gastown/crew/max-v2"},
 		{"gt-gastown-polecat-my-agent", "gastown/polecats/my-agent"},
 
+		// Other beads prefixes
+		{"bd-mayor", "mayor/"},
+		{"bd-beads-crew-dave", "beads/crew/dave"},
+		{"bd-beads-polecat-pearl", "beads/polecats/pearl"},
+		{"ff-witness", "ff/witness"},
+		{"gthq-deacon", "deacon/"},
+		{"g-mayor", "mayor/"},
+		{"ob-my-project-witness", "my-project/witness"},
+		{"nrpk-gastown-witness", "gastown/witness"},
+
+		// Collapsed form: prefix == rig
+		{"gt-witness", "gt/witness"},
+
 		// Invalid
 		{"invalid", ""},
 		{"not-gt-prefix", ""},
