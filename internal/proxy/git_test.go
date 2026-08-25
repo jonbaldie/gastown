@@ -169,7 +169,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(receivePackBody()))
-		ok, _ := srv.authorizeReceivePack(rec, req, "notgt-rig-name")
+		ok, _ := srv.authorizeReceivePack(rec, req, "notgt-rig-name", "rig")
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
@@ -178,7 +178,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(receivePackBody()))
-		ok, _ := srv.authorizeReceivePack(rec, req, "gt-")
+		ok, _ := srv.authorizeReceivePack(rec, req, "gt-", "rig")
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
@@ -188,7 +188,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(receivePackBody("refs/heads/polecat/furiosa-abc")))
-		ok, _ := srv.authorizeReceivePack(rec, req, "gt--furiosa")
+		ok, _ := srv.authorizeReceivePack(rec, req, "gt--furiosa", "rig")
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
@@ -200,7 +200,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(body))
-		ok, refs := srv.authorizeReceivePack(rec, req, cn)
+		ok, refs := srv.authorizeReceivePack(rec, req, cn, "gastown")
 
 		require.True(t, ok)
 		assert.Equal(t, []string{"refs/heads/polecat/furiosa-abc123"}, refs)
@@ -217,7 +217,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack",
 			bytes.NewReader(body))
-		ok, refs := srv.authorizeReceivePack(rec, req, cn)
+		ok, refs := srv.authorizeReceivePack(rec, req, cn, "gastown")
 
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
@@ -231,7 +231,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack", nil)
 		req.Body = errReadCloser{err: fmt.Errorf("simulated read error")}
 
-		ok, refs := srv.authorizeReceivePack(rec, req, cn)
+		ok, refs := srv.authorizeReceivePack(rec, req, cn, "gastown")
 		assert.False(t, ok)
 		assert.Nil(t, refs)
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -243,7 +243,7 @@ func TestAuthorizeReceivePack(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/git/rig/git-receive-pack", nil)
 		req.Body = errReadCloser{err: &http.MaxBytesError{Limit: 32 << 20}}
 
-		ok, _ := srv.authorizeReceivePack(rec, req, cn)
+		ok, _ := srv.authorizeReceivePack(rec, req, cn, "gastown")
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
@@ -260,6 +260,32 @@ func newGitServer(t *testing.T) (*Server, string) {
 	// handleInfoRefs/handlePack pass the repo existence pre-flight.
 	require.NoError(t, os.MkdirAll(filepath.Join(townRoot, "testrip", ".repo.git"), 0700))
 	return srv, townRoot
+}
+
+func TestHandleGitReceivePackIdentity(t *testing.T) {
+	t.Run("hyphenated polecat may push its branch", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		body := receivePackBody("refs/heads/polecat/road-warrior-abc123")
+		req := fakeGitRequest("POST", "/v1/git/testrip/git-receive-pack", body,
+			"gt-testrip-road-warrior")
+		rec := httptest.NewRecorder()
+
+		srv.handleGit(rec, req)
+
+		assert.NotEqual(t, http.StatusForbidden, rec.Code)
+	})
+
+	t.Run("certificate for another rig is rejected", func(t *testing.T) {
+		srv, _ := newGitServer(t)
+		body := receivePackBody("refs/heads/polecat/furiosa-abc123")
+		req := fakeGitRequest("POST", "/v1/git/testrip/git-receive-pack", body,
+			"gt-other-furiosa")
+		rec := httptest.NewRecorder()
+
+		srv.handleGit(rec, req)
+
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+	})
 }
 
 func TestHandleGitRouting(t *testing.T) {
@@ -560,14 +586,14 @@ func TestHandleGitAuditLog(t *testing.T) {
 		srv, _, lc := newGitServerWithLog(t)
 		body := receivePackBody("refs/heads/main") // not allowed
 		req := fakeGitRequest("POST", "/v1/git/testrip/git-receive-pack",
-			body, "gt-gastown-furiosa")
+			body, "gt-testrip-furiosa")
 		rec := httptest.NewRecorder()
 		srv.handleGit(rec, req)
 
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 		e, ok := lc.findEntry(slog.LevelWarn, "git push denied")
 		require.True(t, ok, "expected WARN 'git push denied' log record")
-		assert.Equal(t, "gastown/furiosa", e.attrs["identity"])
+		assert.Equal(t, "testrip/furiosa", e.attrs["identity"])
 		assert.Equal(t, "testrip", e.attrs["rig"])
 		assert.Contains(t, e.attrs["refs"], "refs/heads/main")
 	})
@@ -611,7 +637,7 @@ func TestHandleGitAuditLogIntegration(t *testing.T) {
 // TestHandleReceivePackIntegration performs a full end-to-end mTLS git push
 // through a live proxy server, verifying branch authorization with a real git binary.
 //
-// The test issues a polecat cert (CN "gt-gastown-raider" → polecat name "raider"),
+// The test issues a polecat cert (CN "gt-testrip-raider" → polecat name "raider"),
 // starts the proxy with mTLS enabled, creates a local repo with a commit, then:
 //   - Asserts that a push to refs/heads/polecat/raider-* (allowed) succeeds.
 //   - Asserts that a push to refs/heads/main (disallowed) is rejected.
@@ -622,9 +648,9 @@ func TestHandleReceivePackIntegration(t *testing.T) {
 	ca, err := GenerateCA(t.TempDir())
 	require.NoError(t, err)
 
-	// "raider" is the polecat name extracted from "gt-gastown-raider" by polecatName().
+	// "raider" is the polecat name extracted from "gt-testrip-raider" by polecatName().
 	// Allowed refs are refs/heads/polecat/raider-*.
-	const polecatCN = "gt-gastown-raider"
+	const polecatCN = "gt-testrip-raider"
 	clientCertPEM, clientKeyPEM, err := ca.IssuePolecat(polecatCN, time.Hour)
 	require.NoError(t, err)
 

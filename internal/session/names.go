@@ -3,6 +3,7 @@ package session
 
 import (
 	"fmt"
+	"strings"
 )
 
 // DefaultPrefix is the default beads prefix used when no rig-specific prefix is known.
@@ -44,6 +45,12 @@ func CrewSessionName(rigPrefix, name string) string {
 // PolecatSessionName returns the session name for a polecat in a rig.
 // rigPrefix is the rig's beads prefix (e.g., "gt" for gastown, "bd" for beads).
 func PolecatSessionName(rigPrefix, name string) string {
+	// A bare "<prefix>-crew-*" session is reserved for Crew workers. Escape
+	// Polecat names in that namespace with an underscore, which pool names
+	// cannot contain, so parsing the session preserves the role unambiguously.
+	if strings.HasPrefix(name, "crew-") {
+		return fmt.Sprintf("%s-polecat_%s", rigPrefix, name)
+	}
 	return fmt.Sprintf("%s-%s", rigPrefix, name)
 }
 

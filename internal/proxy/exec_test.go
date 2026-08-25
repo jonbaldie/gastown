@@ -157,18 +157,18 @@ func TestExtractIdentity(t *testing.T) {
 	t.Run("nil TLS returns empty string", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/exec", nil)
 		// req.TLS is nil by default from httptest
-		assert.Equal(t, "", extractIdentity(req))
+		assert.Equal(t, "", extractIdentity(req, ""))
 	})
 
 	t.Run("empty PeerCertificates returns empty string", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/exec", nil)
 		req.TLS = &tls.ConnectionState{PeerCertificates: nil}
-		assert.Equal(t, "", extractIdentity(req))
+		assert.Equal(t, "", extractIdentity(req, ""))
 	})
 
 	t.Run("valid CN parses to identity", func(t *testing.T) {
 		req := makeFakeRequest("POST", "/v1/exec", "", "gt-gastown-rust")
-		assert.Equal(t, "gastown/rust", extractIdentity(req))
+		assert.Equal(t, "gastown/rust", extractIdentity(req, ""))
 	})
 }
 
@@ -251,6 +251,32 @@ func TestHandleExec(t *testing.T) {
 		var resp execResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 		assert.Equal(t, "gastown/rust", resp.Stdout)
+	})
+
+	t.Run("GT_PROXY_IDENTITY preserves a hyphenated polecat name", func(t *testing.T) {
+		scriptDir := t.TempDir()
+		commandName := "printenv.sh"
+		if runtime.GOOS == "windows" {
+			commandName = "printenv"
+			scriptPath := filepath.Join(scriptDir, commandName+".cmd")
+			require.NoError(t, os.WriteFile(scriptPath, []byte("@echo off\r\n<nul set /p =%GT_PROXY_IDENTITY%\r\n"), 0644))
+		} else {
+			scriptPath := filepath.Join(scriptDir, commandName)
+			require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s' \"$GT_PROXY_IDENTITY\"\n"), 0755))
+		}
+		t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		srv2 := newExecTestServer(t, Config{AllowedCommands: []string{commandName}})
+		require.NoError(t, os.MkdirAll(filepath.Join(srv2.cfg.TownRoot, "gastown"), 0755))
+		body := `{"argv":["` + commandName + `"]}`
+		req := makeFakeRequest("POST", "/v1/exec", body, "gt-gastown-road-warrior")
+		rec := httptest.NewRecorder()
+		srv2.handleExec(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		var resp execResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.Equal(t, "gastown/road-warrior", resp.Stdout)
 	})
 
 	t.Run("non-zero exit code is returned", func(t *testing.T) {

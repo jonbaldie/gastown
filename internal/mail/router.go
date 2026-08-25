@@ -922,6 +922,10 @@ func (r *Router) sendToGroup(msg *Message) error {
 // Returns an error if the recipient is invalid or doesn't exist.
 // Queries agents from town-level beads AND all rig-level beads via routes.jsonl.
 func (r *Router) validateRecipient(identity string) error {
+	if hasUnsafeAddressSegment(identity) {
+		return fmt.Errorf("no agent found")
+	}
+
 	// Overseer is the human operator, not an agent bead
 	if identity == "overseer" {
 		return nil
@@ -936,14 +940,16 @@ func (r *Router) validateRecipient(identity string) error {
 		return fmt.Errorf("no agent found")
 	}
 
-	// Well-known rig-level singletons (rig/witness, rig/refinery) always
-	// valid — these agents are ephemeral and may not have an active session,
-	// but mail queues for the next session that starts.
+	// Well-known rig-level singletons are valid without an active session, but
+	// the containing rig must exist so typos do not queue mail to a dead inbox.
 	parts := strings.SplitN(identity, "/", 3)
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "witness", "refinery":
-			return nil
+			if r.townRoot == "" || dirExists(filepath.Join(r.townRoot, parts[0])) {
+				return nil
+			}
+			return fmt.Errorf("no agent found")
 		}
 	}
 
