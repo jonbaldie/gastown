@@ -2794,8 +2794,11 @@ func EnsureRigIssuePrefix(townRoot, rigName string, serverMode bool) error {
 	}
 
 	// Fresh databases run the full Beads schema bootstrap before SetConfig.
-	// Allow more time than ordinary store operations under loaded CI or hosts.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// The operator can raise GT_BEADS_SCHEMA_BOOTSTRAP_TIMEOUT when hosts are loaded.
+	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageOpening, ""); err != nil {
+		return fmt.Errorf("recording schema bootstrap stage: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), beads.SchemaBootstrapTimeout())
 	defer cancel()
 
 	if !serverMode {
@@ -2809,16 +2812,41 @@ func EnsureRigIssuePrefix(townRoot, rigName string, serverMode bool) error {
 		}()
 	}
 
+	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageMigrating, ""); err != nil {
+		return fmt.Errorf("recording schema bootstrap stage: %w", err)
+	}
 	store, err := openRigStoreFromConfig(ctx, townRoot, beadsDir, rigName)
 	if err != nil {
-		return fmt.Errorf("opening beads database: %w", err)
+		return schemaBootstrapFailure(beadsDir, beads.SchemaBootstrapStageMigrating, ctx, fmt.Errorf("opening beads database: %w", err))
 	}
 	defer func() { _ = store.Close() }()
 
+	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageSettingPrefix, ""); err != nil {
+		return fmt.Errorf("recording schema bootstrap stage: %w", err)
+	}
 	if err := store.SetConfig(ctx, "issue_prefix", prefix); err != nil {
-		return fmt.Errorf("setting issue_prefix: %w", err)
+		return schemaBootstrapFailure(beadsDir, beads.SchemaBootstrapStageSettingPrefix, ctx, fmt.Errorf("setting issue_prefix: %w", err))
+	}
+	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageComplete, ""); err != nil {
+		return fmt.Errorf("recording schema bootstrap completion: %w", err)
+	}
+	if !beads.SchemaBootstrapReady(beadsDir) {
+		return fmt.Errorf("schema bootstrap is incomplete; Town remains unavailable until it reaches the complete stage")
 	}
 	return nil
+}
+
+func schemaBootstrapFailure(beadsDir string, stage beads.SchemaBootstrapStage, ctx context.Context, err error) error {
+	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
+		if stateErr := beads.MarkSchemaBootstrapTimedOut(beadsDir, string(stage)); stateErr != nil {
+			return fmt.Errorf("schema bootstrap timed out during %s (budget %s); recording retry state: %w", stage, beads.SchemaBootstrapTimeout(), errors.Join(err, stateErr))
+		}
+		return fmt.Errorf("schema bootstrap timed out during %s (budget %s); retry is safe: %w", stage, beads.SchemaBootstrapTimeout(), err)
+	}
+	if stateErr := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageFailed, err.Error()); stateErr != nil {
+		return fmt.Errorf("schema bootstrap failed during %s; recording failed stage: %w", stage, errors.Join(err, stateErr))
+	}
+	return fmt.Errorf("schema bootstrap failed during %s: %w", stage, err)
 }
 
 var beadsOpenEnvMu sync.Mutex

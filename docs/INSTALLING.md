@@ -151,15 +151,16 @@ Run these workspace steps on macOS, Linux, or WSL. Native Windows shells are min
 git config --global user.name "Your Name"
 git config --global user.email "you@example.com"
 
-# Create a Gas Town workspace (HQ)
-gt install ~/gt --shell --git
+# Create a Gas Town workspace (HQ). Default Town root is ~/gt.
+export GT_TOWN_ROOT="${GT_TOWN_ROOT:-$HOME/gt}"
+gt install "$GT_TOWN_ROOT" --shell --git
 
 # --shell also enables Gas Town machine-wide (Claude Code SessionStart
 # hooks and shell cd hooks). Omit --shell for a throwaway or second town
 # so the host enable flag stays untouched.
 
 # This creates:
-#   ~/gt/
+#   $GT_TOWN_ROOT/
 #   ├── AGENTS.md          # Identity anchor (CLAUDE.md symlinks here)
 #   ├── mayor/             # Mayor config and state
 #   ├── rigs/              # Project containers (initially empty)
@@ -173,7 +174,7 @@ gt install ~/gt --shell --git
 gt rig add myproject https://github.com/you/repo.git
 
 # This clones the repo and sets up:
-#   ~/gt/myproject/
+#   $GT_TOWN_ROOT/myproject/
 #   ├── .beads/            # Project issue tracking
 #   ├── mayor/rig/         # Mayor's clone (canonical)
 #   ├── refinery/rig/      # Merge queue processor
@@ -184,7 +185,7 @@ gt rig add myproject https://github.com/you/repo.git
 ### Step 4: Verify Installation
 
 ```bash
-cd ~/gt
+cd "${GT_TOWN_ROOT:-$HOME/gt}"
 
 gt up                  # Start all services. Use gt down or gt shutdown for stopping.
 
@@ -197,7 +198,7 @@ gt status              # Show workspace status
 SessionStart can run `gt prime`. Town services do not need it: a test
 or second town works after `gt install` and `gt up`. Only run `gt enable`
 on this machine when you want those session hooks everywhere.
-`gt install --shell` already enables the host for a production `~/gt`.
+`gt install --shell` already enables the host for a production Town (default `~/gt`, or `$GT_TOWN_ROOT`).
 
 ### Step 5: Configure Agents (Optional)
 
@@ -259,7 +260,7 @@ gt convoy create "Fix bugs" gt-abc12
 gt sling gt-abc12 myproject
 
 # Run runtime manually
-cd ~/gt/myproject/polecats/<worker>
+cd "${GT_TOWN_ROOT:-$HOME/gt}/myproject/polecats/<worker>"
 claude --resume          # Claude Code
 # or: codex              # Codex CLI
 
@@ -363,7 +364,7 @@ git config --global credential.helper cache
 If experiencing beads problems:
 
 ```bash
-cd ~/gt/myproject/mayor/rig
+cd "${GT_TOWN_ROOT:-$HOME/gt}/myproject/mayor/rig"
 bd status                  # Check database health
 bd doctor                  # Run beads health check
 ```
@@ -397,8 +398,8 @@ updated, fix your PATH before continuing.
 # Remove binaries
 rm $(which gt) $(which bd)
 
-# Remove workspace (CAUTION: deletes all work)
-rm -rf ~/gt
+# Remove workspace (CAUTION: deletes all work). Default Town root is ~/gt.
+rm -rf "${GT_TOWN_ROOT:-$HOME/gt}"
 ```
 
 ## Next Steps
@@ -407,7 +408,7 @@ After installation:
 
 1. **Read the README** - Core concepts and workflows
 2. **Try a simple workflow** - create work in the target rig, then convoy and sling it:
-   `bd -C ~/gt/<rig> create --title="Test task" --type=feature`
+   `bd -C "${GT_TOWN_ROOT:-$HOME/gt}/<rig>" create --title="Test task" --type=feature`
    then `gt convoy create "Test" <rig-prefix-id>` and `gt sling <rig-prefix-id> <rig> --merge=local`
 3. **Explore docs** - `docs/reference.md` for command reference
 4. **Run doctor regularly** - `gt doctor` catches problems early

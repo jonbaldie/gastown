@@ -64,8 +64,12 @@ dolt login
 
 From your Gas Town workspace directory:
 
+Set `GT_TOWN_ROOT` to your Town root (the default is `$HOME/gt`), then use it
+in these commands:
+
 ```bash
-cd ~/gt
+export GT_TOWN_ROOT="${GT_TOWN_ROOT:-$HOME/gt}"
+cd "$GT_TOWN_ROOT"
 gt wl join hop/wl-commons
 ```
 
@@ -99,12 +103,12 @@ On success you'll see:
 **Note:** `gt wl leave` is not yet implemented. To switch wastelands,
 manually delete `mayor/wasteland.json` and the local database directory
 it references (the `local_dir` value — typically
-`~/gt/.wasteland/<org>/<db>`).
+`$GT_TOWN_ROOT/.wasteland/<org>/<db>`).
 
 ### Verify Your Setup
 
 ```bash
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl browse
 ```
 
@@ -164,7 +168,7 @@ accumulate validated completions and stamps once enforcement is enabled.
 ## Browsing the Wanted Board
 
 ```bash
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl browse                          # All open items
 gt wl browse --project gastown        # Filter by project
 gt wl browse --type bug               # Only bugs
@@ -183,7 +187,7 @@ currently available regardless of your local fork's state.
 Found something you want to work on? Claim it:
 
 ```bash
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl claim w-abc123
 ```
 
@@ -237,7 +241,7 @@ Once your work is done and you have evidence (a PR URL, commit hash, or
 description), submit it:
 
 ```bash
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl done w-abc123 --evidence "https://github.com/steveyegge/gastown/pull/99"
 ```
 
@@ -264,7 +268,7 @@ reliability, and creativity dimensions.
 See something that needs doing? Post it to the wanted board:
 
 ```bash
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl post \
   --title "Add retry logic to federation sync" \
   --project gastown \
@@ -285,7 +289,7 @@ for `--description`.
 Pull the latest changes from the upstream commons:
 
 ```bash
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl sync                # Pull upstream changes
 gt wl sync --dry-run      # Preview changes without pulling
 ```
@@ -314,7 +318,7 @@ export DOLTHUB_ORG="your-username"
 export DOLTHUB_TOKEN="dhat.v1.your-token"
 
 # 2. Join the wasteland (one-time, from Gas Town workspace)
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl join hop/wl-commons
 
 # 3. Browse for work
@@ -334,7 +338,7 @@ git push -u origin HEAD
 gh pr create --title "docs: My contribution"
 
 # 7. Submit completion evidence (back in Gas Town workspace)
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl done w-abc123 --evidence "https://github.com/org/repo/pull/123"
 
 # 8. Sync to see updated state
@@ -370,9 +374,9 @@ dolt remote add myfork https://doltremoteapi.dolthub.com/$DOLTHUB_ORG/wl-commons
 dolt push myfork main
 
 # Place the clone where gt wl join would put it
-mkdir -p ~/gt/.wasteland/hop
-cp -r /tmp/wl-setup/wl-commons ~/gt/.wasteland/hop/wl-commons
-cd ~/gt/.wasteland/hop/wl-commons
+mkdir -p "$GT_TOWN_ROOT/.wasteland/hop"
+cp -r /tmp/wl-setup/wl-commons "$GT_TOWN_ROOT/.wasteland/hop/wl-commons"
+cd "$GT_TOWN_ROOT/.wasteland/hop/wl-commons"
 
 # Fix remotes: origin must point to your fork (gt wl join clones the
 # fork, so origin = fork by default; our clone has origin = upstream)
@@ -384,7 +388,7 @@ dolt remote add upstream https://doltremoteapi.dolthub.com/hop/wl-commons
 rm -rf /tmp/wl-setup
 ```
 
-After the manual setup, create the config file at `~/gt/mayor/wasteland.json`:
+After the manual setup, create the config file at `$GT_TOWN_ROOT/mayor/wasteland.json`:
 
 ```json
 {
@@ -411,20 +415,20 @@ gt wl browse --limit 50              # Increase the limit
 ### `gt wl claim` says "not in a Gas Town workspace"
 
 All `gt wl` commands must be run from within your Gas Town workspace
-(typically `~/gt`):
+(typically `$GT_TOWN_ROOT`):
 
 ```bash
-cd ~/gt
+cd "$GT_TOWN_ROOT"
 gt wl claim w-abc123
 ```
 
 ### `gt wl sync` fails to pull
 
 Ensure the upstream remote exists in your local fork. Find the clone
-path from `local_dir` in `~/gt/mayor/wasteland.json`, then check:
+path from `local_dir` in `$GT_TOWN_ROOT/mayor/wasteland.json`, then check:
 
 ```bash
-cd /path/from/local_dir            # e.g. ~/gt/.wasteland/hop/wl-commons
+cd /path/from/local_dir            # e.g. $GT_TOWN_ROOT/.wasteland/hop/wl-commons
 dolt remote -v                     # Should show an 'upstream' remote
 ```
 
