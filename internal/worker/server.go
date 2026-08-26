@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -97,36 +98,59 @@ func (s *Server) Listen() error {
 	if err := s.store.ensure(); err != nil {
 		return err
 	}
+	// The Unix socket is the preferred transport but it is not required. The
+	// bind can fail for a town that is otherwise healthy, most often because
+	// the operating system limits a socket path to about 100 bytes and a deep
+	// town root exceeds that. Report the failure and continue on the loopback
+	// listener, which serves the same routes. Client.Open and DialAgent already
+	// fall back to it.
 	sock := SocketPath(s.store.townRoot)
 	_ = os.Remove(sock)
-	unixLn, err := net.Listen("unix", sock)
-	if err != nil {
-		return fmt.Errorf("listening on worker socket: %w", err)
-	}
-	if err := os.Chmod(sock, socketMode); err != nil {
+	if unixLn, err := net.Listen("unix", sock); err != nil {
+		fmt.Fprintf(os.Stderr, "worker: no Unix socket, using loopback only: %v\n", err)
+		// A path that does not fit in the socket address is rejected as an
+		// invalid argument, so name the length only for that error. An address
+		// already in use or a permission failure has nothing to do with it.
+		if errors.Is(err, syscall.EINVAL) {
+			fmt.Fprintf(os.Stderr, "worker: the socket path is %d bytes\n", len(sock))
+		}
+	} else if err := os.Chmod(sock, socketMode); err != nil {
 		_ = unixLn.Close()
 		return fmt.Errorf("setting worker socket mode: %w", err)
+	} else {
+		s.unixLn = unixLn
 	}
-	s.unixLn = unixLn
 
 	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		_ = unixLn.Close()
+		s.closeUnix()
 		return fmt.Errorf("listening on worker http: %w", err)
 	}
 	s.tcpLn = tcpLn
 	s.port = tcpLn.Addr().(*net.TCPAddr).Port
 	if err := os.WriteFile(PortPath(s.store.townRoot), []byte(strconv.Itoa(s.port)+"\n"), fileMode); err != nil {
-		_ = unixLn.Close()
+		s.closeUnix()
 		_ = tcpLn.Close()
 		return fmt.Errorf("writing worker port file: %w", err)
 	}
 
 	mux := s.routes()
 	s.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = s.httpSrv.Serve(unixLn) }()
+	if s.unixLn != nil {
+		go func() { _ = s.httpSrv.Serve(s.unixLn) }()
+	}
 	go func() { _ = s.httpSrv.Serve(tcpLn) }()
 	return nil
+}
+
+// unixActive reports whether the Unix socket listener is bound.
+func (s *Server) unixActive() bool { return s.unixLn != nil }
+
+func (s *Server) closeUnix() {
+	if s.unixLn != nil {
+		_ = s.unixLn.Close()
+		s.unixLn = nil
+	}
 }
 
 // Close stops the listeners.

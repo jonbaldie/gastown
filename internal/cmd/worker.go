@@ -99,7 +99,8 @@ func runWorkerServe(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = w.Close() }()
 
-	fmt.Fprintf(os.Stderr, "worker listening on %s\n", worker.SocketPath(townRoot))
+	network, address := w.Endpoint()
+	fmt.Fprintf(os.Stderr, "worker listening on %s %s\n", network, address)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

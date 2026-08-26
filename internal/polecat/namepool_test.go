@@ -559,7 +559,7 @@ func TestNamePool_ReservedNamesExcluded(t *testing.T) {
 		}
 
 		// Verify no reserved names were allocated
-		for reserved := range ReservedInfraAgentNames {
+		for _, reserved := range []string{"witness", "mayor", "deacon", "refinery", "crew", "polecats", "overseer", "boot", "dog"} {
 			if allocated[reserved] {
 				t.Errorf("theme %q allocated reserved name %q", themeName, reserved)
 			}

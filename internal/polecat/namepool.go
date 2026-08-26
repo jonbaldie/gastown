@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/jonbaldie/gastown/internal/atomicfile"
+	"github.com/jonbaldie/gastown/internal/constants"
 	"github.com/jonbaldie/gastown/internal/lock"
 )
 
@@ -29,20 +30,6 @@ const (
 	// Prevents accidental theme bloat from large --from-file inputs.
 	MaxThemeNames = 2000
 )
-
-// ReservedInfraAgentNames contains names reserved for infrastructure agents.
-// These names must never be allocated to polecats.
-var ReservedInfraAgentNames = map[string]bool{
-	"witness":  true,
-	"mayor":    true,
-	"deacon":   true,
-	"refinery": true,
-	"crew":     true,
-	"polecats": true,
-	"overseer": true,
-	"boot":     true,
-	"dog":      true,
-}
 
 // Built-in themes with themed polecat names.
 var BuiltinThemes = map[string][]string{
@@ -573,11 +560,21 @@ func ValidatePoolName(name string) error {
 	return nil
 }
 
+// ValidateNewPolecatName rejects a name that collides with another Role's
+// address or session. It deliberately does not apply name-pool style rules so
+// existing explicit polecat names stay supported.
+func ValidateNewPolecatName(name string) error {
+	if constants.IsReservedAgentName(name) {
+		return fmt.Errorf("name %q is reserved for infrastructure agents", name)
+	}
+	return nil
+}
+
 // reservedPolecatName reports names that would collide with other session types.
 // Polecat sessions are <prefix>-<name>, so crew-*, dog-*, overseer, and boot
 // parse as crew, dog, overseer, or boot rather than as a polecat.
 func reservedPolecatName(name string) bool {
-	if ReservedInfraAgentNames[name] {
+	if constants.IsReservedAgentName(name) {
 		return true
 	}
 	return strings.HasPrefix(name, "crew-") || strings.HasPrefix(name, "dog-")

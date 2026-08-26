@@ -13,6 +13,7 @@ import (
 
 	"github.com/jonbaldie/gastown/internal/atomicfile"
 	"github.com/jonbaldie/gastown/internal/config"
+	"github.com/jonbaldie/gastown/internal/constants"
 	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/nudge"
 	"github.com/jonbaldie/gastown/internal/rig"
@@ -124,6 +125,25 @@ func validateCrewName(name string) error {
 	return nil
 }
 
+// validateNewCrewName checks a name that is about to be given to a crew worker.
+//
+// It is stricter than validateCrewName because it also refuses the names of
+// infrastructure Roles. A crew worker's address normalizes to "<rig>/<name>",
+// which collides with the address of a Town or Rig Role of the same name, so
+// mail addressed to the worker is delivered to that Role instead, with no
+// error. The stricter rule belongs here rather than in validateCrewName, so
+// that a worker created before the rule existed can still be listed, stopped,
+// and removed.
+func validateNewCrewName(name string) error {
+	if err := validateCrewName(name); err != nil {
+		return err
+	}
+	if constants.IsReservedAgentName(name) {
+		return fmt.Errorf("%w: %q is reserved for infrastructure agents", ErrInvalidCrewName, name)
+	}
+	return nil
+}
+
 // tmuxOps is the tmux seam for crew start and stop. Production uses *tmux.Tmux.
 type tmuxOps interface {
 	session.TmuxOps
@@ -199,6 +219,9 @@ func (m *Manager) Add(name string, createBranch bool) (*CrewWorker, error) {
 
 // addLocked creates a new crew worker, assumes caller holds lockCrew(name).
 func (m *Manager) addLocked(name string, createBranch bool) (*CrewWorker, error) {
+	if err := validateNewCrewName(name); err != nil {
+		return nil, err
+	}
 	if m.exists(name) {
 		return nil, ErrCrewExists
 	}
@@ -537,7 +560,7 @@ func (m *Manager) loadState(name string) (*CrewWorker, error) {
 
 // Rename renames a crew worker from oldName to newName.
 func (m *Manager) Rename(oldName, newName string) error {
-	if err := validateCrewName(newName); err != nil {
+	if err := validateNewCrewName(newName); err != nil {
 		return err
 	}
 	// Lock both names in alphabetical order to prevent deadlock.

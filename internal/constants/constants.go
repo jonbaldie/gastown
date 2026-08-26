@@ -1,8 +1,13 @@
-// Package constants defines shared constant values used throughout Gas Town.
-// Centralizing these magic strings improves maintainability and consistency.
+// Package constants defines the shared constant values used throughout Gas
+// Town, together with the few lookups that belong to them, such as the reserved
+// agent names. Centralizing these magic strings improves maintainability and
+// consistency.
 package constants
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Timing constants for session management and tmux operations.
 //
@@ -267,6 +272,38 @@ const (
 	// RoleBoot is the boot watchdog role (modeled as a deacon dog).
 	RoleBoot = "boot"
 )
+
+// reservedAgentNames are the names an Agent must never be given.
+//
+// A Rig-scoped agent address normalizes to "<rig>/<name>". That is the same
+// shape as the Rig-scoped alias for a Town-level Role, so a Crew worker or a
+// Polecat named "mayor" in Rig "gastown" has the address "gastown/mayor", which
+// resolves to the Town Mayor. A worker named "witness" or "refinery" collides
+// with the Rig's own Witness or Refinery in the same way. Session IDs collide
+// too: a session is "<prefix>-<name>", so these names parse as a different
+// session type.
+//
+// The set is unexported and reached through the two functions below, so that no
+// caller can add to it or remove from it at run time.
+var reservedAgentNames = map[string]bool{
+	RoleWitness:  true,
+	RoleMayor:    true,
+	RoleDeacon:   true,
+	RoleRefinery: true,
+	RoleCrew:     true,
+	"polecats":   true,
+	"overseer":   true,
+	RoleBoot:     true,
+	"dog":        true,
+}
+
+// IsReservedAgentName reports whether name collides with an infrastructure Role
+// in agent addresses or session IDs. The check ignores case, because a name
+// that differs from a Role only by case is ambiguous to an Overseer even when
+// the address resolver keeps the two apart.
+func IsReservedAgentName(name string) bool {
+	return reservedAgentNames[strings.ToLower(name)]
+}
 
 // Role emojis - centralized for easy customization.
 // These match the Gas Town visual identity (see ~/Desktop/Gas Town/ prompts).
