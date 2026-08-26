@@ -1636,6 +1636,56 @@ func TestBuildStartupCommand_UsesRoleAgentsFromTownSettings(t *testing.T) {
 	})
 }
 
+func TestResolveRoleAgentConfig_AgyModelAliases(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+
+	townSettings := NewTownSettings()
+	townSettings.Agents = map[string]*RuntimeConfig{
+		"agy-flash-medium": {
+			Provider: "agy",
+			Command:  "agy",
+			Args:     []string{"--dangerously-skip-permissions", "--model", "gemini-3.7-flash-medium"},
+		},
+		"agy-pro-high": {
+			Provider: "agy",
+			Command:  "agy",
+			Args:     []string{"--dangerously-skip-permissions", "--model", "gemini-3.1-pro-high"},
+		},
+	}
+	townSettings.RoleAgents = map[string]string{
+		constants.RoleMayor:  "agy-flash-medium",
+		constants.RoleDeacon: "agy-pro-high",
+	}
+	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
+		t.Fatalf("SaveTownSettings: %v", err)
+	}
+
+	tests := []struct {
+		role      string
+		wantAgent string
+		wantModel string
+	}{
+		{role: constants.RoleMayor, wantAgent: "agy-flash-medium", wantModel: "gemini-3.7-flash-medium"},
+		{role: constants.RoleDeacon, wantAgent: "agy-pro-high", wantModel: "gemini-3.1-pro-high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.role, func(t *testing.T) {
+			rc := ResolveRoleAgentConfig(tt.role, townRoot, "")
+			if rc.ResolvedAgent != tt.wantAgent {
+				t.Errorf("ResolvedAgent = %q, want %q", rc.ResolvedAgent, tt.wantAgent)
+			}
+			if rc.Command != "agy" {
+				t.Errorf("Command = %q, want agy", rc.Command)
+			}
+			if !containsArgSequence(rc.Args, []string{"--model", tt.wantModel}) {
+				t.Errorf("Args = %v, want --model %s", rc.Args, tt.wantModel)
+			}
+		})
+	}
+}
+
 func TestBuildStartupCommand_RigRoleAgentsOverridesTownRoleAgents(t *testing.T) {
 	skipIfAgentBinaryMissing(t, "gemini", "codex")
 	t.Parallel()

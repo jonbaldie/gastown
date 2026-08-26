@@ -490,7 +490,38 @@ gt config mix mayor=pi:high crew:alice=codex
 gt config default-agent [name]    # Get or set town default agent
 ```
 
-**Built-in agents**: `claude`, `gemini`, `codex`, `kiro`, `cursor`, `auggie`, `amp`, `opencode`, `copilot`, `pi`, `omp`
+**Built-in agents**: `claude`, `gemini`, `codex`, `kiro`, `cursor`, `auggie`, `amp`, `opencode`, `copilot`, `pi`, `omp`, `agy`
+
+**Agy model profiles**: `agy` accepts `--model`, so define aliases when particular
+Town Roles need different models. This example leaves the Town's default agent
+unchanged and assigns models only to the Roles shown:
+
+```json
+{
+  "type": "town-settings",
+  "version": 1,
+  "agents": {
+    "agy-flash-medium": {
+      "provider": "agy",
+      "command": "agy",
+      "args": ["--dangerously-skip-permissions", "--model", "gemini-3.7-flash-medium"]
+    },
+    "agy-pro-high": {
+      "provider": "agy",
+      "command": "agy",
+      "args": ["--dangerously-skip-permissions", "--model", "gemini-3.1-pro-high"]
+    }
+  },
+  "role_agents": {
+    "mayor": "agy-flash-medium",
+    "deacon": "agy-pro-high"
+  }
+}
+```
+
+Run `agy models` to list the model identifiers available to your account. A
+role-specific mapping in a Rig's settings takes precedence over this Town-wide
+mapping; omit any mapping you do not want to change.
 
 The `kiro` preset launches `kiro-cli chat --trust-all-tools` and uses Kiro's
 documented `--resume` / `--resume-id` session flags. Gas Town does not install
