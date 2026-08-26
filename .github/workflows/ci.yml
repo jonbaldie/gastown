@@ -159,9 +159,32 @@ jobs:
           version: v2.11.4
           args: --timeout=5m
 
-  integration:
-    name: Integration Tests
+  integration-shard:
+    name: Integration Tests / ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Keep each shard below the hosted runner's observed 20-minute lease.
+          # Timings from a full CI run: A-F ~11m, G-Q ~4m, R-Z ~6m,
+          # scheduler ~11m. The final range also catches non-letter test names.
+          - name: A-F
+            tags: integration
+            run: '^Test[A-F]'
+            junit: junit-integration-a-f.xml
+          - name: G-Q
+            tags: integration
+            run: '^Test[G-Q]'
+            junit: junit-integration-g-q.xml
+          - name: R-Z
+            tags: integration
+            run: '^Test([^A-Q]|[R-Z])'
+            junit: junit-integration-r-z.xml
+          - name: Scheduler
+            tags: 'integration scheduler_integration'
+            run: '^(TestScheduler|TestScheduleBead_)'
+            junit: junit-scheduler.xml
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -198,31 +221,30 @@ jobs:
           cp gt "$(go env GOPATH)/bin/"
 
       - name: Integration Tests
-        run: |
-          status=0
-
-          gotestsum --format testname --junitfile junit-integration.xml -- \
-            -tags=integration -timeout=30m ./internal/cmd/... || status=1
-
-          # Separate process so scheduler coverage does not share the 30m
-          # integration budget. One invocation covers every TestScheduler*
-          # / TestScheduleBead_* name; native Dolt start is cheap.
-          gotestsum --format testname --junitfile junit-scheduler.xml -- \
-            -tags='integration scheduler_integration' -timeout=20m \
-            -run '^(TestScheduler|TestScheduleBead_)' ./internal/cmd || status=1
-
-          exit "$status"
+        run: >-
+          gotestsum --format testname --junitfile '${{ matrix.junit }}' --
+          -tags='${{ matrix.tags }}' -timeout=15m
+          -run '${{ matrix.run }}' ./internal/cmd
 
       - name: Test Report
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          status=0
-          python3 .github/scripts/junit-report.py junit-integration.xml "Integration Test Failures" || status=1
-          python3 .github/scripts/junit-report.py junit-scheduler.xml "Scheduler Integration Failures" || status=1
-          exit "$status"
+        run: >-
+          python3 .github/scripts/junit-report.py '${{ matrix.junit }}'
+          'Integration Test Failures (${{ matrix.name }})'
+
+  integration:
+    name: Integration Tests
+    if: always()
+    needs: integration-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm all integration shards passed
+        env:
+          SHARD_RESULT: ${{ needs.integration-shard.result }}
+        run: test "$SHARD_RESULT" = success
 
   go-install:
     name: Public go install
