@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/jonbaldie/gastown/internal/doltserver"
@@ -11,10 +12,20 @@ import (
 // port, so production Dolt is protected when tests run inside a real workspace.
 func ReapOwnedDoltOnCleanup(t testing.TB, townRoot string) {
 	t.Helper()
+	var once sync.Once
+	var stopped int
+	var cleanupErr error
+	cleanup := func() {
+		once.Do(func() {
+			stopped, cleanupErr = doltserver.ReapOwnedTestServers(townRoot)
+		})
+	}
+	unregister := RegisterProcessCleanup(cleanup)
 	t.Cleanup(func() {
-		stopped, err := doltserver.ReapOwnedTestServers(townRoot)
-		if err != nil {
-			t.Logf("owned Dolt cleanup skipped: %v", err)
+		cleanup()
+		unregister()
+		if cleanupErr != nil {
+			t.Logf("owned Dolt cleanup skipped: %v", cleanupErr)
 			return
 		}
 		if stopped > 0 {

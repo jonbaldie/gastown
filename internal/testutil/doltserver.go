@@ -28,6 +28,10 @@ var (
 	dockerAvail  bool
 )
 
+// IntegrationDoltEnabled reports whether this binary was built with the
+// integration test tag, which includes Dolt server support.
+func IntegrationDoltEnabled() bool { return true }
+
 // isDockerAvailable returns true if the Docker daemon is reachable.
 // The result is cached after the first call.
 func isDockerAvailable() bool {

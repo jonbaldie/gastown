@@ -17,3 +17,7 @@ func terminateServePID(pid int) error {
 func killServePID(pid int) error {
 	return terminateServePID(pid)
 }
+
+func terminateServeGroup(pid int) error { return terminateServePID(pid) }
+
+func killServeGroup(pid int) error { return killServePID(pid) }

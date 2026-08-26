@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"sync"
 	"testing"
 )
 
@@ -28,11 +30,31 @@ func TestMain(m *testing.M) {
 		_ = exec.Command("tmux", "-u", "-L", socket, "new-session", "-d", "-s", "gt-test-sentinel").Run()
 	}
 
+	runTmuxTestMain(m, func() {
+		// Kill the test tmux server and restore the original socket state.
+		_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
+		SetDefaultSocket("")
+	})
+}
+
+func runTmuxTestMain(m *testing.M, cleanup func()) {
+	var once sync.Once
+	finish := func() { once.Do(cleanup) }
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, tmuxTestTerminationSignals()...)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-signals:
+			finish()
+			os.Exit(1)
+		case <-done:
+		}
+	}()
+
 	code := m.Run()
-
-	// Kill the test tmux server and restore the original socket state.
-	_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
-	SetDefaultSocket("")
-
+	close(done)
+	signal.Stop(signals)
+	finish()
 	os.Exit(code)
 }

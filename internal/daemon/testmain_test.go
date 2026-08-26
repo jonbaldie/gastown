@@ -37,13 +37,12 @@ func TestMain(m *testing.M) {
 		tmux.SetDefaultSocket(tmuxSocket)
 	}
 
-	code := m.Run()
-
-	if tmuxSocket != "" {
+	testutil.RunTestMain(m, func() {
+		if tmuxSocket == "" {
+			return
+		}
 		_ = exec.Command("tmux", "-L", tmuxSocket, "kill-server").Run()
 		socketPath := filepath.Join(tmux.SocketDir(), tmuxSocket)
 		_ = os.Remove(socketPath)
-	}
-	testutil.TerminateDoltContainer()
-	os.Exit(code)
+	}, testutil.TerminateDoltContainer)
 }

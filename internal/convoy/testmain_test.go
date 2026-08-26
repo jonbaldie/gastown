@@ -19,8 +19,5 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "convoy TestMain: Dolt container unavailable (%v), Dolt-dependent tests will skip\n", err)
 	}
 
-	code := m.Run()
-
-	testutil.TerminateDoltContainer()
-	os.Exit(code)
+	testutil.RunTestMain(m, testutil.TerminateDoltContainer)
 }

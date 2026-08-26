@@ -33,3 +33,13 @@ func processIsAlive(pid int) bool {
 func gracefulTerminate(p *os.Process) error {
 	return p.Kill()
 }
+
+func terminateDoltGroup(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return gracefulTerminate(proc)
+}
+
+func killDoltGroup(pid int) error { return terminateDoltGroup(pid) }

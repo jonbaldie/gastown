@@ -46,8 +46,11 @@ func TestImmediateShutdownStopsTownDoltAndWorkerServe(t *testing.T) {
 	t.Setenv("GT_DOLT_PORT", strconv.Itoa(port))
 
 	doltCmd := exec.Command("python3", "-c", `
-import socket, sys, time
+import os, socket, subprocess, sys, time
 port = int(sys.argv[1])
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"])
+with open(os.environ["GT_DOLT_STANDIN_CHILD_PID"], "w") as f:
+    f.write(str(child.pid))
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", port))
@@ -56,10 +59,29 @@ while True:
     time.sleep(1)
 `, strconv.Itoa(port), "--config", configPath)
 	doltCmd.Dir = dataDir
+	doltChildPIDFile := filepath.Join(townRoot, "dolt-child.pid")
+	doltCmd.Env = append(os.Environ(), "GT_DOLT_STANDIN_CHILD_PID="+doltChildPIDFile)
 	if err := doltCmd.Start(); err != nil {
 		t.Fatalf("start dolt stand-in: %v", err)
 	}
-	t.Cleanup(func() { _ = doltCmd.Process.Kill(); _, _ = doltCmd.Process.Wait() })
+	doltDone := make(chan struct{})
+	go func() { _ = doltCmd.Wait(); close(doltDone) }()
+	t.Cleanup(func() {
+		_ = doltCmd.Process.Kill()
+		select {
+		case <-doltDone:
+		case <-time.After(time.Second):
+		}
+	})
+	doltChildPID := readStandInPID(t, doltChildPIDFile)
+	t.Cleanup(func() {
+		if process.Exited(doltChildPID) {
+			return
+		}
+		if child, err := os.FindProcess(doltChildPID); err == nil {
+			_ = child.Kill()
+		}
+	})
 
 	waitUntil(t, func() bool {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 50*time.Millisecond)
@@ -109,6 +131,9 @@ while True:
 	if running {
 		t.Errorf("gt shutdown left town Dolt running (PID %d on port %d)", pid, port)
 	}
+	if !process.Exited(doltChildPID) {
+		t.Errorf("gt shutdown left Dolt descendant PID %d alive", doltChildPID)
+	}
 	// Reap the child so a killed worker is not left as a zombie owned by this test.
 	done := make(chan struct{})
 	go func() { _, _ = workerCmd.Process.Wait(); close(done) }()
@@ -129,6 +154,23 @@ while True:
 		_ = conn.Close()
 		t.Errorf("town Dolt port %d still listening after shutdown", port)
 	}
+}
+
+func readStandInPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for stand-in PID in %s", path)
+	return 0
 }
 
 var cachedTinyGT string

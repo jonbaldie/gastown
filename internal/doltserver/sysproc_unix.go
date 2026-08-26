@@ -28,3 +28,27 @@ func processIsAlive(pid int) bool {
 func gracefulTerminate(p *os.Process) error {
 	return p.Signal(syscall.SIGTERM)
 }
+
+func terminateDoltGroup(pid int) error {
+	pgid, err := syscall.Getpgid(pid)
+	if err == nil && pgid == pid {
+		return syscall.Kill(-pgid, syscall.SIGTERM)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return gracefulTerminate(proc)
+}
+
+func killDoltGroup(pid int) error {
+	pgid, err := syscall.Getpgid(pid)
+	if err == nil && pgid == pid {
+		return syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Kill()
+}

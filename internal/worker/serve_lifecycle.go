@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,13 +59,28 @@ func canonicalTownRoot(townRoot string) string {
 // StopServe terminates this town's `gt worker serve` processes and removes
 // stale socket/port files. It does not signal processes for other towns.
 func StopServe(townRoot string) int {
+	stopped, _ := StopServeAndWait(townRoot)
+	return stopped
+}
+
+// StopServeAndWait stops every process owned by this town's worker server and
+// does not remove its connection files until each captured descendant has
+// exited. A detached worker uses a fresh session, so stopping only its leader
+// can otherwise leave children reparented to init after the Town is removed.
+func StopServeAndWait(townRoot string) (int, error) {
 	pids := FindServePIDs(townRoot)
+	var errs []error
 	for _, pid := range pids {
-		stopServePID(pid)
+		if err := stopServePID(pid); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return len(pids), fmt.Errorf("stopping worker serve: %w", errors.Join(errs...))
 	}
 	_ = os.Remove(SocketPath(townRoot))
 	_ = os.Remove(PortPath(townRoot))
-	return len(pids)
+	return len(pids), nil
 }
 
 func isTownWorkerServeArgs(args, townRoot string) bool {
@@ -109,21 +126,54 @@ func sameTownPath(got, want string) bool {
 	return gotResErr == nil && wantResErr == nil && gotRes == wantRes
 }
 
-func stopServePID(pid int) {
-	_ = terminateServePID(pid)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if !process.Alive(pid) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+func stopServePID(pid int) error {
+	pids := ownedProcessTree(pid)
+	_ = terminateServeGroup(pid)
+	for _, child := range pids[1:] {
+		_ = terminateServePID(child)
 	}
-	_ = killServePID(pid)
-	deadline = time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !process.Alive(pid) {
-			return
+	if waitForPIDsToExit(pids, 2*time.Second) {
+		return nil
+	}
+
+	_ = killServeGroup(pid)
+	for _, child := range pids[1:] {
+		_ = killServePID(child)
+	}
+	if waitForPIDsToExit(pids, 500*time.Millisecond) {
+		return nil
+	}
+	return fmt.Errorf("worker process tree did not exit: %v", livePIDs(pids))
+}
+
+func ownedProcessTree(pid int) []int {
+	pids := []int{pid}
+	table, err := process.Capture()
+	if err == nil {
+		pids = append(pids, table.Descendants(pid)...)
+	}
+	return pids
+}
+
+func waitForPIDsToExit(pids []int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if len(livePIDs(pids)) == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+func livePIDs(pids []int) []int {
+	var live []int
+	for _, pid := range pids {
+		if !process.Exited(pid) {
+			live = append(live, pid)
+		}
+	}
+	return live
 }

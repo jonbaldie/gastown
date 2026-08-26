@@ -9,6 +9,10 @@ import (
 
 const integrationTagRequired = "Dolt test containers require -tags=integration"
 
+// IntegrationDoltEnabled reports whether this binary was built with the
+// integration test tag, which includes Dolt server support.
+func IntegrationDoltEnabled() bool { return false }
+
 // StartIsolatedDoltContainer skips when the integration tag is off so default
 // `go test` does not compile testcontainers.
 func StartIsolatedDoltContainer(t *testing.T) string {

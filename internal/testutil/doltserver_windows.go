@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+// IntegrationDoltEnabled reports whether this binary was built with the
+// integration test tag, which includes Dolt server support.
+func IntegrationDoltEnabled() bool { return true }
+
 // StartIsolatedDoltContainer is not supported on Windows CI.
 func StartIsolatedDoltContainer(t *testing.T) string {
 	t.Helper()
