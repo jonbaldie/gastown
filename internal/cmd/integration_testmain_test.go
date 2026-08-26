@@ -1,5 +1,3 @@
-//go:build integration
-
 package cmd
 
 import (
@@ -18,17 +16,16 @@ func TestMain(m *testing.M) {
 	_ = flag.Set("test.parallel", "1")
 	flag.Parse()
 
-	// Start an ephemeral Dolt SQL server for this package's integration tests.
-	// Tests like TestAgentWorktreesStayClean and TestBeadsRoutingFromTownRoot
-	// spawn gt/bd subprocesses that create databases (e.g., "tr", "hq").
-	// Routing those to GT_DOLT_PORT keeps them off the developer's town Dolt.
-	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
-		fmt.Fprintf(os.Stderr, "integration TestMain: dolt setup: %v\n", err)
-		os.Exit(1)
+	if testutil.IntegrationDoltEnabled() {
+		// Start an ephemeral Dolt SQL server for this package's integration tests.
+		// Tests like TestAgentWorktreesStayClean and TestBeadsRoutingFromTownRoot
+		// spawn gt/bd subprocesses that create databases (e.g., "tr", "hq").
+		// Routing those to GT_DOLT_PORT keeps them off the developer's town Dolt.
+		if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
+			fmt.Fprintf(os.Stderr, "integration TestMain: dolt setup: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
-	code := m.Run()
-
-	testutil.TerminateDoltContainer()
-	os.Exit(code)
+	testutil.RunTestMain(m, testutil.TerminateDoltContainer)
 }

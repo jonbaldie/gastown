@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,13 +51,16 @@ func TestStopServeStopsOnlyThisTown(t *testing.T) {
 	otherCmd := startWorkerStandIn(t, otherTown)
 	thisPID := thisCmd.Process.Pid
 	otherPID := otherCmd.Process.Pid
+	thisChildPID := workerChildPID(t, thisTown)
 
 	waitUntil(t, func() bool {
 		return containsPID(FindServePIDs(thisTown), thisPID) &&
 			containsPID(FindServePIDs(otherTown), otherPID)
 	})
 
-	if stopped := StopServe(thisTown); stopped == 0 {
+	if stopped, err := StopServeAndWait(thisTown); err != nil {
+		t.Fatalf("StopServeAndWait: %v", err)
+	} else if stopped == 0 {
 		t.Fatal("StopServe stopped 0 processes for this town")
 	}
 	done := make(chan struct{})
@@ -68,6 +72,9 @@ func TestStopServeStopsOnlyThisTown(t *testing.T) {
 	if leftover := FindServePIDs(thisTown); len(leftover) > 0 {
 		t.Fatalf("this town worker still detected after StopServe: %v", leftover)
 	}
+	if process.Alive(thisChildPID) {
+		t.Fatalf("StopServe left worker descendant PID %d alive", thisChildPID)
+	}
 	if !process.Alive(otherPID) {
 		t.Fatalf("other town worker PID %d was killed", otherPID)
 	}
@@ -76,11 +83,41 @@ func TestStopServeStopsOnlyThisTown(t *testing.T) {
 func startWorkerStandIn(t *testing.T, townRoot string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(buildTinyGTStandIn(t), "worker", "serve", "--town", townRoot)
+	childPIDFile := filepath.Join(townRoot, "worker-child.pid")
+	cmd.Env = append(os.Environ(), "GT_WORKER_STANDIN_CHILD_PID="+childPIDFile)
+	cmd.SysProcAttr = serveSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start worker stand-in: %v", err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	t.Cleanup(func() {
+		_, _ = StopServeAndWait(townRoot)
+		_ = cmd.Process.Kill()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	})
 	return cmd
+}
+
+func workerChildPID(t *testing.T, townRoot string) int {
+	t.Helper()
+	path := filepath.Join(townRoot, "worker-child.pid")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			var pid int
+			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for worker child PID in %s", path)
+	return 0
 }
 
 var cachedTinyGT string
@@ -94,7 +131,22 @@ func buildTinyGTStandIn(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")
-	if err := os.WriteFile(src, []byte("package main\nimport \"time\"\nfunc main() { for { time.Sleep(time.Second) } }\n"), 0o644); err != nil {
+	const standIn = `package main
+import (
+ "fmt"
+ "os"
+ "os/exec"
+ "time"
+)
+func main() {
+ if len(os.Args) > 1 && os.Args[1] == "--worker-child" { for { time.Sleep(time.Second) } }
+ child := exec.Command(os.Args[0], "--worker-child")
+ if err := child.Start(); err != nil { panic(err) }
+ if path := os.Getenv("GT_WORKER_STANDIN_CHILD_PID"); path != "" { _ = os.WriteFile(path, []byte(fmt.Sprintf("%d\\n", child.Process.Pid)), 0644) }
+ for { time.Sleep(time.Second) }
+}
+`
+	if err := os.WriteFile(src, []byte(standIn), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "gt")

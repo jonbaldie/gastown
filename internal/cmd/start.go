@@ -538,7 +538,9 @@ func runShutdown(cmd *cobra.Command, args []string) error {
 			if !shutdownPolecatsOnly {
 				fmt.Println()
 				fmt.Println("Stopping town Dolt and worker serve...")
-				stopTownDoltAndWorker(townRoot)
+				if err := stopTownDoltAndWorker(townRoot); err != nil {
+					return fmt.Errorf("town infrastructure did not stop; refusing cleanup: %w", err)
+				}
 			}
 		}
 
@@ -686,9 +688,10 @@ func runGracefulShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) err
 	}
 
 	// Phase 8: Stop this town's Dolt SQL server and worker serve process.
+	var infraErr error
 	if townRoot != "" && !shutdownPolecatsOnly {
 		fmt.Printf("\nPhase 8: Stopping town Dolt and worker serve...\n")
-		stopTownDoltAndWorker(townRoot)
+		infraErr = stopTownDoltAndWorker(townRoot)
 	}
 
 	// Phase 9: Verify no Claude processes survived
@@ -700,6 +703,9 @@ func runGracefulShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) err
 	}
 
 	fmt.Println()
+	if infraErr != nil {
+		return fmt.Errorf("town infrastructure did not stop; refusing cleanup: %w", infraErr)
+	}
 	fmt.Printf("%s Graceful shutdown complete (%d sessions stopped)\n", style.Bold.Render("✓"), stopped)
 	return nil
 }
@@ -739,10 +745,11 @@ func runImmediateShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) er
 	}
 
 	// Stop this town's Dolt SQL server and worker serve process.
+	var infraErr error
 	if townRoot != "" && !shutdownPolecatsOnly {
 		fmt.Println()
 		fmt.Println("Stopping town Dolt and worker serve...")
-		stopTownDoltAndWorker(townRoot)
+		infraErr = stopTownDoltAndWorker(townRoot)
 	}
 
 	// Verify no Claude processes survived
@@ -755,6 +762,9 @@ func runImmediateShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) er
 	}
 
 	fmt.Println()
+	if infraErr != nil {
+		return fmt.Errorf("town infrastructure did not stop; refusing cleanup: %w", infraErr)
+	}
 	fmt.Printf("%s Gas Town shutdown complete (%d sessions stopped)\n", style.Bold.Render("✓"), stopped)
 
 	return nil

@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1067,10 +1068,20 @@ func nowSocket(name string) string {
 // townRoot, so a production daemon is never touched.
 func stopNowDaemonOnCleanup(t *testing.T, townRoot string) {
 	t.Helper()
+	var once sync.Once
+	var cleanupErr error
+	cleanup := func() {
+		once.Do(func() {
+			waitNowProvisionExit(townRoot)
+			cleanupErr = daemon.StopDaemon(townRoot)
+		})
+	}
+	unregister := testutil.RegisterProcessCleanup(cleanup)
 	t.Cleanup(func() {
-		waitNowProvisionExit(t, townRoot)
-		if err := daemon.StopDaemon(townRoot); err != nil {
-			t.Logf("town daemon cleanup skipped: %v", err)
+		cleanup()
+		unregister()
+		if cleanupErr != nil {
+			t.Logf("town daemon cleanup skipped: %v", cleanupErr)
 		}
 	})
 }
@@ -1080,16 +1091,12 @@ func stopNowDaemonOnCleanup(t *testing.T, townRoot string) {
 // town after the test body returns; t.TempDir removal then races it and fails
 // with "directory not empty". Only processes naming this town are matched, so a
 // production provision is never touched.
-func waitNowProvisionExit(t *testing.T, townRoot string) {
-	t.Helper()
+func waitNowProvisionExit(townRoot string) {
 	start := time.Now()
 	deadline := start.Add(30 * time.Second)
 	for {
-		pids := nowProvisionPIDs(t, townRoot)
+		pids := nowProvisionPIDs(townRoot)
 		if len(pids) == 0 {
-			if waited := time.Since(start); waited > 5*time.Second {
-				t.Logf("waited %s for deferred provision to finish", waited)
-			}
 			return
 		}
 		if time.Now().After(deadline) {
@@ -1100,15 +1107,13 @@ func waitNowProvisionExit(t *testing.T, townRoot string) {
 				}
 				_ = proc.Kill()
 			}
-			t.Logf("killed %d deferred provision process(es) still writing to %s", len(pids), townRoot)
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-func nowProvisionPIDs(t *testing.T, townRoot string) []int {
-	t.Helper()
+func nowProvisionPIDs(townRoot string) []int {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
@@ -1137,6 +1142,7 @@ func nowProvisionPIDs(t *testing.T, townRoot string) []int {
 
 func nowTestEnv(t *testing.T, home, bin, socket string, isolated bool) []string {
 	t.Helper()
+	registerNowTmuxCleanup(t, socket)
 	writeNowHomeGitConfig(t, home)
 	path := bin
 	if isolated {
@@ -1424,6 +1430,21 @@ func doltPortFromNowOutput(t *testing.T, out string) int {
 
 func killNowTmux(t *testing.T, socket string) {
 	t.Helper()
+	killNowTmuxQuiet(socket)
+}
+
+func registerNowTmuxCleanup(t *testing.T, socket string) {
+	t.Helper()
+	var once sync.Once
+	cleanup := func() { once.Do(func() { killNowTmuxQuiet(socket) }) }
+	unregister := testutil.RegisterProcessCleanup(cleanup)
+	t.Cleanup(func() {
+		cleanup()
+		unregister()
+	})
+}
+
+func killNowTmuxQuiet(socket string) {
 	cmd := exec.Command("tmux", "-L", socket, "kill-server")
 	_ = cmd.Run()
 }

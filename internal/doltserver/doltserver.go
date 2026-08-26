@@ -54,6 +54,7 @@ import (
 	"github.com/jonbaldie/gastown/internal/beads"
 	configpkg "github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/constants"
+	"github.com/jonbaldie/gastown/internal/process"
 	"github.com/jonbaldie/gastown/internal/style"
 )
 
@@ -2150,11 +2151,6 @@ func Stop(townRoot string) error {
 		return fmt.Errorf("Dolt server is not running")
 	}
 
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("finding process: %w", err)
-	}
-
 	// Drain active connections before stopping to reduce the nbs_manifest
 	// race window inside Dolt's NomsBlockStore.Close(). Non-fatal: proceeds even
 	// if drain times out (10s max). Skipped for remote servers (no local PID).
@@ -2163,25 +2159,30 @@ func Stop(townRoot string) error {
 	}
 
 	// Send termination signal for graceful shutdown (SIGTERM on Unix, Kill on Windows)
-	if err := gracefulTerminate(process); err != nil {
-		return fmt.Errorf("sending termination signal: %w", err)
+	owned := ownedDoltProcessTree(pid)
+	if err := terminateDoltGroup(pid); err != nil && !process.Exited(pid) {
+		return fmt.Errorf("terminating Dolt process group: %w", err)
 	}
-
-	// Wait for graceful shutdown (dolt needs more time)
-	for i := 0; i < 10; i++ {
-		time.Sleep(500 * time.Millisecond)
-		if !processIsAlive(pid) {
-			break
+	for _, child := range owned[1:] {
+		if childProcess, err := os.FindProcess(child); err == nil {
+			_ = gracefulTerminate(childProcess)
 		}
 	}
 
-	// Check if still running
-	if processIsAlive(pid) {
-		// Still running, force kill
-		_ = process.Kill()
-		time.Sleep(100 * time.Millisecond)
+	if !waitForDoltPIDsToExit(owned, 5*time.Second) {
+		_ = killDoltGroup(pid)
+		for _, child := range owned[1:] {
+			if childProcess, err := os.FindProcess(child); err == nil {
+				_ = childProcess.Kill()
+			}
+		}
+		if !waitForDoltPIDsToExit(owned, 500*time.Millisecond) {
+			return fmt.Errorf("Dolt process tree did not exit: %v", liveDoltPIDs(owned))
+		}
 	}
 
+	// A successful wait is the teardown boundary: only now may callers remove
+	// Town files or clear the state that identifies the server.
 	// Clean up PID file
 	_ = os.Remove(config.PidFile)
 
@@ -2195,6 +2196,38 @@ func Stop(townRoot string) error {
 	_ = SaveState(townRoot, state)
 
 	return nil
+}
+
+func ownedDoltProcessTree(pid int) []int {
+	pids := []int{pid}
+	table, err := process.Capture()
+	if err == nil {
+		pids = append(pids, table.Descendants(pid)...)
+	}
+	return pids
+}
+
+func waitForDoltPIDsToExit(pids []int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if len(liveDoltPIDs(pids)) == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func liveDoltPIDs(pids []int) []int {
+	var live []int
+	for _, pid := range pids {
+		if !process.Exited(pid) {
+			live = append(live, pid)
+		}
+	}
+	return live
 }
 
 // GetConnectionString returns the MySQL connection string for the server.

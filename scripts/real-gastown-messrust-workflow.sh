@@ -10,13 +10,14 @@ cleanup() {
   # Do not invoke gt until this Town exists: a failed install could otherwise
   # resolve and shut down the caller's Town.
   if [ "$town_installed" = true ]; then
-    (cd "$town_root" && gt shutdown --yes --all >/dev/null 2>&1) || true
+    # A Town is removable only after gt shutdown has stopped and waited for
+    # every Town-owned process group. Leaving the directory behind is safer
+    # than orphaning a worker or Dolt process in a deleted working directory.
+    if ! (cd "$town_root" && gt shutdown --yes --all); then
+      printf 'Gas Town teardown failed; preserving %s for recovery. Run gt shutdown there before deleting it.\n' "$town_root" >&2
+      return 1
+    fi
   fi
-  # Some failed shutdowns lose the Dolt PID. Kill only a server using this
-  # disposable Town's own config file; never touch a server from another Town.
-  while read -r dolt_pid; do
-    [ -z "$dolt_pid" ] || kill -TERM "$dolt_pid" >/dev/null 2>&1 || true
-  done < <(ps -ax -o pid= -o command= | awk -v config="$town_root/.dolt-data/config.yaml" 'index($0, config) { print $1 }')
   rm -rf "$town_root"
 }
 trap cleanup EXIT INT TERM
