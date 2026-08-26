@@ -129,6 +129,34 @@ func TestResolverValidateAgentAddressDogGuards(t *testing.T) {
 	}
 }
 
+func TestResolverValidateAgentAddressRejectsInvalidRigPaths(t *testing.T) {
+	townRoot := t.TempDir()
+	for _, path := range []string{
+		filepath.Join(townRoot, "gastown", "crew", "alice"),
+		filepath.Join(townRoot, "gastown", "witness"),
+	} {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatalf("creating workspace %s: %v", path, err)
+		}
+	}
+
+	resolver := NewResolver(nil, townRoot)
+	for _, address := range []string{
+		"gastown/crew/..",
+		"gastown/crew/.",
+		"gastown/polecats/..",
+		"../polecats/..",
+		"nosuch/witness",
+		"nosuch/refinery",
+	} {
+		t.Run(address, func(t *testing.T) {
+			if err := resolver.validateAgentAddress(address); err == nil {
+				t.Fatalf("validateAgentAddress(%q) succeeded, want error", address)
+			}
+		})
+	}
+}
+
 func TestResolverResolve_DirectAddresses(t *testing.T) {
 	resolver := NewResolver(nil, "")
 

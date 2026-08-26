@@ -50,6 +50,11 @@ func ParseAddress(address string) (*AgentIdentity, error) {
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid address %q", address)
 	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.Contains(part, `\`) {
+			return nil, fmt.Errorf("invalid address %q", address)
+		}
+	}
 
 	rig := parts[0]
 	prefix := PrefixFor(rig)
@@ -92,6 +97,7 @@ func ParseAddress(address string) (*AgentIdentity, error) {
 //   - <prefix>-witness → Role: witness (e.g., gt-witness for gastown)
 //   - <prefix>-refinery → Role: refinery (e.g., gt-refinery for gastown)
 //   - <prefix>-crew-<name> → Role: crew (e.g., gt-crew-max for gastown)
+//   - <prefix>-polecat_crew-<name> → Role: polecat named crew-<name>
 //   - <prefix>-<name> → Role: polecat (e.g., gt-furiosa for gastown)
 //
 // The prefix is the rig's beads prefix (e.g., "gt" for gastown, "dolt" for beads).
@@ -154,6 +160,13 @@ func ParseSessionNameWithRegistry(session string, registry *PrefixRegistry) (*Ag
 	// Check for refinery (suffix marker)
 	if rest == string(RoleRefinery) {
 		return &AgentIdentity{Role: RoleRefinery, Rig: rig, Prefix: prefix}, nil
+	}
+
+	// Polecat names beginning with "crew-" use an explicit marker to avoid
+	// colliding with Crew session names.
+	if strings.HasPrefix(rest, "polecat_crew-") {
+		name := strings.TrimPrefix(rest, "polecat_")
+		return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, nil
 	}
 
 	// Check for crew (marker in rest)

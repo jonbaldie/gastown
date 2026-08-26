@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/jonbaldie/gastown/internal/beads"
@@ -34,7 +36,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 
 	// Extract identity from client cert CN (format: gt-<rig>-<name>).
-	identity := extractIdentity(r)
+	identity := extractIdentity(r, s.cfg.TownRoot)
 
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -146,14 +148,69 @@ func subForLog(argv []string) string {
 	return s
 }
 
-// extractIdentity parses the client cert CN "gt-<rig>-<name>" into "<rig>/<name>".
-// Uses LastIndex to correctly handle hyphenated rig names (e.g. "gas-town").
-func extractIdentity(r *http.Request) string {
+// extractIdentity parses the client cert CN "gt-<rig>-<name>" into "<rig>/<name>"
+// using the Town's Rig directories to disambiguate hyphenated components.
+func extractIdentity(r *http.Request, townRoot string) string {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return ""
 	}
 	cn := r.TLS.PeerCertificates[0].Subject.CommonName
-	return cnToIdentity(cn)
+	return cnToIdentityInTown(cn, townRoot)
+}
+
+// polecatNameForRig extracts a polecat name when the rig is already known.
+// Supplying the boundary avoids the ambiguity of hyphens in both components.
+func polecatNameForRig(cn, rig string) string {
+	if rig == "" {
+		return ""
+	}
+	prefix := "gt-" + rig + "-"
+	if !strings.HasPrefix(cn, prefix) {
+		return ""
+	}
+	return strings.TrimPrefix(cn, prefix)
+}
+
+// cnToIdentityInTown resolves the rig/name boundary against the Town's live
+// rig directories. If more than one rig prefix matches, an existing Polecat
+// workspace wins, followed by the longest rig name for legacy certificates.
+func cnToIdentityInTown(cn, townRoot string) string {
+	if townRoot == "" {
+		return cnToIdentity(cn)
+	}
+	entries, err := os.ReadDir(townRoot)
+	if err != nil {
+		return cnToIdentity(cn)
+	}
+
+	type candidate struct {
+		rig  string
+		name string
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := polecatNameForRig(cn, entry.Name())
+		if name == "" {
+			continue
+		}
+		if info, statErr := os.Stat(filepath.Join(townRoot, entry.Name(), "polecats", name)); statErr == nil && info.IsDir() {
+			return entry.Name() + "/" + name
+		}
+		candidates = append(candidates, candidate{rig: entry.Name(), name: name})
+	}
+	if len(candidates) == 0 {
+		return cnToIdentity(cn)
+	}
+	best := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if len(candidate.rig) > len(best.rig) {
+			best = candidate
+		}
+	}
+	return best.rig + "/" + best.name
 }
 
 // polecatName extracts the polecat name from a CN of the form "gt-<rig>-<name>".

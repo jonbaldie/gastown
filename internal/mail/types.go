@@ -588,6 +588,21 @@ func normalizeAddress(s string) string {
 	return s
 }
 
+// hasUnsafeAddressSegment reports whether an agent address could escape or
+// alias a workspace when its segments are joined as a filesystem path.
+func hasUnsafeAddressSegment(address string) bool {
+	address = strings.TrimSuffix(address, "/")
+	if address == "" {
+		return true
+	}
+	for _, segment := range strings.Split(address, "/") {
+		if segment == "" || segment == "." || segment == ".." || strings.Contains(segment, `\`) {
+			return true
+		}
+	}
+	return false
+}
+
 // AddressToIdentity converts a GGT address to a beads identity.
 //
 // Addresses use slash format:

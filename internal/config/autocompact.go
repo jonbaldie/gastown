@@ -48,6 +48,10 @@ func ParseTokenCount(s string) (int, bool) {
 	if err != nil || n <= 0 {
 		return 0, false
 	}
+	maxInt := int(^uint(0) >> 1)
+	if n > maxInt/multiplier {
+		return 0, false
+	}
 	return n * multiplier, true
 }
 

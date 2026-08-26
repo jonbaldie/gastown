@@ -1614,6 +1614,10 @@ func TestValidateRecipientFilesystemFallback(t *testing.T) {
 		// Non-existent agent should fail
 		{"nonexistent", "pata/nobody", true},
 		{"wrong rig", "notarig/bob", true},
+		{"unknown rig witness", "notarig/witness", true},
+		{"unknown rig refinery", "notarig/refinery", true},
+		{"crew parent", "pata/crew/..", true},
+		{"crew self", "pata/crew/.", true},
 	}
 
 	for _, tt := range tests {

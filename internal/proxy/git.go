@@ -30,7 +30,8 @@
 //   - The repository must exist; handlers return 404 before writing any
 //     response body if repoPath is missing (avoids corrupt partial responses).
 //   - git-receive-pack requires a valid mTLS client cert.  The cert CN
-//     (format: "gt-<rig>-<name>") is parsed to extract the polecat name.
+//     (format: "gt-<rig>-<name>") must name the Rig in the request URL and
+//     is parsed to extract the polecat name.
 //     Every pushed ref must match refs/heads/polecat/<name>-*; any other
 //     ref is rejected with 403 before git ever sees the request body.
 //   - git-upload-pack is unrestricted for any authenticated client (read-only).
@@ -136,7 +137,7 @@ func (s *Server) handleInfoRefs(w http.ResponseWriter, r *http.Request, repoPath
 		return
 	}
 
-	identity := cnToIdentity(clientCN(r))
+	identity := cnToIdentityInTown(clientCN(r), s.cfg.TownRoot)
 	op := "fetch"
 	if service == "git-receive-pack" {
 		op = "push"
@@ -170,13 +171,13 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 		return
 	}
 
-	identity := cnToIdentity(clientCN)
+	identity := cnToIdentityInTown(clientCN, s.cfg.TownRoot)
 
 	// For receive-pack: enforce CN-scoped branch authorization.
 	var refs []string
 	if service == "git-receive-pack" {
 		var ok bool
-		ok, refs = s.authorizeReceivePack(w, r, clientCN)
+		ok, refs = s.authorizeReceivePack(w, r, clientCN, rig)
 		if !ok {
 			s.log.Warn("git push denied", "identity", identity, "rig", rig, "refs", refs)
 			return
@@ -208,11 +209,10 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request, repoPath, se
 // It reads the pkt-line stream to extract ref names, then rewinds the body.
 // It returns (true, refs) on success, or (false, refs) on failure; refs may be
 // non-nil on failure when the body was read but contained a disallowed ref.
-func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, clientCN string) (bool, []string) {
-	// Issue 8: Use the shared polecatName helper instead of reimplementing CN parsing.
-	cnName := polecatName(clientCN)
+func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, clientCN, rig string) (bool, []string) {
+	cnName := polecatNameForRig(clientCN, rig)
 	if cnName == "" {
-		http.Error(w, "cannot determine polecat name from cert CN", http.StatusForbidden)
+		http.Error(w, "certificate identity does not match requested rig", http.StatusForbidden)
 		return false, nil
 	}
 

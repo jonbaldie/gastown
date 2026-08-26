@@ -74,9 +74,9 @@ func TestParseTokenCount(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		in      string
-		want    int
-		wantOK  bool
+		in     string
+		want   int
+		wantOK bool
 	}{
 		{in: "150000", want: 150_000, wantOK: true},
 		{in: "150k", want: 150_000, wantOK: true},
@@ -87,6 +87,7 @@ func TestParseTokenCount(t *testing.T) {
 		{in: "-1", wantOK: false},
 		{in: "tokens", wantOK: false},
 		{in: "", wantOK: false},
+		{in: "9223372036854776k", wantOK: false},
 	}
 
 	for _, tt := range tests {

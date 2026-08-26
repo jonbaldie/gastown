@@ -172,6 +172,22 @@ func TestParseSessionName(t *testing.T) {
 			wantPrefix: "gt",
 		},
 		{
+			name:       "polecat whose name starts with crew marker",
+			session:    "gt-polecat_crew-max",
+			wantRole:   RolePolecat,
+			wantRig:    "gastown",
+			wantName:   "crew-max",
+			wantPrefix: "gt",
+		},
+		{
+			name:       "legacy polecat name resembling escape marker",
+			session:    "gt-polecat-crew-max",
+			wantRole:   RolePolecat,
+			wantRig:    "gastown",
+			wantName:   "polecat-crew-max",
+			wantPrefix: "gt",
+		},
+		{
 			name:       "polecat beads",
 			session:    "bd-worker1",
 			wantRole:   RolePolecat,
@@ -287,6 +303,11 @@ func TestAgentIdentity_SessionName(t *testing.T) {
 			want:     "gt-morsov",
 		},
 		{
+			name:     "polecat whose name starts with crew marker",
+			identity: AgentIdentity{Role: RolePolecat, Rig: "gastown", Name: "crew-max", Prefix: "gt"},
+			want:     "gt-polecat_crew-max",
+		},
+		{
 			name:     "polecat hop",
 			identity: AgentIdentity{Role: RolePolecat, Rig: "hop", Name: "ostrom", Prefix: "hop"},
 			want:     "hop-ostrom",
@@ -374,6 +395,8 @@ func TestParseSessionName_RoundTrip(t *testing.T) {
 		"bd-refinery",
 		"gt-crew-max",
 		"gt-morsov",
+		"gt-polecat_crew-max",
+		"gt-polecat-crew-max",
 		"hop-ostrom",
 		"sky-furiosa",
 		"hq-witness",
@@ -440,6 +463,26 @@ func TestParseAddress(t *testing.T) {
 		{
 			name:    "invalid",
 			address: "gastown/crew",
+			wantErr: true,
+		},
+		{
+			name:    "dot rig",
+			address: "./witness",
+			wantErr: true,
+		},
+		{
+			name:    "dotdot rig",
+			address: "../witness",
+			wantErr: true,
+		},
+		{
+			name:    "dot crew name",
+			address: "gastown/crew/.",
+			wantErr: true,
+		},
+		{
+			name:    "dotdot polecat name",
+			address: "gastown/polecats/..",
 			wantErr: true,
 		},
 	}

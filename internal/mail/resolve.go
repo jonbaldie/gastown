@@ -136,6 +136,9 @@ func (r *Resolver) validateAgentAddress(address string) error {
 	if r.beads == nil && r.townRoot == "" {
 		return nil
 	}
+	if hasUnsafeAddressSegment(address) {
+		return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
+	}
 
 	normalized := normalizeAddress(strings.TrimSuffix(address, "/"))
 
@@ -156,11 +159,15 @@ func (r *Resolver) validateAgentAddress(address string) error {
 		return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
 	}
 
-	// Well-known rig-level singletons (rig/witness, rig/refinery)
+	// Well-known rig-level singletons (rig/witness, rig/refinery) are valid
+	// even when the role is not running, but only for an existing rig.
 	if len(parts) == 2 {
 		switch parts[1] {
 		case constants.RoleWitness, constants.RoleRefinery:
-			return nil
+			if r.townRoot == "" || dirExistsAt(filepath.Join(r.townRoot, parts[0])) {
+				return nil
+			}
+			return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
 		}
 	}
 
