@@ -321,7 +321,10 @@ func GetRigDirForName(townRoot, rigName string) string {
 		parts := strings.SplitN(r.Path, "/", 2)
 		if len(parts) > 0 && parts[0] == rigName {
 			rigDir := filepath.Join(townRoot, r.Path)
-			if !pathWithin(townRoot, rigDir) {
+			// A route describes the intended rig location, so it may be queried
+			// before the rig directory exists. Resolve the existing ancestor to
+			// reject symlink escapes without requiring the final path to exist.
+			if !pathWithinExistingAncestor(townRoot, rigDir) {
 				continue
 			}
 			return rigDir
@@ -467,6 +470,48 @@ func pathWithin(root, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+func pathLexicallyWithin(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+// pathWithinExistingAncestor verifies a potentially not-yet-created path lies
+// within root. It resolves each existing ancestor so a route cannot escape
+// through a symlink while still allowing a future rig directory.
+func pathWithinExistingAncestor(root, path string) bool {
+	if !pathLexicallyWithin(root, path) {
+		return false
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+
+	candidate := filepath.Clean(path)
+	var missing []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return pathLexicallyWithin(resolvedRoot, resolved)
+		}
+
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return false
+		}
+		missing = append(missing, filepath.Base(candidate))
+		candidate = parent
+	}
 }
 
 // GetRigNameForPrefix returns the rig name that owns a given bead prefix.

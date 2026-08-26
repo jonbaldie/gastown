@@ -5,8 +5,13 @@ set -euo pipefail
 
 repo_url="${1:-https://github.com/quality-gates/messrust.git}"
 town_root="$(mktemp -d "${TMPDIR:-/tmp}/gastown-messrust.XXXXXX")"
+town_installed=false
 cleanup() {
-  gt shutdown --yes --all >/dev/null 2>&1 || true
+  # Do not invoke gt until this Town exists: a failed install could otherwise
+  # resolve and shut down the caller's Town.
+  if [ "$town_installed" = true ]; then
+    (cd "$town_root" && gt shutdown --yes --all >/dev/null 2>&1) || true
+  fi
   # Some failed shutdowns lose the Dolt PID. Kill only a server using this
   # disposable Town's own config file; never touch a server from another Town.
   while read -r dolt_pid; do
@@ -17,6 +22,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 gt install "$town_root" --name "messrust-demo"
+town_installed=true
 cd "$town_root"
 
 # Pin both the model and reasoning effort in the actual Codex invocation.

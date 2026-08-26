@@ -183,7 +183,7 @@ func deliverNudge(t *tmux.Tmux, sessionName, message, sender string) error {
 	if townRoot != "" && !hasACPSessionByName(townRoot, sessionName) {
 		if err := deliverNudgeViaWorker(townRoot, sessionName, sender, message); err == nil {
 			return nil
-		} else if !errors.Is(err, worker.ErrServerDown) {
+		} else if !shouldFallBackFromWorkerNudge(err) {
 			return err
 		}
 	}
@@ -208,6 +208,18 @@ func deliverNudge(t *tmux.Tmux, sessionName, message, sender string) error {
 	default: // NudgeModeImmediate
 		return deliverNudgeImmediate(t, townRoot, sessionName, sender, message)
 	}
+}
+
+// shouldFallBackFromWorkerNudge preserves delivery to live legacy tmux
+// sessions when Worker has no current lifecycle record for that session.
+func shouldFallBackFromWorkerNudge(err error) bool {
+	if errors.Is(err, worker.ErrServerDown) || errors.Is(err, worker.ErrUnknownState) {
+		return true
+	}
+
+	// Worker errors cross a Unix socket as strings, so ErrUnknownState loses
+	// its wrapping before it reaches this client.
+	return err != nil && strings.HasPrefix(err.Error(), worker.ErrUnknownState.Error()+":")
 }
 
 func deliverNudgeViaWorker(townRoot, sessionName, sender, message string) error {

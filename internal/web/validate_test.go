@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -419,11 +420,17 @@ func TestHandler_PRShow_URLIgnoresRepoNumber(t *testing.T) {
 
 func TestSetupHandler_Install_FlagPathInjection(t *testing.T) {
 	handler := NewSetupAPIHandler("test-token")
+	binDir := t.TempDir()
+	argsPath := filepath.Join(binDir, "gt.args")
+	gtPath := filepath.Join(binDir, "gt")
+	if err := os.WriteFile(gtPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GT_TEST_ARGS\"\nexit 23\n"), 0o755); err != nil {
+		t.Fatalf("write fake gt: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("GT_TEST_ARGS", argsPath)
 
-	// Validates the validation layer: "--help" passes expandHomePath (it's a
-	// relative path) and reaches gt install. The -- sentinel in the args
-	// ensures gt install sees it as a path, not a flag — but that's verified
-	// by the args construction, not by this HTTP-level test.
+	// "--help" is a relative path, so it reaches gt install. The -- sentinel
+	// makes it a positional argument rather than an install flag.
 	body := `{"path": "--help"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/install", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -431,10 +438,15 @@ func TestSetupHandler_Install_FlagPathInjection(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// Should get past validation to gt execution (not 400).
-	// The -- sentinel ensures gt install sees "--help" as a path, not a flag.
 	if w.Code == http.StatusBadRequest {
 		t.Errorf("POST /api/install with path=--help rejected as bad request (-- sentinel should protect)")
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read recorded gt args: %v", err)
+	}
+	if got, want := string(args), "install\n--\n--help\n"; got != want {
+		t.Errorf("gt arguments = %q, want %q", got, want)
 	}
 }
 

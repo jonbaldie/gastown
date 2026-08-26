@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -425,6 +426,51 @@ func TestGetRigDirForName_TownLevelNotReturned(t *testing.T) {
 	result := GetRigDirForName(tmpDir, "hq")
 	if result != "" {
 		t.Errorf("GetRigDirForName for town-level path = %q, want empty string", result)
+	}
+}
+
+func TestGetRigDirForNameRejectsRouteOutsideTown(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(`{"prefix":"es-","path":"../escape"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := GetRigDirForName(tmpDir, ".."); got != "" {
+		t.Errorf("GetRigDirForName escaped town root: got %q", got)
+	}
+}
+
+func TestGetRigDirForNameRejectsRouteThroughSymlinkOutsideTown(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink test is POSIX-only")
+	}
+
+	townRoot := t.TempDir()
+	beadsDir := filepath.Join(townRoot, ".beads")
+	if err := os.MkdirAll(filepath.Join(townRoot, "rig", "link"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	link := filepath.Join(townRoot, "rig", "link")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(`{"prefix":"rg-","path":"rig/link/future"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := GetRigDirForName(townRoot, "rig"); got != "" {
+		t.Errorf("GetRigDirForName followed route symlink outside Town: got %q", got)
 	}
 }
 

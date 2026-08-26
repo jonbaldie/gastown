@@ -27,6 +27,11 @@ A comprehensive catalog of all cleanup-related commands in the gastown/beads eco
 | `gt polecat identity remove <rig> <name>` | Removes a polecat identity |
 | `gt done` | Polecat self-cleaning: pushes branch, submits MR/PR path as configured, preserves handoff metadata, kills own session. MR skipped for `--status ESCALATED\|DEFERRED` or `no_merge` paths |
 
+When a polecat's hooked task explicitly requires local-only delivery (for
+example, `merge_strategy: local` or “do not push”), `gt polecat nuke` never
+publishes its branch as part of cleanup. Nuke remains destructive: it removes
+the local worktree and branch after its normal safety checks.
+
 ## Git Artifact Cleanup
 
 | Command | What it does |
