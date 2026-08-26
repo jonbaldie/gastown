@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Harden mail and session identity parsing.** Agent addresses now reject
+  traversal-like path segments, and rig-scoped singleton recipients must name
+  an existing rig. Hyphenated Polecat identities round-trip through session and
+  proxy certificate parsing without colliding with crew sessions.
+- **Bind Git push authorization to the URL rig.** A proxy certificate issued
+  for one rig can no longer authorize a push to another rig.
+- **Reject overflowing token-count settings.** Oversized `k`/`m` values now
+  fail validation instead of wrapping to a negative count.
+
 ## [1.3.3] - 2026-08-21
 
 ## [1.3.2] - 2026-08-20

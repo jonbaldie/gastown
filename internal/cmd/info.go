@@ -75,6 +75,16 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.3.4",
+		Date:    "2026-08-26",
+		Changes: []string{
+			"FIX: Mail and session identities reject traversal-like address segments and nonexistent rig singletons.",
+			"FIX: Hyphenated Polecat names round-trip through session and proxy certificate identity parsing without crew-session collisions.",
+			"FIX: Git push authorization binds the client certificate identity to the URL rig.",
+			"FIX: Overflowing token-count settings fail validation instead of wrapping negative.",
+		},
+	},
+	{
 		Version: "1.2.1",
 		Date:    "2026-06-06",
 		Changes: []string{
