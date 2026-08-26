@@ -192,33 +192,47 @@ jobs:
         id: changes
         run: |
           merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
-          if git diff --name-only --diff-filter=ACMRD "$merge_base" HEAD -- \
-            '*.go' ':(exclude)*_test.go' | grep -q .; then
-            echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
-          else
+          list="$RUNNER_TEMP/mutago-files.txt"
+          # ACMR only: deleted files are gone and cannot be mutated.
+          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
+            '*.go' ':(exclude)*_test.go' > "$list"
+          if [ ! -s "$list" ]; then
             echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
             echo 'No production Go code changed; skipping mutago.'
+            exit 0
           fi
+          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
+          echo "file_list=$list" >> "$GITHUB_OUTPUT"
+          echo 'Changed production Go files:'
+          cat "$list"
 
       - name: Install mutago
         if: steps.changes.outputs.has_production_go == 'true'
         run: go install "github.com/quality-gates/mutago/v2/cmd/mutago@$MUTAGO_VERSION"
 
+      # Pass the changed files, not ./... --git-diff-lines only skips mutant
+      # execution; coverage still walks every target package. --per-test is
+      # worse here: it launches one go test process per Test* (1500+ in
+      # internal/cmd). Timeout is a multiple of the touched-package baseline
+      # so cmd's short suite is not killed at the 10s default.
       - name: Run mutation tests
         if: steps.changes.outputs.has_production_go == 'true'
-        run: >-
-          mutago
-          --coverage
-          --per-test
-          --test-flags=-short
-          --git-diff-lines
-          --git-diff-base "origin/${BASE_REF}"
-          --ignore-msi-with-no-mutations
-          --min-covered-msi 80
-          --logger-github
-          --quiet
-          --no-diffs
-          ./...
+        env:
+          MUTAGO_FILE_LIST: ${{ steps.changes.outputs.file_list }}
+        run: |
+          mapfile -t files < "$MUTAGO_FILE_LIST"
+          mutago \
+            --coverage \
+            --test-flags=-short \
+            --git-diff-lines \
+            --git-diff-base "origin/${BASE_REF}" \
+            --timeout-coefficient 3 \
+            --ignore-msi-with-no-mutations \
+            --min-covered-msi 80 \
+            --logger-github \
+            --quiet \
+            --no-diffs \
+            "${files[@]}"
 
   integration-shard:
     name: Integration Tests / ${{ matrix.name }}
