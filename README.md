@@ -180,8 +180,9 @@ The longer `gt install` path still creates a dedicated HQ with shell integration
 ```bash
 git config --global user.name "Your Name"
 git config --global user.email "you@example.com"
-gt install ~/gt --shell --git
-cd ~/gt
+export GT_TOWN_ROOT="${GT_TOWN_ROOT:-$HOME/gt}"
+gt install "$GT_TOWN_ROOT" --shell --git
+cd "$GT_TOWN_ROOT"
 gt up
 gt doctor --fix
 ```
@@ -265,8 +266,9 @@ Run
 ```shell
 git config --global user.name "Your Name" &&
 git config --global user.email "you@example.com" &&
-gt install ~/gt --shell --git &&
-cd ~/gt &&
+export GT_TOWN_ROOT="${GT_TOWN_ROOT:-$HOME/gt}" &&
+gt install "$GT_TOWN_ROOT" --shell --git &&
+cd "$GT_TOWN_ROOT" &&
 gt up &&
 gt doctor --fix &&
 gt config agent list &&

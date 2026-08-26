@@ -21,7 +21,8 @@ authentication and model settings from `~/.pi/agent/`.
 The built-in `pi` profile uses Pi's currently selected model:
 
 ```bash
-cd ~/gt
+export GT_TOWN_ROOT="${GT_TOWN_ROOT:-$HOME/gt}"
+cd "$GT_TOWN_ROOT"
 gt config default-agent pi
 ```
 

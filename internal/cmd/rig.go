@@ -86,7 +86,8 @@ Example:
   gt rig add existing_rig --adopt
   gt rig add gastown https://github.com/gastownhall/gastown \
     --push-url https://github.com/you/gastown \
-    --upstream-url https://github.com/gastownhall/gastown`,
+    --upstream-url https://github.com/gastownhall/gastown
+  gt rig add beads https://github.com/jonbaldie/beads --import-beads`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runRigAdd,
 }
@@ -314,6 +315,7 @@ var (
 	rigAddAdoptForce     bool
 	rigAddFilter         string
 	rigAddSparseCheckout []string
+	rigAddImportBeads    bool
 	rigResetHandoff      bool
 	rigResetMail         bool
 	rigResetStale        bool
@@ -377,6 +379,7 @@ func init() {
 	rigAddCmd.Flags().BoolVar(&rigAddAdoptForce, "force", false, "With --adopt, register even if git remote cannot be detected")
 	rigAddCmd.Flags().StringVar(&rigAddFilter, "filter", "", "Partial clone filter (e.g. \"blob:none\", \"tree:0\") to reduce clone size")
 	rigAddCmd.Flags().StringSliceVar(&rigAddSparseCheckout, "sparse-checkout", nil, "Sparse checkout paths (cone mode); comma-separated or repeated")
+	rigAddCmd.Flags().BoolVar(&rigAddImportBeads, "import-beads", false, "Consent to activate tracked Beads data and executable hooks from the source repo")
 
 	rigResetCmd.Flags().BoolVar(&rigResetHandoff, "handoff", false, "Clear handoff content")
 	rigResetCmd.Flags().BoolVar(&rigResetMail, "mail", false, "Clear stale mail messages")
@@ -520,6 +523,7 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 		DefaultBranch:  rigAddBranch,
 		CloneFilter:    rigAddFilter,
 		SparseCheckout: rigAddSparseCheckout,
+		ImportBeads:    rigAddImportBeads,
 	})
 }
 
@@ -669,7 +673,6 @@ func addRigToTown(townRoot string, opts rig.AddRigOptions) error {
 
 	return nil
 }
-
 
 // GetRigLED returns the LED indicator for a rig based on session and operational state.
 // Used by both rig list and statusline for consistent indicators:
