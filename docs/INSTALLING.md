@@ -201,7 +201,7 @@ on this machine when you want those session hooks everywhere.
 
 ### Step 5: Configure Agents (Optional)
 
-Gas Town supports built-in runtimes (`claude`, `gemini`, `codex`, `kiro`, `cursor`, `auggie`, `amp`, `opencode`, `copilot`, `pi`) plus custom agent aliases.
+Gas Town supports built-in runtimes (`claude`, `gemini`, `codex`, `kiro`, `cursor`, `auggie`, `amp`, `opencode`, `copilot`, `pi`, `agy`) plus custom agent aliases.
 
 ```bash
 # List available agents

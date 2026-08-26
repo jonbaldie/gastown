@@ -46,6 +46,8 @@ const (
 	AgentOmp AgentPreset = "omp"
 	// AgentMistral is Mistral Vibe CLI.
 	AgentMistral AgentPreset = "vibe"
+	// AgentAgy is Google Antigravity CLI (binary name "agy").
+	AgentAgy AgentPreset = "agy"
 	// AgentGroqCompound routes the Claude CLI to Groq's compound-beta model via
 	// Groq's OpenAI-compatible API endpoint. The claude binary acts as the SDK
 	// proxy; ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY are overridden at runtime
@@ -508,6 +510,31 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		ReadyPromptPrefix: "❯ ",
 		ReadyDelayMs:      5000,
 		InstructionsFile:  "AGENTS.md",
+	},
+	AgentAgy: {
+		Name:    AgentAgy,
+		Command: "agy",
+		Args:    []string{"--dangerously-skip-permissions"},
+		// agy is a native Go binary (Google Antigravity CLI), not Node-wrapped.
+		ProcessNames: []string{"agy"},
+		SessionIDEnv: "", // agy has no session-id env var; sessions are resumed by conversation ID.
+		ResumeFlag:   "--conversation",
+		ContinueFlag: "--continue",
+		ResumeStyle:  "flag",
+		// agy has a plugin/hooks.json system, but it's for plugin lifecycle
+		// hooks, not a Gas Town-compatible adapter yet.
+		SupportsHooks: false,
+		// Conversation forking exists in agy's internal API but isn't exposed
+		// as a CLI flag.
+		SupportsForkSession: false,
+		NonInteractive: &NonInteractiveConfig{
+			PromptFlag: "-p",
+			OutputFlag: "--output-format json",
+		},
+		// Runtime defaults
+		PromptMode:       "arg",
+		ReadyDelayMs:     5000,
+		InstructionsFile: "AGENTS.md",
 	},
 	// AgentGroqCompound uses the Claude CLI as an SDK proxy but routes all
 	// requests to Groq's OpenAI-compatible endpoint by overriding the two

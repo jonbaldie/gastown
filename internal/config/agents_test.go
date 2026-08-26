@@ -55,7 +55,7 @@ func TestBuiltinPresets(t *testing.T) {
 	// Read the compile-time table, not the live registry. GetAgentPreset
 	// races with sibling tests that ResetRegistryForTesting / overlay
 	// agents.json (flakes under go test ./... with -race).
-	presets := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentKiro, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp}
+	presets := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentKiro, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp, AgentAgy}
 
 	for _, preset := range presets {
 		info := builtinPresets[preset]
@@ -849,7 +849,7 @@ func TestGetProcessNames(t *testing.T) {
 func TestListAgentPresetsMatchesConstants(t *testing.T) {
 	t.Parallel()
 	// Ensure all AgentPreset constants are returned by ListAgentPresets
-	allConstants := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp}
+	allConstants := []AgentPreset{AgentClaude, AgentGemini, AgentCodex, AgentCursor, AgentAuggie, AgentAmp, AgentOpenCode, AgentCopilot, AgentPi, AgentOmp, AgentAgy}
 	presets := ListAgentPresets()
 
 	// Convert to map for quick lookup
@@ -1409,6 +1409,68 @@ func TestPiAgentPreset(t *testing.T) {
 	}
 	if info.NonInteractive.PromptFlag != "-p" {
 		t.Errorf("pi NonInteractive.PromptFlag = %q, want -p", info.NonInteractive.PromptFlag)
+	}
+}
+
+func TestAgyAgentPreset(t *testing.T) {
+	t.Parallel()
+	info := GetAgentPreset(AgentAgy)
+	if info == nil {
+		t.Fatal("agy preset not found")
+	}
+
+	if info.Command != "agy" {
+		t.Errorf("agy command = %q, want agy", info.Command)
+	}
+
+	hasSkipPermissions := false
+	for _, arg := range info.Args {
+		if arg == "--dangerously-skip-permissions" {
+			hasSkipPermissions = true
+		}
+	}
+	if !hasSkipPermissions {
+		t.Error("agy args missing --dangerously-skip-permissions")
+	}
+
+	if len(info.ProcessNames) != 1 || info.ProcessNames[0] != "agy" {
+		t.Errorf("agy ProcessNames = %v, want [agy]", info.ProcessNames)
+	}
+
+	if info.SessionIDEnv != "" {
+		t.Errorf("agy SessionIDEnv = %q, want empty", info.SessionIDEnv)
+	}
+
+	if info.ResumeFlag != "--conversation" {
+		t.Errorf("agy ResumeFlag = %q, want --conversation", info.ResumeFlag)
+	}
+	if info.ContinueFlag != "--continue" {
+		t.Errorf("agy ContinueFlag = %q, want --continue", info.ContinueFlag)
+	}
+	if info.ResumeStyle != "flag" {
+		t.Errorf("agy ResumeStyle = %q, want flag", info.ResumeStyle)
+	}
+
+	if info.SupportsHooks {
+		t.Error("agy should not support hooks (no Gas Town adapter yet)")
+	}
+
+	if info.SupportsForkSession {
+		t.Error("agy should not support fork session")
+	}
+
+	if info.NonInteractive == nil {
+		t.Fatal("agy NonInteractive is nil")
+	}
+	if info.NonInteractive.PromptFlag != "-p" {
+		t.Errorf("agy NonInteractive.PromptFlag = %q, want -p", info.NonInteractive.PromptFlag)
+	}
+	if info.NonInteractive.OutputFlag != "--output-format json" {
+		t.Errorf("agy NonInteractive.OutputFlag = %q, want --output-format json", info.NonInteractive.OutputFlag)
+	}
+
+	if info.InstructionsFile != "AGENTS.md" {
+		t.Errorf("agy InstructionsFile = %q, want AGENTS.md", info.InstructionsFile)
 	}
 }
 
