@@ -55,6 +55,19 @@ func listAssignedActiveWork(b *beads.Beads, assignee string) ([]*beads.Issue, er
 	return nil, nil
 }
 
+// lookupLiveHook returns the agent's current Hook, using the same hooked-work
+// lookup Patrol uses. A stale Handoff is not a live Hook.
+func lookupLiveHook(b *beads.Beads, assignee string) (*beads.Issue, error) {
+	assigned, err := listAssignedActiveWork(b, assignee)
+	if err != nil {
+		return nil, err
+	}
+	if len(assigned) == 0 {
+		return nil, nil
+	}
+	return assigned[0], nil
+}
+
 func listAssignedActiveWorkAcrossStatuses(b *beads.Beads, assignee string) ([]*beads.Issue, error) {
 	var assigned []*beads.Issue
 	for _, status := range activeWorkStatuses() {

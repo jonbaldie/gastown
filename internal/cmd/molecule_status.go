@@ -152,6 +152,7 @@ type MoleculeCurrentInfo struct {
 	CurrentStepID string `json:"current_step_id,omitempty"`
 	CurrentStep   string `json:"current_step,omitempty"`
 	Status        string `json:"status"` // "working", "naked", "complete", "blocked"
+	Diagnosis     string `json:"diagnosis,omitempty"`
 }
 
 func runMoleculeProgress(cmd *cobra.Command, args []string) error {
@@ -963,42 +964,38 @@ func runMoleculeCurrent(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("not in a beads workspace: %w", err)
 	}
+	if !isTownLevelRole(target) {
+		workDir = resolveHookLookupWorkDir(workDir, target, townRoot)
+	}
 
 	b := beads.New(workDir)
 
-	// Extract role from target for handoff bead lookup
-	role := extractRoleFromIdentity(target)
-
-	// Find handoff bead for this identity
-	handoff, err := b.FindHandoffBead(role)
+	// Build current info from the live Hook when one exists. Patrol uses the
+	// same hooked-work lookup; a stale Handoff attachment is never current.
+	lookupBeads, handoff, moleculeID, diagnosis, err := resolveCurrentMoleculeSource(b, townRoot, target)
 	if err != nil {
-		return fmt.Errorf("finding handoff bead: %w", err)
+		return err
 	}
 
-	// Build current info
 	info := MoleculeCurrentInfo{
-		Identity: target,
+		Identity:  target,
+		Diagnosis: diagnosis,
 	}
 
-	if handoff == nil {
+	if handoff != nil {
+		info.HandoffID = handoff.ID
+		info.HandoffTitle = handoff.Title
+	}
+
+	if moleculeID == "" {
 		info.Status = "naked"
 		return outputMoleculeCurrent(info)
 	}
 
-	info.HandoffID = handoff.ID
-	info.HandoffTitle = handoff.Title
-
-	// Check for attached molecule
-	attachment := beads.ParseAttachmentFields(handoff)
-	if attachment == nil || attachment.AttachedMolecule == "" {
-		info.Status = "naked"
-		return outputMoleculeCurrent(info)
-	}
-
-	info.MoleculeID = attachment.AttachedMolecule
+	info.MoleculeID = moleculeID
 
 	// Get the molecule root to find its title and children
-	molRoot, err := b.Show(attachment.AttachedMolecule)
+	molRoot, err := lookupBeads.Show(moleculeID)
 	if err != nil {
 		// Molecule not found - might be a template ID, still report what we have
 		info.Status = "working"
@@ -1008,8 +1005,8 @@ func runMoleculeCurrent(cmd *cobra.Command, args []string) error {
 	info.MoleculeTitle = molRoot.Title
 
 	// Find all children (steps) of the molecule root
-	children, err := b.List(beads.ListOptions{
-		Parent:   attachment.AttachedMolecule,
+	children, err := lookupBeads.List(beads.ListOptions{
+		Parent:   moleculeID,
 		Status:   "all",
 		Priority: -1,
 	})
@@ -1142,7 +1139,72 @@ func outputMoleculeCurrent(info MoleculeCurrentInfo) error {
 		fmt.Printf("Status:   %s\n", style.Dim.Render("blocked - waiting on dependencies"))
 	}
 
+	if info.Diagnosis != "" {
+		fmt.Printf("Diagnose: %s\n", info.Diagnosis)
+	}
+
 	return nil
+}
+
+func attachedMoleculeID(issue *beads.Issue) string {
+	if issue == nil {
+		return ""
+	}
+	fields := beads.ParseAttachmentFields(issue)
+	if fields == nil {
+		return ""
+	}
+	return strings.TrimSpace(fields.AttachedMolecule)
+}
+
+// resolveCurrentMoleculeSource prefers the live Hook over a Handoff bead.
+// Patrol uses the same hooked-work lookup; a stale Handoff attachment is never
+// reported as current when a live Hook exists. Disagreement is diagnosed.
+func resolveCurrentMoleculeSource(b *beads.Beads, townRoot, identity string) (lookupBeads *beads.Beads, handoff *beads.Issue, moleculeID, diagnosis string, err error) {
+	role := extractRoleFromIdentity(identity)
+	handoff, err = b.FindHandoffBead(role)
+	if err != nil {
+		return nil, nil, "", "", fmt.Errorf("finding handoff bead: %w", err)
+	}
+	hook, err := lookupLiveHook(b, identity)
+	if err != nil {
+		return nil, handoff, "", "", fmt.Errorf("finding live hook: %w", err)
+	}
+	if hook == nil && isTownLevelRole(identity) {
+		hooks := scanAllRigsForHookedBeads(townRoot, identity)
+		if len(hooks) > 0 {
+			hook = hooks[0]
+		}
+	}
+	if hook == nil && !isTownLevelRole(identity) && townRoot != "" {
+		townBeads := beads.New(filepath.Join(townRoot, ".beads"))
+		hook, err = lookupLiveHook(townBeads, identity)
+		if err != nil {
+			return nil, handoff, "", "", fmt.Errorf("finding live Hook in Town beads: %w", err)
+		}
+		if hook != nil {
+			return townBeads, handoff, attachedMoleculeID(hook), moleculeDisagreementDiagnosis(hook, handoff), nil
+		}
+	}
+	if hook != nil {
+		return b, handoff, attachedMoleculeID(hook), moleculeDisagreementDiagnosis(hook, handoff), nil
+	}
+	if handoffMol := attachedMoleculeID(handoff); handoffMol != "" {
+		diagnosis = fmt.Sprintf("stale Handoff attachment %s has no live Hook", handoffMol)
+	}
+	return b, handoff, "", diagnosis, nil
+}
+
+func moleculeDisagreementDiagnosis(hook, handoff *beads.Issue) string {
+	hookMol := attachedMoleculeID(hook)
+	handoffMol := attachedMoleculeID(handoff)
+	if handoffMol == "" || hookMol == handoffMol {
+		return ""
+	}
+	if hookMol == "" {
+		return fmt.Sprintf("stale Handoff attachment %s disagrees with live Hook %s, which has no attached molecule", handoffMol, hook.ID)
+	}
+	return fmt.Sprintf("stale Handoff attachment %s disagrees with live Hook molecule %s", handoffMol, hookMol)
 }
 
 // isTownLevelRole returns true if the agent ID is a town-level role.

@@ -845,6 +845,9 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 // cross-beads routing issues when slinging work to new polecats.
 func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retErr error) {
 	defer func() { telemetry.RecordPolecatSpawn(context.Background(), name, retErr) }()
+	if err := ValidateNewPolecatName(name); err != nil {
+		return nil, err
+	}
 	// Acquire per-polecat file lock to prevent concurrent Add/Remove/Repair races
 	fl, err := m.lockPolecat(name)
 	if err != nil {

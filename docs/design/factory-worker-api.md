@@ -262,9 +262,12 @@ The API is local-only. Two options:
 - GT is the server; the agent runtime is the client
 - Agent connects at startup, maintains persistent connection
 
-**Embedded HTTP**: localhost with random port, written to a well-known file.
-- Fallback for runtimes that can't do Unix sockets
-- Port file at `$GT_ROOT/.runtime/worker-<session>.port`
+**Embedded HTTP**: localhost with a random port, written to a well-known file.
+- The Worker always starts this listener.
+- Clients use it when the Unix socket is unavailable, including when a deep
+  Town path exceeds the operating system socket-path limit.
+- Port file at `$GT_ROOT/.runtime/worker/worker.port`
+- Clients prefer the Unix socket and then fall back to the port file.
 
 ## Migration
 

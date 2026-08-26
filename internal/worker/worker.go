@@ -58,12 +58,33 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 	if err := srv.Listen(); err != nil {
 		return nil, err
 	}
+	client := newClient(townRoot)
+	if !srv.unixActive() {
+		httpClient, err := newHTTPClient(townRoot)
+		if err != nil {
+			_ = srv.Close()
+			return nil, fmt.Errorf("worker listen: no Unix socket and no usable loopback client: %w", err)
+		}
+		client = httpClient
+	}
 	return &Worker{
 		townRoot: townRoot,
 		store:    store,
-		client:   newClient(townRoot),
+		client:   client,
 		local:    srv,
 	}, nil
+}
+
+// Endpoint reports where an in-process server accepts connections, as the
+// network and address a net.Dial call would take. It names the Unix socket when
+// that transport is bound, and the loopback port when the socket is
+// unavailable. The two are returned separately because a socket path and a
+// host and port are not interchangeable to a caller that wants to connect.
+func (w *Worker) Endpoint() (network, address string) {
+	if w.local == nil || w.local.unixActive() {
+		return "unix", SocketPath(w.townRoot)
+	}
+	return "tcp", fmt.Sprintf("127.0.0.1:%d", w.local.port)
 }
 
 // Close stops an in-process server.
@@ -333,19 +354,29 @@ func StoreHealth(townRoot, sessionID string, grace time.Duration) (*Health, erro
 	return h, nil
 }
 
-// EnsureServer starts `gt worker serve` when the socket is not live.
-func EnsureServer(townRoot string) error {
+// serverLive reports whether a Worker server answers on either transport. A
+// server whose town root is too deep for a Unix socket address serves loopback
+// only, so a check on the socket alone reports a live server as down.
+func serverLive(townRoot string) bool {
 	if pingUnix(townRoot) == nil {
-		return nil
+		return true
 	}
-	if _, err := os.Stat(PortPath(townRoot)); err == nil {
-		if c, err := newHTTPClient(townRoot); err == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			if c.ping(ctx) == nil {
-				return nil
-			}
-		}
+	if _, err := os.Stat(PortPath(townRoot)); err != nil {
+		return false
+	}
+	c, err := newHTTPClient(townRoot)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return c.ping(ctx) == nil
+}
+
+// EnsureServer starts `gt worker serve` when no transport is live.
+func EnsureServer(townRoot string) error {
+	if serverLive(townRoot) {
+		return nil
 	}
 	bin, err := os.Executable()
 	if err != nil {
@@ -365,7 +396,7 @@ func EnsureServer(townRoot string) error {
 	go func() { exited <- cmd.Wait() }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if pingUnix(townRoot) == nil {
+		if serverLive(townRoot) {
 			_ = cmd.Process.Release()
 			return nil
 		}

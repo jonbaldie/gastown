@@ -211,6 +211,9 @@ func runPolecatIdentityAdd(cmd *cobra.Command, args []string) error {
 
 	if len(args) > 1 {
 		polecatName = args[1]
+		if err := polecat.ValidateNewPolecatName(polecatName); err != nil {
+			return err
+		}
 	}
 
 	// Get rig
@@ -555,6 +558,9 @@ func runPolecatIdentityRename(cmd *cobra.Command, args []string) error {
 	// Validate names
 	if oldName == newName {
 		return fmt.Errorf("old and new names are the same")
+	}
+	if err := polecat.ValidateNewPolecatName(newName); err != nil {
+		return err
 	}
 
 	// Get rig

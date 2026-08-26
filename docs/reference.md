@@ -11,24 +11,25 @@ Gas Town `gt` commands route beads work based on issue ID prefix. For direct
 directory matches the database you intend to touch.
 
 ```bash
-bd -C ~/gt/greenplace/mayor/rig show gp-xyz  # Greenplace rig beads
-bd -C ~/gt show hq-abc                       # Town-level beads
-bd -C ~/gt/wyvern/mayor/rig show wyv-123     # Wyvern rig beads
+bd -C "$GT_TOWN_ROOT/greenplace/mayor/rig" show gp-xyz  # Greenplace rig beads
+bd -C "$GT_TOWN_ROOT" show hq-abc                       # Town-level beads
+bd -C "$GT_TOWN_ROOT/wyvern/mayor/rig" show wyv-123     # Wyvern rig beads
 ```
 
-**How it works**: Routes are defined in `~/gt/.beads/routes.jsonl`. Each rig's
-prefix maps to its beads location (the mayor's clone in that rig).
+Set `GT_TOWN_ROOT` to the Town root (its default is `$HOME/gt`). Routes are
+defined in `$GT_TOWN_ROOT/.beads/routes.jsonl`. Each rig's prefix maps to its
+beads location (the mayor's clone in that rig).
 
 | Prefix | Routes To | Purpose |
 |--------|-----------|---------|
-| `hq-*` | `~/gt/.beads/` | Mayor mail, cross-rig coordination |
-| `gp-*` | `~/gt/greenplace/mayor/rig/.beads/` | Greenplace project issues |
-| `wyv-*` | `~/gt/wyvern/mayor/rig/.beads/` | Wyvern project issues |
+| `hq-*` | `$GT_TOWN_ROOT/.beads/` | Mayor mail, cross-rig coordination |
+| `gp-*` | `$GT_TOWN_ROOT/greenplace/mayor/rig/.beads/` | Greenplace project issues |
+| `wyv-*` | `$GT_TOWN_ROOT/wyvern/mayor/rig/.beads/` | Wyvern project issues |
 
 Debug routing: `BD_DEBUG_ROUTING=1 bd -C <owning-root> show <id>`
 
 `bd --global` is not Gas Town's town database. In Beads it targets a separate
-shared-server database named `beads_global`; run `bd -C ~/gt ...` for
+shared-server database named `beads_global`; run `bd -C "$GT_TOWN_ROOT" ...` for
 town-level Gas Town beads.
 
 ## Configuration
@@ -161,7 +162,7 @@ Process state, PIDs, ephemeral data.
 Rigs support layered configuration through:
 1. **Wisp layer** (`.beads-wisp/config/`) - transient, local overrides
 2. **Rig identity bead labels** - persistent rig settings
-3. **Town defaults** (`~/gt/settings/config.json`)
+3. **Town defaults** (`$GT_TOWN_ROOT/settings/config.json`)
 4. **System defaults** - compiled-in fallbacks
 
 #### Polecat Branch Naming
@@ -171,7 +172,7 @@ Configure custom branch name templates for polecats:
 ```bash
 # Set via wisp (transient - for testing)
 echo '{"polecat_branch_template": "adam/{year}/{month}/{description}"}' > \
-  ~/gt/.beads-wisp/config/myrig.json
+  "$GT_TOWN_ROOT/.beads-wisp/config/myrig.json"
 
 # Or set via rig identity bead labels (persistent)
 bd update gt-rig-myrig --labels="polecat_branch_template:adam/{year}/{month}/{description}"
@@ -339,12 +340,12 @@ Understanding this hierarchy is essential for proper configuration.
 
 | Role | Working Directory | Notes |
 |------|-------------------|-------|
-| **Mayor** | `~/gt/mayor/` | Town-level coordinator, isolated from rigs |
-| **Deacon** | `~/gt/deacon/` | Background supervisor daemon |
-| **Witness** | `~/gt/<rig>/witness/` | No git clone, monitors polecats only |
-| **Refinery** | `~/gt/<rig>/refinery/rig/` | Worktree on main branch |
-| **Crew** | `~/gt/<rig>/crew/<name>/rig/` | Persistent human workspace clone |
-| **Polecat** | `~/gt/<rig>/polecats/<name>/rig/` | Polecat worktree (ephemeral sandbox) |
+| **Mayor** | `$GT_TOWN_ROOT/mayor/` | Town-level coordinator, isolated from rigs |
+| **Deacon** | `$GT_TOWN_ROOT/deacon/` | Background supervisor daemon |
+| **Witness** | `$GT_TOWN_ROOT/<rig>/witness/` | No git clone, monitors polecats only |
+| **Refinery** | `$GT_TOWN_ROOT/<rig>/refinery/rig/` | Worktree on main branch |
+| **Crew** | `$GT_TOWN_ROOT/<rig>/crew/<name>/rig/` | Persistent human workspace clone |
+| **Polecat** | `$GT_TOWN_ROOT/<rig>/polecats/<name>/rig/` | Polecat worktree (ephemeral sandbox) |
 
 Note: The per-rig `<rig>/mayor/rig/` directory is NOT a working directory—it's
 a git clone that holds the canonical `.beads/` database for that rig.
@@ -355,7 +356,7 @@ Settings are installed in gastown-managed parent directories and passed to
 Claude Code via the `--settings` flag. This keeps customer repos clean:
 
 ```
-~/gt/
+$GT_TOWN_ROOT/
 ├── mayor/.claude/settings.json              # Mayor settings (cwd = settings dir)
 ├── deacon/.claude/settings.json             # Deacon settings (cwd = settings dir)
 └── <rig>/
@@ -370,9 +371,9 @@ additively with any project-level settings in the customer repo.
 
 ### AGENTS.md
 
-Only `~/gt/AGENTS.md` exists as the identity file — a minimal identity anchor
+Only `$GT_TOWN_ROOT/AGENTS.md` exists as the identity file — a minimal identity anchor
 that prevents agents from losing their Gas Town identity after context compaction
-or new sessions. `~/gt/CLAUDE.md` is a symlink to `AGENTS.md` so Claude Code
+or new sessions. `$GT_TOWN_ROOT/CLAUDE.md` is a symlink to `AGENTS.md` so Claude Code
 reads the same text.
 
 Full role context (~300-500 lines per role) is injected ephemerally by `gt prime`
@@ -396,7 +397,7 @@ overlay pair (`AGENTS.md` with a `CLAUDE.md` symlink, or the `.local` pair when
 the Rig already has a constitution file).
 
 **Why no per-directory Role files?**
-- Claude Code traverses upward from CWD for CLAUDE.md — Mayor and Deacon under `~/gt/` find the town-root symlink
+- Claude Code traverses upward from CWD for CLAUDE.md — Mayor and Deacon under `$GT_TOWN_ROOT/` find the town-root symlink
 - AGENTS.md (for Codex and Cursor) is the canonical town-root file
 - The real Role context comes from `gt prime`, making on-disk Role-home files redundant
 
