@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -124,8 +125,14 @@ configured effort is passed to Pi as --thinking.`,
 var configRoleListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List effective role assignments",
-	Args:  cobra.NoArgs,
-	RunE:  runConfigRoleList,
+	Long: `List effective role assignments.
+
+With no --rig flag, lists town-level role assignments (mayor, deacon, witness,
+refinery, polecat, crew, boot, dog). With --rig, lists the rig-managed roles
+(witness, refinery, polecat, crew) as resolved for that rig, showing whether
+each is a rig-specific override or inherited from town/default.`,
+	Args: cobra.NoArgs,
+	RunE: runConfigRoleList,
 }
 
 var configRoleSetCmd = &cobra.Command{
@@ -133,10 +140,14 @@ var configRoleSetCmd = &cobra.Command{
 	Short: "Assign an agent profile and optional effort to a role",
 	Long: `Assign an agent profile and optional thinking effort to a role.
 
+With --rig, the assignment is scoped to that rig instead of the whole town
+(only witness, refinery, polecat, and crew can be rig-scoped).
+
 Examples:
   gt config role set mayor pi-luna high
   gt config role set witness pi-luna low
-  gt config role set polecat pi-sonnet max`,
+  gt config role set polecat pi-sonnet max
+  gt config role set witness pi-luna low --rig myrig`,
 	Args: cobra.RangeArgs(2, 3),
 	RunE: runConfigRoleSet,
 }
@@ -144,9 +155,16 @@ Examples:
 var configRoleUnsetCmd = &cobra.Command{
 	Use:   "unset <role>",
 	Short: "Clear the agent and effort assigned to a role",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runConfigRoleUnset,
+	Long: `Clear the agent and effort assigned to a role.
+
+With --rig, clears only the rig-scoped override, leaving the town-level
+assignment (if any) in place.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runConfigRoleUnset,
 }
+
+// configRoleRig holds the --rig flag value shared by the role subcommands.
+var configRoleRig string
 
 // Cost-tier subcommand
 
@@ -486,12 +504,18 @@ func runConfigAgentSet(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create or update the agent
-	townSettings.Agents[name] = &config.RuntimeConfig{
-		Provider: provider,
-		Command:  parts[0],
-		Args:     parts[1:],
+	// Create or update the agent. When an entry already exists, mutate it in
+	// place rather than replacing it wholesale — a wholesale replace would
+	// silently discard fields like Env/Session/Hooks/Tmux/Instructions that
+	// aren't set by this command.
+	agent := townSettings.Agents[name]
+	if agent == nil {
+		agent = &config.RuntimeConfig{}
+		townSettings.Agents[name] = agent
 	}
+	agent.Provider = provider
+	agent.Command = parts[0]
+	agent.Args = parts[1:]
 
 	// Save settings
 	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
@@ -621,6 +645,10 @@ func runConfigRoleList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
+	if configRoleRig != "" {
+		return runConfigRoleListForRig(townRoot, configRoleRig)
+	}
+
 	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
 	if err != nil {
 		return fmt.Errorf("loading town settings: %w", err)
@@ -648,6 +676,32 @@ func runConfigRoleList(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+func runConfigRoleListForRig(townRoot, rigName string) error {
+	_, r, err := getRig(rigName)
+	if err != nil {
+		return err
+	}
+
+	assignments, err := config.ResolveRigRoleAssignments(townRoot, r.Path)
+	if err != nil {
+		return fmt.Errorf("resolving rig role assignments: %w", err)
+	}
+
+	fmt.Printf("%-10s %-20s %-20s %s\n", "ROLE", "AGENT", "EFFORT", "SOURCE")
+	for _, a := range assignments {
+		effort := a.Effort
+		if effort == "" {
+			effort = "runtime default"
+		}
+		source := "inherited"
+		if a.RoleSpecific {
+			source = "rig"
+		}
+		fmt.Printf("%-10s %-20s %-20s %s\n", a.Role, a.Agent, effort, source)
+	}
+	return nil
+}
+
 func runConfigRoleSet(_ *cobra.Command, args []string) error {
 	role, agent := args[0], args[1]
 	townRoot, err := workspace.FindFromCwd()
@@ -659,9 +713,19 @@ func runConfigRoleSet(_ *cobra.Command, args []string) error {
 	if len(args) == 3 {
 		effort = args[2]
 	}
-	if err := config.SetTownRole(config.TownSettingsPath(townRoot), role, agent, effort); err != nil {
+
+	if configRoleRig != "" {
+		_, r, err := getRig(configRoleRig)
+		if err != nil {
+			return err
+		}
+		if err := config.SetRigRole(townRoot, r.Path, role, agent, effort); err != nil {
+			return err
+		}
+	} else if err := config.SetTownRole(config.TownSettingsPath(townRoot), role, agent, effort); err != nil {
 		return err
 	}
+
 	if effort == "" {
 		fmt.Printf("Set role %s to agent %s (effort unchanged)\n", style.Bold.Render(role), style.Bold.Render(agent))
 	} else {
@@ -676,9 +740,19 @@ func runConfigRoleUnset(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
-	if err := config.UnsetTownRole(config.TownSettingsPath(townRoot), role); err != nil {
+
+	if configRoleRig != "" {
+		_, r, err := getRig(configRoleRig)
+		if err != nil {
+			return err
+		}
+		if err := config.UnsetRigRole(r.Path, role); err != nil {
+			return err
+		}
+	} else if err := config.UnsetTownRole(config.TownSettingsPath(townRoot), role); err != nil {
 		return err
 	}
+
 	fmt.Printf("Cleared role configuration for %s\n", style.Bold.Render(role))
 	return nil
 }
@@ -732,42 +806,12 @@ func runConfigAgentEmailDomain(cmd *cobra.Command, args []string) error {
 }
 
 // configSetCmd sets a town config value by dot-notation key.
+// Long is populated in init() from the same townSettingsKeySpecs table that
+// drives runConfigSet, so the key list can't drift out of sync with the code.
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Set a configuration value",
-	Long: `Set a town configuration value using dot-notation keys.
-
-Supported keys:
-  convoy.notify_on_complete   Push notification to Mayor session on convoy
-                              completion (true/false, default: false)
-  cli_theme                   CLI color scheme ("dark", "light", "auto")
-  default_agent               Default agent preset name
-  auto_compact_window         Auto-compaction cap in tokens (default: 150000 / 150k).
-                              Applied to every agent type as min(cap, model window).
-  dolt.port                   Dolt SQL server port (default: 3307). Set this when
-                              another Gas Town instance is using the same port.
-                              Writes GT_DOLT_PORT to mayor/daemon.json env section.
-  scheduler.max_polecats      Dispatch mode: -1 = direct (default), N > 0 = deferred
-  scheduler.batch_size        Beads per heartbeat (default: 1)
-  scheduler.spawn_delay       Delay between spawns (default: 0s)
-  polecat.target_clean_policy When to delete <polecat>/target/ on reuse
-                              ("per_bead", "every_n_beads:<N>", "never";
-                              default: per_bead)
-  maintenance.window          Maintenance window start time in HH:MM (e.g., "03:00")
-  maintenance.interval        How often: "daily", "weekly", "monthly", or duration
-  maintenance.threshold       Commit count threshold (default: 1000)
-
-  Lifecycle (Dolt data maintenance):
-  lifecycle.reaper.enabled     Enable/disable wisp reaper (true/false)
-  lifecycle.reaper.interval    Reaper check interval (default: 30m)
-  lifecycle.reaper.delete_age  Delete closed wisps after this duration (default: 168h / 7d)
-  lifecycle.compactor.enabled  Enable/disable compactor dog (true/false)
-  lifecycle.compactor.interval Compactor check interval (default: 24h)
-  lifecycle.compactor.threshold Commit count before compaction (default: 500)
-  lifecycle.doctor.enabled     Enable/disable doctor dog (true/false)
-  lifecycle.doctor.interval    Doctor check interval (default: 5m)
-  lifecycle.backup.enabled     Enable/disable JSONL + Dolt backups (true/false)
-  lifecycle.backup.interval    Backup interval (default: 15m)
+	Long: buildConfigKeyHelp("Set") + `
 
 Examples:
   gt config set convoy.notify_on_complete true
@@ -788,34 +832,7 @@ Examples:
 var configGetCmd = &cobra.Command{
 	Use:   "get <key>",
 	Short: "Get a configuration value",
-	Long: `Get a town configuration value using dot-notation keys.
-
-Supported keys:
-  convoy.notify_on_complete   Push notification to Mayor session on convoy
-                              completion (true/false, default: false)
-  cli_theme                   CLI color scheme
-  default_agent               Default agent preset name
-  auto_compact_window         Auto-compaction cap in tokens (default: 150000)
-  scheduler.max_polecats      Dispatch mode (-1 = direct, N > 0 = deferred)
-  scheduler.batch_size        Beads per heartbeat
-  scheduler.spawn_delay       Delay between spawns
-  polecat.target_clean_policy When to delete <polecat>/target/ on reuse
-                              (per_bead, every_n_beads:<N>, never)
-  maintenance.window          Maintenance window start time (HH:MM)
-  maintenance.interval        How often: daily, weekly, monthly, or duration
-  maintenance.threshold       Commit count threshold
-
-  Lifecycle (Dolt data maintenance):
-  lifecycle.reaper.enabled     Wisp reaper enabled (true/false)
-  lifecycle.reaper.interval    Reaper check interval
-  lifecycle.reaper.delete_age  Duration before closed wisps are deleted
-  lifecycle.compactor.enabled  Compactor dog enabled (true/false)
-  lifecycle.compactor.interval Compactor check interval
-  lifecycle.compactor.threshold Commit count threshold for compaction
-  lifecycle.doctor.enabled     Doctor dog enabled (true/false)
-  lifecycle.doctor.interval    Doctor check interval
-  lifecycle.backup.enabled     JSONL + Dolt backups enabled (true/false)
-  lifecycle.backup.interval    Backup interval
+	Long: buildConfigKeyHelp("Get") + `
 
 Examples:
   gt config get convoy.notify_on_complete
@@ -824,6 +841,249 @@ Examples:
   gt config get lifecycle.reaper.delete_age`,
 	Args: cobra.ExactArgs(1),
 	RunE: runConfigGet,
+}
+
+// townSettingsKeySpec is the single source of truth for a `gt config get/set`
+// key that is backed directly by TownSettings: its get/set behavior and its
+// one-line help text. Adding a new TownSettings-backed key means adding one
+// entry here, not touching four separate switch statements and help blocks.
+//
+// Keys that target a different schema entirely (maintenance.*, lifecycle.*,
+// dolt.port all live in daemon.DaemonPatrolConfig / mayor/daemon.json, not
+// TownSettings) are intentionally NOT part of this table — folding them in
+// would misrepresent what file they actually read/write. They keep their own
+// dedicated handlers below and are merged into the help/error text separately.
+type townSettingsKeySpec struct {
+	key  string
+	help string
+	get  func(*config.TownSettings) string
+	set  func(*config.TownSettings, string) error
+}
+
+var townSettingsKeySpecs = []townSettingsKeySpec{
+	{
+		key:  "convoy.notify_on_complete",
+		help: "Push notification to Mayor session on convoy completion (true/false, default: false)",
+		get: func(s *config.TownSettings) string {
+			if s.Convoy != nil && s.Convoy.NotifyOnComplete {
+				return "true"
+			}
+			return "false"
+		},
+		set: func(s *config.TownSettings, value string) error {
+			b, err := parseBool(value)
+			if err != nil {
+				return fmt.Errorf("invalid value for convoy.notify_on_complete: %w (expected true/false)", err)
+			}
+			if s.Convoy == nil {
+				s.Convoy = &config.ConvoyConfig{}
+			}
+			s.Convoy.NotifyOnComplete = b
+			return nil
+		},
+	},
+	{
+		key:  "cli_theme",
+		help: `CLI color scheme ("dark", "light", "auto")`,
+		get: func(s *config.TownSettings) string {
+			if s.CLITheme == "" {
+				return "auto"
+			}
+			return s.CLITheme
+		},
+		set: func(s *config.TownSettings, value string) error {
+			switch value {
+			case "dark", "light", "auto":
+				s.CLITheme = value
+				return nil
+			default:
+				return fmt.Errorf("invalid cli_theme: %q (expected dark, light, or auto)", value)
+			}
+		},
+	},
+	{
+		key:  "default_agent",
+		help: "Default agent preset name",
+		get: func(s *config.TownSettings) string {
+			if s.DefaultAgent == "" {
+				return "claude"
+			}
+			return s.DefaultAgent
+		},
+		set: func(s *config.TownSettings, value string) error {
+			s.DefaultAgent = value
+			return nil
+		},
+	},
+	{
+		key: "auto_compact_window",
+		help: "Auto-compaction cap in tokens (default: 150000 / 150k). " +
+			"Applied to every agent type as min(cap, model window).",
+		get: func(s *config.TownSettings) string {
+			if s.AutoCompactWindow > 0 {
+				return strconv.Itoa(s.AutoCompactWindow)
+			}
+			return strconv.Itoa(config.DefaultAutoCompactWindowTokens)
+		},
+		set: func(s *config.TownSettings, value string) error {
+			n, ok := config.ParseTokenCount(value)
+			if !ok {
+				return fmt.Errorf("invalid value for auto_compact_window: expected a positive token count such as 150000 or 150k")
+			}
+			s.AutoCompactWindow = n
+			return nil
+		},
+	},
+	{
+		key:  "scheduler.max_polecats",
+		help: "Dispatch mode: -1 = direct (default), N > 0 = deferred",
+		get: func(s *config.TownSettings) string {
+			scfg := s.Scheduler
+			if scfg == nil {
+				scfg = capacity.DefaultSchedulerConfig()
+			}
+			return strconv.Itoa(scfg.GetMaxPolecats())
+		},
+		set: func(s *config.TownSettings, value string) error {
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid value for scheduler.max_polecats: %w (expected integer)", err)
+			}
+			if n < -1 {
+				return fmt.Errorf("invalid value for scheduler.max_polecats: must be >= -1 (-1 = direct dispatch, 0 = direct dispatch, N > 0 = deferred)")
+			}
+			if s.Scheduler == nil {
+				s.Scheduler = capacity.DefaultSchedulerConfig()
+			}
+			s.Scheduler.MaxPolecats = &n
+			return nil
+		},
+	},
+	{
+		key:  "scheduler.batch_size",
+		help: "Beads per heartbeat (default: 1)",
+		get: func(s *config.TownSettings) string {
+			scfg := s.Scheduler
+			if scfg == nil {
+				scfg = capacity.DefaultSchedulerConfig()
+			}
+			return strconv.Itoa(scfg.GetBatchSize())
+		},
+		set: func(s *config.TownSettings, value string) error {
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 {
+				return fmt.Errorf("invalid value for scheduler.batch_size: expected positive integer")
+			}
+			if s.Scheduler == nil {
+				s.Scheduler = capacity.DefaultSchedulerConfig()
+			}
+			s.Scheduler.BatchSize = &n
+			return nil
+		},
+	},
+	{
+		key:  "scheduler.spawn_delay",
+		help: "Delay between spawns (default: 0s)",
+		get: func(s *config.TownSettings) string {
+			scfg := s.Scheduler
+			if scfg == nil {
+				scfg = capacity.DefaultSchedulerConfig()
+			}
+			return scfg.GetSpawnDelay().String()
+		},
+		set: func(s *config.TownSettings, value string) error {
+			if _, err := time.ParseDuration(value); err != nil {
+				return fmt.Errorf("invalid value for scheduler.spawn_delay: %w (expected Go duration, e.g. 2s, 500ms)", err)
+			}
+			if s.Scheduler == nil {
+				s.Scheduler = capacity.DefaultSchedulerConfig()
+			}
+			s.Scheduler.SpawnDelay = value
+			return nil
+		},
+	},
+	{
+		key: "polecat.target_clean_policy",
+		help: `When to delete <polecat>/target/ on reuse ("per_bead", "every_n_beads:<N>", ` +
+			`"never"; default: per_bead)`,
+		get: func(s *config.TownSettings) string {
+			if s.Polecat != nil && s.Polecat.TargetCleanPolicy != "" {
+				return s.Polecat.TargetCleanPolicy
+			}
+			return polecat.DefaultTargetCleanPolicy().String()
+		},
+		set: func(s *config.TownSettings, value string) error {
+			// Validate the policy string parses cleanly. Storage form is the raw
+			// input normalized via parsed.String(), so e.g. "  per_bead  " becomes
+			// "per_bead".
+			parsed, err := polecat.ParseTargetCleanPolicy(value)
+			if err != nil {
+				return fmt.Errorf("invalid value for polecat.target_clean_policy: %w", err)
+			}
+			if s.Polecat == nil {
+				s.Polecat = &config.PolecatConfig{}
+			}
+			s.Polecat.TargetCleanPolicy = parsed.String()
+			return nil
+		},
+	},
+}
+
+// buildConfigKeyHelp renders the "Supported keys" section shared by
+// configSetCmd and configGetCmd Long help, from the same table that drives
+// the actual get/set behavior. verb is "Get" or "Set", used in the header.
+func buildConfigKeyHelp(verb string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s a town configuration value using dot-notation keys.\n\nSupported keys:\n", verb)
+	for _, spec := range townSettingsKeySpecs {
+		fmt.Fprintf(&b, "  %-28s %s\n", spec.key, spec.help)
+	}
+	b.WriteString(daemonBackedConfigKeyHelp)
+	return b.String()
+}
+
+func findTownSettingsKeySpec(key string) *townSettingsKeySpec {
+	for i := range townSettingsKeySpecs {
+		if townSettingsKeySpecs[i].key == key {
+			return &townSettingsKeySpecs[i]
+		}
+	}
+	return nil
+}
+
+// daemonBackedConfigKeyHelp lists the `gt config get/set` keys that are NOT
+// TownSettings-backed: they live in daemon.DaemonPatrolConfig
+// (mayor/daemon.json) instead, and keep their own dedicated handlers.
+const daemonBackedConfigKeyHelp = `  dolt.port                   Dolt SQL server port (default: 3307). Set this when
+                              another Gas Town instance is using the same port.
+                              Writes GT_DOLT_PORT to mayor/daemon.json env section.
+  maintenance.window          Maintenance window start time in HH:MM (e.g., "03:00")
+  maintenance.interval        How often: "daily", "weekly", "monthly", or duration
+  maintenance.threshold       Commit count threshold (default: 1000)
+
+  Lifecycle (Dolt data maintenance):
+  lifecycle.reaper.enabled     Enable/disable wisp reaper (true/false)
+  lifecycle.reaper.interval    Reaper check interval (default: 30m)
+  lifecycle.reaper.delete_age  Delete closed wisps after this duration (default: 168h / 7d)
+  lifecycle.compactor.enabled  Enable/disable compactor dog (true/false)
+  lifecycle.compactor.interval Compactor check interval (default: 24h)
+  lifecycle.compactor.threshold Commit count before compaction (default: 500)
+  lifecycle.doctor.enabled     Enable/disable doctor dog (true/false)
+  lifecycle.doctor.interval    Doctor check interval (default: 5m)
+  lifecycle.backup.enabled     Enable/disable JSONL + Dolt backups (true/false)
+  lifecycle.backup.interval    Backup interval (default: 15m)`
+
+// unknownConfigKeyError builds the single "unknown config key" error shared
+// by runConfigSet and runConfigGet, listing every supported key: the
+// TownSettings-backed table plus the daemon-backed keys.
+func unknownConfigKeyError(key string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "unknown config key: %q\n\nSupported keys:\n", key)
+	for _, spec := range townSettingsKeySpecs {
+		fmt.Fprintf(&b, "  %-28s %s\n", spec.key, spec.help)
+	}
+	b.WriteString(daemonBackedConfigKeyHelp)
+	return errors.New(b.String())
 }
 
 func runConfigSet(cmd *cobra.Command, args []string) error {
@@ -835,87 +1095,23 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	settingsPath := config.TownSettingsPath(townRoot)
-	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
-	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
+	if spec := findTownSettingsKeySpec(key); spec != nil {
+		settingsPath := config.TownSettingsPath(townRoot)
+		townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
+		if err != nil {
+			return fmt.Errorf("loading town settings: %w", err)
+		}
+		if err := spec.set(townSettings, value); err != nil {
+			return err
+		}
+		if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
+			return fmt.Errorf("saving town settings: %w", err)
+		}
+		fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
+		return nil
 	}
 
 	switch key {
-	case "convoy.notify_on_complete":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if townSettings.Convoy == nil {
-			townSettings.Convoy = &config.ConvoyConfig{}
-		}
-		townSettings.Convoy.NotifyOnComplete = b
-
-	case "cli_theme":
-		switch value {
-		case "dark", "light", "auto":
-			townSettings.CLITheme = value
-		default:
-			return fmt.Errorf("invalid cli_theme: %q (expected dark, light, or auto)", value)
-		}
-
-	case "default_agent":
-		townSettings.DefaultAgent = value
-
-	case "auto_compact_window":
-		n, ok := config.ParseTokenCount(value)
-		if !ok {
-			return fmt.Errorf("invalid value for %s: expected a positive token count such as 150000 or 150k", key)
-		}
-		townSettings.AutoCompactWindow = n
-
-	case "scheduler.max_polecats":
-		n, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected integer)", key, err)
-		}
-		if n < -1 {
-			return fmt.Errorf("invalid value for %s: must be >= -1 (-1 = direct dispatch, 0 = direct dispatch, N > 0 = deferred)", key)
-		}
-		if townSettings.Scheduler == nil {
-			townSettings.Scheduler = capacity.DefaultSchedulerConfig()
-		}
-		townSettings.Scheduler.MaxPolecats = &n
-
-	case "scheduler.batch_size":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid value for %s: expected positive integer", key)
-		}
-		if townSettings.Scheduler == nil {
-			townSettings.Scheduler = capacity.DefaultSchedulerConfig()
-		}
-		townSettings.Scheduler.BatchSize = &n
-
-	case "scheduler.spawn_delay":
-		// Validate it parses as a duration
-		_, err := time.ParseDuration(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected Go duration, e.g. 2s, 500ms)", key, err)
-		}
-		if townSettings.Scheduler == nil {
-			townSettings.Scheduler = capacity.DefaultSchedulerConfig()
-		}
-		townSettings.Scheduler.SpawnDelay = value
-
-	case "polecat.target_clean_policy":
-		// Validate the policy string parses cleanly. Storage form is the raw input
-		// (normalized via parsed.String() so e.g. "  per_bead  " becomes "per_bead").
-		parsed, err := polecat.ParseTargetCleanPolicy(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w", key, err)
-		}
-		if townSettings.Polecat == nil {
-			townSettings.Polecat = &config.PolecatConfig{}
-		}
-		townSettings.Polecat.TargetCleanPolicy = parsed.String()
-
 	case "maintenance.window", "maintenance.interval", "maintenance.threshold":
 		return setMaintenanceConfig(townRoot, key, value)
 
@@ -943,15 +1139,8 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		if strings.HasPrefix(key, "lifecycle.") {
 			return setLifecycleConfig(townRoot, key, value)
 		}
-		return fmt.Errorf("unknown config key: %q\n\nSupported keys:\n  convoy.notify_on_complete\n  cli_theme\n  default_agent\n  auto_compact_window\n  dolt.port\n  scheduler.max_polecats\n  scheduler.batch_size\n  scheduler.spawn_delay\n  polecat.target_clean_policy\n  maintenance.window\n  maintenance.interval\n  maintenance.threshold\n  lifecycle.reaper.*\n  lifecycle.compactor.*\n  lifecycle.doctor.*\n  lifecycle.backup.*", key)
+		return unknownConfigKeyError(key)
 	}
-
-	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
-		return fmt.Errorf("saving town settings: %w", err)
-	}
-
-	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
-	return nil
 }
 
 func runConfigGet(cmd *cobra.Command, args []string) error {
@@ -962,68 +1151,17 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	settingsPath := config.TownSettingsPath(townRoot)
-	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
-	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
+	if spec := findTownSettingsKeySpec(key); spec != nil {
+		settingsPath := config.TownSettingsPath(townRoot)
+		townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
+		if err != nil {
+			return fmt.Errorf("loading town settings: %w", err)
+		}
+		fmt.Println(spec.get(townSettings))
+		return nil
 	}
 
-	var value string
 	switch key {
-	case "convoy.notify_on_complete":
-		if townSettings.Convoy != nil && townSettings.Convoy.NotifyOnComplete {
-			value = "true"
-		} else {
-			value = "false"
-		}
-
-	case "cli_theme":
-		value = townSettings.CLITheme
-		if value == "" {
-			value = "auto"
-		}
-
-	case "default_agent":
-		value = townSettings.DefaultAgent
-		if value == "" {
-			value = "claude"
-		}
-
-	case "auto_compact_window":
-		if townSettings.AutoCompactWindow > 0 {
-			value = strconv.Itoa(townSettings.AutoCompactWindow)
-		} else {
-			value = strconv.Itoa(config.DefaultAutoCompactWindowTokens)
-		}
-
-	case "scheduler.max_polecats":
-		scfg := townSettings.Scheduler
-		if scfg == nil {
-			scfg = capacity.DefaultSchedulerConfig()
-		}
-		value = strconv.Itoa(scfg.GetMaxPolecats())
-
-	case "scheduler.batch_size":
-		scfg := townSettings.Scheduler
-		if scfg == nil {
-			scfg = capacity.DefaultSchedulerConfig()
-		}
-		value = strconv.Itoa(scfg.GetBatchSize())
-
-	case "scheduler.spawn_delay":
-		scfg := townSettings.Scheduler
-		if scfg == nil {
-			scfg = capacity.DefaultSchedulerConfig()
-		}
-		value = scfg.GetSpawnDelay().String()
-
-	case "polecat.target_clean_policy":
-		if townSettings.Polecat != nil && townSettings.Polecat.TargetCleanPolicy != "" {
-			value = townSettings.Polecat.TargetCleanPolicy
-		} else {
-			value = polecat.DefaultTargetCleanPolicy().String()
-		}
-
 	case "maintenance.window", "maintenance.interval", "maintenance.threshold":
 		return getMaintenanceConfig(townRoot, key)
 
@@ -1042,11 +1180,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		if strings.HasPrefix(key, "lifecycle.") {
 			return getLifecycleConfig(townRoot, key)
 		}
-		return fmt.Errorf("unknown config key: %q\n\nSupported keys:\n  convoy.notify_on_complete\n  cli_theme\n  default_agent\n  auto_compact_window\n  dolt.port\n  scheduler.max_polecats\n  scheduler.batch_size\n  scheduler.spawn_delay\n  polecat.target_clean_policy\n  maintenance.window\n  maintenance.interval\n  maintenance.threshold\n  lifecycle.reaper.*\n  lifecycle.compactor.*\n  lifecycle.doctor.*\n  lifecycle.backup.*", key)
+		return unknownConfigKeyError(key)
 	}
-
-	fmt.Println(value)
-	return nil
 }
 
 // setMaintenanceConfig sets a maintenance.* key in daemon.json (patrol config).
@@ -1449,6 +1584,9 @@ config values such as the default AI model or provider.`,
 	configRoleCmd.AddCommand(configRoleListCmd)
 	configRoleCmd.AddCommand(configRoleSetCmd)
 	configRoleCmd.AddCommand(configRoleUnsetCmd)
+	configRoleListCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleSetCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleUnsetCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
 
 	// Add default-agent subcommands
 	configDefaultAgentCmd.AddCommand(configDefaultAgentListCmd)
