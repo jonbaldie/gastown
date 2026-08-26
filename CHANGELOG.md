@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-08-26
+
 ### Fixed
 
 - **Harden mail and session identity parsing.** Agent addresses now reject
