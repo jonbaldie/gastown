@@ -12,62 +12,28 @@ Full context is injected by `gt prime` at session start.
 
 ---
 
-## Beads Workflow Integration
+## Beads
 
-This project uses [beads](https://github.com/jonbaldie/beads) for issue tracking. Issues live in `.beads/` and are tracked in git.
-
-Two CLIs: **bd** (issue CRUD) and **bv** (graph-aware triage, read-only).
-
-### bd: Issue Management
+Use `bd` to track planned work and genuine follow-up. Do not create a Bead
+solely to ship, review, or merge an existing pull request.
 
 ```bash
-bd ready              # Unblocked issues ready to work
-bd list --status=open # All open issues
-bd show <id>          # Full details with dependencies
+bd ready              # Unblocked Beads
+bd show <id>          # Details and dependencies
 bd create --title="..." --type=task --priority=2
-bd update <id> --status=in_progress
-bd close <id>         # Mark complete
-bd close <id1> <id2>  # Close multiple
-bd dep add <a> <b>    # a depends on b
-bd sync               # Sync with git
+bd update <id> --claim
+bd close <id>
 ```
 
-### bv: Graph Analysis (read-only)
+Use `bv` only with `--robot-*` flags; bare `bv` opens an interactive UI.
 
-**NEVER run bare `bv`** — it launches interactive TUI. Always use `--robot-*` flags:
+If this Session changed Bead state, run `bd dolt push` once after the code is
+pushed. If it fails, record the exact error in the handoff; do not start
+parallel pushes, repeatedly retry, or change transport settings automatically.
+Beads replication does not block a verified code delivery.
 
-```bash
-bv --robot-triage     # Ranked picks, quick wins, blockers, health
-bv --robot-next       # Single top pick + claim command
-bv --robot-plan       # Parallel execution tracks
-bv --robot-alerts     # Stale issues, cascades, mismatches
-bv --robot-insights   # Full graph metrics: PageRank, betweenness, cycles
-```
-
-### Workflow
-
-1. **Start**: `bd ready` (or `bv --robot-triage` for graph analysis)
-2. **Claim**: `bd update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: `bd close <id>`
-5. **Sync**: `bd sync` at session end
-
-### Session Close Protocol
-
-```bash
-git status            # Check what changed
-git add <files>       # Stage code changes
-bd sync               # Commit beads changes
-git commit -m "..."   # Commit code
-bd sync               # Commit any new beads changes
-git push              # Push to remote
-```
-
-### Key Concepts
-
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (numbers only)
-- **Types**: task, bug, feature, epic, question, docs
-- **Dependencies**: `bd ready` shows only unblocked work
+To finish a Session: run proportionate quality checks, commit and push the
+code, then clean up temporary worktrees. File Beads only for work that remains.
 
 <!-- end-beads-agent-instructions -->
 
@@ -136,53 +102,6 @@ gt mail inbox         # Check for messages
 ```
 
 <!-- end-gastown-agent-instructions -->
-
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `gt prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `gt prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-## Session Completion
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd dolt push
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
 
 ---
 
