@@ -362,6 +362,61 @@ func TestConfigAgentSet(t *testing.T) {
 			t.Errorf("Command = %q, want 'new-command'", agent.Command)
 		}
 	})
+
+	t.Run("preserves other fields when overriding command", func(t *testing.T) {
+		townRoot := setupTestTownForConfig(t)
+		settingsPath := config.TownSettingsPath(townRoot)
+
+		// Create initial settings with fields beyond Command/Args/Provider.
+		settings := &config.TownSettings{
+			Type:         "town-settings",
+			Version:      config.CurrentTownSettingsVersion,
+			DefaultAgent: "claude",
+			Agents: map[string]*config.RuntimeConfig{
+				"my-agent": {
+					Provider: "claude",
+					Command:  "old-command",
+					Args:     []string{"--old"},
+					Env:      map[string]string{"FOO": "bar"},
+					Session:  &config.RuntimeSessionConfig{SessionIDEnv: "MY_SESSION_ID"},
+				},
+			},
+		}
+		if err := config.SaveTownSettings(settingsPath, settings); err != nil {
+			t.Fatalf("save initial settings: %v", err)
+		}
+
+		originalWd, _ := os.Getwd()
+		defer os.Chdir(originalWd)
+		if err := os.Chdir(townRoot); err != nil {
+			t.Fatalf("chdir: %v", err)
+		}
+
+		cmd := &cobra.Command{}
+		args := []string{"my-agent", "new-command --new"}
+		if err := runConfigAgentSet(cmd, args); err != nil {
+			t.Fatalf("runConfigAgentSet failed: %v", err)
+		}
+
+		loaded, err := config.LoadOrCreateTownSettings(settingsPath)
+		if err != nil {
+			t.Fatalf("load settings: %v", err)
+		}
+
+		agent := loaded.Agents["my-agent"]
+		if agent.Command != "new-command" {
+			t.Errorf("Command = %q, want 'new-command'", agent.Command)
+		}
+		if len(agent.Args) != 1 || agent.Args[0] != "--new" {
+			t.Errorf("Args = %v, want [--new]", agent.Args)
+		}
+		if agent.Env["FOO"] != "bar" {
+			t.Errorf("Env[FOO] = %q, want 'bar' (field should be preserved)", agent.Env["FOO"])
+		}
+		if agent.Session == nil || agent.Session.SessionIDEnv != "MY_SESSION_ID" {
+			t.Errorf("Session field was not preserved: %+v", agent.Session)
+		}
+	})
 }
 
 func TestConfigAgentSetProviderInference(t *testing.T) {
