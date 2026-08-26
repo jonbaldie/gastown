@@ -1641,7 +1641,6 @@ func TestResolveRoleAgentConfig_AgyModelAliases(t *testing.T) {
 	townRoot := t.TempDir()
 
 	townSettings := NewTownSettings()
-	townSettings.DefaultAgent = "agy-pro-high"
 	townSettings.Agents = map[string]*RuntimeConfig{
 		"agy-flash-medium": {
 			Provider: "agy",
@@ -1655,7 +1654,8 @@ func TestResolveRoleAgentConfig_AgyModelAliases(t *testing.T) {
 		},
 	}
 	townSettings.RoleAgents = map[string]string{
-		constants.RoleMayor: "agy-flash-medium",
+		constants.RoleMayor:  "agy-flash-medium",
+		constants.RoleDeacon: "agy-pro-high",
 	}
 	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
 		t.Fatalf("SaveTownSettings: %v", err)
