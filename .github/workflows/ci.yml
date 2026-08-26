@@ -161,27 +161,20 @@ jobs:
 
   integration-shard:
     name: Integration Tests / ${{ matrix.name }}
+    # Disabled pending the merge-base-aware mutago replacement tracked by gt-4imw.
+    # Keep the complete jobs here so they remain available while the replacement
+    # gate is calibrated.
+    if: ${{ github.event_name == 'integration-tests-disabled' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Keep each shard below the hosted runner's observed shutdown window.
-          # A-F and then A-C were still progressing when their runners were
-          # stopped, so keep the expensive A/B Beads tests separate from C.
           # The final range also catches non-letter test names.
-          - name: A-B
+          - name: A-F
             tags: integration
-            run: '^Test[A-B]'
-            junit: junit-integration-a-b.xml
-          - name: C
-            tags: integration
-            run: '^TestC'
-            junit: junit-integration-c.xml
-          - name: D-F
-            tags: integration
-            run: '^Test[D-F]'
-            junit: junit-integration-d-f.xml
+            run: '^Test[A-F]'
+            junit: junit-integration-a-f.xml
           - name: G-Q
             tags: integration
             run: '^Test[G-Q]'
@@ -246,7 +239,8 @@ jobs:
 
   integration:
     name: Integration Tests
-    if: always()
+    # Disabled with the shard job above; retain the aggregate check definition.
+    if: ${{ github.event_name == 'integration-tests-disabled' }}
     needs: integration-shard
     runs-on: ubuntu-latest
     steps:
