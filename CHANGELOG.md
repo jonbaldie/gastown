@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-08-26
+
+### Added
+
+- **Config CLI parity.** `gt config get/set` now uses a single schema for
+  Town settings, and `gt config role set`, `unset`, and `list` support
+  rig-scoped assignments through `--rig`.
+- **Agy agent preset.** The built-in `agy` runtime can now be selected and
+  configured like the other supported agent runtimes.
+
+### Fixed
+
+- **Agent overrides preserve runtime settings.** Updating an existing agent
+  with `gt config agent set` no longer discards its environment, session,
+  hooks, tmux, instructions, ACP, or exec-wrapper configuration.
+- **Disposable Town workflow safety.** Nudge delivery falls back to legacy
+  tmux sessions when Worker lacks lifecycle state; future rig paths resolve
+  safely; and local-only polecat work is never pushed during cleanup.
+
 ## [1.3.4] - 2026-08-26
 
 ### Fixed
