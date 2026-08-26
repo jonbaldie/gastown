@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-08-26
+
+### Fixed
+
+- **Mutation Tests avoid uncovered-mutant test runs.** CI now uses Mutago
+  v2.8.3, which skips test execution for uncovered mutants when `--coverage`
+  is enabled while preserving covered-MSI scoring.
+
 ## [1.3.5] - 2026-08-26
 
 ### Added
