@@ -39,6 +39,9 @@ var ReservedInfraAgentNames = map[string]bool{
 	"refinery": true,
 	"crew":     true,
 	"polecats": true,
+	"overseer": true,
+	"boot":     true,
+	"dog":      true,
 }
 
 // Built-in themes with themed polecat names.
@@ -190,7 +193,7 @@ func (p *NamePool) getNames() []string {
 func filterReservedNames(names []string) []string {
 	filtered := make([]string, 0, len(names))
 	for _, name := range names {
-		if !ReservedInfraAgentNames[name] {
+		if !reservedPolecatName(name) {
 			filtered = append(filtered, name)
 		}
 	}
@@ -564,10 +567,20 @@ func ValidatePoolName(name string) error {
 	if !validPoolNameRe.MatchString(name) {
 		return fmt.Errorf("name %q invalid (must be lowercase alphanumeric with hyphens, starting with a letter)", name)
 	}
-	if ReservedInfraAgentNames[name] {
+	if reservedPolecatName(name) {
 		return fmt.Errorf("name %q is reserved for infrastructure agents", name)
 	}
 	return nil
+}
+
+// reservedPolecatName reports names that would collide with other session types.
+// Polecat sessions are <prefix>-<name>, so crew-*, dog-*, overseer, and boot
+// parse as crew, dog, overseer, or boot rather than as a polecat.
+func reservedPolecatName(name string) bool {
+	if ReservedInfraAgentNames[name] {
+		return true
+	}
+	return strings.HasPrefix(name, "crew-") || strings.HasPrefix(name, "dog-")
 }
 
 // ParseThemeFile reads a custom theme file (one name per line).
@@ -598,7 +611,7 @@ func ParseThemeFile(path string) ([]string, error) {
 			fmt.Fprintf(os.Stderr, "warning: skipping invalid name %q (must be lowercase alphanumeric with hyphens)\n", name)
 			continue
 		}
-		if ReservedInfraAgentNames[name] {
+		if reservedPolecatName(name) {
 			fmt.Fprintf(os.Stderr, "warning: skipping reserved name %q\n", name)
 			continue
 		}

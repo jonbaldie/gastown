@@ -238,6 +238,12 @@ func TestAgentBeadIDRoundTrip(t *testing.T) {
 		{"collapsed refinery", "ff", "ff", "refinery", ""},
 		{"collapsed polecat", "ff", "ff", "polecat", "nux"},
 		{"collapsed crew", "ff", "ff", "crew", "dave"},
+
+		// Prefix lengths that ParseAgentBeadID used to reject (1, 4+)
+		{"1-char prefix mayor", "g", "", "mayor", ""},
+		{"4-char prefix deacon", "gthq", "", "deacon", ""},
+		{"4-char prefix witness", "nrpk", "gastown", "witness", ""},
+		{"4-char derived prefix", "abcd", "alpha-bravo-charlie-delta", "witness", ""},
 	}
 
 	for _, tt := range tests {
@@ -265,4 +271,3 @@ func TestAgentBeadIDRoundTrip(t *testing.T) {
 		})
 	}
 }
-

@@ -476,72 +476,40 @@ func (r *Resolver) resolveChannel(name string) ([]Recipient, error) {
 }
 
 // AgentBeadIDToAddress converts an agent bead ID to a mail address.
-// Handles both gt- (rig agents) and hq- (town agents) prefixes:
+// Accepts any beads prefix that ParseAgentBeadID understands:
 //   - hq-mayor → mayor/
-//   - hq-deacon → deacon/
+//   - bd-mayor → mayor/
 //   - gt-gastown-crew-max → gastown/crew/max
+//   - ff-witness → ff/witness (collapsed prefix==rig)
 func AgentBeadIDToAddress(id string) string {
-	if addr := dogAddressFromAgentBeadID(id); addr != "" {
-		return addr
-	}
-	if isDogAgentBeadIDWithoutName(id) {
+	rig, role, name, ok := beads.ParseAgentBeadID(id)
+	if !ok {
 		return ""
 	}
 
-	var rest string
-
-	// Handle both gt- (rig agents) and hq- (town agents) prefixes
-	if strings.HasPrefix(id, "gt-") {
-		rest = strings.TrimPrefix(id, "gt-")
-	} else if strings.HasPrefix(id, "hq-") {
-		rest = strings.TrimPrefix(id, "hq-")
-	} else {
-		return ""
-	}
-
-	// Agent bead IDs include the role explicitly: <prefix>-<rig>-<role>[-<name>]
-	// Scan from right for known role markers to handle hyphenated rig names.
-	parts := strings.Split(rest, "-")
-
-	if len(parts) == 1 {
-		// Town-level: gt-mayor → mayor/
-		return parts[0] + "/"
-	}
-
-	// Scan from right for known role markers
-	for i := len(parts) - 1; i >= 1; i-- {
-		switch parts[i] {
-		case constants.RoleWitness, constants.RoleRefinery:
-			// Singleton role: rig is everything before the role
-			rig := strings.Join(parts[:i], "-")
-			return rig + "/" + parts[i]
-		case constants.RoleCrew, constants.RolePolecat:
-			// Named role: rig/role/name
-			rig := strings.Join(parts[:i], "-")
-			if i+1 < len(parts) {
-				name := strings.Join(parts[i+1:], "-")
-				role := parts[i]
-				if role == constants.RolePolecat {
-					role = "polecats"
-				}
-				return rig + "/" + role + "/" + name
-			}
-			role := parts[i]
-			if role == constants.RolePolecat {
-				role = "polecats"
-			}
-			return rig + "/" + role
-		case "dog":
-			// Town-level named: gt-dog-alpha
-			return dogAddressFromParts(parts, i)
+	switch role {
+	case constants.RoleMayor, constants.RoleDeacon:
+		return role + "/"
+	case "dog":
+		return DogAddress(name)
+	case constants.RoleWitness, constants.RoleRefinery:
+		if rig == "" {
+			return ""
 		}
+		return rig + "/" + role
+	case constants.RoleCrew:
+		if rig == "" || name == "" {
+			return ""
+		}
+		return rig + "/crew/" + name
+	case constants.RolePolecat:
+		if rig == "" || name == "" {
+			return ""
+		}
+		return rig + "/polecats/" + name
+	default:
+		return ""
 	}
-
-	// Fallback: assume rig/role format
-	if len(parts) == 2 {
-		return parts[0] + "/" + parts[1]
-	}
-	return ""
 }
 
 // matchPattern checks if an address matches a wildcard pattern.
