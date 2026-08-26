@@ -118,6 +118,8 @@ func NewMergeFailedMessage(rig, polecat, branch, issue, targetBranch, failureTyp
 }
 
 // formatMergeFailedBody formats the body of a MERGE_FAILED message.
+// Error is written last; see the comment on formatFixNeededBody for why
+// that ordering matters for round-tripping a multi-line value.
 func formatMergeFailedBody(p MergeFailedPayload) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Branch: %s\n", p.Branch))
@@ -164,6 +166,10 @@ func NewFixNeededMessage(rig, polecat, branch, issue, targetBranch, failureType,
 }
 
 // formatFixNeededBody formats the body of a FIX_NEEDED message.
+//
+// Error carries raw subprocess (test/build/lint) output. That output is
+// realistically multi-line, so Error is written last. See parseErrorField
+// for why the ordering matters.
 func formatFixNeededBody(p FixNeededPayload) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Branch: %s\n", p.Branch))
@@ -173,11 +179,11 @@ func formatFixNeededBody(p FixNeededPayload) string {
 	sb.WriteString(fmt.Sprintf("Target: %s\n", p.TargetBranch))
 	sb.WriteString(fmt.Sprintf("Failed-At: %s\n", p.FailedAt.Format(time.RFC3339)))
 	sb.WriteString(fmt.Sprintf("Failure-Type: %s\n", p.FailureType))
-	sb.WriteString(fmt.Sprintf("Error: %s\n", p.Error))
 	if p.MRBeadID != "" {
 		sb.WriteString(fmt.Sprintf("MR-Bead-ID: %s\n", p.MRBeadID))
 	}
 	sb.WriteString(fmt.Sprintf("Attempt-Number: %d\n", p.AttemptNumber))
+	sb.WriteString(fmt.Sprintf("Error: %s\n", p.Error))
 	return sb.String()
 }
 
@@ -191,7 +197,7 @@ func ParseFixNeededPayload(body string) (*FixNeededPayload, error) {
 		Rig:          parseField(body, "Rig"),
 		TargetBranch: parseField(body, "Target"),
 		FailureType:  parseField(body, "Failure-Type"),
-		Error:        parseField(body, "Error"),
+		Error:        parseErrorField(body),
 		MRBeadID:     parseField(body, "MR-Bead-ID"),
 	}
 
@@ -423,7 +429,7 @@ func ParseMergeFailedPayload(body string) (*MergeFailedPayload, error) {
 		Rig:          parseField(body, "Rig"),
 		TargetBranch: parseField(body, "Target"),
 		FailureType:  parseField(body, "Failure-Type"),
-		Error:        parseField(body, "Error"),
+		Error:        parseErrorField(body),
 	}
 
 	// Parse timestamp
@@ -514,16 +520,57 @@ func ParsePolecatDonePayload(polecatName, body string) *PolecatDonePayload {
 
 // parseField extracts a field value from a key-value body format.
 // Format: "Key: value"
+//
+// Error is always the last field written (see formatFixNeededBody) and its
+// value is raw free text that can itself contain "Key: value"-shaped lines
+// (e.g. captured test output containing "Attempt-Number: 999"). That's only
+// safe for a field that's always written, because its real header is then
+// guaranteed to appear before the Error section and win the first-match
+// scan below. An *optional* field (e.g. MR-Bead-ID) has no such guarantee:
+// when it's absent, nothing stops this scan from continuing into the Error
+// section and matching a lookalike line there instead. So the scan stops at
+// the "Error: " boundary rather than continuing to the end of the body.
 func parseField(body, key string) string {
 	lines := strings.Split(body, "\n")
 	prefix := key + ": "
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		if key != "Error" && strings.HasPrefix(line, "Error: ") {
+			break
+		}
 		if strings.HasPrefix(line, prefix) {
 			return strings.TrimPrefix(line, prefix)
 		}
 	}
 
 	return ""
+}
+
+// parseErrorField extracts the value of the final "Error: " field in a
+// key-value body. It captures every line up to the end of the body, not
+// just the first line, so a multi-line value (e.g. raw test/build/lint
+// output) round-trips intact instead of getting truncated.
+//
+// It is the counterpart to writing Error last in
+// formatFixNeededBody/formatMergeFailedBody. That ordering, plus reading to
+// end-of-body here, guarantees a "Key: value"-shaped line inside the Error
+// text can never be misread as a different field: every other field's real
+// header is written before the Error section, so parseField's first-match
+// scan finds it first. See parseField for why an optional field needs one
+// more safeguard on top of this ordering.
+func parseErrorField(body string) string {
+	const prefix = "Error: "
+	searchFrom := 0
+	for {
+		i := strings.Index(body[searchFrom:], prefix)
+		if i < 0 {
+			return ""
+		}
+		abs := searchFrom + i
+		if abs == 0 || body[abs-1] == '\n' {
+			return strings.TrimSuffix(body[abs+len(prefix):], "\n")
+		}
+		searchFrom = abs + 1
+	}
 }

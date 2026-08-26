@@ -1201,20 +1201,41 @@ func IsNonWritableRemoteError(err error) bool {
 }
 
 func normalizeGitRemoteURL(raw string) string {
-	s := strings.TrimSpace(raw)
+	// Lowercase up front (schemes and hosts are case-insensitive per RFC
+	// 3986) so scheme-prefix stripping below matches "HTTPS://" as well as
+	// "https://".
+	s := strings.ToLower(strings.TrimSpace(raw))
 	s = strings.TrimSuffix(s, "/")
 	s = strings.TrimSuffix(s, ".git")
+
+	// True SCP-style syntax ("git@host:path") never carries a "://" scheme.
+	// Decide this before stripping any scheme prefix. Otherwise
+	// "ssh://git@host:PORT/path" also starts with "git@...:" once "ssh://"
+	// is stripped. That misdetects it as SCP syntax and folds the port into
+	// the path instead of dropping it.
+	isSCP := strings.HasPrefix(s, "git@") && !strings.Contains(s, "://")
+
 	s = strings.TrimPrefix(s, "https://")
 	s = strings.TrimPrefix(s, "http://")
 	s = strings.TrimPrefix(s, "ssh://")
 	s = strings.TrimPrefix(s, "git://")
-	if strings.HasPrefix(s, "git@") {
+
+	if isSCP {
 		s = strings.TrimPrefix(s, "git@")
 		s = strings.Replace(s, ":", "/", 1)
-	} else if at := strings.LastIndex(s, "@"); at >= 0 {
-		s = s[at+1:]
+	} else {
+		if at := strings.LastIndex(s, "@"); at >= 0 {
+			s = s[at+1:]
+		}
+		// Drop an explicit "host:port" port so it doesn't get compared as
+		// part of the path.
+		if colon := strings.Index(s, ":"); colon >= 0 {
+			if slash := strings.Index(s[colon:], "/"); slash >= 0 {
+				s = s[:colon] + s[colon+slash:]
+			}
+		}
 	}
-	return strings.ToLower(strings.TrimSuffix(s, "/"))
+	return strings.TrimSuffix(s, "/")
 }
 
 // Push pushes to the remote branch with a timeout to prevent indefinite hangs
