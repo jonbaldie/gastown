@@ -164,7 +164,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
-      MUTAGO_VERSION: v2.8.1
+      MUTAGO_VERSION: v2.8.3
       BASE_REF: ${{ github.base_ref }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
