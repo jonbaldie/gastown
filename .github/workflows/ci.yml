@@ -166,13 +166,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Keep each shard below the hosted runner's observed 20-minute lease.
-          # Timings from a full CI run: A-F ~11m, G-Q ~4m, R-Z ~6m,
-          # scheduler ~11m. The final range also catches non-letter test names.
-          - name: A-F
+          # Keep each shard below the hosted runner's observed shutdown window.
+          # A-F was still progressing when the runner stopped it after 7m37s,
+          # so split that range again. The final range also catches non-letter
+          # test names.
+          - name: A-C
             tags: integration
-            run: '^Test[A-F]'
-            junit: junit-integration-a-f.xml
+            run: '^Test[A-C]'
+            junit: junit-integration-a-c.xml
+          - name: D-F
+            tags: integration
+            run: '^Test[D-F]'
+            junit: junit-integration-d-f.xml
           - name: G-Q
             tags: integration
             run: '^Test[G-Q]'
