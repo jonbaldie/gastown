@@ -434,8 +434,7 @@ func doneSourceCloseSkipReason(bd *beads.Beads, issueID string, issue *beads.Iss
 }
 
 func doneNoMRSourceCloseSkipReason(bd *beads.Beads, issueID string, issue *beads.Issue) (string, bool) {
-	currentHead, _ := currentReviewEvidenceHead()
-	return doneSourceCloseSkipReasonForHeadWithNoMRClose(bd, issueID, issue, currentHead, true)
+	return doneSourceCloseSkipReason(bd, issueID, issue)
 }
 
 func doneSkipPushForLocalStrategy(convoyInfo *ConvoyInfo, sourceIssue *beads.Issue) bool {
@@ -486,10 +485,6 @@ func doneDirectMergeSkipReason(bd *beads.Beads, issueID string, issue *beads.Iss
 }
 
 func doneSourceCloseSkipReasonForHead(bd *beads.Beads, issueID string, issue *beads.Issue, currentHead string) (string, bool) {
-	return doneSourceCloseSkipReasonForHeadWithNoMRClose(bd, issueID, issue, currentHead, false)
-}
-
-func doneSourceCloseSkipReasonForHeadWithNoMRClose(bd *beads.Beads, issueID string, issue *beads.Issue, currentHead string, noMRClose bool) (string, bool) {
 	issue, skipReason, fatal := loadDoneSourceIssue(bd, issueID, issue)
 	if skipReason != "" {
 		return skipReason, fatal
