@@ -333,7 +333,7 @@ func (h *ConvoyHandler) fetchAndRender(r *http.Request, expandPanel string) []by
 	case <-done:
 		// All fetches completed
 	case <-ctx.Done():
-		log.Printf("dashboard: fetch timeout after %v", h.fetchTimeout)
+		log.Printf("dashboard: fetch timeout")
 		// Goroutines may still be writing to shared result variables.
 		// Wait for them to finish to avoid a data race on read below.
 		<-done

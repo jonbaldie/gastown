@@ -5271,7 +5271,7 @@ if [ -n "${BEADS_DOLT_HOST:-}" ] || [ "${BEADS_DOLT_SERVER_DATABASE:-}" = "hq" ]
   printf 'hq\n'
   exit 0
 fi
-if [ "${BEADS_DIR:-}" = "${PWD}/.beads" ]; then
+if [ "${BEADS_DIR:-}" = "${MOCK_BD_EXPECTED_DIR:-}" ]; then
   printf 'gt\n'
   exit 0
 fi
@@ -5282,6 +5282,7 @@ printf 'unknown\n'
 	}
 	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("MOCK_BD_LOG", logPath)
+	t.Setenv("MOCK_BD_EXPECTED_DIR", beadsDir)
 	t.Setenv("GT_DOLT_DATA", "/home/coder/gt/.dolt-data")
 	t.Setenv("BEADS_DOLT_DATA_DIR", "/home/coder/gt/.dolt-data")
 	t.Setenv("BEADS_DOLT_HOST", "127.0.0.1")

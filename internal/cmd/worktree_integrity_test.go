@@ -34,6 +34,18 @@ func TestEnsureRoleWorktreeIntegrityAllowsNeutralDirectoryWithoutMetadata(t *tes
 	}
 }
 
+func TestEnsureRoleWorktreeIntegrityAllowsWitnessDirectoryWithoutGitMetadata(t *testing.T) {
+	townRoot := t.TempDir()
+	witnessDir := filepath.Join(townRoot, "messrust", "witness")
+	if err := os.MkdirAll(witnessDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureRoleWorktreeIntegrity(witnessDir, townRoot, RoleWitness); err != nil {
+		t.Fatalf("ensureRoleWorktreeIntegrity() error = %v, want nil for Witness workspace", err)
+	}
+}
+
 func TestEnsureRoleWorktreeIntegrityRejectsMalformedOptionalMetadata(t *testing.T) {
 	townRoot := t.TempDir()
 	cwd := filepath.Join(townRoot, "scratch")

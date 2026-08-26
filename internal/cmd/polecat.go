@@ -1657,9 +1657,20 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 	}
 
 	// Step 2.75: Best-effort push before nuke (gt-4vr guardrail).
-	// Try to preserve any unpushed commits on the branch. Push failures are
-	// non-fatal because this cleanup path already passed its safety gates.
-	if branchToDelete != "" {
+	// Try to preserve any unpushed commits unless the hooked task explicitly
+	// requires the work to remain local. Push failures are non-fatal because
+	// this cleanup path already passed its safety gates.
+	var sourceIssue *beads.Issue
+	pushPolicyKnown := true
+	if polecatInfo != nil && polecatInfo.Issue != "" {
+		if issue, err := beads.New(r.Path).Show(polecatInfo.Issue); err != nil {
+			pushPolicyKnown = false
+			fmt.Printf("  %s could not inspect task push policy (skipping remote push): %v\n", style.Dim.Render("○"), err)
+		} else {
+			sourceIssue = issue
+		}
+	}
+	if branchToDelete != "" && shouldPushPolecatBranchBeforeNuke(sourceIssue, pushPolicyKnown) {
 		var pushGit *git.Git
 		// Try worktree first (may still exist), then bare repo fallback.
 		// Use ClonePath from the polecat record — the worktree lives at
@@ -1683,6 +1694,8 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 				fmt.Printf("  %s pushed branch %s before nuke\n", style.Success.Render("✓"), branchToDelete)
 			}
 		}
+	} else if branchToDelete != "" {
+		fmt.Printf("  %s skipped remote push because task policy is local-only or unavailable\n", style.Dim.Render("○"))
 	}
 
 	// Step 3: Delete worktree (nuclear=true to bypass safety checks for stale polecats)
@@ -1721,6 +1734,22 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 	}
 
 	return nil
+}
+
+// shouldPushPolecatBranchBeforeNuke keeps cleanup from publishing work whose
+// hooked task explicitly requires a local-only delivery path. Without task
+// metadata, retain the preservation guardrail for unpushed commits.
+func shouldPushPolecatBranchBeforeNuke(issue *beads.Issue, pushPolicyKnown bool) bool {
+	if !pushPolicyKnown {
+		return false
+	}
+	if issue == nil {
+		return true
+	}
+	if beads.HasLocalMergeStrategy(beads.ParseAttachmentFields(issue)) {
+		return false
+	}
+	return !beads.IssueTextImpliesLocalMerge(issue.Title + "\n" + issue.Description)
 }
 
 type activeMRRemovalChecker interface {
