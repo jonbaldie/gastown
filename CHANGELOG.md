@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Submitted Beads stay open until merge proof.** `gt done` no longer closes a
+  merge-queue source Bead on submit; the Refinery closes it after verified merge.
+- **`gt mol current` uses the live Hook.** A stale Handoff attachment is not
+  reported as current; disagreement is diagnosed.
+- **Beads schema bootstrap is configurable and recoverable.** Operators can set
+  `GT_BEADS_SCHEMA_BOOTSTRAP_TIMEOUT`; bootstrap records the running/failed stage
+  and a timed-out run can be retried.
+- **`gt rig add` no longer silently imports tracked Beads.** Tracked JSONL and
+  executable hooks require `--import-beads`, and the command reports source and
+  count.
+- **Town-root docs are location-independent.** Setup and recovery examples use
+  `$GT_TOWN_ROOT` (default `~/gt`).
+
 ## [1.3.6] - 2026-08-26
 
 ### Fixed

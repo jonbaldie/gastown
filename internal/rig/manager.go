@@ -291,6 +291,7 @@ type AddRigOptions struct {
 	SkipDoltCheck  bool     // Skip Dolt server availability check (for tests with mocked beads)
 	CloneFilter    string   // Git clone filter spec (e.g. "blob:none", "tree:0") for partial clones
 	SparseCheckout []string // Sparse checkout paths (cone mode); empty means no sparse checkout
+	ImportBeads    bool     // Explicit consent to activate tracked Beads data and executable hooks
 }
 
 func resolveLocalRepo(path, gitURL string) (string, string) {
@@ -597,6 +598,18 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		}
 	}
 	fmt.Printf("   ✓ Created mayor clone\n")
+
+	inspection, err := InspectTrackedBeadsImport(mayorRigPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting tracked Beads import: %w", err)
+	}
+	if err := RequireTrackedBeadsImportConsent(inspection, opts.ImportBeads); err != nil {
+		return nil, err
+	}
+	if inspection.RequiresConsent() {
+		fmt.Printf("  Importing %d bead(s) from %s (%v); executable hooks: %v\n",
+			inspection.BeadCount, inspection.Source, inspection.JSONLFiles, inspection.ExecutableHooks)
+	}
 
 	// Check if source repo has tracked .beads/ directory.
 	// If so, we need to initialize the database (it doesn't exist after clone since DB files are gitignored).
