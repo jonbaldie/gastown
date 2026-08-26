@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-08-26
+
 ### Fixed
 
 - **Parse dog mail addresses.** `session.ParseAddress` now accepts
@@ -29,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reservation now includes `overseer`, `boot`, `dog`, and names starting with
   `crew-` or `dog-`, so sessions such as `gt-crew-max` and `hq-overseer` cannot
   be allocated to polecats.
+- **Harden agent address and identity parsing.** `ParseAddress` rejects `.`,
+  `..`, empty, and backslash path segments. Mail resolve refuses those paths
+  and unknown rigs for `witness`/`refinery`. Polecat names that start with
+  `crew-` use a `polecat_crew-` session marker so they do not parse as crew.
 
 ## [1.3.3] - 2026-08-21
 
