@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-08-27
+
 ### Fixed
 
+- **Status-line redraws avoid redundant tmux subprocesses.** Session environment
+  values are fetched in one call, reducing real-tmux render latency by about 18%.
 - **Submitted Beads stay open until merge proof.** `gt done` no longer closes a
   merge-queue source Bead on submit; the Refinery closes it after verified merge.
 - **`gt mol current` uses the live Hook.** A stale Handoff attachment is not
