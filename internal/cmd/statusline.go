@@ -75,12 +75,14 @@ func runStatusLine(cmd *cobra.Command, args []string) error {
 	var rigName, polecat, crew, issue, role string
 
 	if statusLineSession != "" {
-		// Non-fatal: missing env vars are handled gracefully below
-		rigName, _ = t.GetEnvironment(statusLineSession, "GT_RIG")
-		polecat, _ = t.GetEnvironment(statusLineSession, "GT_POLECAT")
-		crew, _ = t.GetEnvironment(statusLineSession, "GT_CREW")
-		issue, _ = t.GetEnvironment(statusLineSession, "GT_ISSUE")
-		role, _ = t.GetEnvironment(statusLineSession, "GT_ROLE")
+		// Fetch the session environment in one tmux call. Missing variables are
+		// intentionally left empty and handled gracefully below.
+		env, _ := t.GetAllEnvironment(statusLineSession)
+		rigName = env["GT_RIG"]
+		polecat = env["GT_POLECAT"]
+		crew = env["GT_CREW"]
+		issue = env["GT_ISSUE"]
+		role = env["GT_ROLE"]
 	} else {
 		// Fallback to process environment
 		rigName = os.Getenv("GT_RIG")
