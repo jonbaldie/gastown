@@ -164,7 +164,6 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
-      MUTAGO_VERSION: v2.8.6
       BASE_REF: ${{ github.base_ref }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
@@ -208,15 +207,14 @@ jobs:
 
       - name: Install mutago
         if: steps.changes.outputs.has_production_go == 'true'
-        run: go install "github.com/quality-gates/mutago/v2/cmd/mutago@$MUTAGO_VERSION"
+        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@latest
 
       # Pass the changed files, not the recursive package pattern.
       # --git-diff-lines restricts mutant execution to the PR diff, while
       # coverage skips uncovered mutants before test execution. --per-test is
       # worse here: it launches one go test process per Test* (1500+ in
       # internal/cmd). The timeout is a multiple of the touched-package
-      # baseline; mutago reuses the coverage run for it and v2.8.6 avoids
-      # loading syntax and type data for dependencies.
+      # baseline; mutago reuses the coverage run for it.
       - name: Run mutation tests
         if: steps.changes.outputs.has_production_go == 'true'
         env:
