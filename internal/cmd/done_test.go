@@ -363,6 +363,27 @@ func TestSourceCloseAllowsLocalMergeStrategy(t *testing.T) {
 	}
 }
 
+func TestSourceUsesMergeQueueWithRecordedMRStrategy(t *testing.T) {
+	issue := &beads.Issue{
+		ID:          "gt-work",
+		Type:        "task",
+		Status:      "hooked",
+		Description: "merge_strategy: mr\n",
+	}
+
+	if !sourceUsesMergeQueue(issue) {
+		t.Fatal("recorded mr strategy must identify merge-queue work")
+	}
+}
+
+func TestSourceDoesNotUseMergeQueueWithoutRecordedStrategy(t *testing.T) {
+	issue := &beads.Issue{ID: "gt-work", Type: "task", Status: "hooked"}
+
+	if sourceUsesMergeQueue(issue) {
+		t.Fatal("unrecorded merge strategy must not imply a submitted MR")
+	}
+}
+
 func TestCloseHookedWorkOnDoneClosesLocalMergeBead(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script bd stub not supported on Windows")
@@ -407,6 +428,45 @@ exit 0
 	}
 	if !strings.Contains(string(closesBytes), "ck-7vj") {
 		t.Fatalf("successful local-merge done left ck-7vj HOOKED; closes=%q", closesBytes)
+	}
+}
+
+func TestCloseHookedWorkOnDoneKeepsSubmittedMergeQueueBeadOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script bd stub not supported on Windows")
+	}
+
+	townRoot, closesLog := setupFormulaDoneTown(t, `#!/bin/sh
+while [ "$1" = "--allow-stale" ]; do shift; done
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    case "$1" in
+      gt-work)
+        echo '[{"id":"gt-work","title":"submitted work","status":"hooked","issue_type":"task","description":"merge_strategy: mr"}]'
+        ;;
+    esac
+    ;;
+  close)
+    for arg in "$@"; do
+      case "$arg" in --*) continue ;; esac
+      echo "$arg" >> "%s"
+    done
+    ;;
+  comments|comment)
+    exit 0
+    ;;
+esac
+exit 0
+`)
+
+	bd := beads.New(townRoot)
+	if err := closeHookedWorkOnDone(bd, "gt-work", "", ""); err != nil {
+		t.Fatalf("closeHookedWorkOnDone: %v", err)
+	}
+	if _, err := os.Stat(closesLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("submitted merge-queue work must remain open; closes log err=%v", err)
 	}
 }
 

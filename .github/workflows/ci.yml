@@ -159,9 +159,109 @@ jobs:
           version: v2.11.4
           args: --timeout=5m
 
-  integration:
-    name: Integration Tests
+  mutago:
+    name: Mutation Tests
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      MUTAGO_VERSION: v2.8.3
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      # Check out the PR head rather than GitHub's synthetic merge commit so
+      # mutago computes the PR's merge base against the target branch.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install ICU4C development headers
+        run: sudo apt-get install -y libicu-dev
+
+      - name: Fetch PR base
+        run: >-
+          git fetch --no-tags origin
+          "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Detect changed production Go code
+        id: changes
+        run: |
+          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          list="$RUNNER_TEMP/mutago-files.txt"
+          # ACMR only: deleted files are gone and cannot be mutated.
+          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
+            '*.go' ':(exclude)*_test.go' > "$list"
+          if [ ! -s "$list" ]; then
+            echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
+            echo 'No production Go code changed; skipping mutago.'
+            exit 0
+          fi
+          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
+          echo "file_list=$list" >> "$GITHUB_OUTPUT"
+          echo 'Changed production Go files:'
+          cat "$list"
+
+      - name: Install mutago
+        if: steps.changes.outputs.has_production_go == 'true'
+        run: go install "github.com/quality-gates/mutago/v2/cmd/mutago@$MUTAGO_VERSION"
+
+      # Pass the changed files, not ./... --git-diff-lines only skips mutant
+      # execution; coverage still walks every target package. --per-test is
+      # worse here: it launches one go test process per Test* (1500+ in
+      # internal/cmd). Timeout is a multiple of the touched-package baseline
+      # so cmd's short suite is not killed at the 10s default.
+      - name: Run mutation tests
+        if: steps.changes.outputs.has_production_go == 'true'
+        env:
+          MUTAGO_FILE_LIST: ${{ steps.changes.outputs.file_list }}
+        run: |
+          mapfile -t files < "$MUTAGO_FILE_LIST"
+          mutago \
+            --coverage \
+            --test-flags=-short \
+            --git-diff-lines \
+            --git-diff-base "origin/${BASE_REF}" \
+            --timeout-coefficient 3 \
+            --ignore-msi-with-no-mutations \
+            --min-covered-msi 80 \
+            --logger-github \
+            --quiet \
+            --no-diffs \
+            "${files[@]}"
+
+  integration-shard:
+    name: Integration Tests / ${{ matrix.name }}
+    # Disabled pending the merge-base-aware mutago replacement tracked by gt-4imw.
+    # Keep the complete jobs here so they remain available while the replacement
+    # gate is calibrated.
+    if: ${{ github.event_name == 'integration-tests-disabled' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The final range also catches non-letter test names.
+          - name: A-F
+            tags: integration
+            run: '^Test[A-F]'
+            junit: junit-integration-a-f.xml
+          - name: G-Q
+            tags: integration
+            run: '^Test[G-Q]'
+            junit: junit-integration-g-q.xml
+          - name: R-Z
+            tags: integration
+            run: '^Test([^A-Q]|[R-Z])'
+            junit: junit-integration-r-z.xml
+          - name: Scheduler
+            tags: 'integration scheduler_integration'
+            run: '^(TestScheduler|TestScheduleBead_)'
+            junit: junit-scheduler.xml
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -198,31 +298,31 @@ jobs:
           cp gt "$(go env GOPATH)/bin/"
 
       - name: Integration Tests
-        run: |
-          status=0
-
-          gotestsum --format testname --junitfile junit-integration.xml -- \
-            -tags=integration -timeout=30m ./internal/cmd/... || status=1
-
-          # Separate process so scheduler coverage does not share the 30m
-          # integration budget. One invocation covers every TestScheduler*
-          # / TestScheduleBead_* name; native Dolt start is cheap.
-          gotestsum --format testname --junitfile junit-scheduler.xml -- \
-            -tags='integration scheduler_integration' -timeout=20m \
-            -run '^(TestScheduler|TestScheduleBead_)' ./internal/cmd || status=1
-
-          exit "$status"
+        run: >-
+          gotestsum --format testname --junitfile '${{ matrix.junit }}' --
+          -tags='${{ matrix.tags }}' -timeout=15m
+          -run '${{ matrix.run }}' ./internal/cmd
 
       - name: Test Report
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          status=0
-          python3 .github/scripts/junit-report.py junit-integration.xml "Integration Test Failures" || status=1
-          python3 .github/scripts/junit-report.py junit-scheduler.xml "Scheduler Integration Failures" || status=1
-          exit "$status"
+        run: >-
+          python3 .github/scripts/junit-report.py '${{ matrix.junit }}'
+          'Integration Test Failures (${{ matrix.name }})'
+
+  integration:
+    name: Integration Tests
+    # Disabled with the shard job above; retain the aggregate check definition.
+    if: ${{ github.event_name == 'integration-tests-disabled' }}
+    needs: integration-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm all integration shards passed
+        env:
+          SHARD_RESULT: ${{ needs.integration-shard.result }}
+        run: test "$SHARD_RESULT" = success
 
   go-install:
     name: Public go install

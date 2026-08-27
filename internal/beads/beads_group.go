@@ -7,15 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // groupNameRegex matches valid group names: lowercase alphanumeric, hyphens, underscores.
 var groupNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// MaxGroupNameLength is the maximum allowed length for a group name.
-const MaxGroupNameLength = 64
+const (
+	// MaxGroupNameLength is the maximum allowed length for a group name.
+	MaxGroupNameLength = 64
+
+	groupStorageProbe = "storage-probe"
+)
 
 // ValidateGroupName checks that a group name is valid.
 // Rules: non-empty, max 64 chars, lowercase alphanumeric plus hyphens/underscores,
@@ -33,7 +39,56 @@ func ValidateGroupName(name string) error {
 	if !groupNameRegex.MatchString(name) {
 		return fmt.Errorf("group name %q is invalid: must be lowercase alphanumeric, hyphens, or underscores, starting with alphanumeric", name)
 	}
+	if err := ValidateGroupStorage(name, []string{groupStorageProbe}); err != nil {
+		return err
+	}
 	return nil
+}
+
+// ValidateGroupStorage checks that a group name and member list survive the
+// group bead description format. Members share a comma-separated line, and the
+// parser trims fields, so values must not contain control characters or change
+// when written and read.
+func ValidateGroupStorage(name string, members []string) error {
+	return validateGroupFieldsStorage(&GroupFields{
+		Name:      name,
+		Members:   members,
+		CreatedBy: groupStorageProbe,
+		CreatedAt: groupStorageProbe,
+	})
+}
+
+func validateGroupFieldsStorage(fields *GroupFields) error {
+	if fields == nil {
+		return errors.New("group fields must not be nil")
+	}
+	for _, value := range append([]string{fields.Name, fields.CreatedBy, fields.CreatedAt}, fields.Members...) {
+		if hasControlCharacter(value) {
+			return fmt.Errorf("group field %q contains a control character", value)
+		}
+	}
+
+	want := &GroupFields{
+		Name:      fields.Name,
+		Members:   fields.Members,
+		CreatedBy: fields.CreatedBy,
+		CreatedAt: fields.CreatedAt,
+	}
+	got := ParseGroupFields(FormatGroupDescription("Group: "+groupStorageProbe, want))
+	if got.Name != want.Name || !slices.Equal(got.Members, want.Members) ||
+		got.CreatedBy != want.CreatedBy || got.CreatedAt != want.CreatedAt {
+		return errors.New("group fields cannot be stored without changing")
+	}
+	return nil
+}
+
+func hasControlCharacter(value string) bool {
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // GroupFields holds structured fields for group beads.
@@ -153,6 +208,9 @@ func (b *Beads) CreateGroupBead(name string, fields *GroupFields) (*Issue, error
 	if fields.CreatedAt == "" {
 		fields.CreatedAt = time.Now().Format(time.RFC3339)
 	}
+	if err := validateGroupFieldsStorage(fields); err != nil {
+		return nil, err
+	}
 
 	description := FormatGroupDescription(title, fields)
 
@@ -225,6 +283,12 @@ func (b *Beads) GetGroupByID(id string) (*Issue, *GroupFields, error) {
 
 // UpdateGroupMembers updates the members list for a group.
 func (b *Beads) UpdateGroupMembers(name string, members []string) (*Issue, error) {
+	if err := ValidateGroupName(name); err != nil {
+		return nil, err
+	}
+	if err := ValidateGroupStorage(name, members); err != nil {
+		return nil, err
+	}
 	issue, fields, err := b.GetGroupByName(name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -234,6 +298,9 @@ func (b *Beads) UpdateGroupMembers(name string, members []string) (*Issue, error
 	}
 
 	fields.Members = members
+	if err := validateGroupFieldsStorage(fields); err != nil {
+		return nil, err
+	}
 	description := FormatGroupDescription(issue.Title, fields)
 
 	if err := b.Update(issue.ID, UpdateOptions{Description: &description}); err != nil {
@@ -249,6 +316,12 @@ func (b *Beads) UpdateGroupMembers(name string, members []string) (*Issue, error
 
 // AddGroupMember adds a member to a group if not already present.
 func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
+	if err := ValidateGroupName(name); err != nil {
+		return nil, err
+	}
+	if err := ValidateGroupStorage(name, []string{member}); err != nil {
+		return nil, err
+	}
 	issue, fields, err := b.GetGroupByName(name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -265,6 +338,9 @@ func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
 	}
 
 	fields.Members = append(fields.Members, member)
+	if err := validateGroupFieldsStorage(fields); err != nil {
+		return nil, err
+	}
 	description := FormatGroupDescription(issue.Title, fields)
 
 	if err := b.Update(issue.ID, UpdateOptions{Description: &description}); err != nil {
@@ -280,6 +356,9 @@ func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
 
 // RemoveGroupMember removes a member from a group.
 func (b *Beads) RemoveGroupMember(name string, member string) (*Issue, error) {
+	if err := ValidateGroupName(name); err != nil {
+		return nil, err
+	}
 	issue, fields, err := b.GetGroupByName(name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -297,6 +376,9 @@ func (b *Beads) RemoveGroupMember(name string, member string) (*Issue, error) {
 	}
 
 	fields.Members = newMembers
+	if err := validateGroupFieldsStorage(fields); err != nil {
+		return nil, err
+	}
 	description := FormatGroupDescription(issue.Title, fields)
 
 	if err := b.Update(issue.ID, UpdateOptions{Description: &description}); err != nil {

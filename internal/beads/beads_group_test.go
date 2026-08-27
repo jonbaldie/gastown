@@ -241,6 +241,7 @@ func TestValidateGroupName(t *testing.T) {
 		{"abc_def", false},
 		{"team123", false},
 		{"a-b_c-d", false},
+		{"null", true},
 
 		// Invalid: empty
 		{"", true},

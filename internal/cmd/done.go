@@ -433,6 +433,10 @@ func doneSourceCloseSkipReason(bd *beads.Beads, issueID string, issue *beads.Iss
 	return doneSourceCloseSkipReasonForHead(bd, issueID, issue, currentHead)
 }
 
+func doneNoMRSourceCloseSkipReason(bd *beads.Beads, issueID string, issue *beads.Issue) (string, bool) {
+	return doneSourceCloseSkipReason(bd, issueID, issue)
+}
+
 func doneSkipPushForLocalStrategy(convoyInfo *ConvoyInfo, sourceIssue *beads.Issue) bool {
 	if convoyInfo != nil && beads.IsLocalMergeStrategy(convoyInfo.MergeStrategy) {
 		return true
@@ -497,6 +501,19 @@ func doneSourceCloseSkipReasonForHead(bd *beads.Beads, issueID string, issue *be
 		return fmt.Sprintf("issue %s has %d unchecked acceptance criteria — skipping close", issueID, unchecked), false
 	}
 	return "", false
+}
+
+func sourceUsesMergeQueue(issue *beads.Issue) bool {
+	if issue == nil {
+		return false
+	}
+	fields := beads.ParseAttachmentFields(issue)
+	if fields == nil {
+		return false
+	}
+	// ResolveMergeStrategy intentionally defaults absent metadata to "mr" for
+	// submission, but that default cannot prove a submission happened.
+	return strings.EqualFold(strings.TrimSpace(fields.MergeStrategy), "mr")
 }
 
 func doneReviewOnlyCloseSkipReason(bd *beads.Beads, issueID string, issue *beads.Issue) (string, bool) {
@@ -1077,7 +1094,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 
 				skipClose := false
-				if skipReason, fatal := doneSourceCloseSkipReason(bd, issueID, sourceIssueForNoMerge); skipReason != "" {
+				if skipReason, fatal := doneNoMRSourceCloseSkipReason(bd, issueID, sourceIssueForNoMerge); skipReason != "" {
 					style.PrintWarning("%s", skipReason)
 					fmt.Printf("  The bead will remain open for witness/mayor review.\n")
 					notifyDoneCloseSkipped(townRoot, rigName, sender, issueID, skipReason)
@@ -2303,6 +2320,13 @@ func closeHookedWorkOnDone(hookBd *beads.Beads, hookedBeadID, townRoot, rig stri
 
 	if beads.HasLabel(hookedBead, "gt:rig") {
 		fmt.Fprintf(os.Stderr, "Note: hooked bead %s is a rig identity bead (gt:rig) — skipping close\n", hookedBeadID)
+		return nil
+	}
+	if sourceUsesMergeQueue(hookedBead) {
+		reason := fmt.Sprintf("source issue %s is waiting for Refinery merge proof", hookedBeadID)
+		style.PrintWarning("%s", reason)
+		fmt.Fprintf(os.Stderr, "  The bead will remain open for witness/mayor review.\n")
+		notifyDoneCloseSkipped(townRoot, rig, detectSender(), hookedBeadID, reason)
 		return nil
 	}
 

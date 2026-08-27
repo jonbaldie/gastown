@@ -322,7 +322,10 @@ func isValidGroupName(name string) bool {
 			return false
 		}
 	}
-	return true
+	// The character rules alone still admit "null", which the group bead reads
+	// back as an empty name, so the group is filed under "" and cannot be found
+	// again. Check the name against storage as well.
+	return beads.ValidateGroupStorage(name, []string{storageProbe}) == nil
 }
 
 // isValidMemberPattern checks if a member pattern is syntactically valid.
@@ -333,6 +336,10 @@ func isValidGroupName(name string) bool {
 // - Group names: ops-team
 func isValidMemberPattern(pattern string) bool {
 	if pattern == "" {
+		return false
+	}
+
+	if beads.ValidateGroupStorage(storageProbe, []string{pattern}) != nil {
 		return false
 	}
 
@@ -356,3 +363,8 @@ func isValidMemberPattern(pattern string) bool {
 	// Simple name (group reference) - use same validation as group names
 	return isValidGroupName(pattern)
 }
+
+// storageProbe is the placeholder written into the fields a probe is not
+// testing. It is a value both validators accept, so a probe fails only because
+// of the value under test.
+const storageProbe = "probe"
