@@ -2935,31 +2935,6 @@ func (g *Git) UnpushedCommits() (int, error) {
 	return status.UnpreservedPatchCount, nil
 }
 
-func (g *Git) countCommitsAhead(base string) (int, error) {
-	out, err := g.run("rev-list", "--count", base+"..HEAD")
-	if err != nil {
-		return 0, err
-	}
-
-	var count int
-	_, err = fmt.Sscanf(out, "%d", &count)
-	if err != nil {
-		return 0, fmt.Errorf("parsing unpushed count: %w", err)
-	}
-
-	return count, nil
-}
-
-func (g *Git) unpushedFromExactRemoteBranch(localBranch, remote string) (int, bool, error) {
-	remoteSHA, err := g.PushRemoteBranchTip(remote, localBranch)
-	if err != nil || remoteSHA == "" {
-		return 0, false, err
-	}
-
-	count, err := g.countCommitsAhead(remoteSHA)
-	return count, true, err
-}
-
 // BranchPreservationStatus describes whether HEAD is already preserved on a
 // durable branch, and how many patch-unique commits remain if it is not.
 type BranchPreservationStatus struct {
@@ -3130,10 +3105,6 @@ func (g *Git) preservationOfRefAgainstRef(head, ref string) (BranchPreservationS
 		status.Evidence = "cherry"
 	}
 	return status, nil
-}
-
-func (g *Git) mergeTreeNoopAgainstRef(ref string) (bool, error) {
-	return g.mergeTreeNoopBetweenRefs("HEAD", ref)
 }
 
 func (g *Git) mergeTreeNoopBetweenRefs(head, ref string) (bool, error) {

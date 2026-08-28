@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
-	"github.com/jonbaldie/gastown/internal/crew"
 	"github.com/jonbaldie/gastown/internal/events"
 	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/mail"
@@ -1283,38 +1282,6 @@ func (e *Engineer) runGatesForPhase(ctx context.Context, phase GatePhase) Proces
 
 	_, _ = fmt.Fprintln(e.output, "[Engineer] All quality gates passed")
 	return ProcessResult{Success: true}
-}
-
-// syncCrewWorkspaces pulls latest changes to all crew workspaces.
-// This ensures crew members have access to newly merged code without manual sync.
-func (e *Engineer) syncCrewWorkspaces() {
-	crewGit := git.NewGit(e.rig.Path)
-	crewMgr := crew.NewManager(e.rig, crewGit)
-
-	workers, err := crewMgr.List()
-	if err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to list crew workspaces: %v\n", err)
-		return
-	}
-
-	if len(workers) == 0 {
-		return
-	}
-
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Syncing %d crew workspace(s)...\n", len(workers))
-
-	for _, worker := range workers {
-		result, err := crewMgr.Pristine(worker.Name)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to sync crew/%s: %v\n", worker.Name, err)
-			continue
-		}
-		if result.Pulled {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Synced crew/%s\n", worker.Name)
-		} else if result.PullError != "" {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: crew/%s pull failed: %s\n", worker.Name, result.PullError)
-		}
-	}
 }
 
 // ProcessMRInfo processes a merge request from MRInfo.
