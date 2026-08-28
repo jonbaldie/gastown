@@ -95,62 +95,61 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 	t := tmux.NewTmux()
 
 	for _, bead := range hookedBeads {
-		hookResult := &StaleHookResult{
-			BeadID:   bead.ID,
-			Title:    bead.Title,
-			Assignee: bead.Assignee,
-			Age:      time.Since(bead.UpdatedAt).Round(time.Minute).String(),
-		}
-
-		// Check if assignee agent is still alive (regardless of age)
-		sessionChecked := false
-		if bead.Assignee != "" {
-			sessionName := assigneeToSessionName(bead.Assignee)
-			if sessionName != "" {
-				alive, _ := t.HasSession(sessionName)
-				hookResult.AgentAlive = alive
-				sessionChecked = true
-			}
-		}
-
-		// Determine if this hook is stale:
-		// - Agent confirmed dead → stale (regardless of age)
-		// - Can't check session + older than MaxAge → stale (fallback)
-		// - Agent alive → not stale
-		isStale := false
-		if sessionChecked && !hookResult.AgentAlive {
-			// Session confirmed dead — unhook immediately regardless of age
-			isStale = true
-		} else if !sessionChecked && bead.UpdatedAt.Before(threshold) {
-			// Can't determine session liveness (unknown assignee format)
-			// Fall back to age-based check
-			isStale = true
-		}
-
+		hookResult, isStale := inspectHookedBead(t, bead, threshold)
 		if !isStale {
 			continue
 		}
 
 		result.StaleCount++
-
-		// If agent is dead/gone, check worktree state before unhooking
-		if !hookResult.AgentAlive {
-			checkWorktreeState(townRoot, bead.Assignee, hookResult)
-
-			if !cfg.DryRun {
-				if err := unhookBead(townRoot, bead.ID); err != nil {
-					hookResult.Error = err.Error()
-				} else {
-					hookResult.Unhooked = true
-					result.Unhooked++
-				}
-			}
+		if processStaleHook(townRoot, bead, cfg, hookResult) {
+			result.Unhooked++
 		}
 
 		result.Results = append(result.Results, hookResult)
 	}
 
 	return result, nil
+}
+
+func inspectHookedBead(t *tmux.Tmux, bead *HookedBead, threshold time.Time) (*StaleHookResult, bool) {
+	result := &StaleHookResult{
+		BeadID:   bead.ID,
+		Title:    bead.Title,
+		Assignee: bead.Assignee,
+		Age:      time.Since(bead.UpdatedAt).Round(time.Minute).String(),
+	}
+	sessionChecked := false
+	if bead.Assignee != "" {
+		if sessionName := assigneeToSessionName(bead.Assignee); sessionName != "" {
+			alive, _ := t.HasSession(sessionName)
+			result.AgentAlive = alive
+			sessionChecked = true
+		}
+	}
+	return result, staleHook(sessionChecked, result.AgentAlive, bead.UpdatedAt, threshold)
+}
+
+func staleHook(sessionChecked, agentAlive bool, updatedAt, threshold time.Time) bool {
+	if sessionChecked {
+		return !agentAlive
+	}
+	return updatedAt.Before(threshold)
+}
+
+func processStaleHook(townRoot string, bead *HookedBead, cfg *StaleHookConfig, result *StaleHookResult) bool {
+	if result.AgentAlive {
+		return false
+	}
+	checkWorktreeState(townRoot, bead.Assignee, result)
+	if cfg.DryRun {
+		return false
+	}
+	if err := unhookBead(townRoot, bead.ID); err != nil {
+		result.Error = err.Error()
+		return false
+	}
+	result.Unhooked = true
+	return true
 }
 
 // listHookedBeads returns all beads with status=hooked.
@@ -230,21 +229,26 @@ func assigneeToWorktreePath(townRoot, assignee string) string {
 
 	// New structure: rig/polecats/<name>/<rigname>/
 	newPath := filepath.Join(rigPath, agentType, name, rigName)
-	if info, err := os.Stat(newPath); err == nil && info.IsDir() {
-		if _, err := os.Stat(filepath.Join(newPath, ".git")); err == nil {
-			return newPath
-		}
+	if isGitWorktree(newPath) {
+		return newPath
 	}
 
 	// Old structure: rig/polecats/<name>/
 	oldPath := filepath.Join(rigPath, agentType, name)
-	if info, err := os.Stat(oldPath); err == nil && info.IsDir() {
-		if _, err := os.Stat(filepath.Join(oldPath, ".git")); err == nil {
-			return oldPath
-		}
+	if isGitWorktree(oldPath) {
+		return oldPath
 	}
 
 	return ""
+}
+
+func isGitWorktree(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(path, ".git"))
+	return err == nil
 }
 
 // unhookBead sets a bead's status back to 'open'.
