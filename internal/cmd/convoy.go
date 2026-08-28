@@ -1776,57 +1776,35 @@ func findStrandedConvoys(townBeads string) ([]strandedConvoyInfo, error) {
 // scheduledSet is a pre-computed set of bead IDs with open sling contexts (from areScheduled).
 func isReadyIssue(t trackedIssueInfo, scheduledSet map[string]bool) bool {
 	status := strings.TrimSpace(t.Status)
-
-	// Unresolved issues are not safe to dispatch.
-	if status == "" || status == trackedStatusUnknown {
+	if !isReadyIssueStatus(status) || t.Blocked || scheduledSet[t.ID] {
 		return false
 	}
-
-	// Closed issues are never ready
-	if status == "closed" || status == "tombstone" {
-		return false
-	}
-
-	// Must not be blocked
-	if t.Blocked {
-		return false
-	}
-
-	// Scheduled beads are not stranded — they're waiting for dispatch capacity.
-	if scheduledSet[t.ID] {
-		return false
-	}
-
-	// Open issues with no assignee are trivially ready
-	if status == "open" && t.Assignee == "" {
-		return true
-	}
-
-	// For issues with an assignee (or non-open status with molecule attached),
-	// check if the worker session is still alive
 	if t.Assignee == "" {
-		// Non-open status but no assignee is an edge case (shouldn't happen
-		// normally, but could occur if molecule detached improperly)
 		return true
 	}
+	return isWorkerSessionInactive(t.Assignee)
+}
 
-	// Has assignee - check if session is alive
+func isReadyIssueStatus(status string) bool {
+	switch status {
+	case "", trackedStatusUnknown, "closed", "tombstone":
+		return false
+	default:
+		return true
+	}
+}
+
+func isWorkerSessionInactive(assignee string) bool {
 	// Use the shared assigneeToSessionName from rig.go
-	sessionName, _ := assigneeToSessionName(t.Assignee)
+	sessionName, _ := assigneeToSessionName(assignee)
 	if sessionName == "" {
 		return true // Can't determine session = treat as ready
 	}
 
 	// Check if tmux session exists
 	checkCmd := tmux.BuildCommand("has-session", "-t", sessionName)
-	if err := checkCmd.Run(); err != nil {
-		// Session doesn't exist = orphaned molecule or dead worker
-		// This is the key fix: issues with in_progress/hooked status but
-		// dead workers are now correctly detected as stranded
-		return true
-	}
-
-	return false // Session exists = worker is active
+	// Session doesn't exist = orphaned molecule or dead worker.
+	return checkCmd.Run() != nil
 }
 
 // isSlingableBead reports whether a bead can be dispatched via gt sling.
