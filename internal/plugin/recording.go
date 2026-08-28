@@ -135,6 +135,18 @@ func (r *Recorder) GetRunsSince(pluginName string, since string) ([]*PluginRunBe
 
 // queryRuns queries plugin run beads from the ledger.
 func (r *Recorder) queryRuns(pluginName string, limit int, since string) ([]*PluginRunBead, error) {
+	args, err := buildRunQueryArgs(pluginName, limit, since)
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := r.runPluginQuery(args)
+	if err != nil {
+		return nil, err
+	}
+	return decodePluginRuns(stdout)
+}
+
+func buildRunQueryArgs(pluginName string, limit int, since string) ([]string, error) {
 	args := []string{
 		"list",
 		"--json",
@@ -157,8 +169,10 @@ func (r *Recorder) queryRuns(pluginName string, limit int, since string) ([]*Plu
 		cutoff := time.Now().Add(-d).UTC().Format(time.RFC3339)
 		args = append(args, "--created-after="+cutoff)
 	}
-	args = beads.InjectFlatForListJSON(args)
+	return beads.InjectFlatForListJSON(args), nil
+}
 
+func (r *Recorder) runPluginQuery(args []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), constants.BdCommandTimeout)
 	defer cancel()
 	cmd := beads.CommandContext(ctx, r.townRoot, beads.ResolveBeadsDir(r.townRoot), beads.ReadOnlyPinned, args...)
@@ -174,48 +188,53 @@ func (r *Recorder) queryRuns(pluginName string, limit int, since string) ([]*Plu
 		}
 		return nil, fmt.Errorf("querying plugin runs: %s: %w", stderr.String(), err)
 	}
+	return stdout.Bytes(), nil
+}
 
-	// Parse JSON output
-	var beads []struct {
-		ID        string   `json:"id"`
-		Title     string   `json:"title"`
-		CreatedAt string   `json:"created_at"`
-		Labels    []string `json:"labels"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &beads); err != nil {
-		// Empty array is valid
-		if stdout.String() == "[]\n" || stdout.Len() == 0 {
+type rawPluginRun struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	CreatedAt string   `json:"created_at"`
+	Labels    []string `json:"labels"`
+}
+
+func decodePluginRuns(stdout []byte) ([]*PluginRunBead, error) {
+	var rawRuns []rawPluginRun
+	if err := json.Unmarshal(stdout, &rawRuns); err != nil {
+		// Empty array is valid.
+		if string(stdout) == "[]\n" || len(stdout) == 0 {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("parsing bd list output: %w", err)
 	}
 
-	// Convert to PluginRunBead with parsed result
-	runs := make([]*PluginRunBead, 0, len(beads))
-	for _, b := range beads {
-		run := &PluginRunBead{
-			ID:     b.ID,
-			Title:  b.Title,
-			Labels: b.Labels,
-		}
-
-		// Parse created_at
-		if t, err := time.Parse(time.RFC3339, b.CreatedAt); err == nil {
-			run.CreatedAt = t
-		}
-
-		// Extract result from labels
-		for _, label := range b.Labels {
-			if len(label) > 7 && label[:7] == "result:" {
-				run.Result = RunResult(label[7:])
-				break
-			}
-		}
-
-		runs = append(runs, run)
+	runs := make([]*PluginRunBead, 0, len(rawRuns))
+	for _, raw := range rawRuns {
+		runs = append(runs, pluginRunFromRaw(raw))
 	}
-
 	return runs, nil
+}
+
+func pluginRunFromRaw(raw rawPluginRun) *PluginRunBead {
+	run := &PluginRunBead{
+		ID:     raw.ID,
+		Title:  raw.Title,
+		Labels: raw.Labels,
+	}
+	if createdAt, err := time.Parse(time.RFC3339, raw.CreatedAt); err == nil {
+		run.CreatedAt = createdAt
+	}
+	run.Result = pluginRunResult(raw.Labels)
+	return run
+}
+
+func pluginRunResult(labels []string) RunResult {
+	for _, label := range labels {
+		if len(label) > 7 && label[:7] == "result:" {
+			return RunResult(label[7:])
+		}
+	}
+	return ""
 }
 
 // CountRunsSince returns the count of runs for a plugin since the given duration.
