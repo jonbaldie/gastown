@@ -642,37 +642,32 @@ func (p *Proxy) runKeepAlive(tickerChan <-chan time.Time) {
 				continue
 			}
 
-			// If idle for more than 45 seconds, send a heartbeat
-			if idleTime > 45*time.Second {
-				p.sessionMux.RLock()
-				sid := p.sessionID
-				p.sessionMux.RUnlock()
-
-				if sid == "" {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, no sessionID available")
-					continue
-				}
-
-				// Check if heartbeat is supported and which method to use
-				if !p.heartbeatSupported.Load() {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat not supported by agent, skipping")
-					continue
-				}
-
-				p.modeMux.RLock()
-				method := p.heartbeatMethod
-				currentMode := p.currentModeID
-				p.modeMux.RUnlock()
-
-				msg := p.keepAliveMessage(sid, method, currentMode, idleTime)
-
-				if err := p.writeToAgent(msg); err != nil {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat failed: %v", err)
-				}
-			} else {
-				debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, idle time (%v) < threshold (45s)", idleTime)
-			}
+			p.sendKeepAliveIfIdle(idleTime)
 		}
+	}
+}
+
+func (p *Proxy) sendKeepAliveIfIdle(idleTime time.Duration) {
+	if idleTime <= 45*time.Second {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, idle time (%v) < threshold (45s)", idleTime)
+		return
+	}
+	p.sessionMux.RLock()
+	sessionID := p.sessionID
+	p.sessionMux.RUnlock()
+	if sessionID == "" {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, no sessionID available")
+		return
+	}
+	if !p.heartbeatSupported.Load() {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat not supported by agent, skipping")
+		return
+	}
+	p.modeMux.RLock()
+	method, modeID := p.heartbeatMethod, p.currentModeID
+	p.modeMux.RUnlock()
+	if err := p.writeToAgent(p.keepAliveMessage(sessionID, method, modeID, idleTime)); err != nil {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat failed: %v", err)
 	}
 }
 
