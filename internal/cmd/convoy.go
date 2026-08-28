@@ -2523,44 +2523,41 @@ func applyFreshIssueDetails(dep *trackedDependency, details *issueDetails) {
 // for older bd versions that don't support bd sql.
 // Then fetches fresh issue details via bd show with prefix routing.
 func getTrackedIssues(townBeads, convoyID string) ([]trackedIssueInfo, error) {
-	// Prefer raw SQL — works for cross-database deps where tracked beads
-	// live in different Dolt databases. Falls back to bd dep list if bd sql
-	// is not available (older bd versions).
+	trackedIDs, err := getTrackedIssueIDs(townBeads, convoyID)
+	if err != nil {
+		return nil, err
+	}
+	if len(trackedIDs) == 0 {
+		return nil, nil
+	}
+
+	deps := trackedDependencies(trackedIDs)
+	workersMap := getWorkersForIssues(nonClosedIssueIDs(deps))
+	return trackedIssueInfos(deps, workersMap), nil
+}
+
+func getTrackedIssueIDs(townBeads, convoyID string) ([]string, error) {
 	trackedIDs, err := bdDepListRawIDs(townBeads, convoyID, "down", "tracks")
 	if err != nil {
-		// bd sql not supported (older bd) — fall back to bd dep list.
 		trackedIDs, err = bdDepListTracked(townBeads, convoyID)
 		if err != nil {
 			return nil, fmt.Errorf("querying tracked issues for %s: %w", convoyID, err)
 		}
 	}
-
-	// Fallback: when dep queries return empty (common for cross-database deps
-	// on older bd where the JOIN fails), try parsing from bd show output.
 	if len(trackedIDs) == 0 {
 		trackedIDs, err = bdShowTrackedDeps(townBeads, convoyID)
 		if err != nil {
 			return nil, fmt.Errorf("fallback show for tracked deps of %s: %w", convoyID, err)
 		}
 	}
+	return trackedIDs, nil
+}
 
-	if len(trackedIDs) == 0 {
-		return nil, nil
-	}
-
-	// Fetch fresh issue details via bd show (uses prefix routing for cross-rig).
+func trackedDependencies(trackedIDs []string) []trackedDependency {
 	freshDetails := getIssueDetailsBatch(trackedIDs)
-
-	// Build tracked dependency structs from fresh details. When fresh details
-	// are missing (cross-rig DB unreachable, missing, parked, or unroutable
-	// from town root), mark the dep with trackedStatusUnknown so callers can
-	// distinguish it from a legitimately open bead. (gt-bs6)
-	var deps []trackedDependency
+	deps := make([]trackedDependency, 0, len(trackedIDs))
 	for _, id := range trackedIDs {
-		dep := trackedDependency{
-			ID:             id,
-			DependencyType: "tracks",
-		}
+		dep := trackedDependency{ID: id, DependencyType: "tracks"}
 		if details, ok := freshDetails[id]; ok {
 			applyFreshIssueDetails(&dep, details)
 		} else {
@@ -2568,18 +2565,21 @@ func getTrackedIssues(townBeads, convoyID string) ([]trackedIssueInfo, error) {
 		}
 		deps = append(deps, dep)
 	}
+	return deps
+}
 
-	// Collect non-closed issue IDs for worker lookup
-	openIssueIDs := make([]string, 0, len(deps))
+func nonClosedIssueIDs(deps []trackedDependency) []string {
+	ids := make([]string, 0, len(deps))
 	for _, dep := range deps {
 		if dep.Status != "closed" {
-			openIssueIDs = append(openIssueIDs, dep.ID)
+			ids = append(ids, dep.ID)
 		}
 	}
-	workersMap := getWorkersForIssues(openIssueIDs)
+	return ids
+}
 
-	// Build result
-	var tracked []trackedIssueInfo
+func trackedIssueInfos(deps []trackedDependency, workers map[string]*workerInfo) []trackedIssueInfo {
+	tracked := make([]trackedIssueInfo, 0, len(deps))
 	for _, dep := range deps {
 		info := trackedIssueInfo{
 			ID:        dep.ID,
@@ -2591,17 +2591,13 @@ func getTrackedIssues(townBeads, convoyID string) ([]trackedIssueInfo, error) {
 			Assignee:  dep.Assignee,
 			Labels:    dep.Labels,
 		}
-
-		// Add worker info if available
-		if worker, ok := workersMap[dep.ID]; ok {
+		if worker, ok := workers[dep.ID]; ok {
 			info.Worker = worker.Worker
 			info.WorkerAge = worker.Age
 		}
-
 		tracked = append(tracked, info)
 	}
-
-	return tracked, nil
+	return tracked
 }
 
 // bdDepListTracked runs `bd dep list <convoyID> --direction=down --type=tracks --json`
