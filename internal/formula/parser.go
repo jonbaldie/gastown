@@ -126,25 +126,12 @@ func (f *Formula) validateWorkflow() error {
 		return fmt.Errorf("workflow formula requires at least one step")
 	}
 
-	// Check step IDs are unique
-	seen := make(map[string]bool)
-	for _, step := range f.Steps {
-		if step.ID == "" {
-			return fmt.Errorf("step missing required id field")
-		}
-		if seen[step.ID] {
-			return fmt.Errorf("duplicate step id: %s", step.ID)
-		}
-		seen[step.ID] = true
+	seen, err := validateWorkflowStepIDs(f.Steps)
+	if err != nil {
+		return err
 	}
-
-	// Validate step needs references
-	for _, step := range f.Steps {
-		for _, need := range step.Needs {
-			if !seen[need] {
-				return fmt.Errorf("step %q needs unknown step: %s", step.ID, need)
-			}
-		}
+	if err := validateWorkflowNeeds(f.Steps, seen); err != nil {
+		return err
 	}
 
 	// Check for cycles
@@ -152,6 +139,31 @@ func (f *Formula) validateWorkflow() error {
 		return err
 	}
 
+	return nil
+}
+
+func validateWorkflowStepIDs(steps []Step) (map[string]bool, error) {
+	seen := make(map[string]bool)
+	for _, step := range steps {
+		if step.ID == "" {
+			return nil, fmt.Errorf("step missing required id field")
+		}
+		if seen[step.ID] {
+			return nil, fmt.Errorf("duplicate step id: %s", step.ID)
+		}
+		seen[step.ID] = true
+	}
+	return seen, nil
+}
+
+func validateWorkflowNeeds(steps []Step, seen map[string]bool) error {
+	for _, step := range steps {
+		for _, need := range step.Needs {
+			if !seen[need] {
+				return fmt.Errorf("step %q needs unknown step: %s", step.ID, need)
+			}
+		}
+	}
 	return nil
 }
 
