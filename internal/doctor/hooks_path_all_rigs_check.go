@@ -33,33 +33,50 @@ func NewHooksPathAllRigsCheck() *HooksPathAllRigsCheck {
 func (c *HooksPathAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 	rigs := findAllRigs(ctx.TownRoot)
 	if len(rigs) == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No rigs found",
-		}
+		return hooksPathNoRigsResult(c)
 	}
 
 	c.unconfiguredClones = nil
-	totalClones := 0
+	totalClones := c.inspectRigs(rigs)
+	return c.result(ctx, totalClones)
+}
 
+func hooksPathNoRigsResult(c *HooksPathAllRigsCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "No rigs found",
+	}
+}
+
+func (c *HooksPathAllRigsCheck) inspectRigs(rigs []string) int {
+	totalClones := 0
 	for _, rigPath := range rigs {
-		clonePaths := findRigClones(rigPath)
-		for _, clonePath := range clonePaths {
-			// Skip if no .githooks directory (repo doesn't use hooks)
-			if _, err := os.Stat(filepath.Join(clonePath, ".githooks")); os.IsNotExist(err) {
+		for _, clonePath := range findRigClones(rigPath) {
+			if !usesHooks(clonePath) {
 				continue
 			}
 			totalClones++
-
-			cmd := exec.Command("git", "-C", clonePath, "config", "--get", "core.hooksPath")
-			output, err := cmd.Output()
-			if err != nil || strings.TrimSpace(string(output)) != ".githooks" {
+			if !hooksConfigured(clonePath) {
 				c.unconfiguredClones = append(c.unconfiguredClones, clonePath)
 			}
 		}
 	}
+	return totalClones
+}
 
+func usesHooks(clonePath string) bool {
+	_, err := os.Stat(filepath.Join(clonePath, ".githooks"))
+	return !os.IsNotExist(err)
+}
+
+func hooksConfigured(clonePath string) bool {
+	cmd := exec.Command("git", "-C", clonePath, "config", "--get", "core.hooksPath")
+	output, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(output)) == ".githooks"
+}
+
+func (c *HooksPathAllRigsCheck) result(ctx *CheckContext, totalClones int) *CheckResult {
 	if len(c.unconfiguredClones) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -68,22 +85,25 @@ func (c *HooksPathAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: fmt.Sprintf("%d clone(s) missing core.hooksPath across all rigs", len(c.unconfiguredClones)),
+		Details: relativeClonePaths(ctx.TownRoot, c.unconfiguredClones),
+		FixHint: "Run 'gt doctor --fix' to configure hooks",
+	}
+}
+
+func relativeClonePaths(townRoot string, clonePaths []string) []string {
 	var details []string
-	for _, clonePath := range c.unconfiguredClones {
-		relPath, _ := filepath.Rel(ctx.TownRoot, clonePath)
+	for _, clonePath := range clonePaths {
+		relPath, _ := filepath.Rel(townRoot, clonePath)
 		if relPath == "" {
 			relPath = clonePath
 		}
 		details = append(details, relPath)
 	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusWarning,
-		Message: fmt.Sprintf("%d clone(s) missing core.hooksPath across all rigs", len(c.unconfiguredClones)),
-		Details: details,
-		FixHint: "Run 'gt doctor --fix' to configure hooks",
-	}
+	return details
 }
 
 // Fix configures core.hooksPath for all unconfigured clones.
@@ -99,42 +119,56 @@ func (c *HooksPathAllRigsCheck) Fix(_ *CheckContext) error {
 
 // findRigClones returns all git clone paths within a rig.
 func findRigClones(rigPath string) []string {
-	var clones []string
+	clones := []string{
+		filepath.Join(rigPath, "mayor", "rig"),
+		filepath.Join(rigPath, "refinery", "rig"),
+	}
+	clones = appendCrewClones(clones, filepath.Join(rigPath, "crew"))
+	clones = appendPolecatClones(clones, filepath.Join(rigPath, "polecats"))
+	return existingGitClones(clones)
+}
 
-	// Mayor clone
-	clones = append(clones, filepath.Join(rigPath, "mayor", "rig"))
-	// Refinery clone
-	clones = append(clones, filepath.Join(rigPath, "refinery", "rig"))
-
-	// Crew clones
-	crewDir := filepath.Join(rigPath, "crew")
-	if entries, err := os.ReadDir(crewDir); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				clones = append(clones, filepath.Join(crewDir, entry.Name()))
-			}
+func appendCrewClones(clones []string, crewDir string) []string {
+	entries, err := os.ReadDir(crewDir)
+	if err != nil {
+		return clones
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			clones = append(clones, filepath.Join(crewDir, entry.Name()))
 		}
 	}
+	return clones
+}
 
-	// Polecat clones
-	polecatDir := filepath.Join(rigPath, "polecats")
-	if entries, err := os.ReadDir(polecatDir); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				// Polecats have nested structure: polecats/<name>/<rigname>/
-				subDir := filepath.Join(polecatDir, entry.Name())
-				if subEntries, err := os.ReadDir(subDir); err == nil {
-					for _, subEntry := range subEntries {
-						if subEntry.IsDir() {
-							clones = append(clones, filepath.Join(subDir, subEntry.Name()))
-						}
-					}
-				}
-			}
+func appendPolecatClones(clones []string, polecatDir string) []string {
+	entries, err := os.ReadDir(polecatDir)
+	if err != nil {
+		return clones
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		clones = appendNestedPolecatClones(clones, filepath.Join(polecatDir, entry.Name()))
+	}
+	return clones
+}
+
+func appendNestedPolecatClones(clones []string, polecatDir string) []string {
+	entries, err := os.ReadDir(polecatDir)
+	if err != nil {
+		return clones
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			clones = append(clones, filepath.Join(polecatDir, entry.Name()))
 		}
 	}
+	return clones
+}
 
-	// Filter to only existing git repos
+func existingGitClones(clones []string) []string {
 	var valid []string
 	for _, clonePath := range clones {
 		if _, err := os.Stat(filepath.Join(clonePath, ".git")); err == nil {
