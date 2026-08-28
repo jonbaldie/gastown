@@ -452,15 +452,19 @@ func unresolvedBlockingDependencyIDs(issue *Issue) ([]string, int) {
 		return ids, count
 	}
 
+	return unresolvedDetailedDependencyIDs(issue.Dependencies)
+}
+
+func unresolvedDetailedDependencyIDs(dependencies []IssueDep) ([]string, int) {
 	seen := make(map[string]bool)
-	ids := make([]string, 0, len(issue.Dependencies))
+	ids := make([]string, 0, len(dependencies))
 	count := 0
-	for _, dep := range issue.Dependencies {
-		if !isBlockingDependencyType(dep.DependencyType) || isResolvedDependency(dep) {
+	for _, dependency := range dependencies {
+		if !isBlockingDependencyType(dependency.DependencyType) || isResolvedDependency(dependency) {
 			continue
 		}
 		count++
-		id := ExtractIssueID(dep.ID)
+		id := ExtractIssueID(dependency.ID)
 		if id == "" || seen[id] {
 			continue
 		}
