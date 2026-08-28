@@ -1507,48 +1507,55 @@ func findConvoyWorktrees(tracked []trackedIssueInfo) []convoyWorktreeInfo {
 		return nil
 	}
 
-	// Collect all assignees from tracked issues
+	assignees := convoyAssignees(tracked)
+	if len(assignees) == 0 {
+		return nil
+	}
+
+	var worktrees []convoyWorktreeInfo
+	for rigName := range rigsConfig.Rigs {
+		worktrees = append(worktrees, findRigConvoyWorktrees(townRoot, rigName, assignees)...)
+	}
+
+	return worktrees
+}
+
+func convoyAssignees(tracked []trackedIssueInfo) map[string]bool {
 	assignees := make(map[string]bool)
 	for _, t := range tracked {
 		if t.Assignee != "" {
 			assignees[t.Assignee] = true
 		}
 	}
+	return assignees
+}
 
-	if len(assignees) == 0 {
+func findRigConvoyWorktrees(townRoot, rigName string, assignees map[string]bool) []convoyWorktreeInfo {
+	polecatsDir := filepath.Join(townRoot, rigName, "polecats")
+	entries, err := os.ReadDir(polecatsDir)
+	if err != nil {
 		return nil
 	}
-
 	var worktrees []convoyWorktreeInfo
-
-	for rigName := range rigsConfig.Rigs {
-		rigPath := filepath.Join(townRoot, rigName)
-		polecatsDir := filepath.Join(rigPath, "polecats")
-
-		entries, err := os.ReadDir(polecatsDir)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-
-			// Check if this polecat's assignee matches any tracked issue assignee
-			// Assignees have format: rig/polecats/name
-			polecatAssignee := fmt.Sprintf("%s/polecats/%s", rigName, entry.Name())
-			if assignees[polecatAssignee] {
-				worktrees = append(worktrees, convoyWorktreeInfo{
-					rigName:     rigName,
-					polecatName: entry.Name(),
-					townRoot:    townRoot,
-				})
-			}
+	for _, entry := range entries {
+		if convoyWorktreeMatches(rigName, entry, assignees) {
+			worktrees = append(worktrees, convoyWorktreeInfo{
+				rigName:     rigName,
+				polecatName: entry.Name(),
+				townRoot:    townRoot,
+			})
 		}
 	}
-
 	return worktrees
+}
+
+func convoyWorktreeMatches(rigName string, entry os.DirEntry, assignees map[string]bool) bool {
+	if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		return false
+	}
+	// Assignees have format: rig/polecats/name.
+	polecatAssignee := fmt.Sprintf("%s/polecats/%s", rigName, entry.Name())
+	return assignees[polecatAssignee]
 }
 
 // removePolecatWorktree removes a polecat worktree via gt polecat remove.
