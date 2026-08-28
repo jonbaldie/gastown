@@ -51,65 +51,13 @@ func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 	var formulaVars []string
 
 	for _, line := range strings.Split(issue.Description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		key, value, ok := attachmentFieldLine(line)
+		if !ok || value == "" {
 			continue
 		}
-
-		// Look for "key: value" pattern
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "" {
-			continue
-		}
-
-		// Map keys to fields (case-insensitive)
-		switch strings.ToLower(key) {
-		case "attached_molecule", "attached-molecule", "attachedmolecule":
-			fields.AttachedMolecule = value
-			hasFields = true
-		case "attached_formula", "attached-formula", "attachedformula":
-			fields.AttachedFormula = value
-			hasFields = true
-		case "attached_at", "attached-at", "attachedat":
-			fields.AttachedAt = value
-			hasFields = true
-		case "attached_args", "attached-args", "attachedargs":
-			fields.AttachedArgs = value
-			hasFields = true
-		case "attached_vars", "attached-vars", "attachedvars":
-			fields.AttachedVars = parseAttachedVars(value)
-			hasFields = true
-		case "dispatched_by", "dispatched-by", "dispatchedby":
-			fields.DispatchedBy = value
-			hasFields = true
-		case "no_merge", "no-merge", "nomerge":
-			fields.NoMerge = strings.ToLower(value) == "true"
-			hasFields = true
-		case "review_only", "review-only", "reviewonly":
-			fields.ReviewOnly = strings.ToLower(value) == "true"
-			hasFields = true
-		case "mode":
-			fields.Mode = value
-			hasFields = true
-		case "convoy_id", "convoy-id", "convoyid", "convoy":
-			fields.ConvoyID = value
-			hasFields = true
-		case "merge_strategy", "merge-strategy", "mergestrategy":
-			fields.MergeStrategy = value
-			hasFields = true
-		case "convoy_owned", "convoy-owned", "convoyowned":
-			fields.ConvoyOwned = strings.ToLower(value) == "true"
-			hasFields = true
-		case "formula_vars", "formula-vars", "formulavars":
-			formulaVars = append(formulaVars, splitFormulaVars(parseFormulaVars(value))...)
-			hasFields = true
-		}
+		found, parsedFormulaVars := setAttachmentField(fields, key, value)
+		hasFields = hasFields || found
+		formulaVars = append(formulaVars, parsedFormulaVars...)
 	}
 	if len(formulaVars) > 0 {
 		fields.FormulaVars = strings.Join(formulaVars, "\n")
@@ -129,39 +77,16 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 	}
 
 	var lines []string
-
-	if fields.AttachedMolecule != "" {
-		lines = append(lines, "attached_molecule: "+fields.AttachedMolecule)
-	}
-	if fields.AttachedFormula != "" {
-		lines = append(lines, "attached_formula: "+fields.AttachedFormula)
-	}
-	if fields.AttachedAt != "" {
-		lines = append(lines, "attached_at: "+fields.AttachedAt)
-	}
-	if fields.AttachedArgs != "" {
-		lines = append(lines, "attached_args: "+fields.AttachedArgs)
-	}
-	if len(fields.AttachedVars) > 0 {
-		lines = append(lines, "attached_vars: "+formatAttachedVars(fields.AttachedVars))
-	}
-	if fields.DispatchedBy != "" {
-		lines = append(lines, "dispatched_by: "+fields.DispatchedBy)
+	for _, field := range formattedAttachmentTextFields(fields) {
+		if field.value != "" {
+			lines = append(lines, field.key+": "+field.value)
+		}
 	}
 	if fields.NoMerge {
 		lines = append(lines, "no_merge: true")
 	}
 	if fields.ReviewOnly {
 		lines = append(lines, "review_only: true")
-	}
-	if fields.Mode != "" {
-		lines = append(lines, "mode: "+fields.Mode)
-	}
-	if fields.ConvoyID != "" {
-		lines = append(lines, "convoy_id: "+fields.ConvoyID)
-	}
-	if fields.MergeStrategy != "" {
-		lines = append(lines, "merge_strategy: "+fields.MergeStrategy)
 	}
 	if fields.ConvoyOwned {
 		lines = append(lines, "convoy_owned: true")
@@ -173,6 +98,81 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+type attachmentTextField struct{ key, value string }
+
+func formattedAttachmentTextFields(fields *AttachmentFields) []attachmentTextField {
+	return []attachmentTextField{
+		{"attached_molecule", fields.AttachedMolecule},
+		{"attached_formula", fields.AttachedFormula},
+		{"attached_at", fields.AttachedAt},
+		{"attached_args", fields.AttachedArgs},
+		{"attached_vars", formatAttachedVars(fields.AttachedVars)},
+		{"dispatched_by", fields.DispatchedBy},
+		{"mode", fields.Mode},
+		{"convoy_id", fields.ConvoyID},
+		{"merge_strategy", fields.MergeStrategy},
+	}
+}
+
+func attachmentFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIdx := strings.Index(line, ":")
+	if line == "" || colonIdx == -1 {
+		return "", "", false
+	}
+	return canonicalAttachmentField(strings.ToLower(strings.TrimSpace(line[:colonIdx]))), strings.TrimSpace(line[colonIdx+1:]), true
+}
+
+func canonicalAttachmentField(key string) string {
+	return map[string]string{
+		"attached_molecule": "attached_molecule", "attached-molecule": "attached_molecule", "attachedmolecule": "attached_molecule",
+		"attached_formula": "attached_formula", "attached-formula": "attached_formula", "attachedformula": "attached_formula",
+		"attached_at": "attached_at", "attached-at": "attached_at", "attachedat": "attached_at",
+		"attached_args": "attached_args", "attached-args": "attached_args", "attachedargs": "attached_args",
+		"attached_vars": "attached_vars", "attached-vars": "attached_vars", "attachedvars": "attached_vars",
+		"dispatched_by": "dispatched_by", "dispatched-by": "dispatched_by", "dispatchedby": "dispatched_by",
+		"no_merge": "no_merge", "no-merge": "no_merge", "nomerge": "no_merge",
+		"review_only": "review_only", "review-only": "review_only", "reviewonly": "review_only",
+		"mode":      "mode",
+		"convoy_id": "convoy_id", "convoy-id": "convoy_id", "convoyid": "convoy_id", "convoy": "convoy_id",
+		"merge_strategy": "merge_strategy", "merge-strategy": "merge_strategy", "mergestrategy": "merge_strategy",
+		"convoy_owned": "convoy_owned", "convoy-owned": "convoy_owned", "convoyowned": "convoy_owned",
+		"formula_vars": "formula_vars", "formula-vars": "formula_vars", "formulavars": "formula_vars",
+	}[key]
+}
+
+func setAttachmentField(fields *AttachmentFields, key, value string) (bool, []string) {
+	if destination, ok := attachmentStringFields(fields)[key]; ok {
+		*destination = value
+		return true, nil
+	}
+	if key == "attached_vars" {
+		fields.AttachedVars = parseAttachedVars(value)
+		return true, nil
+	}
+	if key == "formula_vars" {
+		return true, splitFormulaVars(parseFormulaVars(value))
+	}
+	if destination, ok := attachmentBooleanFields(fields)[key]; ok {
+		*destination = strings.EqualFold(value, "true")
+		return true, nil
+	}
+	return false, nil
+}
+
+func attachmentStringFields(fields *AttachmentFields) map[string]*string {
+	return map[string]*string{
+		"attached_molecule": &fields.AttachedMolecule, "attached_formula": &fields.AttachedFormula,
+		"attached_at": &fields.AttachedAt, "attached_args": &fields.AttachedArgs,
+		"dispatched_by": &fields.DispatchedBy, "mode": &fields.Mode,
+		"convoy_id": &fields.ConvoyID, "merge_strategy": &fields.MergeStrategy,
+	}
+}
+
+func attachmentBooleanFields(fields *AttachmentFields) map[string]*bool {
+	return map[string]*bool{"no_merge": &fields.NoMerge, "review_only": &fields.ReviewOnly, "convoy_owned": &fields.ConvoyOwned}
 }
 
 // SetAttachmentFields updates an issue's description with the given attachment fields.
