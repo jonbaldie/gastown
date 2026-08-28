@@ -154,60 +154,10 @@ func ApplyTownMix(settingsPath string, assignments []MixAssignment) error {
 		return fmt.Errorf("loading town settings: %w", err)
 	}
 
-	seenRoles := make(map[string]struct{})
-	seenCrew := make(map[string]struct{})
-	seenDefault := false
-	for _, assignment := range assignments {
-		if err := validateMixAssignment(settings, assignment); err != nil {
-			return err
-		}
-		switch assignment.Kind {
-		case MixKindDefault:
-			if seenDefault {
-				return fmt.Errorf("duplicate assignment for default agent")
-			}
-			seenDefault = true
-		case MixKindRole:
-			if _, ok := seenRoles[assignment.Name]; ok {
-				return fmt.Errorf("duplicate assignment for role %s", assignment.Name)
-			}
-			seenRoles[assignment.Name] = struct{}{}
-		case MixKindCrew:
-			if _, ok := seenCrew[assignment.Name]; ok {
-				return fmt.Errorf("duplicate assignment for crew %s", assignment.Name)
-			}
-			seenCrew[assignment.Name] = struct{}{}
-		default:
-			return fmt.Errorf("unknown mix kind %q", assignment.Kind)
-		}
+	if err := rejectDuplicateMixAssignments(settings, assignments); err != nil {
+		return err
 	}
-
-	for _, assignment := range assignments {
-		switch assignment.Kind {
-		case MixKindDefault:
-			settings.DefaultAgent = assignment.Agent
-		case MixKindRole:
-			if settings.RoleAgents == nil {
-				settings.RoleAgents = make(map[string]string)
-			}
-			settings.RoleAgents[assignment.Name] = assignment.Agent
-			if assignment.Effort != "" {
-				if settings.RoleEffort == nil {
-					settings.RoleEffort = make(map[string]string)
-				}
-				settings.RoleEffort[assignment.Name] = assignment.Effort
-			} else if runtimeConfig := lookupAgentConfigIfExists(assignment.Agent, settings, nil); runtimeConfig != nil {
-				if validateRuntimeEffort(runtimeConfig, settings.RoleEffort[assignment.Name]) != nil {
-					delete(settings.RoleEffort, assignment.Name)
-				}
-			}
-		case MixKindCrew:
-			if settings.CrewAgents == nil {
-				settings.CrewAgents = make(map[string]string)
-			}
-			settings.CrewAgents[assignment.Name] = assignment.Agent
-		}
-	}
+	applyMixAssignments(settings, assignments)
 	settings.CostTier = ""
 
 	if err := SaveTownSettings(settingsPath, settings); err != nil {
@@ -216,42 +166,144 @@ func ApplyTownMix(settingsPath string, assignments []MixAssignment) error {
 	return nil
 }
 
-func validateMixAssignment(settings *TownSettings, assignment MixAssignment) error {
+func rejectDuplicateMixAssignments(settings *TownSettings, assignments []MixAssignment) error {
+	seenRoles := make(map[string]struct{})
+	seenCrew := make(map[string]struct{})
+	seenDefault := false
+	for _, assignment := range assignments {
+		if err := validateMixAssignment(settings, assignment); err != nil {
+			return err
+		}
+		if err := noteSeenMixAssignment(assignment, seenRoles, seenCrew, &seenDefault); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func noteSeenMixAssignment(assignment MixAssignment, seenRoles, seenCrew map[string]struct{}, seenDefault *bool) error {
 	switch assignment.Kind {
 	case MixKindDefault:
-		if assignment.Effort != "" {
-			return fmt.Errorf("default agent cannot set effort")
-		}
-		_, err := requireKnownAgent(assignment.Agent, settings)
-		return err
+		return noteSeenDefaultMix(seenDefault)
 	case MixKindRole:
-		if err := validateManagedRole(assignment.Name); err != nil {
-			return err
-		}
-		runtimeConfig, err := requireKnownAgent(assignment.Agent, settings)
-		if err != nil {
-			return err
-		}
-		effectiveEffort := assignment.Effort
-		if effectiveEffort == "" {
-			effectiveEffort = settings.RoleEffort[assignment.Name]
-			if effectiveEffort != "" && validateRuntimeEffort(runtimeConfig, effectiveEffort) != nil {
-				return nil
-			}
-		}
-		return validateRuntimeEffort(runtimeConfig, effectiveEffort)
+		return noteSeenNamedMix(seenRoles, "role", assignment.Name)
 	case MixKindCrew:
-		if err := validateMixCrewName(assignment.Name); err != nil {
-			return err
-		}
-		if assignment.Effort != "" {
-			return fmt.Errorf("crew assignment cannot set effort")
-		}
-		_, err := requireKnownAgent(assignment.Agent, settings)
-		return err
+		return noteSeenNamedMix(seenCrew, "crew", assignment.Name)
 	default:
 		return fmt.Errorf("unknown mix kind %q", assignment.Kind)
 	}
+}
+
+func noteSeenDefaultMix(seenDefault *bool) error {
+	if *seenDefault {
+		return fmt.Errorf("duplicate assignment for default agent")
+	}
+	*seenDefault = true
+	return nil
+}
+
+func noteSeenNamedMix(seen map[string]struct{}, kind, name string) error {
+	if _, ok := seen[name]; ok {
+		return fmt.Errorf("duplicate assignment for %s %s", kind, name)
+	}
+	seen[name] = struct{}{}
+	return nil
+}
+
+func applyMixAssignments(settings *TownSettings, assignments []MixAssignment) {
+	for _, assignment := range assignments {
+		applyMixAssignment(settings, assignment)
+	}
+}
+
+func applyMixAssignment(settings *TownSettings, assignment MixAssignment) {
+	switch assignment.Kind {
+	case MixKindDefault:
+		settings.DefaultAgent = assignment.Agent
+	case MixKindRole:
+		applyRoleMixAssignment(settings, assignment)
+	case MixKindCrew:
+		applyCrewMixAssignment(settings, assignment)
+	}
+}
+
+func applyRoleMixAssignment(settings *TownSettings, assignment MixAssignment) {
+	if settings.RoleAgents == nil {
+		settings.RoleAgents = make(map[string]string)
+	}
+	settings.RoleAgents[assignment.Name] = assignment.Agent
+	if assignment.Effort != "" {
+		if settings.RoleEffort == nil {
+			settings.RoleEffort = make(map[string]string)
+		}
+		settings.RoleEffort[assignment.Name] = assignment.Effort
+		return
+	}
+	runtimeConfig := lookupAgentConfigIfExists(assignment.Agent, settings, nil)
+	if runtimeConfig != nil && validateRuntimeEffort(runtimeConfig, settings.RoleEffort[assignment.Name]) != nil {
+		delete(settings.RoleEffort, assignment.Name)
+	}
+}
+
+func applyCrewMixAssignment(settings *TownSettings, assignment MixAssignment) {
+	if settings.CrewAgents == nil {
+		settings.CrewAgents = make(map[string]string)
+	}
+	settings.CrewAgents[assignment.Name] = assignment.Agent
+}
+
+func validateMixAssignment(settings *TownSettings, assignment MixAssignment) error {
+	switch assignment.Kind {
+	case MixKindDefault:
+		return validateDefaultMixAssignment(settings, assignment)
+	case MixKindRole:
+		return validateRoleMixAssignment(settings, assignment)
+	case MixKindCrew:
+		return validateCrewMixAssignment(settings, assignment)
+	default:
+		return fmt.Errorf("unknown mix kind %q", assignment.Kind)
+	}
+}
+
+func validateDefaultMixAssignment(settings *TownSettings, assignment MixAssignment) error {
+	if assignment.Effort != "" {
+		return fmt.Errorf("default agent cannot set effort")
+	}
+	_, err := requireKnownAgent(assignment.Agent, settings)
+	return err
+}
+
+func validateRoleMixAssignment(settings *TownSettings, assignment MixAssignment) error {
+	if err := validateManagedRole(assignment.Name); err != nil {
+		return err
+	}
+	runtimeConfig, err := requireKnownAgent(assignment.Agent, settings)
+	if err != nil {
+		return err
+	}
+	return validateRoleMixEffort(runtimeConfig, settings.RoleEffort[assignment.Name], assignment.Effort)
+}
+
+func validateRoleMixEffort(runtimeConfig *RuntimeConfig, existingEffort, assignmentEffort string) error {
+	effectiveEffort := assignmentEffort
+	if effectiveEffort == "" {
+		effectiveEffort = existingEffort
+		if effectiveEffort != "" && validateRuntimeEffort(runtimeConfig, effectiveEffort) != nil {
+			return nil
+		}
+	}
+	return validateRuntimeEffort(runtimeConfig, effectiveEffort)
+}
+
+func validateCrewMixAssignment(settings *TownSettings, assignment MixAssignment) error {
+	if err := validateMixCrewName(assignment.Name); err != nil {
+		return err
+	}
+	if assignment.Effort != "" {
+		return fmt.Errorf("crew assignment cannot set effort")
+	}
+	_, err := requireKnownAgent(assignment.Agent, settings)
+	return err
 }
 
 // DescribeTownMix returns the effective agent mix from town settings.
@@ -259,54 +311,71 @@ func DescribeTownMix(settings *TownSettings) TownMix {
 	if settings == nil {
 		settings = NewTownSettings()
 	}
-
-	defaultAgent := settings.DefaultAgent
-	if defaultAgent == "" {
-		defaultAgent = string(AgentClaude)
-	}
-
+	defaultAgent := mixDefaultAgent(settings)
+	providers := make(map[string]struct{})
 	mix := TownMix{
 		DefaultAgent: defaultAgent,
-		Roles:        make([]MixEntry, 0, len(TierManagedRoles)),
+		Roles:        describeMixRoles(settings, defaultAgent, providers),
+		Crew:         describeMixCrew(settings, providers),
+		Providers:    sortedMixProviders(providers),
 	}
-	providers := make(map[string]struct{})
+	mix.Mixed = len(mix.Providers) > 1
+	return mix
+}
 
+func mixDefaultAgent(settings *TownSettings) string {
+	if settings.DefaultAgent != "" {
+		return settings.DefaultAgent
+	}
+	return string(AgentClaude)
+}
+
+func describeMixRoles(settings *TownSettings, defaultAgent string, providers map[string]struct{}) []MixEntry {
+	roles := make([]MixEntry, 0, len(TierManagedRoles))
 	for _, role := range TierManagedRoles {
-		agent := settings.RoleAgents[role]
-		source := "default"
-		if agent != "" {
-			source = "role"
-		} else {
-			agent = defaultAgent
-		}
+		agent, source := mixRoleAgent(settings.RoleAgents[role], defaultAgent)
 		entry := mixEntry(MixKindRole, role, agent, settings.RoleEffort[role], source, settings)
-		mix.Roles = append(mix.Roles, entry)
-		if entry.Provider != "" {
-			providers[entry.Provider] = struct{}{}
-		}
+		roles = append(roles, entry)
+		noteMixProvider(providers, entry.Provider)
 	}
+	return roles
+}
 
+func mixRoleAgent(agent, defaultAgent string) (string, string) {
+	if agent != "" {
+		return agent, "role"
+	}
+	return defaultAgent, "default"
+}
+
+func describeMixCrew(settings *TownSettings, providers map[string]struct{}) []MixEntry {
 	crewNames := make([]string, 0, len(settings.CrewAgents))
 	for name := range settings.CrewAgents {
 		crewNames = append(crewNames, name)
 	}
 	sort.Strings(crewNames)
+	crew := make([]MixEntry, 0, len(crewNames))
 	for _, name := range crewNames {
-		agent := settings.CrewAgents[name]
-		entry := mixEntry(MixKindCrew, name, agent, "", "crew", settings)
-		mix.Crew = append(mix.Crew, entry)
-		if entry.Provider != "" {
-			providers[entry.Provider] = struct{}{}
-		}
+		entry := mixEntry(MixKindCrew, name, settings.CrewAgents[name], "", "crew", settings)
+		crew = append(crew, entry)
+		noteMixProvider(providers, entry.Provider)
 	}
+	return crew
+}
 
-	mix.Providers = make([]string, 0, len(providers))
-	for provider := range providers {
-		mix.Providers = append(mix.Providers, provider)
+func noteMixProvider(providers map[string]struct{}, provider string) {
+	if provider != "" {
+		providers[provider] = struct{}{}
 	}
-	sort.Strings(mix.Providers)
-	mix.Mixed = len(mix.Providers) > 1
-	return mix
+}
+
+func sortedMixProviders(providers map[string]struct{}) []string {
+	names := make([]string, 0, len(providers))
+	for provider := range providers {
+		names = append(names, provider)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func requireKnownAgent(agent string, settings *TownSettings) (*RuntimeConfig, error) {
