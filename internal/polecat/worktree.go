@@ -41,6 +41,19 @@ func structuralWorktreeError(path string, format string, args ...any) error {
 // VerifyWorktreeExists checks that clonePath is a git worktree whose .git
 // indirection points at an existing gitdir.
 func VerifyWorktreeExists(clonePath string) error {
+	if err := verifyWorktreeDirectory(clonePath); err != nil {
+		return err
+	}
+	if err := verifyGitMarker(clonePath); err != nil {
+		return err
+	}
+	if err := verifyGitdirReference(clonePath); err != nil {
+		return err
+	}
+	return verifyGitRepository(clonePath)
+}
+
+func verifyWorktreeDirectory(clonePath string) error {
 	info, err := os.Stat(clonePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -51,7 +64,10 @@ func VerifyWorktreeExists(clonePath string) error {
 	if !info.IsDir() {
 		return structuralWorktreeError(clonePath, "worktree path is not a directory: %s", clonePath)
 	}
+	return nil
+}
 
+func verifyGitMarker(clonePath string) error {
 	gitPath := filepath.Join(clonePath, ".git")
 	if _, err := os.Stat(gitPath); err != nil {
 		if os.IsNotExist(err) {
@@ -59,24 +75,34 @@ func VerifyWorktreeExists(clonePath string) error {
 		}
 		return fmt.Errorf("checking .git: %w", err)
 	}
+	return nil
+}
 
+func verifyGitdirReference(clonePath string) error {
+	gitPath := filepath.Join(clonePath, ".git")
 	gitContent, err := os.ReadFile(gitPath)
-	if err == nil {
-		content := strings.TrimSpace(string(gitContent))
-		if strings.HasPrefix(content, "gitdir: ") {
-			gitdirPath := strings.TrimPrefix(content, "gitdir: ")
-			if !filepath.IsAbs(gitdirPath) {
-				gitdirPath = filepath.Join(clonePath, gitdirPath)
-			}
-			if _, err := os.Stat(gitdirPath); err != nil {
-				if os.IsNotExist(err) {
-					return structuralWorktreeError(clonePath, "worktree .git references nonexistent gitdir %s: %w", gitdirPath, err)
-				}
-				return fmt.Errorf("checking worktree gitdir %s: %w", gitdirPath, err)
-			}
-		}
+	if err != nil {
+		return nil
 	}
 
+	content := strings.TrimSpace(string(gitContent))
+	if !strings.HasPrefix(content, "gitdir: ") {
+		return nil
+	}
+	gitdirPath := strings.TrimPrefix(content, "gitdir: ")
+	if !filepath.IsAbs(gitdirPath) {
+		gitdirPath = filepath.Join(clonePath, gitdirPath)
+	}
+	if _, err := os.Stat(gitdirPath); err != nil {
+		if os.IsNotExist(err) {
+			return structuralWorktreeError(clonePath, "worktree .git references nonexistent gitdir %s: %w", gitdirPath, err)
+		}
+		return fmt.Errorf("checking worktree gitdir %s: %w", gitdirPath, err)
+	}
+	return nil
+}
+
+func verifyGitRepository(clonePath string) error {
 	cmd := exec.Command("git", "-C", clonePath, "rev-parse", "--git-dir")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("worktree at %s is not a valid git repository: %s", clonePath, strings.TrimSpace(string(output)))
