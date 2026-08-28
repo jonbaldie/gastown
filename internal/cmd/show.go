@@ -9,14 +9,10 @@ import (
 )
 
 func init() {
-	showCmd.GroupID = GroupWork
-	rootCmd.AddCommand(showCmd)
-}
-
-var showCmd = &cobra.Command{
-	Use:   "show <bead-id> [flags]",
-	Short: "Show details of a bead",
-	Long: `Displays the full details of a bead by ID.
+	showCmd := &cobra.Command{
+		Use:   "show <bead-id> [flags]",
+		Short: "Show details of a bead",
+		Long: `Displays the full details of a bead by ID.
 
 Delegates to 'bd show' - all bd show flags are supported.
 Works with any bead prefix (gt-, bd-, hq-, etc.) and routes
@@ -28,8 +24,11 @@ Examples:
   gt show bd-def456          # Show a beads issue
   gt show gt-abc123 --json   # Output as JSON
   gt show gt-abc123 -v       # Verbose output`,
-	DisableFlagParsing: true, // Pass all flags through to bd show
-	RunE:               runShow,
+		DisableFlagParsing: true, // Pass all flags through to bd show
+		RunE:               runShow,
+	}
+	showCmd.GroupID = GroupWork
+	rootCmd.AddCommand(showCmd)
 }
 
 func runShow(cmd *cobra.Command, args []string) error {
@@ -59,19 +58,9 @@ func extractBeadIDFromArgs(args []string) string {
 			}
 			break
 		}
-		if strings.HasPrefix(arg, "--id=") {
-			if idFlag == "" {
-				idFlag = strings.TrimPrefix(arg, "--id=")
-			}
-			continue
-		}
-		if arg == "--id" {
-			if i+1 < len(args) {
-				if idFlag == "" {
-					idFlag = args[i+1]
-				}
-				i++
-			}
+		if next, value, handled := parseShowIDFlag(args, i, idFlag); handled {
+			i = next
+			idFlag = value
 			continue
 		}
 		if showFlagConsumesNextArg(arg) {
@@ -83,6 +72,26 @@ func extractBeadIDFromArgs(args []string) string {
 		}
 	}
 	return idFlag
+}
+
+func parseShowIDFlag(args []string, index int, current string) (int, string, bool) {
+	arg := args[index]
+	if strings.HasPrefix(arg, "--id=") {
+		if current == "" {
+			current = strings.TrimPrefix(arg, "--id=")
+		}
+		return index, current, true
+	}
+	if arg != "--id" {
+		return index, current, false
+	}
+	if index+1 < len(args) && current == "" {
+		current = args[index+1]
+	}
+	if index+1 < len(args) {
+		return index + 1, current, true
+	}
+	return index, current, true
 }
 
 func showFlagConsumesNextArg(arg string) bool {
