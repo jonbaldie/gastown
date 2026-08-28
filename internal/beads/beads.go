@@ -2038,9 +2038,18 @@ func (b *Beads) Update(id string, opts UpdateOptions) error {
 		return b.storeUpdate(id, opts)
 	}
 
-	args := []string{"update", id}
-	var stdinData []byte
+	args, stdinData := updateArgs(id, opts)
+	_, err := b.runWithStdin(stdinData, args...)
+	return err
+}
 
+func updateArgs(id string, opts UpdateOptions) ([]string, []byte) {
+	args := appendUpdateFields([]string{"update", id}, opts)
+	args = appendUpdateLabels(args, opts)
+	return args, updateDescriptionStdin(opts)
+}
+
+func appendUpdateFields(args []string, opts UpdateOptions) []string {
 	if opts.Title != nil {
 		args = append(args, "--title="+*opts.Title)
 	}
@@ -2052,16 +2061,33 @@ func (b *Beads) Update(id string, opts UpdateOptions) error {
 	}
 	if opts.Description != nil {
 		args = append(args, "--body-file=-")
-		stdinData = []byte(*opts.Description)
-		if *opts.Description == "" {
-			args = append(args, "--allow-empty-description")
-			stdinData = []byte{}
-		}
+		args = appendEmptyDescriptionFlag(args, *opts.Description)
 	}
 	if opts.Assignee != nil {
 		args = append(args, "--assignee="+*opts.Assignee)
 	}
-	// Label operations: set-labels replaces all, otherwise use add/remove
+	return args
+}
+
+func appendEmptyDescriptionFlag(args []string, description string) []string {
+	if description == "" {
+		return append(args, "--allow-empty-description")
+	}
+	return args
+}
+
+func updateDescriptionStdin(opts UpdateOptions) []byte {
+	if opts.Description == nil {
+		return nil
+	}
+	if *opts.Description == "" {
+		return []byte{}
+	}
+	return []byte(*opts.Description)
+}
+
+func appendUpdateLabels(args []string, opts UpdateOptions) []string {
+	// Set-labels replaces all labels; otherwise apply add/remove operations.
 	if len(opts.SetLabels) > 0 {
 		for _, label := range opts.SetLabels {
 			args = append(args, "--set-labels="+label)
@@ -2074,9 +2100,7 @@ func (b *Beads) Update(id string, opts UpdateOptions) error {
 			args = append(args, "--remove-label="+label)
 		}
 	}
-
-	_, err := b.runWithStdin(stdinData, args...)
-	return err
+	return args
 }
 
 // AddComment appends a comment to an issue, routing by issue ID when needed.
