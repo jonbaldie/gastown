@@ -469,35 +469,53 @@ func ValidateMolecule(mol *Issue) error {
 		return fmt.Errorf("molecule is nil")
 	}
 
+	steps, err := moleculeStepsForValidation(mol)
+	if err != nil {
+		return err
+	}
+	stepRefs, err := validateMoleculeStepRefs(steps)
+	if err != nil {
+		return err
+	}
+	if err := validateMoleculeDependencies(steps, stepRefs); err != nil {
+		return err
+	}
+	return detectCycles(steps)
+}
+
+func moleculeStepsForValidation(mol *Issue) ([]MoleculeStep, error) {
 	if mol.Type != "molecule" {
-		return fmt.Errorf("issue type is %q, expected molecule", mol.Type)
+		return nil, fmt.Errorf("issue type is %q, expected molecule", mol.Type)
 	}
 
 	steps, err := ParseMoleculeSteps(mol.Description)
 	if err != nil {
-		return fmt.Errorf("parsing steps: %w", err)
+		return nil, fmt.Errorf("parsing steps: %w", err)
 	}
-
 	if len(steps) == 0 {
-		return fmt.Errorf("molecule has no steps defined")
+		return nil, fmt.Errorf("molecule has no steps defined")
 	}
+	return steps, nil
+}
 
-	// Build step map for reference validation
-	stepMap := make(map[string]bool)
+func validateMoleculeStepRefs(steps []MoleculeStep) (map[string]bool, error) {
+	stepRefs := make(map[string]bool, len(steps))
 	for _, step := range steps {
 		if step.Ref == "" {
-			return fmt.Errorf("step has empty ref")
+			return nil, fmt.Errorf("step has empty ref")
 		}
-		if stepMap[step.Ref] {
-			return fmt.Errorf("duplicate step ref: %s", step.Ref)
+		if stepRefs[step.Ref] {
+			return nil, fmt.Errorf("duplicate step ref: %s", step.Ref)
 		}
-		stepMap[step.Ref] = true
+		stepRefs[step.Ref] = true
 	}
+	return stepRefs, nil
+}
 
-	// Validate Needs references
+func validateMoleculeDependencies(steps []MoleculeStep, stepRefs map[string]bool) error {
 	for _, step := range steps {
 		for _, need := range step.Needs {
-			if !stepMap[need] {
+			if !stepRefs[need] {
 				return fmt.Errorf("step %q depends on unknown step %q", step.Ref, need)
 			}
 			if need == step.Ref {
@@ -505,12 +523,6 @@ func ValidateMolecule(mol *Issue) error {
 			}
 		}
 	}
-
-	// Detect cycles in dependency graph
-	if err := detectCycles(steps); err != nil {
-		return err
-	}
-
 	return nil
 }
 
