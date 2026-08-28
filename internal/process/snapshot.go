@@ -28,9 +28,13 @@ type Proc struct {
 
 // Table is a point-in-time process snapshot.
 type Table struct {
-	byPID    map[int]Proc
+	byPID map[int]Proc
+	order []int
+	processTree
+}
+
+type processTree struct {
 	children map[int][]int
-	order    []int
 }
 
 // Capture reads the process table once.
@@ -46,8 +50,8 @@ func Capture() (Table, error) {
 // (`pid ppid comm...`) and the rich capture format (`pid ppid tty etime args...`).
 func Parse(out []byte) Table {
 	table := Table{
-		byPID:    make(map[int]Proc),
-		children: make(map[int][]int),
+		byPID:       make(map[int]Proc),
+		processTree: processTree{children: make(map[int][]int)},
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
@@ -180,12 +184,12 @@ func (t Table) All() []Proc {
 }
 
 // Children returns the direct child PIDs of pid.
-func (t Table) Children(pid int) []int {
+func (t processTree) Children(pid int) []int {
 	return append([]int(nil), t.children[pid]...)
 }
 
 // Descendants returns all descendant PIDs, deepest first.
-func (t Table) Descendants(pid int) []int {
+func (t processTree) Descendants(pid int) []int {
 	seen := map[int]bool{pid: true}
 	var result []int
 	var walk func(int)
