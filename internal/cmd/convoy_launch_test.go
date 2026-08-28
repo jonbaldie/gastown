@@ -198,7 +198,6 @@ func TestLaunchAsAlias_EpicInput(t *testing.T) {
 	// Clean up shared state.
 	defer func() {
 		convoyStageLaunch = false
-		convoyLaunchForce = false
 	}()
 
 	err := runConvoyLaunch(convoyLaunchCmd, []string{"gt-epic-1"})
@@ -253,7 +252,6 @@ func TestLaunchAsAlias_TaskListInput(t *testing.T) {
 	// Clean up shared state.
 	defer func() {
 		convoyStageLaunch = false
-		convoyLaunchForce = false
 	}()
 
 	err := runConvoyLaunch(convoyLaunchCmd, []string{"gt-t1", "gt-t2"})

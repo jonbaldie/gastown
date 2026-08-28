@@ -254,6 +254,10 @@ func argsRequestConvoyStageJSON(args []string) bool {
 }
 
 func runConvoyStage(cmd *cobra.Command, args []string) error {
+	return runConvoyStageWithForce(cmd, args, false)
+}
+
+func runConvoyStageWithForce(cmd *cobra.Command, args []string, launchForce bool) error {
 	if cmd != nil {
 		cmd.SilenceErrors = convoyStageJSON
 		cmd.SilenceUsage = convoyStageJSON
@@ -451,7 +455,7 @@ func runConvoyStage(cmd *cobra.Command, args []string) error {
 
 	// Step 16: If --launch flag is set, transition to open immediately.
 	if convoyStageLaunch {
-		if err := transitionConvoyToOpen(convoyID, convoyLaunchForce); err != nil {
+		if err := transitionConvoyToOpen(convoyID, launchForce); err != nil {
 			return err
 		}
 		fmt.Printf("Convoy launched: %s (status: open)\n", convoyID)
