@@ -1662,38 +1662,55 @@ func (b *Beads) ShowMultiple(ids []string) (map[string]*Issue, error) {
 		return make(map[string]*Issue), nil
 	}
 
-	if !b.noRoute {
-		fallbackDir := b.getResolvedBeadsDir()
-		groups := make(map[string][]string)
-		for _, id := range ids {
-			targetDir := ResolveRoutingTarget(b.getTownRoot(), id, fallbackDir)
-			groups[targetDir] = append(groups[targetDir], id)
-		}
+	result, routed, err := b.showMultipleRouted(ids)
+	if routed {
+		return result, err
+	}
+	return b.showMultipleLocal(ids)
+}
 
-		if len(groups) > 1 || groups[fallbackDir] == nil {
-			result := make(map[string]*Issue, len(ids))
-			var firstErr error
-			for targetDir, groupIDs := range groups {
-				target := b
-				if targetDir != fallbackDir {
-					target = NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
-				}
-				issues, err := target.showMultipleLocal(groupIDs)
-				if err != nil {
-					if firstErr == nil {
-						firstErr = err
-					}
-					continue
-				}
-				for id, issue := range issues {
-					result[id] = issue
-				}
+func (b *Beads) showMultipleRouted(ids []string) (map[string]*Issue, bool, error) {
+	if b.noRoute {
+		return nil, false, nil
+	}
+	fallbackDir := b.getResolvedBeadsDir()
+	groups := b.showMultipleGroupsByTarget(ids, fallbackDir)
+	if len(groups) <= 1 && groups[fallbackDir] != nil {
+		return nil, false, nil
+	}
+	result, err := b.showMultipleGroups(groups, fallbackDir, len(ids))
+	return result, true, err
+}
+
+func (b *Beads) showMultipleGroupsByTarget(ids []string, fallbackDir string) map[string][]string {
+	groups := make(map[string][]string)
+	for _, id := range ids {
+		targetDir := ResolveRoutingTarget(b.getTownRoot(), id, fallbackDir)
+		groups[targetDir] = append(groups[targetDir], id)
+	}
+	return groups
+}
+
+func (b *Beads) showMultipleGroups(groups map[string][]string, fallbackDir string, resultSize int) (map[string]*Issue, error) {
+	result := make(map[string]*Issue, resultSize)
+	var firstErr error
+	for targetDir, groupIDs := range groups {
+		target := b
+		if targetDir != fallbackDir {
+			target = NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
+		}
+		issues, err := target.showMultipleLocal(groupIDs)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
 			}
-			return result, firstErr
+			continue
+		}
+		for id, issue := range issues {
+			result[id] = issue
 		}
 	}
-
-	return b.showMultipleLocal(ids)
+	return result, firstErr
 }
 
 func (b *Beads) showMultipleLocal(ids []string) (map[string]*Issue, error) {
