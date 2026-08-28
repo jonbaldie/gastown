@@ -641,7 +641,7 @@ func isValidBeadID(s string) bool {
 		return false
 	}
 	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_') {
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._", c) {
 			return false
 		}
 	}
@@ -664,10 +664,7 @@ func collectEpicChildren(epicID string) ([]string, error) {
 	queue := []string{epicID}
 	visited[epicID] = true
 
-	for {
-		if len(queue) == 0 {
-			break
-		}
+	for len(queue) > 0 {
 		parentID := queue[0]
 		queue = queue[1:]
 
