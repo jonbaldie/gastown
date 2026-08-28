@@ -124,22 +124,8 @@ esac
 		t.Fatalf("chdir rig work dir: %v", err)
 	}
 
-	oldSet := agentStateSet
-	oldIncr := agentStateIncr
-	oldDel := agentStateDel
-	oldJSON := agentStateJSON
-	t.Cleanup(func() {
-		agentStateSet = oldSet
-		agentStateIncr = oldIncr
-		agentStateDel = oldDel
-		agentStateJSON = oldJSON
-	})
-	agentStateSet = []string{"idle=0"}
-	agentStateIncr = ""
-	agentStateDel = nil
-	agentStateJSON = false
-
-	if err := runAgentState(nil, []string{"gt-gastown-refinery"}); err != nil {
+	opts := &agentStateOptions{set: []string{"idle=0"}}
+	if err := runAgentState(opts, []string{"gt-gastown-refinery"}); err != nil {
 		t.Fatalf("runAgentState() error = %v", err)
 	}
 
