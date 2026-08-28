@@ -72,109 +72,85 @@ func ParseMoleculeSteps(description string) ([]MoleculeStep, error) {
 		return nil, nil
 	}
 
-	lines := strings.Split(description, "\n")
 	var steps []MoleculeStep
-	var currentStep *MoleculeStep
+	var currentRef string
 	var contentLines []string
-
-	// Helper to finalize current step
-	finalizeStep := func() {
-		if currentStep == nil {
-			return
-		}
-
-		// Process content lines to extract Needs/Tier and build instructions
-		var instructionLines []string
-		for _, line := range contentLines {
-			trimmed := strings.TrimSpace(line)
-
-			// Check for Needs: line
-			if matches := needsLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				deps := strings.Split(matches[1], ",")
-				for _, dep := range deps {
-					dep = strings.TrimSpace(dep)
-					if dep != "" {
-						currentStep.Needs = append(currentStep.Needs, dep)
-					}
-				}
-				continue
-			}
-
-			// Check for Tier: line
-			if matches := tierLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				currentStep.Tier = strings.ToLower(matches[1])
-				continue
-			}
-
-			// Check for WaitsFor: line
-			if matches := waitsForLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				conditions := strings.Split(matches[1], ",")
-				for _, cond := range conditions {
-					cond = strings.TrimSpace(cond)
-					if cond != "" {
-						currentStep.WaitsFor = append(currentStep.WaitsFor, cond)
-					}
-				}
-				continue
-			}
-
-			// Check for Type: line
-			if matches := typeLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				currentStep.Type = strings.ToLower(matches[1])
-				continue
-			}
-
-			// Check for Backoff: line
-			if matches := backoffLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				currentStep.Backoff = parseBackoffConfig(matches[1])
-				continue
-			}
-
-			// Regular instruction line
-			instructionLines = append(instructionLines, line)
-		}
-
-		// Build instructions, trimming leading/trailing blank lines
-		currentStep.Instructions = strings.TrimSpace(strings.Join(instructionLines, "\n"))
-
-		// Set title from first non-empty line of instructions, or use ref
-		if currentStep.Instructions != "" {
-			firstLine := strings.SplitN(currentStep.Instructions, "\n", 2)[0]
-			currentStep.Title = strings.TrimSpace(firstLine)
-		}
-		if currentStep.Title == "" {
-			currentStep.Title = currentStep.Ref
-		}
-
-		steps = append(steps, *currentStep)
-		currentStep = nil
-		contentLines = nil
-	}
-
-	for _, line := range lines {
-		// Check for step header
+	for _, line := range strings.Split(description, "\n") {
 		if matches := stepHeaderRegex.FindStringSubmatch(line); matches != nil {
-			// Finalize previous step if any
-			finalizeStep()
-
-			// Start new step
-			currentStep = &MoleculeStep{
-				Ref: matches[1],
-			}
+			steps = appendMoleculeStep(steps, currentRef, contentLines)
+			currentRef = matches[1]
 			contentLines = nil
 			continue
 		}
 
-		// Accumulate content lines if we're in a step
-		if currentStep != nil {
+		if currentRef != "" {
 			contentLines = append(contentLines, line)
 		}
 	}
+	return appendMoleculeStep(steps, currentRef, contentLines), nil
+}
 
-	// Finalize last step
-	finalizeStep()
+func appendMoleculeStep(steps []MoleculeStep, ref string, contentLines []string) []MoleculeStep {
+	if ref == "" {
+		return steps
+	}
+	return append(steps, parseMoleculeStep(ref, contentLines))
+}
 
-	return steps, nil
+func parseMoleculeStep(ref string, contentLines []string) MoleculeStep {
+	step := MoleculeStep{Ref: ref}
+	var instructionLines []string
+	for _, line := range contentLines {
+		if !parseMoleculeStepDirective(&step, strings.TrimSpace(line)) {
+			instructionLines = append(instructionLines, line)
+		}
+	}
+	setMoleculeStepInstructions(&step, instructionLines)
+	return step
+}
+
+func parseMoleculeStepDirective(step *MoleculeStep, line string) bool {
+	if matches := needsLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Needs = append(step.Needs, commaSeparatedValues(matches[1])...)
+		return true
+	}
+	if matches := tierLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Tier = strings.ToLower(matches[1])
+		return true
+	}
+	if matches := waitsForLineRegex.FindStringSubmatch(line); matches != nil {
+		step.WaitsFor = append(step.WaitsFor, commaSeparatedValues(matches[1])...)
+		return true
+	}
+	if matches := typeLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Type = strings.ToLower(matches[1])
+		return true
+	}
+	if matches := backoffLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Backoff = parseBackoffConfig(matches[1])
+		return true
+	}
+	return false
+}
+
+func commaSeparatedValues(value string) []string {
+	var values []string
+	for _, value := range strings.Split(value, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func setMoleculeStepInstructions(step *MoleculeStep, instructionLines []string) {
+	step.Instructions = strings.TrimSpace(strings.Join(instructionLines, "\n"))
+	if step.Instructions != "" {
+		step.Title = strings.TrimSpace(strings.SplitN(step.Instructions, "\n", 2)[0])
+	}
+	if step.Title == "" {
+		step.Title = step.Ref
+	}
 }
 
 // parseBackoffConfig parses a backoff configuration string.
