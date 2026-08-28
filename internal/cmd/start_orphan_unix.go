@@ -31,6 +31,30 @@ func cleanupOrphanedClaude(graceSecs int) {
 		return
 	}
 
+	termPIDs := sendOrphanTermSignals(orphans, graceSecs)
+
+	if len(termPIDs) == 0 {
+		return
+	}
+
+	// Wait for grace period
+	fmt.Printf("  %s Waiting %d seconds for processes to terminate gracefully...\n",
+		style.Dim.Render("⏳"), graceSecs)
+	time.Sleep(time.Duration(graceSecs) * time.Second)
+
+	killedCount, alreadyDeadCount := finishOrphanCleanup(termPIDs)
+
+	if alreadyDeadCount > 0 {
+		fmt.Printf("  %s %d process(es) terminated gracefully from SIGTERM\n",
+			style.Bold.Render("✓"), alreadyDeadCount)
+	}
+	if killedCount == 0 && alreadyDeadCount > 0 {
+		fmt.Printf("  %s All processes cleaned up successfully\n",
+			style.Bold.Render("✓"))
+	}
+}
+
+func sendOrphanTermSignals(orphans []util.OrphanedProcess, graceSecs int) []int {
 	// Send SIGTERM to all orphans
 	var termPIDs []int
 	for _, orphan := range orphans {
@@ -45,20 +69,12 @@ func cleanupOrphanedClaude(graceSecs int) {
 		fmt.Printf("  %s PID %d: sent SIGTERM (waiting %ds before SIGKILL)\n",
 			style.Bold.Render("→"), orphan.PID, graceSecs)
 	}
+	return termPIDs
+}
 
-	if len(termPIDs) == 0 {
-		return
-	}
-
-	// Wait for grace period
-	fmt.Printf("  %s Waiting %d seconds for processes to terminate gracefully...\n",
-		style.Dim.Render("⏳"), graceSecs)
-	time.Sleep(time.Duration(graceSecs) * time.Second)
-
+func finishOrphanCleanup(termPIDs []int) (killedCount, alreadyDeadCount int) {
 	// Check which processes are still alive and send SIGKILL
-	var killedCount, alreadyDeadCount int
 	for _, pid := range termPIDs {
-		// Check if process still exists
 		if !process.Alive(pid) {
 			// Process is gone (either died from SIGTERM or doesn't exist)
 			alreadyDeadCount++
@@ -77,15 +93,7 @@ func cleanupOrphanedClaude(graceSecs int) {
 		fmt.Printf("  %s PID %d: sent SIGKILL (did not respond to SIGTERM)\n",
 			style.Bold.Render("✓"), pid)
 	}
-
-	if alreadyDeadCount > 0 {
-		fmt.Printf("  %s %d process(es) terminated gracefully from SIGTERM\n",
-			style.Bold.Render("✓"), alreadyDeadCount)
-	}
-	if killedCount == 0 && alreadyDeadCount > 0 {
-		fmt.Printf("  %s All processes cleaned up successfully\n",
-			style.Bold.Render("✓"))
-	}
+	return killedCount, alreadyDeadCount
 }
 
 // verifyNoOrphans checks that no Claude processes survived shutdown.
