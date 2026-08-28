@@ -123,47 +123,12 @@ func (c *DispatchCycle) RunPlan(plan DispatchPlan) (DispatchReport, error) {
 	}
 
 	for i, b := range plan.ToDispatch {
-		if c.Validate != nil {
-			if err := c.Validate(b); err != nil {
-				report.Failed++
-				if c.OnFailure != nil {
-					c.OnFailure(b, err)
-				}
-				continue
-			}
-		}
-
-		if err := c.Execute(b); err != nil {
+		if err := c.runPlannedBead(b); err != nil {
 			report.Failed++
 			if c.OnFailure != nil {
 				c.OnFailure(b, err)
 			}
 			continue
-		}
-
-		// OnSuccess must succeed (e.g., closing the sling context) to prevent
-		// re-dispatch on the next cycle. Retry before giving up.
-		if c.OnSuccess != nil {
-			var successErr error
-			for attempt := 0; attempt <= onSuccessRetries; attempt++ {
-				successErr = c.OnSuccess(b)
-				if successErr == nil {
-					break
-				}
-				if attempt < onSuccessRetries {
-					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-				}
-			}
-			if successErr != nil {
-				// OnSuccess failed after retries — do NOT count as dispatched.
-				// The dispatch ran but we couldn't close the context, so treat
-				// it as a failure to prevent double-dispatch on the next cycle.
-				report.Failed++
-				if c.OnFailure != nil {
-					c.OnFailure(b, &ErrOnSuccessFailed{Err: successErr})
-				}
-				continue
-			}
 		}
 
 		report.Dispatched++
@@ -175,4 +140,44 @@ func (c *DispatchCycle) RunPlan(plan DispatchPlan) (DispatchReport, error) {
 	}
 
 	return report, nil
+}
+
+func (c *DispatchCycle) runPlannedBead(b PendingBead) error {
+	if c.Validate != nil {
+		if err := c.Validate(b); err != nil {
+			return err
+		}
+	}
+	if err := c.Execute(b); err != nil {
+		return err
+	}
+
+	// OnSuccess must succeed (e.g., closing the sling context) to prevent
+	// re-dispatch on the next cycle. Retry before giving up.
+	successErr := c.retryOnSuccess(b)
+	if successErr != nil {
+		// OnSuccess failed after retries — do NOT count as dispatched. The
+		// dispatch ran but we couldn't close the context, so treat it as a
+		// failure to prevent double-dispatch on the next cycle.
+		return &ErrOnSuccessFailed{Err: successErr}
+	}
+	return nil
+}
+
+func (c *DispatchCycle) retryOnSuccess(b PendingBead) error {
+	if c.OnSuccess == nil {
+		return nil
+	}
+
+	var successErr error
+	for attempt := 0; attempt <= onSuccessRetries; attempt++ {
+		successErr = c.OnSuccess(b)
+		if successErr == nil {
+			return nil
+		}
+		if attempt < onSuccessRetries {
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+		}
+	}
+	return successErr
 }
