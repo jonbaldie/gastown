@@ -318,37 +318,14 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 	offset := 0
 	bodyLength := len(body)
 	for offset < bodyLength {
-		// Guard: need at least 4 bytes for the length field.
-		if offset+4 > bodyLength {
-			return fmt.Errorf("malformed pkt-line: truncated length field at offset %d", offset)
+		line, nextOffset, finished, err := nextReceivePackLine(body, offset)
+		if err != nil {
+			return err
 		}
-		lenHex := body[offset : offset+4]
-		if bytes.Equal(lenHex, []byte("0000")) {
-			break // flush packet: end of ref list
+		if finished {
+			break
 		}
-		var pktLen int
-		_, err := fmt.Sscanf(string(lenHex), "%x", &pktLen)
-		// pktLen < 4 would underflow the payload slice; treat as malformed and reject.
-		if err != nil || pktLen < 4 {
-			return fmt.Errorf("malformed pkt-line: invalid length field %q at offset %d", lenHex, offset)
-		}
-		end := offset + pktLen
-		// Guard: truncated packet — length field claims more bytes than available.
-		if end > len(body) {
-			return fmt.Errorf("malformed pkt-line: truncated body at offset %d (need %d, have %d)", offset, pktLen, len(body)-offset)
-		}
-		// Payload starts after the 4-byte length prefix; always advances by pktLen
-		// (even when pktLen==4, the empty payload line is skipped below).
-		line := body[offset+4 : end]
-		offset = end
-
-		// Each line: "<old-sha> <new-sha> <refname>\0[capabilities]\n"
-		// Strip the trailing newline, then truncate at the first NUL byte so that
-		// capability strings (e.g. "\0side-band-64k") do not pollute the ref name.
-		line = bytes.TrimRight(line, "\n")
-		if idx := bytes.IndexByte(line, 0); idx >= 0 {
-			line = line[:idx]
-		}
+		offset = nextOffset
 		parts := bytes.Fields(line)
 		if len(parts) < 3 {
 			continue
@@ -362,4 +339,27 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 		}
 	}
 	return nil
+}
+
+func nextReceivePackLine(body []byte, offset int) ([]byte, int, bool, error) {
+	if offset+4 > len(body) {
+		return nil, 0, false, fmt.Errorf("malformed pkt-line: truncated length field at offset %d", offset)
+	}
+	lenHex := body[offset : offset+4]
+	if bytes.Equal(lenHex, []byte("0000")) {
+		return nil, offset, true, nil
+	}
+	var packetLength int
+	if _, err := fmt.Sscanf(string(lenHex), "%x", &packetLength); err != nil || packetLength < 4 {
+		return nil, 0, false, fmt.Errorf("malformed pkt-line: invalid length field %q at offset %d", lenHex, offset)
+	}
+	end := offset + packetLength
+	if end > len(body) {
+		return nil, 0, false, fmt.Errorf("malformed pkt-line: truncated body at offset %d (need %d, have %d)", offset, packetLength, len(body)-offset)
+	}
+	line := bytes.TrimRight(body[offset+4:end], "\n")
+	if idx := bytes.IndexByte(line, 0); idx >= 0 {
+		line = line[:idx]
+	}
+	return line, end, false, nil
 }
