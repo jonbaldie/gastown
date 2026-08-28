@@ -12,11 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	gitInitGitHub string
-	gitInitPublic bool
-)
-
 var gitInitCmd = &cobra.Command{
 	Use:     "git-init",
 	GroupID: GroupWorkspace,
@@ -46,8 +41,8 @@ Examples:
 }
 
 func init() {
-	gitInitCmd.Flags().StringVar(&gitInitGitHub, "github", "", "Create GitHub repo (format: owner/repo, private by default)")
-	gitInitCmd.Flags().BoolVar(&gitInitPublic, "public", false, "Make GitHub repo public (repos are private by default)")
+	gitInitCmd.Flags().String("github", "", "Create GitHub repo (format: owner/repo, private by default)")
+	gitInitCmd.Flags().Bool("public", false, "Make GitHub repo public (repos are private by default)")
 	rootCmd.AddCommand(gitInitCmd)
 }
 
@@ -147,28 +142,70 @@ beads_hq/
 # and keeps metadata.json, config file as source of truth
 `
 
-func runGitInit(_ *cobra.Command, _ []string) error {
-	// Find the HQ root
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
-	}
+type gitInitOptions struct {
+	github string
+	public bool
+}
 
-	hqRoot, err := workspace.Find(cwd)
-	if err != nil || hqRoot == "" {
-		return fmt.Errorf("not inside a Gas Town HQ (run 'gt install' first)")
+func readGitInitOptions(cmd *cobra.Command) (gitInitOptions, error) {
+	github, err := cmd.Flags().GetString("github")
+	if err != nil {
+		return gitInitOptions{}, err
+	}
+	public, err := cmd.Flags().GetBool("public")
+	if err != nil {
+		return gitInitOptions{}, err
+	}
+	return gitInitOptions{github: github, public: public}, nil
+}
+
+func runGitInit(cmd *cobra.Command, _ []string) error {
+	opts, err := readGitInitOptions(cmd)
+	if err != nil {
+		return err
+	}
+	hqRoot, err := gitInitHQRoot()
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("%s Initializing git for HQ at %s\n\n",
 		style.Bold.Render("🔧"), style.Dim.Render(hqRoot))
 
-	// Create .gitignore
-	gitignorePath := filepath.Join(hqRoot, ".gitignore")
-	if err := createGitignore(gitignorePath); err != nil {
+	if err := initializeGitFiles(hqRoot); err != nil {
 		return err
 	}
 
-	// Initialize git if needed
+	if err := maybeCreateGitHubRepo(hqRoot, opts); err != nil {
+		return err
+	}
+
+	fmt.Printf("\n%s Git initialization complete!\n", style.Bold.Render("✓"))
+
+	// Show next steps if no GitHub was created
+	if opts.github == "" {
+		printGitInitNextSteps()
+	}
+
+	return nil
+}
+
+func gitInitHQRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+	hqRoot, err := workspace.Find(cwd)
+	if err != nil || hqRoot == "" {
+		return "", fmt.Errorf("not inside a Gas Town HQ (run 'gt install' first)")
+	}
+	return hqRoot, nil
+}
+
+func initializeGitFiles(hqRoot string) error {
+	if err := createGitignore(filepath.Join(hqRoot, ".gitignore")); err != nil {
+		return err
+	}
 	gitDir := filepath.Join(hqRoot, ".git")
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 		if err := initGitRepo(hqRoot); err != nil {
@@ -177,32 +214,26 @@ func runGitInit(_ *cobra.Command, _ []string) error {
 	} else {
 		fmt.Printf("   ✓ Git repository already exists\n")
 	}
-
-	// Install pre-checkout hook to prevent accidental branch switches
 	if err := InstallPreCheckoutHook(hqRoot); err != nil {
 		fmt.Printf("   %s Could not install pre-checkout hook: %v\n", style.Dim.Render("⚠"), err)
 	}
-
-	// Create GitHub repo if requested
-	if gitInitGitHub != "" {
-		if err := createGitHubRepo(hqRoot, gitInitGitHub, !gitInitPublic); err != nil {
-			return err
-		}
-	}
-
-	fmt.Printf("\n%s Git initialization complete!\n", style.Bold.Render("✓"))
-
-	// Show next steps if no GitHub was created
-	if gitInitGitHub == "" {
-		fmt.Println()
-		fmt.Println("Next steps:")
-		fmt.Printf("  1. Create initial commit: %s\n",
-			style.Dim.Render("git add . && git commit -m 'Initial Gas Town HQ'"))
-		fmt.Printf("  2. Create remote repo: %s\n",
-			style.Dim.Render("gt git-init --github=user/repo"))
-	}
-
 	return nil
+}
+
+func maybeCreateGitHubRepo(hqRoot string, opts gitInitOptions) error {
+	if opts.github == "" {
+		return nil
+	}
+	return createGitHubRepo(hqRoot, opts.github, !opts.public)
+}
+
+func printGitInitNextSteps() {
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Printf("  1. Create initial commit: %s\n",
+		style.Dim.Render("git add . && git commit -m 'Initial Gas Town HQ'"))
+	fmt.Printf("  2. Create remote repo: %s\n",
+		style.Dim.Render("gt git-init --github=user/repo"))
 }
 
 func createGitignore(path string) error {
@@ -424,20 +455,13 @@ func InstallBranchProtection(hqRoot string) error {
 		return fmt.Errorf("creating hooks directory: %w", err)
 	}
 
-	// Remove obsolete pre-checkout hook if it's ours
-	preCheckoutPath := filepath.Join(hooksDir, "pre-checkout")
-	if content, err := os.ReadFile(preCheckoutPath); err == nil {
-		if strings.Contains(string(content), "Gas Town pre-checkout hook") {
-			_ = os.Remove(preCheckoutPath) // Best effort removal
-			fmt.Printf("   ✓ Removed obsolete pre-checkout hook\n")
-		}
-	}
+	removeObsoletePreCheckoutHook(hooksDir)
 
 	hookPath := filepath.Join(hooksDir, "post-checkout")
 
 	// Read existing hook content (if any)
-	existingContent, err := os.ReadFile(hookPath)
-	if err != nil && !os.IsNotExist(err) {
+	existingContent, err := readBranchProtectionHook(hookPath)
+	if err != nil {
 		return fmt.Errorf("reading existing hook: %w", err)
 	}
 
@@ -447,25 +471,7 @@ func InstallBranchProtection(hqRoot string) error {
 		return nil
 	}
 
-	var newContent string
-	if len(existingContent) == 0 {
-		// No existing hook - create new one with shebang
-		newContent = "#!/bin/sh\n" + BranchProtectionScript
-	} else {
-		// Prepend branch protection after shebang
-		content := string(existingContent)
-		if strings.HasPrefix(content, "#!") {
-			// Find end of shebang line
-			idx := strings.Index(content, "\n")
-			if idx != -1 {
-				newContent = content[:idx+1] + BranchProtectionScript + content[idx+1:]
-			} else {
-				newContent = content + "\n" + BranchProtectionScript
-			}
-		} else {
-			newContent = "#!/bin/sh\n" + BranchProtectionScript + content
-		}
-	}
+	newContent := buildBranchProtectionHook(existingContent)
 
 	// Write the hook
 	if err := os.WriteFile(hookPath, []byte(newContent), 0755); err != nil {
@@ -474,6 +480,38 @@ func InstallBranchProtection(hqRoot string) error {
 
 	fmt.Printf("   ✓ Installed branch protection (auto-reverts non-main checkouts)\n")
 	return nil
+}
+
+func removeObsoletePreCheckoutHook(hooksDir string) {
+	preCheckoutPath := filepath.Join(hooksDir, "pre-checkout")
+	content, err := os.ReadFile(preCheckoutPath)
+	if err == nil && strings.Contains(string(content), "Gas Town pre-checkout hook") {
+		_ = os.Remove(preCheckoutPath) // Best effort removal
+		fmt.Printf("   ✓ Removed obsolete pre-checkout hook\n")
+	}
+}
+
+func readBranchProtectionHook(hookPath string) ([]byte, error) {
+	content, err := os.ReadFile(hookPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	return content, nil
+}
+
+func buildBranchProtectionHook(existingContent []byte) string {
+	if len(existingContent) == 0 {
+		return "#!/bin/sh\n" + BranchProtectionScript
+	}
+	content := string(existingContent)
+	if !strings.HasPrefix(content, "#!") {
+		return "#!/bin/sh\n" + BranchProtectionScript + content
+	}
+	idx := strings.Index(content, "\n")
+	if idx == -1 {
+		return content + "\n" + BranchProtectionScript
+	}
+	return content[:idx+1] + BranchProtectionScript + content[idx+1:]
 }
 
 // IsPreCheckoutHookInstalled checks if branch protection is installed.
