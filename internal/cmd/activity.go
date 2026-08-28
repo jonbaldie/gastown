@@ -115,33 +115,49 @@ func runActivityEmit(opts *activityOptions, args []string) error {
 func activityPayload(eventType string, opts *activityOptions) (map[string]interface{}, error) {
 	switch eventType {
 	case events.TypePatrolStarted, events.TypePatrolComplete:
-		if opts.rig == "" {
-			return nil, fmt.Errorf("--rig is required for %s events", eventType)
-		}
-		return events.PatrolPayload(opts.rig, opts.count, opts.message), nil
+		return patrolActivityPayload(eventType, opts)
 	case events.TypePolecatChecked:
-		if opts.rig == "" || opts.polecat == "" {
-			return nil, fmt.Errorf("--rig and --polecat are required for polecat_checked events")
-		}
-		if opts.status == "" {
-			opts.status = "checked"
-		}
-		return events.PolecatCheckPayload(opts.rig, opts.polecat, opts.status, opts.issue), nil
+		return polecatCheckActivityPayload(opts)
 	case events.TypePolecatNudged:
-		if opts.rig == "" || opts.polecat == "" {
-			return nil, fmt.Errorf("--rig and --polecat are required for polecat_nudged events")
-		}
-		return events.NudgePayload(opts.rig, opts.polecat, opts.reason), nil
+		return polecatNudgeActivityPayload(opts)
 	case events.TypeEscalationSent:
-		if opts.rig == "" || opts.target == "" || opts.to == "" {
-			return nil, fmt.Errorf("--rig, --target, and --to are required for escalation_sent events")
-		}
-		return events.EscalationPayload(opts.rig, opts.target, opts.to, opts.reason), nil
+		return escalationActivityPayload(opts)
 	case events.TypeMergeStarted, events.TypeMerged, events.TypeMergeFailed, events.TypeMergeSkipped:
 		return optionalActivityFields(map[string]string{"rig": opts.rig, "message": opts.message, "branch": opts.target, "reason": opts.reason}, opts.count), nil
 	default:
 		return optionalActivityFields(map[string]string{"rig": opts.rig, "polecat": opts.polecat, "target": opts.target, "reason": opts.reason, "message": opts.message, "status": opts.status, "issue": opts.issue, "to": opts.to}, opts.count), nil
 	}
+}
+
+func patrolActivityPayload(eventType string, opts *activityOptions) (map[string]interface{}, error) {
+	if opts.rig == "" {
+		return nil, fmt.Errorf("--rig is required for %s events", eventType)
+	}
+	return events.PatrolPayload(opts.rig, opts.count, opts.message), nil
+}
+
+func polecatCheckActivityPayload(opts *activityOptions) (map[string]interface{}, error) {
+	if opts.rig == "" || opts.polecat == "" {
+		return nil, fmt.Errorf("--rig and --polecat are required for polecat_checked events")
+	}
+	if opts.status == "" {
+		opts.status = "checked"
+	}
+	return events.PolecatCheckPayload(opts.rig, opts.polecat, opts.status, opts.issue), nil
+}
+
+func polecatNudgeActivityPayload(opts *activityOptions) (map[string]interface{}, error) {
+	if opts.rig == "" || opts.polecat == "" {
+		return nil, fmt.Errorf("--rig and --polecat are required for polecat_nudged events")
+	}
+	return events.NudgePayload(opts.rig, opts.polecat, opts.reason), nil
+}
+
+func escalationActivityPayload(opts *activityOptions) (map[string]interface{}, error) {
+	if opts.rig == "" || opts.target == "" || opts.to == "" {
+		return nil, fmt.Errorf("--rig, --target, and --to are required for escalation_sent events")
+	}
+	return events.EscalationPayload(opts.rig, opts.target, opts.to, opts.reason), nil
 }
 
 func optionalActivityFields(fields map[string]string, count int) map[string]interface{} {
