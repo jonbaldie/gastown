@@ -168,7 +168,7 @@ func (c *SparseCheckoutCheck) checkRig(rigPath string) {
 }
 
 // Fix removes sparse checkout configuration from affected repos.
-func (c *SparseCheckoutCheck) Fix(ctx *CheckContext) error {
+func (c *SparseCheckoutCheck) Fix(_ *CheckContext) error {
 	for _, repoPath := range c.affectedRepos {
 		if err := git.RemoveSparseCheckout(repoPath); err != nil {
 			relPath, _ := filepath.Rel(c.townRoot, repoPath)

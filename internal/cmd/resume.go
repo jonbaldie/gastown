@@ -30,7 +30,7 @@ func init() {
 	rootCmd.AddCommand(resumeCmd)
 }
 
-func runResume(cmd *cobra.Command, args []string) error {
+func runResume(_ *cobra.Command, _ []string) error {
 	return checkHandoffMessages()
 }
 

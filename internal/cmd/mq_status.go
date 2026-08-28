@@ -48,7 +48,7 @@ type DependencyInfo struct {
 	Type     string `json:"type"`
 }
 
-func runMqStatus(cmd *cobra.Command, args []string) error {
+func runMqStatus(_ *cobra.Command, args []string) error {
 	mrID := args[0]
 
 	// Use current working directory for beads operations

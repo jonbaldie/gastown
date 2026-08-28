@@ -107,7 +107,7 @@ Examples:
 	RunE: runFeed,
 }
 
-func runFeed(cmd *cobra.Command, args []string) error {
+func runFeed(_ *cobra.Command, _ []string) error {
 	// Must be in a Gas Town workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

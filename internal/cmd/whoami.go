@@ -33,7 +33,7 @@ func init() {
 	rootCmd.AddCommand(whoamiCmd)
 }
 
-func runWhoami(cmd *cobra.Command, args []string) error {
+func runWhoami(_ *cobra.Command, _ []string) error {
 	// Get current identity using same logic as mail commands
 	identity := detectSender()
 

@@ -46,7 +46,7 @@ func init() {
 	rigQuickAddCmd.Flags().BoolVar(&quickAddQuiet, "quiet", false, "Minimal output")
 }
 
-func runRigQuickAdd(cmd *cobra.Command, args []string) error {
+func runRigQuickAdd(_ *cobra.Command, args []string) error {
 	targetPath := "."
 	if len(args) > 0 {
 		targetPath = args[0]

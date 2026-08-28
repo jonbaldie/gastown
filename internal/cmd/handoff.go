@@ -95,7 +95,7 @@ func init() {
 	rootCmd.AddCommand(handoffCmd)
 }
 
-func runHandoff(cmd *cobra.Command, args []string) error {
+func runHandoff(_ *cobra.Command, args []string) error {
 	// Handle --stdin: read message body from stdin (avoids shell quoting issues)
 	if handoffStdin {
 		if handoffMessage != "" {

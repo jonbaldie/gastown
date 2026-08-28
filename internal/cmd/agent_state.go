@@ -91,7 +91,7 @@ type agentStateResult struct {
 	Labels    map[string]string `json:"labels"`
 }
 
-func runAgentState(cmd *cobra.Command, args []string) error {
+func runAgentState(_ *cobra.Command, args []string) error {
 	agentBead := args[0]
 
 	beadsDir, err := resolveAgentTrackingBeadsDir()

@@ -53,7 +53,7 @@ func init() {
 	wlCmd.AddCommand(wlPostCmd)
 }
 
-func runWlPost(cmd *cobra.Command, args []string) error {
+func runWlPost(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

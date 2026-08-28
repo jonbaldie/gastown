@@ -142,7 +142,7 @@ func (c *CrewStateCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix regenerates invalid state.json files with correct values.
-func (c *CrewStateCheck) Fix(ctx *CheckContext) error {
+func (c *CrewStateCheck) Fix(_ *CheckContext) error {
 	if len(c.invalidCrews) == 0 {
 		return nil
 	}

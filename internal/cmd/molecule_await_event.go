@@ -136,7 +136,7 @@ func init() {
 	moleculeStepCmd.AddCommand(moleculeAwaitEventCmd)
 }
 
-func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
+func runMoleculeAwaitEvent(_ *cobra.Command, _ []string) error {
 	// Validate channel name (prevent path traversal)
 	if !validChannelName.MatchString(awaitEventChannel) {
 		return fmt.Errorf("invalid channel name %q: must match [a-zA-Z0-9_-]", awaitEventChannel)

@@ -298,7 +298,7 @@ func getRefineryManager(rigName string) (*refinery.Manager, *rig.Rig, string, er
 	return mgr, r, rigName, nil
 }
 
-func runRefineryStart(cmd *cobra.Command, args []string) error {
+func runRefineryStart(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -335,7 +335,7 @@ func runRefineryStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryStop(cmd *cobra.Command, args []string) error {
+func runRefineryStop(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -366,7 +366,7 @@ type RefineryStatusOutput struct {
 	QueueLength int    `json:"queue_length"`
 }
 
-func runRefineryStatus(cmd *cobra.Command, args []string) error {
+func runRefineryStatus(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -417,7 +417,7 @@ func runRefineryStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryQueue(cmd *cobra.Command, args []string) error {
+func runRefineryQueue(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -498,7 +498,7 @@ func runRefineryQueue(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryAttach(cmd *cobra.Command, args []string) error {
+func runRefineryAttach(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -546,7 +546,7 @@ func runRefineryAttach(cmd *cobra.Command, args []string) error {
 	return attachToTmuxSession(sessionID)
 }
 
-func runRefineryRestart(cmd *cobra.Command, args []string) error {
+func runRefineryRestart(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -604,7 +604,7 @@ func getWorkerID() string {
 	return "refinery-1"
 }
 
-func runRefineryClaim(cmd *cobra.Command, args []string) error {
+func runRefineryClaim(_ *cobra.Command, args []string) error {
 	mrID := args[0]
 	workerID := getWorkerID()
 
@@ -632,7 +632,7 @@ func runRefineryClaim(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryRelease(cmd *cobra.Command, args []string) error {
+func runRefineryRelease(_ *cobra.Command, args []string) error {
 	mrID := args[0]
 
 	// Find beads from current working directory
@@ -659,7 +659,7 @@ func runRefineryRelease(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryUnclaimed(cmd *cobra.Command, args []string) error {
+func runRefineryUnclaimed(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -726,7 +726,7 @@ func runRefineryUnclaimed(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryReady(cmd *cobra.Command, args []string) error {
+func runRefineryReady(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -851,7 +851,7 @@ func runRefineryReadyAll(eng *refinery.Engineer, rigName string) error {
 	return nil
 }
 
-func runRefineryBlocked(cmd *cobra.Command, args []string) error {
+func runRefineryBlocked(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]

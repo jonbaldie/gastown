@@ -32,7 +32,7 @@ func init() {
 	tapGuardCmd.AddCommand(tapGuardMolPatrolCmd)
 }
 
-func runTapGuardMolPatrol(cmd *cobra.Command, args []string) error {
+func runTapGuardMolPatrol(_ *cobra.Command, _ []string) error {
 	if !isGasTownAgentContext() {
 		return nil
 	}

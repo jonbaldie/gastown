@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMailSend(cmd *cobra.Command, args []string) error {
+func runMailSend(_ *cobra.Command, args []string) error {
 	// Handle --stdin: read message body from stdin (avoids shell quoting issues)
 	if mailStdin {
 		if mailBody != "" {

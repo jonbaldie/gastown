@@ -11,7 +11,7 @@ import (
 )
 
 // runMailSearch searches for messages matching a pattern.
-func runMailSearch(cmd *cobra.Command, args []string) error {
+func runMailSearch(_ *cobra.Command, args []string) error {
 	query := args[0]
 
 	// Determine which inbox to search

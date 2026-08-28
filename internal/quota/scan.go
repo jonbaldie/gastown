@@ -27,8 +27,8 @@ type ScanResult struct {
 // This allows testing without a real tmux server.
 type TmuxClient interface {
 	ListSessions() ([]string, error)
-	CapturePane(session string, lines int) (string, error)
-	GetEnvironment(session, key string) (string, error)
+	CapturePane(_ string, _ int) (string, error)
+	GetEnvironment(_, _ string) (string, error)
 }
 
 // Scanner detects rate-limited and near-limit sessions by examining tmux pane content.

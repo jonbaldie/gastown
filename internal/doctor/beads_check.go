@@ -286,7 +286,7 @@ func saveRigsConfig(path string, cfg *rigsConfigFile) error {
 // dbPrefixGetter abstracts querying the database for issue_prefix.
 // Allows mocking in tests without shelling out to bd.
 type dbPrefixGetter interface {
-	GetDBPrefix(rigPath string) (string, error)
+	GetDBPrefix(_ string) (string, error)
 }
 
 // realDBPrefixGetter shells out to bd to query the database.

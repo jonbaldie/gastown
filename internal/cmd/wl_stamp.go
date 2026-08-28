@@ -79,7 +79,7 @@ func init() {
 	wlCmd.AddCommand(wlStampCmd)
 }
 
-func runWlStamp(cmd *cobra.Command, args []string) error {
+func runWlStamp(_ *cobra.Command, _ []string) error {
 	// Validate inputs
 	if err := validateStampInputs(); err != nil {
 		return err

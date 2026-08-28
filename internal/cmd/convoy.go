@@ -734,7 +734,7 @@ func validateConvoyMerge(merge string) error {
 	}
 }
 
-func runConvoyCreate(cmd *cobra.Command, args []string) error {
+func runConvoyCreate(_ *cobra.Command, args []string) error {
 	if err := validateConvoyMerge(convoyMerge); err != nil {
 		return err
 	}
@@ -914,7 +914,7 @@ func collectConvoyAddIssues(args []string) (convoyID string, issues []string, er
 	return convoyID, issues, nil
 }
 
-func runConvoyAdd(cmd *cobra.Command, args []string) error {
+func runConvoyAdd(_ *cobra.Command, args []string) error {
 	convoyID, issuesToAdd, err := collectConvoyAddIssues(args)
 	if err != nil {
 		return err
@@ -1010,7 +1010,7 @@ func runConvoyAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConvoyCheck(cmd *cobra.Command, args []string) error {
+func runConvoyCheck(_ *cobra.Command, args []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
@@ -1152,7 +1152,7 @@ func checkSingleConvoy(townBeads, convoyID string, dryRun bool) error {
 	return err
 }
 
-func runConvoyClose(cmd *cobra.Command, args []string) error {
+func runConvoyClose(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	townBeads, err := getTownBeadsDir()
@@ -1315,7 +1315,7 @@ func sendCloseNotification(addr, convoyID, title, reason string) {
 	}
 }
 
-func runConvoyLand(cmd *cobra.Command, args []string) error {
+func runConvoyLand(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	townBeads, err := getTownBeadsDir()
@@ -1552,7 +1552,7 @@ type readyIssueInfo struct {
 	Priority string `json:"priority"`
 }
 
-func runConvoyStranded(cmd *cobra.Command, args []string) error {
+func runConvoyStranded(_ *cobra.Command, _ []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
@@ -1972,7 +1972,7 @@ func notifyMayorSession(townBeads, convoyID, title string) {
 	}
 }
 
-func runConvoyStatus(cmd *cobra.Command, args []string) error {
+func runConvoyStatus(_ *cobra.Command, args []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
@@ -2162,7 +2162,7 @@ func showAllConvoyStatus(townBeads string) error {
 	return nil
 }
 
-func runConvoyList(cmd *cobra.Command, args []string) error {
+func runConvoyList(_ *cobra.Command, _ []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err

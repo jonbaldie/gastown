@@ -66,7 +66,7 @@ func init() {
 	moleculeDagCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
 }
 
-func runMoleculeDag(cmd *cobra.Command, args []string) error {
+func runMoleculeDag(_ *cobra.Command, args []string) error {
 	rootID := args[0]
 
 	workDir, err := findLocalBeadsDir()

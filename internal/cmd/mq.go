@@ -190,17 +190,17 @@ Examples:
 }
 
 type mqPostMergeManager interface {
-	FindMRForPostMerge(idOrBranch string) (*refinery.MergeRequest, error)
-	PostMergeMR(mr *refinery.MergeRequest) (*refinery.PostMergeResult, error)
+	FindMRForPostMerge(_ string) (*refinery.MergeRequest, error)
+	PostMergeMR(_ *refinery.MergeRequest) (*refinery.PostMergeResult, error)
 }
 
 type mqPostMergeGit interface {
-	VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error
-	PushRemoteBranchTip(remote, branch string) (string, error)
-	HasOpenPullRequest(ref git.PullRequestRef) bool
-	Rev(ref string) (string, error)
-	DeleteRemoteBranchIfAt(remote, branch, expectedHash string) error
-	DeleteBranch(branch string, force bool) error
+	VerifyPushedCommitReachableFromPushTarget(_, _, _ string) error
+	PushRemoteBranchTip(_, _ string) (string, error)
+	HasOpenPullRequest(_ git.PullRequestRef) bool
+	Rev(_ string) (string, error)
+	DeleteRemoteBranchIfAt(_, _, _ string) error
+	DeleteBranch(_ string, _ bool) error
 }
 
 type mqPostMergeBranchCleanup struct {
@@ -437,7 +437,7 @@ func findCurrentRig(townRoot string) (string, *rig.Rig, error) {
 	return rigName, r, nil
 }
 
-func runMQRetry(cmd *cobra.Command, args []string) error {
+func runMQRetry(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
 
@@ -481,7 +481,7 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMQReject(cmd *cobra.Command, args []string) error {
+func runMQReject(_ *cobra.Command, args []string) error {
 	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
 	if mqRejectStdin {
 		if mqRejectReason != "" {

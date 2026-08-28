@@ -12,7 +12,7 @@ import (
 // on a specific tmux socket. Allows injecting mocks in tests.
 type socketSessionLister interface {
 	ListSessions() ([]string, error)
-	KillSessionWithProcesses(name string) error
+	KillSessionWithProcesses(_ string) error
 }
 
 // SocketSplitBrainCheck detects tmux sessions that exist on both the town
@@ -44,7 +44,7 @@ func NewSocketSplitBrainCheck() *SocketSplitBrainCheck {
 
 // Run checks for Gas Town sessions on the "default" socket that duplicate
 // sessions on the town socket.
-func (c *SocketSplitBrainCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *SocketSplitBrainCheck) Run(_ *CheckContext) *CheckResult {
 	townSocket := tmux.GetDefaultSocket()
 	if c.useSocketForTest {
 		townSocket = c.socketForTest
@@ -135,7 +135,7 @@ func (c *SocketSplitBrainCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix kills Gas Town sessions on the "default" socket that shouldn't be there.
-func (c *SocketSplitBrainCheck) Fix(ctx *CheckContext) error {
+func (c *SocketSplitBrainCheck) Fix(_ *CheckContext) error {
 	if len(c.staleSessions) == 0 {
 		return nil
 	}

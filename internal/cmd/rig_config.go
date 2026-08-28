@@ -99,7 +99,7 @@ func init() {
 	rigConfigSetCmd.Flags().BoolVar(&rigConfigSetBlock, "block", false, "Block inheritance for this key")
 }
 
-func runRigConfigShow(cmd *cobra.Command, args []string) error {
+func runRigConfigShow(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	townRoot, r, err := getRig(rigName)
@@ -143,7 +143,7 @@ func runRigConfigShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigConfigSet(cmd *cobra.Command, args []string) error {
+func runRigConfigSet(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	key := args[1]
 
@@ -201,7 +201,7 @@ func runRigConfigSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigConfigUnset(cmd *cobra.Command, args []string) error {
+func runRigConfigUnset(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	key := args[1]
 

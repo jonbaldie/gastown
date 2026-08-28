@@ -205,7 +205,7 @@ func (c *GitExcludeConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix appends missing entries to .git/info/exclude.
-func (c *GitExcludeConfiguredCheck) Fix(ctx *CheckContext) error {
+func (c *GitExcludeConfiguredCheck) Fix(_ *CheckContext) error {
 	if len(c.missingEntries) == 0 {
 		return nil
 	}
@@ -356,7 +356,7 @@ func (c *HooksPathConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix configures core.hooksPath for all unconfigured clones.
-func (c *HooksPathConfiguredCheck) Fix(ctx *CheckContext) error {
+func (c *HooksPathConfiguredCheck) Fix(_ *CheckContext) error {
 	for _, clonePath := range c.unconfiguredClones {
 		cmd := exec.Command("git", "-C", clonePath, "config", "core.hooksPath", ".githooks")
 		if err := cmd.Run(); err != nil {
@@ -445,7 +445,7 @@ func (c *WitnessExistsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix creates missing witness structure.
-func (c *WitnessExistsCheck) Fix(ctx *CheckContext) error {
+func (c *WitnessExistsCheck) Fix(_ *CheckContext) error {
 	witnessDir := filepath.Join(c.rigPath, "witness")
 
 	if c.needsCreate {
@@ -552,7 +552,7 @@ func (c *RefineryExistsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix creates missing refinery structure.
-func (c *RefineryExistsCheck) Fix(ctx *CheckContext) error {
+func (c *RefineryExistsCheck) Fix(_ *CheckContext) error {
 	refineryDir := filepath.Join(c.rigPath, "refinery")
 
 	if c.needsCreate {
@@ -679,7 +679,7 @@ func (c *MayorCloneExistsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix creates missing mayor structure.
-func (c *MayorCloneExistsCheck) Fix(ctx *CheckContext) error {
+func (c *MayorCloneExistsCheck) Fix(_ *CheckContext) error {
 	mayorDir := filepath.Join(c.rigPath, "mayor")
 
 	if c.needsCreate {
@@ -892,7 +892,7 @@ func (c *BeadsConfigValidCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix is a no-op with Dolt backend (no sync needed).
-func (c *BeadsConfigValidCheck) Fix(ctx *CheckContext) error {
+func (c *BeadsConfigValidCheck) Fix(_ *CheckContext) error {
 	// With Dolt backend, beads changes are persisted immediately - no sync needed
 	return nil
 }

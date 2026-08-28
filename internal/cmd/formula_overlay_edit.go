@@ -39,7 +39,7 @@ func init() {
 	formulaOverlayEditCmd.Flags().BoolVar(&formulaOverlayEditTown, "town", false, "Edit town-level overlay instead of rig-level")
 }
 
-func runFormulaOverlayEdit(cmd *cobra.Command, args []string) error {
+func runFormulaOverlayEdit(_ *cobra.Command, args []string) error {
 	formulaName := args[0]
 
 	townRoot, rigName, err := resolveOverlayContext(formulaOverlayEditRig)

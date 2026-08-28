@@ -108,7 +108,7 @@ func (c *StaleSQLServerInfoCheck) Run(ctx *CheckContext) *CheckResult {
 // directory — including noms/LOCK files. These are Dolt-internal files.
 // Removing them WILL cause unrecoverable data corruption and data loss.
 // Dolt manages these files itself; external interference is never safe.
-func (c *StaleSQLServerInfoCheck) Fix(ctx *CheckContext) error {
+func (c *StaleSQLServerInfoCheck) Fix(_ *CheckContext) error {
 	return nil
 }
 

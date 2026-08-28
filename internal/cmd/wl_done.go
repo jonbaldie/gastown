@@ -43,7 +43,7 @@ func init() {
 	wlCmd.AddCommand(wlDoneCmd)
 }
 
-func runWlDone(cmd *cobra.Command, args []string) error {
+func runWlDone(_ *cobra.Command, args []string) error {
 	wantedID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

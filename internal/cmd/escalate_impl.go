@@ -268,7 +268,7 @@ type deliveryStatus struct {
 	NotificationRoute string `json:"notification_route,omitempty"`
 }
 
-func runEscalateList(cmd *cobra.Command, args []string) error {
+func runEscalateList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -353,7 +353,7 @@ func runEscalateList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runEscalateAck(cmd *cobra.Command, args []string) error {
+func runEscalateAck(_ *cobra.Command, args []string) error {
 	escalationID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -382,7 +382,7 @@ func runEscalateAck(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runEscalateClose(cmd *cobra.Command, args []string) error {
+func runEscalateClose(_ *cobra.Command, args []string) error {
 	escalationID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -413,7 +413,7 @@ func runEscalateClose(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runEscalateStale(cmd *cobra.Command, args []string) error {
+func runEscalateStale(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -602,7 +602,7 @@ func formatReescalationMailBody(result *beads.ReescalationResult, reescalatedBy 
 	return strings.Join(lines, "\n")
 }
 
-func runEscalateShow(cmd *cobra.Command, args []string) error {
+func runEscalateShow(_ *cobra.Command, args []string) error {
 	escalationID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

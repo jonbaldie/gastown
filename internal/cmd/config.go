@@ -189,7 +189,7 @@ Examples:
 	RunE: runConfigCostTier,
 }
 
-func runConfigCostTier(cmd *cobra.Command, args []string) error {
+func runConfigCostTier(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -307,7 +307,7 @@ type AgentListItem struct {
 	IsCustom bool   `json:"is_custom"`
 }
 
-func runConfigAgentList(cmd *cobra.Command, args []string) error {
+func runConfigAgentList(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -396,7 +396,7 @@ func runConfigAgentList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigAgentGet(cmd *cobra.Command, args []string) error {
+func runConfigAgentGet(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -464,7 +464,7 @@ func displayAgentConfig(name string, runtime *config.RuntimeConfig, preset *conf
 	}
 }
 
-func runConfigAgentSet(cmd *cobra.Command, args []string) error {
+func runConfigAgentSet(_ *cobra.Command, args []string) error {
 	name := args[0]
 	commandLine := args[1]
 
@@ -536,7 +536,7 @@ func runConfigAgentSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigAgentRemove(cmd *cobra.Command, args []string) error {
+func runConfigAgentRemove(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -576,7 +576,7 @@ func runConfigAgentRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigDefaultAgent(cmd *cobra.Command, args []string) error {
+func runConfigDefaultAgent(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -757,7 +757,7 @@ func runConfigRoleUnset(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigAgentEmailDomain(cmd *cobra.Command, args []string) error {
+func runConfigAgentEmailDomain(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -1086,7 +1086,7 @@ func unknownConfigKeyError(key string) error {
 	return errors.New(b.String())
 }
 
-func runConfigSet(cmd *cobra.Command, args []string) error {
+func runConfigSet(_ *cobra.Command, args []string) error {
 	key := args[0]
 	value := args[1]
 
@@ -1143,7 +1143,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func runConfigGet(cmd *cobra.Command, args []string) error {
+func runConfigGet(_ *cobra.Command, args []string) error {
 	key := args[0]
 
 	townRoot, err := workspace.FindFromCwd()

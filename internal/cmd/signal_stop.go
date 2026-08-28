@@ -44,7 +44,7 @@ All output goes to stdout as JSON for Claude Code to consume.`,
 	SilenceErrors: true,
 }
 
-func runSignalStop(cmd *cobra.Command, args []string) error {
+func runSignalStop(_ *cobra.Command, _ []string) error {
 	// Detect agent identity
 	address := detectSender()
 	if address == "" || address == "overseer" {

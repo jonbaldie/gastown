@@ -16,7 +16,7 @@ import (
 // runMoleculeAttachFromMail handles the "gt mol attach-from-mail <mail-id>" command.
 // It reads a mail message, extracts the molecule ID from the body, and attaches
 // it to the current agent's hook (pinned bead).
-func runMoleculeAttachFromMail(cmd *cobra.Command, args []string) error {
+func runMoleculeAttachFromMail(_ *cobra.Command, args []string) error {
 	mailID := args[0]
 
 	// Get current working directory and town root

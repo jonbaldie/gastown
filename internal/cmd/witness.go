@@ -153,7 +153,7 @@ func getWitnessManager(rigName string) (*witness.Manager, error) {
 	return mgr, nil
 }
 
-func runWitnessStart(cmd *cobra.Command, args []string) error {
+func runWitnessStart(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	if err := checkRigNotParkedOrDocked(rigName); err != nil {
@@ -185,7 +185,7 @@ func runWitnessStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWitnessStop(cmd *cobra.Command, args []string) error {
+func runWitnessStop(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	mgr, err := getWitnessManager(rigName)
@@ -228,7 +228,7 @@ type WitnessStatusOutput struct {
 	MonitoredPolecats []string `json:"monitored_polecats,omitempty"`
 }
 
-func runWitnessStatus(cmd *cobra.Command, args []string) error {
+func runWitnessStatus(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	// Get rig for polecat info
@@ -291,7 +291,7 @@ func witnessSessionName(rigName string) string {
 	return session.WitnessSessionName(session.PrefixFor(rigName))
 }
 
-func runWitnessAttach(cmd *cobra.Command, args []string) error {
+func runWitnessAttach(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -328,7 +328,7 @@ func runWitnessAttach(cmd *cobra.Command, args []string) error {
 	return attachToTmuxSession(sessionName)
 }
 
-func runWitnessRestart(cmd *cobra.Command, args []string) error {
+func runWitnessRestart(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	if err := checkRigNotParkedOrDocked(rigName); err != nil {

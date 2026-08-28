@@ -23,7 +23,7 @@ type CrewListItem struct {
 	GitClean   bool   `json:"git_clean"`
 }
 
-func runCrewList(cmd *cobra.Command, args []string) error {
+func runCrewList(_ *cobra.Command, args []string) error {
 	// Accept positional rig argument: gt crew list <rig>
 	if len(args) > 0 {
 		if crewRig != "" {

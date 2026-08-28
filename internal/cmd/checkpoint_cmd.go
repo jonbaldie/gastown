@@ -80,7 +80,7 @@ func init() {
 	rootCmd.AddCommand(checkpointCmd)
 }
 
-func runCheckpointWrite(cmd *cobra.Command, args []string) error {
+func runCheckpointWrite(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -151,7 +151,7 @@ func runCheckpointWrite(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runCheckpointRead(cmd *cobra.Command, args []string) error {
+func runCheckpointRead(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -204,7 +204,7 @@ func runCheckpointRead(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runCheckpointClear(cmd *cobra.Command, args []string) error {
+func runCheckpointClear(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)

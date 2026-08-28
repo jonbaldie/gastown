@@ -328,7 +328,7 @@ func getDogManager() (*dog.Manager, error) {
 	return dog.NewManager(townRoot, rigsConfig), nil
 }
 
-func runDogAdd(cmd *cobra.Command, args []string) error {
+func runDogAdd(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	// Validate name
@@ -371,7 +371,7 @@ func runDogAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDogRemove(cmd *cobra.Command, args []string) error {
+func runDogRemove(_ *cobra.Command, args []string) error {
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -462,7 +462,7 @@ func runDogRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDogList(cmd *cobra.Command, args []string) error {
+func runDogList(_ *cobra.Command, _ []string) error {
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -544,7 +544,7 @@ func runDogList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDogCall(cmd *cobra.Command, args []string) error {
+func runDogCall(_ *cobra.Command, args []string) error {
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -617,7 +617,7 @@ func runDogCall(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDogClear(cmd *cobra.Command, args []string) error {
+func runDogClear(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	mgr, err := getDogManager()
@@ -667,7 +667,7 @@ func runDogClear(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDogDone(cmd *cobra.Command, args []string) error {
+func runDogDone(_ *cobra.Command, args []string) error {
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -847,7 +847,7 @@ func closePluginMails(dogName string) {
 	}
 }
 
-func runDogStatus(cmd *cobra.Command, args []string) error {
+func runDogStatus(_ *cobra.Command, args []string) error {
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -1003,7 +1003,7 @@ func dogFormatTimeAgo(t time.Time) string {
 	}
 }
 
-func runDogHealthCheck(cmd *cobra.Command, args []string) error {
+func runDogHealthCheck(_ *cobra.Command, args []string) error {
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -1086,7 +1086,7 @@ func runDogHealthCheck(cmd *cobra.Command, args []string) error {
 }
 
 // runDogDispatch dispatches plugin execution to a dog worker.
-func runDogDispatch(cmd *cobra.Command, args []string) error {
+func runDogDispatch(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)

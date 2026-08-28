@@ -45,7 +45,7 @@ Not intended for direct user invocation.`,
 	RunE: runNudgePoller,
 }
 
-func runNudgePoller(cmd *cobra.Command, args []string) error {
+func runNudgePoller(_ *cobra.Command, args []string) error {
 	sessionName := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

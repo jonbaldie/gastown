@@ -23,7 +23,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runCrewRemove(cmd *cobra.Command, args []string) error {
+func runCrewRemove(_ *cobra.Command, args []string) error {
 	var lastErr error
 
 	// --purge implies --force
@@ -187,7 +187,7 @@ func runCrewRemove(cmd *cobra.Command, args []string) error {
 	return lastErr
 }
 
-func runCrewRefresh(cmd *cobra.Command, args []string) error {
+func runCrewRefresh(_ *cobra.Command, args []string) error {
 	name := args[0]
 	// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
 	if rig, crewName, ok := parseRigSlashName(name); ok {
@@ -407,7 +407,7 @@ func runCrewStart(cmd *cobra.Command, args []string) error {
 	return lastErr
 }
 
-func runCrewRestart(cmd *cobra.Command, args []string) error {
+func runCrewRestart(_ *cobra.Command, args []string) error {
 	// Handle --all flag
 	if crewAll {
 		return runCrewRestartAll()
@@ -552,7 +552,7 @@ func runCrewRestartAll() error {
 
 // runCrewStop stops one or more crew workers.
 // Supports: "name", "rig/name" formats, "rig" (to stop all in rig), or --all.
-func runCrewStop(cmd *cobra.Command, args []string) error {
+func runCrewStop(_ *cobra.Command, args []string) error {
 	// Handle --all flag
 	if crewAll {
 		return runCrewStopAll()

@@ -150,7 +150,7 @@ type HandlerResult struct {
 // When work is done, the polecat transitions to idle state (no nuke).
 // The MR lifecycle continues independently in the Refinery.
 // If conflicts arise, Refinery creates a conflict-resolution task for an available polecat.
-func HandlePolecatDone(bd *BdCli, workDir, rigName string, msg *mail.Message, router *mail.Router) *HandlerResult {
+func HandlePolecatDone(bd *BdCli, workDir, rigName string, msg *mail.Message, _ *mail.Router) *HandlerResult {
 	result := &HandlerResult{
 		MessageID:    msg.ID,
 		ProtocolType: ProtoPolecatDone,
@@ -214,7 +214,7 @@ func HandlePolecatDone(bd *BdCli, workDir, rigName string, msg *mail.Message, ro
 //
 // The processing logic is identical to HandlePolecatDone: pending MR triggers
 // cleanup wisp + MERGE_READY; no MR means simple acknowledgment.
-func HandlePolecatDoneFromBead(bd *BdCli, workDir, rigName, polecatName string, fields *beads.AgentFields, router *mail.Router) *HandlerResult {
+func HandlePolecatDoneFromBead(bd *BdCli, workDir, rigName, polecatName string, fields *beads.AgentFields, _ *mail.Router) *HandlerResult {
 	result := &HandlerResult{
 		ProtocolType: ProtoPolecatDone,
 	}
@@ -384,7 +384,7 @@ func isStalePolecatDone(workDir, rigName, polecatName string, msg *mail.Message)
 // HandleLifecycleShutdown processes a LIFECYCLE:Shutdown message.
 // Similar to POLECAT_DONE but triggered by daemon rather than polecat.
 // Persistent polecat model (gt-4ac): sandbox preserved, polecat goes idle.
-func HandleLifecycleShutdown(workDir, rigName string, msg *mail.Message) *HandlerResult {
+func HandleLifecycleShutdown(_, _ string, msg *mail.Message) *HandlerResult {
 	result := &HandlerResult{
 		MessageID:    msg.ID,
 		ProtocolType: ProtoLifecycleShutdown,
@@ -410,7 +410,7 @@ func HandleLifecycleShutdown(workDir, rigName string, msg *mail.Message) *Handle
 // HandleHelp processes a HELP message from a polecat requesting intervention.
 // Parses the HELP payload, assesses category/severity, and presents a
 // classified summary to the witness agent for triage.
-func HandleHelp(workDir, rigName string, msg *mail.Message, router *mail.Router) *HandlerResult {
+func HandleHelp(_, _ string, msg *mail.Message, _ *mail.Router) *HandlerResult {
 	result := &HandlerResult{
 		MessageID:    msg.ID,
 		ProtocolType: ProtoHelp,
@@ -490,7 +490,7 @@ func handleMergedCleanupStatus(_, _, polecatName, cleanupStatus, wispID string, 
 
 // HandleMergeFailed processes a MERGE_FAILED message from the Refinery.
 // Notifies the polecat that their merge was rejected and rework is needed.
-func HandleMergeFailed(workDir, rigName string, msg *mail.Message, router *mail.Router) *HandlerResult {
+func HandleMergeFailed(workDir, rigName string, msg *mail.Message, _ *mail.Router) *HandlerResult {
 	result := &HandlerResult{
 		MessageID:    msg.ID,
 		ProtocolType: ProtoMergeFailed,
@@ -1164,7 +1164,7 @@ type NukePolecatResult struct {
 // With persistent polecats (gt-4ac), polecats are no longer auto-nuked.
 // This function now always returns a "skipped" result since polecats go idle
 // instead of being destroyed. The polecat's sandbox is preserved for reuse.
-func AutoNukeIfClean(workDir, rigName, polecatName string) *NukePolecatResult {
+func AutoNukeIfClean(_, _, _ string) *NukePolecatResult {
 	return &NukePolecatResult{
 		Skipped: true,
 		Reason:  "persistent polecat model: sandbox preserved for reuse (gt-4ac)",
@@ -1411,7 +1411,7 @@ type DetectZombiePolecatsResult struct {
 //   - If agent is hung (no output for 30+ min): restart the session
 //   - If git state is dirty (unpushed/uncommitted work): report cleanup_status,
 //     create cleanup wisp (witness agent decides escalation policy, gt-5rne)
-func DetectZombiePolecats(bd *BdCli, workDir, rigName string, router *mail.Router) *DetectZombiePolecatsResult {
+func DetectZombiePolecats(bd *BdCli, workDir, rigName string, _ *mail.Router) *DetectZombiePolecatsResult {
 	result := &DetectZombiePolecatsResult{}
 
 	townRoot, err := workspace.Find(workDir)
@@ -2198,7 +2198,7 @@ type DiscoverCompletionsResult struct {
 //
 // This implements 'Discover Don't Track' (PRIMING.md principle #4): the witness
 // observes completion state from beads each cycle rather than relying on mail.
-func DiscoverCompletions(bd *BdCli, workDir, rigName string, router *mail.Router) *DiscoverCompletionsResult {
+func DiscoverCompletions(bd *BdCli, workDir, rigName string, _ *mail.Router) *DiscoverCompletionsResult {
 	result := &DiscoverCompletionsResult{}
 
 	townRoot, err := workspace.Find(workDir)

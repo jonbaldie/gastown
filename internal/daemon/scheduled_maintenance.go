@@ -49,7 +49,7 @@ type ScheduledMaintenanceConfig struct {
 }
 
 // maintenanceCheckInterval returns the configured check interval, or the default (5m).
-func maintenanceCheckInterval(config *DaemonPatrolConfig) time.Duration {
+func maintenanceCheckInterval(_ *DaemonPatrolConfig) time.Duration {
 	// The check interval is not user-configurable — it's internal.
 	// We just need to poll often enough to catch the window.
 	return defaultMaintenanceCheckInterval

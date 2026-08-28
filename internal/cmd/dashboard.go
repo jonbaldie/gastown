@@ -55,7 +55,7 @@ func init() {
 	rootCmd.AddCommand(dashboardCmd)
 }
 
-func runDashboard(cmd *cobra.Command, args []string) error {
+func runDashboard(cmd *cobra.Command, _ []string) error {
 	// Check if we're in a workspace - if not, run in setup mode
 	var handler http.Handler
 	var err error

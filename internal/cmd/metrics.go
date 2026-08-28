@@ -42,7 +42,7 @@ type usageEntry struct {
 	Argc  int    `json:"argc"`
 }
 
-func runMetrics(cmd *cobra.Command, args []string) error {
+func runMetrics(_ *cobra.Command, _ []string) error {
 	entries, err := readUsageLog()
 	if err != nil {
 		return err

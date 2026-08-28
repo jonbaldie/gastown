@@ -119,7 +119,7 @@ func init() {
 	namepoolCreateCmd.Flags().StringVar(&namepoolFromFileFlag, "from-file", "", "Read names from file instead of arguments")
 }
 
-func runNamepool(cmd *cobra.Command, args []string) error {
+func runNamepool(cmd *cobra.Command, _ []string) error {
 	// List themes mode
 	if namepoolListFlag {
 		return runNamepoolThemes(cmd, nil)
@@ -182,7 +182,7 @@ func runNamepool(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runNamepoolThemes(cmd *cobra.Command, args []string) error {
+func runNamepoolThemes(_ *cobra.Command, args []string) error {
 	// Find town root for custom theme discovery
 	townRoot, _ := workspace.FindFromCwd()
 
@@ -243,7 +243,7 @@ func runNamepoolThemes(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runNamepoolSet(cmd *cobra.Command, args []string) error {
+func runNamepoolSet(_ *cobra.Command, args []string) error {
 	theme := args[0]
 
 	// Get rig
@@ -297,7 +297,7 @@ func runNamepoolSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runNamepoolAdd(cmd *cobra.Command, args []string) error {
+func runNamepoolAdd(_ *cobra.Command, args []string) error {
 	name := strings.ToLower(args[0])
 
 	// Validate name
@@ -366,7 +366,7 @@ func runNamepoolAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runNamepoolReset(cmd *cobra.Command, args []string) error {
+func runNamepoolReset(_ *cobra.Command, _ []string) error {
 	rigName, rigPath := detectCurrentRigWithPath()
 	if rigName == "" {
 		return fmt.Errorf("not in a rig directory")
@@ -416,7 +416,7 @@ func detectCurrentRigWithPath() (string, string) {
 	return "", ""
 }
 
-func runNamepoolCreate(cmd *cobra.Command, args []string) error {
+func runNamepoolCreate(_ *cobra.Command, args []string) error {
 	themeName := args[0]
 
 	// Validate theme name
@@ -462,7 +462,7 @@ func runNamepoolCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runNamepoolDelete(cmd *cobra.Command, args []string) error {
+func runNamepoolDelete(_ *cobra.Command, args []string) error {
 	themeName := args[0]
 
 	// Validate theme name to prevent path traversal (e.g., "../../etc/foo")

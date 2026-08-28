@@ -64,20 +64,20 @@ func (r *HandlerRegistry) CanHandle(msg *mail.Message) bool {
 // The Witness receives messages from Refinery about merge status.
 type WitnessHandler interface {
 	// HandleMerged is called when a branch was successfully merged.
-	HandleMerged(payload *MergedPayload) error
+	HandleMerged(_ *MergedPayload) error
 
 	// HandleMergeFailed is called when a merge attempt failed.
-	HandleMergeFailed(payload *MergeFailedPayload) error
+	HandleMergeFailed(_ *MergeFailedPayload) error
 
 	// HandleReworkRequest is called when a branch needs rebasing.
-	HandleReworkRequest(payload *ReworkRequestPayload) error
+	HandleReworkRequest(_ *ReworkRequestPayload) error
 }
 
 // RefineryHandler defines the interface for Refinery protocol handlers.
 // The Refinery receives messages from Witness about ready branches.
 type RefineryHandler interface {
 	// HandleMergeReady is called when a polecat's work is verified and ready.
-	HandleMergeReady(payload *MergeReadyPayload) error
+	HandleMergeReady(_ *MergeReadyPayload) error
 }
 
 // WrapWitnessHandlers creates mail handlers from a WitnessHandler.

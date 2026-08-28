@@ -126,7 +126,7 @@ type scheduledBeadInfo struct {
 	Blocked   bool   `json:"blocked,omitempty"`
 }
 
-func runSchedulerStatus(cmd *cobra.Command, args []string) error {
+func runSchedulerStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -211,7 +211,7 @@ func runSchedulerStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSchedulerList(cmd *cobra.Command, args []string) error {
+func runSchedulerList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -255,7 +255,7 @@ func runSchedulerList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSchedulerPause(cmd *cobra.Command, args []string) error {
+func runSchedulerPause(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -281,7 +281,7 @@ func runSchedulerPause(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSchedulerResume(cmd *cobra.Command, args []string) error {
+func runSchedulerResume(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -306,7 +306,7 @@ func runSchedulerResume(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSchedulerClear(cmd *cobra.Command, args []string) error {
+func runSchedulerClear(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -366,7 +366,7 @@ func runSchedulerClear(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSchedulerRun(cmd *cobra.Command, args []string) error {
+func runSchedulerRun(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err

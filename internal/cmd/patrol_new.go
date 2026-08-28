@@ -32,7 +32,7 @@ func init() {
 	patrolNewCmd.Flags().StringVar(&patrolNewRole, "role", "", "Role override (deacon, witness, refinery)")
 }
 
-func runPatrolNew(cmd *cobra.Command, args []string) error {
+func runPatrolNew(_ *cobra.Command, _ []string) error {
 	// Resolve role
 	roleInfo, err := GetRole()
 	if err != nil {

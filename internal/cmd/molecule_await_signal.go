@@ -131,7 +131,7 @@ func init() {
 	moleculeCmd.AddCommand(moleculeAwaitSignalShortcutCmd)
 }
 
-func runMoleculeAwaitSignal(cmd *cobra.Command, args []string) error {
+func runMoleculeAwaitSignal(_ *cobra.Command, _ []string) error {
 	// Find beads directory (rig-local for bead operations)
 	beadsDir, err := resolveAgentTrackingBeadsDir()
 	if err != nil {

@@ -147,7 +147,7 @@ beads_hq/
 # and keeps metadata.json, config file as source of truth
 `
 
-func runGitInit(cmd *cobra.Command, args []string) error {
+func runGitInit(_ *cobra.Command, _ []string) error {
 	// Find the HQ root
 	cwd, err := os.Getwd()
 	if err != nil {

@@ -18,7 +18,7 @@ import (
 // Using a narrow interface allows deterministic unit tests of crew bead creation
 // behavior without requiring a live bd backend.
 type agentBeadUpserter interface {
-	CreateOrReopenAgentBead(id, title string, fields *beads.AgentFields) (*beads.Issue, error)
+	CreateOrReopenAgentBead(_, _ string, _ *beads.AgentFields) (*beads.Issue, error)
 }
 
 // upsertCrewAgentBead ensures the crew agent bead exists with expected metadata.
@@ -40,7 +40,7 @@ func upsertCrewAgentBead(bd agentBeadUpserter, townRoot, rigName, crewName strin
 	return crewID, nil
 }
 
-func runCrewAdd(cmd *cobra.Command, args []string) error {
+func runCrewAdd(_ *cobra.Command, args []string) error {
 	// Deduplicate args to handle cases like "gt crew add foo --branch foo"
 	// where "foo" appears twice because --branch is a boolean flag.
 	// This prevents confusing "already exists" errors after a successful create.

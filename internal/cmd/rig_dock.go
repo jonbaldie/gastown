@@ -71,7 +71,7 @@ func init() {
 	rigCmd.AddCommand(rigUndockCmd)
 }
 
-func runRigDock(cmd *cobra.Command, args []string) error {
+func runRigDock(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	// Check we're on main branch - docking on other branches won't persist
@@ -188,7 +188,7 @@ func runRigDock(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigUndock(cmd *cobra.Command, args []string) error {
+func runRigUndock(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	// Check we're on main branch - undocking on other branches won't persist

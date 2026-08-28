@@ -59,7 +59,7 @@ var estopStatusCmd = &cobra.Command{
 	RunE:  runEstopStatus,
 }
 
-func runEstopStatus(cmd *cobra.Command, args []string) error {
+func runEstopStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -108,7 +108,7 @@ func init() {
 	rootCmd.AddCommand(thawCmd)
 }
 
-func runEstop(cmd *cobra.Command, args []string) error {
+func runEstop(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -189,7 +189,7 @@ func runEstopRig(townRoot, rigName string) error {
 	return nil
 }
 
-func runThaw(cmd *cobra.Command, args []string) error {
+func runThaw(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

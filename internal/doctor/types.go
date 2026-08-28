@@ -99,11 +99,11 @@ type Check interface {
 	Description() string
 
 	// Run executes the check and returns a result.
-	Run(ctx *CheckContext) *CheckResult
+	Run(_ *CheckContext) *CheckResult
 
 	// Fix attempts to automatically fix the issue.
 	// Should only be called if CanFix() returns true.
-	Fix(ctx *CheckContext) error
+	Fix(_ *CheckContext) error
 
 	// CanFix returns true if this check can automatically fix issues.
 	CanFix() bool

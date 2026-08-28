@@ -426,7 +426,7 @@ func effectivePolecatState(item PolecatListItem) polecat.State {
 }
 
 type reuseMRShower interface {
-	Show(issueID string) (*beads.Issue, error)
+	Show(_ string) (*beads.Issue, error)
 }
 
 func activeMRBlocksReuse(bd reuseMRShower, mrID, sourceHint string, requireGitSafe, gitSafe bool) bool {
@@ -448,7 +448,7 @@ func getPolecatManager(rigName string) (*polecat.Manager, *rig.Rig, error) {
 	return mgr, r, nil
 }
 
-func runPolecatList(cmd *cobra.Command, args []string) error {
+func runPolecatList(_ *cobra.Command, args []string) error {
 	var rigs []*rig.Rig
 
 	if polecatListAll {
@@ -622,7 +622,7 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatAdd(cmd *cobra.Command, args []string) error {
+func runPolecatAdd(_ *cobra.Command, args []string) error {
 	// Emit deprecation warning
 	fmt.Fprintf(os.Stderr, "%s 'gt polecat add' is deprecated. Use 'gt polecat identity add' instead.\n",
 		style.Warning.Render("Warning:"))
@@ -650,7 +650,7 @@ func runPolecatAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatRemove(cmd *cobra.Command, args []string) error {
+func runPolecatRemove(_ *cobra.Command, args []string) error {
 	targets, err := resolvePolecatTargets(args, polecatRemoveAll)
 	if err != nil {
 		return err
@@ -727,7 +727,7 @@ type PolecatStatus struct {
 	LastActivity   string        `json:"last_activity,omitempty"`
 }
 
-func runPolecatStatus(cmd *cobra.Command, args []string) error {
+func runPolecatStatus(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -875,7 +875,7 @@ type GitState struct {
 	SharedStashCount      int      `json:"shared_stash_count,omitempty"` // Other branch stashes visible through the shared repo.
 }
 
-func runPolecatGitState(cmd *cobra.Command, args []string) error {
+func runPolecatGitState(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -1020,7 +1020,7 @@ type RecoveryStatus struct {
 	Reconciled           bool                  `json:"reconciled,omitempty"`
 }
 
-func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
+func runPolecatCheckRecovery(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -1148,7 +1148,7 @@ func applyWorkstateDispositionToRecoveryStatus(status *RecoveryStatus, dispositi
 }
 
 type issueShower interface {
-	Show(issueID string) (*beads.Issue, error)
+	Show(_ string) (*beads.Issue, error)
 }
 
 func cleanupStatusBlocker(status polecat.CleanupStatus) string {
@@ -1219,7 +1219,7 @@ func hookBeadSafeForCleanup(bd issueShower, hookBead string) (safe bool, termina
 }
 
 type cleanupStatusUpdater interface {
-	UpdateAgentCleanupStatus(id string, cleanupStatus string) error
+	UpdateAgentCleanupStatus(_ string, _ string) error
 }
 
 func reconcileCleanupStatusIfSafe(status *RecoveryStatus, updater cleanupStatusUpdater, agentBeadID string, p *polecat.Polecat, fields *beads.AgentFields) {
@@ -1350,7 +1350,7 @@ func isRecoveryBaseBranch(branch string) bool {
 // mrFinder is the subset of *beads.Beads that applyMQCheck needs. It lets us
 // unit-test the verdict logic without a real bd binary.
 type mrFinder interface {
-	FindMRForBranchAny(branch string) (*beads.Issue, error)
+	FindMRForBranchAny(_ string) (*beads.Issue, error)
 }
 
 // isMQNotRequiredSource reports whether the source bead intentionally bypasses
@@ -1413,7 +1413,7 @@ func applyMQCheck(status *RecoveryStatus, bd mrFinder, beadTerminal, hasSubmitta
 	status.Verdict = "NEEDS_MQ_SUBMIT"
 }
 
-func runPolecatGC(cmd *cobra.Command, args []string) error {
+func runPolecatGC(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	mgr, r, err := getPolecatManager(rigName)
@@ -1490,7 +1490,7 @@ func splitLines(s string) []string {
 	return lines
 }
 
-func runPolecatNuke(cmd *cobra.Command, args []string) error {
+func runPolecatNuke(_ *cobra.Command, args []string) error {
 	targets, err := resolvePolecatTargets(args, polecatNukeAll)
 	if err != nil {
 		return err
@@ -1753,7 +1753,7 @@ func shouldPushPolecatBranchBeforeNuke(issue *beads.Issue, pushPolicyKnown bool)
 }
 
 type activeMRRemovalChecker interface {
-	ActiveMRRemovalBlocker(name string) (activeMR, blocker string)
+	ActiveMRRemovalBlocker(_ string) (activeMR, blocker string)
 }
 
 func checkNukeActiveMRSafety(checker activeMRRemovalChecker, polecatName, rigName string, force bool) error {
@@ -1864,7 +1864,7 @@ func cleanupOrphanedProcesses() {
 	}
 }
 
-func runPolecatStale(cmd *cobra.Command, args []string) error {
+func runPolecatStale(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	mgr, r, err := getPolecatManager(rigName)
 	if err != nil {
@@ -1983,7 +1983,7 @@ func runPolecatStale(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatPrune(cmd *cobra.Command, args []string) error {
+func runPolecatPrune(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	_, r, err := getPolecatManager(rigName)
@@ -2096,7 +2096,7 @@ func pruneRemotePolecatBranches(repoGit *git.Git, dryRun bool) (int, error) {
 // runPolecatPoolInit creates a persistent polecat pool for a rig.
 // Creates N polecats with identities and worktrees in IDLE state.
 // Existing polecats are preserved — only new ones are created.
-func runPolecatPoolInit(cmd *cobra.Command, args []string) error {
+func runPolecatPoolInit(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	mgr, r, err := getPolecatManager(rigName)

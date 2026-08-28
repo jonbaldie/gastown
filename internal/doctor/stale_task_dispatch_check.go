@@ -121,7 +121,7 @@ func stripTaskDispatch(cfg *hooks.HooksConfig) *hooks.HooksConfig {
 // Fix regenerates settings.json files that contain the stale task-dispatch guard.
 // After computing expected hooks, it strips any task-dispatch references that may
 // originate from on-disk hooks-overrides to ensure the fix converges.
-func (c *StaleTaskDispatchCheck) Fix(ctx *CheckContext) error {
+func (c *StaleTaskDispatchCheck) Fix(_ *CheckContext) error {
 	if len(c.staleTargets) == 0 {
 		return nil
 	}

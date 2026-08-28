@@ -55,7 +55,7 @@ type StaleOutput struct {
 	Error         string `json:"error,omitempty"`
 }
 
-func runStale(cmd *cobra.Command, args []string) error {
+func runStale(_ *cobra.Command, _ []string) error {
 	// Find the gastown repo
 	repoRoot, err := version.GetRepoRoot()
 	if err != nil {

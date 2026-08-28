@@ -285,7 +285,7 @@ func getSessionManager(rigName string) (*polecat.SessionManager, *rig.Rig, error
 	return polecatMgr, r, nil
 }
 
-func runSessionStart(cmd *cobra.Command, args []string) error {
+func runSessionStart(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -333,7 +333,7 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionStop(cmd *cobra.Command, args []string) error {
+func runSessionStop(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -369,7 +369,7 @@ func runSessionStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionAttach(cmd *cobra.Command, args []string) error {
+func runSessionAttach(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -402,7 +402,7 @@ type SessionListItem struct {
 	Running   bool   `json:"running"`
 }
 
-func runSessionList(cmd *cobra.Command, args []string) error {
+func runSessionList(_ *cobra.Command, _ []string) error {
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -481,7 +481,7 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionCapture(cmd *cobra.Command, args []string) error {
+func runSessionCapture(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -514,7 +514,7 @@ func runSessionCapture(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionInject(cmd *cobra.Command, args []string) error {
+func runSessionInject(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -548,7 +548,7 @@ func runSessionInject(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionRestart(cmd *cobra.Command, args []string) error {
+func runSessionRestart(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -601,7 +601,7 @@ func runSessionRestart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionStatus(cmd *cobra.Command, args []string) error {
+func runSessionStatus(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -650,7 +650,7 @@ func runSessionStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionHealth(cmd *cobra.Command, args []string) error {
+func runSessionHealth(_ *cobra.Command, args []string) error {
 	sessionName := args[0]
 	status := tmux.NewTmux().CheckSessionHealth(sessionName, sessionHealthMaxInactivity)
 	report := newSessionHealthReport(sessionName, status, sessionHealthMaxInactivity)
@@ -687,7 +687,7 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh %dm", hours, mins)
 }
 
-func runSessionCheck(cmd *cobra.Command, args []string) error {
+func runSessionCheck(_ *cobra.Command, args []string) error {
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

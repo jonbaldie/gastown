@@ -173,7 +173,7 @@ type compactIssue struct {
 	WispType     string `json:"wisp_type,omitempty"`
 }
 
-func runCompact(cmd *cobra.Command, args []string) error {
+func runCompact(_ *cobra.Command, _ []string) error {
 	now := time.Now().UTC()
 
 	// Resolve working directory and town root

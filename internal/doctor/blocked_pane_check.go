@@ -26,7 +26,7 @@ func NewBlockedPaneCheck() *BlockedPaneCheck {
 }
 
 // Run captures known Gas Town panes and reports blocking dialogs.
-func (c *BlockedPaneCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *BlockedPaneCheck) Run(_ *CheckContext) *CheckResult {
 	t := tmux.NewTmux()
 	sessions, err := t.ListSessions()
 	if err != nil {

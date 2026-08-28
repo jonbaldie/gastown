@@ -89,7 +89,7 @@ func (c *SettingsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix creates missing settings/ directories.
-func (c *SettingsCheck) Fix(ctx *CheckContext) error {
+func (c *SettingsCheck) Fix(_ *CheckContext) error {
 	for _, path := range c.missingSettings {
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return fmt.Errorf("failed to create %s: %w", path, err)
@@ -255,7 +255,7 @@ func (c *LegacyGastownCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix removes legacy .gastown/ directories.
-func (c *LegacyGastownCheck) Fix(ctx *CheckContext) error {
+func (c *LegacyGastownCheck) Fix(_ *CheckContext) error {
 	for _, dir := range c.legacyDirs {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("failed to remove %s: %w", dir, err)
@@ -338,7 +338,7 @@ func (c *SessionHookCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix updates settings.json files to use 'gt prime --hook' instead of bare 'gt prime'.
-func (c *SessionHookCheck) Fix(ctx *CheckContext) error {
+func (c *SessionHookCheck) Fix(_ *CheckContext) error {
 	for _, path := range c.filesToFix {
 		if err := c.fixSettingsFile(path); err != nil {
 			return fmt.Errorf("failed to fix %s: %w", path, err)
@@ -740,7 +740,7 @@ func parseConfigOutput(output []byte) string {
 }
 
 // Fix registers the missing custom types.
-func (c *CustomTypesCheck) Fix(ctx *CheckContext) error {
+func (c *CustomTypesCheck) Fix(_ *CheckContext) error {
 	getCmd := beads.Spawn("config", "get", "types.custom")
 	getCmd.Dir = c.targetBeadsDir
 	getCmd.Env = doctorConfigEnv(c.targetBeadsDir)
@@ -881,7 +881,7 @@ func (c *CustomStatusesCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix registers the missing custom statuses by merging with existing ones.
-func (c *CustomStatusesCheck) Fix(ctx *CheckContext) error {
+func (c *CustomStatusesCheck) Fix(_ *CheckContext) error {
 	// Read existing statuses
 	getCmd := beads.Spawn("config", "get", "status.custom")
 	getCmd.Dir = c.targetBeadsDir

@@ -32,7 +32,7 @@ func getMailbox(address string) (*mail.Mailbox, error) {
 	return mailbox, nil
 }
 
-func runMailInbox(cmd *cobra.Command, args []string) error {
+func runMailInbox(_ *cobra.Command, args []string) error {
 	// Check for mutually exclusive flags
 	if mailInboxAll && mailInboxUnread {
 		return errors.New("--all and --unread are mutually exclusive")
@@ -150,7 +150,7 @@ func filterUnreadMessages(messages []*mail.Message) []*mail.Message {
 	return unreadMessages
 }
 
-func runMailRead(cmd *cobra.Command, args []string) error {
+func runMailRead(_ *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("message ID or index required\n\nRun 'gt mail inbox' to list messages and their IDs")
 	}
@@ -245,7 +245,7 @@ func runMailRead(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMailPeek(cmd *cobra.Command, args []string) error {
+func runMailPeek(_ *cobra.Command, _ []string) error {
 	// Determine which inbox
 	address := detectSender()
 
@@ -296,7 +296,7 @@ func runMailPeek(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMailDelete(cmd *cobra.Command, args []string) error {
+func runMailDelete(_ *cobra.Command, args []string) error {
 	// Determine which inbox
 	address := detectSender()
 
@@ -334,7 +334,7 @@ func runMailDelete(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMailArchive(cmd *cobra.Command, args []string) error {
+func runMailArchive(_ *cobra.Command, args []string) error {
 	// Determine which inbox
 	address := detectSender()
 
@@ -496,7 +496,7 @@ func staleMessagesForSession(messages []*mail.Message, sessionStart time.Time) [
 	return staleMessages
 }
 
-func runMailMarkRead(cmd *cobra.Command, args []string) error {
+func runMailMarkRead(_ *cobra.Command, args []string) error {
 	// Determine which inbox
 	address := detectSender()
 
@@ -563,7 +563,7 @@ func runMailMarkRead(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMailMarkUnread(cmd *cobra.Command, args []string) error {
+func runMailMarkUnread(_ *cobra.Command, args []string) error {
 	// Determine which inbox
 	address := detectSender()
 
@@ -601,7 +601,7 @@ func runMailMarkUnread(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMailClear(cmd *cobra.Command, args []string) error {
+func runMailClear(_ *cobra.Command, args []string) error {
 	// Determine which inbox to clear (target arg or auto-detect)
 	address := ""
 	if len(args) > 0 {

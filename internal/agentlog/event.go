@@ -42,7 +42,7 @@ type AgentAdapter interface {
 	// workDir is the agent's working directory (used to locate log files).
 	// since filters out JSONL files last modified before this time; use zero
 	// to disable filtering (picks up any file regardless of age).
-	Watch(ctx context.Context, sessionID, workDir string, since time.Time) (<-chan AgentEvent, error)
+	Watch(_ context.Context, _, _ string, _ time.Time) (<-chan AgentEvent, error)
 }
 
 // NewAdapter returns the AgentAdapter for the given agent type name.

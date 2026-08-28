@@ -46,7 +46,7 @@ func init() {
 	rigDetectCmd.Flags().StringVar(&rigDetectCache, "cache", "", "Repository path to cache detection result for")
 }
 
-func runRigDetect(cmd *cobra.Command, args []string) error {
+func runRigDetect(_ *cobra.Command, args []string) error {
 	checkPath := "."
 	if len(args) > 0 {
 		checkPath = args[0]

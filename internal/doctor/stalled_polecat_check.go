@@ -133,7 +133,7 @@ func (c *StalledPolecatCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix pushes branches from stalled polecats to the remote.
-func (c *StalledPolecatCheck) Fix(ctx *CheckContext) error {
+func (c *StalledPolecatCheck) Fix(_ *CheckContext) error {
 	if len(c.stalledPolecats) == 0 {
 		return nil
 	}

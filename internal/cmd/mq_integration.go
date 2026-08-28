@@ -330,7 +330,7 @@ type IntegrationStatusMRSummary struct {
 }
 
 // runMqIntegrationCreate creates an integration branch for an epic.
-func runMqIntegrationCreate(cmd *cobra.Command, args []string) error {
+func runMqIntegrationCreate(_ *cobra.Command, args []string) error {
 	epicID := args[0]
 
 	// Find workspace
@@ -454,7 +454,7 @@ func addIntegrationBranchField(description, branchName string) string {
 }
 
 // runMqIntegrationLand merges an integration branch to main.
-func runMqIntegrationLand(cmd *cobra.Command, args []string) error {
+func runMqIntegrationLand(_ *cobra.Command, args []string) error {
 	epicID := args[0]
 
 	// Find workspace
@@ -863,7 +863,7 @@ func runTestCommand(workDir, testCmd string) error {
 }
 
 // runMqIntegrationStatus shows the status of an integration branch for an epic.
-func runMqIntegrationStatus(cmd *cobra.Command, args []string) error {
+func runMqIntegrationStatus(_ *cobra.Command, args []string) error {
 	epicID := args[0]
 
 	// Find workspace

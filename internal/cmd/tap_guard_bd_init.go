@@ -29,7 +29,7 @@ func init() {
 	tapGuardCmd.AddCommand(tapGuardBdInitCmd)
 }
 
-func runTapGuardBdInit(cmd *cobra.Command, args []string) error {
+func runTapGuardBdInit(_ *cobra.Command, _ []string) error {
 	if !isGasTownAgentContext() {
 		return nil
 	}

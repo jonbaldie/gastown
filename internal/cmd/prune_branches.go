@@ -46,7 +46,7 @@ func init() {
 	rootCmd.AddCommand(pruneBranchesCmd)
 }
 
-func runPruneBranches(cmd *cobra.Command, args []string) error {
+func runPruneBranches(_ *cobra.Command, _ []string) error {
 	g := gitpkg.NewGit(".")
 	if !g.IsRepo() {
 		return fmt.Errorf("not a git repository")

@@ -122,7 +122,7 @@ type CommitEntry struct {
 	IsAgent   bool      `json:"is_agent"`
 }
 
-func runTrailCommits(cmd *cobra.Command, args []string) error {
+func runTrailCommits(_ *cobra.Command, _ []string) error {
 	// Get email domain for agent filtering
 	domain := DefaultAgentEmailDomain
 	townRoot, err := workspace.FindFromCwd()
@@ -237,7 +237,7 @@ type HookEntry struct {
 	TimeRel   string    `json:"time_relative"`
 }
 
-func runTrailBeads(cmd *cobra.Command, args []string) error {
+func runTrailBeads(_ *cobra.Command, _ []string) error {
 	// Find beads directory
 	beadsDir, err := findBeadsDir()
 	if err != nil {
@@ -340,7 +340,7 @@ func runTrailBeadsSimple(beadsDir string) error {
 	return beadsCmd.Run()
 }
 
-func runTrailHooks(cmd *cobra.Command, args []string) error {
+func runTrailHooks(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err

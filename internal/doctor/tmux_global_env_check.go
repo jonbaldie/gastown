@@ -9,8 +9,8 @@ import (
 
 // GlobalEnvAccessor abstracts tmux global environment reads/writes for testing.
 type GlobalEnvAccessor interface {
-	GetGlobalEnvironment(key string) (string, error)
-	SetGlobalEnvironment(key, value string) error
+	GetGlobalEnvironment(_ string) (string, error)
+	SetGlobalEnvironment(_, _ string) error
 }
 
 // TmuxGlobalEnvCheck verifies that GT_TOWN_ROOT is set in the tmux global

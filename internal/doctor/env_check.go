@@ -11,12 +11,12 @@ import (
 // SessionEnvReader abstracts tmux session environment reads for testing.
 type SessionEnvReader interface {
 	ListSessions() ([]string, error)
-	GetAllEnvironment(session string) (map[string]string, error)
+	GetAllEnvironment(_ string) (map[string]string, error)
 }
 
 // SessionEnvWriter abstracts tmux session environment writes for testing.
 type SessionEnvWriter interface {
-	SetEnvironment(session, key, value string) error
+	SetEnvironment(_, _, _ string) error
 }
 
 // SessionEnvAccessor combines read and write access to tmux session environments.

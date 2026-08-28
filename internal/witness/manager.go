@@ -30,8 +30,8 @@ var (
 // tmuxOps is the tmux seam for witness start and stop. Production uses *tmux.Tmux.
 type tmuxOps interface {
 	session.TmuxOps
-	GetSessionInfo(name string) (*tmux.SessionInfo, error)
-	GetSessionCreatedUnix(session string) (int64, error)
+	GetSessionInfo(_ string) (*tmux.SessionInfo, error)
+	GetSessionCreatedUnix(_ string) (int64, error)
 }
 
 // Manager handles witness lifecycle and monitoring operations.

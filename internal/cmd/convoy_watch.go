@@ -66,7 +66,7 @@ Examples:
 	RunE:         runConvoyUnwatch,
 }
 
-func runConvoyWatch(cmd *cobra.Command, args []string) error {
+func runConvoyWatch(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	// Resolve numeric shortcut
@@ -159,7 +159,7 @@ func runConvoyWatch(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConvoyUnwatch(cmd *cobra.Command, args []string) error {
+func runConvoyUnwatch(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	// Resolve numeric shortcut

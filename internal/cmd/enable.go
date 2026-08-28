@@ -40,7 +40,7 @@ func init() {
 	rootCmd.AddCommand(enableCmd)
 }
 
-func runEnable(cmd *cobra.Command, args []string) error {
+func runEnable(_ *cobra.Command, _ []string) error {
 	if err := state.Enable(Version); err != nil {
 		return fmt.Errorf("enabling Gas Town: %w", err)
 	}

@@ -37,7 +37,7 @@ func init() {
 	rootCmd.AddCommand(releaseCmd)
 }
 
-func runRelease(cmd *cobra.Command, args []string) error {
+func runRelease(_ *cobra.Command, args []string) error {
 	// Get working directory for beads
 	cwd, err := os.Getwd()
 	if err != nil {

@@ -44,7 +44,7 @@ func init() {
 	_ = patrolReportCmd.MarkFlagRequired("summary")
 }
 
-func runPatrolReport(cmd *cobra.Command, args []string) error {
+func runPatrolReport(_ *cobra.Command, _ []string) error {
 	// Resolve role
 	roleInfo, err := GetRole()
 	if err != nil {

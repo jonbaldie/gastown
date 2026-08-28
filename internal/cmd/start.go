@@ -505,7 +505,7 @@ func discoverAllRigs(townRoot string) ([]*rig.Rig, error) {
 	return rigMgr.DiscoverRigs()
 }
 
-func runShutdown(cmd *cobra.Command, args []string) error {
+func runShutdown(_ *cobra.Command, _ []string) error {
 	// Prefer the town under CWD, then GT_TOWN_ROOT, so we bind the town socket
 	// before listing sessions. Listing first can miss a running town.
 	townRoot, _ := workspace.FindFromCwdOrError()
@@ -1062,7 +1062,7 @@ func stopDaemonIfRunning(townRoot string) {
 
 // runStartCrew starts a crew workspace, creating it if it doesn't exist.
 // This combines the functionality of 'gt crew add' and 'gt crew at --detached'.
-func runStartCrew(cmd *cobra.Command, args []string) error {
+func runStartCrew(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	// Parse rig/name format (e.g., "greenplace/joe" -> rig=gastown, name=joe)

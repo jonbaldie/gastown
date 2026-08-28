@@ -42,7 +42,7 @@ type tapHandler struct {
 	implemented bool
 }
 
-func runTapList(cmd *cobra.Command, args []string) error {
+func runTapList(_ *cobra.Command, _ []string) error {
 	// Built-in handlers (implemented as Go commands)
 	handlers := []tapHandler{
 		{

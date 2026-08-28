@@ -44,7 +44,7 @@ func init() {
 	statusLineCmd.Flags().StringVar(&statusLineSession, "session", "", "Tmux session name")
 }
 
-func runStatusLine(cmd *cobra.Command, args []string) error {
+func runStatusLine(_ *cobra.Command, _ []string) error {
 	// Check E-stop first — prepend red indicator if active
 	if townRoot, twErr := workspace.FindFromCwd(); twErr == nil {
 		showEstop := false

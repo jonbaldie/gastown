@@ -75,7 +75,7 @@ type scoredIssue struct {
 // tmuxOps is the tmux seam for refinery start and stop. Production uses *tmux.Tmux.
 type tmuxOps interface {
 	session.TmuxOps
-	GetSessionInfo(name string) (*tmux.SessionInfo, error)
+	GetSessionInfo(_ string) (*tmux.SessionInfo, error)
 }
 
 // NewManager creates a new refinery manager for a rig.

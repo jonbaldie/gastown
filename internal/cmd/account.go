@@ -93,7 +93,7 @@ type AccountListItem struct {
 	IsDefault   bool   `json:"is_default"`
 }
 
-func runAccountList(cmd *cobra.Command, args []string) error {
+func runAccountList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -164,7 +164,7 @@ func runAccountList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runAccountAdd(cmd *cobra.Command, args []string) error {
+func runAccountAdd(_ *cobra.Command, args []string) error {
 	handle := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -233,7 +233,7 @@ func runAccountAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runAccountDefault(cmd *cobra.Command, args []string) error {
+func runAccountDefault(_ *cobra.Command, args []string) error {
 	handle := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -298,7 +298,7 @@ Examples:
 	RunE: runAccountSwitch,
 }
 
-func runAccountStatus(cmd *cobra.Command, args []string) error {
+func runAccountStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -352,7 +352,7 @@ func runAccountStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runAccountSwitch(cmd *cobra.Command, args []string) error {
+func runAccountSwitch(_ *cobra.Command, args []string) error {
 	targetHandle := args[0]
 
 	townRoot, err := workspace.FindFromCwd()

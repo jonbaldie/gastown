@@ -33,7 +33,7 @@ func init() {
 	hooksBaseCmd.Flags().BoolVar(&hooksBaseShow, "show", false, "Print current base config to stdout")
 }
 
-func runHooksBase(cmd *cobra.Command, args []string) error {
+func runHooksBase(_ *cobra.Command, _ []string) error {
 	cfg, err := hooks.LoadBase()
 	if err != nil {
 		if !os.IsNotExist(err) {

@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMoleculeAttach(cmd *cobra.Command, args []string) error {
+func runMoleculeAttach(_ *cobra.Command, args []string) error {
 	var pinnedBeadID, moleculeID string
 
 	workDir, err := findLocalBeadsDir()
@@ -86,7 +86,7 @@ func runMoleculeAttach(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMoleculeDetach(cmd *cobra.Command, args []string) error {
+func runMoleculeDetach(_ *cobra.Command, args []string) error {
 	pinnedBeadID := args[0]
 
 	workDir, err := findLocalBeadsDir()
@@ -123,7 +123,7 @@ func runMoleculeDetach(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMoleculeAttachment(cmd *cobra.Command, args []string) error {
+func runMoleculeAttachment(_ *cobra.Command, args []string) error {
 	pinnedBeadID := args[0]
 
 	workDir, err := findLocalBeadsDir()

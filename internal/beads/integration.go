@@ -42,14 +42,14 @@ func SanitizeBranchSegment(s string) string {
 // IssueShower provides issue lookup without requiring a full Beads instance.
 // *Beads satisfies this interface, so existing callers need no changes.
 type IssueShower interface {
-	Show(id string) (*Issue, error)
+	Show(_ string) (*Issue, error)
 }
 
 // BranchChecker provides branch existence checks without importing the git package.
 // This avoids circular imports between beads and git.
 type BranchChecker interface {
-	BranchExists(name string) (bool, error)
-	RemoteBranchExists(remote, name string) (bool, error)
+	BranchExists(_ string) (bool, error)
+	RemoteBranchExists(_, _ string) (bool, error)
 }
 
 // GetIntegrationBranchField extracts the integration_branch field from an epic's description.

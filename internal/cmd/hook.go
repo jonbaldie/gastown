@@ -471,7 +471,7 @@ func checkPinnedBeadComplete(b *beads.Beads, issue *beads.Issue) (isComplete boo
 }
 
 // runHookShow displays another agent's hook in compact one-line format.
-func runHookShow(cmd *cobra.Command, args []string) error {
+func runHookShow(_ *cobra.Command, args []string) error {
 	if err := ensureCurrentHookWorktreeIntegrity(); err != nil {
 		return err
 	}

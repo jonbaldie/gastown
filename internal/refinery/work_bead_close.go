@@ -24,12 +24,12 @@ type mergedWorkBeadCloseResult struct {
 }
 
 type workBeadCloser interface {
-	Show(id string) (*beads.Issue, error)
-	ForceCloseWithReason(reason string, ids ...string) error
+	Show(_ string) (*beads.Issue, error)
+	ForceCloseWithReason(_ string, _ ...string) error
 }
 
 type issueReader interface {
-	Show(id string) (*beads.Issue, error)
+	Show(_ string) (*beads.Issue, error)
 }
 
 func closeMergedWorkBead(work workBeadCloser, agent issueReader, out io.Writer, req mergedWorkBeadCloseRequest) mergedWorkBeadCloseResult {

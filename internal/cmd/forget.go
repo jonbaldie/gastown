@@ -29,7 +29,7 @@ Examples:
 	RunE: runForget,
 }
 
-func runForget(cmd *cobra.Command, args []string) error {
+func runForget(_ *cobra.Command, args []string) error {
 	key := args[0]
 
 	// Strip memory. prefix if the user included it

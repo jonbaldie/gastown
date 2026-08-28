@@ -169,7 +169,7 @@ func (c *HookAttachmentValidCheck) formatInvalid(inv invalidAttachment) string {
 }
 
 // Fix detaches all invalid molecule attachments.
-func (c *HookAttachmentValidCheck) Fix(ctx *CheckContext) error {
+func (c *HookAttachmentValidCheck) Fix(_ *CheckContext) error {
 	var errors []string
 
 	for _, inv := range c.invalidAttachments {
@@ -305,7 +305,7 @@ func (c *HookSingletonCheck) formatDuplicate(dup duplicateHandoff) string {
 }
 
 // Fix closes duplicate handoff beads, keeping the first one.
-func (c *HookSingletonCheck) Fix(ctx *CheckContext) error {
+func (c *HookSingletonCheck) Fix(_ *CheckContext) error {
 	var errors []string
 
 	for _, dup := range c.duplicates {

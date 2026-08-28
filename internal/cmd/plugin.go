@@ -216,7 +216,7 @@ func getPluginScanner() (*plugin.Scanner, string, error) {
 	return scanner, townRoot, nil
 }
 
-func runPluginList(cmd *cobra.Command, args []string) error {
+func runPluginList(_ *cobra.Command, _ []string) error {
 	scanner, townRoot, err := getPluginScanner()
 	if err != nil {
 		return err
@@ -322,7 +322,7 @@ func printPluginSummary(p *plugin.Plugin) {
 	}
 }
 
-func runPluginShow(cmd *cobra.Command, args []string) error {
+func runPluginShow(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	scanner, _, err := getPluginScanner()
@@ -435,7 +435,7 @@ func outputPluginShowText(p *plugin.Plugin) error {
 	return nil
 }
 
-func runPluginRun(cmd *cobra.Command, args []string) error {
+func runPluginRun(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	scanner, townRoot, err := getPluginScanner()
@@ -515,7 +515,7 @@ func runPluginRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPluginSync(cmd *cobra.Command, args []string) error {
+func runPluginSync(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -599,7 +599,7 @@ func runPluginSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPluginHistory(cmd *cobra.Command, args []string) error {
+func runPluginHistory(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	_, townRoot, err := getPluginScanner()
@@ -655,7 +655,7 @@ func runPluginHistory(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPluginRecordRun(cmd *cobra.Command, args []string) error {
+func runPluginRecordRun(cmd *cobra.Command, _ []string) error {
 	if pluginRecordPlugin == "" {
 		return fmt.Errorf("--plugin is required")
 	}

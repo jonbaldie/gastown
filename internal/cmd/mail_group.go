@@ -115,7 +115,7 @@ func init() {
 	mailCmd.AddCommand(mailGroupCmd)
 }
 
-func runGroupList(cmd *cobra.Command, args []string) error {
+func runGroupList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -151,7 +151,7 @@ func runGroupList(cmd *cobra.Command, args []string) error {
 	return w.Flush()
 }
 
-func runGroupShow(cmd *cobra.Command, args []string) error {
+func runGroupShow(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -191,7 +191,7 @@ func runGroupShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runGroupCreate(cmd *cobra.Command, args []string) error {
+func runGroupCreate(_ *cobra.Command, args []string) error {
 	name := args[0]
 	members := args[1:] // Positional members
 
@@ -243,7 +243,7 @@ func runGroupCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runGroupAdd(cmd *cobra.Command, args []string) error {
+func runGroupAdd(_ *cobra.Command, args []string) error {
 	name := args[0]
 	member := args[1]
 
@@ -265,7 +265,7 @@ func runGroupAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runGroupRemove(cmd *cobra.Command, args []string) error {
+func runGroupRemove(_ *cobra.Command, args []string) error {
 	name := args[0]
 	member := args[1]
 
@@ -283,7 +283,7 @@ func runGroupRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runGroupDelete(cmd *cobra.Command, args []string) error {
+func runGroupDelete(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

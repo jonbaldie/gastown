@@ -34,7 +34,7 @@ func init() {
 	catCmd.Flags().BoolVar(&catJSON, "json", false, "Output as JSON")
 }
 
-func runCat(cmd *cobra.Command, args []string) error {
+func runCat(_ *cobra.Command, args []string) error {
 	beadID := args[0]
 
 	// Validate it looks like a bead ID

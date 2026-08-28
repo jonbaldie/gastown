@@ -285,21 +285,21 @@ func escapeSQLString(s string) string {
 
 // DoltHubAPI abstracts DoltHub REST API operations.
 type DoltHubAPI interface {
-	ForkRepo(fromOrg, fromDB, toOrg, token string) error
+	ForkRepo(_, _, _, _ string) error
 }
 
 // DoltCLI abstracts dolt CLI subprocess operations.
 type DoltCLI interface {
-	Clone(org, db, targetDir string) error
-	RegisterRig(localDir, handle, dolthubOrg, displayName, ownerEmail, gtVersion string) error
-	Push(localDir string) error
-	AddUpstreamRemote(localDir, upstreamOrg, upstreamDB string) error
+	Clone(_, _, _ string) error
+	RegisterRig(_, _, _, _, _, _ string) error
+	Push(_ string) error
+	AddUpstreamRemote(_, _, _ string) error
 }
 
 // ConfigStore abstracts wasteland config persistence.
 type ConfigStore interface {
-	Load(townRoot string) (*Config, error)
-	Save(townRoot string, cfg *Config) error
+	Load(_ string) (*Config, error)
+	Save(_ string, _ *Config) error
 }
 
 // Service coordinates wasteland operations with injectable dependencies.

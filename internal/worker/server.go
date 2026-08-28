@@ -60,13 +60,13 @@ type agentConn struct {
 
 // TmuxSession is the fallback adapter surface. Production uses tmux.Tmux.
 type TmuxSession interface {
-	HasSession(session string) (bool, error)
-	NudgeSession(session, message string) error
-	WaitForRuntimeReady(session string, timeout time.Duration) error
-	WaitForIdle(session string, timeout time.Duration) error
-	IsAgentAlive(session string) bool
-	KillSessionWithProcesses(session string) error
-	CheckSessionHealth(session string, stale time.Duration) string
+	HasSession(_ string) (bool, error)
+	NudgeSession(_, _ string) error
+	WaitForRuntimeReady(_ string, _ time.Duration) error
+	WaitForIdle(_ string, _ time.Duration) error
+	IsAgentAlive(_ string) bool
+	KillSessionWithProcesses(_ string) error
+	CheckSessionHealth(_ string, _ time.Duration) string
 }
 
 func envDuration(name string, fallback time.Duration) time.Duration {

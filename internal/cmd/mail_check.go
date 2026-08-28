@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMailCheck(cmd *cobra.Command, args []string) error {
+func runMailCheck(_ *cobra.Command, _ []string) error {
 	// Determine which inbox (priority: --identity flag, auto-detect)
 	address := ""
 	if mailCheckIdentity != "" {

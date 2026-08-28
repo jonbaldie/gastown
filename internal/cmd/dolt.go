@@ -389,7 +389,7 @@ func init() {
 	rootCmd.AddCommand(doltCmd)
 }
 
-func runDoltStart(cmd *cobra.Command, args []string) error {
+func runDoltStart(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -441,7 +441,7 @@ func runDoltStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltKillImposters(cmd *cobra.Command, args []string) error {
+func runDoltKillImposters(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -475,7 +475,7 @@ func runDoltKillImposters(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltStop(cmd *cobra.Command, args []string) error {
+func runDoltStop(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -496,7 +496,7 @@ func runDoltStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltRestart(cmd *cobra.Command, args []string) error {
+func runDoltRestart(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -565,7 +565,7 @@ func runDoltRestart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltStatus(cmd *cobra.Command, args []string) error {
+func runDoltStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -804,7 +804,7 @@ func netJoinHostPort(host string, port int) string {
 	return host + ":" + strconv.Itoa(port)
 }
 
-func runDoltLogs(cmd *cobra.Command, args []string) error {
+func runDoltLogs(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -831,7 +831,7 @@ func runDoltLogs(cmd *cobra.Command, args []string) error {
 	return tailCmd.Run()
 }
 
-func runDoltDump(cmd *cobra.Command, args []string) error {
+func runDoltDump(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -893,7 +893,7 @@ func runDoltDump(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltSQL(cmd *cobra.Command, args []string) error {
+func runDoltSQL(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -952,7 +952,7 @@ func runDoltSQL(cmd *cobra.Command, args []string) error {
 	return sqlCmd.Run()
 }
 
-func runDoltInitRig(cmd *cobra.Command, args []string) error {
+func runDoltInitRig(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -987,7 +987,7 @@ func runDoltInitRig(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltInit(cmd *cobra.Command, args []string) error {
+func runDoltInit(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1069,7 +1069,7 @@ func runDoltInit(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltCleanup(cmd *cobra.Command, args []string) error {
+func runDoltCleanup(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1169,7 +1169,7 @@ func runDoltCleanup(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltList(cmd *cobra.Command, args []string) error {
+func runDoltList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1201,7 +1201,7 @@ func runDoltList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltMigrate(cmd *cobra.Command, args []string) error {
+func runDoltMigrate(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1324,7 +1324,7 @@ func dirSizeHuman(path string) string {
 	return formatBytes(total)
 }
 
-func runDoltFixMetadata(cmd *cobra.Command, args []string) error {
+func runDoltFixMetadata(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1353,7 +1353,7 @@ func runDoltFixMetadata(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltRecover(cmd *cobra.Command, args []string) error {
+func runDoltRecover(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1387,7 +1387,7 @@ func runDoltRecover(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltRollback(cmd *cobra.Command, args []string) error {
+func runDoltRollback(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1569,7 +1569,7 @@ func printBackupContents(backupPath, townRoot string) {
 	}
 }
 
-func runDoltSync(cmd *cobra.Command, args []string) error {
+func runDoltSync(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1692,7 +1692,7 @@ func runDoltSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltPull(cmd *cobra.Command, args []string) error {
+func runDoltPull(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1761,7 +1761,7 @@ func runDoltPull(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDoltMigrateWisps(cmd *cobra.Command, args []string) error {
+func runDoltMigrateWisps(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

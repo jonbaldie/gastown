@@ -89,7 +89,7 @@ func init() {
 	rootCmd.AddCommand(logCmd)
 }
 
-func runLog(cmd *cobra.Command, args []string) error {
+func runLog(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -356,7 +356,7 @@ func truncateStr(s string, maxLen int) string {
 }
 
 // runLogCrash handles the "gt log crash" command from tmux pane-died hooks.
-func runLogCrash(cmd *cobra.Command, args []string) error {
+func runLogCrash(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil || townRoot == "" {
 		// Try to find town root from conventional location

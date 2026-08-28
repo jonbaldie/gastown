@@ -38,7 +38,7 @@ func (p *bitbucketPRProvider) IsPRApproved(pr *git.PullRequestInfo) (bool, error
 	return p.git.IsBitbucketPRApproved(p.workspace, p.repoSlug, pr.Number)
 }
 
-func (p *bitbucketPRProvider) MergePR(pr *git.PullRequestInfo, method string) (string, error) {
+func (p *bitbucketPRProvider) MergePR(pr *git.PullRequestInfo, _ string) (string, error) {
 	prNumber := 0
 	if pr != nil {
 		prNumber = pr.Number

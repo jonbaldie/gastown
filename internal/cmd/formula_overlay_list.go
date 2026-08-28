@@ -26,7 +26,7 @@ func init() {
 	formulaOverlayCmd.AddCommand(formulaOverlayListCmd)
 }
 
-func runFormulaOverlayList(cmd *cobra.Command, args []string) error {
+func runFormulaOverlayList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

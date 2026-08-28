@@ -288,7 +288,7 @@ func (c *WorktreeGitdirCheck) buildReason(gitdirTarget, bareRepoPath, correctedB
 
 	// Stale .repo.git path doesn't exist — is this a relocation?
 	if correctedBareRepo != "" {
-		oldPrefix := filepath.Dir(filepath.Dir(bareRepoPath))     // e.g., /Users/bob/gt
+		oldPrefix := filepath.Dir(filepath.Dir(bareRepoPath))      // e.g., /Users/bob/gt
 		newPrefix := filepath.Dir(filepath.Dir(correctedBareRepo)) // e.g., /home/bob/gt
 		return fmt.Sprintf("relocated (%s -> %s), needs worktree re-creation", oldPrefix, newPrefix)
 	}
@@ -307,7 +307,7 @@ func (c *WorktreeGitdirCheck) hasGitFile(path string) bool {
 }
 
 // Fix attempts to re-create broken worktrees.
-func (c *WorktreeGitdirCheck) Fix(ctx *CheckContext) error {
+func (c *WorktreeGitdirCheck) Fix(_ *CheckContext) error {
 	var errs []string
 
 	for _, bw := range c.brokenWorktrees {

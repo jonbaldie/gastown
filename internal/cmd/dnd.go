@@ -41,7 +41,7 @@ func init() {
 	rootCmd.AddCommand(dndCmd)
 }
 
-func runDnd(cmd *cobra.Command, args []string) error {
+func runDnd(_ *cobra.Command, args []string) error {
 	// Get current agent bead ID
 	cwd, err := os.Getwd()
 	if err != nil {

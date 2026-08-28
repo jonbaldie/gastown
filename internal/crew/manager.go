@@ -147,7 +147,7 @@ func validateNewCrewName(name string) error {
 // tmuxOps is the tmux seam for crew start and stop. Production uses *tmux.Tmux.
 type tmuxOps interface {
 	session.TmuxOps
-	SetCrewCycleBindings(session string) error
+	SetCrewCycleBindings(_ string) error
 }
 
 // Manager handles crew worker lifecycle.

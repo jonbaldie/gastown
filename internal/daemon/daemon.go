@@ -1131,7 +1131,7 @@ func readBeadsBackend(beadsDir string) string {
 }
 
 type beadsMetadataReader interface {
-	GetMetadata(ctx context.Context, key string) (string, error)
+	GetMetadata(_ context.Context, _ string) (string, error)
 }
 
 type beadsDBAccessor interface {

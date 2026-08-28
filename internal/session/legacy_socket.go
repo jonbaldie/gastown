@@ -11,7 +11,7 @@ import (
 // It is extracted to allow tests to avoid real tmux calls.
 type legacySocketTmux interface {
 	ListSessions() ([]string, error)
-	KillSessionWithProcesses(name string) error
+	KillSessionWithProcesses(_ string) error
 }
 
 // Test hooks; nil in production.

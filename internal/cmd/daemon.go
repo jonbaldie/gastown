@@ -166,7 +166,7 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 }
 
-func runDaemonStart(cmd *cobra.Command, args []string) error {
+func runDaemonStart(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -234,7 +234,7 @@ func runDaemonStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonStop(cmd *cobra.Command, args []string) error {
+func runDaemonStop(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -256,7 +256,7 @@ func runDaemonStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonStatus(cmd *cobra.Command, args []string) error {
+func runDaemonStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -335,7 +335,7 @@ func readDaemonStartupFailure(townRoot string, pid int) string {
 	return ""
 }
 
-func runDaemonLogs(cmd *cobra.Command, args []string) error {
+func runDaemonLogs(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -362,7 +362,7 @@ func runDaemonLogs(cmd *cobra.Command, args []string) error {
 	return tailCmd.Run()
 }
 
-func runDaemonRun(cmd *cobra.Command, args []string) error {
+func runDaemonRun(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -387,7 +387,7 @@ func runDaemonRun(cmd *cobra.Command, args []string) error {
 	return d.Run()
 }
 
-func runDaemonEnableSupervisor(cmd *cobra.Command, args []string) error {
+func runDaemonEnableSupervisor(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -412,7 +412,7 @@ func runDaemonEnableSupervisor(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonClearBackoff(cmd *cobra.Command, args []string) error {
+func runDaemonClearBackoff(_ *cobra.Command, args []string) error {
 	agentID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -447,7 +447,7 @@ func runDaemonClearBackoff(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonRotateLogs(cmd *cobra.Command, args []string) error {
+func runDaemonRotateLogs(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

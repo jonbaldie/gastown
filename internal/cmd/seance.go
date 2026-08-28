@@ -83,7 +83,7 @@ type sessionEvent struct {
 	Payload   map[string]interface{} `json:"payload"`
 }
 
-func runSeance(cmd *cobra.Command, args []string) error {
+func runSeance(_ *cobra.Command, _ []string) error {
 	// If --talk is provided, spawn a seance
 	if seanceTalk != "" {
 		return runSeanceTalk(seanceTalk, seancePrompt)

@@ -101,7 +101,7 @@ func init() {
 	rigSettingsCmd.AddCommand(rigSettingsUnsetCmd)
 }
 
-func runRigSettingsShow(cmd *cobra.Command, args []string) error {
+func runRigSettingsShow(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	_, r, err := getRig(rigName)
@@ -190,7 +190,7 @@ func validateRigRoleSetting(townRoot, rigPath, keyPath, value string) error {
 	}
 }
 
-func runRigSettingsUnset(cmd *cobra.Command, args []string) error {
+func runRigSettingsUnset(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	keyPath := args[1]
 

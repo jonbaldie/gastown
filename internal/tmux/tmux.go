@@ -3891,7 +3891,7 @@ func IsInsideTmux() bool {
 // a registered rig prefix or "hq-"). In non-GT sessions, the user's original
 // MouseDown1StatusRight binding (if any) is preserved.
 // See: https://github.com/steveyegge/gastown/issues/1548
-func (t *Tmux) SetMailClickBinding(session string) error {
+func (t *Tmux) SetMailClickBinding(_ string) error {
 	// Skip if already configured — preserves user's original fallback from first call
 	if t.isGTBinding("root", "MouseDown1StatusRight") {
 		return nil
@@ -4166,7 +4166,7 @@ func sessionPrefixPattern() string {
 // IMPORTANT: We pass #{session_name} to the command because run-shell doesn't
 // reliably preserve the session context. tmux expands #{session_name} at binding
 // resolution time (when the key is pressed), giving us the correct session.
-func (t *Tmux) SetCycleBindings(session string) error {
+func (t *Tmux) SetCycleBindings(_ string) error {
 	// Skip if already correctly configured:
 	// 1. Has --client for multi-client support
 	// 2. Has the current prefix pattern (not stale from before a gt rig add)
@@ -4218,7 +4218,7 @@ func (t *Tmux) SetCycleBindings(session string) error {
 // press is silently ignored.
 // See: https://github.com/steveyegge/gastown/issues/13
 // See: https://github.com/steveyegge/gastown/issues/1548
-func (t *Tmux) SetFeedBinding(session string) error {
+func (t *Tmux) SetFeedBinding(_ string) error {
 	pattern := sessionPrefixPattern()
 	// Skip if already configured with the current rig prefix pattern.
 	// Must re-bind if the pattern is stale (e.g., after gt rig add adds a new prefix).
@@ -4246,7 +4246,7 @@ func (t *Tmux) SetFeedBinding(session string) error {
 // user's original binding is preserved. If no prior binding existed, the key
 // press is silently ignored.
 // See: https://github.com/steveyegge/gastown/issues/1548
-func (t *Tmux) SetAgentsBinding(session string) error {
+func (t *Tmux) SetAgentsBinding(_ string) error {
 	pattern := sessionPrefixPattern()
 	// Skip if already configured with the current rig prefix pattern.
 	// Must re-bind if the pattern is stale (e.g., after gt rig add adds a new prefix).
@@ -4269,7 +4269,7 @@ func (t *Tmux) SetAgentsBinding(session string) error {
 // SetRigMenuBinding configures C-b r to open the rig menu popup.
 // This runs `gt rig menu` which displays a tmux display-menu with all rigs
 // and per-rig actions (start, stop, park, etc.).
-func (t *Tmux) SetRigMenuBinding(session string) error {
+func (t *Tmux) SetRigMenuBinding(_ string) error {
 	if t.isGTBinding("prefix", "r") {
 		return nil
 	}

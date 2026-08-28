@@ -82,7 +82,7 @@ func isDrainableMessage(subject string) bool {
 	return false
 }
 
-func runMailDrain(cmd *cobra.Command, args []string) error {
+func runMailDrain(_ *cobra.Command, _ []string) error {
 	// Parse max-age duration
 	maxAge, err := time.ParseDuration(mailDrainMaxAge)
 	if err != nil {

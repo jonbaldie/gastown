@@ -43,7 +43,7 @@ func init() {
 	heartbeatCmd.Flags().StringVar(&heartbeatState, "state", "working", "Agent state (working, idle, exiting, stuck)")
 }
 
-func runHeartbeat(cmd *cobra.Command, args []string) error {
+func runHeartbeat(_ *cobra.Command, args []string) error {
 	sessionName := os.Getenv("GT_SESSION")
 	if sessionName == "" {
 		return fmt.Errorf("GT_SESSION not set (not running in a Gas Town session)")

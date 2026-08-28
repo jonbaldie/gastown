@@ -38,7 +38,7 @@ func init() {
 	rootCmd.AddCommand(notifyCmd)
 }
 
-func runNotify(cmd *cobra.Command, args []string) error {
+func runNotify(_ *cobra.Command, args []string) error {
 	// Get current agent bead ID
 	cwd, err := os.Getwd()
 	if err != nil {

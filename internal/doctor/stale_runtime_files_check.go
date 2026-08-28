@@ -147,7 +147,7 @@ func (c *StaleRuntimeFilesCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix removes stale runtime files.
-func (c *StaleRuntimeFilesCheck) Fix(ctx *CheckContext) error {
+func (c *StaleRuntimeFilesCheck) Fix(_ *CheckContext) error {
 	for _, path := range c.stalePIDFiles {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("could not remove %s: %w", path, err)

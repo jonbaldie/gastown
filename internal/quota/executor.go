@@ -13,21 +13,21 @@ import (
 // Separating this from scan.go's TmuxClient keeps read-only scanning distinct
 // from the write operations required by rotation execution.
 type TmuxExecutor interface {
-	SetEnvironment(session, key, value string) error
-	GetPaneID(session string) (string, error)
-	SetRemainOnExit(pane string, on bool) error
-	KillPaneProcesses(pane string) error
-	ClearHistory(pane string) error
-	RespawnPane(pane, command string) error
-	AcceptStartupDialogs(session string) error
-	AcceptWorkspaceTrustDialog(session string) error
-	AcceptBypassPermissionsWarning(session string) error
+	SetEnvironment(_, _, _ string) error
+	GetPaneID(_ string) (string, error)
+	SetRemainOnExit(_ string, _ bool) error
+	KillPaneProcesses(_ string) error
+	ClearHistory(_ string) error
+	RespawnPane(_, _ string) error
+	AcceptStartupDialogs(_ string) error
+	AcceptWorkspaceTrustDialog(_ string) error
+	AcceptBypassPermissionsWarning(_ string) error
 }
 
 // Logger allows the Rotator to emit non-fatal warnings without depending
 // on the CLI style package.
 type Logger interface {
-	Warn(format string, args ...interface{})
+	Warn(_ string, _ ...interface{})
 }
 
 // SessionLinker symlinks a session file from its current account into a target

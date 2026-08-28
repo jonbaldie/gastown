@@ -94,7 +94,7 @@ func (e *Engineer) AssembleBatch(readyMRs []*MRInfo, config *BatchConfig) []*MRI
 //
 // On return, the git working directory is on the target branch with all
 // successful MR merges applied (but not pushed).
-func (e *Engineer) BuildRebaseStack(ctx context.Context, batch []*MRInfo, target string) (stacked []*MRInfo, conflicts []*MRInfo, err error) {
+func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target string) (stacked []*MRInfo, conflicts []*MRInfo, err error) {
 	if len(batch) == 0 {
 		return nil, nil, nil
 	}

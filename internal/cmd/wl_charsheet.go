@@ -37,7 +37,7 @@ func init() {
 	wlCmd.AddCommand(wlCharsheetCmd)
 }
 
-func runWlCharsheet(cmd *cobra.Command, args []string) error {
+func runWlCharsheet(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

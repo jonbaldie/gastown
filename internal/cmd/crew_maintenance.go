@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runCrewRename(cmd *cobra.Command, args []string) error {
+func runCrewRename(_ *cobra.Command, args []string) error {
 	oldName := args[0]
 	newName := args[1]
 	// Parse rig/name format for oldName (e.g., "beads/emma" -> rig=beads, name=emma)
@@ -61,7 +61,7 @@ func runCrewRename(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runCrewPristine(cmd *cobra.Command, args []string) error {
+func runCrewPristine(_ *cobra.Command, args []string) error {
 	crewMgr, r, err := getCrewManager(crewRig)
 	if err != nil {
 		return err

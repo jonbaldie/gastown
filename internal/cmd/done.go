@@ -102,7 +102,7 @@ func shouldRetirePolecatSessionAfterDone(exitType, mergeStrategy string, pushFai
 }
 
 type doneSessionKiller interface {
-	KillSessionWithProcessesExcluding(name string, excludePIDs []string) error
+	KillSessionWithProcessesExcluding(_ string, _ []string) error
 }
 
 type donePolecatWorktree struct {
@@ -702,7 +702,7 @@ func init() {
 	rootCmd.AddCommand(doneCmd)
 }
 
-func runDone(cmd *cobra.Command, args []string) (retErr error) {
+func runDone(_ *cobra.Command, _ []string) (retErr error) {
 	defer func() { telemetry.RecordDone(context.Background(), strings.ToUpper(doneStatus), retErr) }()
 	// Guard: Only polecats should call gt done
 	// Crew, deacons, witnesses etc. don't use gt done - they persist across tasks.

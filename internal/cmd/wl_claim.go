@@ -33,7 +33,7 @@ func init() {
 	wlCmd.AddCommand(wlClaimCmd)
 }
 
-func runWlClaim(cmd *cobra.Command, args []string) error {
+func runWlClaim(_ *cobra.Command, args []string) error {
 	wantedID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

@@ -84,7 +84,7 @@ func init() {
 
 }
 
-func runTheme(cmd *cobra.Command, args []string) error {
+func runTheme(_ *cobra.Command, args []string) error {
 	// List mode
 	if themeListFlag {
 		fmt.Println("Available themes:")
@@ -134,7 +134,7 @@ func runTheme(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runThemeApply(cmd *cobra.Command, args []string) error {
+func runThemeApply(_ *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
 	townRoot, _ := workspace.FindFromCwd()
 
@@ -355,7 +355,7 @@ func saveRigTheme(rigName, themeName string) error {
 	return nil
 }
 
-func runThemeCLI(cmd *cobra.Command, args []string) error {
+func runThemeCLI(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding workspace: %w", err)

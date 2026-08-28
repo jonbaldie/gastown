@@ -40,7 +40,7 @@ Examples:
 	RunE: runMemories,
 }
 
-func runMemories(cmd *cobra.Command, args []string) error {
+func runMemories(_ *cobra.Command, args []string) error {
 	kvs, err := bdKvListJSON()
 	if err != nil {
 		return fmt.Errorf("listing memories: %w", err)

@@ -151,7 +151,7 @@ func init() {
 	krcDecayCmd.Flags().BoolVar(&krcDecayJSON, "json", false, "Output in JSON format")
 }
 
-func runKrcStats(cmd *cobra.Command, args []string) error {
+func runKrcStats(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -233,7 +233,7 @@ func runKrcStats(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runKrcPrune(cmd *cobra.Command, args []string) error {
+func runKrcPrune(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -331,7 +331,7 @@ func runKrcPrune(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runKrcConfig(cmd *cobra.Command, args []string) error {
+func runKrcConfig(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -366,7 +366,7 @@ func runKrcConfig(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runKrcConfigSet(cmd *cobra.Command, args []string) error {
+func runKrcConfigSet(_ *cobra.Command, args []string) error {
 	pattern := args[0]
 	ttlStr := args[1]
 
@@ -403,7 +403,7 @@ func runKrcConfigSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runKrcConfigReset(cmd *cobra.Command, args []string) error {
+func runKrcConfigReset(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -503,7 +503,7 @@ func runKrcAutoPrune(townRoot string, config *krc.Config) error {
 	return nil
 }
 
-func runKrcDecay(cmd *cobra.Command, args []string) error {
+func runKrcDecay(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -580,7 +580,7 @@ func runKrcDecay(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runKrcAutoPruneStatus(cmd *cobra.Command, args []string) error {
+func runKrcAutoPruneStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

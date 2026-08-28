@@ -87,7 +87,7 @@ func init() {
 	rootCmd.AddCommand(activityCmd)
 }
 
-func runActivityEmit(cmd *cobra.Command, args []string) error {
+func runActivityEmit(_ *cobra.Command, args []string) error {
 	eventType := args[0]
 
 	// Validate we're in a Gas Town workspace

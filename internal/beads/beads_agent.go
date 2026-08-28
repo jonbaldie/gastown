@@ -390,7 +390,7 @@ func labelsForAgentBeadReuse(existing []string) []string {
 // CreateOrReopenAgentBead can simply update it on re-spawn without needing reopen.
 //
 // This is the standard nuke path (gt-14b8o).
-func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
+func (b *Beads) ResetAgentBeadForReuse(id, _ string) error {
 	// Lock the agent bead to prevent concurrent read-modify-write races.
 	// Without this, a concurrent CreateOrReopenAgentBead could overwrite
 	// the nuked state we're about to set. See gt-joazs.

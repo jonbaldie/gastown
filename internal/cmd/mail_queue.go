@@ -19,7 +19,7 @@ import (
 // runMailClaim claims the oldest unclaimed message from a work queue.
 // If a queue name is provided, claims from that specific queue.
 // If no queue name is provided, claims from any queue the caller is eligible for.
-func runMailClaim(cmd *cobra.Command, args []string) error {
+func runMailClaim(_ *cobra.Command, args []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -283,7 +283,7 @@ func claimQueueMessage(beadsDir, messageID, claimant string) error {
 }
 
 // runMailRelease releases a claimed queue message back to its queue.
-func runMailRelease(cmd *cobra.Command, args []string) error {
+func runMailRelease(_ *cobra.Command, args []string) error {
 	messageID := args[0]
 
 	// Find workspace
@@ -548,7 +548,7 @@ func init() {
 }
 
 // runMailQueueCreate creates a new beads-native queue.
-func runMailQueueCreate(cmd *cobra.Command, args []string) error {
+func runMailQueueCreate(_ *cobra.Command, args []string) error {
 	queueName := args[0]
 
 	// Find workspace
@@ -598,7 +598,7 @@ func runMailQueueCreate(cmd *cobra.Command, args []string) error {
 }
 
 // runMailQueueShow shows details about a queue.
-func runMailQueueShow(cmd *cobra.Command, args []string) error {
+func runMailQueueShow(_ *cobra.Command, args []string) error {
 	queueName := args[0]
 
 	// Find workspace
@@ -662,7 +662,7 @@ func runMailQueueShow(cmd *cobra.Command, args []string) error {
 }
 
 // runMailQueueList lists all queues.
-func runMailQueueList(cmd *cobra.Command, args []string) error {
+func runMailQueueList(_ *cobra.Command, _ []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -714,7 +714,7 @@ func runMailQueueList(cmd *cobra.Command, args []string) error {
 }
 
 // runMailQueueDelete deletes a queue.
-func runMailQueueDelete(cmd *cobra.Command, args []string) error {
+func runMailQueueDelete(_ *cobra.Command, args []string) error {
 	queueName := args[0]
 
 	// Find workspace

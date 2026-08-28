@@ -442,7 +442,7 @@ func shortcutKey(index int) string {
 	return ""
 }
 
-func runAgents(cmd *cobra.Command, args []string) error {
+func runAgents(_ *cobra.Command, _ []string) error {
 	groups := getAllSocketSessions(agentsAllFlag)
 
 	// Count total sessions across all groups
@@ -537,7 +537,7 @@ func runAgents(cmd *cobra.Command, args []string) error {
 	return execCmd.Run()
 }
 
-func runAgentsList(cmd *cobra.Command, args []string) error {
+func runAgentsList(_ *cobra.Command, _ []string) error {
 	agents, err := getAgentSessions(agentsAllFlag)
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
@@ -598,7 +598,7 @@ type CollisionIssue struct {
 	SessionID string `json:"session_id,omitempty"`
 }
 
-func runAgentsCheck(cmd *cobra.Command, args []string) error {
+func runAgentsCheck(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -639,7 +639,7 @@ func runAgentsCheck(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runAgentsFix(cmd *cobra.Command, args []string) error {
+func runAgentsFix(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

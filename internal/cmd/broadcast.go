@@ -44,7 +44,7 @@ Examples:
 	RunE: runBroadcast,
 }
 
-func runBroadcast(cmd *cobra.Command, args []string) error {
+func runBroadcast(_ *cobra.Command, args []string) error {
 	message := args[0]
 
 	if message == "" {

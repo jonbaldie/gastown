@@ -39,7 +39,7 @@ func init() {
 	hooksOverrideCmd.Flags().BoolVar(&hooksOverrideShow, "show", false, "Print current override config to stdout")
 }
 
-func runHooksOverride(cmd *cobra.Command, args []string) error {
+func runHooksOverride(_ *cobra.Command, args []string) error {
 	normalized, ok := hooks.NormalizeTarget(args[0])
 	if !ok {
 		return fmt.Errorf("invalid target %q; valid targets are roles (crew, witness, refinery, polecats, mayor, deacon) or rig/role (gastown/crew, etc.)", args[0])

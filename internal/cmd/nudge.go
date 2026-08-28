@@ -491,7 +491,7 @@ var validNudgePriorities = map[string]bool{
 	nudge.PrioritySystem: true,
 }
 
-func runNudge(cmd *cobra.Command, args []string) (retErr error) {
+func runNudge(_ *cobra.Command, args []string) (retErr error) {
 	defer func() {
 		target := ""
 		if len(args) > 0 {

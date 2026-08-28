@@ -32,7 +32,7 @@ func init() {
 	formulaOverlayShowCmd.Flags().StringVar(&formulaOverlayShowRig, "rig", "", "Rig name (default: auto-detect from cwd)")
 }
 
-func runFormulaOverlayShow(cmd *cobra.Command, args []string) error {
+func runFormulaOverlayShow(_ *cobra.Command, args []string) error {
 	formulaName := args[0]
 
 	townRoot, rigName, err := resolveOverlayContext(formulaOverlayShowRig)

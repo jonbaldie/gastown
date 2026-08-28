@@ -21,7 +21,7 @@ type HealthDataSource interface {
 	// ListAgentBeads returns all agent beads (single efficient query).
 	ListAgentBeads() (map[string]*beads.Issue, error)
 	// IsSessionAlive checks if a tmux session exists (zombie detection only).
-	IsSessionAlive(sessionName string) (bool, error)
+	IsSessionAlive(_ string) (bool, error)
 }
 
 // AgentState represents the possible states for a GasTown agent.

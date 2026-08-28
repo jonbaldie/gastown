@@ -263,7 +263,7 @@ func (b *BaseCheck) CanFix() bool {
 }
 
 // Fix returns an error indicating this check cannot be auto-fixed.
-func (b *BaseCheck) Fix(ctx *CheckContext) error {
+func (b *BaseCheck) Fix(_ *CheckContext) error {
 	return ErrCannotFix
 }
 

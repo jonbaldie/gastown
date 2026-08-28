@@ -47,7 +47,7 @@ func init() {
 	mqCmd.AddCommand(mqNextCmd)
 }
 
-func runMQNext(cmd *cobra.Command, args []string) error {
+func runMQNext(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	_, r, _, err := getRefineryManager(rigName)

@@ -126,7 +126,7 @@ func init() {
 	compactCmd.AddCommand(compactReportCmd)
 }
 
-func runCompactReport(cmd *cobra.Command, args []string) error {
+func runCompactReport(_ *cobra.Command, _ []string) error {
 	if compactReportWeekly {
 		return runWeeklyRollup()
 	}

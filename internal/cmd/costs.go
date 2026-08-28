@@ -217,7 +217,7 @@ var modelPricing = map[string]struct {
 	"default": {3.0, 15.0, 0.3, 3.75},
 }
 
-func runCosts(cmd *cobra.Command, args []string) error {
+func runCosts(_ *cobra.Command, _ []string) error {
 	// If querying ledger, use ledger functions
 	if costsToday || costsWeek || costsByRole || costsByRig {
 		return runCostsFromLedger()
@@ -971,7 +971,7 @@ func getCostsLogPath() string {
 // runCostsRecord captures the final cost from a session and appends it to a local log file.
 // This is called by the Claude Code Stop hook. It's designed to never fail due to
 // database availability - it's a simple file append operation.
-func runCostsRecord(cmd *cobra.Command, args []string) error {
+func runCostsRecord(_ *cobra.Command, _ []string) error {
 	// Get session from flag or try to detect from environment
 	session := recordSession
 	if session == "" {
@@ -1170,7 +1170,7 @@ type CostDigestPayload struct {
 }
 
 // runCostsDigest aggregates session cost entries into a daily digest bead.
-func runCostsDigest(cmd *cobra.Command, args []string) error {
+func runCostsDigest(_ *cobra.Command, _ []string) error {
 	// Determine target date
 	var targetDate time.Time
 

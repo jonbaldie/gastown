@@ -205,7 +205,7 @@ type RecentWorkItem struct {
 	Ago       string `json:"ago"`
 }
 
-func runPolecatIdentityAdd(cmd *cobra.Command, args []string) error {
+func runPolecatIdentityAdd(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	var polecatName string
 
@@ -262,7 +262,7 @@ func runPolecatIdentityAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatIdentityList(cmd *cobra.Command, args []string) error {
+func runPolecatIdentityList(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	// Get rig
@@ -377,7 +377,7 @@ func runPolecatIdentityList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatIdentityShow(cmd *cobra.Command, args []string) error {
+func runPolecatIdentityShow(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	polecatName := args[1]
 
@@ -550,7 +550,7 @@ func runPolecatIdentityShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatIdentityRename(cmd *cobra.Command, args []string) error {
+func runPolecatIdentityRename(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	oldName := args[1]
 	newName := args[2]
@@ -630,7 +630,7 @@ func runPolecatIdentityRename(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatIdentityRemove(cmd *cobra.Command, args []string) error {
+func runPolecatIdentityRemove(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	polecatName := args[1]
 

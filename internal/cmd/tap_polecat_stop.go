@@ -39,7 +39,7 @@ func init() {
 	tapCmd.AddCommand(tapPolecatStopCmd)
 }
 
-func runTapPolecatStop(cmd *cobra.Command, args []string) error {
+func runTapPolecatStop(_ *cobra.Command, _ []string) error {
 	// Only applies to polecats
 	polecatName := os.Getenv("GT_POLECAT")
 	if polecatName == "" {

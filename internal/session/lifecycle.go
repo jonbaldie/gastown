@@ -313,7 +313,7 @@ func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr err
 }
 
 type sessionNoWait interface {
-	NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error
+	NewSessionWithCommandAndEnvNoWait(_, _, _ string, _ map[string]string) error
 }
 
 func startSessionCommand(tm TmuxOps, work Work, command string, envVars map[string]string) error {

@@ -19,10 +19,10 @@ type CrashReportCheck struct {
 
 // crashReport represents a found crash report file.
 type crashReport struct {
-	path     string
-	name     string
-	modTime  time.Time
-	process  string // "tmux", "claude", "node", etc.
+	path    string
+	name    string
+	modTime time.Time
+	process string // "tmux", "claude", "node", etc.
 }
 
 // NewCrashReportCheck creates a new crash report check.
@@ -37,7 +37,7 @@ func NewCrashReportCheck() *CrashReportCheck {
 }
 
 // Run checks for recent crash reports in macOS diagnostic directories.
-func (c *CrashReportCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *CrashReportCheck) Run(_ *CheckContext) *CheckResult {
 	// Only run on macOS
 	if runtime.GOOS != "darwin" {
 		return &CheckResult{
@@ -176,7 +176,7 @@ func (c *CrashReportCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix does nothing - crash reports are informational.
-func (c *CrashReportCheck) Fix(ctx *CheckContext) error {
+func (c *CrashReportCheck) Fix(_ *CheckContext) error {
 	return nil
 }
 

@@ -133,7 +133,7 @@ func (c *OrphanSessionCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix kills all orphaned sessions, except crew sessions which are protected.
-func (c *OrphanSessionCheck) Fix(ctx *CheckContext) error {
+func (c *OrphanSessionCheck) Fix(_ *CheckContext) error {
 	if len(c.orphanSessions) == 0 {
 		return nil
 	}
@@ -296,7 +296,7 @@ func NewOrphanProcessCheck() *OrphanProcessCheck {
 }
 
 // Run checks for runtime processes running outside tmux.
-func (c *OrphanProcessCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *OrphanProcessCheck) Run(_ *CheckContext) *CheckResult {
 	// Get list of tmux session PIDs
 	tmuxPIDs, err := c.getTmuxSessionPIDs()
 	if err != nil {

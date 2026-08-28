@@ -73,7 +73,7 @@ func LoadRegistry(townRoot string) (*HookRegistry, error) {
 	return &registry, nil
 }
 
-func runHooksRegistry(cmd *cobra.Command, args []string) error {
+func runHooksRegistry(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

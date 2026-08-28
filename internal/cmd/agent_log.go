@@ -37,7 +37,7 @@ func init() {
 	rootCmd.AddCommand(agentLogCmd)
 }
 
-func runAgentLog(cmd *cobra.Command, args []string) error {
+func runAgentLog(_ *cobra.Command, _ []string) error {
 	ctx := context.Background()
 	// Inject run ID into context so every RecordAgentEvent call carries run.id.
 	// Falls back to GT_RUN env var when --run-id is not provided.

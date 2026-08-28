@@ -22,7 +22,7 @@ var (
 // tmuxOps abstracts tmux operations for testing.
 type tmuxOps interface {
 	session.TmuxOps
-	GetSessionInfo(name string) (*tmux.SessionInfo, error)
+	GetSessionInfo(_ string) (*tmux.SessionInfo, error)
 }
 
 // Manager handles deacon lifecycle operations.

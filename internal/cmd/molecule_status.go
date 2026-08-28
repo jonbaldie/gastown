@@ -155,7 +155,7 @@ type MoleculeCurrentInfo struct {
 	Diagnosis     string `json:"diagnosis,omitempty"`
 }
 
-func runMoleculeProgress(cmd *cobra.Command, args []string) error {
+func runMoleculeProgress(_ *cobra.Command, args []string) error {
 	rootID := args[0]
 
 	workDir, err := findLocalBeadsDir()
@@ -321,7 +321,7 @@ func extractMoleculeID(description string) string {
 	return ""
 }
 
-func runMoleculeStatus(cmd *cobra.Command, args []string) error {
+func runMoleculeStatus(_ *cobra.Command, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -920,7 +920,7 @@ func showRecentTrailSummary() {
 		style.Dim.Render("📍"), totalCommits, strings.Join(parts, ", "))
 }
 
-func runMoleculeCurrent(cmd *cobra.Command, args []string) error {
+func runMoleculeCurrent(_ *cobra.Command, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)

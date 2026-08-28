@@ -42,7 +42,7 @@ func init() {
 	rootCmd.AddCommand(cleanupCmd)
 }
 
-func runCleanup(cmd *cobra.Command, args []string) error {
+func runCleanup(_ *cobra.Command, _ []string) error {
 	// Find orphaned processes using aggressive zombie detection
 	zombies, err := util.FindZombieClaudeProcesses()
 	if err != nil {

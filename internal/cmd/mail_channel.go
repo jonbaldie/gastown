@@ -156,7 +156,7 @@ func runMailChannel(cmd *cobra.Command, args []string) error {
 	return runChannelShow(cmd, args)
 }
 
-func runChannelList(cmd *cobra.Command, args []string) error {
+func runChannelList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -198,7 +198,7 @@ func runChannelList(cmd *cobra.Command, args []string) error {
 	return w.Flush()
 }
 
-func runChannelShow(cmd *cobra.Command, args []string) error {
+func runChannelShow(_ *cobra.Command, args []string) error {
 	channelName := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -272,7 +272,7 @@ func runChannelShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runChannelCreate(cmd *cobra.Command, args []string) error {
+func runChannelCreate(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	if !isValidGroupName(name) { // Reuse group name validation
@@ -323,7 +323,7 @@ func runChannelCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runChannelDelete(cmd *cobra.Command, args []string) error {
+func runChannelDelete(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -350,7 +350,7 @@ func runChannelDelete(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runChannelSubscribe(cmd *cobra.Command, args []string) error {
+func runChannelSubscribe(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	subscriber := os.Getenv("BD_ACTOR")
@@ -390,7 +390,7 @@ func runChannelSubscribe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runChannelUnsubscribe(cmd *cobra.Command, args []string) error {
+func runChannelUnsubscribe(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	subscriber := os.Getenv("BD_ACTOR")
@@ -435,7 +435,7 @@ func runChannelUnsubscribe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runChannelSubscribers(cmd *cobra.Command, args []string) error {
+func runChannelSubscribers(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

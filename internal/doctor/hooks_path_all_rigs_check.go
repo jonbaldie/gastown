@@ -87,7 +87,7 @@ func (c *HooksPathAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix configures core.hooksPath for all unconfigured clones.
-func (c *HooksPathAllRigsCheck) Fix(ctx *CheckContext) error {
+func (c *HooksPathAllRigsCheck) Fix(_ *CheckContext) error {
 	for _, clonePath := range c.unconfiguredClones {
 		cmd := exec.Command("git", "-C", clonePath, "config", "core.hooksPath", ".githooks")
 		if err := cmd.Run(); err != nil {

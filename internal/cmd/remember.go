@@ -67,7 +67,7 @@ Examples:
 	RunE: runRemember,
 }
 
-func runRemember(cmd *cobra.Command, args []string) error {
+func runRemember(_ *cobra.Command, args []string) error {
 	content := args[0]
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("memory content cannot be empty")

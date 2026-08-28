@@ -135,7 +135,7 @@ func warrantFilePath(dir, target string) string {
 	return filepath.Join(dir, safe+".warrant.json")
 }
 
-func runWarrantFile(cmd *cobra.Command, args []string) error {
+func runWarrantFile(_ *cobra.Command, args []string) error {
 	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
 	if warrantStdin {
 		if warrantReason != "" {
@@ -210,7 +210,7 @@ func runWarrantFile(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWarrantList(cmd *cobra.Command, args []string) error {
+func runWarrantList(_ *cobra.Command, _ []string) error {
 	warrantDir, err := getWarrantDir()
 	if err != nil {
 		return err
@@ -275,7 +275,7 @@ func runWarrantList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWarrantExecute(cmd *cobra.Command, args []string) error {
+func runWarrantExecute(_ *cobra.Command, args []string) error {
 	target := args[0]
 
 	warrantDir, err := getWarrantDir()

@@ -18,7 +18,7 @@ import (
 )
 
 // runMailAnnounces lists announce channels or reads messages from a channel.
-func runMailAnnounces(cmd *cobra.Command, args []string) error {
+func runMailAnnounces(_ *cobra.Command, args []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

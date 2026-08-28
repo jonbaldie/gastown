@@ -87,7 +87,7 @@ type PatrolCycleEntry struct {
 }
 
 // runPatrolDigest aggregates patrol cycle digests into a daily digest bead.
-func runPatrolDigest(cmd *cobra.Command, args []string) error {
+func runPatrolDigest(_ *cobra.Command, _ []string) error {
 	// Determine target date
 	var targetDate time.Time
 

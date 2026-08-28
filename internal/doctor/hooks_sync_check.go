@@ -198,7 +198,7 @@ func (c *HooksSyncCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix brings all out-of-sync targets back into sync.
-func (c *HooksSyncCheck) Fix(ctx *CheckContext) error {
+func (c *HooksSyncCheck) Fix(_ *CheckContext) error {
 	if len(c.outOfSync) == 0 && len(c.templateOutOfSync) == 0 {
 		return nil
 	}

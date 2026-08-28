@@ -150,7 +150,7 @@ func getMayorSessionName() string {
 	return mayor.SessionName()
 }
 
-func runMayorStart(cmd *cobra.Command, args []string) error {
+func runMayorStart(_ *cobra.Command, _ []string) error {
 	mgr, err := getMayorManager()
 	if err != nil {
 		return err
@@ -171,7 +171,7 @@ func runMayorStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMayorStop(cmd *cobra.Command, args []string) error {
+func runMayorStop(_ *cobra.Command, _ []string) error {
 	mgr, err := getMayorManager()
 	if err != nil {
 		return err
@@ -189,7 +189,7 @@ func runMayorStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMayorAttach(cmd *cobra.Command, args []string) error {
+func runMayorAttach(_ *cobra.Command, _ []string) error {
 	mgr, err := getMayorManager()
 	if err != nil {
 		return err
@@ -333,7 +333,7 @@ func gracefullyShutdownACP(townRoot string) error {
 	return nil
 }
 
-func runMayorStatus(cmd *cobra.Command, args []string) error {
+func runMayorStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -458,7 +458,7 @@ func ensureMayorInfra(townRoot string) error {
 // It bypasses tmux and execs the agent directly with stdin/stdout connected.
 // A PID file is created to signal that automatic cleanup should be vetoed,
 // allowing the Mayor to review worker diffs before cleanup.
-func runMayorAcp(cmd *cobra.Command, args []string) error {
+func runMayorAcp(_ *cobra.Command, _ []string) error {
 	ctx := context.Background()
 
 	townRoot := acpTownRootOverride

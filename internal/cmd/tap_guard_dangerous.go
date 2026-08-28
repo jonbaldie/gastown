@@ -63,7 +63,7 @@ var fragmentPatterns = []dangerousPattern{
 // safeForceFlags are git push flags that look like --force but are safe.
 var safeForceFlags = []string{"--force-with-lease", "--force-if-includes"}
 
-func runTapGuardDangerous(cmd *cobra.Command, args []string) error {
+func runTapGuardDangerous(_ *cobra.Command, _ []string) error {
 	// Read hook input from stdin (Claude Code protocol)
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {

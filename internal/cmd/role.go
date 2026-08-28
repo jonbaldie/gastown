@@ -471,7 +471,7 @@ func getRoleHome(role Role, rig, polecat, townRoot string) string {
 	}
 }
 
-func runRoleShow(cmd *cobra.Command, args []string) error {
+func runRoleShow(_ *cobra.Command, _ []string) error {
 	info, err := GetRole()
 	if err != nil {
 		return err
@@ -507,7 +507,7 @@ func runRoleShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRoleHome(cmd *cobra.Command, args []string) error {
+func runRoleHome(_ *cobra.Command, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -560,7 +560,7 @@ func runRoleHome(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRoleDetect(cmd *cobra.Command, args []string) error {
+func runRoleDetect(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -601,7 +601,7 @@ func runRoleDetect(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRoleList(cmd *cobra.Command, args []string) error {
+func runRoleList(_ *cobra.Command, _ []string) error {
 	roles := []struct {
 		name Role
 		desc string
@@ -622,7 +622,7 @@ func runRoleList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRoleEnv(cmd *cobra.Command, args []string) error {
+func runRoleEnv(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -683,7 +683,7 @@ func runRoleEnv(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRoleDef(cmd *cobra.Command, args []string) error {
+func runRoleDef(_ *cobra.Command, args []string) error {
 	roleName := args[0]
 
 	// Validate role name

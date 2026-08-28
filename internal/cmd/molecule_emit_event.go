@@ -64,7 +64,7 @@ func init() {
 	moleculeStepCmd.AddCommand(moleculeEmitEventCmd)
 }
 
-func runMoleculeEmitEvent(cmd *cobra.Command, args []string) error {
+func runMoleculeEmitEvent(_ *cobra.Command, _ []string) error {
 	path, err := channelevents.Emit(emitEventChannel, emitEventType, emitEventPayload)
 	if err != nil {
 		return err

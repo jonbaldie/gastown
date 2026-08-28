@@ -10,9 +10,9 @@ import (
 // sessionChecker abstracts the tmux health-check methods needed by the
 // health checker.  Satisfied by *tmux.Tmux; mockable in tests.
 type sessionChecker interface {
-	CheckSessionHealth(session string, maxInactivity time.Duration) tmux.ZombieStatus
-	HasSession(name string) (bool, error)
-	KillSession(name string) error
+	CheckSessionHealth(_ string, _ time.Duration) tmux.ZombieStatus
+	HasSession(_ string) (bool, error)
+	KillSession(_ string) error
 }
 
 // DogHealthResult describes the health of a single dog.

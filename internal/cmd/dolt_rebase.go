@@ -63,7 +63,7 @@ func init() {
 	doltCmd.AddCommand(doltRebaseCmd)
 }
 
-func runDoltRebase(cmd *cobra.Command, args []string) error {
+func runDoltRebase(_ *cobra.Command, args []string) error {
 	dbName := args[0]
 
 	if !doltRebaseConfirm && !doltRebaseDryRun {

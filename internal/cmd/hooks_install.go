@@ -45,7 +45,7 @@ func init() {
 	hooksInstallCmd.Flags().BoolVar(&hooksInstForce, "force", false, "Install even if hook is disabled in registry")
 }
 
-func runHooksInstall(cmd *cobra.Command, args []string) error {
+func runHooksInstall(_ *cobra.Command, args []string) error {
 	hookName := args[0]
 
 	townRoot, err := workspace.FindFromCwd()

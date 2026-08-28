@@ -40,7 +40,7 @@ func init() {
 	directiveEditCmd.Flags().BoolVar(&directiveEditTown, "town", false, "Edit town-level directive instead of rig-level")
 }
 
-func runDirectiveEdit(cmd *cobra.Command, args []string) error {
+func runDirectiveEdit(_ *cobra.Command, args []string) error {
 	role := args[0]
 
 	if !isValidRole(role) {

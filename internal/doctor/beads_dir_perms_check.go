@@ -94,7 +94,7 @@ func (c *BeadsDirPermsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix sets loose .beads directories to mode 0700.
-func (c *BeadsDirPermsCheck) Fix(ctx *CheckContext) error {
+func (c *BeadsDirPermsCheck) Fix(_ *CheckContext) error {
 	if len(c.loose) == 0 {
 		return nil
 	}

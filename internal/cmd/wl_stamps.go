@@ -108,7 +108,7 @@ func buildStampsQuery(f StampsFilter) string {
 	return query
 }
 
-func runWLStamps(cmd *cobra.Command, args []string) error {
+func runWLStamps(_ *cobra.Command, args []string) error {
 	wlStampsRig = args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

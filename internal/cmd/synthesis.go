@@ -128,7 +128,7 @@ type ConvoyMeta struct {
 }
 
 // runSynthesisStart implements gt synthesis start.
-func runSynthesisStart(cmd *cobra.Command, args []string) error {
+func runSynthesisStart(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	// Get convoy metadata
@@ -241,7 +241,7 @@ func runSynthesisStart(cmd *cobra.Command, args []string) error {
 }
 
 // runSynthesisStatus implements gt synthesis status.
-func runSynthesisStatus(cmd *cobra.Command, args []string) error {
+func runSynthesisStatus(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	meta, err := getConvoyMeta(convoyID)
@@ -314,7 +314,7 @@ func runSynthesisStatus(cmd *cobra.Command, args []string) error {
 }
 
 // runSynthesisClose implements gt synthesis close.
-func runSynthesisClose(cmd *cobra.Command, args []string) error {
+func runSynthesisClose(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	townBeads, err := getTownBeadsDir()

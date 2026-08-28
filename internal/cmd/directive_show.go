@@ -32,7 +32,7 @@ func init() {
 	directiveShowCmd.Flags().StringVar(&directiveShowRig, "rig", "", "Rig name (default: auto-detect from cwd)")
 }
 
-func runDirectiveShow(cmd *cobra.Command, args []string) error {
+func runDirectiveShow(_ *cobra.Command, args []string) error {
 	role := args[0]
 
 	// Validate role

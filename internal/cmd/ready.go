@@ -74,7 +74,7 @@ type ReadySummary struct {
 	P4Count  int            `json:"p4_count"`
 }
 
-func runReady(cmd *cobra.Command, args []string) error {
+func runReady(_ *cobra.Command, _ []string) error {
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

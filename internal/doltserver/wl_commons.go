@@ -26,18 +26,18 @@ var DefaultWLDBName = WLCommonsDB
 // WLCommonsStore abstracts wl-commons database operations.
 type WLCommonsStore interface {
 	EnsureDB() error
-	DatabaseExists(dbName string) bool
-	InsertWanted(item *WantedItem) error
-	ClaimWanted(wantedID, rigHandle string) error
-	SubmitCompletion(completionID, wantedID, rigHandle, evidence string) error
-	QueryWanted(wantedID string) (*WantedItem, error)
-	QueryWantedFull(wantedID string) (*WantedItem, error)
-	InsertStamp(stamp *StampRecord) error
-	QueryLastStampForSubject(subject string) (*StampRecord, error)
-	QueryStampsForSubject(subject string) ([]StampRecord, error)
-	QueryBadges(handle string) ([]BadgeRecord, error)
+	DatabaseExists(_ string) bool
+	InsertWanted(_ *WantedItem) error
+	ClaimWanted(_, _ string) error
+	SubmitCompletion(_, _, _, _ string) error
+	QueryWanted(_ string) (*WantedItem, error)
+	QueryWantedFull(_ string) (*WantedItem, error)
+	InsertStamp(_ *StampRecord) error
+	QueryLastStampForSubject(_ string) (*StampRecord, error)
+	QueryStampsForSubject(_ string) ([]StampRecord, error)
+	QueryBadges(_ string) ([]BadgeRecord, error)
 	QueryAllSubjects() ([]string, error)
-	UpsertLeaderboard(entry *LeaderboardEntry) error
+	UpsertLeaderboard(_ *LeaderboardEntry) error
 }
 
 // WLCommons implements WLCommonsStore using the real Dolt server.
@@ -67,7 +67,8 @@ func (w *WLCommons) DBName() string {
 	return w.dbName
 }
 
-func (w *WLCommons) EnsureDB() error           { return EnsureWLCommons(w.townRoot) }
+func (w *WLCommons) EnsureDB() error { return EnsureWLCommons(w.townRoot) }
+
 // DatabaseExists checks whether db exists. Tries the host filesystem first;
 // falls back to a live SHOW DATABASES query so containerised Dolt is handled.
 func (w *WLCommons) DatabaseExists(db string) bool {

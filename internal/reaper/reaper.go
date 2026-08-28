@@ -207,7 +207,7 @@ func OpenDB(host string, port int, dbName string, readTimeout, writeTimeout time
 //
 //	join, where := parentExcludeJoin(dbName)
 //	query := fmt.Sprintf("SELECT ... FROM wisps w %s WHERE ... AND %s", dbName, join, where)
-func parentExcludeJoin(dbName string) (joinClause, whereCondition string) {
+func parentExcludeJoin(_ string) (joinClause, whereCondition string) {
 	joinClause = `LEFT JOIN (
 		SELECT DISTINCT wd.issue_id
 		FROM wisp_dependencies wd

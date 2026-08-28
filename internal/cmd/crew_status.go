@@ -31,7 +31,7 @@ type CrewStatusItem struct {
 	MailUnread   int      `json:"mail_unread"`
 }
 
-func runCrewStatus(cmd *cobra.Command, args []string) error {
+func runCrewStatus(_ *cobra.Command, args []string) error {
 	// Parse rig/name format before getting manager (e.g., "beads/emma" -> rig=beads, name=emma)
 	var targetName string
 	if len(args) > 0 {

@@ -138,8 +138,8 @@ func gitRootOf(dir string) string {
 }
 
 type startupPromptSession interface {
-	NudgeSession(sessionID, message string) error
-	WaitForRuntimeReady(sessionID string, rc *config.RuntimeConfig, timeout time.Duration) error
+	NudgeSession(_, _ string) error
+	WaitForRuntimeReady(_ string, _ *config.RuntimeConfig, _ time.Duration) error
 }
 
 // SessionIDFromEnv returns the runtime session ID, if present.

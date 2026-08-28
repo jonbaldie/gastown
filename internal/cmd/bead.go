@@ -107,7 +107,7 @@ type moveBeadInfo struct {
 	CloseReason string   `json:"close_reason,omitempty"`
 }
 
-func runBeadMove(cmd *cobra.Command, args []string) error {
+func runBeadMove(_ *cobra.Command, args []string) error {
 	sourceID := args[0]
 	targetPrefix := args[1]
 	townRoot, _ := workspace.FindFromCwd()

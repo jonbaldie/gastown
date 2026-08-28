@@ -88,7 +88,7 @@ func resolveWorkerTown() (string, error) {
 	return root, nil
 }
 
-func runWorkerServe(cmd *cobra.Command, args []string) error {
+func runWorkerServe(_ *cobra.Command, _ []string) error {
 	townRoot, err := resolveWorkerTown()
 	if err != nil {
 		return err
@@ -108,7 +108,7 @@ func runWorkerServe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWorkerStatus(cmd *cobra.Command, args []string) error {
+func runWorkerStatus(_ *cobra.Command, args []string) error {
 	townRoot, err := resolveWorkerTown()
 	if err != nil {
 		return err
@@ -175,7 +175,7 @@ var workerStartRunCmd = &cobra.Command{
 	RunE:   runWorkerStartRun,
 }
 
-func runWorkerStartRun(cmd *cobra.Command, args []string) error {
+func runWorkerStartRun(cmd *cobra.Command, _ []string) error {
 	if workerStartSession == "" {
 		return fmt.Errorf("--session is required")
 	}

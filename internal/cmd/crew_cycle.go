@@ -36,10 +36,10 @@ func cycleCrewSession(direction int, sessionOverride string) error {
 	return cycleInGroup(direction, currentSession, sessions)
 }
 
-func runCrewNext(cmd *cobra.Command, args []string) error {
+func runCrewNext(_ *cobra.Command, _ []string) error {
 	return cycleCrewSession(1, crewCycleSession)
 }
 
-func runCrewPrev(cmd *cobra.Command, args []string) error {
+func runCrewPrev(_ *cobra.Command, _ []string) error {
 	return cycleCrewSession(-1, crewCycleSession)
 }

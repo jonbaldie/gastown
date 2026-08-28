@@ -720,7 +720,7 @@ func rigStatePriority(hasWitness, hasRefinery bool, opState string) int {
 	}
 }
 
-func runRigList(cmd *cobra.Command, args []string) error {
+func runRigList(_ *cobra.Command, _ []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -854,7 +854,7 @@ var rigMenuCmd = &cobra.Command{
 	RunE:   runRigMenu,
 }
 
-func runRigMenu(cmd *cobra.Command, args []string) error {
+func runRigMenu(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -969,7 +969,7 @@ func runRigMenu(cmd *cobra.Command, args []string) error {
 	return execCmd.Run()
 }
 
-func runRigRemove(cmd *cobra.Command, args []string) error {
+func runRigRemove(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	// Find workspace
@@ -1384,7 +1384,7 @@ func adoptedRigBeadsPlan(existing []string, beadsPrefix string) (dirToHandle str
 	return "", beadsPrefix != ""
 }
 
-func runRigReset(cmd *cobra.Command, args []string) error {
+func runRigReset(_ *cobra.Command, _ []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -1588,7 +1588,7 @@ func isAgentSessionHealthy(t *tmux.Tmux, sessionName string) bool {
 	return t.CheckSessionHealth(sessionName, 0) == tmux.SessionHealthy
 }
 
-func runRigBoot(cmd *cobra.Command, args []string) error {
+func runRigBoot(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	// Find workspace
@@ -1660,7 +1660,7 @@ func runRigBoot(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigStart(cmd *cobra.Command, args []string) error {
+func runRigStart(_ *cobra.Command, args []string) error {
 	// Find workspace once
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -1759,7 +1759,7 @@ func runRigStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigShutdown(cmd *cobra.Command, args []string) error {
+func runRigShutdown(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	// Find workspace
@@ -1858,7 +1858,7 @@ func runRigReboot(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigStatus(cmd *cobra.Command, args []string) error {
+func runRigStatus(_ *cobra.Command, args []string) error {
 	var rigName string
 
 	if len(args) > 0 {
@@ -2087,7 +2087,7 @@ func runRigStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigStop(cmd *cobra.Command, args []string) error {
+func runRigStop(_ *cobra.Command, args []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -2185,7 +2185,7 @@ func runRigStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigRestart(cmd *cobra.Command, args []string) error {
+func runRigRestart(_ *cobra.Command, args []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

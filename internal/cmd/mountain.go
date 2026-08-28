@@ -107,7 +107,7 @@ func init() {
 
 // runMountain implements `gt mountain <epic-id>`.
 // Stages a convoy from the epic, adds the mountain label, and launches Wave 1.
-func runMountain(cmd *cobra.Command, args []string) error {
+func runMountain(_ *cobra.Command, args []string) error {
 	epicID := args[0]
 
 	// Step 1: Validate the input is an epic.
@@ -306,7 +306,7 @@ type mountainConvoyInfo struct {
 }
 
 // runMountainStatus shows status for active mountains.
-func runMountainStatus(cmd *cobra.Command, args []string) error {
+func runMountainStatus(_ *cobra.Command, args []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
@@ -644,7 +644,7 @@ func renderProgressBar(pct, width int) string {
 }
 
 // runMountainPause pauses an active mountain by setting the convoy to paused status.
-func runMountainPause(cmd *cobra.Command, args []string) error {
+func runMountainPause(_ *cobra.Command, args []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
@@ -667,7 +667,7 @@ func runMountainPause(cmd *cobra.Command, args []string) error {
 }
 
 // runMountainResume resumes a paused mountain.
-func runMountainResume(cmd *cobra.Command, args []string) error {
+func runMountainResume(_ *cobra.Command, args []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
@@ -689,7 +689,7 @@ func runMountainResume(cmd *cobra.Command, args []string) error {
 
 // runMountainCancel cancels a mountain by removing the mountain label.
 // Leaves the convoy intact for manual management.
-func runMountainCancel(cmd *cobra.Command, args []string) error {
+func runMountainCancel(_ *cobra.Command, args []string) error {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err

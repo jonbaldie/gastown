@@ -44,7 +44,7 @@ func init() {
 	rootCmd.AddCommand(disableCmd)
 }
 
-func runDisable(cmd *cobra.Command, args []string) error {
+func runDisable(_ *cobra.Command, _ []string) error {
 	if err := state.Disable(); err != nil {
 		return fmt.Errorf("disabling Gas Town: %w", err)
 	}

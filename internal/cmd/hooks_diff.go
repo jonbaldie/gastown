@@ -40,7 +40,7 @@ var (
 	diffRemove = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#f07171", Dark: "#f07178"})
 )
 
-func runHooksDiff(cmd *cobra.Command, args []string) error {
+func runHooksDiff(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

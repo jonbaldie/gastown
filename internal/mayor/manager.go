@@ -47,7 +47,7 @@ type MayorStatus struct {
 // tmuxOps is the tmux seam for mayor start and stop. Production uses *tmux.Tmux.
 type tmuxOps interface {
 	session.TmuxOps
-	GetSessionInfo(name string) (*tmux.SessionInfo, error)
+	GetSessionInfo(_ string) (*tmux.SessionInfo, error)
 }
 
 // Manager handles mayor lifecycle operations.

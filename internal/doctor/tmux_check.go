@@ -29,7 +29,7 @@ func NewLinkedPaneCheck() *LinkedPaneCheck {
 }
 
 // Run checks for linked panes across Gas Town tmux sessions.
-func (c *LinkedPaneCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *LinkedPaneCheck) Run(_ *CheckContext) *CheckResult {
 	t := tmux.NewTmux()
 
 	sessions, err := t.ListSessions()
@@ -113,7 +113,7 @@ func (c *LinkedPaneCheck) Run(ctx *CheckContext) *CheckResult {
 
 // Fix kills sessions with linked panes (except mayor session).
 // The daemon will recreate them with independent panes.
-func (c *LinkedPaneCheck) Fix(ctx *CheckContext) error {
+func (c *LinkedPaneCheck) Fix(_ *CheckContext) error {
 	if len(c.linkedSessions) == 0 {
 		return nil
 	}

@@ -54,7 +54,7 @@ func init() {
 	rootCmd.AddCommand(uninstallCmd)
 }
 
-func runUninstall(cmd *cobra.Command, args []string) error {
+func runUninstall(_ *cobra.Command, _ []string) error {
 	if !uninstallForce {
 		fmt.Println("This will remove Gas Town from your system.")
 		fmt.Println()

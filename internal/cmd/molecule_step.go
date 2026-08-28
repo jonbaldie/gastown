@@ -64,7 +64,7 @@ type StepDoneResult struct {
 	Action        string   `json:"action"` // "continue", "parallel", "done", "no_more_ready"
 }
 
-func runMoleculeStepDone(cmd *cobra.Command, args []string) error {
+func runMoleculeStepDone(_ *cobra.Command, args []string) error {
 	stepID := args[0]
 
 	cwd, err := os.Getwd()

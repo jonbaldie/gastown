@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMailThread(cmd *cobra.Command, args []string) error {
+func runMailThread(_ *cobra.Command, args []string) error {
 	threadID := args[0]
 
 	// All mail uses town beads (two-level architecture)
@@ -79,7 +79,7 @@ func runMailThread(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMailReply(cmd *cobra.Command, args []string) error {
+func runMailReply(_ *cobra.Command, args []string) error {
 	msgID := args[0]
 
 	// Get message body from positional arg or flag (positional takes precedence)

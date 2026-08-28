@@ -99,7 +99,7 @@ func peekSessionName(address string) (string, error) {
 	}
 }
 
-func runPeek(cmd *cobra.Command, args []string) error {
+func runPeek(_ *cobra.Command, args []string) error {
 	address := args[0]
 
 	// Handle optional positional count argument

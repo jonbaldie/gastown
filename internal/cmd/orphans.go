@@ -189,7 +189,7 @@ type OrphanCommit struct {
 	Subject string
 }
 
-func runOrphans(cmd *cobra.Command, args []string) error {
+func runOrphans(_ *cobra.Command, _ []string) error {
 	// Find workspace to determine rig root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -547,7 +547,7 @@ func formatAge(t time.Time) string {
 }
 
 // runOrphansKill removes orphaned commits and kills orphaned processes
-func runOrphansKill(cmd *cobra.Command, args []string) error {
+func runOrphansKill(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -794,7 +794,7 @@ func isExcludedProcess(args string) bool {
 }
 
 // runOrphansListProcesses lists orphaned Claude processes
-func runOrphansListProcesses(cmd *cobra.Command, args []string) error {
+func runOrphansListProcesses(_ *cobra.Command, _ []string) error {
 	if orphansProcsAggressive {
 		return runOrphansListProcessesAggressive()
 	}
@@ -870,7 +870,7 @@ func formatProcessAge(seconds int) string {
 }
 
 // runOrphansKillProcesses kills orphaned Claude processes
-func runOrphansKillProcesses(cmd *cobra.Command, args []string) error {
+func runOrphansKillProcesses(_ *cobra.Command, _ []string) error {
 	if orphansProcsAggressive {
 		return runOrphansKillProcessesAggressive()
 	}

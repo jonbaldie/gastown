@@ -56,7 +56,7 @@ func parseBranchName(branch string) branchInfo {
 	return info
 }
 
-func runMqSubmit(cmd *cobra.Command, args []string) error {
+func runMqSubmit(_ *cobra.Command, _ []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

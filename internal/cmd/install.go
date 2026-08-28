@@ -95,7 +95,7 @@ func init() {
 	rootCmd.AddCommand(installCmd)
 }
 
-func runInstall(cmd *cobra.Command, args []string) error {
+func runInstall(_ *cobra.Command, args []string) error {
 	targetPath := "."
 	if len(args) > 0 {
 		targetPath = args[0]

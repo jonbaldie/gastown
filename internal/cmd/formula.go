@@ -188,7 +188,7 @@ func init() {
 }
 
 // runFormulaList delegates to bd formula list
-func runFormulaList(cmd *cobra.Command, args []string) error {
+func runFormulaList(_ *cobra.Command, _ []string) error {
 	bdArgs := []string{"formula", "list"}
 	if formulaListJSON {
 		bdArgs = append(bdArgs, "--json")
@@ -201,7 +201,7 @@ func runFormulaList(cmd *cobra.Command, args []string) error {
 }
 
 // runFormulaShow delegates to bd formula show
-func runFormulaShow(cmd *cobra.Command, args []string) error {
+func runFormulaShow(_ *cobra.Command, args []string) error {
 	formulaName := args[0]
 	bdArgs := []string{"formula", "show", formulaName}
 	if formulaShowJSON {
@@ -217,7 +217,7 @@ func runFormulaShow(cmd *cobra.Command, args []string) error {
 // runFormulaRun executes a formula by spawning a convoy of polecats.
 // For convoy-type formulas, it creates a convoy bead, creates leg beads,
 // and slings each leg to a separate polecat with leg-specific prompts.
-func runFormulaRun(cmd *cobra.Command, args []string) error {
+func runFormulaRun(_ *cobra.Command, args []string) error {
 	// Determine target rig first (needed for default formula lookup)
 	targetRig := formulaRunRig
 	var rigPath string
@@ -1149,7 +1149,7 @@ func generateFormulaShortID() string {
 }
 
 // runFormulaCreate creates a new formula template
-func runFormulaCreate(cmd *cobra.Command, args []string) error {
+func runFormulaCreate(_ *cobra.Command, args []string) error {
 	formulaName := args[0]
 
 	// Find or create formulas directory

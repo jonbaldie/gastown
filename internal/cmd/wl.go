@@ -70,7 +70,7 @@ func init() {
 	rootCmd.AddCommand(wlCmd)
 }
 
-func runWlJoin(cmd *cobra.Command, args []string) error {
+func runWlJoin(_ *cobra.Command, args []string) error {
 	upstream := args[0]
 
 	// Parse upstream path (validate early)

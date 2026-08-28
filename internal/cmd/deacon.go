@@ -468,7 +468,7 @@ func init() {
 	rootCmd.AddCommand(deaconCmd)
 }
 
-func runDeaconStart(cmd *cobra.Command, args []string) error {
+func runDeaconStart(_ *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
 
 	sessionName := getDeaconSessionName()
@@ -606,7 +606,7 @@ func stopDeaconNudgePoller(sessionName string) {
 	}
 }
 
-func runDeaconStop(cmd *cobra.Command, args []string) error {
+func runDeaconStop(_ *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
 
 	sessionName := getDeaconSessionName()
@@ -637,7 +637,7 @@ func runDeaconStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDeaconAttach(cmd *cobra.Command, args []string) error {
+func runDeaconAttach(_ *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
 
 	sessionName := getDeaconSessionName()
@@ -679,7 +679,7 @@ type HeartbeatStatus struct {
 	VeryStale  bool      `json:"very_stale"`
 }
 
-func runDeaconStatus(cmd *cobra.Command, args []string) error {
+func runDeaconStatus(_ *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
 
 	sessionName := getDeaconSessionName()
@@ -828,7 +828,7 @@ func runDeaconRestart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDeaconHeartbeat(cmd *cobra.Command, args []string) error {
+func runDeaconHeartbeat(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -866,7 +866,7 @@ func runDeaconHeartbeat(cmd *cobra.Command, args []string) error {
 
 // runDeaconHealthCheck implements the health-check command.
 // It sends a HEALTH_CHECK nudge to an agent, waits for response, and tracks state.
-func runDeaconHealthCheck(cmd *cobra.Command, args []string) error {
+func runDeaconHealthCheck(_ *cobra.Command, args []string) error {
 	agent := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -1006,7 +1006,7 @@ Done:
 
 // runDeaconForceKill implements the force-kill command.
 // It kills a stuck agent session and updates its bead state.
-func runDeaconForceKill(cmd *cobra.Command, args []string) error {
+func runDeaconForceKill(_ *cobra.Command, args []string) error {
 	agent := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -1090,7 +1090,7 @@ func runDeaconForceKill(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconHealthState shows the current health check state.
-func runDeaconHealthState(cmd *cobra.Command, args []string) error {
+func runDeaconHealthState(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1218,7 +1218,7 @@ func updateAgentBeadState(townRoot, agent, state, _ string) { // reason unused b
 }
 
 // runDeaconStaleHooks finds and unhooks stale hooked beads.
-func runDeaconStaleHooks(cmd *cobra.Command, args []string) error {
+func runDeaconStaleHooks(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1312,7 +1312,7 @@ func runDeaconStaleHooks(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconPause pauses the Deacon to prevent patrol actions.
-func runDeaconPause(cmd *cobra.Command, args []string) error {
+func runDeaconPause(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1356,7 +1356,7 @@ func runDeaconPause(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconResume resumes the Deacon to allow patrol actions.
-func runDeaconResume(cmd *cobra.Command, args []string) error {
+func runDeaconResume(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1390,7 +1390,7 @@ func runDeaconResume(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconCleanupOrphans cleans up orphaned claude subagent processes.
-func runDeaconCleanupOrphans(cmd *cobra.Command, args []string) error {
+func runDeaconCleanupOrphans(_ *cobra.Command, _ []string) error {
 	// First, find orphans
 	orphans, err := util.FindOrphanedClaudeProcesses()
 	if err != nil {
@@ -1445,7 +1445,7 @@ func runDeaconCleanupOrphans(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconZombieScan finds and cleans zombie Claude processes not in active tmux sessions.
-func runDeaconZombieScan(cmd *cobra.Command, args []string) error {
+func runDeaconZombieScan(_ *cobra.Command, _ []string) error {
 	// Find zombies using tmux verification
 	zombies, err := util.FindZombieClaudeProcesses()
 	if err != nil {
@@ -1518,7 +1518,7 @@ func runDeaconZombieScan(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconRedispatch handles re-dispatching a recovered bead.
-func runDeaconRedispatch(cmd *cobra.Command, args []string) error {
+func runDeaconRedispatch(_ *cobra.Command, args []string) error {
 	beadID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -1564,7 +1564,7 @@ func runDeaconRedispatch(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconRedispatchState shows the current re-dispatch state.
-func runDeaconRedispatchState(cmd *cobra.Command, args []string) error {
+func runDeaconRedispatchState(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1610,7 +1610,7 @@ func runDeaconRedispatchState(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconFeedStranded detects stranded convoys and feeds them.
-func runDeaconFeedStranded(cmd *cobra.Command, args []string) error {
+func runDeaconFeedStranded(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1660,7 +1660,7 @@ func runDeaconFeedStranded(cmd *cobra.Command, args []string) error {
 }
 
 // runDeaconFeedStrandedState shows the current feed-stranded state.
-func runDeaconFeedStrandedState(cmd *cobra.Command, args []string) error {
+func runDeaconFeedStrandedState(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)

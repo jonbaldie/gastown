@@ -108,7 +108,7 @@ func getBootManager() (*boot.Boot, error) {
 	return boot.New(townRoot), nil
 }
 
-func runBootStatus(cmd *cobra.Command, args []string) error {
+func runBootStatus(_ *cobra.Command, _ []string) error {
 	b, err := getBootManager()
 	if err != nil {
 		return err
@@ -192,7 +192,7 @@ func runBootStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runBootSpawn(cmd *cobra.Command, args []string) error {
+func runBootSpawn(_ *cobra.Command, _ []string) error {
 	b, err := getBootManager()
 	if err != nil {
 		return err
@@ -228,7 +228,7 @@ func runBootSpawn(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runBootTriage(cmd *cobra.Command, args []string) error {
+func runBootTriage(_ *cobra.Command, _ []string) error {
 	b, err := getBootManager()
 	if err != nil {
 		return err

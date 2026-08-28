@@ -413,7 +413,7 @@ func (c *PatrolPluginsAccessibleCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix creates missing plugin directories.
-func (c *PatrolPluginsAccessibleCheck) Fix(ctx *CheckContext) error {
+func (c *PatrolPluginsAccessibleCheck) Fix(_ *CheckContext) error {
 	for _, dir := range c.missingDirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("creating %s: %w", dir, err)
@@ -503,7 +503,7 @@ func (c *PatrolPluginDriftCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix syncs plugins from source to runtime.
-func (c *PatrolPluginDriftCheck) Fix(ctx *CheckContext) error {
+func (c *PatrolPluginDriftCheck) Fix(_ *CheckContext) error {
 	if c.sourceDir == "" || c.targetDir == "" {
 		return fmt.Errorf("drift check did not run; cannot fix")
 	}

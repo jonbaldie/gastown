@@ -27,7 +27,7 @@ func NewGlobalStateCheck() *GlobalStateCheck {
 	}
 }
 
-func (c *GlobalStateCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *GlobalStateCheck) Run(_ *CheckContext) *CheckResult {
 	result := &CheckResult{
 		Name:   c.Name(),
 		Status: StatusOK,

@@ -46,7 +46,7 @@ func init() {
 	doltCmd.AddCommand(doltFlattenCmd)
 }
 
-func runDoltFlatten(cmd *cobra.Command, args []string) error {
+func runDoltFlatten(_ *cobra.Command, args []string) error {
 	dbName := args[0]
 
 	if !doltFlattenConfirm {

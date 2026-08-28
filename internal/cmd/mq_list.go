@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMQList(cmd *cobra.Command, args []string) error {
+func runMQList(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	_, r, _, err := getRefineryManager(rigName)
@@ -406,8 +406,8 @@ func calculateMRScore(issue *beads.Issue, fields *beads.MRFields, now time.Time)
 
 // branchVerifier abstracts git branch existence checks for testability.
 type branchVerifier interface {
-	BranchExists(branch string) (bool, error)
-	RemoteTrackingBranchExists(remote, branch string) (bool, error)
+	BranchExists(_ string) (bool, error)
+	RemoteTrackingBranchExists(_, _ string) (bool, error)
 }
 
 // verifyBranch checks if a branch exists locally or as a remote-tracking ref.

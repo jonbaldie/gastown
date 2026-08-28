@@ -94,7 +94,7 @@ func init() {
 	rootCmd.AddCommand(worktreeCmd)
 }
 
-func runWorktree(cmd *cobra.Command, args []string) error {
+func runWorktree(_ *cobra.Command, args []string) error {
 	targetRig := args[0]
 
 	// Detect current crew identity from cwd
@@ -207,7 +207,7 @@ func setGitConfig(worktreePath, key, value string) error {
 	return cmd.Run()
 }
 
-func runWorktreeList(cmd *cobra.Command, args []string) error {
+func runWorktreeList(_ *cobra.Command, _ []string) error {
 	// Detect current crew identity from cwd
 	detected, err := detectCrewFromCwd()
 	if err != nil {
@@ -293,7 +293,7 @@ func getGitStatusSummary(dir string) string {
 	return fmt.Sprintf("%d uncommitted", uncommitted)
 }
 
-func runWorktreeRemove(cmd *cobra.Command, args []string) error {
+func runWorktreeRemove(_ *cobra.Command, args []string) error {
 	targetRig := args[0]
 
 	// Detect current crew identity from cwd

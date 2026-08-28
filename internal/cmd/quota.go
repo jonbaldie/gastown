@@ -75,7 +75,7 @@ type QuotaStatusItem struct {
 	IsDefault bool   `json:"is_default"`
 }
 
-func runQuotaStatus(cmd *cobra.Command, args []string) error {
+func runQuotaStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -220,7 +220,7 @@ Examples:
 	RunE: runQuotaScan,
 }
 
-func runQuotaScan(cmd *cobra.Command, args []string) error {
+func runQuotaScan(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -384,7 +384,7 @@ Examples:
 	RunE: runQuotaRotate,
 }
 
-func runQuotaRotate(cmd *cobra.Command, args []string) error {
+func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -604,7 +604,7 @@ Examples:
 	RunE: runQuotaClear,
 }
 
-func runQuotaClear(cmd *cobra.Command, args []string) error {
+func runQuotaClear(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -825,7 +825,7 @@ Examples:
 	RunE: runQuotaWatch,
 }
 
-func runQuotaWatch(cmd *cobra.Command, args []string) error {
+func runQuotaWatch(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)

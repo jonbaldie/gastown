@@ -11,8 +11,8 @@ import (
 // tmuxRenamer is the minimal tmux interface needed by Fix().
 // Allows injecting a mock in tests without depending on a live tmux.
 type tmuxRenamer interface {
-	HasSession(name string) (bool, error)
-	RenameSession(from, to string) error
+	HasSession(_ string) (bool, error)
+	RenameSession(_, _ string) error
 }
 
 // MalformedSessionNameCheck detects Gas Town tmux sessions whose names use the
@@ -59,7 +59,7 @@ func NewMalformedSessionNameCheck() *MalformedSessionNameCheck {
 }
 
 // Run detects sessions whose names use the legacy {prefix}-{rig_name}-{role} format.
-func (c *MalformedSessionNameCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *MalformedSessionNameCheck) Run(_ *CheckContext) *CheckResult {
 	lister := c.sessionListerForTest
 	if lister == nil {
 		lister = &realSessionLister{t: tmux.NewTmux()}
@@ -128,7 +128,7 @@ func (c *MalformedSessionNameCheck) Run(ctx *CheckContext) *CheckResult {
 // Fix renames auto-fixable legacy sessions to their canonical names.
 // Crew sessions are silently skipped — Run already told the user they need
 // manual intervention, so Fix does not mislead them into thinking --fix works.
-func (c *MalformedSessionNameCheck) Fix(ctx *CheckContext) error {
+func (c *MalformedSessionNameCheck) Fix(_ *CheckContext) error {
 	if len(c.malformed) == 0 {
 		return nil
 	}
