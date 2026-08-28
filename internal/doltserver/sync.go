@@ -590,35 +590,43 @@ func SyncDatabasesSQL(townRoot string, opts SyncOptions) []SyncResult {
 // Errors are non-fatal — the caller should log them but continue with sync.
 // Must be called while the Dolt server is still running (bd purge needs SQL access).
 func PurgeClosedEphemerals(townRoot, dbName string, dryRun bool) (int, error) {
-	// Resolve the beads directory for this rig (read-only — never create dirs during purge)
 	beadsDir := FindRigBeadsDir(townRoot, dbName)
-
-	// Check that the beads directory actually exists on disk.
-	// FindRigBeadsDir returns a path even for non-existent directories,
-	// so we must verify existence explicitly.
-	if _, err := os.Stat(beadsDir); err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil // no beads dir — nothing to purge
-		}
-		return 0, fmt.Errorf("checking beads dir for %s: %w", dbName, err)
+	skip, err := checkPurgeBeadsDir(beadsDir, dbName)
+	if err != nil {
+		return 0, err
+	}
+	if skip {
+		return 0, nil
 	}
 
-	// Skip databases with uninitialized beads dirs (no metadata.json).
-	// An empty .beads/ directory causes bd to attempt a fresh bootstrap,
-	// which hangs waiting on dolt init or lock acquisition.
+	stdout, err := runPurgeCommand(beadsDir, dbName, dryRun)
+	if err != nil {
+		return 0, err
+	}
+	return parsePurgeResult(stdout, dbName)
+}
+
+func checkPurgeBeadsDir(beadsDir, dbName string) (bool, error) {
+	if _, err := os.Stat(beadsDir); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil // no beads dir — nothing to purge
+		}
+		return false, fmt.Errorf("checking beads dir for %s: %w", dbName, err)
+	}
+
 	metadataPath := filepath.Join(beadsDir, "metadata.json")
 	if info, err := os.Stat(metadataPath); err != nil {
 		if os.IsNotExist(err) {
-			return 0, nil // not initialized — nothing to purge
+			return true, nil // not initialized — nothing to purge
 		}
-		return 0, fmt.Errorf("checking metadata for %s: %w", dbName, err)
+		return false, fmt.Errorf("checking metadata for %s: %w", dbName, err)
 	} else if info.IsDir() {
-		return 0, fmt.Errorf("metadata.json for %s is a directory", dbName)
+		return false, fmt.Errorf("metadata.json for %s is a directory", dbName)
 	}
+	return false, nil
+}
 
-	// Build bd purge command with safety-net timeout.
-	// bd purge v2 uses batched SQL (completes in seconds), but we keep a
-	// generous timeout as a circuit breaker against future regressions.
+func runPurgeCommand(beadsDir, dbName string, dryRun bool) ([]byte, error) {
 	env := beads.BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
 	// Probe --allow-stale support with the same hardened target env used by purge.
 	args := beads.MaybePrependAllowStaleWithEnv(env, []string{"purge", "--json"})
@@ -640,31 +648,31 @@ func PurgeClosedEphemerals(townRoot, dbName string, dryRun bool) (int, error) {
 
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return 0, fmt.Errorf("bd purge for %s: timed out after 60s", dbName)
+		return nil, fmt.Errorf("bd purge for %s: timed out after 60s", dbName)
 	}
 	if err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg == "" {
 			errMsg = strings.TrimSpace(stdout.String())
 		}
-		return 0, fmt.Errorf("bd purge for %s: %w (%s)", dbName, err, errMsg)
+		return nil, fmt.Errorf("bd purge for %s: %w (%s)", dbName, err, errMsg)
 	}
+	return stdout.Bytes(), nil
+}
 
-	// Parse JSON output (from stdout only) to get purged count.
-	// bd may emit non-JSON warning lines before the JSON object,
-	// so extract the first JSON object from stdout.
-	jsonBytes := extractJSON(stdout.Bytes())
+func parsePurgeResult(stdout []byte, dbName string) (int, error) {
+	jsonBytes := extractJSON(stdout)
 	var result struct {
 		PurgedCount *int `json:"purged_count"`
 	}
 	if err := json.Unmarshal(jsonBytes, &result); err != nil {
-		return 0, fmt.Errorf("bd purge for %s: unexpected output format: %s", dbName, strings.TrimSpace(stdout.String()))
+		return 0, fmt.Errorf("bd purge for %s: unexpected output format: %s", dbName, strings.TrimSpace(string(stdout)))
 	}
 
 	// Warn if purged_count field was missing from the JSON response — may indicate
 	// a schema mismatch (e.g., field renamed). An explicit 0 is a valid success case.
 	if result.PurgedCount == nil {
-		fmt.Fprintf(os.Stderr, "Warning: bd purge for %s: purged_count field missing (raw: %s)\n", dbName, strings.TrimSpace(stdout.String()))
+		fmt.Fprintf(os.Stderr, "Warning: bd purge for %s: purged_count field missing (raw: %s)\n", dbName, strings.TrimSpace(string(stdout)))
 		return 0, nil
 	}
 
