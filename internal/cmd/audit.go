@@ -19,14 +19,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Audit command flags
-var (
-	auditActor string
-	auditSince string
-	auditLimit int
-	auditJSON  bool
-)
-
 var auditCmd = &cobra.Command{
 	Use:     "audit",
 	GroupID: GroupDiag,
@@ -51,10 +43,10 @@ Examples:
 }
 
 func init() {
-	auditCmd.Flags().StringVar(&auditActor, "actor", "", "Filter by actor (agent address or partial match)")
-	auditCmd.Flags().StringVar(&auditSince, "since", "", "Show events since duration (e.g., 1h, 24h, 7d)")
-	auditCmd.Flags().IntVarP(&auditLimit, "limit", "n", 50, "Maximum number of entries to show")
-	auditCmd.Flags().BoolVar(&auditJSON, "json", false, "Output as JSON")
+	auditCmd.Flags().String("actor", "", "Filter by actor (agent address or partial match)")
+	auditCmd.Flags().String("since", "", "Show events since duration (e.g., 1h, 24h, 7d)")
+	auditCmd.Flags().IntP("limit", "n", 50, "Maximum number of entries to show")
+	auditCmd.Flags().Bool("json", false, "Output as JSON")
 
 	rootCmd.AddCommand(auditCmd)
 }
@@ -70,67 +62,72 @@ type AuditEntry struct {
 	ID        string    `json:"id,omitempty"` // commit hash, bead ID, etc.
 }
 
-func runAudit(_ *cobra.Command, _ []string) error {
+type auditOptions struct {
+	actor string
+	since string
+	limit int
+	json  bool
+}
+
+func readAuditOptions(cmd *cobra.Command) auditOptions {
+	if cmd == nil {
+		return auditOptions{limit: 50}
+	}
+	return auditOptions{
+		actor: auditStringFlag(cmd, "actor", ""),
+		since: auditStringFlag(cmd, "since", ""),
+		limit: auditIntFlag(cmd, "limit", 50),
+		json:  auditBoolFlag(cmd, "json", false),
+	}
+}
+
+func auditStringFlag(cmd *cobra.Command, name, fallback string) string {
+	value, err := cmd.Flags().GetString(name)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func auditIntFlag(cmd *cobra.Command, name string, fallback int) int {
+	value, err := cmd.Flags().GetInt(name)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func auditBoolFlag(cmd *cobra.Command, name string, fallback bool) bool {
+	value, err := cmd.Flags().GetBool(name)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func runAudit(cmd *cobra.Command, _ []string) error {
+	opts := readAuditOptions(cmd)
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Parse since duration if provided
-	var sinceTime time.Time
-	if auditSince != "" {
-		duration, err := parseDuration(auditSince)
-		if err != nil {
-			return fmt.Errorf("invalid --since duration: %w", err)
-		}
-		sinceTime = time.Now().Add(-duration)
-	}
-
-	// Collect entries from all sources
-	var allEntries []AuditEntry
-
-	// 1. Git commits
-	gitEntries, err := collectGitCommits(townRoot, auditActor, sinceTime)
+	sinceTime, err := auditSinceTime(opts.since)
 	if err != nil {
-		// Non-fatal: log and continue
-		fmt.Fprintf(os.Stderr, "Warning: could not query git commits: %v\n", err)
+		return err
 	}
-	allEntries = append(allEntries, gitEntries...)
 
-	// 2. Beads (created_by, assignee)
-	beadsEntries, err := collectBeadsActivity(townRoot, auditActor, sinceTime)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not query beads: %v\n", err)
-	}
-	allEntries = append(allEntries, beadsEntries...)
+	allEntries := collectAuditEntries(townRoot, opts.actor, sinceTime)
 
-	// 3. Town log events
-	townlogEntries, err := collectTownlogEvents(townRoot, auditActor, sinceTime)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not query town log: %v\n", err)
-	}
-	allEntries = append(allEntries, townlogEntries...)
-
-	// 4. Activity feed events
-	feedEntries, err := collectFeedEvents(townRoot, auditActor, sinceTime)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not query events feed: %v\n", err)
-	}
-	allEntries = append(allEntries, feedEntries...)
-
-	// Sort by timestamp (newest first)
 	sort.Slice(allEntries, func(i, j int) bool {
 		return allEntries[i].Timestamp.After(allEntries[j].Timestamp)
 	})
 
-	// Apply limit
-	if auditLimit > 0 && len(allEntries) > auditLimit {
-		allEntries = allEntries[:auditLimit]
-	}
+	allEntries = limitAuditEntries(allEntries, opts.limit)
 
 	if len(allEntries) == 0 {
-		if auditActor != "" {
-			fmt.Printf("%s No activity found for actor %q\n", style.Dim.Render("○"), auditActor)
+		if opts.actor != "" {
+			fmt.Printf("%s No activity found for actor %q\n", style.Dim.Render("○"), opts.actor)
 		} else {
 			fmt.Printf("%s No activity found\n", style.Dim.Render("○"))
 		}
@@ -138,10 +135,54 @@ func runAudit(_ *cobra.Command, _ []string) error {
 	}
 
 	// Output
-	if auditJSON {
+	if opts.json {
 		return outputAuditJSON(allEntries)
 	}
 	return outputAuditText(allEntries)
+}
+
+func auditSinceTime(since string) (time.Time, error) {
+	if since == "" {
+		return time.Time{}, nil
+	}
+	duration, err := parseDuration(since)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid --since duration: %w", err)
+	}
+	return time.Now().Add(-duration), nil
+}
+
+func collectAuditEntries(townRoot, actor string, since time.Time) []AuditEntry {
+	var entries []AuditEntry
+	appendAuditSource(&entries, "git commits", func() ([]AuditEntry, error) {
+		return collectGitCommits(townRoot, actor, since)
+	})
+	appendAuditSource(&entries, "beads", func() ([]AuditEntry, error) {
+		return collectBeadsActivity(townRoot, actor, since)
+	})
+	appendAuditSource(&entries, "town log", func() ([]AuditEntry, error) {
+		return collectTownlogEvents(townRoot, actor, since)
+	})
+	appendAuditSource(&entries, "events feed", func() ([]AuditEntry, error) {
+		return collectFeedEvents(townRoot, actor, since)
+	})
+	return entries
+}
+
+func appendAuditSource(entries *[]AuditEntry, source string, collect func() ([]AuditEntry, error)) {
+	collected, err := collect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not query %s: %v\n", source, err)
+		return
+	}
+	*entries = append(*entries, collected...)
+}
+
+func limitAuditEntries(entries []AuditEntry, limit int) []AuditEntry {
+	if limit > 0 && len(entries) > limit {
+		return entries[:limit]
+	}
+	return entries
 }
 
 // parseDuration parses a duration string with support for days (d).
@@ -272,48 +313,51 @@ func collectBeadsActivity(townRoot, actor string, since time.Time) ([]AuditEntry
 	}
 
 	for _, issue := range issues {
-		// Check created_by
-		if issue.CreatedBy != "" {
-			if actor == "" || matchesActor(issue.CreatedBy, actor) {
-				ts := parseBeadsTimestamp(issue.CreatedAt)
-				if !since.IsZero() && ts.Before(since) {
-					continue
-				}
-				entries = append(entries, AuditEntry{
-					Timestamp: ts,
-					Source:    "beads",
-					Type:      "bead_created",
-					Actor:     issue.CreatedBy,
-					Summary:   fmt.Sprintf("Created: %s", issue.Title),
-					ID:        issue.ID,
-					Details:   fmt.Sprintf("type=%s priority=%d", issue.Type, issue.Priority),
-				})
-			}
-		}
-
-		// Check if issue was closed and has an assignee
-		if issue.Status == "closed" && issue.Assignee != "" {
-			if actor == "" || matchesActor(issue.Assignee, actor) {
-				ts := parseBeadsTimestamp(issue.ClosedAt)
-				if ts.IsZero() {
-					ts = parseBeadsTimestamp(issue.UpdatedAt)
-				}
-				if !since.IsZero() && ts.Before(since) {
-					continue
-				}
-				entries = append(entries, AuditEntry{
-					Timestamp: ts,
-					Source:    "beads",
-					Type:      "bead_closed",
-					Actor:     issue.Assignee,
-					Summary:   fmt.Sprintf("Closed: %s", issue.Title),
-					ID:        issue.ID,
-				})
-			}
-		}
+		appendCreatedBeadEntry(&entries, issue, actor, since)
+		appendClosedBeadEntry(&entries, issue, actor, since)
 	}
 
 	return entries, nil
+}
+
+func appendCreatedBeadEntry(entries *[]AuditEntry, issue *beads.Issue, actor string, since time.Time) {
+	if issue.CreatedBy == "" || (actor != "" && !matchesActor(issue.CreatedBy, actor)) {
+		return
+	}
+	ts := parseBeadsTimestamp(issue.CreatedAt)
+	if !since.IsZero() && ts.Before(since) {
+		return
+	}
+	*entries = append(*entries, AuditEntry{
+		Timestamp: ts,
+		Source:    "beads",
+		Type:      "bead_created",
+		Actor:     issue.CreatedBy,
+		Summary:   fmt.Sprintf("Created: %s", issue.Title),
+		ID:        issue.ID,
+		Details:   fmt.Sprintf("type=%s priority=%d", issue.Type, issue.Priority),
+	})
+}
+
+func appendClosedBeadEntry(entries *[]AuditEntry, issue *beads.Issue, actor string, since time.Time) {
+	if issue.Status != "closed" || issue.Assignee == "" || (actor != "" && !matchesActor(issue.Assignee, actor)) {
+		return
+	}
+	ts := parseBeadsTimestamp(issue.ClosedAt)
+	if ts.IsZero() {
+		ts = parseBeadsTimestamp(issue.UpdatedAt)
+	}
+	if !since.IsZero() && ts.Before(since) {
+		return
+	}
+	*entries = append(*entries, AuditEntry{
+		Timestamp: ts,
+		Source:    "beads",
+		Type:      "bead_closed",
+		Actor:     issue.Assignee,
+		Summary:   fmt.Sprintf("Closed: %s", issue.Title),
+		ID:        issue.ID,
+	})
 }
 
 // parseBeadsTimestamp parses a beads timestamp string.
@@ -369,24 +413,15 @@ func collectTownlogEvents(townRoot, actor string, since time.Time) ([]AuditEntry
 func formatTownlogSummary(e townlog.Event) string {
 	switch e.Type {
 	case townlog.EventSpawn:
-		if e.Context != "" {
-			return fmt.Sprintf("Spawned for %s", e.Context)
-		}
-		return "Spawned"
+		return formatEventContext(e.Context, "Spawned for %s", "Spawned")
 	case townlog.EventDone:
-		if e.Context != "" {
-			return fmt.Sprintf("Completed %s", e.Context)
-		}
-		return "Completed work"
+		return formatEventContext(e.Context, "Completed %s", "Completed work")
 	case townlog.EventHandoff:
 		return "Handed off session"
 	case townlog.EventHandoffNoPersist:
 		return "Handoff FAILED (Dolt persistence)"
 	case townlog.EventCrash:
-		if e.Context != "" {
-			return fmt.Sprintf("Crashed: %s", e.Context)
-		}
-		return "Crashed"
+		return formatEventContext(e.Context, "Crashed: %s", "Crashed")
 	case townlog.EventKill:
 		return "Session killed"
 	case townlog.EventNudge:
@@ -394,11 +429,15 @@ func formatTownlogSummary(e townlog.Event) string {
 	case townlog.EventWake:
 		return "Resumed"
 	default:
-		if e.Context != "" {
-			return fmt.Sprintf("%s: %s", e.Type, e.Context)
-		}
-		return string(e.Type)
+		return formatEventContext(e.Context, fmt.Sprintf("%s: %%s", e.Type), string(e.Type))
 	}
+}
+
+func formatEventContext(context, format, fallback string) string {
+	if context != "" {
+		return fmt.Sprintf(format, context)
+	}
+	return fallback
 }
 
 // collectFeedEvents queries the activity feed for events.
@@ -451,35 +490,28 @@ func collectFeedEvents(townRoot, actor string, since time.Time) ([]AuditEntry, e
 func formatFeedSummary(e events.Event) string {
 	switch e.Type {
 	case events.TypeSling:
-		if bead, ok := e.Payload["bead"].(string); ok {
-			return fmt.Sprintf("Slung %s", bead)
-		}
-		return "Slung work"
+		return formatFeedPayload(e, "bead", "Slung %s", "Slung work")
 	case events.TypeMerged:
-		if branch, ok := e.Payload["branch"].(string); ok {
-			return fmt.Sprintf("Merged %s", branch)
-		}
-		return "Merged work"
+		return formatFeedPayload(e, "branch", "Merged %s", "Merged work")
 	case events.TypeMergeFailed:
-		if reason, ok := e.Payload["reason"].(string); ok {
-			return fmt.Sprintf("Merge failed: %s", reason)
-		}
-		return "Merge failed"
+		return formatFeedPayload(e, "reason", "Merge failed: %s", "Merge failed")
 	case events.TypeHandoff:
 		return "Handed off"
 	case events.TypeDone:
-		if bead, ok := e.Payload["bead"].(string); ok {
-			return fmt.Sprintf("Done %s", bead)
-		}
-		return "Done"
+		return formatFeedPayload(e, "bead", "Done %s", "Done")
 	case events.TypeMail:
-		if to, ok := e.Payload["to"].(string); ok {
-			return fmt.Sprintf("Sent mail to %s", to)
-		}
-		return "Sent mail"
+		return formatFeedPayload(e, "to", "Sent mail to %s", "Sent mail")
 	default:
 		return e.Type
 	}
+}
+
+func formatFeedPayload(e events.Event, key, format, fallback string) string {
+	value, ok := e.Payload[key].(string)
+	if ok {
+		return fmt.Sprintf(format, value)
+	}
+	return fallback
 }
 
 func outputAuditJSON(entries []AuditEntry) error {
@@ -555,6 +587,13 @@ func formatType(t string) string {
 		return style.Success.Render("spawn")
 	case "done":
 		return style.Success.Render("done")
+	default:
+		return formatLifecycleType(t)
+	}
+}
+
+func formatLifecycleType(t string) string {
+	switch t {
 	case "handoff":
 		return style.Bold.Render("handoff")
 	case "crash":
