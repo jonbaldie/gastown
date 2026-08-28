@@ -2,20 +2,18 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/jonbaldie/gastown/internal/beads"
 	"os"
 	"strings"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/spf13/cobra"
 )
 
-var catJSON bool
+type catOptions struct {
+	json bool
+}
 
-var catCmd = &cobra.Command{
-	Use:     "cat <bead-id>",
-	GroupID: GroupWork,
-	Short:   "Display bead content",
-	Long: `Display the content of a bead (issue, task, molecule, etc.).
+const catLongDescription = `Display the content of a bead (issue, task, molecule, etc.).
 
 This is a convenience wrapper around 'bd show' that integrates with gt.
 Accepts any bead ID with a recognized prefix (gt-*, bd-*, hq-*, mol-*, etc.).
@@ -24,17 +22,29 @@ Examples:
   gt cat gt-abc123       # Show a gastown bead
   gt cat bd-abc123       # Show a beads bead
   gt cat hq-xyz789       # Show a town-level bead
-  gt cat bd-abc --json   # Output as JSON`,
-	Args: cobra.ExactArgs(1),
-	RunE: runCat,
-}
+  gt cat bd-abc --json   # Output as JSON`
 
 func init() {
-	rootCmd.AddCommand(catCmd)
-	catCmd.Flags().BoolVar(&catJSON, "json", false, "Output as JSON")
+	rootCmd.AddCommand(newCatCommand())
 }
 
-func runCat(_ *cobra.Command, args []string) error {
+func newCatCommand() *cobra.Command {
+	opts := &catOptions{}
+	cmd := &cobra.Command{
+		Use:     "cat <bead-id>",
+		GroupID: GroupWork,
+		Short:   "Display bead content",
+		Long:    catLongDescription,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runCat(opts, args)
+		},
+	}
+	cmd.Flags().BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
+func runCat(opts *catOptions, args []string) error {
 	beadID := args[0]
 
 	// Validate it looks like a bead ID
@@ -44,7 +54,7 @@ func runCat(_ *cobra.Command, args []string) error {
 
 	// Build bd show command
 	bdArgs := []string{"show", beadID}
-	if catJSON {
+	if opts.json {
 		bdArgs = append(bdArgs, "--json")
 	}
 
@@ -69,7 +79,11 @@ func isBeadID(s string) bool {
 	if dashIdx <= 0 || dashIdx >= len(s)-1 {
 		return false
 	}
-	for i, c := range s[:dashIdx] {
+	return validBeadPrefix(s[:dashIdx])
+}
+
+func validBeadPrefix(prefix string) bool {
+	for i, c := range prefix {
 		if i == 0 {
 			if c < 'a' || c > 'z' {
 				return false
