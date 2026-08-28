@@ -181,50 +181,21 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("daemon already running (PID %d)", pid)
 	}
 
-	// Start daemon in background
-	// We use 'gt daemon run' as the actual daemon process
-	gtPath, err := os.Executable()
+	// Start daemon in background.
+	daemonProcess, err := startDaemonProcess(townRoot)
 	if err != nil {
-		return fmt.Errorf("finding executable: %w", err)
+		return err
 	}
 
-	daemonCmd := exec.Command(gtPath, "daemon", "run")
-	daemonCmd.Dir = townRoot
-
-	// Detach from terminal
-	daemonCmd.Stdin = nil
-	daemonCmd.Stdout = nil
-	daemonCmd.Stderr = nil
-	util.SetDetachedProcessGroup(daemonCmd)
-
-	if err := daemonCmd.Start(); err != nil {
-		return fmt.Errorf("starting daemon: %w", err)
-	}
-
-	// Poll for daemon to initialize and acquire the lock (up to 3s)
-	var started bool
-	for range 30 {
-		time.Sleep(100 * time.Millisecond)
-		running, pid, err = daemon.IsRunning(townRoot)
-		if err != nil {
-			return fmt.Errorf("checking daemon status: %w", err)
-		}
-		if running {
-			started = true
-			break
-		}
-	}
-	if !started {
-		if msg := readDaemonStartupFailure(townRoot, daemonCmd.Process.Pid); msg != "" {
-			return fmt.Errorf("daemon failed to start: %s", msg)
-		}
-		return fmt.Errorf("daemon failed to start (check logs with 'gt daemon logs')")
+	pid, err = waitForDaemonStart(townRoot, daemonProcess)
+	if err != nil {
+		return err
 	}
 
 	// Check if our spawned process is the one that won the race.
 	// If another concurrent start won, our process would have exited after
 	// failing to acquire the lock, and the PID file would have a different PID.
-	if pid != daemonCmd.Process.Pid {
+	if pid != daemonProcess.Process.Pid {
 		// Another daemon won the race - that's fine, report it
 		fmt.Printf("%s Daemon already running (PID %d)\n", style.Bold.Render("●"), pid)
 		return nil
@@ -232,6 +203,46 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 
 	fmt.Printf("%s Daemon started (PID %d)\n", style.Bold.Render("✓"), pid)
 	return nil
+}
+
+func startDaemonProcess(townRoot string) (*exec.Cmd, error) {
+	// We use 'gt daemon run' as the actual daemon process.
+	gtPath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("finding executable: %w", err)
+	}
+
+	daemonProcess := exec.Command(gtPath, "daemon", "run")
+	daemonProcess.Dir = townRoot
+
+	// Detach from terminal.
+	daemonProcess.Stdin = nil
+	daemonProcess.Stdout = nil
+	daemonProcess.Stderr = nil
+	util.SetDetachedProcessGroup(daemonProcess)
+
+	if err := daemonProcess.Start(); err != nil {
+		return nil, fmt.Errorf("starting daemon: %w", err)
+	}
+	return daemonProcess, nil
+}
+
+func waitForDaemonStart(townRoot string, daemonProcess *exec.Cmd) (int, error) {
+	// Poll for daemon to initialize and acquire the lock (up to 3s).
+	for range 30 {
+		time.Sleep(100 * time.Millisecond)
+		running, pid, err := daemon.IsRunning(townRoot)
+		if err != nil {
+			return 0, fmt.Errorf("checking daemon status: %w", err)
+		}
+		if running {
+			return pid, nil
+		}
+	}
+	if msg := readDaemonStartupFailure(townRoot, daemonProcess.Process.Pid); msg != "" {
+		return 0, fmt.Errorf("daemon failed to start: %s", msg)
+	}
+	return 0, fmt.Errorf("daemon failed to start (check logs with 'gt daemon logs')")
 }
 
 func runDaemonStop(_ *cobra.Command, _ []string) error {
