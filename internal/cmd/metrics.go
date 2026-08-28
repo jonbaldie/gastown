@@ -12,16 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	metricsByActor bool
-	metricsSince   int
-	metricsDead    bool
-)
-
 func init() {
-	metricsCmd.Flags().BoolVar(&metricsByActor, "by-actor", false, "Show breakdown by actor")
-	metricsCmd.Flags().IntVar(&metricsSince, "since", 0, "Only show data from last N days")
-	metricsCmd.Flags().BoolVar(&metricsDead, "dead", false, "Show commands defined but never invoked")
+	metricsCmd.Flags().Bool("by-actor", false, "Show breakdown by actor")
+	metricsCmd.Flags().Int("since", 0, "Only show data from last N days")
+	metricsCmd.Flags().Bool("dead", false, "Show commands defined but never invoked")
 
 	rootCmd.AddCommand(metricsCmd)
 }
@@ -42,15 +36,42 @@ type usageEntry struct {
 	Argc  int    `json:"argc"`
 }
 
-func runMetrics(_ *cobra.Command, _ []string) error {
+type metricsOptions struct {
+	byActor bool
+	since   int
+	dead    bool
+}
+
+func metricsOptionsFromCommand(cmd *cobra.Command) (metricsOptions, error) {
+	byActor, err := cmd.Flags().GetBool("by-actor")
+	if err != nil {
+		return metricsOptions{}, err
+	}
+	since, err := cmd.Flags().GetInt("since")
+	if err != nil {
+		return metricsOptions{}, err
+	}
+	dead, err := cmd.Flags().GetBool("dead")
+	if err != nil {
+		return metricsOptions{}, err
+	}
+	return metricsOptions{byActor: byActor, since: since, dead: dead}, nil
+}
+
+func runMetrics(cmd *cobra.Command, _ []string) error {
+	opts, err := metricsOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
 	entries, err := readUsageLog()
 	if err != nil {
 		return err
 	}
 
 	// Filter by --since
-	if metricsSince > 0 {
-		cutoff := time.Now().AddDate(0, 0, -metricsSince)
+	if opts.since > 0 {
+		cutoff := time.Now().AddDate(0, 0, -opts.since)
 		var filtered []usageEntry
 		for _, e := range entries {
 			if t, err := time.Parse(time.RFC3339, e.Ts); err == nil && t.After(cutoff) {
@@ -60,10 +81,10 @@ func runMetrics(_ *cobra.Command, _ []string) error {
 		entries = filtered
 	}
 
-	if metricsDead {
+	if opts.dead {
 		return showDeadCommands(entries)
 	}
-	if metricsByActor {
+	if opts.byActor {
 		return showByActor(entries)
 	}
 	return showFrequency(entries)
