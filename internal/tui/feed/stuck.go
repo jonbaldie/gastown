@@ -189,76 +189,74 @@ func (d *StuckDetector) analyzeAgent(id string, issue *beads.Issue) *ProblemAgen
 		return nil
 	}
 
-	// Derive display name
+	agent := newProblemAgent(id, issue, rig, role, name)
+	setAgentActivity(agent, issue.UpdatedAt)
+
+	// 1. Zombie check (tmux liveness)
+	// On error, treat session as alive (unknown) rather than falsely flagging as zombie
+	alive, err := d.source.IsSessionAlive(agent.SessionID)
+	stalledThreshold, guppThreshold := healthThresholds(issue)
+	return classifyAgent(agent, agent.HasHookedWork, err == nil && !alive, stalledThreshold, guppThreshold)
+}
+
+func newProblemAgent(id string, issue *beads.Issue, rig, role, name string) *ProblemAgent {
 	displayName := name
 	if displayName == "" {
 		displayName = role
 	}
-
-	// Derive tmux session name from bead ID components
-	sessionName := deriveSessionName(rig, role, name)
-
-	agent := &ProblemAgent{
+	return &ProblemAgent{
 		Name:          displayName,
-		SessionID:     sessionName,
+		SessionID:     deriveSessionName(rig, role, name),
 		Role:          role,
 		Rig:           rig,
 		CurrentBeadID: id,
 		HasHookedWork: issue.HookBead != "",
 	}
+}
 
-	// Parse staleness from UpdatedAt
-	updatedAt, err := time.Parse(time.RFC3339, issue.UpdatedAt)
+func setAgentActivity(agent *ProblemAgent, updatedAt string) {
+	parsed, err := time.Parse(time.RFC3339, updatedAt)
 	if err != nil {
-		// Try alternate format (some beads use different timestamp formats)
-		updatedAt, err = time.Parse("2006-01-02T15:04:05", issue.UpdatedAt)
+		// Some beads use a timestamp without a timezone.
+		parsed, err = time.Parse("2006-01-02T15:04:05", updatedAt)
 	}
 	if err == nil {
-		agent.LastActivity = updatedAt
-		agent.IdleMinutes = int(time.Since(updatedAt).Minutes())
+		agent.LastActivity = parsed
+		agent.IdleMinutes = int(time.Since(parsed).Minutes())
 	}
+}
 
-	// 1. Zombie check (tmux liveness)
-	// On error, treat session as alive (unknown) rather than falsely flagging as zombie
-	alive, err := d.source.IsSessionAlive(sessionName)
-	if err == nil && !alive {
+func healthThresholds(issue *beads.Issue) (stalled, gupp int) {
+	stalled = StalledThresholdMinutes
+	gupp = GUPPViolationMinutes
+	if issue.HookBead != "" && isRalphMode(issue) {
+		stalled = 120
+		gupp = 240
+	}
+	return stalled, gupp
+}
+
+func classifyAgent(agent *ProblemAgent, hasHook, zombie bool, stalledThreshold, guppThreshold int) *ProblemAgent {
+	if zombie {
 		agent.State = StateZombie
 		agent.ActionHint = "Session dead - may need restart"
 		return agent
 	}
-
-	hasHook := issue.HookBead != ""
-
-	// Determine thresholds — ralphcats get a longer leash since Ralph loops
-	// involve multiple fresh-context iterations that can take much longer.
-	stalledThreshold := StalledThresholdMinutes // 15
-	guppThreshold := GUPPViolationMinutes       // 30
-	if hasHook && isRalphMode(issue) {
-		stalledThreshold = 120 // 2 hours
-		guppThreshold = 240    // 4 hours
-	}
-
-	// 2. GUPP violation (most critical)
 	if hasHook && agent.IdleMinutes >= guppThreshold {
 		agent.State = StateGUPPViolation
 		agent.ActionHint = "GUPP violation: hooked work + " + strconv.Itoa(agent.IdleMinutes) + "m no progress"
 		return agent
 	}
-
-	// 3. Stalled (hooked work but no recent progress)
 	if hasHook && agent.IdleMinutes >= stalledThreshold {
 		agent.State = StateStalled
 		agent.ActionHint = "No progress for " + strconv.Itoa(agent.IdleMinutes) + "m"
 		return agent
 	}
-
-	// 4. Working / Idle
 	if hasHook {
 		agent.State = StateWorking
 	} else {
 		agent.State = StateIdle
 	}
-
 	return agent
 }
 
