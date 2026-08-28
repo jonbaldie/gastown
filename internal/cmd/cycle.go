@@ -96,18 +96,17 @@ func cycleToSession(direction int, sessionOverride, clientOverride string) error
 		tmux.SetDefaultSocket(socketName)
 	}
 
-	session := sessionOverride
-	if session == "" {
-		var err error
-		session, err = getCurrentTmuxSession()
-		if err != nil {
-			return nil // Not in tmux, nothing to do
-		}
+	session, err := resolveCurrentSession(sessionOverride)
+	if err != nil {
+		return nil // Not in tmux, nothing to do
 	}
 
 	// Store client for use by cycleRigInfraSession
 	cycleClientTarget = clientOverride
+	return cycleSessionByType(direction, session)
+}
 
+func cycleSessionByType(direction int, session string) error {
 	// Check if it's a town-level session
 	townLevelSessions := getTownLevelSessions()
 	if townLevelSessions != nil {
