@@ -1813,52 +1813,7 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 		return b.storeCreate(opts)
 	}
 
-	args := []string{"create", "--json"}
-
-	if opts.Title != "" {
-		args = append(args, "--title="+opts.Title)
-	}
-	// Labels takes precedence; fall back to deprecated single-label/Type fields.
-	if len(opts.Labels) > 0 {
-		args = append(args, "--labels="+strings.Join(opts.Labels, ","))
-	} else if opts.Label != "" {
-		args = append(args, "--labels="+opts.Label)
-	} else if opts.Type != "" {
-		args = append(args, "--labels=gt:"+opts.Type)
-	}
-	if opts.Priority >= 0 {
-		args = append(args, fmt.Sprintf("--priority=%d", opts.Priority))
-	}
-	if opts.Description != "" {
-		args = append(args, "--description="+opts.Description)
-	}
-	if opts.Parent != "" {
-		args = append(args, "--parent="+opts.Parent)
-	}
-	if opts.Ephemeral {
-		args = append(args, "--ephemeral")
-	}
-	// Default Actor from BD_ACTOR env var if not specified
-	// Uses getActor() to respect isolated mode (tests)
-	actor := opts.Actor
-	if actor == "" {
-		actor = b.getActor()
-	}
-	if actor != "" {
-		args = append(args, "--actor="+actor)
-	}
-
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
-	}
-
-	var issue Issue
-	if err := json.Unmarshal(out, &issue); err != nil {
-		return nil, fmt.Errorf("parsing bd create output: %w", err)
-	}
-
-	return &issue, nil
+	return b.createIssue(createArgs(opts, b.createActor(opts), true))
 }
 
 // CreateWithID creates an issue with a specific ID.
@@ -1888,18 +1843,26 @@ func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
 	if NeedsForceForID(id) {
 		args = append(args, "--force")
 	}
+	args = appendCreateOptions(args, opts, b.createActor(opts), false)
+	return b.createIssue(args)
+}
 
+func (b *Beads) createActor(opts CreateOptions) string {
+	if opts.Actor != "" {
+		return opts.Actor
+	}
+	return b.getActor()
+}
+
+func createArgs(opts CreateOptions, actor string, ephemeral bool) []string {
+	return appendCreateOptions([]string{"create", "--json"}, opts, actor, ephemeral)
+}
+
+func appendCreateOptions(args []string, opts CreateOptions, actor string, ephemeral bool) []string {
 	if opts.Title != "" {
 		args = append(args, "--title="+opts.Title)
 	}
-	// Labels takes precedence; fall back to deprecated single-label/Type fields.
-	if len(opts.Labels) > 0 {
-		args = append(args, "--labels="+strings.Join(opts.Labels, ","))
-	} else if opts.Label != "" {
-		args = append(args, "--labels="+opts.Label)
-	} else if opts.Type != "" {
-		args = append(args, "--labels=gt:"+opts.Type)
-	}
+	args = appendCreateLabels(args, opts)
 	if opts.Priority >= 0 {
 		args = append(args, fmt.Sprintf("--priority=%d", opts.Priority))
 	}
@@ -1909,16 +1872,29 @@ func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
 	if opts.Parent != "" {
 		args = append(args, "--parent="+opts.Parent)
 	}
-	// Default Actor from BD_ACTOR env var if not specified
-	// Uses getActor() to respect isolated mode (tests)
-	actor := opts.Actor
-	if actor == "" {
-		actor = b.getActor()
+	if ephemeral && opts.Ephemeral {
+		args = append(args, "--ephemeral")
 	}
 	if actor != "" {
 		args = append(args, "--actor="+actor)
 	}
+	return args
+}
 
+func appendCreateLabels(args []string, opts CreateOptions) []string {
+	if len(opts.Labels) > 0 {
+		return append(args, "--labels="+strings.Join(opts.Labels, ","))
+	}
+	if opts.Label != "" {
+		return append(args, "--labels="+opts.Label)
+	}
+	if opts.Type != "" {
+		return append(args, "--labels=gt:"+opts.Type)
+	}
+	return args
+}
+
+func (b *Beads) createIssue(args []string) (*Issue, error) {
 	out, err := b.run(args...)
 	if err != nil {
 		return nil, err
