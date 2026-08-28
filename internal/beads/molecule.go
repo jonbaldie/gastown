@@ -111,7 +111,7 @@ func parseMoleculeStep(ref string, contentLines []string) MoleculeStep {
 
 func parseMoleculeStepDirective(step *MoleculeStep, line string) bool {
 	if matches := needsLineRegex.FindStringSubmatch(line); matches != nil {
-		step.Needs = append(step.Needs, commaSeparatedValues(matches[1])...)
+		step.Needs = append(step.Needs, splitCommaSeparatedValues(matches[1])...)
 		return true
 	}
 	if matches := tierLineRegex.FindStringSubmatch(line); matches != nil {
@@ -119,7 +119,7 @@ func parseMoleculeStepDirective(step *MoleculeStep, line string) bool {
 		return true
 	}
 	if matches := waitsForLineRegex.FindStringSubmatch(line); matches != nil {
-		step.WaitsFor = append(step.WaitsFor, commaSeparatedValues(matches[1])...)
+		step.WaitsFor = append(step.WaitsFor, splitCommaSeparatedValues(matches[1])...)
 		return true
 	}
 	if matches := typeLineRegex.FindStringSubmatch(line); matches != nil {
@@ -133,7 +133,7 @@ func parseMoleculeStepDirective(step *MoleculeStep, line string) bool {
 	return false
 }
 
-func commaSeparatedValues(value string) []string {
+func splitCommaSeparatedValues(value string) []string {
 	var values []string
 	for _, value := range strings.Split(value, ",") {
 		if value = strings.TrimSpace(value); value != "" {

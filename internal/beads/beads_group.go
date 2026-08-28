@@ -136,45 +136,46 @@ func FormatGroupDescription(title string, fields *GroupFields) string {
 // ParseGroupFields extracts group fields from an issue's description.
 func ParseGroupFields(description string) *GroupFields {
 	fields := &GroupFields{}
-
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "null" || value == "" {
-			value = ""
-		}
-
-		switch strings.ToLower(key) {
-		case "name":
-			fields.Name = value
-		case "members":
-			if value != "" {
-				// Parse comma-separated members
-				for _, m := range strings.Split(value, ",") {
-					m = strings.TrimSpace(m)
-					if m != "" {
-						fields.Members = append(fields.Members, m)
-					}
-				}
-			}
-		case "created_by":
-			fields.CreatedBy = value
-		case "created_at":
-			fields.CreatedAt = value
-		}
+		setGroupField(fields, line)
 	}
-
 	return fields
+}
+
+func setGroupField(fields *GroupFields, line string) {
+	key, value, ok := groupFieldLine(line)
+	if !ok {
+		return
+	}
+	if key == "members" {
+		fields.Members = splitCommaSeparatedValues(value)
+		return
+	}
+	if destination, ok := groupStringFields(fields)[key]; ok {
+		*destination = value
+	}
+}
+
+func groupFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIdx := strings.Index(line, ":")
+	if line == "" || colonIdx == -1 {
+		return "", "", false
+	}
+	key := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
+	value := strings.TrimSpace(line[colonIdx+1:])
+	if value == "null" {
+		value = ""
+	}
+	return key, value, true
+}
+
+func groupStringFields(fields *GroupFields) map[string]*string {
+	return map[string]*string{
+		"name":       &fields.Name,
+		"created_by": &fields.CreatedBy,
+		"created_at": &fields.CreatedAt,
+	}
 }
 
 // GroupBeadIDWithPrefix generates a group bead ID using the specified prefix.
