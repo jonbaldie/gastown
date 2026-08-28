@@ -118,14 +118,14 @@ func (c *RoutingModeCheck) checkRoutingMode(beadsDir, location string) *CheckRes
 func (c *RoutingModeCheck) Fix(ctx *CheckContext) error {
 	// Fix town-level beads
 	townBeadsDir := filepath.Join(ctx.TownRoot, ".beads")
-	if err := c.setRoutingMode(townBeadsDir); err != nil {
+	if err := setRoutingMode(townBeadsDir); err != nil {
 		return fmt.Errorf("fixing town beads: %w", err)
 	}
 
 	// Also fix rig-level beads if specified
 	if ctx.RigName != "" {
 		rigBeadsDir := filepath.Join(ctx.RigPath(), ".beads")
-		if err := c.setRoutingMode(rigBeadsDir); err != nil {
+		if err := setRoutingMode(rigBeadsDir); err != nil {
 			return fmt.Errorf("fixing rig %s beads: %w", ctx.RigName, err)
 		}
 	}
@@ -134,7 +134,7 @@ func (c *RoutingModeCheck) Fix(ctx *CheckContext) error {
 }
 
 // setRoutingMode sets routing.mode to "explicit" in the specified beads directory.
-func (c *RoutingModeCheck) setRoutingMode(beadsDir string) error {
+func setRoutingMode(beadsDir string) error {
 	cmd := beads.Spawn("config", "set", "routing.mode", "explicit")
 	cmd.Dir = filepath.Dir(beadsDir)
 	cmd.Env = append(cmd.Environ(), "BEADS_DIR="+beadsDir)
