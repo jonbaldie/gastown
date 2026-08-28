@@ -126,19 +126,7 @@ func validateConvoyStatusTransition(currentStatus, targetStatus string) error {
 		return nil
 	}
 
-	// Original open ↔ closed transitions.
-	if (current == convoyStatusOpen && target == convoyStatusClosed) ||
-		(current == convoyStatusClosed && target == convoyStatusOpen) {
-		return nil
-	}
-
-	// Staged → open (launch) and staged → closed (cancel) are allowed.
-	if isStagedStatus(current) && (target == convoyStatusOpen || target == convoyStatusClosed) {
-		return nil
-	}
-
-	// Staged ↔ staged transitions (re-stage with different result).
-	if isStagedStatus(current) && isStagedStatus(target) {
+	if canTransitionConvoyStatus(current, target) {
 		return nil
 	}
 
@@ -146,6 +134,20 @@ func validateConvoyStatusTransition(currentStatus, targetStatus string) error {
 	// (Falls through to the error below.)
 
 	return fmt.Errorf("illegal convoy status transition %q -> %q", currentStatus, targetStatus)
+}
+
+func canTransitionConvoyStatus(current, target string) bool {
+	// Original open ↔ closed transitions.
+	if (current == convoyStatusOpen && target == convoyStatusClosed) ||
+		(current == convoyStatusClosed && target == convoyStatusOpen) {
+		return true
+	}
+
+	if !isStagedStatus(current) {
+		return false
+	}
+	// Staged → open/closed and staged ↔ staged transitions are allowed.
+	return target == convoyStatusOpen || target == convoyStatusClosed || isStagedStatus(target)
 }
 
 var convoyCmd = &cobra.Command{
