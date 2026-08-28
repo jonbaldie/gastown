@@ -292,7 +292,7 @@ func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun boo
 		if err != nil {
 			fmt.Printf("%s Could not reload scheduler state: %v\n", style.Dim.Render("Warning:"), err)
 		} else {
-			freshState.RecordDispatch(report.Dispatched)
+			capacity.RecordDispatch(freshState, report.Dispatched)
 			if err := capacity.SaveState(townRoot, freshState); err != nil {
 				fmt.Printf("%s Could not save scheduler state: %v\n", style.Dim.Render("Warning:"), err)
 			}
