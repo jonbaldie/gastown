@@ -167,60 +167,71 @@ func outputHooksHuman(townRoot string, hookInfos []HookInfo) error {
 	fmt.Printf("\n%s Claude Code Hooks\n", style.Bold.Render("🪝"))
 	fmt.Printf("Town root: %s\n\n", style.Dim.Render(townRoot))
 
-	// Group by hook type
-	byType := make(map[string][]HookInfo)
-
-	for _, h := range hookInfos {
-		byType[h.Type] = append(byType[h.Type], h)
-	}
-
-	// Use canonical event type order, plus any extras
-	typeOrder := make([]string, len(hooks.EventTypes))
-	copy(typeOrder, hooks.EventTypes)
-	for t := range byType {
-		found := false
-		for _, o := range typeOrder {
-			if t == o {
-				found = true
-				break
-			}
+	byType := groupHooksByType(hookInfos)
+	for _, hookType := range hookTypeOrder(byType) {
+		if typeHooks := byType[hookType]; len(typeHooks) > 0 {
+			printHookType(hookType, typeHooks)
 		}
-		if !found {
-			typeOrder = append(typeOrder, t)
-		}
-	}
-
-	for _, hookType := range typeOrder {
-		typeHooks := byType[hookType]
-		if len(typeHooks) == 0 {
-			continue
-		}
-
-		fmt.Printf("%s %s\n", style.Bold.Render("▸"), hookType)
-
-		for _, h := range typeHooks {
-			statusIcon := "●"
-			if h.Status != "active" {
-				statusIcon = "○"
-			}
-
-			matcherStr := ""
-			if h.Matcher != "" {
-				matcherStr = fmt.Sprintf(" [%s]", h.Matcher)
-			}
-
-			fmt.Printf("  %s %-25s%s\n", statusIcon, h.Agent, style.Dim.Render(matcherStr))
-
-			if hooksScanVerbose {
-				for _, cmd := range h.Commands {
-					fmt.Printf("    %s %s\n", style.Dim.Render("→"), cmd)
-				}
-			}
-		}
-		fmt.Println()
 	}
 
 	fmt.Printf("%s %d hooks found\n", style.Dim.Render("Total:"), len(hookInfos))
 
 	return nil
+}
+
+func groupHooksByType(hookInfos []HookInfo) map[string][]HookInfo {
+	byType := make(map[string][]HookInfo)
+	for _, hook := range hookInfos {
+		byType[hook.Type] = append(byType[hook.Type], hook)
+	}
+	return byType
+}
+
+func hookTypeOrder(byType map[string][]HookInfo) []string {
+	// Use canonical event type order, plus any extras.
+	typeOrder := make([]string, len(hooks.EventTypes))
+	copy(typeOrder, hooks.EventTypes)
+	for hookType := range byType {
+		if containsHookType(typeOrder, hookType) {
+			continue
+		}
+		typeOrder = append(typeOrder, hookType)
+	}
+	return typeOrder
+}
+
+func containsHookType(typeOrder []string, hookType string) bool {
+	for _, existing := range typeOrder {
+		if hookType == existing {
+			return true
+		}
+	}
+	return false
+}
+
+func printHookType(hookType string, typeHooks []HookInfo) {
+	fmt.Printf("%s %s\n", style.Bold.Render("▸"), hookType)
+	for _, hook := range typeHooks {
+		printHookInfo(hook)
+	}
+	fmt.Println()
+}
+
+func printHookInfo(hook HookInfo) {
+	statusIcon := "●"
+	if hook.Status != "active" {
+		statusIcon = "○"
+	}
+
+	matcherStr := ""
+	if hook.Matcher != "" {
+		matcherStr = fmt.Sprintf(" [%s]", hook.Matcher)
+	}
+
+	fmt.Printf("  %s %-25s%s\n", statusIcon, hook.Agent, style.Dim.Render(matcherStr))
+	if hooksScanVerbose {
+		for _, command := range hook.Commands {
+			fmt.Printf("    %s %s\n", style.Dim.Render("→"), command)
+		}
+	}
 }
