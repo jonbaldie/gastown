@@ -38,12 +38,12 @@ func Open(townRoot string) (*Worker, error) {
 	client := newClient(townRoot)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := client.ping(ctx); err != nil {
+	if err := client.Ping(ctx); err != nil {
 		httpClient, httpErr := newHTTPClient(townRoot)
 		if httpErr != nil {
 			return nil, fmt.Errorf("worker open: %w", err)
 		}
-		if pingErr := httpClient.ping(ctx); pingErr != nil {
+		if pingErr := httpClient.Ping(ctx); pingErr != nil {
 			return nil, fmt.Errorf("%w: %v", ErrServerDown, pingErr)
 		}
 		client = httpClient
@@ -370,7 +370,7 @@ func serverLive(townRoot string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	return c.ping(ctx) == nil
+	return c.Ping(ctx) == nil
 }
 
 // EnsureServer starts `gt worker serve` when no transport is live.

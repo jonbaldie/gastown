@@ -66,7 +66,7 @@ func TestListenSucceedsWhenSocketPathIsTooLong(t *testing.T) {
 	// The returned Worker must be usable, not merely constructed.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.client.ping(ctx); err != nil {
+	if err := w.client.Ping(ctx); err != nil {
 		t.Fatalf("ping over the loopback fallback: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestListenUsesUnixSocketWhenPathFits(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.client.ping(ctx); err != nil {
+	if err := w.client.Ping(ctx); err != nil {
 		t.Fatalf("ping over the Unix socket: %v", err)
 	}
 }

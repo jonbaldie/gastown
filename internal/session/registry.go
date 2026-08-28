@@ -306,13 +306,13 @@ func IsKnownSession(sess string) bool {
 	return DefaultRegistry().HasPrefix(sess)
 }
 
-// matchPrefix finds the prefix in a session name suffix using the registry.
+// MatchPrefix finds the prefix in a session name suffix using the registry.
 // Returns the prefix and the remaining string after the prefix dash.
 // Tries longest prefix match first.
 // Only matches sessions with registered prefixes - does NOT fall back to
 // splitting on dashes, as that would incorrectly match non-gastown sessions
 // (e.g., "gs-1923" or "dotfiles-main" would be parsed as gastown sessions).
-func (r *PrefixRegistry) matchPrefix(session string) (prefix, rest string, matched bool) {
+func (r *PrefixRegistry) MatchPrefix(session string) (prefix, rest string, matched bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

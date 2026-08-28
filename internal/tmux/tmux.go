@@ -1561,7 +1561,7 @@ func (t *Tmux) dismissRewindMode(target string) {
 	time.Sleep(300 * time.Millisecond)
 }
 
-// sendEnterVerified sends a submit keystroke to a tmux target and verifies it
+// SendEnterVerified sends a submit keystroke to a tmux target and verifies it
 // was processed by checking that the pane content changes. Under load, tmux may
 // buffer keystrokes, causing the submit to race with text delivery.
 //
@@ -1570,7 +1570,7 @@ func (t *Tmux) dismissRewindMode(target string) {
 // Max 3 retries before returning an error.
 //
 // Falls back to best-effort (no verification) if pane capture fails.
-func (t *Tmux) sendEnterVerified(target string) error {
+func (t *Tmux) SendEnterVerified(target string) error {
 	const (
 		maxRetries     = 3
 		initialBackoff = 500 * time.Millisecond

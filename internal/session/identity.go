@@ -161,7 +161,7 @@ func ParseSessionNameWithRegistry(session string, registry *PrefixRegistry) (*Ag
 
 	// Rig-level roles: <prefix>-<rest>
 	// Use registry to identify the prefix boundary
-	prefix, rest, _ := registry.matchPrefix(session)
+	prefix, rest, _ := registry.MatchPrefix(session)
 	if prefix == "" || rest == "" {
 		return nil, fmt.Errorf("invalid session name %q: cannot determine prefix", session)
 	}

@@ -283,7 +283,7 @@ func (t *Tmux) pollSubmission(target, needle, promptPrefix string, attempts int)
 }
 
 func (t *Tmux) submitComposer(target, message, promptPrefix string) error {
-	enterErr := t.sendEnterVerified(target)
+	enterErr := t.SendEnterVerified(target)
 	needle := submitNeedle(message)
 	if needle == "" {
 		return enterErr
@@ -317,7 +317,7 @@ func (t *Tmux) recoverStrandedComposer(target, message, needle, promptPrefix str
 			return fmt.Errorf("%w (retype failed: %v)", ErrSubmitNotVerified, err)
 		}
 		time.Sleep(adaptiveTextDelay(len(message)))
-		_ = t.sendEnterVerified(target)
+		_ = t.SendEnterVerified(target)
 	case probeStranded, probeComposerDirty, probeUnknown:
 		return fmt.Errorf("%w (composer state after C-j: %s)", ErrSubmitNotVerified, probe)
 	}

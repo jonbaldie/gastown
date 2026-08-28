@@ -458,8 +458,8 @@ func (c *Config) SQLArgs() []string {
 	}
 }
 
-// userDSN returns the user[:password] portion of a MySQL DSN.
-func (c *Config) userDSN() string {
+// UserDSN returns the user[:password] portion of a MySQL DSN.
+func (c *Config) UserDSN() string {
 	if c.Password != "" {
 		return c.User + ":" + c.Password
 	}

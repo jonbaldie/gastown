@@ -30,7 +30,7 @@ func planProvision(snap dirSnap, content, skipIfContains string) provisionPlan {
 		writeBody:     writeBody,
 	}
 
-	alias := snap.entry(names.alias)
+	alias := snap.Entry(names.alias)
 	if !symlinkPointsAt(alias, names.canonical) {
 		plan.writeAlias = true
 		if alias.exists {
@@ -38,7 +38,7 @@ func planProvision(snap dirSnap, content, skipIfContains string) provisionPlan {
 		}
 	}
 
-	canonical := snap.entry(names.canonical)
+	canonical := snap.Entry(names.canonical)
 	if writeBody && canonical.symlink {
 		plan.remove = appendUnique(plan.remove, names.canonical)
 	}
@@ -55,7 +55,7 @@ func planProvision(snap dirSnap, content, skipIfContains string) provisionPlan {
 }
 
 func canonicalBody(snap dirSnap, names pairNames, content, skipIfContains string) (string, bool) {
-	current := snap.entry(names.canonical)
+	current := snap.Entry(names.canonical)
 	if current.regular {
 		if skipIfContains != "" && strings.Contains(current.content, skipIfContains) {
 			return current.content, false
