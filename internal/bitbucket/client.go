@@ -62,8 +62,8 @@ func NewClient(opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// restRequest makes an authenticated REST API request and decodes the JSON response.
-func (c *Client) restRequest(ctx context.Context, method, path string, body any, result any) error {
+// Request makes an authenticated REST API request and decodes the JSON response.
+func (c *Client) Request(ctx context.Context, method, path string, body any, result any) error {
 	var reqBody io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
