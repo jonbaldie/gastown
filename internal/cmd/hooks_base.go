@@ -26,14 +26,13 @@ Examples:
 	RunE: runHooksBase,
 }
 
-var hooksBaseShow bool
-
 func init() {
 	hooksCmd.AddCommand(hooksBaseCmd)
-	hooksBaseCmd.Flags().BoolVar(&hooksBaseShow, "show", false, "Print current base config to stdout")
+	hooksBaseCmd.Flags().Bool("show", false, "Print current base config to stdout")
 }
 
-func runHooksBase(_ *cobra.Command, _ []string) error {
+func runHooksBase(cmd *cobra.Command, _ []string) error {
+	show, _ := cmd.Flags().GetBool("show")
 	cfg, err := hooks.LoadBase()
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -47,7 +46,7 @@ func runHooksBase(_ *cobra.Command, _ []string) error {
 		fmt.Println("Created default base config")
 	}
 
-	if hooksBaseShow {
+	if show {
 		data, err := hooks.MarshalConfig(cfg)
 		if err != nil {
 			return err
