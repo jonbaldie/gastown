@@ -252,12 +252,6 @@ func (r *Resolver) resolvePattern(pattern string) ([]Recipient, error) {
 	return recipients, nil
 }
 
-// resolveAtPattern handles @-prefixed patterns.
-// These include @town, @crew, @rig/X, @role/X, @overseer.
-func (r *Resolver) resolveAtPattern(address string) ([]Recipient, error) {
-	return r.resolveAtPatternWithVisited(address, make(map[string]bool))
-}
-
 // resolveAtPatternWithVisited handles @-prefixed patterns with cycle detection.
 func (r *Resolver) resolveAtPatternWithVisited(address string, visited map[string]bool) ([]Recipient, error) {
 	// First check if this is a beads-native group (if beads available)
@@ -276,12 +270,6 @@ func (r *Resolver) resolveAtPatternWithVisited(address string, visited map[strin
 	// Fall back to built-in patterns (handled by existing router)
 	// Return as-is for router to handle
 	return []Recipient{{Address: address, Type: RecipientAgent}}, nil
-}
-
-// resolveByName looks up a name as group → queue → channel.
-// Returns error if name conflicts exist without explicit prefix.
-func (r *Resolver) resolveByName(name string) ([]Recipient, error) {
-	return r.resolveByNameWithVisited(name, make(map[string]bool))
 }
 
 // resolveByNameWithVisited looks up a name with cycle detection.
@@ -377,11 +365,6 @@ func (r *Resolver) resolveByNameWithVisited(name string, visited map[string]bool
 	return r.resolveChannel(name)
 }
 
-// resolveBeadsGroup resolves a beads-native group by name.
-func (r *Resolver) resolveBeadsGroup(name string) ([]Recipient, error) {
-	return r.resolveBeadsGroupWithVisited(name, make(map[string]bool))
-}
-
 // resolveBeadsGroupWithVisited resolves a beads-native group with cycle detection.
 func (r *Resolver) resolveBeadsGroupWithVisited(name string, visited map[string]bool) ([]Recipient, error) {
 	if r.beads == nil {
@@ -397,12 +380,6 @@ func (r *Resolver) resolveBeadsGroupWithVisited(name string, visited map[string]
 	}
 
 	return r.expandGroupMembersWithVisited(fields, visited)
-}
-
-// expandGroupMembers expands a group's members to recipients.
-// Handles nested groups and patterns recursively.
-func (r *Resolver) expandGroupMembers(fields *beads.GroupFields) ([]Recipient, error) {
-	return r.expandGroupMembersWithVisited(fields, make(map[string]bool))
 }
 
 // expandGroupMembersWithVisited expands group members with cycle detection.
