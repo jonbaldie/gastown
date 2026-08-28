@@ -258,7 +258,14 @@ func ConcreteWorkIssueRejectReason(issue *Issue) string {
 	if InternalIssueType(issue.Type) {
 		return "internal-type:" + strings.ToLower(strings.TrimSpace(issue.Type))
 	}
-	for _, label := range issue.Labels {
+	if reason := labelRejectReason(issue.Labels); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+func labelRejectReason(labels []string) string {
+	for _, label := range labels {
 		if InternalIssueLabel(label) {
 			return "internal-label:" + strings.ToLower(strings.TrimSpace(label))
 		}
