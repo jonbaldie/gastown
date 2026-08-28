@@ -131,43 +131,63 @@ func writeEmbeddedTree(destDir string) error {
 	}
 
 	if err := fs.WalkDir(embeddedFS, "embedded", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("walking embedded skills: %w", err)
-		}
-		rel, err := filepath.Rel("embedded", path)
-		if err != nil {
-			return fmt.Errorf("rel path for %s: %w", path, err)
-		}
-		if rel == "." {
-			return nil
-		}
-		target := filepath.Join(destDir, rel)
-		if d.IsDir() {
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return fmt.Errorf("creating %s: %w", target, err)
-			}
-			return nil
-		}
-		if _, err := os.Lstat(target); err == nil {
-			return nil
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("stat %s: %w", target, err)
-		}
-		data, err := embeddedFS.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading embedded %s: %w", path, err)
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return fmt.Errorf("creating %s: %w", filepath.Dir(target), err)
-		}
-		if err := os.WriteFile(target, data, 0644); err != nil {
-			return fmt.Errorf("writing %s: %w", target, err)
-		}
-		return nil
+		return writeEmbeddedEntry(destDir, path, d, err)
 	}); err != nil {
 		return err
 	}
 	return enableStandingSkillModelInvocation(destDir)
+}
+
+func writeEmbeddedEntry(destDir, path string, d fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return fmt.Errorf("walking embedded skills: %w", walkErr)
+	}
+	rel, err := embeddedEntryRelativePath(path)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	target := filepath.Join(destDir, rel)
+	if d.IsDir() {
+		return ensureEmbeddedDirectory(target)
+	}
+	return writeEmbeddedFile(path, target)
+}
+
+func embeddedEntryRelativePath(path string) (string, error) {
+	rel, err := filepath.Rel("embedded", path)
+	if err != nil {
+		return "", fmt.Errorf("rel path for %s: %w", path, err)
+	}
+	return rel, nil
+}
+
+func ensureEmbeddedDirectory(target string) error {
+	if err := os.MkdirAll(target, 0755); err != nil {
+		return fmt.Errorf("creating %s: %w", target, err)
+	}
+	return nil
+}
+
+func writeEmbeddedFile(path, target string) error {
+	if _, err := os.Lstat(target); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", target, err)
+	}
+	data, err := embeddedFS.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading embedded %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return fmt.Errorf("creating %s: %w", filepath.Dir(target), err)
+	}
+	if err := os.WriteFile(target, data, 0644); err != nil {
+		return fmt.Errorf("writing %s: %w", target, err)
+	}
+	return nil
 }
 
 func enableStandingSkillModelInvocation(destDir string) error {
@@ -226,24 +246,38 @@ func linkOrWrite(destDir, sourceDir string) error {
 	if destDir == sourceDir {
 		return nil
 	}
+	handled, err := handleExistingSkillsPath(destDir, sourceDir)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+	return linkSkillsTree(destDir, sourceDir)
+}
+
+func handleExistingSkillsPath(destDir, sourceDir string) (bool, error) {
 	if info, err := os.Lstat(destDir); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			target, err := os.Readlink(destDir)
 			if err == nil && sameResolvedPath(destDir, target, sourceDir) {
-				return nil
+				return true, nil
 			}
 			if err := os.Remove(destDir); err != nil {
-				return fmt.Errorf("removing stale skills symlink: %w", err)
+				return false, fmt.Errorf("removing stale skills symlink: %w", err)
 			}
 		} else if info.IsDir() {
-			return writeEmbeddedTree(destDir)
+			return true, writeEmbeddedTree(destDir)
 		} else {
-			return fmt.Errorf("skills path %s exists and is not a directory", destDir)
+			return false, fmt.Errorf("skills path %s exists and is not a directory", destDir)
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat %s: %w", destDir, err)
+		return false, fmt.Errorf("stat %s: %w", destDir, err)
 	}
+	return false, nil
+}
 
+func linkSkillsTree(destDir, sourceDir string) error {
 	if err := os.MkdirAll(filepath.Dir(destDir), 0755); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(destDir), err)
 	}
