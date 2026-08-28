@@ -1594,7 +1594,8 @@ func splitCamelCase(s string) []string {
 	var parts []string
 	start := 0
 	runes := []rune(s)
-	for i := 1; i < len(runes); i++ {
+	runeCount := len(runes)
+	for i := 1; i < runeCount; i++ {
 		// Split when transitioning from lower to upper: "myProject" at 'P'
 		if unicode.IsLower(runes[i-1]) && unicode.IsUpper(runes[i]) {
 			parts = append(parts, string(runes[start:i]))

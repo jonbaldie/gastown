@@ -313,8 +313,9 @@ func deriveSessionName(rig, role, name string) string {
 
 // sortProblemAgents sorts agents by state priority (problems first)
 func sortProblemAgents(agents []*ProblemAgent) {
-	for i := 0; i < len(agents); i++ {
-		for j := i + 1; j < len(agents); j++ {
+	agentCount := len(agents)
+	for i := 0; i < agentCount; i++ {
+		for j := i + 1; j < agentCount; j++ {
 			if agents[i].State.Priority() > agents[j].State.Priority() {
 				agents[i], agents[j] = agents[j], agents[i]
 			} else if agents[i].State.Priority() == agents[j].State.Priority() {
