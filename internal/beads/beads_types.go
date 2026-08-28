@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/config"
@@ -24,13 +23,6 @@ const typesSentinel = ".gt-types-configured"
 
 // statusesSentinel is a marker file indicating custom statuses have been configured.
 const statusesSentinel = ".gt-statuses-configured"
-
-// ensuredDirs tracks which beads directories have been ensured this session.
-// This provides fast in-memory caching for multiple creates in the same CLI run.
-var (
-	ensuredDirs = make(map[string]bool)
-	ensuredMu   sync.Mutex
-)
 
 // FindTownRoot walks up from startDir to find the Gas Town root directory.
 // Delegates to townroot.Find so every caller shares the outermost-town.json rule.
@@ -59,15 +51,14 @@ func ResolveRoutingTarget(townRoot, beadID, fallbackDir string) string {
 }
 
 // EnsureCustomTypes ensures the target beads directory has custom types configured.
-// Uses a two-level caching strategy:
-//   - In-memory cache for multiple creates in the same CLI invocation
-//   - Sentinel file on disk for persistence across CLI invocations
+// Uses a sentinel file on disk to avoid redundant bd config calls across CLI
+// invocations without retaining process-global mutable state.
 //
 // The sentinel file stores the configured custom and infra type lists. When
 // either list changes, the sentinel is detected as stale and types are
 // re-configured automatically (gt-zmy, gt-26f).
 //
-// This function is thread-safe and idempotent.
+// This function is idempotent.
 //
 // If the beads database does not exist (e.g., after a fresh rig add), this function
 // will attempt to initialize it automatically using bd init --server.
@@ -79,9 +70,6 @@ func EnsureCustomTypes(beadsDir string) error {
 	customTypes := strings.Join(constants.BeadsCustomTypesList(), ",")
 	infraTypes := strings.Join(constants.BeadsInfraTypesList(), ",")
 	sentinelValue := TypeConfigSentinelValue()
-
-	ensuredMu.Lock()
-	defer ensuredMu.Unlock()
 
 	if customTypesCached(beadsDir, sentinelValue) {
 		return nil
@@ -97,20 +85,12 @@ func EnsureCustomTypes(beadsDir string) error {
 	}
 	sentinelPath := filepath.Join(beadsDir, typesSentinel)
 	_ = os.WriteFile(sentinelPath, []byte(sentinelValue+"\n"), 0644)
-	ensuredDirs[beadsDir] = true
 	return nil
 }
 
 func customTypesCached(beadsDir, sentinelValue string) bool {
-	if ensuredDirs[beadsDir] {
-		return true
-	}
 	data, err := os.ReadFile(filepath.Join(beadsDir, typesSentinel))
-	if err != nil || strings.TrimSpace(string(data)) != sentinelValue {
-		return false
-	}
-	ensuredDirs[beadsDir] = true
-	return true
+	return err == nil && strings.TrimSpace(string(data)) == sentinelValue
 }
 
 func validateBeadsDirectory(beadsDir string) error {
@@ -196,11 +176,9 @@ func EnsureCustomTypesConfigYAML(beadsDir string) error {
 }
 
 // EnsureCustomStatuses ensures the target beads directory has custom statuses configured.
-// Uses the same two-level caching strategy as EnsureCustomTypes:
-//   - In-memory cache for multiple operations in the same CLI invocation
-//   - Sentinel file on disk for persistence across CLI invocations
+// Uses the same durable sentinel caching strategy as EnsureCustomTypes.
 //
-// This function is thread-safe and idempotent.
+// This function is idempotent.
 func EnsureCustomStatuses(beadsDir string) error {
 	if beadsDir == "" {
 		return fmt.Errorf("empty beads directory")
@@ -208,11 +186,7 @@ func EnsureCustomStatuses(beadsDir string) error {
 
 	statusesList := strings.Join(constants.BeadsCustomStatusesList(), ",")
 
-	ensuredMu.Lock()
-	defer ensuredMu.Unlock()
-
-	cacheKey := beadsDir + ":statuses"
-	if customStatusesCached(cacheKey, beadsDir, statusesList) {
+	if customStatusesCached(beadsDir, statusesList) {
 		return nil
 	}
 	if err := validateBeadsDirectory(beadsDir); err != nil {
@@ -227,20 +201,12 @@ func EnsureCustomStatuses(beadsDir string) error {
 	}
 	sentinelPath := filepath.Join(beadsDir, statusesSentinel)
 	_ = os.WriteFile(sentinelPath, []byte(statusesList+"\n"), 0644)
-	ensuredDirs[cacheKey] = true
 	return nil
 }
 
-func customStatusesCached(cacheKey, beadsDir, statusesList string) bool {
-	if ensuredDirs[cacheKey] {
-		return true
-	}
+func customStatusesCached(beadsDir, statusesList string) bool {
 	data, err := os.ReadFile(filepath.Join(beadsDir, statusesSentinel))
-	if err != nil || strings.TrimSpace(string(data)) != statusesList {
-		return false
-	}
-	ensuredDirs[cacheKey] = true
-	return true
+	return err == nil && strings.TrimSpace(string(data)) == statusesList
 }
 
 func mergedCustomStatuses(beadsDir string) string {
@@ -482,12 +448,10 @@ func stripYAMLQuotes(s string) string {
 	return s
 }
 
-// ResetEnsuredDirs clears the in-memory cache of ensured directories.
-// This is primarily useful for testing.
+// ResetEnsuredDirs is retained for compatibility with callers that previously
+// cleared the session cache. Configuration is now cached only by durable
+// sentinel files, so there is no process-local state to reset.
 func ResetEnsuredDirs() {
-	ensuredMu.Lock()
-	defer ensuredMu.Unlock()
-	ensuredDirs = make(map[string]bool)
 }
 
 // ParseConfigOutput extracts the config value from `bd config get <key>` output,

@@ -400,7 +400,7 @@ func TestEnsureCustomTypes(t *testing.T) {
 		}
 	})
 
-	t.Run("in-memory cache prevents repeated calls", func(t *testing.T) {
+	t.Run("durable sentinel prevents repeated calls", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		beadsDir := filepath.Join(tmpDir, ".beads")
 		if err := os.MkdirAll(beadsDir, 0755); err != nil {
@@ -420,11 +420,8 @@ func TestEnsureCustomTypes(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Remove sentinel - second call should still succeed due to in-memory cache
-		os.Remove(sentinelPath)
-
 		if err := EnsureCustomTypes(beadsDir); err != nil {
-			t.Errorf("expected cache hit, got: %v", err)
+			t.Errorf("expected sentinel hit, got: %v", err)
 		}
 	})
 }
@@ -466,11 +463,6 @@ func TestEnsureCustomTypesConfigYAMLIgnoresDBCache(t *testing.T) {
 	if err := os.MkdirAll(beadsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	ensuredMu.Lock()
-	ensuredDirs[beadsDir] = true
-	ensuredMu.Unlock()
-	t.Cleanup(ResetEnsuredDirs)
-
 	if err := EnsureCustomTypesConfigYAML(beadsDir); err != nil {
 		t.Fatalf("EnsureCustomTypesConfigYAML: %v", err)
 	}
@@ -608,15 +600,11 @@ func TestEnsureCustomStatuses(t *testing.T) {
 
 		ResetEnsuredDirs()
 
-		cacheKey := beadsDir + ":statuses"
 		err := EnsureCustomStatuses(beadsDir)
 		if err != nil {
 			t.Fatalf("EnsureCustomStatuses: %v", err)
 		}
 
-		if !ensuredDirs[cacheKey] {
-			t.Fatal("expected successful reconfiguration to populate statuses cache")
-		}
 		if got := strings.TrimSpace(string(mustReadFile(t, sentinelPath))); got != strings.Join(constants.BeadsCustomStatusesList(), ",") {
 			t.Fatalf("statuses sentinel = %q, want current configured statuses", got)
 		}
@@ -629,7 +617,7 @@ func TestEnsureCustomStatuses(t *testing.T) {
 		}
 	})
 
-	t.Run("in-memory cache prevents repeated calls", func(t *testing.T) {
+	t.Run("durable sentinel prevents repeated calls", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		beadsDir := filepath.Join(tmpDir, ".beads")
 		if err := os.MkdirAll(beadsDir, 0755); err != nil {
@@ -650,36 +638,8 @@ func TestEnsureCustomStatuses(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Remove sentinel - second call should still succeed due to in-memory cache
-		os.Remove(sentinelPath)
-
 		if err := EnsureCustomStatuses(beadsDir); err != nil {
-			t.Errorf("expected cache hit, got: %v", err)
-		}
-	})
-
-	t.Run("cache key does not collide with types cache", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		beadsDir := filepath.Join(tmpDir, ".beads")
-		if err := os.MkdirAll(beadsDir, 0755); err != nil {
-			t.Fatal(err)
-		}
-
-		ResetEnsuredDirs()
-
-		// Manually set the types cache entry (simulating EnsureCustomTypes ran)
-		ensuredMu.Lock()
-		ensuredDirs[beadsDir] = true
-		ensuredMu.Unlock()
-
-		// Statuses cache should NOT be hit — different key
-		cacheKey := beadsDir + ":statuses"
-		ensuredMu.Lock()
-		cached := ensuredDirs[cacheKey]
-		ensuredMu.Unlock()
-
-		if cached {
-			t.Error("statuses cache key should not collide with types cache key")
+			t.Errorf("expected sentinel hit, got: %v", err)
 		}
 	})
 
