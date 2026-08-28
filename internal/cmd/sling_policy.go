@@ -40,26 +40,9 @@ func evaluateSlingStatus(info *beadInfo, beadID string, explicitForce bool, merg
 		Merge: resolveBeadMergeStrategy(merge, info),
 	}
 
-	if (info.Status == "pinned" || info.Status == "hooked" || info.Status == "in_progress") && !explicitForce {
-		if (info.Status == "hooked" || info.Status == "in_progress") && info.Assignee != "" && isHookedAgentDeadFn(info.Assignee) {
-			fmt.Printf("%s Hooked agent %s has no active session, auto-forcing re-sling...\n",
-				style.Warning.Render("⚠"), info.Assignee)
-			dec.Force = true
-		} else if sameTarget && formulaRefresh {
-			// Formula-on-bead against the live assignee: keep the hook, apply new work.
-		} else if sameTarget {
-			fmt.Printf("%s Bead %s is already %s to %s, no-op\n",
-				style.Dim.Render("○"), beadID, info.Status, info.Assignee)
-			dec.NoOp = true
-			return dec
-		} else {
-			assignee := info.Assignee
-			if assignee == "" {
-				assignee = "(unknown)"
-			}
-			dec.ErrMsg = "already " + info.Status
-			dec.Err = fmt.Errorf("bead %s is already %s to %s\nUse --force to re-sling", beadID, info.Status, assignee)
-			return dec
+	if isActiveSlingStatus(info.Status) && !explicitForce {
+		if next, done := evaluateActiveSlingStatus(dec, info, beadID, sameTarget, formulaRefresh); done {
+			return next
 		}
 	}
 
@@ -69,4 +52,39 @@ func evaluateSlingStatus(info *beadInfo, beadID string, explicitForce bool, merg
 		return dec
 	}
 	return dec
+}
+
+func isActiveSlingStatus(status string) bool {
+	return status == "pinned" || status == "hooked" || status == "in_progress"
+}
+
+func evaluateActiveSlingStatus(dec slingStatusDecision, info *beadInfo, beadID string, sameTarget, formulaRefresh bool) (slingStatusDecision, bool) {
+	if isHookedOrInProgress(info.Status) && info.Assignee != "" && isHookedAgentDeadFn(info.Assignee) {
+		fmt.Printf("%s Hooked agent %s has no active session, auto-forcing re-sling...\n",
+			style.Warning.Render("⚠"), info.Assignee)
+		dec.Force = true
+		return dec, false
+	}
+	if sameTarget && formulaRefresh {
+		// Formula-on-bead against the live assignee: keep the hook, apply new work.
+		return dec, false
+	}
+	if sameTarget {
+		fmt.Printf("%s Bead %s is already %s to %s, no-op\n",
+			style.Dim.Render("○"), beadID, info.Status, info.Assignee)
+		dec.NoOp = true
+		return dec, true
+	}
+
+	assignee := info.Assignee
+	if assignee == "" {
+		assignee = "(unknown)"
+	}
+	dec.ErrMsg = "already " + info.Status
+	dec.Err = fmt.Errorf("bead %s is already %s to %s\nUse --force to re-sling", beadID, info.Status, assignee)
+	return dec, true
+}
+
+func isHookedOrInProgress(status string) bool {
+	return status == "hooked" || status == "in_progress"
 }
