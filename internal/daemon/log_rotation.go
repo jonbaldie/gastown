@@ -117,37 +117,37 @@ func ForceRotateLogs(townRoot string) *RotateLogsResult {
 // collectDoltLogFiles returns all Dolt-related log files that need copytruncate rotation.
 // Excludes daemon.log (handled by lumberjack).
 func collectDoltLogFiles(daemonDir, townRoot string) []string {
-	var logFiles []string
-
-	// daemon-level Dolt logs
-	for _, name := range []string{"dolt.log", "dolt-server.log", "dolt-test-server.log"} {
-		path := filepath.Join(daemonDir, name)
-		if _, err := os.Stat(path); err == nil {
-			logFiles = append(logFiles, path)
-		}
-	}
-
-	// rig-level .beads/dolt-server.log files
+	logFiles := existingDoltLogs(daemonDir, []string{"dolt.log", "dolt-server.log", "dolt-test-server.log"})
 	entries, err := os.ReadDir(townRoot)
 	if err != nil {
 		return logFiles
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "daemon" {
-			continue
-		}
-		rigLog := filepath.Join(townRoot, entry.Name(), ".beads", "dolt-server.log")
-		if _, err := os.Stat(rigLog); err == nil {
-			logFiles = append(logFiles, rigLog)
-		}
-		// Also check mayor/rig/.beads path
-		mayorRigLog := filepath.Join(townRoot, entry.Name(), "rig", ".beads", "dolt-server.log")
-		if _, err := os.Stat(mayorRigLog); err == nil {
-			logFiles = append(logFiles, mayorRigLog)
+		logFiles = append(logFiles, rigDoltLogs(townRoot, entry)...)
+	}
+	return logFiles
+}
+
+func existingDoltLogs(dir string, names []string) []string {
+	logFiles := make([]string, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			logFiles = append(logFiles, path)
 		}
 	}
-
 	return logFiles
+}
+
+func rigDoltLogs(townRoot string, entry os.DirEntry) []string {
+	if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "daemon" {
+		return nil
+	}
+	rigRoot := filepath.Join(townRoot, entry.Name())
+	return existingDoltLogs(rigRoot, []string{
+		filepath.Join(".beads", "dolt-server.log"),
+		filepath.Join("rig", ".beads", "dolt-server.log"),
+	})
 }
 
 // copyTruncateRotate performs a safe copytruncate rotation:
