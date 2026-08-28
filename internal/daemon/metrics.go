@@ -44,64 +44,15 @@ func newDaemonMetrics() (*daemonMetrics, error) {
 	state := &daemonMetricState{}
 	dm := &daemonMetrics{daemonMetricState: state}
 
-	var err error
-
-	dm.heartbeatTotal, err = m.Int64Counter("gastown.daemon.heartbeat.total",
-		metric.WithDescription("Total number of daemon heartbeat cycles"),
-	)
+	counters, err := registerDaemonCounters(m)
 	if err != nil {
 		return nil, err
 	}
+	dm.heartbeatTotal = counters.heartbeat
+	dm.restartTotal = counters.restart
+	dm.polecatSpawns = counters.polecatSpawns
 
-	dm.restartTotal, err = m.Int64Counter("gastown.daemon.restart.total",
-		metric.WithDescription("Total number of agent session restarts"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	dm.polecatSpawns, err = m.Int64Counter("gastown.polecat.spawns.total",
-		metric.WithDescription("Total number of polecat session spawns"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Dolt observable gauges — values are updated by health checks and
-	// collected by the SDK on each export interval.
-	connGauge, err := m.Int64ObservableGauge("gastown.dolt.connections",
-		metric.WithDescription("Active Dolt server connections"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	maxConnGauge, err := m.Int64ObservableGauge("gastown.dolt.max_connections",
-		metric.WithDescription("Configured maximum Dolt server connections"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	latencyGauge, err := m.Float64ObservableGauge("gastown.dolt.query_latency_ms",
-		metric.WithDescription("Dolt health probe round-trip latency in milliseconds"),
-		metric.WithUnit("ms"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	diskGauge, err := m.Int64ObservableGauge("gastown.dolt.disk_usage_bytes",
-		metric.WithDescription("Dolt data directory disk usage"),
-		metric.WithUnit("By"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	healthyGauge, err := m.Int64ObservableGauge("gastown.dolt.healthy",
-		metric.WithDescription("Dolt server health (1=healthy, 0=unhealthy)"),
-	)
+	gauges, err := registerDoltGauges(m)
 	if err != nil {
 		return nil, err
 	}
@@ -109,18 +60,102 @@ func newDaemonMetrics() (*daemonMetrics, error) {
 	_, err = m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		state.doltMu.RLock()
 		defer state.doltMu.RUnlock()
-		o.ObserveInt64(connGauge, state.doltConnections)
-		o.ObserveInt64(maxConnGauge, state.doltMaxConnections)
-		o.ObserveFloat64(latencyGauge, state.doltLatencyMs)
-		o.ObserveInt64(diskGauge, state.doltDiskBytes)
-		o.ObserveInt64(healthyGauge, state.doltHealthy)
+		o.ObserveInt64(gauges.connections, state.doltConnections)
+		o.ObserveInt64(gauges.maxConnections, state.doltMaxConnections)
+		o.ObserveFloat64(gauges.latency, state.doltLatencyMs)
+		o.ObserveInt64(gauges.disk, state.doltDiskBytes)
+		o.ObserveInt64(gauges.healthy, state.doltHealthy)
 		return nil
-	}, connGauge, maxConnGauge, latencyGauge, diskGauge, healthyGauge)
+	}, gauges.connections, gauges.maxConnections, gauges.latency, gauges.disk, gauges.healthy)
 	if err != nil {
 		return nil, err
 	}
 
 	return dm, nil
+}
+
+type daemonCounters struct {
+	heartbeat     metric.Int64Counter
+	restart       metric.Int64Counter
+	polecatSpawns metric.Int64Counter
+}
+
+func registerDaemonCounters(m metric.Meter) (daemonCounters, error) {
+	heartbeat, err := m.Int64Counter("gastown.daemon.heartbeat.total",
+		metric.WithDescription("Total number of daemon heartbeat cycles"),
+	)
+	if err != nil {
+		return daemonCounters{}, err
+	}
+
+	restart, err := m.Int64Counter("gastown.daemon.restart.total",
+		metric.WithDescription("Total number of agent session restarts"),
+	)
+	if err != nil {
+		return daemonCounters{}, err
+	}
+
+	polecatSpawns, err := m.Int64Counter("gastown.polecat.spawns.total",
+		metric.WithDescription("Total number of polecat session spawns"),
+	)
+	if err != nil {
+		return daemonCounters{}, err
+	}
+	return daemonCounters{heartbeat: heartbeat, restart: restart, polecatSpawns: polecatSpawns}, nil
+}
+
+type doltGauges struct {
+	connections    metric.Int64ObservableGauge
+	maxConnections metric.Int64ObservableGauge
+	latency        metric.Float64ObservableGauge
+	disk           metric.Int64ObservableGauge
+	healthy        metric.Int64ObservableGauge
+}
+
+func registerDoltGauges(m metric.Meter) (doltGauges, error) {
+	connections, err := m.Int64ObservableGauge("gastown.dolt.connections",
+		metric.WithDescription("Active Dolt server connections"),
+	)
+	if err != nil {
+		return doltGauges{}, err
+	}
+
+	maxConnections, err := m.Int64ObservableGauge("gastown.dolt.max_connections",
+		metric.WithDescription("Configured maximum Dolt server connections"),
+	)
+	if err != nil {
+		return doltGauges{}, err
+	}
+
+	latency, err := m.Float64ObservableGauge("gastown.dolt.query_latency_ms",
+		metric.WithDescription("Dolt health probe round-trip latency in milliseconds"),
+		metric.WithUnit("ms"),
+	)
+	if err != nil {
+		return doltGauges{}, err
+	}
+
+	disk, err := m.Int64ObservableGauge("gastown.dolt.disk_usage_bytes",
+		metric.WithDescription("Dolt data directory disk usage"),
+		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return doltGauges{}, err
+	}
+
+	healthy, err := m.Int64ObservableGauge("gastown.dolt.healthy",
+		metric.WithDescription("Dolt server health (1=healthy, 0=unhealthy)"),
+	)
+	if err != nil {
+		return doltGauges{}, err
+	}
+	return doltGauges{
+		connections:    connections,
+		maxConnections: maxConnections,
+		latency:        latency,
+		disk:           disk,
+		healthy:        healthy,
+	}, nil
 }
 
 // RecordHeartbeat increments the heartbeat counter.
