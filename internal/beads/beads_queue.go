@@ -98,61 +98,65 @@ func ParseQueueFields(description string) *QueueFields {
 	}
 
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "null" || value == "" {
-			value = ""
-		}
-
-		switch strings.ToLower(key) {
-		case "name":
-			fields.Name = value
-		case "claim_pattern":
-			if value != "" {
-				fields.ClaimPattern = value
-			}
-		case "status":
-			fields.Status = value
-		case "max_concurrency":
-			if v, err := strconv.Atoi(value); err == nil {
-				fields.MaxConcurrency = v
-			}
-		case "processing_order":
-			fields.ProcessingOrder = value
-		case "available_count":
-			if v, err := strconv.Atoi(value); err == nil {
-				fields.AvailableCount = v
-			}
-		case "processing_count":
-			if v, err := strconv.Atoi(value); err == nil {
-				fields.ProcessingCount = v
-			}
-		case "completed_count":
-			if v, err := strconv.Atoi(value); err == nil {
-				fields.CompletedCount = v
-			}
-		case "failed_count":
-			if v, err := strconv.Atoi(value); err == nil {
-				fields.FailedCount = v
-			}
-		case "created_by":
-			fields.CreatedBy = value
-		case "created_at":
-			fields.CreatedAt = value
-		}
+		setQueueField(fields, line)
 	}
 
 	return fields
+}
+
+func setQueueField(fields *QueueFields, line string) {
+	key, value, ok := queueFieldLine(line)
+	if !ok {
+		return
+	}
+	if key == "claim_pattern" {
+		if value != "" {
+			fields.ClaimPattern = value
+		}
+		return
+	}
+	if destination, ok := queueStringFields(fields)[key]; ok {
+		*destination = value
+		return
+	}
+	if destination, ok := queueIntegerFields(fields)[key]; ok {
+		if count, err := strconv.Atoi(value); err == nil {
+			*destination = count
+		}
+	}
+}
+
+func queueFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIdx := strings.Index(line, ":")
+	if line == "" || colonIdx == -1 {
+		return "", "", false
+	}
+	value := strings.TrimSpace(line[colonIdx+1:])
+	if value == "null" {
+		value = ""
+	}
+	return strings.ToLower(strings.TrimSpace(line[:colonIdx])), value, true
+}
+
+func queueStringFields(fields *QueueFields) map[string]*string {
+	return map[string]*string{
+		"name":             &fields.Name,
+		"status":           &fields.Status,
+		"processing_order": &fields.ProcessingOrder,
+		"created_by":       &fields.CreatedBy,
+		"created_at":       &fields.CreatedAt,
+	}
+}
+
+func queueIntegerFields(fields *QueueFields) map[string]*int {
+	return map[string]*int{
+		"max_concurrency":  &fields.MaxConcurrency,
+		"available_count":  &fields.AvailableCount,
+		"processing_count": &fields.ProcessingCount,
+		"completed_count":  &fields.CompletedCount,
+		"failed_count":     &fields.FailedCount,
+	}
 }
 
 // QueueBeadID returns the queue bead ID for a given queue name.
