@@ -75,53 +75,7 @@ func (c *CrashReportCheck) Run(_ *CheckContext) *CheckResult {
 		"node",
 	}
 
-	var reports []crashReport
-
-	for _, dir := range crashDirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue // Directory may not exist
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-
-			name := entry.Name()
-
-			// Check if this is a crash report for a relevant process
-			var matchedProcess string
-			nameLower := strings.ToLower(name)
-			for _, proc := range relevantProcesses {
-				if strings.Contains(nameLower, proc) {
-					matchedProcess = proc
-					break
-				}
-			}
-
-			if matchedProcess == "" {
-				continue
-			}
-
-			// Check modification time
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-
-			if info.ModTime().Before(cutoff) {
-				continue // Too old
-			}
-
-			reports = append(reports, crashReport{
-				path:    filepath.Join(dir, name),
-				name:    name,
-				modTime: info.ModTime(),
-				process: matchedProcess,
-			})
-		}
-	}
+	reports := collectCrashReports(crashDirs, relevantProcesses, cutoff)
 
 	// Sort by time (most recent first)
 	sort.Slice(reports, func(i, j int) bool {
@@ -130,10 +84,59 @@ func (c *CrashReportCheck) Run(_ *CheckContext) *CheckResult {
 
 	// Cache for display
 	c.crashReports = reports
+	return crashReportResult(c.Name(), reports)
+}
 
+func collectCrashReports(dirs, relevantProcesses []string, cutoff time.Time) []crashReport {
+	var reports []crashReport
+	for _, dir := range dirs {
+		reports = append(reports, scanCrashReportDir(dir, relevantProcesses, cutoff)...)
+	}
+	return reports
+}
+
+func scanCrashReportDir(dir string, relevantProcesses []string, cutoff time.Time) []crashReport {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil // Directory may not exist
+	}
+	var reports []crashReport
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		matchedProcess := matchCrashProcess(entry.Name(), relevantProcesses)
+		if matchedProcess == "" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().Before(cutoff) {
+			continue
+		}
+		reports = append(reports, crashReport{
+			path:    filepath.Join(dir, entry.Name()),
+			name:    entry.Name(),
+			modTime: info.ModTime(),
+			process: matchedProcess,
+		})
+	}
+	return reports
+}
+
+func matchCrashProcess(name string, relevantProcesses []string) string {
+	nameLower := strings.ToLower(name)
+	for _, proc := range relevantProcesses {
+		if strings.Contains(nameLower, proc) {
+			return proc
+		}
+	}
+	return ""
+}
+
+func crashReportResult(name string, reports []crashReport) *CheckResult {
 	if len(reports) == 0 {
 		return &CheckResult{
-			Name:    c.Name(),
+			Name:    name,
 			Status:  StatusOK,
 			Message: "No recent crash reports found",
 		}
@@ -167,7 +170,7 @@ func (c *CrashReportCheck) Run(_ *CheckContext) *CheckResult {
 	}
 
 	return &CheckResult{
-		Name:    c.Name(),
+		Name:    name,
 		Status:  status,
 		Message: message,
 		Details: details,
