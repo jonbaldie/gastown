@@ -124,6 +124,13 @@ func sdkIssueToIssue(si *beadsdk.Issue) *Issue {
 		return nil
 	}
 
+	issue := sdkIssueCore(si)
+	appendSDKIssueComments(issue, si.Comments)
+	populateSDKIssueDependencies(issue, si)
+	return issue
+}
+
+func sdkIssueCore(si *beadsdk.Issue) *Issue {
 	issue := &Issue{
 		ID:                 si.ID,
 		Title:              si.Title,
@@ -142,41 +149,47 @@ func sdkIssueToIssue(si *beadsdk.Issue) *Issue {
 		AcceptanceCriteria: si.AcceptanceCriteria,
 		Metadata:           si.Metadata,
 	}
-	for _, c := range si.Comments {
+	if si.ClosedAt != nil {
+		issue.ClosedAt = si.ClosedAt.Format(time.RFC3339)
+	}
+	return issue
+}
+
+func appendSDKIssueComments(issue *Issue, comments []*beadsdk.Comment) {
+	for _, c := range comments {
 		comment, ok := sdkCommentToComment(c)
 		if !ok {
 			continue
 		}
 		issue.Comments = append(issue.Comments, comment)
 	}
+}
 
-	if si.ClosedAt != nil {
-		issue.ClosedAt = si.ClosedAt.Format(time.RFC3339)
+func populateSDKIssueDependencies(issue *Issue, si *beadsdk.Issue) {
+	if len(si.Dependencies) == 0 {
+		return
 	}
+	deps := sdkIssueDependencies(issue, si.Dependencies)
+	if len(deps) > 0 {
+		issue.DependsOn = deps
+	}
+}
 
-	// Populate dependency-derived fields from the SDK issue's Dependencies.
-	// The SDK issue may have Dependencies populated (from show) or not (from list).
-	if len(si.Dependencies) > 0 {
-		var deps []string
-		for _, dep := range si.Dependencies {
-			if dep.IssueID != si.ID {
-				continue
-			}
-
-			switch {
-			case dep.Type == beadsdk.DepParentChild:
-				// If this issue depends on the parent, the parent is the DependsOnID
-				issue.Parent = dep.DependsOnID
-			case isBlockingDependencyType(string(dep.Type)):
-				deps = append(deps, dep.DependsOnID)
-			}
+func sdkIssueDependencies(issue *Issue, dependencies []*beadsdk.Dependency) []string {
+	var deps []string
+	for _, dependency := range dependencies {
+		if dependency.IssueID != issue.ID {
+			continue
 		}
-		if len(deps) > 0 {
-			issue.DependsOn = deps
+		if dependency.Type == beadsdk.DepParentChild {
+			issue.Parent = dependency.DependsOnID
+			continue
+		}
+		if isBlockingDependencyType(string(dependency.Type)) {
+			deps = append(deps, dependency.DependsOnID)
 		}
 	}
-
-	return issue
+	return deps
 }
 
 func sdkCommentToComment(c *beadsdk.Comment) (Comment, bool) {
@@ -239,43 +252,56 @@ func issueFilterFromListOpts(opts ListOptions) beadsdk.IssueFilter {
 	f := beadsdk.IssueFilter{
 		Limit: opts.Limit,
 	}
-
-	if opts.Status != "" && opts.Status != "all" {
-		status := beadsdk.Status(opts.Status)
-		f.Status = &status
-	}
-
-	// Prefer Label; fall back to deprecated Type
-	if opts.Label != "" {
-		f.Labels = []string{opts.Label}
-	} else if opts.Type != "" {
-		f.Labels = []string{"gt:" + opts.Type}
-	}
-
-	if opts.Priority >= 0 {
-		f.Priority = &opts.Priority
-	}
-
-	if opts.Parent != "" {
-		f.ParentID = &opts.Parent
-	}
-
-	if opts.Assignee != "" {
-		f.Assignee = &opts.Assignee
-	}
-
-	if opts.NoAssignee {
-		f.NoAssignee = true
-	}
-
-	if opts.Ephemeral {
-		eph := true
-		f.Ephemeral = &eph
-	} else {
-		f.SkipWisps = true
-	}
-
+	setIssueFilterStatus(&f, opts.Status)
+	setIssueFilterLabels(&f, opts)
+	setIssueFilterPriority(&f, opts.Priority)
+	setIssueFilterOwnership(&f, opts)
+	setIssueFilterEphemeral(&f, opts.Ephemeral)
 	return f
+}
+
+func setIssueFilterStatus(filter *beadsdk.IssueFilter, statusName string) {
+	if statusName == "" || statusName == "all" {
+		return
+	}
+	status := beadsdk.Status(statusName)
+	filter.Status = &status
+}
+
+func setIssueFilterLabels(filter *beadsdk.IssueFilter, opts ListOptions) {
+	if opts.Label != "" {
+		filter.Labels = []string{opts.Label}
+		return
+	}
+	if opts.Type != "" {
+		filter.Labels = []string{"gt:" + opts.Type}
+	}
+}
+
+func setIssueFilterPriority(filter *beadsdk.IssueFilter, priority int) {
+	if priority >= 0 {
+		filter.Priority = &priority
+	}
+}
+
+func setIssueFilterOwnership(filter *beadsdk.IssueFilter, opts ListOptions) {
+	if opts.Parent != "" {
+		filter.ParentID = &opts.Parent
+	}
+	if opts.Assignee != "" {
+		filter.Assignee = &opts.Assignee
+	}
+	if opts.NoAssignee {
+		filter.NoAssignee = true
+	}
+}
+
+func setIssueFilterEphemeral(filter *beadsdk.IssueFilter, ephemeral bool) {
+	if ephemeral {
+		filter.Ephemeral = &ephemeral
+		return
+	}
+	filter.SkipWisps = true
 }
 
 // workFilterFromListOpts builds a beadsdk WorkFilter from ListOptions.
