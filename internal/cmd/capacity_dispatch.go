@@ -103,11 +103,11 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 	}
 
 	maxPolecats := schedulerCfg.GetMaxPolecats()
-	batchSize := schedulerCfg.GetBatchSize()
+	batchSize := capacity.GetBatchSize(schedulerCfg)
 	if batchOverride > 0 {
 		batchSize = batchOverride
 	}
-	spawnDelay := schedulerCfg.GetSpawnDelay()
+	spawnDelay := capacity.GetSpawnDelay(schedulerCfg)
 
 	if cleanup && !state.Paused && maxPolecats > 0 {
 		if err := cleanupStaleContexts(townRoot); err != nil {

@@ -10,9 +10,10 @@ import "time"
 // API rate limits, memory, and CPU are shared resources across all rigs.
 //
 // Behavior is driven entirely by MaxPolecats:
-//   -1 (default): direct dispatch — gt sling works as before, near-zero overhead
-//    0:           direct dispatch (same as -1)
-//    N > 0:       deferred dispatch — labels/metadata applied, daemon dispatches
+//
+//	-1 (default): direct dispatch — gt sling works as before, near-zero overhead
+//	 0:           direct dispatch (same as -1)
+//	 N > 0:       deferred dispatch — labels/metadata applied, daemon dispatches
 type SchedulerConfig struct {
 	// MaxPolecats is the max concurrent polecats across ALL rigs.
 	// Includes both scheduler-dispatched and directly-slung polecats.
@@ -51,7 +52,7 @@ func (c *SchedulerConfig) GetMaxPolecats() int {
 }
 
 // GetBatchSize returns BatchSize or the default (1) if unset.
-func (c *SchedulerConfig) GetBatchSize() int {
+func GetBatchSize(c *SchedulerConfig) int {
 	if c == nil || c.BatchSize == nil {
 		return 1
 	}
@@ -59,7 +60,7 @@ func (c *SchedulerConfig) GetBatchSize() int {
 }
 
 // GetSpawnDelay returns SpawnDelay as a duration, defaulting to 0s.
-func (c *SchedulerConfig) GetSpawnDelay() time.Duration {
+func GetSpawnDelay(c *SchedulerConfig) time.Duration {
 	if c == nil || c.SpawnDelay == "" {
 		return 0
 	}

@@ -967,7 +967,7 @@ var townSettingsKeySpecs = []townSettingsKeySpec{
 			if scfg == nil {
 				scfg = capacity.DefaultSchedulerConfig()
 			}
-			return strconv.Itoa(scfg.GetBatchSize())
+			return strconv.Itoa(capacity.GetBatchSize(scfg))
 		},
 		set: func(s *config.TownSettings, value string) error {
 			n, err := strconv.Atoi(value)
@@ -989,7 +989,7 @@ var townSettingsKeySpecs = []townSettingsKeySpec{
 			if scfg == nil {
 				scfg = capacity.DefaultSchedulerConfig()
 			}
-			return scfg.GetSpawnDelay().String()
+			return capacity.GetSpawnDelay(scfg).String()
 		},
 		set: func(s *config.TownSettings, value string) error {
 			if _, err := time.ParseDuration(value); err != nil {
