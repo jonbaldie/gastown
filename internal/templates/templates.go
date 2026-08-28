@@ -43,8 +43,16 @@ var polecatAgentsMD string
 
 // Templates manages role and message templates.
 type Templates struct {
-	roleTemplates    *template.Template
-	messageTemplates *template.Template
+	roleTemplateSet
+	messageTemplateSet
+}
+
+type roleTemplateSet struct {
+	templates *template.Template
+}
+
+type messageTemplateSet struct {
+	templates *template.Template
 }
 
 // RoleData contains information for rendering role contexts.
@@ -117,31 +125,28 @@ type SupervisorData struct {
 
 // New creates a new Templates instance.
 func New() (*Templates, error) {
-	t := &Templates{}
-
 	// Parse role templates with custom functions
 	roleTempl, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "roles/*.md.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parsing role templates: %w", err)
 	}
-	t.roleTemplates = roleTempl
-
 	// Parse message templates with custom functions
 	msgTempl, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "messages/*.md.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parsing message templates: %w", err)
 	}
-	t.messageTemplates = msgTempl
-
-	return t, nil
+	return &Templates{
+		roleTemplateSet:    roleTemplateSet{templates: roleTempl},
+		messageTemplateSet: messageTemplateSet{templates: msgTempl},
+	}, nil
 }
 
 // RenderRole renders a role context template.
-func (t *Templates) RenderRole(role string, data RoleData) (string, error) {
+func (t *roleTemplateSet) RenderRole(role string, data RoleData) (string, error) {
 	templateName := role + ".md.tmpl"
 
 	var buf bytes.Buffer
-	if err := t.roleTemplates.ExecuteTemplate(&buf, templateName, data); err != nil {
+	if err := t.templates.ExecuteTemplate(&buf, templateName, data); err != nil {
 		return "", fmt.Errorf("rendering role template %s: %w", templateName, err)
 	}
 
@@ -149,11 +154,11 @@ func (t *Templates) RenderRole(role string, data RoleData) (string, error) {
 }
 
 // RenderMessage renders a message template.
-func (t *Templates) RenderMessage(name string, data interface{}) (string, error) {
+func (t *messageTemplateSet) RenderMessage(name string, data interface{}) (string, error) {
 	templateName := name + ".md.tmpl"
 
 	var buf bytes.Buffer
-	if err := t.messageTemplates.ExecuteTemplate(&buf, templateName, data); err != nil {
+	if err := t.templates.ExecuteTemplate(&buf, templateName, data); err != nil {
 		return "", fmt.Errorf("rendering message template %s: %w", templateName, err)
 	}
 
@@ -161,12 +166,12 @@ func (t *Templates) RenderMessage(name string, data interface{}) (string, error)
 }
 
 // RoleNames returns the list of available role templates.
-func (t *Templates) RoleNames() []string {
+func (t *roleTemplateSet) RoleNames() []string {
 	return []string{"mayor", "witness", "refinery", "polecat", "crew", "deacon", "boot"}
 }
 
 // MessageNames returns the list of available message templates.
-func (t *Templates) MessageNames() []string {
+func (t *messageTemplateSet) MessageNames() []string {
 	return []string{"spawn", "nudge", "escalation", "handoff"}
 }
 
