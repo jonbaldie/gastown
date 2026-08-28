@@ -1317,7 +1317,8 @@ func containsPathBoundary(line, path string) bool {
 	if path == "" {
 		return false
 	}
-	for start := 0; start < len(line); {
+	lineLength := len(line)
+	for start := 0; start < lineLength; {
 		idx := strings.Index(line[start:], path)
 		if idx < 0 {
 			return false

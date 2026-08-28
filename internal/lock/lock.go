@@ -339,7 +339,8 @@ func getActiveTmuxSessions() []string {
 // splitOnColon splits on the first colon only (session names shouldn't have colons)
 func splitOnColon(s string) []string {
 	idx := -1
-	for i := 0; i < len(s); i++ {
+	sLength := len(s)
+	for i := 0; i < sLength; i++ {
 		if s[i] == ':' {
 			idx = i
 			break

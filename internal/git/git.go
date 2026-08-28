@@ -387,7 +387,8 @@ func submoduleArgsMutate(args []string) bool {
 }
 
 func firstNonOptionSubcommand(args []string) string {
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		if arg == "--" {
 			if i+1 < len(args) {
@@ -494,7 +495,8 @@ func firstNonOptionPath(args []string, valueOptions map[string]bool) string {
 
 func nonOptionPaths(args []string, valueOptions map[string]bool, limit int) []string {
 	paths := make([]string, 0, limit)
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		if valueOptions[arg] {
 			i++

@@ -298,7 +298,8 @@ func resolveSourcePaths(line, homeDir string, vars map[string]string) []string {
 func replaceUnresolvedVars(s string) string {
 	var b strings.Builder
 	i := 0
-	for i < len(s) {
+	sLength := len(s)
+	for i < sLength {
 		if s[i] == '$' {
 			if i+1 < len(s) && s[i+1] == '{' {
 				end := strings.Index(s[i:], "}")
