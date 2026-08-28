@@ -1134,35 +1134,12 @@ func printConvoyIncomplete(convoyID string, openCount, unknownCount int) {
 
 // checkSingleConvoy checks a specific convoy and closes it if all tracked issues are complete.
 func checkSingleConvoy(townBeads, convoyID string, dryRun bool) error {
-	stdout, err := runBdJSON(townBeads, "show", convoyID, "--json")
+	convoy, err := getConvoyIssue(townBeads, convoyID)
 	if err != nil {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
+		return err
 	}
-
-	var convoys []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Status      string   `json:"status"`
-		Type        string   `json:"issue_type"`
-		Description string   `json:"description"`
-		Labels      []string `json:"labels"`
-	}
-	if err := json.Unmarshal(stdout, &convoys); err != nil {
-		return fmt.Errorf("parsing convoy data: %w", err)
-	}
-
-	if len(convoys) == 0 {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
-	}
-
-	convoy := convoys[0]
-
-	// Verify it's actually a convoy type
-	if !isConvoyIssue(convoy.Type, convoy.Labels) {
-		return fmt.Errorf("'%s' is not a convoy (type: %s)", convoyID, convoy.Type)
-	}
-	if err := ensureKnownConvoyStatus(convoy.Status); err != nil {
-		return fmt.Errorf("convoy '%s' has invalid lifecycle state: %w", convoyID, err)
+	if err := validateConvoyForClose(convoyID, convoy); err != nil {
+		return err
 	}
 
 	// Check if convoy is already closed
