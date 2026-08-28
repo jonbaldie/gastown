@@ -2257,60 +2257,41 @@ func printConvoyListHuman(townBeads string, convoys []convoyListIssue, tree bool
 
 // printConvoyTree displays convoys with their child issues in a tree format.
 func printConvoyTree(townBeads string, convoys []convoyListIssue) error {
-	for _, c := range convoys {
-		// Get tracked issues for this convoy
-		tracked, err := getTrackedIssues(townBeads, c.ID)
+	for _, convoy := range convoys {
+		tracked, err := getTrackedIssues(townBeads, convoy.ID)
 		if err != nil {
-			style.PrintWarning("skipping convoy %s: %v", c.ID, err)
+			style.PrintWarning("skipping convoy %s: %v", convoy.ID, err)
 			continue
 		}
-
-		// Count completed
-		completed := 0
-		for _, t := range tracked {
-			if t.Status == "closed" {
-				completed++
-			}
-		}
-
-		// Print convoy header with progress
-		total := len(tracked)
-		progress := ""
-		if total > 0 {
-			progress = fmt.Sprintf(" (%d/%d)", completed, total)
-		}
-		ownedTag := ""
-		if hasLabel(c.Labels, "gt:owned") {
-			ownedTag = " " + style.Warning.Render("[owned]")
-		}
-		fmt.Printf("🚚 %s: %s%s%s\n", c.ID, c.Title, progress, ownedTag)
-
-		// Print tracked issues as tree children
-		for i, t := range tracked {
-			// Determine tree connector
-			isLast := i == len(tracked)-1
-			connector := "├──"
-			if isLast {
-				connector = "└──"
-			}
-
-			// Status symbol: ✓ closed, ▶ in_progress/hooked, ○ other
-			status := "○"
-			switch t.Status {
-			case "closed":
-				status = "✓"
-			case "in_progress", "hooked":
-				status = "▶"
-			}
-
-			fmt.Printf("%s %s %s: %s\n", connector, status, t.ID, t.Title)
-		}
-
-		// Add blank line between convoys
-		fmt.Println()
+		printConvoyTreeConvoy(convoy, tracked)
 	}
 
 	return nil
+}
+
+func printConvoyTreeConvoy(convoy convoyListIssue, tracked []trackedIssueInfo) {
+	completed := countCompletedTrackedIssues(tracked)
+	progress := ""
+	if len(tracked) > 0 {
+		progress = fmt.Sprintf(" (%d/%d)", completed, len(tracked))
+	}
+	ownedTag := ""
+	if hasLabel(convoy.Labels, "gt:owned") {
+		ownedTag = " " + style.Warning.Render("[owned]")
+	}
+	fmt.Printf("🚚 %s: %s%s%s\n", convoy.ID, convoy.Title, progress, ownedTag)
+	printConvoyTreeIssues(tracked)
+	fmt.Println()
+}
+
+func printConvoyTreeIssues(tracked []trackedIssueInfo) {
+	for i, issue := range tracked {
+		connector := "├──"
+		if i == len(tracked)-1 {
+			connector = "└──"
+		}
+		fmt.Printf("%s %s %s: %s\n", connector, trackedStatusSymbol(issue.Status), issue.ID, issue.Title)
+	}
 }
 
 // hasLabel checks if a label exists in a list of labels.
@@ -2363,36 +2344,43 @@ func convoyLabels(owned bool) string {
 }
 
 func listConvoyIssues(townBeads, status string, all bool, extraLabels ...string) ([]convoyListIssue, error) {
-	args := []string{"list", "--label=gt:convoy", "--json", "--limit=0"}
-	for _, label := range extraLabels {
-		args = append(args, "--label="+label)
+	args := convoyListArgs(status, all, true, extraLabels...)
+	convoys, err := readConvoyIssues(townBeads, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	legacyArgs := convoyListArgs(status, all, false)
+	legacy, err := readConvoyIssues(townBeads, legacyArgs...)
+	if err != nil {
+		return nil, err
+	}
+	return appendLegacyConvoys(convoys, legacy, extraLabels...), nil
+}
+
+func convoyListArgs(status string, all, includeConvoyLabel bool, extraLabels ...string) []string {
+	args := []string{"list"}
+	if includeConvoyLabel {
+		args = append(args, "--label=gt:convoy")
+	}
+	args = append(args, "--json", "--limit=0")
+	if includeConvoyLabel {
+		for _, label := range extraLabels {
+			args = append(args, "--label="+label)
+		}
 	}
 	if status != "" {
 		args = append(args, "--status="+status)
 	} else if all {
 		args = append(args, "--all")
 	}
+	return beads.InjectFlatForListJSON(args)
+}
 
-	args = beads.InjectFlatForListJSON(args)
-	convoys, err := readConvoyIssues(townBeads, args...)
-	if err != nil {
-		return nil, err
-	}
+func appendLegacyConvoys(convoys, legacy []convoyListIssue, extraLabels ...string) []convoyListIssue {
 	seen := make(map[string]bool, len(convoys))
 	for _, convoy := range convoys {
 		seen[convoy.ID] = true
-	}
-
-	legacyArgs := []string{"list", "--json", "--limit=0"}
-	if status != "" {
-		legacyArgs = append(legacyArgs, "--status="+status)
-	} else if all {
-		legacyArgs = append(legacyArgs, "--all")
-	}
-	legacyArgs = beads.InjectFlatForListJSON(legacyArgs)
-	legacy, err := readConvoyIssues(townBeads, legacyArgs...)
-	if err != nil {
-		return nil, err
 	}
 	for _, issue := range legacy {
 		if seen[issue.ID] || issue.IssueType != "convoy" || !hasAllLabels(issue.Labels, extraLabels) {
@@ -2401,7 +2389,7 @@ func listConvoyIssues(townBeads, status string, all bool, extraLabels ...string)
 		convoys = append(convoys, issue)
 		seen[issue.ID] = true
 	}
-	return convoys, nil
+	return convoys
 }
 
 func readConvoyIssues(townBeads string, args ...string) ([]convoyListIssue, error) {
