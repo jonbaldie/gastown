@@ -27,19 +27,19 @@ const (
 
 // Table provides styled table rendering.
 type Table struct {
-	columns    []Column
-	rows       [][]string
-	headerSep  bool
-	indent     string
+	columns     []Column
+	rows        [][]string
+	headerSep   bool
+	indent      string
 	headerStyle lipgloss.Style
 }
 
 // NewTable creates a new table with the given columns.
 func NewTable(columns ...Column) *Table {
 	return &Table{
-		columns:    columns,
-		headerSep:  true,
-		indent:     "  ",
+		columns:     columns,
+		headerSep:   true,
+		indent:      "  ",
 		headerStyle: Bold,
 	}
 }
@@ -73,8 +73,15 @@ func (t *Table) Render() string {
 	}
 
 	var sb strings.Builder
+	t.renderHeader(&sb)
+	if t.headerSep {
+		t.renderSeparator(&sb)
+	}
+	t.renderRows(&sb)
+	return sb.String()
+}
 
-	// Render header
+func (t *Table) renderHeader(sb *strings.Builder) {
 	sb.WriteString(t.indent)
 	for i, col := range t.columns {
 		text := t.headerStyle.Render(col.Name)
@@ -84,47 +91,53 @@ func (t *Table) Render() string {
 		}
 	}
 	sb.WriteString("\n")
+}
 
-	// Render separator
-	if t.headerSep {
-		sb.WriteString(t.indent)
-		totalWidth := 0
-		for i, col := range t.columns {
-			totalWidth += col.Width
-			if i < len(t.columns)-1 {
-				totalWidth++ // space between columns
-			}
+func (t *Table) renderSeparator(sb *strings.Builder) {
+	sb.WriteString(t.indent)
+	totalWidth := 0
+	for i, col := range t.columns {
+		totalWidth += col.Width
+		if i < len(t.columns)-1 {
+			totalWidth++ // space between columns
 		}
-		sb.WriteString(Dim.Render(strings.Repeat("─", totalWidth)))
-		sb.WriteString("\n")
 	}
+	sb.WriteString(Dim.Render(strings.Repeat("─", totalWidth)))
+	sb.WriteString("\n")
+}
 
-	// Render rows
+func (t *Table) renderRows(sb *strings.Builder) {
 	for _, row := range t.rows {
-		sb.WriteString(t.indent)
-		for i, col := range t.columns {
-			val := ""
-			if i < len(row) {
-				val = row[i]
-			}
-			// Truncate if too long
-			plainVal := stripAnsi(val)
-			if len(plainVal) > col.Width {
-				val = plainVal[:col.Width-3] + "..."
-			}
-			// Apply column style if set
-			if col.Style.Value() != "" {
-				val = col.Style.Render(val)
-			}
-			sb.WriteString(t.pad(val, plainVal, col.Width, col.Align))
-			if i < len(t.columns)-1 {
-				sb.WriteString(" ")
-			}
+		t.renderRow(sb, row)
+	}
+}
+
+func (t *Table) renderRow(sb *strings.Builder, row []string) {
+	sb.WriteString(t.indent)
+	for i, col := range t.columns {
+		val, plainVal := renderTableCell(row, i, col)
+		sb.WriteString(t.pad(val, plainVal, col.Width, col.Align))
+		if i < len(t.columns)-1 {
+			sb.WriteString(" ")
 		}
-		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+}
+
+func renderTableCell(row []string, index int, col Column) (string, string) {
+	val := ""
+	if index < len(row) {
+		val = row[index]
 	}
 
-	return sb.String()
+	plainVal := stripAnsi(val)
+	if len(plainVal) > col.Width {
+		val = plainVal[:col.Width-3] + "..."
+	}
+	if col.Style.Value() != "" {
+		val = col.Style.Render(val)
+	}
+	return val, plainVal
 }
 
 // pad pads text to width, accounting for ANSI escape sequences.
