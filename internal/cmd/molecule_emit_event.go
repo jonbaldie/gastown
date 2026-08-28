@@ -9,12 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	emitEventChannel string
-	emitEventType    string
-	emitEventPayload []string
-)
-
 var moleculeEmitEventCmd = &cobra.Command{
 	Use:   "emit-event",
 	Short: "Emit a file-based event on a named channel",
@@ -50,11 +44,11 @@ type EmitEventResult struct {
 }
 
 func init() {
-	moleculeEmitEventCmd.Flags().StringVar(&emitEventChannel, "channel", "",
+	moleculeEmitEventCmd.Flags().String("channel", "",
 		"Event channel name (required, e.g., 'refinery')")
-	moleculeEmitEventCmd.Flags().StringVar(&emitEventType, "type", "",
+	moleculeEmitEventCmd.Flags().String("type", "",
 		"Event type (required, e.g., 'MERGE_READY')")
-	moleculeEmitEventCmd.Flags().StringArrayVar(&emitEventPayload, "payload", nil,
+	moleculeEmitEventCmd.Flags().StringArray("payload", nil,
 		"Payload key=value pairs (repeatable)")
 	moleculeEmitEventCmd.Flags().BoolVar(&moleculeJSON, "json", false,
 		"Output as JSON")
@@ -64,8 +58,21 @@ func init() {
 	moleculeStepCmd.AddCommand(moleculeEmitEventCmd)
 }
 
-func runMoleculeEmitEvent(_ *cobra.Command, _ []string) error {
-	path, err := channelevents.Emit(emitEventChannel, emitEventType, emitEventPayload)
+func runMoleculeEmitEvent(cmd *cobra.Command, _ []string) error {
+	channel, err := cmd.Flags().GetString("channel")
+	if err != nil {
+		return err
+	}
+	eventType, err := cmd.Flags().GetString("type")
+	if err != nil {
+		return err
+	}
+	payload, err := cmd.Flags().GetStringArray("payload")
+	if err != nil {
+		return err
+	}
+
+	path, err := channelevents.Emit(channel, eventType, payload)
 	if err != nil {
 		return err
 	}
@@ -75,8 +82,8 @@ func runMoleculeEmitEvent(_ *cobra.Command, _ []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(EmitEventResult{
 			Path:    path,
-			Channel: emitEventChannel,
-			Type:    emitEventType,
+			Channel: channel,
+			Type:    eventType,
 		})
 	}
 
