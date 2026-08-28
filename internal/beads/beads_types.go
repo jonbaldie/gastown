@@ -58,6 +58,17 @@ func ResolveRoutingTarget(townRoot, beadID, fallbackDir string) string {
 	return fallbackDir
 }
 
+func (a *Authority) withFallback(dir string) *Authority {
+	if a == nil {
+		return &Authority{fallbackDir: dir}
+	}
+	cp := *a
+	if dir != "" {
+		cp.fallbackDir = dir
+	}
+	return &cp
+}
+
 // EnsureCustomTypes ensures the target beads directory has custom types configured.
 // Uses a two-level caching strategy:
 //   - In-memory cache for multiple creates in the same CLI invocation

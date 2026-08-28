@@ -627,13 +627,6 @@ func (b *Beads) ForAgentBead() *Beads {
 	}
 }
 
-func (b *Beads) agentBeadTarget() *Beads {
-	if b.noRoute {
-		return b
-	}
-	return b.ForAgentBead()
-}
-
 // getActor returns the BD_ACTOR value for this context.
 // Returns empty string when in isolated mode (tests) to prevent
 // inherited actors from routing to production databases.
@@ -853,46 +846,6 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 	return stripStdoutWarnings(stdout.Bytes()), nil
 }
 
-// runWithRouting executes a bd command without setting BEADS_DIR, allowing bd's
-// native prefix-based routing via routes.jsonl to resolve cross-prefix beads.
-// This is needed for slot operations that reference beads with different prefixes
-// (e.g., setting an hq-* hook bead on a gt-* agent bead).
-// See: sling_helpers.go verifyBeadExists/hookBeadWithRetry for the same pattern.
-func (b *Beads) runWithRouting(args ...string) (_ []byte, retErr error) { //nolint:unparam // mirrors run() signature for consistency
-	start := time.Now()
-	var stdout, stderr bytes.Buffer
-	defer func() {
-		telemetry.RecordBDCall(context.Background(), args, float64(time.Since(start).Milliseconds()), retErr, stdout.Bytes(), stderr.String())
-	}()
-	runEnv := b.buildRoutingEnv()
-	fullArgs := MaybePrependAllowStaleWithEnv(runEnv, args)
-
-	// Bound subprocess runtime — see bdSubprocessTimeout doc comment.
-	ctx, cancel := context.WithTimeout(context.Background(), resolveBdSubprocessTimeout())
-	defer cancel()
-
-	cmd := SpawnContext(ctx, fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
-	util.SetDetachedProcessGroup(cmd)
-	cmd.Dir = b.workDir
-
-	cmd.Env = runEnv
-	cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
-
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return nil, b.wrapError(err, stderr.String(), args)
-	}
-
-	if stdout.Len() == 0 && stderr.Len() > 0 {
-		return nil, b.wrapError(fmt.Errorf("command produced no output"), stderr.String(), args)
-	}
-
-	return stripStdoutWarnings(stdout.Bytes()), nil
-}
-
 // Run executes a bd command and returns stdout.
 // This is a public wrapper around the internal run method for cases where
 // callers need to run arbitrary bd commands.
@@ -966,24 +919,6 @@ func (b *Beads) buildRunEnv() []string {
 	return env
 }
 
-// buildRoutingEnv builds the environment for runWithRouting() calls.
-// Always strips BEADS_DIR so bd uses native routing.
-// In isolated mode: also strips BD_ACTOR, BEADS_*, GT_ROOT, HOME.
-func (b *Beads) buildRoutingEnv() []string {
-	if b.isolated {
-		env := filterBeadsEnv(os.Environ())
-		if b.serverPort > 0 {
-			env = stripEnvPrefixes(env, "GT_DOLT_PORT=", "BEADS_DOLT_SERVER_PORT=", "BEADS_DOLT_PORT=", "BEADS_DOLT_AUTO_START=")
-			env = append(env, fmt.Sprintf("GT_DOLT_PORT=%d", b.serverPort))
-			env = append(env, fmt.Sprintf("BEADS_DOLT_SERVER_PORT=%d", b.serverPort))
-			env = append(env, fmt.Sprintf("BEADS_DOLT_PORT=%d", b.serverPort))
-			env = append(env, "BEADS_DOLT_AUTO_START=0")
-		}
-		return SuppressBDSideEffects(env)
-	}
-	return BuildRoutingBDEnv(os.Environ(), b.getResolvedBeadsDir())
-}
-
 // filterBeadsEnv removes beads-related environment variables from the given
 // environment slice. This ensures test isolation by preventing inherited
 // BD_ACTOR, BEADS_DB, GT_ROOT, HOME etc. from routing commands to production databases.
@@ -1026,7 +961,7 @@ func filterBeadsEnv(environ []string) []string {
 }
 
 // stripEnvPrefixes removes entries matching any of the given prefixes from an
-// environment variable slice. Used by runWithRouting to strip BEADS_DIR.
+// environment variable slice.
 func stripEnvPrefixes(environ []string, prefixes ...string) []string {
 	filtered := make([]string, 0, len(environ))
 	for _, env := range environ {
@@ -2066,11 +2001,6 @@ func (b *Beads) Comments(id string) ([]Comment, error) {
 		return nil, fmt.Errorf("parsing comments: %w", err)
 	}
 	return comments, nil
-}
-
-func (b *Beads) deleteBead(id string) error {
-	_, err := b.run("delete", id, "--force")
-	return err
 }
 
 type closeOptions struct {

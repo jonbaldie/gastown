@@ -149,17 +149,6 @@ func (s Session) WithStore(store beadsdk.Storage) Session {
 	return s
 }
 
-func (a *Authority) withFallback(dir string) *Authority {
-	if a == nil {
-		return &Authority{fallbackDir: dir}
-	}
-	cp := *a
-	if dir != "" {
-		cp.fallbackDir = dir
-	}
-	return &cp
-}
-
 // Client returns a Beads wrapper pinned to this Session's database.
 // Routing is already applied, so the client does not re-route by prefix.
 func (s Session) Client() *Beads {

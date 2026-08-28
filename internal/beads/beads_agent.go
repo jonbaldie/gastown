@@ -18,6 +18,13 @@ import (
 	"github.com/jonbaldie/gastown/internal/telemetry"
 )
 
+func (b *Beads) agentBeadTarget() *Beads {
+	if b.noRoute {
+		return b
+	}
+	return b.ForAgentBead()
+}
+
 // lockAgentBead acquires an exclusive file lock for a specific agent bead ID.
 // This prevents concurrent read-modify-write races in methods like
 // CreateOrReopenAgentBead, ResetAgentBeadForReuse, and UpdateAgentDescriptionFields.
