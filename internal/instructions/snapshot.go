@@ -81,7 +81,7 @@ func isTracked(dir, name string) bool {
 	return false
 }
 
-func (s dirSnap) entry(name string) fsEntry {
+func entry(s dirSnap, name string) fsEntry {
 	switch name {
 	case CanonicalFile:
 		return s.agents
