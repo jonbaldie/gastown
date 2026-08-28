@@ -41,97 +41,98 @@ var (
 // Caller must hold m.mu.
 func (m *Model) renderView() string {
 	var b strings.Builder
+	m.renderHeader(&b)
+	m.renderConvoys(&b)
+	m.renderFooter(&b)
+	return b.String()
+}
 
-	// Title
+func (m *Model) renderHeader(b *strings.Builder) {
 	b.WriteString(titleStyle.Render("Convoys"))
 	b.WriteString("\n\n")
 
-	// Error message
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 		b.WriteString("\n\n")
 	}
 
-	// Empty state
 	if len(m.convoys) == 0 && m.err == nil {
 		b.WriteString("No convoys found.\n")
 		b.WriteString("Create a convoy with: gt convoy create <name> [issues...]\n")
 	}
+}
 
-	// Render convoys
+func (m *Model) renderConvoys(b *strings.Builder) {
 	pos := 0
 	for ci, c := range m.convoys {
-		isSelected := pos == m.cursor
+		m.renderConvoy(b, ci, c, &pos)
+	}
+}
 
-		// Convoy row
-		expandIcon := "▶"
-		if c.Expanded {
-			expandIcon = "▼"
-		}
+func (m *Model) renderConvoy(b *strings.Builder, index int, convoy ConvoyItem, pos *int) {
+	line := fmt.Sprintf("%s %d. %s %s: %s %s",
+		convoyExpandIcon(convoy.Expanded),
+		index+1,
+		statusToIcon(convoy.Status),
+		convoy.ID,
+		convoy.Title,
+		progressStyle.Render(fmt.Sprintf("(%s)", convoy.Progress)),
+	)
+	if *pos == m.cursor {
+		b.WriteString(selectedStyle.Render(line))
+	} else {
+		b.WriteString(convoyStyle.Render(line))
+	}
+	b.WriteString("\n")
+	*pos++
 
-		statusIcon := statusToIcon(c.Status)
-		line := fmt.Sprintf("%s %d. %s %s: %s %s",
-			expandIcon,
-			ci+1,
-			statusIcon,
-			c.ID,
-			c.Title,
-			progressStyle.Render(fmt.Sprintf("(%s)", c.Progress)),
-		)
-
-		if isSelected {
-			b.WriteString(selectedStyle.Render(line))
-		} else {
-			b.WriteString(convoyStyle.Render(line))
-		}
-		b.WriteString("\n")
-		pos++
-
-		// Render issues if expanded
-		if c.Expanded {
-			for ii, issue := range c.Issues {
-				isIssueSelected := pos == m.cursor
-
-				// Tree connector
-				connector := "├─"
-				if ii == len(c.Issues)-1 {
-					connector = "└─"
-				}
-
-				issueIcon := "○"
-				style := issueOpenStyle
-				if issue.Status == "closed" {
-					issueIcon = "✓"
-					style = issueClosedStyle
-				}
-
-				issueLine := fmt.Sprintf("  %s %s %s: %s",
-					connector,
-					issueIcon,
-					issue.ID,
-					truncate(issue.Title, 50),
-				)
-
-				if isIssueSelected {
-					b.WriteString(selectedStyle.Render(issueLine))
-				} else {
-					b.WriteString(style.Render(issueLine))
-				}
-				b.WriteString("\n")
-				pos++
-			}
+	if convoy.Expanded {
+		for index, issue := range convoy.Issues {
+			m.renderIssue(b, issue, index, len(convoy.Issues), pos)
 		}
 	}
+}
 
-	// Help footer
+func convoyExpandIcon(expanded bool) string {
+	if expanded {
+		return "▼"
+	}
+	return "▶"
+}
+
+func (m *Model) renderIssue(b *strings.Builder, issue IssueItem, index, total int, pos *int) {
+	connector := "├─"
+	if index == total-1 {
+		connector = "└─"
+	}
+	issueIcon := "○"
+	style := issueOpenStyle
+	if issue.Status == "closed" {
+		issueIcon = "✓"
+		style = issueClosedStyle
+	}
+	issueLine := fmt.Sprintf("  %s %s %s: %s",
+		connector,
+		issueIcon,
+		issue.ID,
+		truncate(issue.Title, 50),
+	)
+	if *pos == m.cursor {
+		b.WriteString(selectedStyle.Render(issueLine))
+	} else {
+		b.WriteString(style.Render(issueLine))
+	}
+	b.WriteString("\n")
+	*pos++
+}
+
+func (m *Model) renderFooter(b *strings.Builder) {
 	b.WriteString("\n")
 	if m.showHelp {
 		b.WriteString(m.help.View(m.keys))
 	} else {
 		b.WriteString(helpStyle.Render("j/k:navigate  enter:expand  1-9:jump  q:quit  ?:help"))
 	}
-
-	return b.String()
 }
 
 // statusToIcon converts a status string to an icon.
