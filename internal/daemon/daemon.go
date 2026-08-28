@@ -50,12 +50,12 @@ import (
 // This is recovery-focused: normal wake is handled by feed subscription (bd activity --follow).
 // The daemon is the safety net for dead sessions, GUPP violations, and orphaned work.
 type Daemon struct {
+	daemonLifecycle
 	config        *Config
 	patrolConfig  *DaemonPatrolConfig
 	tmux          *tmux.Tmux
 	logger        *log.Logger
 	ctx           context.Context
-	cancel        context.CancelFunc
 	curator       *feed.Curator
 	convoyManager *ConvoyManager
 	beadsStores   map[string]beadsdk.Storage
@@ -133,6 +133,17 @@ type Daemon struct {
 	// legacySocketCleanupOnce ensures upgrade cleanup only runs once per daemon
 	// lifetime, before any patrol agent can be started on the current socket.
 	legacySocketCleanupOnce sync.Once
+}
+
+type daemonLifecycle struct {
+	cancel context.CancelFunc
+}
+
+// Stop signals the daemon to stop.
+func (l *daemonLifecycle) Stop() {
+	if l != nil && l.cancel != nil {
+		l.cancel()
+	}
 }
 
 // sessionDeath records a detected session death for mass death analysis.
@@ -381,13 +392,13 @@ func New(config *Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
+		daemonLifecycle: daemonLifecycle{cancel: cancel},
 		config:          config,
 		patrolConfig:    patrolConfig,
 		disabledPatrols: disabledPatrols,
 		tmux:            tmux.NewTmux(),
 		logger:          logger,
 		ctx:             ctx,
-		cancel:          cancel,
 		doltServer:      doltServer,
 		gtPath:          gtPath,
 		bdPath:          bdPath,
@@ -2315,11 +2326,6 @@ func (d *Daemon) shutdown(state *State) error { //nolint:unparam // error return
 
 	d.logger.Println("Daemon stopped")
 	return nil
-}
-
-// Stop signals the daemon to stop.
-func (d *Daemon) Stop() {
-	d.cancel()
 }
 
 // isShutdownInProgress checks if a shutdown is currently in progress.
