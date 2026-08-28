@@ -187,65 +187,95 @@ func queryVitalsStats(config *doltserver.Config, dbName string) *vitalsStats {
 
 func printVitalsBackups(townRoot string) {
 	fmt.Println(style.Bold.Render("Backups"))
+	printVitalsLocalBackup(townRoot)
+	printVitalsJSONLBackup(townRoot)
+}
 
-	// Local Dolt backup
+func printVitalsLocalBackup(townRoot string) {
 	backupDir := filepath.Join(townRoot, ".dolt-backup")
-	if entries, err := os.ReadDir(backupDir); err == nil {
-		var count int
-		var latest time.Time
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			count++
-			if info, err := e.Info(); err == nil && info.ModTime().After(latest) {
-				latest = info.ModTime()
-			}
-		}
-		if count > 0 {
-			fmt.Printf("  Local:  %s  last sync %s (%d DBs)\n",
-				vitalsShortHome(backupDir), latest.Format("2006-01-02 15:04"), count)
-		} else {
-			fmt.Printf("  Local:  %s  %s\n", vitalsShortHome(backupDir), style.Dim.Render("empty"))
-		}
-	} else {
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
 		fmt.Printf("  Local:  %s\n", style.Dim.Render("not found"))
+		return
 	}
+	count, latest := summarizeVitalsBackups(entries)
+	if count == 0 {
+		fmt.Printf("  Local:  %s  %s\n", vitalsShortHome(backupDir), style.Dim.Render("empty"))
+		return
+	}
+	fmt.Printf("  Local:  %s  last sync %s (%d DBs)\n",
+		vitalsShortHome(backupDir), latest.Format("2006-01-02 15:04"), count)
+}
 
-	// JSONL git archive
+func summarizeVitalsBackups(entries []os.DirEntry) (int, time.Time) {
+	var count int
+	var latest time.Time
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		count++
+		info, err := entry.Info()
+		if err == nil && info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return count, latest
+}
+
+func printVitalsJSONLBackup(townRoot string) {
 	archiveDir := filepath.Join(townRoot, ".dolt-archive", "git")
-	out, err := exec.Command("git", "-C", archiveDir, "log", "-1", "--format=%ci").Output()
+	ts, err := latestVitalsArchiveCommit(archiveDir)
 	if err != nil {
 		fmt.Printf("  JSONL:  %s\n", style.Dim.Render("not available"))
 		return
 	}
-	ts := strings.TrimSpace(string(out))
 	if ts == "" {
 		fmt.Printf("  JSONL:  %s\n", style.Dim.Render("no commits"))
 		return
 	}
-	// Count records across per-rig issues.jsonl
-	var records int
-	if dirs, err := os.ReadDir(archiveDir); err == nil {
-		for _, d := range dirs {
-			if !d.IsDir() {
-				continue
-			}
-			if data, err := os.ReadFile(filepath.Join(archiveDir, d.Name(), "issues.jsonl")); err == nil {
-				if s := strings.TrimSpace(string(data)); s != "" {
-					records += len(strings.Split(s, "\n"))
-				}
-			}
-		}
-	}
-	if t, err := time.Parse("2006-01-02 15:04:05 -0700", ts); err == nil {
-		ts = t.Format("2006-01-02 15:04")
-	}
+	records := countVitalsArchiveRecords(archiveDir)
+	ts = formatVitalsArchiveTimestamp(ts)
 	fmt.Printf("  JSONL:  last push %s", ts)
 	if records > 0 {
 		fmt.Printf(" (%s records)", vitalsFormatCount(records))
 	}
 	fmt.Println()
+}
+
+func latestVitalsArchiveCommit(archiveDir string) (string, error) {
+	out, err := exec.Command("git", "-C", archiveDir, "log", "-1", "--format=%ci").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func countVitalsArchiveRecords(archiveDir string) int {
+	dirs, err := os.ReadDir(archiveDir)
+	if err != nil {
+		return 0
+	}
+	var records int
+	for _, dir := range dirs {
+		if !dir.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(archiveDir, dir.Name(), "issues.jsonl"))
+		if err == nil {
+			if content := strings.TrimSpace(string(data)); content != "" {
+				records += len(strings.Split(content, "\n"))
+			}
+		}
+	}
+	return records
+}
+
+func formatVitalsArchiveTimestamp(ts string) string {
+	if t, err := time.Parse("2006-01-02 15:04:05 -0700", ts); err == nil {
+		return t.Format("2006-01-02 15:04")
+	}
+	return ts
 }
 
 func vitalsFormatCount(n int) string {
