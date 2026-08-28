@@ -32,43 +32,67 @@ Examples:
 	RunE: runHooksOverride,
 }
 
-var hooksOverrideShow bool
-
 func init() {
 	hooksCmd.AddCommand(hooksOverrideCmd)
-	hooksOverrideCmd.Flags().BoolVar(&hooksOverrideShow, "show", false, "Print current override config to stdout")
+	hooksOverrideCmd.Flags().Bool("show", false, "Print current override config to stdout")
 }
 
-func runHooksOverride(_ *cobra.Command, args []string) error {
+func runHooksOverride(cmd *cobra.Command, args []string) error {
 	normalized, ok := hooks.NormalizeTarget(args[0])
 	if !ok {
 		return fmt.Errorf("invalid target %q; valid targets are roles (crew, witness, refinery, polecats, mayor, deacon) or rig/role (gastown/crew, etc.)", args[0])
 	}
 	target := normalized
 
-	cfg, err := hooks.LoadOverride(target)
+	cfg, err := loadOrCreateHookOverride(target)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("loading override config for %q: %w", target, err)
-		}
-		// File doesn't exist yet - create empty
-		cfg = &hooks.HooksConfig{}
-		if err := hooks.SaveOverride(target, cfg); err != nil {
-			return fmt.Errorf("creating override config: %w", err)
-		}
-		fmt.Printf("Created empty override config for %s\n", target)
+		return err
 	}
 
-	if hooksOverrideShow {
-		data, err := hooks.MarshalConfig(cfg)
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(data))
-		return nil
+	if hooksOverrideShowFlag(cmd) {
+		return printHookOverride(cfg)
 	}
 
-	// Open in editor
+	if err := editHookOverride(target); err != nil {
+		return err
+	}
+	return nil
+}
+
+func loadOrCreateHookOverride(target string) (*hooks.HooksConfig, error) {
+	cfg, err := hooks.LoadOverride(target)
+	if err == nil {
+		return cfg, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("loading override config for %q: %w", target, err)
+	}
+
+	// File doesn't exist yet - create empty.
+	cfg = &hooks.HooksConfig{}
+	if err := hooks.SaveOverride(target, cfg); err != nil {
+		return nil, fmt.Errorf("creating override config: %w", err)
+	}
+	fmt.Printf("Created empty override config for %s\n", target)
+	return cfg, nil
+}
+
+func hooksOverrideShowFlag(cmd *cobra.Command) bool {
+	show, err := cmd.Flags().GetBool("show")
+	return err == nil && show
+}
+
+func printHookOverride(cfg *hooks.HooksConfig) error {
+	data, err := hooks.MarshalConfig(cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func editHookOverride(target string) error {
+	// Open in editor.
 	path := hooks.OverridePath(target)
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
