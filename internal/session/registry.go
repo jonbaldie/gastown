@@ -92,25 +92,40 @@ func (r *PrefixRegistry) Prefixes() []string {
 	return prefixes
 }
 
-// defaultRegistry is the package-level registry used by convenience functions.
-// Access is protected by defaultRegistryMu for concurrent test safety.
-var (
-	defaultRegistry   = NewPrefixRegistry()
-	defaultRegistryMu sync.RWMutex
-)
+// registryState owns the package-level registry used by convenience functions.
+// Keeping the mutable pointer behind methods avoids exposing package mutation
+// while preserving the registry swap used by tests and town initialization.
+type registryState struct {
+	mu       sync.RWMutex
+	registry *PrefixRegistry
+}
+
+func newRegistryState() *registryState {
+	return &registryState{registry: NewPrefixRegistry()}
+}
+
+func (s *registryState) get() *PrefixRegistry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.registry
+}
+
+func (s *registryState) set(registry *PrefixRegistry) {
+	s.mu.Lock()
+	s.registry = registry
+	s.mu.Unlock()
+}
+
+var defaultRegistryState = newRegistryState()
 
 // DefaultRegistry returns the package-level prefix registry.
 func DefaultRegistry() *PrefixRegistry {
-	defaultRegistryMu.RLock()
-	defer defaultRegistryMu.RUnlock()
-	return defaultRegistry
+	return defaultRegistryState.get()
 }
 
 // SetDefaultRegistry replaces the package-level prefix registry.
 func SetDefaultRegistry(r *PrefixRegistry) {
-	defaultRegistryMu.Lock()
-	defaultRegistry = r
-	defaultRegistryMu.Unlock()
+	defaultRegistryState.set(r)
 }
 
 // InitRegistry populates the default registry from the town's rigs.json and
