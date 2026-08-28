@@ -373,25 +373,29 @@ func RewriteBDCreateRepoAlias(townRoot string, argv []string) ([]string, string)
 	}
 
 	rewritten := make([]string, 0, len(argv))
-	for i := 0; i < len(argv); i++ {
-		arg := argv[i]
+	skipValue := false
+	for i, arg := range argv {
+		if skipValue {
+			skipValue = false
+			continue
+		}
 		if arg == "--" {
 			rewritten = append(rewritten, argv[i:]...)
 			break
 		}
 
 		if arg == "--repo" {
-			if i+1 >= len(argv) {
+			if i+1 == len(argv) {
 				rewritten = append(rewritten, arg)
 				continue
 			}
 			value := argv[i+1]
 			if beadsDir, ok := ResolveRepoAliasBeadsDir(townRoot, value); ok {
 				i++
-				return append(rewritten, argv[i+1:]...), beadsDir
+				return append(rewritten, argv[i+2:]...), beadsDir
 			}
 			rewritten = append(rewritten, arg, value)
-			i++
+			skipValue = true
 			continue
 		}
 
