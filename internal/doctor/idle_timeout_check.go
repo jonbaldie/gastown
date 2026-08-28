@@ -42,17 +42,7 @@ func (c *IdleTimeoutCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Build unique rig list from routes
-	rigSet := make(map[string]string) // rigName -> beadsPath
-	for _, r := range routes {
-		parts := strings.Split(r.Path, "/")
-		if len(parts) >= 1 && parts[0] != "." {
-			rigName := parts[0]
-			if _, exists := rigSet[rigName]; !exists {
-				rigSet[rigName] = r.Path
-			}
-		}
-	}
+	rigSet := uniqueRigSet(routes)
 
 	if len(rigSet) == 0 {
 		return &CheckResult{
@@ -62,43 +52,63 @@ func (c *IdleTimeoutCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	var missing []string
-	var checked int
+	missing, checked := inspectIdleTimeoutRigs(ctx.TownRoot, rigSet)
+	return idleTimeoutResult(c.Name(), missing, checked)
+}
 
-	// Check each rig for idle-timeout config
-	for rigName, beadsPath := range rigSet {
-		// beadsPath from routes is the rig path (e.g., "gastown/mayor/rig" or "gastown")
-		// We need to find the .beads directory within that path
-		rigPath := filepath.Join(ctx.TownRoot, beadsPath)
-		// Check for .beads in the rig path
-		configPath := filepath.Join(rigPath, ".beads", "config.yaml")
-
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			// Config file missing - will be created by EnsureConfigYAML
-			missing = append(missing, fmt.Sprintf("%s (config.yaml missing)", rigName))
-			checked++
-			continue
+func uniqueRigSet(routes []beads.Route) map[string]string {
+	rigSet := make(map[string]string)
+	for _, route := range routes {
+		parts := strings.Split(route.Path, "/")
+		if len(parts) >= 1 && parts[0] != "." {
+			rigName := parts[0]
+			if _, exists := rigSet[rigName]; !exists {
+				rigSet[rigName] = route.Path
+			}
 		}
+	}
+	return rigSet
+}
 
-		content := string(data)
-		if !strings.Contains(content, "dolt.idle-timeout:") ||
-			!strings.Contains(content, "dolt.idle-timeout: \"0\"") {
-			missing = append(missing, rigName)
+func inspectIdleTimeoutRigs(townRoot string, rigSet map[string]string) ([]string, int) {
+	var missing []string
+	checked := 0
+	for rigName, beadsPath := range rigSet {
+		missingName, isMissing := inspectIdleTimeoutRig(townRoot, rigName, beadsPath)
+		if isMissing {
+			missing = append(missing, missingName)
 		}
 		checked++
 	}
+	return missing, checked
+}
 
+func inspectIdleTimeoutRig(townRoot, rigName, beadsPath string) (string, bool) {
+	rigPath := filepath.Join(townRoot, beadsPath)
+	configPath := filepath.Join(rigPath, ".beads", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Sprintf("%s (config.yaml missing)", rigName), true
+	}
+	return rigName, !hasIdleTimeout(string(data))
+}
+
+func hasIdleTimeout(content string) bool {
+	return strings.Contains(content, "dolt.idle-timeout:") &&
+		strings.Contains(content, "dolt.idle-timeout: \"0\"")
+}
+
+func idleTimeoutResult(name string, missing []string, checked int) *CheckResult {
 	if len(missing) == 0 {
 		return &CheckResult{
-			Name:    c.Name(),
+			Name:    name,
 			Status:  StatusOK,
 			Message: fmt.Sprintf("All %d rigs have dolt.idle-timeout set to \"0\"", checked),
 		}
 	}
 
 	return &CheckResult{
-		Name:    c.Name(),
+		Name:    name,
 		Status:  StatusWarning,
 		Message: fmt.Sprintf("%d rig(s) missing dolt.idle-timeout: \"0\"", len(missing)),
 		Details: missing,
@@ -115,17 +125,7 @@ func (c *IdleTimeoutCheck) Fix(ctx *CheckContext) error {
 		return fmt.Errorf("loading routes.jsonl: %w", err)
 	}
 
-	// Build unique rig list from routes
-	rigSet := make(map[string]string) // rigName -> beadsPath
-	for _, r := range routes {
-		parts := strings.Split(r.Path, "/")
-		if len(parts) >= 1 && parts[0] != "." {
-			rigName := parts[0]
-			if _, exists := rigSet[rigName]; !exists {
-				rigSet[rigName] = r.Path
-			}
-		}
-	}
+	rigSet := uniqueRigSet(routes)
 
 	// Fix each rig
 	for rigName, beadsPath := range rigSet {
