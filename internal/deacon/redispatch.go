@@ -201,7 +201,7 @@ func (s *BeadRedispatchState) RecordAttempt(rig string) {
 }
 
 // RecordEscalation records that the bead was escalated to Mayor.
-func (s *BeadRedispatchState) RecordEscalation() {
+func RecordEscalation(s *BeadRedispatchState) {
 	s.Escalated = true
 	s.EscalatedAt = time.Now().UTC()
 }
@@ -262,7 +262,7 @@ func Redispatch(townRoot, beadID, sourceRig string, maxAttempts int, cooldown ti
 			result.Error = fmt.Errorf("escalating to mayor: %w", err)
 			result.Message = fmt.Sprintf("failed to escalate after %d attempts: %v", beadState.AttemptCount, err)
 		} else {
-			beadState.RecordEscalation()
+			RecordEscalation(beadState)
 			result.Message = fmt.Sprintf("escalated to Mayor after %d failed re-dispatches", beadState.AttemptCount)
 		}
 
