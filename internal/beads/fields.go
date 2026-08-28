@@ -683,67 +683,25 @@ func FormatMRFields(fields *MRFields) string {
 		return ""
 	}
 
-	var lines []string
+	lines := formatOptionalDescriptionFields([]optionalDescriptionField{
+		{"branch", fields.Branch}, {"target", fields.Target}, {"source_issue", fields.SourceIssue}, {"worker", fields.Worker}, {"rig", fields.Rig}, {"commit_sha", fields.CommitSHA}, {"pr_url", fields.PRURL},
+		{"pr_number", optionalPositiveInt(fields.PRNumber)}, {"merge_commit", fields.MergeCommit}, {"close_reason", fields.CloseReason}, {"agent_bead", fields.AgentBead}, {"retry_count", optionalPositiveInt(fields.RetryCount)}, {"last_conflict_sha", fields.LastConflictSHA}, {"conflict_task_id", fields.ConflictTaskID}, {"convoy_id", fields.ConvoyID}, {"convoy_created_at", fields.ConvoyCreatedAt}, {"pre_verified", optionalTrue(fields.PreVerified)}, {"pre_verified_at", fields.PreVerifiedAt}, {"pre_verified_base", fields.PreVerifiedBase},
+	})
+	return lines
+}
 
-	if fields.Branch != "" {
-		lines = append(lines, "branch: "+fields.Branch)
+func optionalPositiveInt(value int) string {
+	if value <= 0 {
+		return ""
 	}
-	if fields.Target != "" {
-		lines = append(lines, "target: "+fields.Target)
-	}
-	if fields.SourceIssue != "" {
-		lines = append(lines, "source_issue: "+fields.SourceIssue)
-	}
-	if fields.Worker != "" {
-		lines = append(lines, "worker: "+fields.Worker)
-	}
-	if fields.Rig != "" {
-		lines = append(lines, "rig: "+fields.Rig)
-	}
-	if fields.CommitSHA != "" {
-		lines = append(lines, "commit_sha: "+fields.CommitSHA)
-	}
-	if fields.PRURL != "" {
-		lines = append(lines, "pr_url: "+fields.PRURL)
-	}
-	if fields.PRNumber > 0 {
-		lines = append(lines, fmt.Sprintf("pr_number: %d", fields.PRNumber))
-	}
-	if fields.MergeCommit != "" {
-		lines = append(lines, "merge_commit: "+fields.MergeCommit)
-	}
-	if fields.CloseReason != "" {
-		lines = append(lines, "close_reason: "+fields.CloseReason)
-	}
-	if fields.AgentBead != "" {
-		lines = append(lines, "agent_bead: "+fields.AgentBead)
-	}
-	if fields.RetryCount > 0 {
-		lines = append(lines, fmt.Sprintf("retry_count: %d", fields.RetryCount))
-	}
-	if fields.LastConflictSHA != "" {
-		lines = append(lines, "last_conflict_sha: "+fields.LastConflictSHA)
-	}
-	if fields.ConflictTaskID != "" {
-		lines = append(lines, "conflict_task_id: "+fields.ConflictTaskID)
-	}
-	if fields.ConvoyID != "" {
-		lines = append(lines, "convoy_id: "+fields.ConvoyID)
-	}
-	if fields.ConvoyCreatedAt != "" {
-		lines = append(lines, "convoy_created_at: "+fields.ConvoyCreatedAt)
-	}
-	if fields.PreVerified {
-		lines = append(lines, "pre_verified: true")
-	}
-	if fields.PreVerifiedAt != "" {
-		lines = append(lines, "pre_verified_at: "+fields.PreVerifiedAt)
-	}
-	if fields.PreVerifiedBase != "" {
-		lines = append(lines, "pre_verified_base: "+fields.PreVerifiedBase)
-	}
+	return fmt.Sprint(value)
+}
 
-	return strings.Join(lines, "\n")
+func optionalTrue(value bool) string {
+	if !value {
+		return ""
+	}
+	return "true"
 }
 
 // SetMRFields updates an issue's description with the given MR fields.
