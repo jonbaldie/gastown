@@ -369,50 +369,85 @@ func printAccountStatus(handle, configDir, envAccount, defaultHandle string, acc
 func runAccountSwitch(_ *cobra.Command, args []string) error {
 	targetHandle := args[0]
 
-	cfg, accountsPath, targetAcct, err := accountSwitchTarget(targetHandle)
+	state, err := loadAccountSwitchState(targetHandle)
 	if err != nil {
 		return err
 	}
 
-	claudeDir, err := claudeConfigDir()
-	if err != nil {
-		return err
-	}
-	fileInfo, err := inspectClaudeConfigDir(claudeDir)
-	if err != nil {
-		return err
-	}
-
-	currentHandle, err := currentAccountFromClaudeSymlink(claudeDir, fileInfo, cfg)
-	if err != nil {
-		return err
-	}
-
-	if currentHandle == targetHandle {
+	if state.currentHandle == targetHandle {
 		fmt.Printf("Already on account '%s'\n", targetHandle)
 		return nil
 	}
 
-	if err := prepareClaudeConfigDir(claudeDir, fileInfo, cfg, currentHandle); err != nil {
+	if err := applyAccountSwitch(state); err != nil {
 		return err
 	}
 
-	if err := os.Symlink(targetAcct.ConfigDir, claudeDir); err != nil {
-		return fmt.Errorf("creating symlink to %s: %w", targetAcct.ConfigDir, err)
-	}
-
-	// Update default account
-	cfg.Default = targetHandle
-	if err := config.SaveAccountsConfig(accountsPath, cfg); err != nil {
+	if err := saveAccountSwitch(state); err != nil {
 		return fmt.Errorf("saving accounts config: %w", err)
 	}
 
 	fmt.Printf("Switched to account '%s'\n", targetHandle)
-	fmt.Printf("~/.claude -> %s\n", targetAcct.ConfigDir)
+	fmt.Printf("~/.claude -> %s\n", state.targetAcct.ConfigDir)
 	fmt.Println()
 	fmt.Println(style.Warning.Render("⚠️  Restart Claude Code for the change to take effect"))
 
 	return nil
+}
+
+type accountSwitchState struct {
+	cfg           *config.AccountsConfig
+	accountsPath  string
+	targetHandle  string
+	targetAcct    *config.Account
+	claudeDir     string
+	fileInfo      os.FileInfo
+	currentHandle string
+}
+
+func loadAccountSwitchState(targetHandle string) (*accountSwitchState, error) {
+	cfg, accountsPath, targetAcct, err := accountSwitchTarget(targetHandle)
+	if err != nil {
+		return nil, err
+	}
+
+	claudeDir, err := claudeConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	fileInfo, err := inspectClaudeConfigDir(claudeDir)
+	if err != nil {
+		return nil, err
+	}
+	currentHandle, err := currentAccountFromClaudeSymlink(claudeDir, fileInfo, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &accountSwitchState{
+		cfg:           cfg,
+		accountsPath:  accountsPath,
+		targetHandle:  targetHandle,
+		targetAcct:    targetAcct,
+		claudeDir:     claudeDir,
+		fileInfo:      fileInfo,
+		currentHandle: currentHandle,
+	}, nil
+}
+
+func applyAccountSwitch(state *accountSwitchState) error {
+	if err := prepareClaudeConfigDir(state.claudeDir, state.fileInfo, state.cfg, state.currentHandle); err != nil {
+		return err
+	}
+	if err := os.Symlink(state.targetAcct.ConfigDir, state.claudeDir); err != nil {
+		return fmt.Errorf("creating symlink to %s: %w", state.targetAcct.ConfigDir, err)
+	}
+	return nil
+}
+
+func saveAccountSwitch(state *accountSwitchState) error {
+	state.cfg.Default = state.targetHandle
+	return config.SaveAccountsConfig(state.accountsPath, state.cfg)
 }
 
 func accountSwitchTarget(targetHandle string) (*config.AccountsConfig, string, *config.Account, error) {
