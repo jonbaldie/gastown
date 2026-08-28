@@ -18,6 +18,18 @@ import (
 	"time"
 )
 
+func setProxyStreams(proxy *Proxy, in io.Reader, out io.Writer) {
+	proxy.stdin = in
+	proxy.stdout = out
+	proxy.uiEncoder = json.NewEncoder(out)
+}
+
+func waitForAgent(proxy *Proxy) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- proxy.cmd.Wait() }()
+	return done
+}
+
 func TestNewProxy(t *testing.T) {
 	p := NewProxy()
 	if p == nil {
@@ -105,8 +117,8 @@ func TestProxy_InjectNotification(t *testing.T) {
 	}
 	defer r.Close()
 
-	// Use setStreams to inject our pipe
-	p.setStreams(nil, w)
+	// Inject our pipe as the proxy's UI stream.
+	setProxyStreams(p, nil, w)
 
 	p.sessionMux.Lock()
 	p.sessionID = "test-session"
@@ -302,8 +314,8 @@ func TestProxy_InjectNotification_NoSessionID(t *testing.T) {
 	}
 	defer r.Close()
 
-	// Use setStreams to inject our pipe
-	p.setStreams(nil, w)
+	// Inject our pipe as the proxy's UI stream.
+	setProxyStreams(p, nil, w)
 
 	go func() {
 		_ = p.InjectNotificationToUI("test/notification", nil)
@@ -336,8 +348,8 @@ func TestProxy_InjectNotification_WithParams(t *testing.T) {
 	}
 	defer r.Close()
 
-	// Use setStreams to inject our pipe
-	p.setStreams(nil, w)
+	// Inject our pipe as the proxy's UI stream.
+	setProxyStreams(p, nil, w)
 
 	p.sessionMux.Lock()
 	p.sessionID = "sess-test"
@@ -382,7 +394,7 @@ func TestProxy_AgentDone(t *testing.T) {
 
 	p := &Proxy{cmd: cmd}
 
-	done := p.agentDone()
+	done := waitForAgent(p)
 
 	select {
 	case err := <-done:
@@ -492,8 +504,8 @@ func TestIntegration_PropulsionNotificationFormat(t *testing.T) {
 	}
 	defer r.Close()
 
-	// Use setStreams to inject our pipe
-	p.setStreams(nil, w)
+	// Inject our pipe as the proxy's UI stream.
+	setProxyStreams(p, nil, w)
 
 	p.sessionMux.Lock()
 	p.sessionID = "test-session-propulsion"
@@ -800,7 +812,7 @@ func TestProxy_HandshakeWithMockAgent(t *testing.T) {
 
 	// UI side pipes - needed to avoid panics in forwardFromAgent when encoding to UI
 	uiStdoutR, uiStdoutW := io.Pipe()
-	p.setStreams(nil, uiStdoutW)
+	setProxyStreams(p, nil, uiStdoutW)
 	go func() {
 		_, _ = io.Copy(io.Discard, uiStdoutR)
 	}()
@@ -889,7 +901,7 @@ func TestIntegration_FullLoop(t *testing.T) {
 	// Capture proxy's stdout (UI side)
 	var uiStdout bytes.Buffer
 	p.stdoutMux.Lock()
-	p.setStreams(nil, &uiStdout)
+	setProxyStreams(p, nil, &uiStdout)
 	p.stdoutMux.Unlock()
 
 	// Input from UI side - using a pipe to control EOF

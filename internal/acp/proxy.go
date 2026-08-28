@@ -79,7 +79,6 @@ type Proxy struct {
 	// Stderr monitoring for pipe saturation
 	stderrBytesDropped   atomic.Int64
 	stderrLinesTruncated atomic.Int64
-	stderrLastLogTime    atomic.Int64
 }
 
 // SetTownRoot sets the town root for logging important events to town.log.
@@ -135,13 +134,6 @@ func NewProxy() *Proxy {
 	p.uiEncoder = json.NewEncoder(p.stdout)
 	p.lastActivity.Store(time.Now().UnixNano())
 	return p
-}
-
-// setStreams sets the standard streams for the proxy.
-func (p *Proxy) setStreams(in io.Reader, out io.Writer) {
-	p.stdin = in
-	p.stdout = out
-	p.uiEncoder = json.NewEncoder(out)
 }
 
 // SetPIDFilePath sets the path to the PID file for monitoring.
@@ -1120,15 +1112,6 @@ func (p *Proxy) markDone() {
 	p.doneOnce.Do(func() {
 		close(p.done)
 	})
-}
-
-func (p *Proxy) agentDone() <-chan error {
-	ch := make(chan error, 1)
-	go func() {
-		err := p.cmd.Wait()
-		ch <- err
-	}()
-	return ch
 }
 
 func truncateStr(s string, maxLen int) string {
