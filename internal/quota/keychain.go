@@ -128,35 +128,19 @@ func SwapOAuthAccount(targetConfigDir, sourceConfigDir string) (json.RawMessage,
 
 	// Skip if either file doesn't exist — the keychain token is what
 	// authenticates; oauthAccount is only cached identity metadata.
-	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-		return nil, nil
-	}
-	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+	if !oauthAccountFilesPresent(targetPath, sourcePath) {
 		return nil, nil
 	}
 
-	// Read source's oauthAccount
-	sourceData, err := os.ReadFile(sourcePath)
+	sourceOAuth, err := readOAuthAccount(sourcePath, "source")
 	if err != nil {
-		return nil, fmt.Errorf("reading source .claude.json: %w", err)
-	}
-	var sourceDoc map[string]json.RawMessage
-	if err := json.Unmarshal(sourceData, &sourceDoc); err != nil {
-		return nil, fmt.Errorf("parsing source .claude.json: %w", err)
-	}
-	sourceOAuth, ok := sourceDoc["oauthAccount"]
-	if !ok {
-		return nil, fmt.Errorf("source .claude.json has no oauthAccount")
+		return nil, err
 	}
 
 	// Read target's .claude.json (preserve all other fields)
-	targetData, err := os.ReadFile(targetPath)
+	targetDoc, err := readOAuthDocument(targetPath, "target")
 	if err != nil {
-		return nil, fmt.Errorf("reading target .claude.json: %w", err)
-	}
-	var targetDoc map[string]json.RawMessage
-	if err := json.Unmarshal(targetData, &targetDoc); err != nil {
-		return nil, fmt.Errorf("parsing target .claude.json: %w", err)
+		return nil, err
 	}
 
 	// Back up target's oauthAccount
@@ -175,6 +159,40 @@ func SwapOAuthAccount(targetConfigDir, sourceConfigDir string) (json.RawMessage,
 	}
 
 	return backup, nil
+}
+
+func oauthAccountFilesPresent(targetPath, sourcePath string) bool {
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		return false
+	}
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
+func readOAuthAccount(path, label string) (json.RawMessage, error) {
+	doc, err := readOAuthDocument(path, label)
+	if err != nil {
+		return nil, err
+	}
+	oauth, ok := doc["oauthAccount"]
+	if !ok {
+		return nil, fmt.Errorf("%s .claude.json has no oauthAccount", label)
+	}
+	return oauth, nil
+}
+
+func readOAuthDocument(path, label string) (map[string]json.RawMessage, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s .claude.json: %w", label, err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parsing %s .claude.json: %w", label, err)
+	}
+	return doc, nil
 }
 
 // RestoreOAuthAccount writes the backup oauthAccount back to the target .claude.json.
@@ -216,33 +234,11 @@ func ValidateKeychainToken(configDir string) error {
 		return nil
 	}
 
-	// Strategy 1: Parse as JSON credential with expires_at field.
-	// Claude Code may store the full OAuth response including expiry.
-	var cred struct {
-		ExpiresAt int64 `json:"expires_at"`
+	if err, recognized := validateJSONToken(raw); recognized {
+		return err
 	}
-	if json.Unmarshal([]byte(raw), &cred) == nil && cred.ExpiresAt > 0 {
-		if time.Now().Unix() >= cred.ExpiresAt {
-			return fmt.Errorf("token expired at %s", time.Unix(cred.ExpiresAt, 0).Format(time.RFC3339))
-		}
-		return nil
-	}
-
-	// Strategy 2: Parse as JWT — decode payload, check exp claim.
-	parts := strings.Split(raw, ".")
-	if len(parts) == 3 {
-		payload, decErr := base64.RawURLEncoding.DecodeString(parts[1])
-		if decErr == nil {
-			var claims struct {
-				Exp int64 `json:"exp"`
-			}
-			if json.Unmarshal(payload, &claims) == nil && claims.Exp > 0 {
-				if time.Now().Unix() >= claims.Exp {
-					return fmt.Errorf("JWT expired at %s", time.Unix(claims.Exp, 0).Format(time.RFC3339))
-				}
-				return nil
-			}
-		}
+	if err, recognized := validateJWTToken(raw); recognized {
+		return err
 	}
 
 	// Token is present but format is opaque (not JSON with expires_at, not JWT).
@@ -250,6 +246,42 @@ func ValidateKeychainToken(configDir string) error {
 	// than Bearer tokens against the Anthropic API, so HTTP validation would
 	// always return 401 for valid OAuth tokens. Assume valid if present.
 	return nil
+}
+
+func validateJSONToken(raw string) (error, bool) {
+	// Claude Code may store the full OAuth response including expiry.
+	var cred struct {
+		ExpiresAt int64 `json:"expires_at"`
+	}
+	if json.Unmarshal([]byte(raw), &cred) != nil || cred.ExpiresAt <= 0 {
+		return nil, false
+	}
+	if time.Now().Unix() >= cred.ExpiresAt {
+		return fmt.Errorf("token expired at %s", time.Unix(cred.ExpiresAt, 0).Format(time.RFC3339)), true
+	}
+	return nil, true
+}
+
+func validateJWTToken(raw string) (error, bool) {
+	// Decode the JWT payload and check its exp claim.
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, false
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Exp <= 0 {
+		return nil, false
+	}
+	if time.Now().Unix() >= claims.Exp {
+		return fmt.Errorf("JWT expired at %s", time.Unix(claims.Exp, 0).Format(time.RFC3339)), true
+	}
+	return nil, true
 }
 
 // validateTokenHTTP sends a minimal request to the Anthropic API to check if a
