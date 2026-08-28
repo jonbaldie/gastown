@@ -18,51 +18,13 @@ import (
 )
 
 func runMailSend(_ *cobra.Command, args []string) error {
-	// Handle --stdin: read message body from stdin (avoids shell quoting issues)
-	if mailStdin {
-		if mailBody != "" {
-			return fmt.Errorf("cannot use --stdin with --message/-m")
-		}
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading stdin: %w", err)
-		}
-		mailBody = strings.TrimRight(string(data), "\n")
+	if err := readMailStdin(); err != nil {
+		return err
 	}
 
-	var to string
-
-	if mailSendSelf {
-		// Auto-detect identity from cwd
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting current directory: %w", err)
-		}
-		townRoot, err := workspace.FindFromCwd()
-		if err != nil || townRoot == "" {
-			return fmt.Errorf("not in a Gas Town workspace")
-		}
-		roleInfo, err := GetRoleWithContext(cwd, townRoot)
-		if err != nil {
-			return fmt.Errorf("detecting role: %w", err)
-		}
-		ctx := RoleContext{
-			Role:     roleInfo.Role,
-			Rig:      roleInfo.Rig,
-			Polecat:  roleInfo.Polecat,
-			TownRoot: townRoot,
-			WorkDir:  cwd,
-		}
-		to = buildAgentIdentity(ctx)
-		if to == "" {
-			return fmt.Errorf("cannot determine identity (role: %s)", ctx.Role)
-		}
-	} else if mailTo != "" {
-		to = mailTo
-	} else if len(args) > 0 {
-		to = args[0]
-	} else {
-		return fmt.Errorf("address required (use positional arg, --to, or --self)")
+	to, err := resolveMailRecipient(args)
+	if err != nil {
+		return err
 	}
 
 	// All mail uses town beads (two-level architecture)
@@ -83,77 +45,13 @@ func runMailSend(_ *cobra.Command, args []string) error {
 	// existing thread-lookup + ClearReplyReminders flow below works as designed.
 	// hq-k382x: without this, every "gt mail send <addr> -s 'Re: ...'" leaves
 	// the queued reply-reminder in place.
-	if mailReplyTo == "" && hasReplyPrefix(mailSubject) {
-		if inferred := inferReplyTo(workDir, from, to, mailSubject); inferred != "" {
-			mailReplyTo = inferred
-		}
-	}
+	maybeInferMailReply(workDir, from, to)
 
-	// Create message with auto-generated ID and thread ID
-	msg := mail.NewMessage(from, to, mailSubject, mailBody)
-
-	// Set priority (--urgent overrides --priority)
-	if mailUrgent {
-		msg.Priority = mail.PriorityUrgent
-	} else {
-		msg.Priority = mail.PriorityFromInt(mailPriority)
-	}
-	if mailNotify && msg.Priority == mail.PriorityNormal {
-		msg.Priority = mail.PriorityHigh
-	}
-
-	// Set message type
-	msg.Type = mail.ParseMessageType(mailType)
-
-	// Set pinned flag
-	msg.Pinned = mailPinned
-
-	// Set wisp flag (ephemeral message) - default true, --permanent overrides
-	msg.Wisp = mailWisp && !mailPermanent
-
-	// Set CC recipients
-	msg.CC = mailCC
-
-	// Suppress router-side notification when --no-notify is passed.
-	// Otherwise the router handles idle-aware notification per-recipient,
-	// which also works correctly for fan-out (groups, lists, channels).
-	if mailNoNotify {
-		msg.SuppressNotify = true
-	}
-
-	// Handle reply-to: auto-set type to reply and look up thread
-	if mailReplyTo != "" {
-		msg.ReplyTo = mailReplyTo
-		if msg.Type == mail.TypeNotification {
-			msg.Type = mail.TypeReply
-		}
-
-		// Look up original message in current user's mailbox to get thread ID.
-		// The message we're replying to lives in our inbox (we received it),
-		// so we look it up via our own identity (from), not the recipient (to).
-		router := mail.NewRouter(workDir)
-		mailbox, err := router.GetMailbox(from)
-		if err != nil {
-			style.PrintWarning("could not open mailbox for thread lookup: %v", err)
-		} else {
-			original, err := mailbox.Get(mailReplyTo)
-			if err != nil {
-				style.PrintWarning("could not find original message %s for threading (new thread will be created)", mailReplyTo)
-			} else {
-				msg.ThreadID = original.ThreadID
-			}
-		}
-	}
-
-	// Generate thread ID for new threads
-	if msg.ThreadID == "" {
-		msg.ThreadID = generateThreadID()
-	}
+	msg := buildMailSendMessage(workDir, from, to)
 
 	// Use address resolver for new address types
 	townRoot, _ := workspace.FindFromCwd()
-	b := beads.New(townRoot)
-	resolver := mail.NewResolver(b, townRoot)
+	resolver := mail.NewResolver(beads.New(townRoot), townRoot)
 
 	recipients, err := resolver.Resolve(to)
 	if err != nil {
@@ -163,88 +61,223 @@ func runMailSend(_ *cobra.Command, args []string) error {
 		if errors.Is(err, mail.ErrUnknownRecipient) {
 			return err
 		}
-		// Fall back to legacy routing for infrastructure errors (beads down, etc.)
-		router := mail.NewRouter(workDir)
-		defer router.WaitPendingNotifications()
-		if err := router.Send(msg); err != nil {
-			return fmt.Errorf("sending message: %w", err)
-		}
-		_ = events.LogFeed(events.TypeMail, from, events.MailPayload(to, mailSubject))
-		fmt.Printf("%s Message sent to %s\n", style.Bold.Render("✓"), to)
-		fmt.Printf("  Subject: %s\n", mailSubject)
+		return sendLegacyMail(workDir, from, to, msg)
+	}
+	return sendResolvedMail(workDir, from, to, msg, recipients)
+}
+
+// readMailStdin replaces the message body with stdin content when requested.
+func readMailStdin() error {
+	if !mailStdin {
 		return nil
 	}
+	if mailBody != "" {
+		return fmt.Errorf("cannot use --stdin with --message/-m")
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("reading stdin: %w", err)
+	}
+	mailBody = strings.TrimRight(string(data), "\n")
+	return nil
+}
 
-	// Route based on recipient type, collecting errors instead of failing early
+func resolveMailRecipient(args []string) (string, error) {
+	if mailSendSelf {
+		return resolveSelfMailRecipient()
+	}
+	if mailTo != "" {
+		return mailTo, nil
+	}
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	return "", fmt.Errorf("address required (use positional arg, --to, or --self)")
+}
+
+func resolveSelfMailRecipient() (string, error) {
+	// Auto-detect identity from cwd.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return "", fmt.Errorf("not in a Gas Town workspace")
+	}
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return "", fmt.Errorf("detecting role: %w", err)
+	}
+	ctx := RoleContext{
+		Role:     roleInfo.Role,
+		Rig:      roleInfo.Rig,
+		Polecat:  roleInfo.Polecat,
+		TownRoot: townRoot,
+		WorkDir:  cwd,
+	}
+	to := buildAgentIdentity(ctx)
+	if to == "" {
+		return "", fmt.Errorf("cannot determine identity (role: %s)", ctx.Role)
+	}
+	return to, nil
+}
+
+func maybeInferMailReply(workDir, from, to string) {
+	if mailReplyTo != "" || !hasReplyPrefix(mailSubject) {
+		return
+	}
+	if inferred := inferReplyTo(workDir, from, to, mailSubject); inferred != "" {
+		mailReplyTo = inferred
+	}
+}
+
+func buildMailSendMessage(workDir, from, to string) *mail.Message {
+	msg := mail.NewMessage(from, to, mailSubject, mailBody)
+	if mailUrgent {
+		msg.Priority = mail.PriorityUrgent
+	} else {
+		msg.Priority = mail.PriorityFromInt(mailPriority)
+	}
+	if mailNotify && msg.Priority == mail.PriorityNormal {
+		msg.Priority = mail.PriorityHigh
+	}
+	msg.Type = mail.ParseMessageType(mailType)
+	msg.Pinned = mailPinned
+	msg.Wisp = mailWisp && !mailPermanent
+	msg.CC = mailCC
+	if mailNoNotify {
+		msg.SuppressNotify = true
+	}
+	applyMailReply(workDir, from, msg)
+	if msg.ThreadID == "" {
+		msg.ThreadID = generateThreadID()
+	}
+	return msg
+}
+
+func applyMailReply(workDir, from string, msg *mail.Message) {
+	if mailReplyTo == "" {
+		return
+	}
+	msg.ReplyTo = mailReplyTo
+	if msg.Type == mail.TypeNotification {
+		msg.Type = mail.TypeReply
+	}
+	router := mail.NewRouter(workDir)
+	mailbox, err := router.GetMailbox(from)
+	if err != nil {
+		style.PrintWarning("could not open mailbox for thread lookup: %v", err)
+		return
+	}
+	original, err := mailbox.Get(mailReplyTo)
+	if err != nil {
+		style.PrintWarning("could not find original message %s for threading (new thread will be created)", mailReplyTo)
+		return
+	}
+	msg.ThreadID = original.ThreadID
+}
+
+func sendLegacyMail(workDir, from, to string, msg *mail.Message) error {
+	// Fall back to legacy routing for infrastructure errors (beads down, etc.).
 	router := mail.NewRouter(workDir)
 	defer router.WaitPendingNotifications()
-	var recipientAddrs []string
-	var sendErrs []string
-
-	for _, rec := range recipients {
-		switch rec.Type {
-		case mail.RecipientQueue:
-			// Queue messages: single message, workers claim
-			msg.To = rec.Address
-			if err := router.Send(msg); err != nil {
-				sendErrs = append(sendErrs, fmt.Sprintf("queue %s: %v", rec.Address, err))
-				continue
-			}
-			recipientAddrs = append(recipientAddrs, rec.Address)
-
-		case mail.RecipientChannel:
-			// Channel messages: single message, broadcast
-			msg.To = rec.Address
-			if err := router.Send(msg); err != nil {
-				sendErrs = append(sendErrs, fmt.Sprintf("channel %s: %v", rec.Address, err))
-				continue
-			}
-			recipientAddrs = append(recipientAddrs, rec.Address)
-
-		default:
-			// Direct/agent messages: fan out to each recipient
-			msgCopy := *msg
-			msgCopy.To = rec.Address
-			msgCopy.ID = "" // Each fan-out copy gets its own unique ID
-			if err := router.Send(&msgCopy); err != nil {
-				sendErrs = append(sendErrs, fmt.Sprintf("%s: %v", rec.Address, err))
-				continue
-			}
-			recipientAddrs = append(recipientAddrs, rec.Address)
-		}
+	if err := router.Send(msg); err != nil {
+		return fmt.Errorf("sending message: %w", err)
 	}
+	_ = events.LogFeed(events.TypeMail, from, events.MailPayload(to, mailSubject))
+	fmt.Printf("%s Message sent to %s\n", style.Bold.Render("✓"), to)
+	fmt.Printf("  Subject: %s\n", mailSubject)
+	return nil
+}
 
-	if len(sendErrs) > 0 {
-		if len(recipientAddrs) == 0 {
-			return fmt.Errorf("all sends failed: %s", strings.Join(sendErrs, "; "))
-		}
-		fmt.Fprintf(os.Stderr, "⚠ Some deliveries failed: %s\n", strings.Join(sendErrs, "; "))
+func sendResolvedMail(workDir, from, to string, msg *mail.Message, recipients []mail.Recipient) error {
+	router := mail.NewRouter(workDir)
+	defer router.WaitPendingNotifications()
+	recipientAddrs, sendErrs := sendMailRecipients(router, msg, recipients)
+	if err := reportMailSendErrors(recipientAddrs, sendErrs); err != nil {
+		return err
 	}
-	if mailReplyTo != "" {
-		if err := router.ClearReplyReminders(from, msg.ThreadID); err != nil {
-			style.PrintWarning("could not clear satisfied reply reminders: %v", err)
-		}
-	}
+	clearMailReplyReminders(router, from, msg.ThreadID)
 
 	// Log mail event to activity feed
 	_ = events.LogFeed(events.TypeMail, from, events.MailPayload(to, mailSubject))
 
+	printMailSendSummary(to, msg, recipientAddrs)
+	return nil
+}
+
+func reportMailSendErrors(recipientAddrs, sendErrs []string) error {
+	if len(sendErrs) == 0 {
+		return nil
+	}
+	if len(recipientAddrs) == 0 {
+		return fmt.Errorf("all sends failed: %s", strings.Join(sendErrs, "; "))
+	}
+	fmt.Fprintf(os.Stderr, "⚠ Some deliveries failed: %s\n", strings.Join(sendErrs, "; "))
+	return nil
+}
+
+func clearMailReplyReminders(router *mail.Router, from, threadID string) {
+	if mailReplyTo == "" {
+		return
+	}
+	if err := router.ClearReplyReminders(from, threadID); err != nil {
+		style.PrintWarning("could not clear satisfied reply reminders: %v", err)
+	}
+}
+
+func printMailSendSummary(to string, msg *mail.Message, recipientAddrs []string) {
 	fmt.Printf("%s Message sent to %s\n", style.Bold.Render("✓"), to)
 	fmt.Printf("  Subject: %s\n", mailSubject)
-
-	// Show resolved recipients if fan-out occurred
 	if len(recipientAddrs) > 1 || (len(recipientAddrs) == 1 && recipientAddrs[0] != to) {
 		fmt.Printf("  Recipients: %s\n", strings.Join(recipientAddrs, ", "))
 	}
-
 	if len(msg.CC) > 0 {
 		fmt.Printf("  CC: %s\n", strings.Join(msg.CC, ", "))
 	}
 	if msg.Type != mail.TypeNotification {
 		fmt.Printf("  Type: %s\n", msg.Type)
 	}
+}
 
-	return nil
+func sendMailRecipients(router *mail.Router, msg *mail.Message, recipients []mail.Recipient) ([]string, []string) {
+	var recipientAddrs []string
+	var sendErrs []string
+	for _, rec := range recipients {
+		if err := sendMailRecipient(router, msg, rec); err != nil {
+			sendErrs = append(sendErrs, fmt.Sprintf("%s: %v", mailRecipientErrorPrefix(rec), err))
+			continue
+		}
+		recipientAddrs = append(recipientAddrs, rec.Address)
+	}
+	return recipientAddrs, sendErrs
+}
+
+func sendMailRecipient(router *mail.Router, msg *mail.Message, rec mail.Recipient) error {
+	switch rec.Type {
+	case mail.RecipientQueue, mail.RecipientChannel:
+		// Queue messages are claimed by workers; channel messages are broadcast.
+		msg.To = rec.Address
+		return router.Send(msg)
+	default:
+		// Direct/agent messages fan out with a fresh ID for each recipient.
+		msgCopy := *msg
+		msgCopy.To = rec.Address
+		msgCopy.ID = ""
+		return router.Send(&msgCopy)
+	}
+}
+
+func mailRecipientErrorPrefix(rec mail.Recipient) string {
+	switch rec.Type {
+	case mail.RecipientQueue:
+		return "queue " + rec.Address
+	case mail.RecipientChannel:
+		return "channel " + rec.Address
+	default:
+		return rec.Address
+	}
 }
 
 // generateThreadID creates a random thread ID for new message threads.
