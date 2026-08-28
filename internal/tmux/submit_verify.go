@@ -109,9 +109,9 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 				i = j + 1
 				continue
 			}
-			if i+1 < len(s) && s[i+1] == ']' {
+			if i+1 < sLength && s[i+1] == ']' {
 				j := i + 2
-				for j < len(s) && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\') {
+				for j < sLength && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < sLength && s[j+1] == '\\') {
 					j++
 				}
 				if j >= len(s) {
@@ -135,10 +135,12 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 }
 
 func runeIndex(haystack, needle []rune) int {
-	if len(needle) == 0 || len(needle) > len(haystack) {
+	needleCount := len(needle)
+	haystackCount := len(haystack)
+	if needleCount == 0 || needleCount > haystackCount {
 		return -1
 	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
+	for i := 0; i+needleCount <= haystackCount; i++ {
 		match := true
 		for j := range needle {
 			if haystack[i+j] != needle[j] {
@@ -182,11 +184,17 @@ func splitRunesAndDim(plain []rune, dim []bool) ([][]rune, [][]bool) {
 
 func trimRunesAndDim(runes []rune, dim []bool) ([]rune, []bool) {
 	isSpace := func(r rune) bool { return r == ' ' || r == '\t' || r == '\u00a0' }
-	for len(runes) > 0 && isSpace(runes[0]) {
+	for {
+		if len(runes) == 0 || !isSpace(runes[0]) {
+			break
+		}
 		runes = runes[1:]
 		dim = dim[1:]
 	}
-	for len(runes) > 0 && isSpace(runes[len(runes)-1]) {
+	for {
+		if len(runes) == 0 || !isSpace(runes[len(runes)-1]) {
+			break
+		}
 		runes = runes[:len(runes)-1]
 		dim = dim[:len(dim)-1]
 	}
