@@ -344,7 +344,8 @@ func cleanOldRotations(logPath string) {
 	})
 
 	// Remove extras beyond maxBackups
-	for i := 0; i < len(matches)-logRotationMaxBackups; i++ {
+	extras := len(matches) - logRotationMaxBackups
+	for i := 0; i < extras; i++ {
 		os.Remove(matches[i])
 	}
 }
