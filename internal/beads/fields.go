@@ -867,75 +867,61 @@ func ParseRoleConfig(description string) *RoleConfig {
 		EnvVars:  make(map[string]string),
 		WispTTLs: make(map[string]string),
 	}
-	hasFields := false
-
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "" || value == "null" {
-			continue
-		}
-
-		switch strings.ToLower(key) {
-		case "session_pattern", "session-pattern", "sessionpattern":
-			config.SessionPattern = value
-			hasFields = true
-		case "work_dir_pattern", "work-dir-pattern", "workdirpattern", "workdir_pattern":
-			config.WorkDirPattern = value
-			hasFields = true
-		case "needs_pre_sync", "needs-pre-sync", "needspresync":
-			config.NeedsPreSync = strings.ToLower(value) == "true"
-			hasFields = true
-		case "start_command", "start-command", "startcommand":
-			config.StartCommand = value
-			hasFields = true
-		case "env_var", "env-var", "envvar":
-			// Format: "env_var: KEY=VALUE"
-			if eqIdx := strings.Index(value, "="); eqIdx != -1 {
-				envKey := strings.TrimSpace(value[:eqIdx])
-				envVal := strings.TrimSpace(value[eqIdx+1:])
-				config.EnvVars[envKey] = envVal
-				hasFields = true
-			}
-		// Health check threshold fields (ZFC: agent-controlled)
-		case "ping_timeout", "ping-timeout", "pingtimeout":
-			config.PingTimeout = value
-			hasFields = true
-		case "consecutive_failures", "consecutive-failures", "consecutivefailures":
-			if n, err := parseIntField(value); err == nil {
-				config.ConsecutiveFailures = n
-				hasFields = true
-			}
-		case "kill_cooldown", "kill-cooldown", "killcooldown":
-			config.KillCooldown = value
-			hasFields = true
-		case "stuck_threshold", "stuck-threshold", "stuckthreshold":
-			config.StuckThreshold = value
-			hasFields = true
-		default:
-			// Check for wisp_ttl_* pattern (e.g., wisp_ttl_patrol, wisp-ttl-error)
-			lowerKey := strings.ToLower(key)
-			if wispType, ok := ParseWispTTLKey(lowerKey); ok {
-				config.WispTTLs[wispType] = value
-				hasFields = true
-			}
-		}
+		setRoleConfigField(config, line)
 	}
-
-	if !hasFields {
+	if !hasRoleConfigFields(config) {
 		return nil
 	}
 	return config
+}
+
+func setRoleConfigField(config *RoleConfig, line string) {
+	key, value, ok := agentDescriptionFieldLine(line)
+	if !ok || value == "" {
+		return
+	}
+	if wispType, ok := ParseWispTTLKey(key); ok {
+		config.WispTTLs[wispType] = value
+		return
+	}
+	key = convoyFieldKey(key)
+	if destination, ok := roleConfigStringFields(config)[key]; ok {
+		*destination = value
+		return
+	}
+	if key == "needspresync" {
+		config.NeedsPreSync = strings.EqualFold(value, "true")
+		return
+	}
+	if key == "consecutivefailures" {
+		if value, err := parseIntField(value); err == nil {
+			config.ConsecutiveFailures = value
+		}
+		return
+	}
+	if key == "envvar" {
+		setRoleConfigEnvVar(config, value)
+	}
+}
+
+func roleConfigStringFields(config *RoleConfig) map[string]*string {
+	return map[string]*string{
+		"sessionpattern": &config.SessionPattern, "workdirpattern": &config.WorkDirPattern, "startcommand": &config.StartCommand, "pingtimeout": &config.PingTimeout, "killcooldown": &config.KillCooldown, "stuckthreshold": &config.StuckThreshold,
+	}
+}
+func setRoleConfigEnvVar(config *RoleConfig, value string) {
+	if index := strings.Index(value, "="); index != -1 {
+		config.EnvVars[strings.TrimSpace(value[:index])] = strings.TrimSpace(value[index+1:])
+	}
+}
+func hasRoleConfigFields(config *RoleConfig) bool {
+	for _, value := range []string{config.SessionPattern, config.WorkDirPattern, optionalTrue(config.NeedsPreSync), config.StartCommand, config.PingTimeout, optionalPositiveInt(config.ConsecutiveFailures), config.KillCooldown, config.StuckThreshold} {
+		if value != "" {
+			return true
+		}
+	}
+	return len(config.EnvVars) > 0 || len(config.WispTTLs) > 0
 }
 
 // ParseWispTTLKey checks if a lowercase key matches the wisp_ttl_* pattern
@@ -960,19 +946,9 @@ func FormatRoleConfig(config *RoleConfig) string {
 		return ""
 	}
 
-	var lines []string
-
-	if config.SessionPattern != "" {
-		lines = append(lines, "session_pattern: "+config.SessionPattern)
-	}
-	if config.WorkDirPattern != "" {
-		lines = append(lines, "work_dir_pattern: "+config.WorkDirPattern)
-	}
-	if config.NeedsPreSync {
-		lines = append(lines, "needs_pre_sync: true")
-	}
-	if config.StartCommand != "" {
-		lines = append(lines, "start_command: "+config.StartCommand)
+	lines := strings.Split(formatOptionalDescriptionFields([]optionalDescriptionField{{"session_pattern", config.SessionPattern}, {"work_dir_pattern", config.WorkDirPattern}, {"needs_pre_sync", optionalTrue(config.NeedsPreSync)}, {"start_command", config.StartCommand}}), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
 	}
 	for k, v := range config.EnvVars {
 		lines = append(lines, "env_var: "+k+"="+v)
