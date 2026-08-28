@@ -182,30 +182,34 @@ func isBDReadOnlyGlobalFlag(arg string) bool {
 }
 
 func stripBDGlobalFlags(args []string) ([]string, bool) {
-	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
-		if args[0] == "--" {
+	for index, arg := range args {
+		if !strings.HasPrefix(arg, "--") {
+			if strings.HasPrefix(arg, "-") {
+				return nil, false
+			}
+			return args[index:], true
+		}
+		if arg == "--" {
 			return nil, false
 		}
-		name := args[0]
+		name := arg
 		if cut, _, hasValue := strings.Cut(name, "="); hasValue {
 			name = cut
 		}
 		if !bdBoolGlobalFlags[name] {
 			return nil, false
 		}
-		args = args[1:]
 	}
-	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		return nil, false
-	}
-	return args, true
+	return nil, true
 }
 
 func stripBDCommandFlags(args []string) []string {
-	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
-		args = args[1:]
+	for index, arg := range args {
+		if !strings.HasPrefix(arg, "--") {
+			return args[index:]
+		}
 	}
-	return args
+	return nil
 }
 
 func hasReadOnlySQLPrefix(query string) bool {
