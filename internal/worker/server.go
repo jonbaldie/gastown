@@ -254,7 +254,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := StateUnknown
-	if run, err := s.store.getRun(req.RunID); err == nil {
+	if run, err := s.store.GetRun(req.RunID); err == nil {
 		state = run.State
 	}
 	writeJSON(w, http.StatusOK, DecideAuthorize(state, req))
@@ -403,19 +403,19 @@ func (s *Server) dispatchTown(ctx context.Context, req TownRequest) TownResponse
 		}
 		return TownResponse{OK: true}
 	case opLiveBead:
-		run, err := s.store.liveRunForBead(req.BeadID)
+		run, err := s.store.LiveRunForBead(req.BeadID)
 		if err != nil {
 			return failTown(err)
 		}
 		return okTown(run)
 	case opEvents:
-		ev, err := s.store.readEvents()
+		ev, err := s.store.ReadEvents()
 		if err != nil {
 			return failTown(err)
 		}
 		return okTown(ev)
 	case opCosts:
-		costs, err := s.store.readCosts()
+		costs, err := s.store.ReadCosts()
 		if err != nil {
 			return failTown(err)
 		}
@@ -426,7 +426,7 @@ func (s *Server) dispatchTown(ctx context.Context, req TownRequest) TownResponse
 		}
 		return TownResponse{OK: true}
 	case opExpireQueue:
-		expired, err := s.store.expireStale(nowUTC())
+		expired, err := s.store.ExpireStale(nowUTC())
 		if err != nil {
 			return failTown(err)
 		}
@@ -444,17 +444,17 @@ func (s *Server) startRun(spec StartSpec) (*Run, error) {
 		return nil, fmt.Errorf("session_id is required")
 	}
 	if spec.BeadID != "" {
-		if live, err := s.store.liveRunForBead(spec.BeadID); err != nil {
+		if live, err := s.store.LiveRunForBead(spec.BeadID); err != nil {
 			return nil, err
 		} else if live != nil && live.RunID != spec.RunID {
 			return nil, fmt.Errorf("%w: %s is %s", ErrLiveRun, spec.BeadID, live.RunID)
 		}
-		if latest, err := s.store.latestRunForBead(spec.BeadID); err == nil && latest != nil && !latest.State.known() {
+		if latest, err := s.store.LatestRunForBead(spec.BeadID); err == nil && latest != nil && !latest.State.known() {
 			return nil, fmt.Errorf("%w: bead %s has unknown state; refusing extra spawn", ErrUnknownState, spec.BeadID)
 		}
 	}
 	if spec.SessionID != "" {
-		if existing, err := s.store.latestRunForSession(spec.SessionID); err == nil && existing != nil && existing.RunID != spec.RunID {
+		if existing, err := s.store.LatestRunForSession(spec.SessionID); err == nil && existing != nil && existing.RunID != spec.RunID {
 			if !existing.State.known() {
 				return nil, fmt.Errorf("%w: session %s has unknown state; refusing extra spawn", ErrUnknownState, spec.SessionID)
 			}
@@ -481,10 +481,10 @@ func (s *Server) startRun(spec StartSpec) (*Run, error) {
 	} else {
 		run.Adapter = AdapterTmux
 	}
-	if err := s.store.putRun(run); err != nil {
+	if err := s.store.PutRun(run); err != nil {
 		return nil, err
 	}
-	_ = s.store.appendEvent(Event{
+	_ = s.store.AppendEvent(Event{
 		Type: EventStarted, RunID: run.RunID, BeadID: run.BeadID,
 		SessionID: run.SessionID, Timestamp: now,
 		Payload: map[string]any{"role": run.Role, "agent_type": run.AgentType},
@@ -500,7 +500,7 @@ func (s *Server) applyLifecycle(lc Lifecycle) error {
 	if !st.known() {
 		return fmt.Errorf("unknown lifecycle event %q", lc.Event)
 	}
-	run, err := s.store.getRun(lc.RunID)
+	run, err := s.store.GetRun(lc.RunID)
 	if err != nil {
 		if !errors.Is(err, ErrRunNotFound) {
 			return err
@@ -537,10 +537,10 @@ func (s *Server) applyLifecycle(lc Lifecycle) error {
 	if s.connected(lc.RunID) {
 		run.Adapter = AdapterProtocol
 	}
-	if err := s.store.putRun(run); err != nil {
+	if err := s.store.PutRun(run); err != nil {
 		return err
 	}
-	_ = s.store.appendEvent(Event{
+	_ = s.store.AppendEvent(Event{
 		Type: lc.Event, RunID: run.RunID, BeadID: run.BeadID,
 		SessionID: run.SessionID, Timestamp: run.UpdatedAt,
 		Payload: lc.Metadata,
@@ -555,7 +555,7 @@ func (s *Server) applyTelemetry(batch TelemetryBatch) error {
 	if batch.RunID == "" {
 		return fmt.Errorf("run_id is required")
 	}
-	run, err := s.store.getRun(batch.RunID)
+	run, err := s.store.GetRun(batch.RunID)
 	if err != nil {
 		return err
 	}
@@ -578,10 +578,10 @@ func (s *Server) applyTelemetry(batch TelemetryBatch) error {
 		if rec.Timestamp.IsZero() {
 			rec.Timestamp = nowUTC()
 		}
-		if err := s.store.appendCost(rec); err != nil {
+		if err := s.store.AppendCost(rec); err != nil {
 			return err
 		}
-		_ = s.store.appendEvent(Event{
+		_ = s.store.AppendEvent(Event{
 			Type: "telemetry", RunID: run.RunID, BeadID: run.BeadID,
 			SessionID: run.SessionID, Timestamp: rec.Timestamp,
 			Payload: map[string]any{
@@ -596,14 +596,14 @@ func (s *Server) applyHealth(h Health) error {
 	if h.RunID == "" {
 		return fmt.Errorf("run_id is required")
 	}
-	run, err := s.store.getRun(h.RunID)
+	run, err := s.store.GetRun(h.RunID)
 	if err != nil {
 		return err
 	}
 	run.LastHealth = nowUTC()
 	run.UpdatedAt = run.LastHealth
 	s.touch(h.RunID)
-	return s.store.putRun(run)
+	return s.store.PutRun(run)
 }
 
 func (s *Server) deliver(ctx context.Context, p Prompt) (*Delivery, error) {
@@ -645,7 +645,7 @@ func (s *Server) deliverProtocol(ctx context.Context, run *Run, p Prompt) (*Deli
 			return nil, err
 		}
 		d := &Delivery{Accepted: false, Queued: true, Position: pos, Adapter: AdapterProtocol, RunID: run.RunID}
-		_ = s.store.appendEvent(Event{
+		_ = s.store.AppendEvent(Event{
 			Type: "queued", RunID: run.RunID, BeadID: run.BeadID,
 			SessionID: run.SessionID, Timestamp: nowUTC(),
 			Payload: map[string]any{"source": p.Source, "priority": p.Priority, "position": pos},
@@ -681,7 +681,7 @@ func (s *Server) deliverProtocol(ctx context.Context, run *Run, p Prompt) (*Deli
 	case ack := <-conn.ack:
 		ack.Adapter = AdapterProtocol
 		ack.RunID = run.RunID
-		_ = s.store.appendEvent(Event{
+		_ = s.store.AppendEvent(Event{
 			Type: "delivered", RunID: run.RunID, BeadID: run.BeadID,
 			SessionID: run.SessionID, Timestamp: nowUTC(),
 			Payload: map[string]any{"source": p.Source, "priority": p.Priority, "accepted": ack.Accepted, "queued": ack.Queued},
@@ -717,7 +717,7 @@ func (s *Server) deliverTmux(run *Run, p Prompt) (*Delivery, error) {
 	if err := s.tmux.NudgeSession(run.SessionID, p.Content); err != nil {
 		return nil, fmt.Errorf("tmux deliver: %w", err)
 	}
-	_ = s.store.appendEvent(Event{
+	_ = s.store.AppendEvent(Event{
 		Type: "delivered", RunID: run.RunID, BeadID: run.BeadID,
 		SessionID: run.SessionID, Timestamp: nowUTC(),
 		Payload: map[string]any{"source": p.Source, "adapter": AdapterTmux},
@@ -736,12 +736,12 @@ func (s *Server) enqueuePrompt(p Prompt) (int, error) {
 		Enqueued:  nowUTC(),
 		ExpiresAt: nowUTC().Add(ttl),
 	}
-	pos, err := s.store.enqueue(item)
+	pos, err := s.store.Enqueue(item)
 	if err != nil {
 		return 0, err
 	}
 	if s.store.townRoot != "" && p.RunID != "" {
-		if run, err := s.store.getRun(p.RunID); err == nil && run.SessionID != "" {
+		if run, err := s.store.GetRun(p.RunID); err == nil && run.SessionID != "" {
 			_ = nudge.Enqueue(s.store.townRoot, run.SessionID, nudge.QueuedNudge{
 				Sender:    p.From,
 				Message:   p.Content,
@@ -756,7 +756,7 @@ func (s *Server) enqueuePrompt(p Prompt) (int, error) {
 }
 
 func (s *Server) drainQueue(runID string) {
-	due, err := s.store.drainDue(runID)
+	due, err := s.store.DrainDue(runID)
 	if err != nil || len(due) == 0 {
 		return
 	}
@@ -768,7 +768,7 @@ func (s *Server) drainQueue(runID string) {
 }
 
 func mustRun(s *Server, runID string) *Run {
-	run, err := s.store.getRun(runID)
+	run, err := s.store.GetRun(runID)
 	if err != nil {
 		return &Run{RunID: runID, State: StateIdle}
 	}
@@ -863,7 +863,7 @@ func (s *Server) kill(runID, sessionID string) error {
 }
 
 func (s *Server) pushIdentity(id Identity) error {
-	if _, err := s.store.getRun(id.RunID); err != nil {
+	if _, err := s.store.GetRun(id.RunID); err != nil {
 		return err
 	}
 	conn := s.conn(id.RunID)
@@ -885,7 +885,7 @@ func (s *Server) pushIdentity(id Identity) error {
 }
 
 func (s *Server) pushContext(push ContextPush) error {
-	if _, err := s.store.getRun(push.RunID); err != nil {
+	if _, err := s.store.GetRun(push.RunID); err != nil {
 		return err
 	}
 	conn := s.conn(push.RunID)
@@ -912,7 +912,7 @@ func (s *Server) waitReady(ctx context.Context, runID string) error {
 		deadline = dl
 	}
 	for time.Now().Before(deadline) {
-		run, err := s.store.getRun(runID)
+		run, err := s.store.GetRun(runID)
 		if err != nil {
 			return err
 		}
@@ -936,17 +936,17 @@ func (s *Server) waitReady(ctx context.Context, runID string) error {
 
 func (s *Server) resolveRun(runID, sessionID string) (*Run, error) {
 	if runID != "" {
-		if run, err := s.store.getRun(runID); err == nil {
+		if run, err := s.store.GetRun(runID); err == nil {
 			return run, nil
 		} else if !errors.Is(err, ErrRunNotFound) {
 			return nil, err
 		}
 	}
 	if sessionID != "" {
-		return s.store.getRunBySession(sessionID)
+		return s.store.GetRunBySession(sessionID)
 	}
 	if runID != "" {
-		return s.store.getRunBySession(runID)
+		return s.store.GetRunBySession(runID)
 	}
 	return nil, ErrRunNotFound
 }
@@ -967,7 +967,7 @@ func (s *Server) attach(runID, sessionID string) {
 	conn.connected = true
 	conn.lastSeen = nowUTC()
 	conn.sessionID = sessionID
-	if run, err := s.store.getRun(runID); err == nil {
+	if run, err := s.store.GetRun(runID); err == nil {
 		run.Adapter = AdapterProtocol
 		run.SessionID = sessionID
 		_ = s.store.putRunLocked(run)
