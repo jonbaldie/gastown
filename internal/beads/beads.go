@@ -1408,12 +1408,7 @@ func (b *Beads) hydrateMergeRequestDetails(issues []*Issue) ([]*Issue, error) {
 		return issues, nil
 	}
 
-	ids := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		if issue != nil && issue.ID != "" {
-			ids = append(ids, issue.ID)
-		}
-	}
+	ids := mergeRequestIDs(issues)
 	if len(ids) == 0 {
 		return issues, nil
 	}
@@ -1422,7 +1417,20 @@ func (b *Beads) hydrateMergeRequestDetails(issues []*Issue) ([]*Issue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hydrating merge-request dependencies: %w", err)
 	}
+	return hydrateMergeRequestIssues(issues, details)
+}
 
+func mergeRequestIDs(issues []*Issue) []string {
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue != nil && issue.ID != "" {
+			ids = append(ids, issue.ID)
+		}
+	}
+	return ids
+}
+
+func hydrateMergeRequestIssues(issues []*Issue, details map[string]*Issue) ([]*Issue, error) {
 	hydrated := make([]*Issue, 0, len(issues))
 	for _, issue := range issues {
 		if issue == nil || issue.ID == "" {
