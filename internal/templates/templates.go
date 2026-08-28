@@ -10,29 +10,20 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"text/template"
 
 	"github.com/jonbaldie/gastown/internal/instructions"
 	"github.com/jonbaldie/gastown/internal/templates/commands"
 )
 
-var (
-	cmdName     string
-	cmdNameOnce sync.Once
-)
-
 // CmdName returns the Gas Town CLI command name.
 // Defaults to "gt", but can be overridden with GT_COMMAND env var.
 // This allows coexistence with other tools that use "gt" (e.g., Graphite).
 func CmdName() string {
-	cmdNameOnce.Do(func() {
-		cmdName = os.Getenv("GT_COMMAND")
-		if cmdName == "" {
-			cmdName = "gt"
-		}
-	})
-	return cmdName
+	if cmdName := os.Getenv("GT_COMMAND"); cmdName != "" {
+		return cmdName
+	}
+	return "gt"
 }
 
 // templateFuncs provides custom functions for templates.
