@@ -1639,6 +1639,14 @@ func (b *Beads) FindLatestIssueByTitleAndAssignee(title, assignee string) (*Issu
 		return nil, ErrNotFound
 	}
 
+	newest := newestIssueForTitleAndAssignee(issues, title, assignee)
+	if newest == nil {
+		return nil, ErrNotFound
+	}
+	return newest, nil
+}
+
+func newestIssueForTitleAndAssignee(issues []*Issue, title, assignee string) *Issue {
 	var newest *Issue
 	for _, issue := range issues {
 		if issue.Title != title || issue.Assignee != assignee {
@@ -1648,10 +1656,7 @@ func (b *Beads) FindLatestIssueByTitleAndAssignee(title, assignee string) (*Issu
 			newest = issue
 		}
 	}
-	if newest == nil {
-		return nil, ErrNotFound
-	}
-	return newest, nil
+	return newest
 }
 
 // ShowMultiple fetches multiple issues by ID, grouped by routed database.
