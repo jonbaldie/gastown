@@ -1044,34 +1044,26 @@ func stripEnvPrefixes(environ []string, prefixes ...string) []string {
 	filtered := make([]string, 0, len(environ))
 	for _, env := range environ {
 		keyName, _, ok := strings.Cut(env, "=")
-		skip := false
-		if ok {
-			for _, prefix := range prefixes {
-				if strings.HasSuffix(prefix, "=") {
-					if envKeyMatches(keyName, strings.TrimSuffix(prefix, "=")) {
-						skip = true
-						break
-					}
-					continue
-				}
-				if envKeyHasPrefix(keyName, prefix) {
-					skip = true
-					break
-				}
-			}
-		} else {
-			for _, prefix := range prefixes {
-				if strings.HasPrefix(env, prefix) {
-					skip = true
-					break
-				}
-			}
-		}
-		if !skip {
+		if !matchesEnvPrefix(env, keyName, ok, prefixes) {
 			filtered = append(filtered, env)
 		}
 	}
 	return filtered
+}
+
+func matchesEnvPrefix(env, keyName string, hasKey bool, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if hasKey && strings.HasSuffix(prefix, "=") && envKeyMatches(keyName, strings.TrimSuffix(prefix, "=")) {
+			return true
+		}
+		if hasKey && !strings.HasSuffix(prefix, "=") && envKeyHasPrefix(keyName, prefix) {
+			return true
+		}
+		if !hasKey && strings.HasPrefix(env, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // List returns issues matching the given options.
