@@ -22,10 +22,18 @@ func (c *Client) ping(ctx context.Context) error {
 // Worker is the town module for session talk. Nudge, prime, mail, sling,
 // witness, cost ingest, and session start call this type.
 type Worker struct {
+	workerRuntime
+	workerClient
+}
+
+type workerRuntime struct {
 	townRoot string
-	store    *Store
-	client   *Client
 	local    *Server
+}
+
+type workerClient struct {
+	store  *Store
+	client *Client
 }
 
 // Open dials a running Worker server. If none is up, it starts one.
@@ -53,7 +61,10 @@ func Open(townRoot string) (*Worker, error) {
 		}
 		client = httpClient
 	}
-	return &Worker{townRoot: townRoot, store: store, client: client}, nil
+	return &Worker{
+		workerRuntime: workerRuntime{townRoot: townRoot},
+		workerClient:  workerClient{store: store, client: client},
+	}, nil
 }
 
 // Listen starts an in-process Worker server. Tests and `gt worker serve` use this.
@@ -73,10 +84,8 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 		client = httpClient
 	}
 	return &Worker{
-		townRoot: townRoot,
-		store:    store,
-		client:   client,
-		local:    srv,
+		workerRuntime: workerRuntime{townRoot: townRoot, local: srv},
+		workerClient:  workerClient{store: store, client: client},
 	}, nil
 }
 
@@ -85,7 +94,7 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 // that transport is bound, and the loopback port when the socket is
 // unavailable. The two are returned separately because a socket path and a
 // host and port are not interchangeable to a caller that wants to connect.
-func (w *Worker) Endpoint() (network, address string) {
+func (w *workerRuntime) Endpoint() (network, address string) {
 	if w.local == nil || w.local.UnixActive() {
 		return "unix", SocketPath(w.townRoot)
 	}
@@ -93,7 +102,7 @@ func (w *Worker) Endpoint() (network, address string) {
 }
 
 // Close stops an in-process server.
-func (w *Worker) Close() error {
+func (w *workerRuntime) Close() error {
 	if w.local != nil {
 		return w.local.Close()
 	}
