@@ -836,34 +836,33 @@ func (p *Proxy) InjectNotificationToUI(method string, params any) error {
 		return fmt.Errorf("cannot inject session/update: empty sessionID")
 	}
 
-	msg := JSONRPCMessage{
-		JSONRPC: "2.0",
-		Method:  method,
-	}
-
-	if sessionID != "" || params != nil {
-		paramMap := make(map[string]any)
-		if sessionID != "" {
-			paramMap["sessionId"] = sessionID
-		}
-		if params != nil {
-			if v, ok := params.(map[string]any); ok {
-				for k, val := range v {
-					paramMap[k] = val
-				}
-			} else {
-				paramMap["params"] = params
-			}
-		}
-		rawParams, _ := json.Marshal(paramMap)
-		msg.Params = rawParams
-	}
+	msg := notificationMessage(method, sessionID, params)
 
 	debugLog(p.townRoot, "[Proxy] Injecting notification to UI: method=%s sessionId=%s", method, sessionID)
 	p.stdoutMux.Lock()
 	err := p.uiEncoder.Encode(&msg)
 	p.stdoutMux.Unlock()
 	return err
+}
+
+func notificationMessage(method, sessionID string, params any) JSONRPCMessage {
+	msg := JSONRPCMessage{JSONRPC: "2.0", Method: method}
+	if sessionID == "" && params == nil {
+		return msg
+	}
+	paramMap := make(map[string]any)
+	if sessionID != "" {
+		paramMap["sessionId"] = sessionID
+	}
+	if values, ok := params.(map[string]any); ok {
+		for key, value := range values {
+			paramMap[key] = value
+		}
+	} else if params != nil {
+		paramMap["params"] = params
+	}
+	msg.Params, _ = json.Marshal(paramMap)
+	return msg
 }
 
 func (p *Proxy) InjectPrompt(prompt string) error {
