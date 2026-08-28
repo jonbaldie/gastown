@@ -392,20 +392,32 @@ func EnsureServer(townRoot string) error {
 	if serverLive(townRoot) {
 		return nil
 	}
+	cmd, err := startWorkerServer(townRoot)
+	if err != nil {
+		return err
+	}
+	return waitForWorkerServer(cmd, townRoot)
+}
+
+func startWorkerServer(townRoot string) (*exec.Cmd, error) {
 	bin, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("finding gt binary: %w", err)
+		return nil, fmt.Errorf("finding gt binary: %w", err)
 	}
 	if isTestExecutable(bin) {
-		return fmt.Errorf("%w: refusing to start test binary as worker server", ErrServerDown)
+		return nil, fmt.Errorf("%w: refusing to start test binary as worker server", ErrServerDown)
 	}
 	cmd := exec.Command(bin, "worker", "serve", "--town", townRoot)
 	cmd.SysProcAttr = serveSysProcAttr()
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%w: starting worker server: %v", ErrServerDown, err)
+		return nil, fmt.Errorf("%w: starting worker server: %v", ErrServerDown, err)
 	}
+	return cmd, nil
+}
+
+func waitForWorkerServer(cmd *exec.Cmd, townRoot string) error {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	deadline := time.Now().Add(5 * time.Second)
