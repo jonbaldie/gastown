@@ -31,25 +31,17 @@ func GenerateCA(dir string) (*CA, error) {
 		return nil, fmt.Errorf("create ca dir: %w", err)
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := generateCAKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate ca key: %w", err)
 	}
 
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := generateCASerial()
 	if err != nil {
 		return nil, fmt.Errorf("generate ca serial: %w", err)
 	}
 
-	tmpl := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "GasTown CA"},
-		NotBefore:             time.Now().Add(-time.Minute),
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
-		IsCA:                  true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-	}
+	tmpl := newCACertificateTemplate(serial)
 
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -64,21 +56,8 @@ func GenerateCA(dir string) (*CA, error) {
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-	// Write each file to a *.tmp sibling then rename atomically so that a
-	// crash between writes never leaves ca.crt and ca.key in an inconsistent state.
-	certTmp := filepath.Join(dir, "ca.crt.tmp")
-	if err := os.WriteFile(certTmp, certPEM, 0644); err != nil {
-		return nil, fmt.Errorf("write ca.crt.tmp: %w", err)
-	}
-	if err := os.Rename(certTmp, filepath.Join(dir, "ca.crt")); err != nil {
-		return nil, fmt.Errorf("rename ca.crt: %w", err)
-	}
-	keyTmp := filepath.Join(dir, "ca.key.tmp")
-	if err := os.WriteFile(keyTmp, keyPEM, 0600); err != nil {
-		return nil, fmt.Errorf("write ca.key.tmp: %w", err)
-	}
-	if err := os.Rename(keyTmp, filepath.Join(dir, "ca.key")); err != nil {
-		return nil, fmt.Errorf("rename ca.key: %w", err)
+	if err := writeCAFiles(dir, certPEM, keyPEM); err != nil {
+		return nil, err
 	}
 
 	cert, err := x509.ParseCertificate(certDER)
@@ -87,6 +66,46 @@ func GenerateCA(dir string) (*CA, error) {
 	}
 
 	return &CA{Cert: cert, CertPEM: certPEM, Key: key}, nil
+}
+
+func generateCAKey() (*ecdsa.PrivateKey, error) {
+	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+}
+
+func generateCASerial() (*big.Int, error) {
+	return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+}
+
+func newCACertificateTemplate(serial *big.Int) *x509.Certificate {
+	return &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "GasTown CA"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+	}
+}
+
+func writeCAFiles(dir string, certPEM, keyPEM []byte) error {
+	// Write each file to a *.tmp sibling then rename atomically so that a
+	// crash between writes never leaves ca.crt and ca.key in an inconsistent state.
+	if err := writeCAFile(dir, "ca.crt.tmp", "ca.crt", certPEM, 0644); err != nil {
+		return err
+	}
+	return writeCAFile(dir, "ca.key.tmp", "ca.key", keyPEM, 0600)
+}
+
+func writeCAFile(dir, tempName, finalName string, content []byte, perm os.FileMode) error {
+	tempPath := filepath.Join(dir, tempName)
+	if err := os.WriteFile(tempPath, content, perm); err != nil {
+		return fmt.Errorf("write %s: %w", tempName, err)
+	}
+	if err := os.Rename(tempPath, filepath.Join(dir, finalName)); err != nil {
+		return fmt.Errorf("rename %s: %w", finalName, err)
+	}
+	return nil
 }
 
 // LoadOrGenerateCA loads the CA from dir if present, otherwise generates and saves it.
