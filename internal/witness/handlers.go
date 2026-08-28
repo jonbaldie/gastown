@@ -1472,7 +1472,7 @@ func DetectZombiePolecats(bd *BdCli, workDir, rigName string, _ *mail.Router) *D
 				agentState = snap.AgentState
 			}
 			if beads.AgentState(agentState) == AgentStateIdle {
-				cleanupStatus := snap.cleanupStatus()
+				cleanupStatus := agentBeadSnapshotCleanupStatus(snap)
 				if cleanupStatus != "" && cleanupStatus != "clean" {
 					// ZFC (gt-5rne): Report data, don't escalate. The witness agent
 					// decides whether dirty idle state warrants escalation.
@@ -1681,7 +1681,7 @@ func detectSubmittedStillRunning(bd *BdCli, workDir, polecatName, sessionName st
 		AgentState:     snapState,
 		Classification: ZombieSubmittedStillRunning,
 		HookBead:       snapHook,
-		CleanupStatus:  snap.cleanupStatus(),
+		CleanupStatus:  agentBeadSnapshotCleanupStatus(snap),
 		WasActive:      false,
 		Action:         fmt.Sprintf("nudged-exit-submitted-session (idle=%v, hook_status=%s)", age.Round(time.Second), hookStatus),
 	}
@@ -1694,13 +1694,13 @@ func detectSubmittedStillRunning(bd *BdCli, workDir, polecatName, sessionName st
 }
 
 func isSubmittedStillRunningCandidate(snap *agentBeadSnapshot, hb *polecat.SessionHeartbeat, staleThreshold time.Duration) (time.Duration, bool) {
-	if snap == nil || snap.cleanupStatus() != "clean" || !hasSuccessfulSubmissionEvidence(snap) {
+	if snap == nil || agentBeadSnapshotCleanupStatus(snap) != "clean" || !hasSuccessfulSubmissionEvidence(snap) {
 		return 0, false
 	}
 	if beads.AgentState(snap.AgentState) == AgentStateIdle {
 		return 0, false
 	}
-	age := snap.age()
+	age := agentBeadSnapshotAge(snap)
 	if hb != nil {
 		age = time.Since(hb.Timestamp)
 	}
@@ -1829,7 +1829,7 @@ func detectZombieDeadSession(bd *BdCli, workDir, townRoot, rigName, polecatName,
 	// detection if the polecat has been spawning for less than SpawnGracePeriod.
 	if typedState == beads.AgentStateSpawning {
 		// gt-2gra: Use snapshot's age instead of calling getAgentBeadAge.
-		spawnAge := snap.age()
+		spawnAge := agentBeadSnapshotAge(snap)
 		if spawnAge < SpawnGracePeriod {
 			return ZombieResult{}, false
 		}
@@ -1867,7 +1867,7 @@ func detectZombieDeadSession(bd *BdCli, workDir, townRoot, rigName, polecatName,
 
 	// gt-dsgp: Restart instead of nuking. For dirty state, escalate AND restart.
 	// gt-2gra: Use snapshot's cleanup status instead of calling getCleanupStatus.
-	cleanupStatus := snap.cleanupStatus()
+	cleanupStatus := agentBeadSnapshotCleanupStatus(snap)
 	handleZombieRestart(bd, workDir, rigName, polecatName, snapHook, cleanupStatus, &zombie)
 	return zombie, true
 }
@@ -2403,7 +2403,7 @@ func fetchAgentBeadSnapshot(bd *BdCli, workDir, agentBeadID string) *agentBeadSn
 // snapshotAge returns the time since the agent bead was last updated.
 // Returns a large duration if the timestamp can't be parsed, so callers
 // don't accidentally skip zombie detection on parse failure.
-func (s *agentBeadSnapshot) age() time.Duration {
+func agentBeadSnapshotAge(s *agentBeadSnapshot) time.Duration {
 	if s == nil || s.UpdatedAt == "" {
 		return 24 * time.Hour
 	}
@@ -2417,8 +2417,8 @@ func (s *agentBeadSnapshot) age() time.Duration {
 	return time.Since(updatedAt)
 }
 
-// cleanupStatus returns the cleanup_status from the agent bead's description fields.
-func (s *agentBeadSnapshot) cleanupStatus() string {
+// agentBeadSnapshotCleanupStatus returns the cleanup_status from the agent bead's description fields.
+func agentBeadSnapshotCleanupStatus(s *agentBeadSnapshot) string {
 	if s == nil || s.Fields == nil {
 		return ""
 	}
