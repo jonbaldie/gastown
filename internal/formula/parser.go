@@ -539,8 +539,10 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 		Version:     formula.Version,
 		Pour:        formula.Pour,
 		Agent:       formula.Agent,
-		Compose:     formula.Compose,
 		Vars:        make(map[string]Var),
+		FormulaComposition: FormulaComposition{
+			Compose: formula.Compose,
+		},
 	}
 	if merged.Type == "" {
 		merged.Type = TypeWorkflow

@@ -46,6 +46,13 @@ type Formula struct {
 	Steps []Step         `toml:"steps"`
 	Vars  map[string]Var `toml:"vars"`
 
+	FormulaComposition
+}
+
+// FormulaComposition groups the fields used when formulas inherit, expand, or
+// apply aspect rules. Its anonymous embedding keeps Formula's core model
+// compact while retaining the promoted selectors used throughout the package.
+type FormulaComposition struct {
 	// Composition-specific
 	Extends []string      `toml:"extends"` // Parent formula names to inherit steps from.
 	Compose *ComposeRules `toml:"compose"` // Composition rules applied after inheritance.
