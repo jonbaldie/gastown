@@ -831,8 +831,7 @@ func (c *PolecatClonesValidCheck) Run(ctx *CheckContext) *CheckResult {
 // BeadsConfigValidCheck verifies beads configuration if .beads/ exists.
 type BeadsConfigValidCheck struct {
 	FixableCheck
-	rigPath   string
-	needsSync bool
+	rigPath string
 }
 
 // NewBeadsConfigValidCheck creates a new beads config check.

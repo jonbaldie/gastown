@@ -59,7 +59,7 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 		return nil, err
 	}
 	client := newClient(townRoot)
-	if !srv.unixActive() {
+	if !srv.UnixActive() {
 		httpClient, err := newHTTPClient(townRoot)
 		if err != nil {
 			_ = srv.Close()
@@ -81,7 +81,7 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 // unavailable. The two are returned separately because a socket path and a
 // host and port are not interchangeable to a caller that wants to connect.
 func (w *Worker) Endpoint() (network, address string) {
-	if w.local == nil || w.local.unixActive() {
+	if w.local == nil || w.local.UnixActive() {
 		return "unix", SocketPath(w.townRoot)
 	}
 	return "tcp", fmt.Sprintf("127.0.0.1:%d", w.local.port)

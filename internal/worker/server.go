@@ -52,8 +52,6 @@ type agentConn struct {
 	lastSeen    time.Time
 	outbound    chan Envelope
 	ack         chan Delivery
-	interrupt   bool
-	prompts     []Prompt
 	identity    *Identity
 	contextPush *ContextPush
 }
@@ -143,8 +141,8 @@ func (s *Server) Listen() error {
 	return nil
 }
 
-// unixActive reports whether the Unix socket listener is bound.
-func (s *Server) unixActive() bool { return s.unixLn != nil }
+// UnixActive reports whether the Unix socket listener is bound.
+func (s *Server) UnixActive() bool { return s.unixLn != nil }
 
 func (s *Server) closeUnix() {
 	if s.unixLn != nil {

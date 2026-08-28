@@ -59,7 +59,7 @@ func TestListenSucceedsWhenSocketPathIsTooLong(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 
-	if w.local.unixActive() {
+	if w.local.UnixActive() {
 		t.Fatalf("expected the Unix socket to be unavailable at %d bytes", len(SocketPath(root)))
 	}
 
@@ -111,7 +111,7 @@ func TestListenUsesUnixSocketWhenPathFits(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 
-	if !w.local.unixActive() {
+	if !w.local.UnixActive() {
 		t.Fatal("expected the Unix socket to be bound for a short town root")
 	}
 	if network, address := w.Endpoint(); network != "unix" || address != SocketPath(root) {
