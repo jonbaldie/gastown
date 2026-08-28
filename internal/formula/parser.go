@@ -583,11 +583,8 @@ func Resolve(formula *Formula, searchPaths []string) (*Formula, error) {
 // resolveChain is the recursive workhorse for Resolve; chain tracks the current
 // extends chain for cycle detection.
 func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Formula, error) {
-	// Cycle detection
-	for _, name := range chain {
-		if name == formula.Name {
-			return nil, fmt.Errorf("circular extends detected: %s", strings.Join(append(chain, formula.Name), " -> "))
-		}
+	if err := checkExtendsCycle(formula.Name, chain); err != nil {
+		return nil, err
 	}
 
 	// No inheritance or composition — validate and return as-is.
@@ -599,7 +596,31 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 	}
 
 	chain = append(chain, formula.Name)
+	merged := newMergedFormula(formula)
+	if err := mergeParentFormulas(merged, formula.Extends, searchPaths, chain); err != nil {
+		return nil, err
+	}
+	mergeChildFormula(merged, formula)
+	if err := applyComposeRules(merged, formula.Compose, searchPaths); err != nil {
+		return nil, err
+	}
 
+	if err := merged.Validate(); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func checkExtendsCycle(formulaName string, chain []string) error {
+	for _, name := range chain {
+		if name == formulaName {
+			return fmt.Errorf("circular extends detected: %s", strings.Join(append(chain, formulaName), " -> "))
+		}
+	}
+	return nil
+}
+
+func newMergedFormula(formula *Formula) *Formula {
 	merged := &Formula{
 		Name:        formula.Name,
 		Description: formula.Description,
@@ -615,16 +636,18 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 	if merged.Type == "" {
 		merged.Type = TypeWorkflow
 	}
+	return merged
+}
 
-	// Merge each parent in order.
-	for _, parentName := range formula.Extends {
+func mergeParentFormulas(merged *Formula, extends, searchPaths, chain []string) error {
+	for _, parentName := range extends {
 		parent, err := loadFormulaByName(parentName, searchPaths)
 		if err != nil {
-			return nil, fmt.Errorf("extends %q: %w", parentName, err)
+			return fmt.Errorf("extends %q: %w", parentName, err)
 		}
 		parent, err = resolveChain(parent, searchPaths, chain)
 		if err != nil {
-			return nil, fmt.Errorf("resolve parent %q: %w", parentName, err)
+			return fmt.Errorf("resolve parent %q: %w", parentName, err)
 		}
 
 		// Inherit vars (child overrides take precedence later).
@@ -641,8 +664,10 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 			merged.Description = parent.Description
 		}
 	}
+	return nil
+}
 
-	// Apply child vars (override any inherited).
+func mergeChildFormula(merged, formula *Formula) {
 	for name, v := range formula.Vars {
 		merged.Vars[name] = v
 	}
@@ -652,23 +677,21 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 	if formula.Description != "" {
 		merged.Description = formula.Description
 	}
+}
 
-	// Apply compose expand rules.
-	if formula.Compose != nil {
-		for _, rule := range formula.Compose.Expand {
-			expanded, err := applyExpandRule(merged.Steps, rule, searchPaths)
-			if err != nil {
-				return nil, fmt.Errorf("compose expand %q with %q: %w", rule.Target, rule.With, err)
-			}
-			merged.Steps = expanded
+func applyComposeRules(merged *Formula, compose *ComposeRules, searchPaths []string) error {
+	if compose == nil {
+		return nil
+	}
+	for _, rule := range compose.Expand {
+		expanded, err := applyExpandRule(merged.Steps, rule, searchPaths)
+		if err != nil {
+			return fmt.Errorf("compose expand %q with %q: %w", rule.Target, rule.With, err)
 		}
-		// compose.aspects is recorded but not yet acted upon (future work).
+		merged.Steps = expanded
 	}
-
-	if err := merged.Validate(); err != nil {
-		return nil, err
-	}
-	return merged, nil
+	// compose.aspects is recorded but not yet acted upon (future work).
+	return nil
 }
 
 // loadFormulaByName loads a formula by name: embedded FS first, then searchPaths.
