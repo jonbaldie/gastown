@@ -45,13 +45,29 @@ func dangerousReason(command string) string {
 	if reason := matchForcePush(lower); reason != "" {
 		return reason
 	}
-	if strings.Contains(lower, "git") && strings.Contains(lower, "reset") && strings.Contains(lower, "--hard") {
+	return matchDestructiveGitCommand(lower)
+}
+
+func matchDestructiveGitCommand(command string) string {
+	if isHardReset(command) {
 		return "hard reset discards uncommitted changes"
 	}
-	if strings.Contains(lower, "git") && strings.Contains(lower, "clean") && strings.Contains(lower, "-f") {
+	if isForcedClean(command) {
 		return "git clean -f deletes untracked files"
 	}
 	return ""
+}
+
+func isHardReset(command string) bool {
+	return strings.Contains(command, "git") &&
+		strings.Contains(command, "reset") &&
+		strings.Contains(command, "--hard")
+}
+
+func isForcedClean(command string) bool {
+	return strings.Contains(command, "git") &&
+		strings.Contains(command, "clean") &&
+		strings.Contains(command, "-f")
 }
 
 func matchSudo(command string) string {
@@ -64,25 +80,39 @@ func matchSudo(command string) string {
 }
 
 func matchForcePush(command string) string {
-	if !strings.Contains(command, "git") || !strings.Contains(command, "push") {
-		return ""
+	return forcePushReason(strings.Fields(command))
+}
+
+func forcePushReason(fields []string) string {
+	for i := range fields {
+		if !isGitPushToken(fields, i) {
+			continue
+		}
+		return forcePushFlagReason(fields[i+1:])
 	}
-	fields := strings.Fields(command)
-	hasPush := false
-	for i, f := range fields {
-		if f == "push" && i > 0 && fields[i-1] == "git" {
-			hasPush = true
+	return ""
+}
+
+func isGitPushToken(fields []string, index int) bool {
+	return index > 0 && fields[index] == "push" && fields[index-1] == "git"
+}
+
+func forcePushFlagReason(fields []string) string {
+	for _, field := range fields {
+		if isAllowedForcePushFlag(field) {
 			continue
 		}
-		if !hasPush {
-			continue
-		}
-		if f == "--force-with-lease" || f == "--force-if-includes" {
-			continue
-		}
-		if f == "--force" || f == "-f" {
+		if isForcePushFlag(field) {
 			return "force push rewrites remote history"
 		}
 	}
 	return ""
+}
+
+func isAllowedForcePushFlag(field string) bool {
+	return field == "--force-with-lease" || field == "--force-if-includes"
+}
+
+func isForcePushFlag(field string) bool {
+	return field == "--force" || field == "-f"
 }
