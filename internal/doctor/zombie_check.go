@@ -35,77 +35,87 @@ func (c *ZombieSessionCheck) Run(_ *CheckContext) *CheckResult {
 
 	sessions, err := t.ListSessions()
 	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: "Could not list tmux sessions",
-			Details: []string{err.Error()},
-		}
+		return zombieSessionListError(c, err)
 	}
 
 	if len(sessions) == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No tmux sessions found",
-		}
+		return noZombieSessionsResult(c)
 	}
 
-	// Check each Gas Town session for zombie status
+	zombies, healthyCount := classifyZombieSessions(t, sessions)
+
+	c.zombieSessions = zombies
+	return c.zombieResult(zombies, healthyCount)
+}
+
+func zombieSessionListError(c *ZombieSessionCheck, err error) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: "Could not list tmux sessions",
+		Details: []string{err.Error()},
+	}
+}
+
+func noZombieSessionsResult(c *ZombieSessionCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "No tmux sessions found",
+	}
+}
+
+func classifyZombieSessions(t *tmux.Tmux, sessions []string) ([]string, int) {
 	var zombies []string
-	var healthyCount int
-
+	healthyCount := 0
 	for _, sess := range sessions {
-		if sess == "" {
+		if !shouldInspectZombieSession(sess) {
 			continue
 		}
-
-		// Only check Gas Town sessions
-		if !session.IsKnownSession(sess) {
-			continue
-		}
-
-		// Skip crew sessions - they are human-managed and may intentionally
-		// have no Claude running (e.g., between work assignments)
-		if isCrewSession(sess) {
-			continue
-		}
-
-		// Check if Claude is running in this session
 		if t.IsAgentAlive(sess) {
 			healthyCount++
-		} else {
-			zombies = append(zombies, sess)
+			continue
 		}
+		zombies = append(zombies, sess)
 	}
+	return zombies, healthyCount
+}
 
-	// Cache zombies for Fix
-	c.zombieSessions = zombies
+func shouldInspectZombieSession(sess string) bool {
+	return sess != "" && session.IsKnownSession(sess) && !isCrewSession(sess)
+}
 
+func (c *ZombieSessionCheck) zombieResult(zombies []string, healthyCount int) *CheckResult {
 	if len(zombies) == 0 {
-		msg := "No zombie sessions found"
-		if healthyCount > 0 {
-			msg = fmt.Sprintf("All %d Gas Town sessions have running Claude processes", healthyCount)
-		}
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusOK,
-			Message: msg,
+			Message: zombieOKMessage(healthyCount),
 		}
-	}
-
-	details := make([]string, len(zombies))
-	for i, session := range zombies {
-		details[i] = fmt.Sprintf("Zombie: %s (tmux alive, Claude dead)", session)
 	}
 
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusWarning,
 		Message: fmt.Sprintf("Found %d zombie session(s)", len(zombies)),
-		Details: details,
+		Details: zombieDetails(zombies),
 		FixHint: "Run 'gt doctor --fix' to kill zombie sessions",
 	}
+}
+
+func zombieOKMessage(healthyCount int) string {
+	if healthyCount > 0 {
+		return fmt.Sprintf("All %d Gas Town sessions have running Claude processes", healthyCount)
+	}
+	return "No zombie sessions found"
+}
+
+func zombieDetails(zombies []string) []string {
+	details := make([]string, len(zombies))
+	for i, name := range zombies {
+		details[i] = fmt.Sprintf("Zombie: %s (tmux alive, Claude dead)", name)
+	}
+	return details
 }
 
 // Fix kills all zombie sessions (tmux sessions with no Claude running).
