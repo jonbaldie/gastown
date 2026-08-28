@@ -154,10 +154,7 @@ func (m *Mailbox) storeAcknowledgeDeliveryForPrimary(id string) error {
 
 	si, err := m.store.GetIssue(ctx, id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return ErrMessageNotFound
-		}
-		return fmt.Errorf("store get message for delivery ack: %w", err)
+		return deliveryAckGetError(err)
 	}
 	if AddressToIdentity(si.Assignee) != m.identity {
 		return nil
@@ -168,7 +165,22 @@ func (m *Mailbox) storeAcknowledgeDeliveryForPrimary(id string) error {
 	}
 
 	toWrite := deliveryAckLabelsToWrite(m.identity, timeNow().UTC(), si.Labels)
-	for _, label := range toWrite {
+	if err := m.storeDeliveryAckLabels(ctx, id, toWrite); err != nil {
+		return err
+	}
+
+	return m.storeConvergeDelivery(ctx, id, si.Labels, toWrite)
+}
+
+func deliveryAckGetError(err error) error {
+	if strings.Contains(err.Error(), "not found") {
+		return ErrMessageNotFound
+	}
+	return fmt.Errorf("store get message for delivery ack: %w", err)
+}
+
+func (m *Mailbox) storeDeliveryAckLabels(ctx context.Context, id string, labels []string) error {
+	for _, label := range labels {
 		if err := m.store.AddLabel(ctx, id, label, ""); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				return ErrMessageNotFound
@@ -176,8 +188,11 @@ func (m *Mailbox) storeAcknowledgeDeliveryForPrimary(id string) error {
 			return fmt.Errorf("store delivery ack: %w", err)
 		}
 	}
+	return nil
+}
 
-	labelsAfterAck := append(append([]string{}, si.Labels...), toWrite...)
+func (m *Mailbox) storeConvergeDelivery(ctx context.Context, id string, existingLabels, addedLabels []string) error {
+	labelsAfterAck := append(append([]string{}, existingLabels...), addedLabels...)
 	if !deliveryPendingRemovalNeeded(labelsAfterAck) {
 		return nil
 	}
