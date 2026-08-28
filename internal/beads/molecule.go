@@ -273,162 +273,184 @@ func (b *Beads) InstantiateMolecule(ctx context.Context, mol *Issue, parent *Iss
 
 // instantiateFromChildren creates steps from template child issues (new format).
 func (b *Beads) instantiateFromChildren(ctx context.Context, mol *Issue, parent *Issue, templates []*Issue, opts InstantiateOptions) ([]*Issue, error) {
+	createdIssues, templateToNew, err := b.createTemplateChildren(ctx, mol, parent, templates, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.wireTemplateDependencies(templates, templateToNew); err != nil {
+		return createdIssues, err
+	}
+	return createdIssues, nil
+}
+
+func (b *Beads) createTemplateChildren(ctx context.Context, mol *Issue, parent *Issue, templates []*Issue, opts InstantiateOptions) ([]*Issue, map[string]string, error) {
 	var createdIssues []*Issue
-	templateToNew := make(map[string]string) // template ID -> new issue ID
-
-	// First pass: create all child issues
+	templateToNew := make(map[string]string, len(templates))
 	for _, tmpl := range templates {
-		// Expand template variables in description
-		description := tmpl.Description
-		if opts.Context != nil {
-			description = ExpandTemplateVars(description, opts.Context)
-		}
-
-		// Add provenance metadata
-		if description != "" {
-			description += "\n\n"
-		}
-		description += fmt.Sprintf("instantiated_from: %s\ntemplate_step: %s", mol.ID, tmpl.ID)
-
-		// Create the child issue
-		stepType := tmpl.Type
-		if stepType == "" {
-			stepType = "task"
-		}
-		childOpts := CreateOptions{
-			Title:       tmpl.Title,
-			Labels:      []string{"gt:" + stepType},
-			Priority:    parent.Priority,
-			Description: description,
-			Parent:      parent.ID,
-		}
-
-		child, err := b.Create(childOpts)
+		child, err := b.Create(moleculeTemplateCreateOptions(mol, parent, tmpl, opts))
 		if err != nil {
-			// Attempt to clean up created issues on failure (best-effort cleanup)
-			for _, created := range createdIssues {
-				_ = b.Close(created.ID)
-			}
-			return nil, fmt.Errorf("creating step from template %q: %w", tmpl.ID, err)
+			b.closeMoleculeIssues(createdIssues)
+			return nil, nil, fmt.Errorf("creating step from template %q: %w", tmpl.ID, err)
 		}
 		telemetry.RecordBeadCreate(ctx, child.ID, parent.ID, mol.ID)
-
 		createdIssues = append(createdIssues, child)
 		templateToNew[tmpl.ID] = child.ID
 	}
+	return createdIssues, templateToNew, nil
+}
 
-	// Second pass: wire dependencies based on template dependencies
+func moleculeTemplateCreateOptions(mol, parent, tmpl *Issue, opts InstantiateOptions) CreateOptions {
+	description := moleculeTemplateDescription(mol.ID, tmpl, opts.Context)
+	stepType := tmpl.Type
+	if stepType == "" {
+		stepType = "task"
+	}
+	return CreateOptions{
+		Title:       tmpl.Title,
+		Labels:      []string{"gt:" + stepType},
+		Priority:    parent.Priority,
+		Description: description,
+		Parent:      parent.ID,
+	}
+}
+
+func moleculeTemplateDescription(moleculeID string, tmpl *Issue, context map[string]string) string {
+	description := tmpl.Description
+	if context != nil {
+		description = ExpandTemplateVars(description, context)
+	}
+	if description != "" {
+		description += "\n\n"
+	}
+	return description + fmt.Sprintf("instantiated_from: %s\ntemplate_step: %s", moleculeID, tmpl.ID)
+}
+
+func (b *Beads) wireTemplateDependencies(templates []*Issue, templateToNew map[string]string) error {
 	for _, tmpl := range templates {
-		if len(tmpl.DependsOn) == 0 {
-			continue
-		}
-
-		newChildID := templateToNew[tmpl.ID]
-		for _, depTemplateID := range tmpl.DependsOn {
-			newDepID, ok := templateToNew[depTemplateID]
-			if !ok {
-				// Dependency points outside the template - skip
-				continue
-			}
-			if err := b.AddDependency(newChildID, newDepID); err != nil {
-				// Log but don't fail - the issues are created
-				return createdIssues, fmt.Errorf("adding dependency %s -> %s: %w", newChildID, newDepID, err)
+		for _, dependency := range tmpl.DependsOn {
+			if err := b.addTemplateDependency(templateToNew, tmpl.ID, dependency); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
 
-	return createdIssues, nil
+func (b *Beads) addTemplateDependency(templateToNew map[string]string, templateID, dependencyID string) error {
+	newDependencyID, ok := templateToNew[dependencyID]
+	if !ok {
+		return nil
+	}
+	newChildID := templateToNew[templateID]
+	if err := b.AddDependency(newChildID, newDependencyID); err != nil {
+		return fmt.Errorf("adding dependency %s -> %s: %w", newChildID, newDependencyID, err)
+	}
+	return nil
+}
+
+func (b *Beads) closeMoleculeIssues(issues []*Issue) {
+	for _, issue := range issues {
+		_ = b.Close(issue.ID)
+	}
 }
 
 // instantiateFromMarkdown creates steps from embedded markdown (old format).
 func (b *Beads) instantiateFromMarkdown(ctx context.Context, mol *Issue, parent *Issue, opts InstantiateOptions) ([]*Issue, error) {
-	// Parse steps from molecule
-	steps, err := ParseMoleculeSteps(mol.Description)
+	steps, err := markdownMoleculeSteps(mol.Description)
+	if err != nil {
+		return nil, err
+	}
+	createdIssues, stepIssueIDs, err := b.createMarkdownChildren(ctx, mol, parent, steps, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.wireMarkdownDependencies(steps, stepIssueIDs); err != nil {
+		return createdIssues, err
+	}
+	return createdIssues, nil
+}
+
+func markdownMoleculeSteps(description string) ([]MoleculeStep, error) {
+	steps, err := ParseMoleculeSteps(description)
 	if err != nil {
 		return nil, fmt.Errorf("parsing molecule steps: %w", err)
 	}
-
 	if len(steps) == 0 {
 		return nil, fmt.Errorf("molecule has no steps defined")
 	}
-
-	// Build map of step ref -> step for dependency validation
-	stepMap := make(map[string]*MoleculeStep)
-	for i := range steps {
-		stepMap[steps[i].Ref] = &steps[i]
+	if err := validateMarkdownDependencies(steps); err != nil {
+		return nil, err
 	}
+	return steps, nil
+}
 
-	// Validate all Needs references exist
+func validateMarkdownDependencies(steps []MoleculeStep) error {
+	stepRefs := make(map[string]bool, len(steps))
+	for _, step := range steps {
+		stepRefs[step.Ref] = true
+	}
 	for _, step := range steps {
 		for _, need := range step.Needs {
-			if _, ok := stepMap[need]; !ok {
-				return nil, fmt.Errorf("step %q depends on unknown step %q", step.Ref, need)
+			if !stepRefs[need] {
+				return fmt.Errorf("step %q depends on unknown step %q", step.Ref, need)
 			}
 		}
 	}
+	return nil
+}
 
-	// Create child issues for each step
+func (b *Beads) createMarkdownChildren(ctx context.Context, mol *Issue, parent *Issue, steps []MoleculeStep, opts InstantiateOptions) ([]*Issue, map[string]string, error) {
 	var createdIssues []*Issue
-	stepIssueIDs := make(map[string]string) // step ref -> issue ID
-
+	stepIssueIDs := make(map[string]string, len(steps))
 	for _, step := range steps {
-		// Expand template variables in instructions
-		instructions := step.Instructions
-		if opts.Context != nil {
-			instructions = ExpandTemplateVars(instructions, opts.Context)
-		}
-
-		// Build description with provenance metadata
-		description := instructions
-		if description != "" {
-			description += "\n\n"
-		}
-		description += fmt.Sprintf("instantiated_from: %s\nstep: %s", mol.ID, step.Ref)
-		if step.Tier != "" {
-			description += fmt.Sprintf("\ntier: %s", step.Tier)
-		}
-
-		// Create the child issue
-		childOpts := CreateOptions{
-			Title:       step.Title,
-			Labels:      []string{"gt:task"},
-			Priority:    parent.Priority,
-			Description: description,
-			Parent:      parent.ID,
-		}
-
-		child, err := b.Create(childOpts)
+		child, err := b.Create(markdownStepCreateOptions(mol, parent, step, opts))
 		if err != nil {
-			// Attempt to clean up created issues on failure (best-effort cleanup)
-			for _, created := range createdIssues {
-				_ = b.Close(created.ID)
-			}
-			return nil, fmt.Errorf("creating step %q: %w", step.Ref, err)
+			b.closeMoleculeIssues(createdIssues)
+			return nil, nil, fmt.Errorf("creating step %q: %w", step.Ref, err)
 		}
 		telemetry.RecordBeadCreate(ctx, child.ID, parent.ID, mol.ID)
-
 		createdIssues = append(createdIssues, child)
 		stepIssueIDs[step.Ref] = child.ID
 	}
+	return createdIssues, stepIssueIDs, nil
+}
 
-	// Wire inter-step dependencies based on Needs: declarations
+func markdownStepCreateOptions(mol, parent *Issue, step MoleculeStep, opts InstantiateOptions) CreateOptions {
+	return CreateOptions{
+		Title:       step.Title,
+		Labels:      []string{"gt:task"},
+		Priority:    parent.Priority,
+		Description: markdownStepDescription(mol.ID, step, opts.Context),
+		Parent:      parent.ID,
+	}
+}
+
+func markdownStepDescription(moleculeID string, step MoleculeStep, context map[string]string) string {
+	description := step.Instructions
+	if context != nil {
+		description = ExpandTemplateVars(description, context)
+	}
+	if description != "" {
+		description += "\n\n"
+	}
+	description += fmt.Sprintf("instantiated_from: %s\nstep: %s", moleculeID, step.Ref)
+	if step.Tier != "" {
+		description += fmt.Sprintf("\ntier: %s", step.Tier)
+	}
+	return description
+}
+
+func (b *Beads) wireMarkdownDependencies(steps []MoleculeStep, stepIssueIDs map[string]string) error {
 	for _, step := range steps {
-		if len(step.Needs) == 0 {
-			continue
-		}
-
-		childID := stepIssueIDs[step.Ref]
 		for _, need := range step.Needs {
+			childID := stepIssueIDs[step.Ref]
 			dependsOnID := stepIssueIDs[need]
 			if err := b.AddDependency(childID, dependsOnID); err != nil {
-				// Log but don't fail - the issues are created
-				// This is non-atomic but bd CLI doesn't support transactions
-				return createdIssues, fmt.Errorf("adding dependency %s -> %s: %w", childID, dependsOnID, err)
+				return fmt.Errorf("adding dependency %s -> %s: %w", childID, dependsOnID, err)
 			}
 		}
 	}
-
-	return createdIssues, nil
+	return nil
 }
 
 // ValidateMolecule checks if an issue is a valid molecule definition.
