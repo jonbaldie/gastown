@@ -100,38 +100,45 @@ func apfsContainerSpace(mountPoint string) (free, total uint64, err error) {
 // parsePlistUint64 extracts a uint64 integer for the given key from Apple plist XML.
 func parsePlistUint64(data []byte, key string) (uint64, bool) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
-	waitForValue := false
 	for {
-		tok, err := dec.Token()
-		if err != nil {
+		element, ok := nextPlistElement(dec)
+		if !ok {
 			// any xml decode error (incl. io.EOF) → treat as "key not found";
 			// caller falls back to statfs values, which is the safe default.
 			return 0, false
 		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			switch t.Name.Local {
-			case "key":
-				var k string
-				if err := dec.DecodeElement(&k, &t); err == nil {
-					waitForValue = k == key
-				} else {
-					waitForValue = false
-				}
-			case "integer":
-				if waitForValue {
-					var s string
-					if err := dec.DecodeElement(&s, &t); err == nil {
-						if v, err := strconv.ParseUint(s, 10, 64); err == nil {
-							return v, true
-						}
-					}
-					return 0, false
-				}
-				waitForValue = false
-			default:
-				waitForValue = false
-			}
+		if element.Name.Local != "key" {
+			continue
+		}
+		var foundKey string
+		if err := dec.DecodeElement(&foundKey, &element); err != nil || foundKey != key {
+			continue
+		}
+		return plistIntegerValue(dec)
+	}
+}
+
+func nextPlistElement(dec *xml.Decoder) (xml.StartElement, bool) {
+	for {
+		token, err := dec.Token()
+		if err != nil {
+			return xml.StartElement{}, false
+		}
+		if element, ok := token.(xml.StartElement); ok {
+			return element, true
 		}
 	}
+}
+
+func plistIntegerValue(dec *xml.Decoder) (uint64, bool) {
+	element, ok := nextPlistElement(dec)
+	if !ok || element.Name.Local != "integer" {
+		return 0, false
+	}
+	var value string
+	if err := dec.DecodeElement(&value, &element); err != nil {
+		return 0, false
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	return parsed, err == nil
 }
