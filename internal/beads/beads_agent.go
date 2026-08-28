@@ -583,13 +583,13 @@ func (b *Beads) ClearAgentActiveMRIfMatches(id string, expectedMR string) (bool,
 		return false, fmt.Errorf("locking agent bead %s: %w", id, lockErr)
 	}
 	defer func() { _ = fl.Unlock() }()
+	return b.clearAgentActiveMR(id, expectedMR)
+}
 
+func (b *Beads) clearAgentActiveMR(id, expectedMR string) (bool, error) {
 	issue, err := b.Show(id)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return false, nil
-		}
-		return false, err
+		return clearAgentActiveMRError(err)
 	}
 	if !IsAgentBead(issue) {
 		return false, fmt.Errorf("%s is not an agent bead", id)
@@ -606,6 +606,13 @@ func (b *Beads) ClearAgentActiveMRIfMatches(id string, expectedMR string) (bool,
 		return false, err
 	}
 	return true, nil
+}
+
+func clearAgentActiveMRError(err error) (bool, error) {
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return false, err
 }
 
 // UpdateAgentNotificationLevel updates the notification_level field in an agent bead.
