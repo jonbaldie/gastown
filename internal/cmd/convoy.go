@@ -2189,54 +2189,54 @@ func runConvoyList(cmd *cobra.Command, _ []string) error {
 	}
 
 	if jsonOutput {
-		// Enrich each convoy with tracked issues and completion counts
-		type convoyListEntry struct {
-			ID        string             `json:"id"`
-			Title     string             `json:"title"`
-			Status    string             `json:"status"`
-			CreatedAt string             `json:"created_at"`
-			Tracked   []trackedIssueInfo `json:"tracked"`
-			Completed int                `json:"completed"`
-			Total     int                `json:"total"`
-		}
-		enriched := make([]convoyListEntry, 0, len(convoys))
-		for _, c := range convoys {
-			tracked, err := getTrackedIssues(townBeads, c.ID)
-			if err != nil {
-				style.PrintWarning("skipping convoy %s: %v", c.ID, err)
-				continue
-			}
-			if tracked == nil {
-				tracked = []trackedIssueInfo{} // Ensure JSON [] not null
-			}
-			completed := 0
-			for _, t := range tracked {
-				if t.Status == "closed" {
-					completed++
-				}
-			}
-			enriched = append(enriched, convoyListEntry{
-				ID:        c.ID,
-				Title:     c.Title,
-				Status:    c.Status,
-				CreatedAt: c.CreatedAt,
-				Tracked:   tracked,
-				Completed: completed,
-				Total:     len(tracked),
-			})
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(enriched)
+		return printConvoyListJSON(townBeads, convoys)
 	}
+	return printConvoyListHuman(townBeads, convoys, tree)
+}
 
+type convoyListEntry struct {
+	ID        string             `json:"id"`
+	Title     string             `json:"title"`
+	Status    string             `json:"status"`
+	CreatedAt string             `json:"created_at"`
+	Tracked   []trackedIssueInfo `json:"tracked"`
+	Completed int                `json:"completed"`
+	Total     int                `json:"total"`
+}
+
+func printConvoyListJSON(townBeads string, convoys []convoyListIssue) error {
+	enriched := make([]convoyListEntry, 0, len(convoys))
+	for _, convoy := range convoys {
+		tracked, err := getTrackedIssues(townBeads, convoy.ID)
+		if err != nil {
+			style.PrintWarning("skipping convoy %s: %v", convoy.ID, err)
+			continue
+		}
+		if tracked == nil {
+			tracked = []trackedIssueInfo{}
+		}
+		enriched = append(enriched, convoyListEntry{
+			ID:        convoy.ID,
+			Title:     convoy.Title,
+			Status:    convoy.Status,
+			CreatedAt: convoy.CreatedAt,
+			Tracked:   tracked,
+			Completed: countCompletedTrackedIssues(tracked),
+			Total:     len(tracked),
+		})
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(enriched)
+}
+
+func printConvoyListHuman(townBeads string, convoys []convoyListIssue, tree bool) error {
 	if len(convoys) == 0 {
 		fmt.Println("No convoys found.")
 		fmt.Println("Create a convoy with: gt convoy create <name> [issues...]")
 		return nil
 	}
 
-	// Tree view: show convoys with their child issues
 	if tree {
 		return printConvoyTree(townBeads, convoys)
 	}
