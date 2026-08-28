@@ -635,25 +635,11 @@ func (p *Proxy) runKeepAlive(tickerChan <-chan time.Time) {
 				continue
 			}
 
-			// Don't send heartbeat if we're currently in a turn
-			p.promptMux.Lock()
-			busyID := p.activePromptID
-			p.promptMux.Unlock()
-
 			last := p.lastActivity.Load()
 			idleTime := time.Since(time.Unix(0, last))
 
-			if busyID != "" {
-				// FORCE RECOVERY: If busy but no activity for 60s, clear state and heartbeat
-				if idleTime > 60*time.Second {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: busy state stuck (id=%s) for %v, forcing recovery", busyID, idleTime)
-					p.promptMux.Lock()
-					p.activePromptID = ""
-					p.promptMux.Unlock()
-				} else {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, agent is busy (id=%s)", busyID)
-					continue
-				}
+			if p.keepAliveBusy(idleTime) {
+				continue
 			}
 
 			// If idle for more than 45 seconds, send a heartbeat
@@ -678,35 +664,7 @@ func (p *Proxy) runKeepAlive(tickerChan <-chan time.Time) {
 				currentMode := p.currentModeID
 				p.modeMux.RUnlock()
 
-				id := fmt.Sprintf("gt-inject-keepalive-%d", time.Now().UnixNano())
-
-				var msg *JSONRPCMessage
-
-				// Try session/set_mode with current mode (no-op that resets timer)
-				if method == "set_mode" && currentMode != "" {
-					params := map[string]any{
-						"sessionId": sid,
-						"modeId":    currentMode, // Set to current mode = no-op
-					}
-					paramsBytes, _ := json.Marshal(params)
-
-					msg = &JSONRPCMessage{
-						JSONRPC: "2.0",
-						Method:  "session/set_mode",
-						ID:      id,
-						Params:  paramsBytes,
-					}
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (session/set_mode mode=%s, idle=%v)", currentMode, idleTime)
-				} else {
-					// Fallback: try custom _ping method (ACP allows custom methods prefixed with _)
-					msg = &JSONRPCMessage{
-						JSONRPC: "2.0",
-						Method:  "_ping",
-						ID:      id,
-						Params:  json.RawMessage("{}"),
-					}
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (_ping, idle=%v)", idleTime)
-				}
+				msg := p.keepAliveMessage(sid, method, currentMode, idleTime)
 
 				if err := p.writeToAgent(msg); err != nil {
 					debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat failed: %v", err)
@@ -716,6 +674,33 @@ func (p *Proxy) runKeepAlive(tickerChan <-chan time.Time) {
 			}
 		}
 	}
+}
+
+func (p *Proxy) keepAliveBusy(idleTime time.Duration) bool {
+	p.promptMux.Lock()
+	busyID := p.activePromptID
+	if busyID != "" && idleTime > 60*time.Second {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: busy state stuck (id=%s) for %v, forcing recovery", busyID, idleTime)
+		p.activePromptID = ""
+		busyID = ""
+	}
+	p.promptMux.Unlock()
+	if busyID == "" {
+		return false
+	}
+	debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, agent is busy (id=%s)", busyID)
+	return true
+}
+
+func (p *Proxy) keepAliveMessage(sessionID, method, modeID string, idleTime time.Duration) *JSONRPCMessage {
+	id := fmt.Sprintf("gt-inject-keepalive-%d", time.Now().UnixNano())
+	if method == "set_mode" && modeID != "" {
+		paramsBytes, _ := json.Marshal(map[string]any{"sessionId": sessionID, "modeId": modeID})
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (session/set_mode mode=%s, idle=%v)", modeID, idleTime)
+		return &JSONRPCMessage{JSONRPC: "2.0", Method: "session/set_mode", ID: id, Params: paramsBytes}
+	}
+	debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (_ping, idle=%v)", idleTime)
+	return &JSONRPCMessage{JSONRPC: "2.0", Method: "_ping", ID: id, Params: json.RawMessage("{}")}
 }
 
 func (p *Proxy) trackPromptResponse(msg *JSONRPCMessage) {
