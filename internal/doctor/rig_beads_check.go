@@ -17,6 +17,11 @@ type RigBeadsCheck struct {
 	FixableCheck
 }
 
+type rigRouteInfo struct {
+	prefix    string
+	beadsPath string
+}
+
 // NewRigBeadsCheck creates a new rig identity beads check.
 func NewRigBeadsCheck() *RigBeadsCheck {
 	return &RigBeadsCheck{
@@ -32,64 +37,76 @@ func NewRigBeadsCheck() *RigBeadsCheck {
 
 // Run checks if rig identity beads exist for all rigs.
 func (c *RigBeadsCheck) Run(ctx *CheckContext) *CheckResult {
-	// Load routes to get rig info
-	townBeadsDir := filepath.Join(ctx.TownRoot, ".beads")
-	routes, err := beads.LoadRoutes(townBeadsDir)
+	routes, err := loadRigRoutes(ctx.TownRoot)
 	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: "Could not load routes.jsonl",
-		}
+		return rigBeadsRoutesResult(c)
 	}
 
-	// Build unique rig list from routes
-	// Routes have format: prefix "gt-" -> path "gastown/mayor/rig"
-	rigSet := make(map[string]struct {
-		prefix    string
-		beadsPath string
-	})
-	for _, r := range routes {
-		// Extract rig name from path (first component)
-		parts := strings.Split(r.Path, "/")
-		if len(parts) >= 1 && parts[0] != "." {
-			rigName := parts[0]
-			prefix := strings.TrimSuffix(r.Prefix, "-")
-			if _, exists := rigSet[rigName]; !exists {
-				rigSet[rigName] = struct {
-					prefix    string
-					beadsPath string
-				}{
-					prefix:    prefix,
-					beadsPath: r.Path,
-				}
-			}
-		}
-	}
+	rigSet := uniqueRigRoutes(routes)
 
 	if len(rigSet) == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No rigs to check",
-		}
+		return noRigBeadsResult(c)
 	}
 
+	missing, checked := missingRigBeads(ctx.TownRoot, rigSet)
+	return rigBeadsResult(c, missing, checked)
+}
+
+func loadRigRoutes(townRoot string) ([]beads.Route, error) {
+	return beads.LoadRoutes(filepath.Join(townRoot, ".beads"))
+}
+
+func rigBeadsRoutesResult(c *RigBeadsCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: "Could not load routes.jsonl",
+	}
+}
+
+func uniqueRigRoutes(routes []beads.Route) map[string]rigRouteInfo {
+	rigSet := make(map[string]rigRouteInfo)
+	for _, route := range routes {
+		parts := strings.Split(route.Path, "/")
+		if len(parts) == 0 || parts[0] == "." {
+			continue
+		}
+		rigName := parts[0]
+		if _, exists := rigSet[rigName]; exists {
+			continue
+		}
+		rigSet[rigName] = rigRouteInfo{
+			prefix:    strings.TrimSuffix(route.Prefix, "-"),
+			beadsPath: route.Path,
+		}
+	}
+	return rigSet
+}
+
+func noRigBeadsResult(c *RigBeadsCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "No rigs to check",
+	}
+}
+
+func missingRigBeads(townRoot string, rigSet map[string]rigRouteInfo) ([]string, int) {
 	var missing []string
-	var checked int
-
-	// Check each rig for its identity bead
+	checked := 0
 	for rigName, info := range rigSet {
-		rigBeadsPath := filepath.Join(ctx.TownRoot, info.beadsPath)
+		rigBeadsPath := filepath.Join(townRoot, info.beadsPath)
 		bd := beads.New(rigBeadsPath)
-
 		rigBeadID := beads.RigBeadIDWithPrefix(info.prefix, rigName)
 		if _, err := bd.Show(rigBeadID); err != nil {
 			missing = append(missing, rigBeadID)
 		}
 		checked++
 	}
+	return missing, checked
+}
 
+func rigBeadsResult(c *RigBeadsCheck, missing []string, checked int) *CheckResult {
 	if len(missing) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -109,64 +126,49 @@ func (c *RigBeadsCheck) Run(ctx *CheckContext) *CheckResult {
 
 // Fix creates missing rig identity beads.
 func (c *RigBeadsCheck) Fix(ctx *CheckContext) error {
-	// Load routes to get rig info
-	townBeadsDir := filepath.Join(ctx.TownRoot, ".beads")
-	routes, err := beads.LoadRoutes(townBeadsDir)
+	routes, err := loadRigRoutes(ctx.TownRoot)
 	if err != nil {
 		return fmt.Errorf("loading routes.jsonl: %w", err)
 	}
 
-	// Build unique rig list from routes
-	rigSet := make(map[string]struct {
-		prefix    string
-		beadsPath string
-	})
-	for _, r := range routes {
-		parts := strings.Split(r.Path, "/")
-		if len(parts) >= 1 && parts[0] != "." {
-			rigName := parts[0]
-			prefix := strings.TrimSuffix(r.Prefix, "-")
-			if _, exists := rigSet[rigName]; !exists {
-				rigSet[rigName] = struct {
-					prefix    string
-					beadsPath string
-				}{
-					prefix:    prefix,
-					beadsPath: r.Path,
-				}
-			}
-		}
-	}
+	rigSet := uniqueRigRoutes(routes)
 
 	if len(rigSet) == 0 {
 		return nil // No rigs to process
 	}
+	return ensureRigBeads(ctx, rigSet)
+}
 
-	// Create missing rig identity beads — collect errors instead of failing
-	// on first so one broken rig doesn't block fixes for others.
+func ensureRigBeads(ctx *CheckContext, rigSet map[string]rigRouteInfo) error {
 	var errs []error
 	for rigName, info := range rigSet {
-		rigBeadsPath := filepath.Join(ctx.TownRoot, info.beadsPath)
-		bd := beads.New(rigBeadsPath)
-
-		// Try to get git URL from rig config
-		rigPath := filepath.Join(ctx.TownRoot, rigName)
-		gitURL := ""
-		if cfg, err := rig.LoadRigConfig(rigPath); err == nil {
-			gitURL = cfg.GitURL
-		}
-
-		fields := &beads.RigFields{
-			Repo:   gitURL,
-			Prefix: info.prefix,
-			State:  beads.RigStateActive,
-		}
-
-		rigBeadID := beads.RigBeadIDWithPrefix(info.prefix, rigName)
-		if _, err := bd.EnsureRigBead(rigName, fields); err != nil {
-			errs = append(errs, fmt.Errorf("ensuring %s: %w", rigBeadID, err))
+		if err := ensureRigBead(ctx, rigName, info); err != nil {
+			errs = append(errs, err)
 		}
 	}
-
 	return errors.Join(errs...)
+}
+
+func ensureRigBead(ctx *CheckContext, rigName string, info rigRouteInfo) error {
+	rigBeadsPath := filepath.Join(ctx.TownRoot, info.beadsPath)
+	bd := beads.New(rigBeadsPath)
+	gitURL := rigGitURL(filepath.Join(ctx.TownRoot, rigName))
+	fields := &beads.RigFields{
+		Repo:   gitURL,
+		Prefix: info.prefix,
+		State:  beads.RigStateActive,
+	}
+	rigBeadID := beads.RigBeadIDWithPrefix(info.prefix, rigName)
+	if _, err := bd.EnsureRigBead(rigName, fields); err != nil {
+		return fmt.Errorf("ensuring %s: %w", rigBeadID, err)
+	}
+	return nil
+}
+
+func rigGitURL(rigPath string) string {
+	cfg, err := rig.LoadRigConfig(rigPath)
+	if err != nil {
+		return ""
+	}
+	return cfg.GitURL
 }
