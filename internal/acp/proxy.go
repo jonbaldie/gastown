@@ -957,12 +957,7 @@ func (p *Proxy) WaitForReady(ctx context.Context) error {
 			return fmt.Errorf("proxy is shutting down")
 		}
 
-		p.promptMux.Lock()
-		busy := p.activePromptID != ""
-		p.promptMux.Unlock()
-
-		state := p.getStartupPromptState()
-		if !busy && (state == startupPromptStateIdle || state == startupPromptStateComplete || state == startupPromptStateFailed) {
+		if p.readyForInteraction() {
 			return nil
 		}
 
@@ -973,6 +968,18 @@ func (p *Proxy) WaitForReady(ctx context.Context) error {
 			return fmt.Errorf("proxy shutting down")
 		case <-ticker.C:
 		}
+	}
+}
+
+func (p *Proxy) readyForInteraction() bool {
+	if p.IsBusy() {
+		return false
+	}
+	switch p.getStartupPromptState() {
+	case startupPromptStateIdle, startupPromptStateComplete, startupPromptStateFailed:
+		return true
+	default:
+		return false
 	}
 }
 
