@@ -380,18 +380,7 @@ func (p *Proxy) forwardToAgent() {
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
-				if !receivedInput && p.handshakeState == handshakeInit {
-					logEvent(p.townRoot, "acp_error", "stdin closed before handshake - no ACP client connected")
-					debugLog(p.townRoot, "[Proxy] stdin closed before handshake - no ACP client connected?")
-				} else {
-					logEvent(p.townRoot, "acp_shutdown", "stdin EOF - ACP client disconnected")
-					debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin EOF (client disconnected)")
-				}
-			} else {
-				debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin read error: %v", err)
-				p.markDone()
-			}
+			p.handleInputReadError(err, receivedInput)
 			return
 		}
 
@@ -415,6 +404,21 @@ func (p *Proxy) forwardToAgent() {
 			return
 		}
 	}
+}
+
+func (p *Proxy) handleInputReadError(err error, receivedInput bool) {
+	if err != io.EOF {
+		debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin read error: %v", err)
+		p.markDone()
+		return
+	}
+	if !receivedInput && p.handshakeState == handshakeInit {
+		logEvent(p.townRoot, "acp_error", "stdin closed before handshake - no ACP client connected")
+		debugLog(p.townRoot, "[Proxy] stdin closed before handshake - no ACP client connected?")
+		return
+	}
+	logEvent(p.townRoot, "acp_shutdown", "stdin EOF - ACP client disconnected")
+	debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin EOF (client disconnected)")
 }
 
 func (p *Proxy) trackHandshakeRequest(msg *JSONRPCMessage) {
