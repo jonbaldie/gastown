@@ -181,31 +181,54 @@ func removeBeadsRuntimeFiles(beadsDir string) error {
 }
 
 func removeWorktreeIdentityFile(worktreePath, path string) error {
-	if _, err := os.Lstat(path); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("checking %s: %w", path, err)
+	present, err := identityFilePresent(path)
+	if err != nil || !present {
+		return err
 	}
+	rel, err := safeWorktreeRelativePath(worktreePath, path)
+	if err != nil {
+		return err
+	}
+	if err := hideTrackedIdentityFile(worktreePath, rel); err != nil {
+		return err
+	}
+	return removeIdentityFile(path)
+}
 
+func identityFilePresent(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func safeWorktreeRelativePath(worktreePath, path string) (string, error) {
 	rel, err := filepath.Rel(worktreePath, path)
 	if err != nil {
-		return fmt.Errorf("computing git path for %s: %w", path, err)
+		return "", fmt.Errorf("computing git path for %s: %w", path, err)
 	}
 	if rel == "." || rel == "" || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("refusing to clean identity file outside worktree: %s", path)
+		return "", fmt.Errorf("refusing to clean identity file outside worktree: %s", path)
 	}
-	rel = filepath.ToSlash(rel)
+	return filepath.ToSlash(rel), nil
+}
 
-	tracked, err := gitPathTracked(worktreePath, rel)
+func hideTrackedIdentityFile(worktreePath, relPath string) error {
+	tracked, err := gitPathTracked(worktreePath, relPath)
 	if err != nil {
 		return err
 	}
 	if tracked {
-		if err := markGitPathSkipWorktree(worktreePath, rel); err != nil {
-			return err
-		}
+		return markGitPathSkipWorktree(worktreePath, relPath)
 	}
+	return nil
+}
 
+func removeIdentityFile(path string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing %s: %w", path, err)
 	}
