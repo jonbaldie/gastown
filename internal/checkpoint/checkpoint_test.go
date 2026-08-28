@@ -208,7 +208,7 @@ func TestCapture(t *testing.T) {
 
 func TestWithMolecule(t *testing.T) {
 	cp := &Checkpoint{}
-	result := cp.WithMolecule("mol-abc", "step-1", "Do the thing")
+	result := WithMolecule(cp, "mol-abc", "step-1", "Do the thing")
 
 	if result != cp {
 		t.Error("WithMolecule should return same checkpoint")
@@ -226,7 +226,7 @@ func TestWithMolecule(t *testing.T) {
 
 func TestWithHookedBead(t *testing.T) {
 	cp := &Checkpoint{}
-	result := cp.WithHookedBead("gt-123")
+	result := WithHookedBead(cp, "gt-123")
 
 	if result != cp {
 		t.Error("WithHookedBead should return same checkpoint")
@@ -238,7 +238,7 @@ func TestWithHookedBead(t *testing.T) {
 
 func TestWithNotes(t *testing.T) {
 	cp := &Checkpoint{}
-	result := cp.WithNotes("important context")
+	result := WithNotes(cp, "important context")
 
 	if result != cp {
 		t.Error("WithNotes should return same checkpoint")
@@ -253,7 +253,7 @@ func TestAge(t *testing.T) {
 		Timestamp: time.Now().Add(-5 * time.Minute),
 	}
 
-	age := cp.Age()
+	age := Age(cp)
 	if age < 4*time.Minute || age > 6*time.Minute {
 		t.Errorf("Age = %v, expected ~5 minutes", age)
 	}
@@ -277,7 +277,7 @@ func TestIsStale(t *testing.T) {
 			cp := &Checkpoint{
 				Timestamp: time.Now().Add(-tt.age),
 			}
-			got := cp.IsStale(tt.threshold)
+			got := IsStale(cp, tt.threshold)
 			if got != tt.want {
 				t.Errorf("IsStale(%v) = %v, want %v", tt.threshold, got, tt.want)
 			}
@@ -336,7 +336,7 @@ func TestSummary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.cp.Summary()
+			got := Summary(tt.cp)
 			if got != tt.want {
 				t.Errorf("Summary() = %q, want %q", got, tt.want)
 			}

@@ -161,7 +161,7 @@ func Capture(polecatDir string) (*Checkpoint, error) {
 }
 
 // WithMolecule adds molecule context to a checkpoint.
-func (cp *Checkpoint) WithMolecule(moleculeID, stepID, stepTitle string) *Checkpoint {
+func WithMolecule(cp *Checkpoint, moleculeID, stepID, stepTitle string) *Checkpoint {
 	cp.MoleculeID = moleculeID
 	cp.CurrentStep = stepID
 	cp.StepTitle = stepTitle
@@ -169,29 +169,29 @@ func (cp *Checkpoint) WithMolecule(moleculeID, stepID, stepTitle string) *Checkp
 }
 
 // WithHookedBead adds hooked bead context to a checkpoint.
-func (cp *Checkpoint) WithHookedBead(beadID string) *Checkpoint {
+func WithHookedBead(cp *Checkpoint, beadID string) *Checkpoint {
 	cp.HookedBead = beadID
 	return cp
 }
 
 // WithNotes adds context notes to a checkpoint.
-func (cp *Checkpoint) WithNotes(notes string) *Checkpoint {
+func WithNotes(cp *Checkpoint, notes string) *Checkpoint {
 	cp.Notes = notes
 	return cp
 }
 
 // Age returns how long ago the checkpoint was written.
-func (cp *Checkpoint) Age() time.Duration {
+func Age(cp *Checkpoint) time.Duration {
 	return time.Since(cp.Timestamp)
 }
 
 // IsStale returns true if the checkpoint is at or older than the threshold.
-func (cp *Checkpoint) IsStale(threshold time.Duration) bool {
-	return cp.Age() >= threshold
+func IsStale(cp *Checkpoint, threshold time.Duration) bool {
+	return Age(cp) >= threshold
 }
 
 // Summary returns a concise summary of the checkpoint.
-func (cp *Checkpoint) Summary() string {
+func Summary(cp *Checkpoint) string {
 	var parts []string
 
 	if cp.MoleculeID != "" {

@@ -112,7 +112,7 @@ func runCheckpointWrite(_ *cobra.Command, _ []string) error {
 
 	// Add notes if provided
 	if checkpointNotes != "" {
-		cp.WithNotes(checkpointNotes)
+		checkpoint.WithNotes(cp, checkpointNotes)
 	}
 
 	// Try to detect molecule context if not overridden
@@ -125,19 +125,19 @@ func runCheckpointWrite(_ *cobra.Command, _ []string) error {
 			checkpointStep = stepID
 		}
 		if stepTitle != "" {
-			cp.WithMolecule(checkpointMolecule, checkpointStep, stepTitle)
+			checkpoint.WithMolecule(cp, checkpointMolecule, checkpointStep, stepTitle)
 		}
 	}
 
 	// Add molecule context
 	if checkpointMolecule != "" {
-		cp.WithMolecule(checkpointMolecule, checkpointStep, "")
+		checkpoint.WithMolecule(cp, checkpointMolecule, checkpointStep, "")
 	}
 
 	// Detect hooked bead
 	hookedBead := detectHookedBead(cwd, roleInfo)
 	if hookedBead != "" {
-		cp.WithHookedBead(hookedBead)
+		checkpoint.WithHookedBead(cp, hookedBead)
 	}
 
 	// Write checkpoint
@@ -146,7 +146,7 @@ func runCheckpointWrite(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("%s Checkpoint written\n", style.Bold.Render("✓"))
-	fmt.Printf("  %s\n", cp.Summary())
+	fmt.Printf("  %s\n", checkpoint.Summary(cp))
 
 	return nil
 }
@@ -168,7 +168,7 @@ func runCheckpointRead(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("%s\n\n", style.Bold.Render("Checkpoint"))
-	fmt.Printf("Timestamp: %s (%s ago)\n", cp.Timestamp.Format("2006-01-02 15:04:05"), cp.Age().Round(1))
+	fmt.Printf("Timestamp: %s (%s ago)\n", cp.Timestamp.Format("2006-01-02 15:04:05"), checkpoint.Age(cp).Round(1))
 
 	if cp.MoleculeID != "" {
 		fmt.Printf("Molecule: %s\n", cp.MoleculeID)

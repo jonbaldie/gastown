@@ -840,7 +840,7 @@ func outputCheckpointContext(ctx RoleContext) {
 	}
 
 	// Check if checkpoint is stale (older than 24 hours)
-	if cp.IsStale(24 * time.Hour) {
+	if checkpoint.IsStale(cp, 24*time.Hour) {
 		// Remove stale checkpoint
 		_ = checkpoint.Remove(ctx.WorkDir)
 		return
@@ -849,7 +849,7 @@ func outputCheckpointContext(ctx RoleContext) {
 	// Display checkpoint context
 	fmt.Println()
 	fmt.Printf("%s\n\n", style.Bold.Render("## 📌 Previous Session Checkpoint"))
-	fmt.Printf("A previous session left a checkpoint %s ago.\n\n", cp.Age().Round(time.Minute))
+	fmt.Printf("A previous session left a checkpoint %s ago.\n\n", checkpoint.Age(cp).Round(time.Minute))
 
 	if cp.StepTitle != "" {
 		fmt.Printf("  **Working on:** %s\n", cp.StepTitle)

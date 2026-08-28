@@ -297,9 +297,9 @@ func detectSessionState(ctx RoleContext) SessionState {
 
 	// Check for checkpoint (crash-recovery state) - only for polecat/crew
 	if ctx.Role == RolePolecat || ctx.Role == RoleCrew {
-		if cp, err := checkpoint.Read(ctx.WorkDir); err == nil && cp != nil && !cp.IsStale(24*time.Hour) {
+		if cp, err := checkpoint.Read(ctx.WorkDir); err == nil && cp != nil && !checkpoint.IsStale(cp, 24*time.Hour) {
 			state.State = "crash-recovery"
-			state.CheckpointAge = cp.Age().Round(time.Minute).String()
+			state.CheckpointAge = checkpoint.Age(cp).Round(time.Minute).String()
 			return state
 		}
 	}
