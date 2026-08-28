@@ -9,11 +9,7 @@
 package bitbucket
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 )
@@ -60,56 +56,6 @@ func NewClient(opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("bitbucket: BITBUCKET_TOKEN is required (set env var or use WithToken)")
 	}
 	return c, nil
-}
-
-// restRequest makes an authenticated REST API request and decodes the JSON response.
-func (c *Client) restRequest(ctx context.Context, method, path string, body any, result any) error {
-	var reqBody io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("bitbucket: marshal request: %w", err)
-		}
-		reqBody = bytes.NewReader(b)
-	}
-
-	url := c.restBase + path
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
-	if err != nil {
-		return fmt.Errorf("bitbucket: create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("bitbucket: %s %s: %w", method, path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("bitbucket: read response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{
-			Method:     method,
-			Path:       path,
-			StatusCode: resp.StatusCode,
-			Body:       string(respBody),
-		}
-	}
-
-	if result != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, result); err != nil {
-			return fmt.Errorf("bitbucket: decode response: %w", err)
-		}
-	}
-	return nil
 }
 
 // APIError represents a non-2xx response from the Bitbucket API.
