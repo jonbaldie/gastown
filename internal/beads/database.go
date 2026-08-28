@@ -146,6 +146,10 @@ func ArgsAreReadOnly(args []string) bool {
 	if HasBDTargetSelectorFlag(append([]string{"bd"}, args...)) {
 		return false
 	}
+	return argsAreReadOnlyAfterGlobalFlags(args)
+}
+
+func argsAreReadOnlyAfterGlobalFlags(args []string) bool {
 	var ok bool
 	args, ok = stripBDGlobalFlags(args)
 	if !ok {
@@ -154,27 +158,57 @@ func ArgsAreReadOnly(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	switch args[0] {
-	case "show", "list", "ready", "blocked", "stats", "stale", "orphans", "activity", "query", "search", "version", "help":
+	if isSimpleReadOnlyBDCommand(args[0]) {
 		return true
-	case "dep":
-		return len(args) > 1 && args[1] == "list"
-	case "formula":
-		return len(args) > 1 && (args[1] == "list" || args[1] == "show")
-	case "kv":
-		return len(args) > 1 && (args[1] == "get" || args[1] == "list")
-	case "message":
-		return len(args) > 1 && args[1] == "thread"
-	case "mol":
-		return len(args) > 1 && (args[1] == "current" || (len(args) > 2 && args[1] == "wisp" && args[2] == "list"))
-	case "sql":
-		query := strings.ToLower(strings.Join(stripBDCommandFlags(args[1:]), " "))
-		return hasReadOnlySQLPrefix(strings.TrimSpace(query))
-	case "config":
-		return len(args) > 1 && args[1] == "get"
-	default:
+	}
+	if isReadOnlyBDSubcommand(args) {
+		return true
+	}
+	if args[0] == "sql" {
+		return isReadOnlySQLCommand(args[1:])
+	}
+	return args[0] == "config" && len(args) > 1 && args[1] == "get"
+}
+
+func isSimpleReadOnlyBDCommand(command string) bool {
+	return strings.Contains("|show|list|ready|blocked|stats|stale|orphans|activity|query|search|version|help|", "|"+command+"|")
+}
+
+func isReadOnlyBDSubcommand(args []string) bool {
+	if len(args) < 2 {
 		return false
 	}
+	return isReadOnlyDependencyCommand(args) ||
+		isReadOnlyFormulaCommand(args) ||
+		isReadOnlyKVCommand(args) ||
+		isReadOnlyMessageCommand(args) ||
+		isReadOnlyMoleculeCommand(args)
+}
+
+func isReadOnlyDependencyCommand(args []string) bool {
+	return args[0] == "dep" && args[1] == "list"
+}
+
+func isReadOnlyFormulaCommand(args []string) bool {
+	return args[0] == "formula" && (args[1] == "list" || args[1] == "show")
+}
+
+func isReadOnlyKVCommand(args []string) bool {
+	return args[0] == "kv" && (args[1] == "get" || args[1] == "list")
+}
+
+func isReadOnlyMessageCommand(args []string) bool {
+	return args[0] == "message" && args[1] == "thread"
+}
+
+func isReadOnlyMoleculeCommand(args []string) bool {
+	return (args[1] == "current" && args[0] == "mol") ||
+		(len(args) > 2 && args[0] == "mol" && args[1] == "wisp" && args[2] == "list")
+}
+
+func isReadOnlySQLCommand(args []string) bool {
+	query := strings.ToLower(strings.Join(stripBDCommandFlags(args), " "))
+	return hasReadOnlySQLPrefix(strings.TrimSpace(query))
 }
 
 func isBDReadOnlyGlobalFlag(arg string) bool {
