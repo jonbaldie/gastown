@@ -28,12 +28,9 @@ type IntegrityOptions struct {
 // clones (.git directory) and validates linked worktree .git files by ensuring
 // they are well formed and point at usable git metadata.
 func Validate(path string, opts IntegrityOptions) error {
-	if path == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("%w: get cwd: %v", ErrIntegrityViolation, err)
-		}
-		path = cwd
+	path, err := validationPath(path)
+	if err != nil {
+		return err
 	}
 
 	marker, found, err := findGitMarker(path, opts.TownRoot)
@@ -41,12 +38,31 @@ func Validate(path string, opts IntegrityOptions) error {
 		return err
 	}
 	if !found {
-		if opts.Require {
-			return fmt.Errorf("%w: missing .git metadata under %s", ErrIntegrityViolation, path)
-		}
-		return nil
+		return missingMarkerError(path, opts.Require)
 	}
 
+	return validateMarker(marker)
+}
+
+func validationPath(path string) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("%w: get cwd: %v", ErrIntegrityViolation, err)
+	}
+	return cwd, nil
+}
+
+func missingMarkerError(path string, require bool) error {
+	if !require {
+		return nil
+	}
+	return fmt.Errorf("%w: missing .git metadata under %s", ErrIntegrityViolation, path)
+}
+
+func validateMarker(marker string) error {
 	info, err := os.Stat(marker)
 	if err != nil {
 		return fmt.Errorf("%w: cannot stat %s: %v", ErrIntegrityViolation, marker, err)
@@ -60,30 +76,35 @@ func Validate(path string, opts IntegrityOptions) error {
 		return fmt.Errorf("%w: cannot read %s: %v", ErrIntegrityViolation, marker, err)
 	}
 
+	target, err := resolveGitDirTarget(marker, content)
+	if err != nil {
+		return err
+	}
+	return validateGitDir(target, marker)
+}
+
+func resolveGitDirTarget(marker string, content []byte) (string, error) {
 	line := strings.TrimSpace(string(content))
 	if !strings.HasPrefix(line, "gitdir: ") {
-		return fmt.Errorf("%w: malformed .git file at %s", ErrIntegrityViolation, marker)
+		return "", fmt.Errorf("%w: malformed .git file at %s", ErrIntegrityViolation, marker)
 	}
 
 	target := strings.TrimSpace(strings.TrimPrefix(line, "gitdir: "))
 	if target == "" {
-		return fmt.Errorf("%w: empty gitdir target in %s", ErrIntegrityViolation, marker)
+		return "", fmt.Errorf("%w: empty gitdir target in %s", ErrIntegrityViolation, marker)
 	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Clean(filepath.Join(filepath.Dir(marker), target))
 	}
 
-	if info, err := os.Stat(target); err != nil {
-		return fmt.Errorf("%w: gitdir target missing for %s: %s", ErrIntegrityViolation, marker, target)
-	} else if !info.IsDir() {
-		return fmt.Errorf("%w: gitdir target is not a directory for %s: %s", ErrIntegrityViolation, marker, target)
+	info, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("%w: gitdir target missing for %s: %s", ErrIntegrityViolation, marker, target)
 	}
-
-	if err := validateGitDir(target, marker); err != nil {
-		return err
+	if !info.IsDir() {
+		return "", fmt.Errorf("%w: gitdir target is not a directory for %s: %s", ErrIntegrityViolation, marker, target)
 	}
-
-	return nil
+	return target, nil
 }
 
 func validateGitDir(gitdir, marker string) error {
@@ -94,28 +115,18 @@ func validateGitDir(gitdir, marker string) error {
 }
 
 func findGitMarker(path, townRoot string) (string, bool, error) {
-	path, err := filepath.Abs(path)
+	path, stop, err := searchBounds(path, townRoot)
 	if err != nil {
-		return "", false, fmt.Errorf("%w: resolve path %s: %v", ErrIntegrityViolation, path, err)
-	}
-
-	var stop string
-	if townRoot != "" {
-		stop, err = filepath.Abs(townRoot)
-		if err != nil {
-			return "", false, fmt.Errorf("%w: resolve town root %s: %v", ErrIntegrityViolation, townRoot, err)
-		}
+		return "", false, err
 	}
 
 	for {
-		marker := filepath.Join(path, ".git")
-		if _, err := os.Lstat(marker); err == nil {
-			return marker, true, nil
-		} else if !os.IsNotExist(err) {
-			return "", false, fmt.Errorf("%w: cannot inspect %s: %v", ErrIntegrityViolation, marker, err)
+		marker, found, err := markerAt(path)
+		if err != nil || found {
+			return marker, found, err
 		}
 
-		if stop != "" && path == stop {
+		if atSearchStop(path, stop) {
 			break
 		}
 		parent := filepath.Dir(path)
@@ -126,4 +137,35 @@ func findGitMarker(path, townRoot string) (string, bool, error) {
 	}
 
 	return "", false, nil
+}
+
+func searchBounds(path, townRoot string) (string, string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: resolve path %s: %v", ErrIntegrityViolation, path, err)
+	}
+	if townRoot == "" {
+		return path, "", nil
+	}
+	stop, err := filepath.Abs(townRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: resolve town root %s: %v", ErrIntegrityViolation, townRoot, err)
+	}
+	return path, stop, nil
+}
+
+func markerAt(path string) (string, bool, error) {
+	marker := filepath.Join(path, ".git")
+	_, err := os.Lstat(marker)
+	if err == nil {
+		return marker, true, nil
+	}
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	return "", false, fmt.Errorf("%w: cannot inspect %s: %v", ErrIntegrityViolation, marker, err)
+}
+
+func atSearchStop(path, stop string) bool {
+	return stop != "" && path == stop
 }
