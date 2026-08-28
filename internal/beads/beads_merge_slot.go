@@ -101,65 +101,80 @@ func (b *Beads) MergeSlotCheck() (*MergeSlotStatus, error) {
 // waiters queue (informational; callers use retries for contention handling).
 // Returns the acquisition result.
 func (b *Beads) MergeSlotAcquire(holder string, addWaiter bool) (*MergeSlotStatus, error) {
-	if holder == "" {
-		holder = b.getActor()
-	}
-
+	holder = mergeSlotHolder(holder, b.getActor())
 	issue, err := b.getMergeSlotBead()
 	if err != nil {
 		return nil, fmt.Errorf("acquiring merge slot: %w", err)
 	}
-
 	data := parseMergeSlotData(issue)
-
-	if data.Holder != "" && data.Holder != holder {
-		// Slot is held by someone else.
-		if addWaiter {
-			// Add to waiters list if not already present.
-			alreadyWaiting := false
-			for _, w := range data.Waiters {
-				if w == holder {
-					alreadyWaiting = true
-					break
-				}
-			}
-			if !alreadyWaiting {
-				data.Waiters = append(data.Waiters, holder)
-				newDesc, _ := json.Marshal(data)
-				desc := string(newDesc)
-				_ = b.Update(issue.ID, UpdateOptions{Description: &desc})
-			}
-		}
-		return &MergeSlotStatus{
-			ID:      issue.ID,
-			Holder:  data.Holder,
-			Waiters: data.Waiters,
-		}, nil
+	if mergeSlotHeldByOther(data, holder) {
+		b.addMergeSlotWaiter(issue.ID, &data, holder, addWaiter)
+		return mergeSlotStatus(issue.ID, data), nil
 	}
+	return b.acquireMergeSlotIssue(issue.ID, data, holder)
+}
 
-	// Slot is available or we already hold it — acquire.
+func mergeSlotHolder(holder, actor string) string {
+	if holder == "" {
+		return actor
+	}
+	return holder
+}
+
+func mergeSlotHeldByOther(data mergeSlotData, holder string) bool {
+	return data.Holder != "" && data.Holder != holder
+}
+
+func (b *Beads) addMergeSlotWaiter(issueID string, data *mergeSlotData, holder string, addWaiter bool) {
+	if !addWaiter || containsMergeSlotWaiter(data.Waiters, holder) {
+		return
+	}
+	data.Waiters = append(data.Waiters, holder)
+	description := marshalMergeSlotData(*data)
+	_ = b.Update(issueID, UpdateOptions{Description: &description})
+}
+
+func containsMergeSlotWaiter(waiters []string, holder string) bool {
+	for _, waiter := range waiters {
+		if waiter == holder {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Beads) acquireMergeSlotIssue(issueID string, data mergeSlotData, holder string) (*MergeSlotStatus, error) {
 	data.Holder = holder
-	// Remove from waiters if present.
-	filtered := data.Waiters[:0]
-	for _, w := range data.Waiters {
-		if w != holder {
-			filtered = append(filtered, w)
-		}
-	}
-	data.Waiters = filtered
-
-	newDesc, _ := json.Marshal(data)
-	desc := string(newDesc)
-	if err := b.Update(issue.ID, UpdateOptions{Description: &desc}); err != nil {
+	data.Waiters = removeMergeSlotWaiter(data.Waiters, holder)
+	description := marshalMergeSlotData(data)
+	if err := b.Update(issueID, UpdateOptions{Description: &description}); err != nil {
 		return nil, fmt.Errorf("acquiring merge slot: %w", err)
 	}
+	return mergeSlotStatus(issueID, data), nil
+}
 
+func removeMergeSlotWaiter(waiters []string, holder string) []string {
+	filtered := waiters[:0]
+	for _, waiter := range waiters {
+		if waiter != holder {
+			filtered = append(filtered, waiter)
+		}
+	}
+	return filtered
+}
+
+func marshalMergeSlotData(data mergeSlotData) string {
+	encoded, _ := json.Marshal(data)
+	return string(encoded)
+}
+
+func mergeSlotStatus(issueID string, data mergeSlotData) *MergeSlotStatus {
 	return &MergeSlotStatus{
-		ID:        issue.ID,
+		ID:        issueID,
 		Available: false,
-		Holder:    holder,
+		Holder:    data.Holder,
 		Waiters:   data.Waiters,
-	}, nil
+	}
 }
 
 // MergeSlotRelease releases the merge slot after conflict resolution completes.
