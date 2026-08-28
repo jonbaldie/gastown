@@ -78,53 +78,59 @@ func ParseChannelFields(description string) *ChannelFields {
 	}
 
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "null" || value == "" {
-			value = ""
-		}
-
-		switch strings.ToLower(key) {
-		case "name":
-			fields.Name = value
-		case "subscribers":
-			if value != "" {
-				// Parse comma-separated subscribers
-				for _, s := range strings.Split(value, ",") {
-					s = strings.TrimSpace(s)
-					if s != "" {
-						fields.Subscribers = append(fields.Subscribers, s)
-					}
-				}
-			}
-		case "status":
-			fields.Status = value
-		case "retention_count":
-			if v, err := strconv.Atoi(value); err == nil {
-				fields.RetentionCount = v
-			}
-		case "retention_hours":
-			if v, err := strconv.Atoi(value); err == nil {
-				fields.RetentionHours = v
-			}
-		case "created_by":
-			fields.CreatedBy = value
-		case "created_at":
-			fields.CreatedAt = value
-		}
+		setChannelField(fields, line)
 	}
 
 	return fields
+}
+
+func setChannelField(fields *ChannelFields, line string) {
+	key, value, ok := channelFieldLine(line)
+	if !ok {
+		return
+	}
+	if key == "subscribers" {
+		fields.Subscribers = splitCommaSeparatedValues(value)
+		return
+	}
+	if destination, ok := channelStringFields(fields)[key]; ok {
+		*destination = value
+		return
+	}
+	if destination, ok := channelIntegerFields(fields)[key]; ok {
+		if count, err := strconv.Atoi(value); err == nil {
+			*destination = count
+		}
+	}
+}
+
+func channelFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIdx := strings.Index(line, ":")
+	if line == "" || colonIdx == -1 {
+		return "", "", false
+	}
+	value := strings.TrimSpace(line[colonIdx+1:])
+	if value == "null" {
+		value = ""
+	}
+	return strings.ToLower(strings.TrimSpace(line[:colonIdx])), value, true
+}
+
+func channelStringFields(fields *ChannelFields) map[string]*string {
+	return map[string]*string{
+		"name":       &fields.Name,
+		"status":     &fields.Status,
+		"created_by": &fields.CreatedBy,
+		"created_at": &fields.CreatedAt,
+	}
+}
+
+func channelIntegerFields(fields *ChannelFields) map[string]*int {
+	return map[string]*int{
+		"retention_count": &fields.RetentionCount,
+		"retention_hours": &fields.RetentionHours,
+	}
 }
 
 // ChannelBeadID returns the bead ID for a channel name.
