@@ -285,46 +285,50 @@ var parseResetTimePattern = regexp.MustCompile(`(?i)^(\d{1,2})(?::(\d{2}))?\s*(a
 //
 // The reference time is used to determine "today".
 func ParseResetTime(resetsAt string, reference time.Time) (time.Time, error) {
-	resetsAt = strings.TrimSpace(resetsAt)
-
-	// Extract timezone if present: "7pm (America/Los_Angeles)" or "7pm"
-	loc := reference.Location()
-	if idx := strings.Index(resetsAt, "("); idx != -1 {
-		end := strings.Index(resetsAt, ")")
-		if end > idx {
-			tzName := strings.TrimSpace(resetsAt[idx+1 : end])
-			parsed, err := time.LoadLocation(tzName)
-			if err == nil {
-				loc = parsed
-			}
-			resetsAt = strings.TrimSpace(resetsAt[:idx])
-		}
+	timeText, loc := resetTimeLocation(strings.TrimSpace(resetsAt), reference.Location())
+	hour, minute, err := parseResetClock(timeText)
+	if err != nil {
+		return time.Time{}, err
 	}
-
-	// Parse the time portion: "7pm", "11am", "3:30pm"
-	m := parseResetTimePattern.FindStringSubmatch(resetsAt)
-	if len(m) < 4 {
-		return time.Time{}, fmt.Errorf("cannot parse reset time: %q", resetsAt)
-	}
-
-	hour := 0
-	fmt.Sscanf(m[1], "%d", &hour)
-	minute := 0
-	if m[2] != "" {
-		fmt.Sscanf(m[2], "%d", &minute)
-	}
-
-	ampm := strings.ToLower(m[3])
-	if ampm == "pm" && hour != 12 {
-		hour += 12
-	} else if ampm == "am" && hour == 12 {
-		hour = 0
-	}
-
-	// Build the reset time using today's date in the target timezone
 	refInLoc := reference.In(loc)
-	resetTime := time.Date(refInLoc.Year(), refInLoc.Month(), refInLoc.Day(),
-		hour, minute, 0, 0, loc)
+	return time.Date(refInLoc.Year(), refInLoc.Month(), refInLoc.Day(), hour, minute, 0, 0, loc), nil
+}
 
-	return resetTime, nil
+func resetTimeLocation(resetsAt string, defaultLocation *time.Location) (string, *time.Location) {
+	idx := strings.Index(resetsAt, "(")
+	if idx == -1 {
+		return resetsAt, defaultLocation
+	}
+	end := strings.Index(resetsAt, ")")
+	if end <= idx {
+		return resetsAt, defaultLocation
+	}
+	location, err := time.LoadLocation(strings.TrimSpace(resetsAt[idx+1 : end]))
+	if err != nil {
+		return strings.TrimSpace(resetsAt[:idx]), defaultLocation
+	}
+	return strings.TrimSpace(resetsAt[:idx]), location
+}
+
+func parseResetClock(resetsAt string) (int, int, error) {
+	match := parseResetTimePattern.FindStringSubmatch(resetsAt)
+	if len(match) < 4 {
+		return 0, 0, fmt.Errorf("cannot parse reset time: %q", resetsAt)
+	}
+	hour, minute := 0, 0
+	fmt.Sscanf(match[1], "%d", &hour)
+	if match[2] != "" {
+		fmt.Sscanf(match[2], "%d", &minute)
+	}
+	return clockHour(hour, strings.ToLower(match[3])), minute, nil
+}
+
+func clockHour(hour int, ampm string) int {
+	if ampm == "pm" && hour != 12 {
+		return hour + 12
+	}
+	if ampm == "am" && hour == 12 {
+		return 0
+	}
+	return hour
 }
