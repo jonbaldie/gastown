@@ -229,7 +229,16 @@ func (m *Message) IsClaimed() bool {
 // Validate checks that the message has valid required fields and routing configuration.
 // Returns an error if required fields are missing or routing targets are not mutually exclusive.
 func (m *Message) Validate() error {
-	// Required fields
+	if err := validateMessageRequiredFields(m); err != nil {
+		return err
+	}
+	if err := validateMessageRouting(m); err != nil {
+		return err
+	}
+	return validateMessageClaimedFields(m)
+}
+
+func validateMessageRequiredFields(m *Message) error {
 	if m.ID == "" {
 		return fmt.Errorf("message must have an ID")
 	}
@@ -239,8 +248,10 @@ func (m *Message) Validate() error {
 	if m.Subject == "" {
 		return fmt.Errorf("message must have a Subject")
 	}
+	return nil
+}
 
-	// Routing: exactly one of To, Queue, or Channel
+func validateMessageRouting(m *Message) error {
 	count := 0
 	if m.To != "" {
 		count++
@@ -251,22 +262,22 @@ func (m *Message) Validate() error {
 	if m.Channel != "" {
 		count++
 	}
-
 	if count == 0 {
 		return fmt.Errorf("message must have exactly one of: to, queue, or channel")
 	}
 	if count > 1 {
 		return fmt.Errorf("message cannot have multiple routing targets (to, queue, channel are mutually exclusive)")
 	}
+	return nil
+}
 
-	// ClaimedBy/ClaimedAt only valid for queue messages
+func validateMessageClaimedFields(m *Message) error {
 	if m.ClaimedBy != "" && m.Queue == "" {
 		return fmt.Errorf("claimed_by is only valid for queue messages")
 	}
 	if m.ClaimedAt != nil && m.Queue == "" {
 		return fmt.Errorf("claimed_at is only valid for queue messages")
 	}
-
 	return nil
 }
 
