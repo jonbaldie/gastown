@@ -1219,9 +1219,8 @@ func runConvoyClose(cmd *cobra.Command, args []string) error {
 	}
 
 	openIssues := convoyOpenIssues(tracked)
-	if len(openIssues) > 0 && !force {
-		printConvoyOpenIssues(convoyID, openIssues, "close")
-		return fmt.Errorf("convoy has %d open issue(s)", len(openIssues))
+	if err := rejectOpenConvoyIssues(convoyID, openIssues, force, "close"); err != nil {
+		return err
 	}
 
 	return completeConvoyClose(townBeads, convoy, convoyID, closeReason, closeNotify, force, tracked, openIssues)
@@ -1353,119 +1352,117 @@ func runConvoyLand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	stdout, err := runBdJSON(townBeads, "show", convoyID, "--json")
+	convoy, err := getConvoyIssue(townBeads, convoyID)
 	if err != nil {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
+		return err
 	}
 
-	var convoys []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Status      string   `json:"status"`
-		Type        string   `json:"issue_type"`
-		Description string   `json:"description"`
-		Labels      []string `json:"labels,omitempty"`
-	}
-	if err := json.Unmarshal(stdout, &convoys); err != nil {
-		return fmt.Errorf("parsing convoy data: %w", err)
-	}
-
-	if len(convoys) == 0 {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
-	}
-
-	convoy := convoys[0]
-
-	// Verify it's a convoy type
-	if !isConvoyIssue(convoy.Type, convoy.Labels) {
-		return fmt.Errorf("'%s' is not a convoy (type: %s)", convoyID, convoy.Type)
-	}
-
-	// Verify the convoy is owned
-	if !hasLabel(convoy.Labels, "gt:owned") {
-		return fmt.Errorf("convoy '%s' is not an owned convoy\n  Only convoys created with --owned can be landed.\n  Use %s instead for non-owned convoys.",
-			convoyID, style.Bold.Render("gt convoy close"))
-	}
-
-	// Check if already closed
-	if err := ensureKnownConvoyStatus(convoy.Status); err != nil {
-		return fmt.Errorf("convoy '%s' has invalid lifecycle state: %w", convoyID, err)
+	if err := validateConvoyForLand(convoyID, convoy); err != nil {
+		return err
 	}
 	if normalizeConvoyStatus(convoy.Status) == convoyStatusClosed {
 		fmt.Printf("%s Convoy %s is already closed\n", style.Dim.Render("○"), convoyID)
 		return persistAndNotifyConvoyCompletion(townBeads, convoyID, convoy.Title)
 	}
 
-	// Get tracked issues
-	tracked, err := getTrackedIssues(townBeads, convoyID)
+	tracked, err := getTrackedIssuesForLand(townBeads, convoyID, force)
 	if err != nil {
-		if !force {
-			return fmt.Errorf("couldn't verify tracked issues: %w\n  Use --force to land anyway", err)
-		}
-		style.PrintWarning("couldn't verify tracked issues: %v", err)
+		return err
 	}
 
-	// Check if all tracked issues are done
-	var openIssues []trackedIssueInfo
-	for _, t := range tracked {
-		if t.Status != "closed" && t.Status != "tombstone" {
-			openIssues = append(openIssues, t)
-		}
-	}
+	openIssues := convoyOpenIssues(tracked)
 
-	if len(openIssues) > 0 && !force {
-		fmt.Printf("%s Convoy %s has %d open issue(s):\n\n", style.Warning.Render("⚠"), convoyID, len(openIssues))
-		for _, t := range openIssues {
-			status := "○"
-			if t.Status == "in_progress" || t.Status == "hooked" {
-				status = "▶"
-			}
-			fmt.Printf("    %s %s: %s [%s]\n", status, t.ID, t.Title, t.Status)
-		}
-		fmt.Printf("\n  Use %s to land anyway.\n", style.Bold.Render("--force"))
-		return fmt.Errorf("convoy has %d open issue(s)", len(openIssues))
+	if err := rejectOpenConvoyIssues(convoyID, openIssues, force, "land"); err != nil {
+		return err
 	}
+	return landConvoy(townBeads, convoy, convoyID, tracked, openIssues, keepWorktrees, dryRun)
+}
 
-	if dryRun {
-		fmt.Printf("%s Dry run — would land convoy 🚚 %s: %s\n\n", style.Warning.Render("⚠"), convoyID, convoy.Title)
-		fmt.Printf("  Tracked: %d issue(s) (%d closed, %d open)\n", len(tracked), len(tracked)-len(openIssues), len(openIssues))
-		if !keepWorktrees {
-			worktrees := findConvoyWorktrees(tracked)
-			fmt.Printf("  Worktrees to clean: %d\n", len(worktrees))
-			for _, wt := range worktrees {
-				fmt.Printf("    • %s (%s)\n", wt.polecatName, wt.rigName)
-			}
-		} else {
-			fmt.Printf("  Worktrees: skipped (--keep-worktrees)\n")
-		}
-		fmt.Printf("  Close reason: Landed by owner\n")
+func rejectOpenConvoyIssues(convoyID string, openIssues []trackedIssueInfo, force bool, action string) error {
+	if len(openIssues) == 0 || force {
 		return nil
 	}
+	printConvoyOpenIssues(convoyID, openIssues, action)
+	return fmt.Errorf("convoy has %d open issue(s)", len(openIssues))
+}
 
-	// Phase 1: Clean up polecat worktrees
+func landConvoy(townBeads string, convoy convoyListIssue, convoyID string, tracked, openIssues []trackedIssueInfo, keepWorktrees, dryRun bool) error {
+	if dryRun {
+		printConvoyLandDryRun(convoyID, convoy.Title, tracked, openIssues, keepWorktrees)
+		return nil
+	}
 	if !keepWorktrees {
+		cleanupConvoyWorktrees(tracked)
+	}
+	if err := completeConvoyLand(townBeads, convoy, convoyID, tracked, openIssues); err != nil {
+		return fmt.Errorf("closing convoy: %w", err)
+	}
+	return nil
+}
+
+func validateConvoyForLand(convoyID string, convoy convoyListIssue) error {
+	if !isConvoyIssue(convoy.IssueType, convoy.Labels) {
+		return fmt.Errorf("'%s' is not a convoy (type: %s)", convoyID, convoy.IssueType)
+	}
+	if !hasLabel(convoy.Labels, "gt:owned") {
+		return fmt.Errorf("convoy '%s' is not an owned convoy\n  Only convoys created with --owned can be landed.\n  Use %s instead for non-owned convoys.",
+			convoyID, style.Bold.Render("gt convoy close"))
+	}
+	if err := ensureKnownConvoyStatus(convoy.Status); err != nil {
+		return fmt.Errorf("convoy '%s' has invalid lifecycle state: %w", convoyID, err)
+	}
+	return nil
+}
+
+func getTrackedIssuesForLand(townBeads, convoyID string, force bool) ([]trackedIssueInfo, error) {
+	tracked, err := getTrackedIssues(townBeads, convoyID)
+	if err == nil {
+		return tracked, nil
+	}
+	if !force {
+		return nil, fmt.Errorf("couldn't verify tracked issues: %w\n  Use --force to land anyway", err)
+	}
+	style.PrintWarning("couldn't verify tracked issues: %v", err)
+	return nil, nil
+}
+
+func printConvoyLandDryRun(convoyID, title string, tracked, openIssues []trackedIssueInfo, keepWorktrees bool) {
+	fmt.Printf("%s Dry run — would land convoy 🚚 %s: %s\n\n", style.Warning.Render("⚠"), convoyID, title)
+	fmt.Printf("  Tracked: %d issue(s) (%d closed, %d open)\n", len(tracked), len(tracked)-len(openIssues), len(openIssues))
+	if keepWorktrees {
+		fmt.Printf("  Worktrees: skipped (--keep-worktrees)\n")
+	} else {
 		worktrees := findConvoyWorktrees(tracked)
-		if len(worktrees) > 0 {
-			fmt.Printf("  Cleaning up %d worktree(s)...\n", len(worktrees))
-			for _, wt := range worktrees {
-				if err := removePolecatWorktree(wt); err != nil {
-					style.PrintWarning("couldn't remove worktree %s/%s: %v", wt.rigName, wt.polecatName, err)
-				} else {
-					fmt.Printf("    %s %s/%s\n", style.Dim.Render("✓"), wt.rigName, wt.polecatName)
-				}
-			}
+		fmt.Printf("  Worktrees to clean: %d\n", len(worktrees))
+		for _, wt := range worktrees {
+			fmt.Printf("    • %s (%s)\n", wt.polecatName, wt.rigName)
 		}
 	}
+	fmt.Printf("  Close reason: Landed by owner\n")
+}
 
-	// Phase 2: Close the convoy
-	reason := "Landed by owner"
-	closeArgs := []string{"close", convoyID, "-r", reason}
-	if err := runTownMutationAndExport(townBeads, closeArgs...); err != nil {
-		return fmt.Errorf("closing convoy: %w", err)
+func cleanupConvoyWorktrees(tracked []trackedIssueInfo) {
+	worktrees := findConvoyWorktrees(tracked)
+	if len(worktrees) == 0 {
+		return
+	}
+	fmt.Printf("  Cleaning up %d worktree(s)...\n", len(worktrees))
+	for _, wt := range worktrees {
+		if err := removePolecatWorktree(wt); err != nil {
+			style.PrintWarning("couldn't remove worktree %s/%s: %v", wt.rigName, wt.polecatName, err)
+		} else {
+			fmt.Printf("    %s %s/%s\n", style.Dim.Render("✓"), wt.rigName, wt.polecatName)
+		}
+	}
+}
+
+func completeConvoyLand(townBeads string, convoy convoyListIssue, convoyID string, tracked, openIssues []trackedIssueInfo) error {
+	if err := runTownMutationAndExport(townBeads, "close", convoyID, "-r", "Landed by owner"); err != nil {
+		return err
 	}
 
 	fmt.Printf("\n%s Landed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, convoy.Title)
-	fmt.Printf("  Reason: %s\n", reason)
+	fmt.Printf("  Reason: Landed by owner\n")
 	if len(tracked) > 0 {
 		closedCount := len(tracked) - len(openIssues)
 		fmt.Printf("  Tracked: %d issue(s) (%d closed", len(tracked), closedCount)
@@ -1474,10 +1471,7 @@ func runConvoyLand(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println(")")
 	}
-
-	// Phase 3: Send completion notifications
 	notifyConvoyCompletion(townBeads, convoyID, convoy.Title)
-
 	return nil
 }
 
