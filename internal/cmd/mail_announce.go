@@ -103,13 +103,8 @@ func listAnnounceChannels(cfg *config.MessagingConfig) error {
 
 // readAnnounceChannel reads messages from an announce channel.
 func readAnnounceChannel(townRoot string, cfg *config.MessagingConfig, channelName string) error {
-	// Validate channel exists
-	if cfg.Announces == nil {
-		return fmt.Errorf("no announce channels configured")
-	}
-	_, ok := cfg.Announces[channelName]
-	if !ok {
-		return fmt.Errorf("unknown announce channel: %s", channelName)
+	if err := validateAnnounceChannel(cfg, channelName); err != nil {
+		return err
 	}
 
 	// Query beads for messages with announce_channel=<channel>
@@ -124,44 +119,67 @@ func readAnnounceChannel(townRoot string, cfg *config.MessagingConfig, channelNa
 		if messages == nil {
 			messages = []announceMessage{}
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(messages)
+		return printAnnounceMessagesJSON(messages)
 	}
 
-	// Human-readable output
+	printAnnounceMessages(channelName, messages)
+	return nil
+}
+
+func validateAnnounceChannel(cfg *config.MessagingConfig, channelName string) error {
+	if cfg.Announces == nil {
+		return fmt.Errorf("no announce channels configured")
+	}
+	if _, ok := cfg.Announces[channelName]; !ok {
+		return fmt.Errorf("unknown announce channel: %s", channelName)
+	}
+	return nil
+}
+
+func printAnnounceMessagesJSON(messages []announceMessage) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(messages)
+}
+
+func printAnnounceMessages(channelName string, messages []announceMessage) {
 	fmt.Printf("%s Channel: %s (%d messages)\n\n",
 		style.Bold.Render("📢"), channelName, len(messages))
 
 	if len(messages) == 0 {
 		fmt.Printf("  %s\n", style.Dim.Render("(no messages)"))
-		return nil
+		return
 	}
 
 	for _, msg := range messages {
-		priorityMarker := ""
-		if msg.Priority <= 1 {
-			priorityMarker = " " + style.Bold.Render("!")
-		}
+		printAnnounceMessage(msg)
+	}
+}
 
-		fmt.Printf("  %s %s%s\n", style.Bold.Render("●"), msg.Title, priorityMarker)
-		fmt.Printf("    %s from %s\n",
-			style.Dim.Render(msg.ID),
-			msg.From)
-		fmt.Printf("    %s\n",
-			style.Dim.Render(msg.Created.Local().Format("2006-01-02 15:04")))
-		if msg.Description != "" {
-			// Show first line of description as preview
-			lines := strings.SplitN(msg.Description, "\n", 2)
-			preview := lines[0]
-			if len(preview) > 80 {
-				preview = preview[:77] + "..."
-			}
-			fmt.Printf("    %s\n", style.Dim.Render(preview))
-		}
+func printAnnounceMessage(msg announceMessage) {
+	priorityMarker := ""
+	if msg.Priority <= 1 {
+		priorityMarker = " " + style.Bold.Render("!")
 	}
 
-	return nil
+	fmt.Printf("  %s %s%s\n", style.Bold.Render("●"), msg.Title, priorityMarker)
+	fmt.Printf("    %s from %s\n",
+		style.Dim.Render(msg.ID),
+		msg.From)
+	fmt.Printf("    %s\n",
+		style.Dim.Render(msg.Created.Local().Format("2006-01-02 15:04")))
+	if msg.Description != "" {
+		fmt.Printf("    %s\n", style.Dim.Render(announcePreview(msg.Description)))
+	}
+}
+
+func announcePreview(description string) string {
+	// Show first line of description as preview
+	preview := strings.SplitN(description, "\n", 2)[0]
+	if len(preview) > 80 {
+		return preview[:77] + "..."
+	}
+	return preview
 }
 
 // announceMessage represents a message in an announce channel.
