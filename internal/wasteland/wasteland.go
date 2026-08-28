@@ -318,14 +318,10 @@ func (s *Service) Join(upstream, forkOrg, token, handle, displayName, ownerEmail
 		return nil, err
 	}
 
-	// Check if already joined
-	if existing, err := s.Config.Load(townRoot); err == nil {
-		if existing.Upstream != upstream {
-			return nil, fmt.Errorf("already joined to %s; run gt wl leave first", existing.Upstream)
-		}
+	if existing, joined, err := existingJoin(s.Config, townRoot, upstream); err != nil {
+		return nil, err
+	} else if joined {
 		return existing, nil
-	} else if !errors.Is(err, ErrNotJoined) {
-		return nil, fmt.Errorf("loading wasteland config: %w", err)
 	}
 
 	localDir := LocalCloneDir(townRoot, upstreamOrg, upstreamDB)
@@ -334,29 +330,18 @@ func (s *Service) Join(upstream, forkOrg, token, handle, displayName, ownerEmail
 		progress = func(string) {}
 	}
 
-	progress("Forking commons...")
-	if err := s.API.ForkRepo(upstreamOrg, upstreamDB, forkOrg, token); err != nil {
-		return nil, fmt.Errorf("forking commons: %w", err)
-	}
-
-	progress("Cloning fork locally...")
-	if err := s.CLI.Clone(forkOrg, upstreamDB, localDir); err != nil {
-		return nil, fmt.Errorf("cloning fork: %w", err)
-	}
-
-	progress("Adding upstream remote...")
-	if err := s.CLI.AddUpstreamRemote(localDir, upstreamOrg, upstreamDB); err != nil {
-		return nil, fmt.Errorf("adding upstream remote: %w", err)
-	}
-
-	progress("Registering rig...")
-	if err := s.CLI.RegisterRig(localDir, handle, forkOrg, displayName, ownerEmail, gtVersion); err != nil {
-		return nil, fmt.Errorf("registering rig: %w", err)
-	}
-
-	progress("Pushing to fork...")
-	if err := s.CLI.Push(localDir); err != nil {
-		return nil, fmt.Errorf("pushing to fork: %w", err)
+	if err := s.runJoinSteps(progress, joinInputs{
+		upstreamOrg: upstreamOrg,
+		upstreamDB:  upstreamDB,
+		forkOrg:     forkOrg,
+		token:       token,
+		handle:      handle,
+		displayName: displayName,
+		ownerEmail:  ownerEmail,
+		gtVersion:   gtVersion,
+		localDir:    localDir,
+	}); err != nil {
+		return nil, err
 	}
 
 	cfg := &Config{
@@ -372,6 +357,79 @@ func (s *Service) Join(upstream, forkOrg, token, handle, displayName, ownerEmail
 	}
 
 	return cfg, nil
+}
+
+func existingJoin(config ConfigStore, townRoot, upstream string) (*Config, bool, error) {
+	existing, err := config.Load(townRoot)
+	if err == nil {
+		if existing.Upstream != upstream {
+			return nil, false, fmt.Errorf("already joined to %s; run gt wl leave first", existing.Upstream)
+		}
+		return existing, true, nil
+	}
+	if errors.Is(err, ErrNotJoined) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("loading wasteland config: %w", err)
+}
+
+type joinStep struct {
+	message string
+	name    string
+	run     func() error
+}
+
+type joinInputs struct {
+	upstreamOrg string
+	upstreamDB  string
+	forkOrg     string
+	token       string
+	handle      string
+	displayName string
+	ownerEmail  string
+	gtVersion   string
+	localDir    string
+}
+
+func (s *Service) runJoinSteps(progress func(string), inputs joinInputs) error {
+	steps := []joinStep{
+		{
+			message: "Forking commons...",
+			name:    "forking commons",
+			run: func() error {
+				return s.API.ForkRepo(inputs.upstreamOrg, inputs.upstreamDB, inputs.forkOrg, inputs.token)
+			},
+		},
+		{
+			message: "Cloning fork locally...",
+			name:    "cloning fork",
+			run:     func() error { return s.CLI.Clone(inputs.forkOrg, inputs.upstreamDB, inputs.localDir) },
+		},
+		{
+			message: "Adding upstream remote...",
+			name:    "adding upstream remote",
+			run:     func() error { return s.CLI.AddUpstreamRemote(inputs.localDir, inputs.upstreamOrg, inputs.upstreamDB) },
+		},
+		{
+			message: "Registering rig...",
+			name:    "registering rig",
+			run: func() error {
+				return s.CLI.RegisterRig(inputs.localDir, inputs.handle, inputs.forkOrg, inputs.displayName, inputs.ownerEmail, inputs.gtVersion)
+			},
+		},
+		{
+			message: "Pushing to fork...",
+			name:    "pushing to fork",
+			run:     func() error { return s.CLI.Push(inputs.localDir) },
+		},
+	}
+	for _, step := range steps {
+		progress(step.message)
+		if err := step.run(); err != nil {
+			return fmt.Errorf("%s: %w", step.name, err)
+		}
+	}
+	return nil
 }
 
 // httpDoltHubAPI implements DoltHubAPI using the real DoltHub REST API.
