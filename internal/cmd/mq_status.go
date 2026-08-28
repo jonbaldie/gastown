@@ -14,6 +14,16 @@ import (
 
 // MRStatusOutput is the JSON output structure for gt mq status.
 type MRStatusOutput struct {
+	MRStatusCore
+	MRStatusDetails
+
+	// Dependencies
+	DependsOn []DependencyInfo `json:"depends_on,omitempty"`
+	Blocks    []DependencyInfo `json:"blocks,omitempty"`
+}
+
+// MRStatusCore contains the issue fields shared by all merge requests.
+type MRStatusCore struct {
 	// Core issue fields
 	ID        string `json:"id"`
 	Title     string `json:"title"`
@@ -24,7 +34,10 @@ type MRStatusOutput struct {
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 	ClosedAt  string `json:"closed_at,omitempty"`
+}
 
+// MRStatusDetails contains merge-request-specific fields.
+type MRStatusDetails struct {
 	// MR-specific fields
 	Branch      string `json:"branch,omitempty"`
 	Target      string `json:"target,omitempty"`
@@ -33,10 +46,6 @@ type MRStatusOutput struct {
 	Rig         string `json:"rig,omitempty"`
 	MergeCommit string `json:"merge_commit,omitempty"`
 	CloseReason string `json:"close_reason,omitempty"`
-
-	// Dependencies
-	DependsOn []DependencyInfo `json:"depends_on,omitempty"`
-	Blocks    []DependencyInfo `json:"blocks,omitempty"`
 }
 
 // DependencyInfo represents a dependency or blocker.
@@ -75,15 +84,17 @@ func runMqStatus(_ *cobra.Command, args []string) error {
 
 	// Build output structure
 	output := MRStatusOutput{
-		ID:        issue.ID,
-		Title:     issue.Title,
-		Status:    issue.Status,
-		Priority:  issue.Priority,
-		Type:      issue.Type,
-		Assignee:  issue.Assignee,
-		CreatedAt: issue.CreatedAt,
-		UpdatedAt: issue.UpdatedAt,
-		ClosedAt:  issue.ClosedAt,
+		MRStatusCore: MRStatusCore{
+			ID:        issue.ID,
+			Title:     issue.Title,
+			Status:    issue.Status,
+			Priority:  issue.Priority,
+			Type:      issue.Type,
+			Assignee:  issue.Assignee,
+			CreatedAt: issue.CreatedAt,
+			UpdatedAt: issue.UpdatedAt,
+			ClosedAt:  issue.ClosedAt,
+		},
 	}
 
 	// Add MR fields if present
@@ -132,14 +143,24 @@ func runMqStatus(_ *cobra.Command, args []string) error {
 
 // printMqStatus prints detailed MR status in human-readable format.
 func printMqStatus(issue *beads.Issue, mrFields *beads.MRFields) error {
-	// Header
+	printMqHeader(issue)
+	printMqStatusSection(issue)
+	printMqTimeline(issue)
+	printMqMergeDetails(mrFields)
+	printMqDependencies("Waiting On", issue.Dependencies)
+	printMqDependencies("Blocking", issue.Dependents)
+	printMqNotes(issue.Description)
+	return nil
+}
+
+func printMqHeader(issue *beads.Issue) {
 	fmt.Printf("%s %s\n", style.Bold.Render("📋 Merge Request:"), issue.ID)
 	fmt.Printf("   %s\n\n", issue.Title)
+}
 
-	// Status section
+func printMqStatusSection(issue *beads.Issue) {
 	fmt.Printf("%s\n", style.Bold.Render("Status"))
-	statusDisplay := formatStatus(issue.Status)
-	fmt.Printf("   State:    %s\n", statusDisplay)
+	fmt.Printf("   State:    %s\n", formatStatus(issue.Status))
 	fmt.Printf("   Priority: P%d\n", issue.Priority)
 	if issue.Type != "" {
 		fmt.Printf("   Type:     %s\n", issue.Type)
@@ -147,8 +168,9 @@ func printMqStatus(issue *beads.Issue, mrFields *beads.MRFields) error {
 	if issue.Assignee != "" {
 		fmt.Printf("   Assignee: %s\n", issue.Assignee)
 	}
+}
 
-	// Timestamps
+func printMqTimeline(issue *beads.Issue) {
 	fmt.Printf("\n%s\n", style.Bold.Render("Timeline"))
 	if issue.CreatedAt != "" {
 		fmt.Printf("   Created: %s %s\n", issue.CreatedAt, formatTimeAgo(issue.CreatedAt))
@@ -159,70 +181,52 @@ func printMqStatus(issue *beads.Issue, mrFields *beads.MRFields) error {
 	if issue.ClosedAt != "" {
 		fmt.Printf("   Closed:  %s %s\n", issue.ClosedAt, formatTimeAgo(issue.ClosedAt))
 	}
+}
 
-	// MR-specific fields
-	if mrFields != nil {
-		fmt.Printf("\n%s\n", style.Bold.Render("Merge Details"))
-		if mrFields.Branch != "" {
-			fmt.Printf("   Branch:       %s\n", mrFields.Branch)
-		}
-		if mrFields.Target != "" {
-			fmt.Printf("   Target:       %s\n", mrFields.Target)
-		}
-		if mrFields.SourceIssue != "" {
-			fmt.Printf("   Source Issue: %s\n", mrFields.SourceIssue)
-		}
-		if mrFields.Worker != "" {
-			fmt.Printf("   Worker:       %s\n", mrFields.Worker)
-		}
-		if mrFields.Rig != "" {
-			fmt.Printf("   Rig:          %s\n", mrFields.Rig)
-		}
-		if mrFields.MergeCommit != "" {
-			fmt.Printf("   Merge Commit: %s\n", mrFields.MergeCommit)
-		}
-		if mrFields.CloseReason != "" {
-			fmt.Printf("   Close Reason: %s\n", mrFields.CloseReason)
-		}
+func printMqMergeDetails(mrFields *beads.MRFields) {
+	if mrFields == nil {
+		return
 	}
+	fmt.Printf("\n%s\n", style.Bold.Render("Merge Details"))
+	printMqMergeField("Branch:       ", mrFields.Branch)
+	printMqMergeField("Target:       ", mrFields.Target)
+	printMqMergeField("Source Issue: ", mrFields.SourceIssue)
+	printMqMergeField("Worker:       ", mrFields.Worker)
+	printMqMergeField("Rig:          ", mrFields.Rig)
+	printMqMergeField("Merge Commit: ", mrFields.MergeCommit)
+	printMqMergeField("Close Reason: ", mrFields.CloseReason)
+}
 
-	// Dependencies (what this MR is waiting on)
-	if len(issue.Dependencies) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("Waiting On"))
-		for _, dep := range issue.Dependencies {
-			statusIcon := getStatusIcon(dep.Status)
-			fmt.Printf("   %s %s: %s %s\n",
-				statusIcon,
-				dep.ID,
-				truncateString(dep.Title, 50),
-				style.Dim.Render(fmt.Sprintf("[%s]", dep.Status)))
-		}
+func printMqMergeField(label, value string) {
+	if value != "" {
+		fmt.Printf("   %s%s\n", label, value)
 	}
+}
 
-	// Blockers (what's waiting on this MR)
-	if len(issue.Dependents) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("Blocking"))
-		for _, dep := range issue.Dependents {
-			statusIcon := getStatusIcon(dep.Status)
-			fmt.Printf("   %s %s: %s %s\n",
-				statusIcon,
-				dep.ID,
-				truncateString(dep.Title, 50),
-				style.Dim.Render(fmt.Sprintf("[%s]", dep.Status)))
-		}
+func printMqDependencies(title string, dependencies []beads.IssueDep) {
+	if len(dependencies) == 0 {
+		return
 	}
-
-	// Description (if present and not just MR fields)
-	desc := getDescriptionWithoutMRFields(issue.Description)
-	if desc != "" {
-		fmt.Printf("\n%s\n", style.Bold.Render("Notes"))
-		// Indent each line
-		for _, line := range strings.Split(desc, "\n") {
-			fmt.Printf("   %s\n", line)
-		}
+	fmt.Printf("\n%s\n", style.Bold.Render(title))
+	for _, dep := range dependencies {
+		statusIcon := getStatusIcon(dep.Status)
+		fmt.Printf("   %s %s: %s %s\n",
+			statusIcon,
+			dep.ID,
+			truncateString(dep.Title, 50),
+			style.Dim.Render(fmt.Sprintf("[%s]", dep.Status)))
 	}
+}
 
-	return nil
+func printMqNotes(description string) {
+	desc := getDescriptionWithoutMRFields(description)
+	if desc == "" {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("Notes"))
+	for _, line := range strings.Split(desc, "\n") {
+		fmt.Printf("   %s\n", line)
+	}
 }
 
 // formatStatus formats the status with appropriate styling.
