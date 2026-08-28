@@ -1656,32 +1656,47 @@ func groupStrandedConvoys(stranded []strandedConvoyInfo) strandedConvoyGroups {
 }
 
 func printStrandedAdvice(groups strandedConvoyGroups) {
-	if len(groups.feedable) > 0 {
-		fmt.Println("To feed stranded convoys, run:")
-		for _, s := range groups.feedable {
-			fmt.Printf("  gt sling mol-convoy-feed deacon/dogs --var convoy=%s\n", s.ID)
-		}
-	}
-	if len(groups.needsAttention) > 0 {
-		if len(groups.feedable) > 0 {
-			fmt.Println()
-		}
-		fmt.Println("Needs agent review (tracked issues exist but none are ready):")
-		for _, s := range groups.needsAttention {
-			fmt.Printf("  🚚 %s (%d tracked, 0 ready)\n", s.ID, s.TrackedCount)
-		}
-	}
-	if len(groups.empty) > 0 {
-		if len(groups.feedable) > 0 || len(groups.needsAttention) > 0 {
-			fmt.Println()
-		}
-		fmt.Println("To close empty convoys, run:")
-		for _, s := range groups.empty {
-			fmt.Printf("  gt convoy check %s\n", s.ID)
-		}
-	}
+	printFeedableAdvice(groups.feedable)
+	printNeedsAttentionAdvice(groups.feedable, groups.needsAttention)
+	printEmptyConvoyAdvice(groups.feedable, groups.needsAttention, groups.empty)
 	fmt.Println()
 	fmt.Println(style.Dim.Render("  Note: Pool dispatch auto-creates dogs if pool is under capacity."))
+}
+
+func printFeedableAdvice(convoys []strandedConvoyInfo) {
+	if len(convoys) == 0 {
+		return
+	}
+	fmt.Println("To feed stranded convoys, run:")
+	for _, convoy := range convoys {
+		fmt.Printf("  gt sling mol-convoy-feed deacon/dogs --var convoy=%s\n", convoy.ID)
+	}
+}
+
+func printNeedsAttentionAdvice(feedable, needsAttention []strandedConvoyInfo) {
+	if len(needsAttention) == 0 {
+		return
+	}
+	if len(feedable) > 0 {
+		fmt.Println()
+	}
+	fmt.Println("Needs agent review (tracked issues exist but none are ready):")
+	for _, convoy := range needsAttention {
+		fmt.Printf("  🚚 %s (%d tracked, 0 ready)\n", convoy.ID, convoy.TrackedCount)
+	}
+}
+
+func printEmptyConvoyAdvice(feedable, needsAttention, empty []strandedConvoyInfo) {
+	if len(empty) == 0 {
+		return
+	}
+	if len(feedable) > 0 || len(needsAttention) > 0 {
+		fmt.Println()
+	}
+	fmt.Println("To close empty convoys, run:")
+	for _, convoy := range empty {
+		fmt.Printf("  gt convoy check %s\n", convoy.ID)
+	}
 }
 
 // findStrandedConvoys finds convoys with ready work but no workers,
