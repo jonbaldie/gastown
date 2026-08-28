@@ -347,50 +347,66 @@ func isIDEClaudeProcess(pid int) bool {
 // Format: [[DD-]HH:]MM:SS
 // Examples: "01:23" (83s), "01:02:03" (3723s), "2-01:02:03" (176523s)
 func parseEtime(etime string) (int, error) {
-	var days, hours, minutes, seconds int
-
-	// Check for days component (DD-HH:MM:SS)
-	if idx := strings.Index(etime, "-"); idx != -1 {
-		d, err := strconv.Atoi(etime[:idx])
-		if err != nil {
-			return 0, fmt.Errorf("parsing days: %w", err)
-		}
-		days = d
-		etime = etime[idx+1:]
+	days, clock, err := parseEtimeDays(etime)
+	if err != nil {
+		return 0, err
 	}
-
-	// Split remaining by colons
-	parts := strings.Split(etime, ":")
-	switch len(parts) {
-	case 2: // MM:SS
-		m, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return 0, fmt.Errorf("parsing minutes: %w", err)
-		}
-		s, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return 0, fmt.Errorf("parsing seconds: %w", err)
-		}
-		minutes, seconds = m, s
-	case 3: // HH:MM:SS
-		h, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return 0, fmt.Errorf("parsing hours: %w", err)
-		}
-		m, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return 0, fmt.Errorf("parsing minutes: %w", err)
-		}
-		s, err := strconv.Atoi(parts[2])
-		if err != nil {
-			return 0, fmt.Errorf("parsing seconds: %w", err)
-		}
-		hours, minutes, seconds = h, m, s
-	default:
-		return 0, fmt.Errorf("unexpected etime format: %s", etime)
+	hours, minutes, seconds, err := parseEtimeClock(clock)
+	if err != nil {
+		return 0, err
 	}
-
 	return days*86400 + hours*3600 + minutes*60 + seconds, nil
+}
+
+func parseEtimeDays(etime string) (int, string, error) {
+	idx := strings.Index(etime, "-")
+	if idx == -1 {
+		return 0, etime, nil
+	}
+	days, err := strconv.Atoi(etime[:idx])
+	if err != nil {
+		return 0, "", fmt.Errorf("parsing days: %w", err)
+	}
+	return days, etime[idx+1:], nil
+}
+
+func parseEtimeClock(clock string) (int, int, int, error) {
+	parts := strings.Split(clock, ":")
+	labels, err := etimePartLabels(parts)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	values, err := parseEtimeValues(parts, labels)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if len(values) == 2 {
+		return 0, values[0], values[1], nil
+	}
+	return values[0], values[1], values[2], nil
+}
+
+func etimePartLabels(parts []string) ([]string, error) {
+	switch len(parts) {
+	case 2:
+		return []string{"minutes", "seconds"}, nil
+	case 3:
+		return []string{"hours", "minutes", "seconds"}, nil
+	default:
+		return nil, fmt.Errorf("unexpected etime format: %s", strings.Join(parts, ":"))
+	}
+}
+
+func parseEtimeValues(parts, labels []string) ([]int, error) {
+	values := make([]int, len(parts))
+	for i, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", labels[i], err)
+		}
+		values[i] = value
+	}
+	return values, nil
 }
 
 // isAgentOrphanCommName returns true if the ps "comm" field names a runtime we track for
