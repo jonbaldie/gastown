@@ -1314,14 +1314,25 @@ func (b *Beads) ListMergeRequests(opts ListOptions) ([]*Issue, error) {
 	if err != nil {
 		return nil, err
 	}
+	issueResults = b.appendMergeRequestWisps(issueResults, opts)
+	issueResults = filterMergeRequestsByRig(issueResults, opts.Rig)
+	return b.hydrateMergeRequestDetails(issueResults)
+}
 
-	// Build dedup map from issues
+func (b *Beads) appendMergeRequestWisps(issueResults []*Issue, opts ListOptions) []*Issue {
 	seen := make(map[string]bool, len(issueResults))
 	for _, issue := range issueResults {
 		seen[issue.ID] = true
 	}
 
-	// 2. Query wisps table via SQL for merge-request wisps with full data
+	sqlOut, err := b.run("sql", "--json", mergeRequestWispQuery(opts))
+	if err != nil || len(sqlOut) == 0 || !isJSONBytes(sqlOut) {
+		return issueResults
+	}
+	return appendMergeRequestWispRows(issueResults, seen, parseMergeRequestWispRows(sqlOut))
+}
+
+func mergeRequestWispQuery(opts ListOptions) string {
 	statusFilter := "w.status = 'open'"
 	if opts.Status != "" && strings.EqualFold(opts.Status, "all") {
 		statusFilter = "1=1"
@@ -1334,7 +1345,7 @@ func (b *Beads) ListMergeRequests(opts ListOptions) ([]*Issue, error) {
 		labelFilter = fmt.Sprintf("l.label = '%s'", strings.ReplaceAll(opts.Label, "'", "''"))
 	}
 
-	query := fmt.Sprintf(
+	return fmt.Sprintf(
 		"SELECT w.id, w.title, w.description, w.status, w.priority, w.assignee, "+
 			"w.created_at, w.updated_at, w.created_by, "+
 			"GROUP_CONCAT(al.label) as labels_csv "+
@@ -1344,48 +1355,57 @@ func (b *Beads) ListMergeRequests(opts ListOptions) ([]*Issue, error) {
 			"WHERE %s AND %s "+
 			"GROUP BY w.id, w.title, w.description, w.status, w.priority, w.assignee, w.created_at, w.updated_at, w.created_by",
 		labelFilter, statusFilter)
+}
 
-	sqlOut, sqlErr := b.run("sql", "--json", query)
-	if sqlErr == nil && len(sqlOut) > 0 && isJSONBytes(sqlOut) {
-		var rows []struct {
-			ID          string `json:"id"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Status      string `json:"status"`
-			Priority    int    `json:"priority"`
-			Assignee    string `json:"assignee"`
-			CreatedAt   string `json:"created_at"`
-			UpdatedAt   string `json:"updated_at"`
-			CreatedBy   string `json:"created_by"`
-			LabelsCSV   string `json:"labels_csv"`
-		}
-		if jsonErr := json.Unmarshal(sqlOut, &rows); jsonErr == nil {
-			for _, row := range rows {
-				if seen[row.ID] {
-					continue
-				}
-				issue := &Issue{
-					ID:          row.ID,
-					Title:       row.Title,
-					Description: row.Description,
-					Status:      row.Status,
-					Priority:    row.Priority,
-					Assignee:    row.Assignee,
-					CreatedAt:   row.CreatedAt,
-					UpdatedAt:   row.UpdatedAt,
-					CreatedBy:   row.CreatedBy,
-					Ephemeral:   true,
-				}
-				if row.LabelsCSV != "" {
-					issue.Labels = strings.Split(row.LabelsCSV, ",")
-				}
-				issueResults = append(issueResults, issue)
-			}
-		}
+type mergeRequestWispRow struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	Priority    int    `json:"priority"`
+	Assignee    string `json:"assignee"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	CreatedBy   string `json:"created_by"`
+	LabelsCSV   string `json:"labels_csv"`
+}
+
+func parseMergeRequestWispRows(sqlOut []byte) []mergeRequestWispRow {
+	var rows []mergeRequestWispRow
+	if json.Unmarshal(sqlOut, &rows) != nil {
+		return nil
 	}
+	return rows
+}
 
-	issueResults = filterMergeRequestsByRig(issueResults, opts.Rig)
-	return b.hydrateMergeRequestDetails(issueResults)
+func appendMergeRequestWispRows(issues []*Issue, seen map[string]bool, rows []mergeRequestWispRow) []*Issue {
+	for _, row := range rows {
+		if seen[row.ID] {
+			continue
+		}
+		issue := issueFromMergeRequestWispRow(row)
+		issues = append(issues, issue)
+	}
+	return issues
+}
+
+func issueFromMergeRequestWispRow(row mergeRequestWispRow) *Issue {
+	issue := &Issue{
+		ID:          row.ID,
+		Title:       row.Title,
+		Description: row.Description,
+		Status:      row.Status,
+		Priority:    row.Priority,
+		Assignee:    row.Assignee,
+		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
+		CreatedBy:   row.CreatedBy,
+		Ephemeral:   true,
+	}
+	if row.LabelsCSV != "" {
+		issue.Labels = strings.Split(row.LabelsCSV, ",")
+	}
+	return issue
 }
 
 func filterMergeRequestsByRig(issues []*Issue, rigName string) []*Issue {
