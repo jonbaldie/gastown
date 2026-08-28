@@ -423,78 +423,104 @@ func buildWitnessPatrolVars(ctx RoleContext) []string {
 // buildRefineryPatrolVars loads rig MQ settings and returns --var key=value
 // strings for the refinery patrol formula.
 func buildRefineryPatrolVars(ctx RoleContext) []string {
-	var vars []string
 	if ctx.TownRoot == "" || ctx.Rig == "" {
-		return vars
+		return nil
 	}
 	rigPath := filepath.Join(ctx.TownRoot, ctx.Rig)
+	rigCfg, _ := rig.LoadRigConfig(rigPath)
+	vars := buildRefineryBaseVars(ctx.Rig, refineryDefaultBranch(rigCfg))
 
-	// Always inject target_branch from rig config — this is independent of
-	// merge queue settings and must not be gated behind MQ existence.
-	// Without this, rigs with no settings/config.json or no merge_queue
-	// section get the formula default ("main") instead of their configured
-	// default_branch.
-	defaultBranch := "main"
-	rigCfg, err := rig.LoadRigConfig(rigPath)
-	if err == nil && rigCfg != nil && rigCfg.DefaultBranch != "" {
-		defaultBranch = rigCfg.DefaultBranch
+	if settingsVars, ok := loadRefinerySettingsVars(rigPath); ok {
+		return append(vars, settingsVars...)
 	}
-	vars = append(vars, fmt.Sprintf("rig=%s", ctx.Rig))
-	vars = append(vars, fmt.Sprintf("target_branch=%s", defaultBranch))
+	return append(vars, loadRefineryLabelVars(ctx, rigCfg)...)
+}
 
-	// MQ-specific vars: try settings/config.json first (legacy format), then
-	// fall back to the layered rig config (bead labels / wisp layer).
+func buildRefineryBaseVars(rigName, defaultBranch string) []string {
+	return []string{
+		fmt.Sprintf("rig=%s", rigName),
+		fmt.Sprintf("target_branch=%s", defaultBranch),
+	}
+}
+
+func refineryDefaultBranch(rigCfg *rig.RigConfig) string {
+	if rigCfg != nil && rigCfg.DefaultBranch != "" {
+		return rigCfg.DefaultBranch
+	}
+	return "main"
+}
+
+func loadRefinerySettingsVars(rigPath string) ([]string, bool) {
 	settingsPath := filepath.Join(rigPath, "settings", "config.json")
-	settings, sErr := config.LoadRigSettings(settingsPath)
-	if sErr == nil && settings != nil && settings.MergeQueue != nil {
-		mq := settings.MergeQueue
-		vars = append(vars, fmt.Sprintf("integration_branch_refinery_enabled=%t", config.IsRefineryIntegrationEnabled(mq)))
-		vars = append(vars, fmt.Sprintf("integration_branch_auto_land=%t", config.IsIntegrationBranchAutoLandEnabled(mq)))
-		vars = append(vars, fmt.Sprintf("run_tests=%t", config.IsRunTestsEnabled(mq)))
-		if mq.SetupCommand != "" {
-			vars = append(vars, fmt.Sprintf("setup_command=%s", mq.SetupCommand))
-		}
-		if mq.TypecheckCommand != "" {
-			vars = append(vars, fmt.Sprintf("typecheck_command=%s", mq.TypecheckCommand))
-		}
-		if mq.LintCommand != "" {
-			vars = append(vars, fmt.Sprintf("lint_command=%s", mq.LintCommand))
-		}
-		if mq.TestCommand != "" {
-			vars = append(vars, fmt.Sprintf("test_command=%s", mq.TestCommand))
-		}
-		if mq.BuildCommand != "" {
-			vars = append(vars, fmt.Sprintf("build_command=%s", mq.BuildCommand))
-		}
-		vars = append(vars, fmt.Sprintf("delete_merged_branches=%t", config.IsDeleteMergedBranchesEnabled(mq)))
-		vars = append(vars, fmt.Sprintf("judgment_enabled=%t", config.IsJudgmentEnabled(mq)))
-		vars = append(vars, fmt.Sprintf("review_depth=%s", config.GetReviewDepth(mq)))
-		if mq.MergeStrategy != "" {
-			vars = append(vars, fmt.Sprintf("merge_strategy=%s", mq.MergeStrategy))
-		}
-		vars = append(vars, fmt.Sprintf("require_review=%t", config.IsRequireReviewEnabled(mq)))
-		return vars
+	settings, err := config.LoadRigSettings(settingsPath)
+	if err != nil || settings == nil || settings.MergeQueue == nil {
+		return nil, false
 	}
+	return refineryMergeQueueVars(settings.MergeQueue), true
+}
 
-	// Fallback: read command vars from rig identity bead labels.
-	// This is the path for rigs using `gt rig config set --global` (bead layer).
-	// We use native bd routing (no explicit BEADS_DIR) to avoid dolt database
-	// name mismatches that occur when bypassing the routing system.
-	if rigCfg != nil && rigCfg.Beads != nil && rigCfg.Beads.Prefix != "" {
-		rigBeadID := beads.RigBeadIDWithPrefix(rigCfg.Beads.Prefix, ctx.Rig)
-		bd := beads.New(ctx.TownRoot)
-		if issue, err := bd.Show(rigBeadID); err == nil {
-			labelMap := make(map[string]string, len(issue.Labels))
-			for _, label := range issue.Labels {
-				if idx := strings.IndexByte(label, ':'); idx > 0 {
-					labelMap[label[:idx]] = label[idx+1:]
-				}
-			}
-			for _, key := range []string{"integration_branch_refinery_enabled", "integration_branch_auto_land", "run_tests", "delete_merged_branches", "setup_command", "typecheck_command", "lint_command", "test_command", "build_command", "merge_strategy", "require_review"} {
-				if val := labelMap[key]; val != "" {
-					vars = append(vars, fmt.Sprintf("%s=%s", key, val))
-				}
-			}
+func refineryMergeQueueVars(mq *config.MergeQueueConfig) []string {
+	vars := []string{
+		fmt.Sprintf("integration_branch_refinery_enabled=%t", config.IsRefineryIntegrationEnabled(mq)),
+		fmt.Sprintf("integration_branch_auto_land=%t", config.IsIntegrationBranchAutoLandEnabled(mq)),
+		fmt.Sprintf("run_tests=%t", config.IsRunTestsEnabled(mq)),
+	}
+	if mq.SetupCommand != "" {
+		vars = append(vars, fmt.Sprintf("setup_command=%s", mq.SetupCommand))
+	}
+	if mq.TypecheckCommand != "" {
+		vars = append(vars, fmt.Sprintf("typecheck_command=%s", mq.TypecheckCommand))
+	}
+	if mq.LintCommand != "" {
+		vars = append(vars, fmt.Sprintf("lint_command=%s", mq.LintCommand))
+	}
+	if mq.TestCommand != "" {
+		vars = append(vars, fmt.Sprintf("test_command=%s", mq.TestCommand))
+	}
+	if mq.BuildCommand != "" {
+		vars = append(vars, fmt.Sprintf("build_command=%s", mq.BuildCommand))
+	}
+	vars = append(vars,
+		fmt.Sprintf("delete_merged_branches=%t", config.IsDeleteMergedBranchesEnabled(mq)),
+		fmt.Sprintf("judgment_enabled=%t", config.IsJudgmentEnabled(mq)),
+		fmt.Sprintf("review_depth=%s", config.GetReviewDepth(mq)),
+	)
+	if mq.MergeStrategy != "" {
+		vars = append(vars, fmt.Sprintf("merge_strategy=%s", mq.MergeStrategy))
+	}
+	vars = append(vars, fmt.Sprintf("require_review=%t", config.IsRequireReviewEnabled(mq)))
+	return vars
+}
+
+func loadRefineryLabelVars(ctx RoleContext, rigCfg *rig.RigConfig) []string {
+	if rigCfg == nil || rigCfg.Beads == nil || rigCfg.Beads.Prefix == "" {
+		return nil
+	}
+	rigBeadID := beads.RigBeadIDWithPrefix(rigCfg.Beads.Prefix, ctx.Rig)
+	bd := beads.New(ctx.TownRoot)
+	issue, err := bd.Show(rigBeadID)
+	if err != nil {
+		return nil
+	}
+	labelMap := refineryLabelMap(issue.Labels)
+	return refineryLabelVars(labelMap)
+}
+
+func refineryLabelMap(labels []string) map[string]string {
+	labelMap := make(map[string]string, len(labels))
+	for _, label := range labels {
+		if idx := strings.IndexByte(label, ':'); idx > 0 {
+			labelMap[label[:idx]] = label[idx+1:]
+		}
+	}
+	return labelMap
+}
+
+func refineryLabelVars(labelMap map[string]string) []string {
+	var vars []string
+	for _, key := range []string{"integration_branch_refinery_enabled", "integration_branch_auto_land", "run_tests", "delete_merged_branches", "setup_command", "typecheck_command", "lint_command", "test_command", "build_command", "merge_strategy", "require_review"} {
+		if val := labelMap[key]; val != "" {
+			vars = append(vars, fmt.Sprintf("%s=%s", key, val))
 		}
 	}
 	return vars
