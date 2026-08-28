@@ -53,64 +53,53 @@ func (hc *HealthChecker) Check(d *Dog, maxInactivity time.Duration, autoClear bo
 	if d.State == StateWorking && !d.WorkStartedAt.IsZero() {
 		result.WorkDuration = time.Since(d.WorkStartedAt)
 	}
-
 	session := dogSessionName(d.Name)
-
 	switch d.State {
 	case StateWorking:
-		status := hc.checker.CheckSessionHealth(session, maxInactivity)
-		result.SessionStatus = status.String()
-
-		switch status {
-		case tmux.SessionDead:
-			// Zombie: state says working but session is gone.
-			result.NeedsAttention = true
-			result.Recommendation = "zombie: session dead but state=working"
-			hc.maybeClearStateOnly(d, &result, autoClear, false, session,
-				"zombie: source-backed work requires explicit recovery",
-				"zombie auto-cleared (session dead)")
-
-		case tmux.AgentDead:
-			// Zombie: session exists but agent process died.
-			result.NeedsAttention = true
-			result.Recommendation = "zombie: agent dead in session"
-			hc.maybeClearStateOnly(d, &result, autoClear, true, session,
-				"zombie: session killed; source-backed work requires explicit recovery",
-				"zombie auto-cleared (agent dead, session killed)")
-
-		case tmux.AgentHung:
-			// Hung: process alive but no tmux activity for maxInactivity.
-			result.NeedsAttention = true
-			if !autoClear {
-				result.Recommendation = "hung: agent alive but no tmux activity"
-				break
-			}
-			hc.maybeClearStateOnly(d, &result, true, true, session,
-				"hung: session killed; source-backed work requires explicit recovery",
-				"hung dog auto-cleared (idle prompt, session killed)")
-
-		default: // SessionHealthy — status.String() already set above
-		}
-
+		hc.checkWorkingDog(d, &result, session, maxInactivity, autoClear)
 	case StateIdle:
-		// Check for orphan session.
-		has, _ := hc.checker.HasSession(session)
-		if has {
-			result.SessionStatus = "orphan"
-			result.NeedsAttention = true
-			if autoClear {
-				_ = hc.checker.KillSession(session)
-				result.AutoCleared = true
-				result.Recommendation = "orphan auto-cleared (session killed)"
-			} else {
-				result.Recommendation = "orphan: dog idle but tmux session exists"
-			}
-		} else {
-			result.SessionStatus = "none"
-		}
+		hc.checkIdleDog(&result, session, autoClear)
 	}
-
 	return result
+}
+
+func (hc *HealthChecker) checkWorkingDog(d *Dog, result *DogHealthResult, session string, maxInactivity time.Duration, autoClear bool) {
+	status := hc.checker.CheckSessionHealth(session, maxInactivity)
+	result.SessionStatus = status.String()
+	switch status {
+	case tmux.SessionDead:
+		result.NeedsAttention, result.Recommendation = true, "zombie: session dead but state=working"
+		hc.maybeClearStateOnly(d, result, autoClear, false, session, "zombie: source-backed work requires explicit recovery", "zombie auto-cleared (session dead)")
+	case tmux.AgentDead:
+		result.NeedsAttention, result.Recommendation = true, "zombie: agent dead in session"
+		hc.maybeClearStateOnly(d, result, autoClear, true, session, "zombie: session killed; source-backed work requires explicit recovery", "zombie auto-cleared (agent dead, session killed)")
+	case tmux.AgentHung:
+		hc.checkHungDog(d, result, session, autoClear)
+	}
+}
+
+func (hc *HealthChecker) checkHungDog(d *Dog, result *DogHealthResult, session string, autoClear bool) {
+	result.NeedsAttention = true
+	if !autoClear {
+		result.Recommendation = "hung: agent alive but no tmux activity"
+		return
+	}
+	hc.maybeClearStateOnly(d, result, true, true, session, "hung: session killed; source-backed work requires explicit recovery", "hung dog auto-cleared (idle prompt, session killed)")
+}
+
+func (hc *HealthChecker) checkIdleDog(result *DogHealthResult, session string, autoClear bool) {
+	hasSession, _ := hc.checker.HasSession(session)
+	if !hasSession {
+		result.SessionStatus = "none"
+		return
+	}
+	result.SessionStatus, result.NeedsAttention = "orphan", true
+	if !autoClear {
+		result.Recommendation = "orphan: dog idle but tmux session exists"
+		return
+	}
+	_ = hc.checker.KillSession(session)
+	result.AutoCleared, result.Recommendation = true, "orphan auto-cleared (session killed)"
 }
 
 func (hc *HealthChecker) maybeClearStateOnly(d *Dog, result *DogHealthResult, autoClear, killSession bool, session, blockedRec, clearedRec string) {
