@@ -559,20 +559,10 @@ func (p *Proxy) forwardAgentStderr() {
 	for {
 		select {
 		case <-p.done:
-			// Log final statistics on exit
-			dropped := p.stderrBytesDropped.Load()
-			truncated := p.stderrLinesTruncated.Load()
-			if dropped > 0 || truncated > 0 {
-				debugLog(p.townRoot, "[Proxy] Stderr statistics: %d lines truncated, %d bytes dropped", truncated, dropped)
-			}
+			p.logStderrStatistics()
 			return
 		case <-statsTicker.C:
-			// Log statistics periodically if there's activity
-			dropped := p.stderrBytesDropped.Load()
-			truncated := p.stderrLinesTruncated.Load()
-			if dropped > 0 || truncated > 0 {
-				debugLog(p.townRoot, "[Proxy] Stderr statistics: %d lines truncated, %d bytes dropped", truncated, dropped)
-			}
+			p.logStderrStatistics()
 		default:
 		}
 
@@ -621,6 +611,14 @@ func (p *Proxy) forwardAgentStderr() {
 			debugLine = line[:2000] + "... (truncated)"
 		}
 		debugLog(p.townRoot, "[Agent] %s", debugLine)
+	}
+}
+
+func (p *Proxy) logStderrStatistics() {
+	dropped := p.stderrBytesDropped.Load()
+	truncated := p.stderrLinesTruncated.Load()
+	if dropped > 0 || truncated > 0 {
+		debugLog(p.townRoot, "[Proxy] Stderr statistics: %d lines truncated, %d bytes dropped", truncated, dropped)
 	}
 }
 
