@@ -116,23 +116,38 @@ func SyncForRole(provider, settingsDir, workDir, role, hooksDir, hooksFile strin
 		return 0, err
 	}
 
-	fileExisted := false
-	if existing, err := os.ReadFile(targetPath); err == nil {
-		fileExisted = true
-		if isSettingsFile(hooksFile) {
-			// JSON files: use structural comparison to tolerate whitespace differences.
-			if TemplateContentEqual(existing, content) {
-				return SyncUnchanged, nil
-			}
-		} else {
-			if bytes.Equal(existing, content) {
-				return SyncUnchanged, nil
-			}
-		}
+	fileExisted, unchanged := syncFileMatches(targetPath, hooksFile, content)
+	if unchanged {
+		return SyncUnchanged, nil
 	}
 
+	if err := writeSyncedFile(targetPath, hooksFile, content); err != nil {
+		return 0, fmt.Errorf("writing hooks file: %w", err)
+	}
+
+	if fileExisted {
+		return SyncUpdated, nil
+	}
+	return SyncCreated, nil
+}
+
+func syncFileMatches(targetPath, hooksFile string, content []byte) (fileExisted, unchanged bool) {
+	existing, err := os.ReadFile(targetPath)
+	if err != nil {
+		return false, false
+	}
+
+	fileExisted = true
+	if isSettingsFile(hooksFile) {
+		// JSON files: use structural comparison to tolerate whitespace differences.
+		return fileExisted, TemplateContentEqual(existing, content)
+	}
+	return fileExisted, bytes.Equal(existing, content)
+}
+
+func writeSyncedFile(targetPath, hooksFile string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return 0, fmt.Errorf("creating hooks directory: %w", err)
+		return fmt.Errorf("creating hooks directory: %w", err)
 	}
 
 	perm := os.FileMode(0644)
@@ -143,14 +158,7 @@ func SyncForRole(provider, settingsDir, workDir, role, hooksDir, hooksFile strin
 	// Atomic write (temp + rename) prevents concurrent polecat spawns from
 	// interleaving truncates+writes into a partial JSON file that Claude
 	// rejects at startup. See gh#3500.
-	if err := atomicfile.WriteFile(targetPath, content, perm); err != nil {
-		return 0, fmt.Errorf("writing hooks file: %w", err)
-	}
-
-	if fileExisted {
-		return SyncUpdated, nil
-	}
-	return SyncCreated, nil
+	return atomicfile.WriteFile(targetPath, content, perm)
 }
 
 // installTargetPath computes the full path for a hook/settings file.
