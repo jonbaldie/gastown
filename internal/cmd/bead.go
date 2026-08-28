@@ -48,8 +48,6 @@ Examples:
 	RunE: runBeadMove,
 }
 
-var beadMoveDryRun bool
-
 var beadShowCmd = &cobra.Command{
 	Use:   "show <bead-id> [flags]",
 	Short: "Show details of a bead",
@@ -87,7 +85,7 @@ Examples:
 }
 
 func init() {
-	beadMoveCmd.Flags().BoolVarP(&beadMoveDryRun, "dry-run", "n", false, "Show what would be done")
+	beadMoveCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
 	beadCmd.AddCommand(beadMoveCmd)
 	beadCmd.AddCommand(beadShowCmd)
 	beadCmd.AddCommand(beadReadCmd)
@@ -107,12 +105,12 @@ type moveBeadInfo struct {
 	CloseReason string   `json:"close_reason,omitempty"`
 }
 
-func runBeadMove(_ *cobra.Command, args []string) error {
+func runBeadMove(cmd *cobra.Command, args []string) error {
 	sourceID := args[0]
 	targetPrefix := args[1]
 	townRoot, _ := workspace.FindFromCwd()
 
-	if beadMoveDryRun {
+	if beadMoveDryRunRequested(cmd) {
 		if err := previewBeadMove(sourceID, targetPrefix, townRoot); err != nil {
 			return err
 		}
@@ -128,6 +126,14 @@ func runBeadMove(_ *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\nBead moved: %s → %s\n", sourceID, newID)
 	return nil
+}
+
+func beadMoveDryRunRequested(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	dryRun, err := cmd.Flags().GetBool("dry-run")
+	return err == nil && dryRun
 }
 
 func normalizeBeadPrefix(prefix string) string {
@@ -260,37 +266,64 @@ func moveBeadToPrefixChecked(sourceID, targetPrefix, townRoot, targetDir string,
 	}
 
 	targetPrefix = normalizeBeadPrefix(targetPrefix)
-
 	fmt.Printf("%s Moving %s to %s...\n", style.Bold.Render("→"), sourceID, targetPrefix)
 	fmt.Printf("  Title: %s\n", source.Title)
 	fmt.Printf("  Type: %s\n", source.Type)
 
-	// Create in the target beads directory. Current bd has no --prefix flag
-	// on create; the directory's configured prefix assigns the new ID.
-	createArgs := []string{
+	createArgs := moveBeadCreateArgs(source)
+	targetDir = moveBeadTargetDir(targetDir, targetPrefix, townRoot)
+	newID, err := createMovedBead(createArgs, targetDir)
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("%s Created %s\n", style.Bold.Render("✓"), newID)
+
+	if accept != nil {
+		if err := accept(newID); err != nil {
+			cleanupMovedTarget(newID, townRoot, targetDir, "Cleanup: town-bead sling failed the target-rig dispatch check")
+			return "", err
+		}
+	}
+
+	if err := closeMovedSource(sourceID, newID, townRoot); err != nil {
+		return "", err
+	}
+
+	fmt.Printf("%s Closed %s (moved to %s)\n", style.Bold.Render("✓"), sourceID, newID)
+	return newID, nil
+}
+
+func moveBeadCreateArgs(source *moveBeadInfo) []string {
+	args := []string{
 		"create",
 		"--title=" + source.Title,
 		"--type", source.Type,
 		"--priority", fmt.Sprintf("%d", source.Priority),
-		"--silent", // Only output the ID
+		"--silent",
 	}
-
 	if source.Description != "" {
-		createArgs = append(createArgs, "--description", source.Description)
+		args = append(args, "--description", source.Description)
 	}
 	if source.Assignee != "" {
-		createArgs = append(createArgs, "--assignee", source.Assignee)
+		args = append(args, "--assignee", source.Assignee)
 	}
 	for _, label := range source.Labels {
-		createArgs = append(createArgs, "--label", label)
+		args = append(args, "--label", label)
 	}
+	return args
+}
 
-	if targetDir == "" {
-		targetDir = resolveBeadDir(targetPrefix + "x")
-		if townRoot != "" {
-			targetDir = resolveBeadDirFromTownRoot(townRoot, targetPrefix+"x")
-		}
+func moveBeadTargetDir(targetDir, targetPrefix, townRoot string) string {
+	if targetDir != "" {
+		return targetDir
 	}
+	if townRoot != "" {
+		return resolveBeadDirFromTownRoot(townRoot, targetPrefix+"x")
+	}
+	return resolveBeadDir(targetPrefix + "x")
+}
+
+func createMovedBead(createArgs []string, targetDir string) (string, error) {
 	out, err := BdCmd(createArgs...).
 		Dir(targetDir).
 		StripBeadsDir().
@@ -303,56 +336,71 @@ func moveBeadToPrefixChecked(sourceID, targetPrefix, townRoot, targetDir string,
 	if newID == "" {
 		return "", fmt.Errorf("creating new bead: empty ID")
 	}
+	return newID, nil
+}
 
-	fmt.Printf("%s Created %s\n", style.Bold.Render("✓"), newID)
-
-	if accept != nil {
-		if err := accept(newID); err != nil {
-			if cleanupErr := closeMovedBead(newID, townRoot, targetDir, "Cleanup: town-bead sling failed the target-rig dispatch check"); cleanupErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to clean up new bead %s: %v\n", newID, cleanupErr)
-			}
-			return "", err
-		}
+func cleanupMovedTarget(beadID, townRoot, targetDir, reason string) {
+	if err := closeMovedBead(beadID, townRoot, targetDir, reason); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to clean up new bead %s: %v\n", beadID, err)
 	}
+}
 
+func closeMovedSource(sourceID, newID, townRoot string) error {
 	closeReason := fmt.Sprintf("%s%s", movedToCloseReasonPrefix, newID)
 	if townRoot != "" {
-		sourceDir := resolveBeadDirFromTownRoot(townRoot, sourceID)
-		if err := BdCmd("close", sourceID, "--reason", closeReason).
-			Dir(sourceDir).
-			StripBeadsDir().
-			WithAutoCommit().
-			Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to close source bead: %v\n", err)
-			targetDir := resolveBeadDirFromTownRoot(townRoot, newID)
-			if cleanupErr := BdCmd("close", newID, "--reason", "Cleanup: source bead close failed during move").
-				Dir(targetDir).
-				StripBeadsDir().
-				WithAutoCommit().
-				Run(); cleanupErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: also failed to clean up new bead %s: %v\n", newID, cleanupErr)
-				fmt.Fprintf(os.Stderr, "Both %s and %s remain open - manual cleanup needed\n", sourceID, newID)
-			} else {
-				fmt.Fprintf(os.Stderr, "Cleaned up new bead %s\n", newID)
-			}
-			return "", err
-		}
-	} else {
-		closeCmd := beads.Spawn("close", sourceID, "--reason", closeReason)
-		closeCmd.Stderr = os.Stderr
-		if err := closeCmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to close source bead: %v\n", err)
-			cleanupCmd := beads.Spawn("close", newID, "--reason", "Cleanup: source bead close failed during move")
-			if cleanupErr := cleanupCmd.Run(); cleanupErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: also failed to clean up new bead %s: %v\n", newID, cleanupErr)
-				fmt.Fprintf(os.Stderr, "Both %s and %s remain open - manual cleanup needed\n", sourceID, newID)
-			} else {
-				fmt.Fprintf(os.Stderr, "Cleaned up new bead %s\n", newID)
-			}
-			return "", err
-		}
+		return closeMovedSourceInTown(sourceID, newID, townRoot, closeReason)
 	}
+	return closeMovedSourceOutsideTown(sourceID, newID, closeReason)
+}
 
-	fmt.Printf("%s Closed %s (moved to %s)\n", style.Bold.Render("✓"), sourceID, newID)
-	return newID, nil
+func closeMovedSourceInTown(sourceID, newID, townRoot, closeReason string) error {
+	sourceDir := resolveBeadDirFromTownRoot(townRoot, sourceID)
+	err := BdCmd("close", sourceID, "--reason", closeReason).
+		Dir(sourceDir).
+		StripBeadsDir().
+		WithAutoCommit().
+		Run()
+	if err == nil {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "Warning: failed to close source bead: %v\n", err)
+	cleanupTargetAfterCloseFailure(sourceID, newID, townRoot)
+	return err
+}
+
+func closeMovedSourceOutsideTown(sourceID, newID, closeReason string) error {
+	closeCmd := beads.Spawn("close", sourceID, "--reason", closeReason)
+	closeCmd.Stderr = os.Stderr
+	if err := closeCmd.Run(); err == nil {
+		return nil
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: failed to close source bead: %v\n", err)
+		cleanupTargetAfterCloseFailureOutsideTown(sourceID, newID)
+		return err
+	}
+}
+
+func cleanupTargetAfterCloseFailure(sourceID, newID, townRoot string) {
+	targetDir := resolveBeadDirFromTownRoot(townRoot, newID)
+	err := BdCmd("close", newID, "--reason", "Cleanup: source bead close failed during move").
+		Dir(targetDir).
+		StripBeadsDir().
+		WithAutoCommit().
+		Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: also failed to clean up new bead %s: %v\n", newID, err)
+		fmt.Fprintf(os.Stderr, "Both %s and %s remain open - manual cleanup needed\n", sourceID, newID)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Cleaned up new bead %s\n", newID)
+}
+
+func cleanupTargetAfterCloseFailureOutsideTown(sourceID, newID string) {
+	cleanupCmd := beads.Spawn("close", newID, "--reason", "Cleanup: source bead close failed during move")
+	if err := cleanupCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: also failed to clean up new bead %s: %v\n", newID, err)
+		fmt.Fprintf(os.Stderr, "Both %s and %s remain open - manual cleanup needed\n", sourceID, newID)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Cleaned up new bead %s\n", newID)
 }
