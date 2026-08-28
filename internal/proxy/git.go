@@ -273,8 +273,9 @@ func (s *Server) authorizeReceivePack(w http.ResponseWriter, r *http.Request, cl
 func collectReceivePackRefs(body []byte) []string {
 	var refs []string
 	offset := 0
-	for offset < len(body) {
-		if offset+4 > len(body) {
+	bodyLength := len(body)
+	for offset < bodyLength {
+		if offset+4 > bodyLength {
 			break
 		}
 		lenHex := body[offset : offset+4]
@@ -287,7 +288,7 @@ func collectReceivePackRefs(body []byte) []string {
 			break
 		}
 		end := offset + pktLen
-		if end > len(body) {
+		if end > bodyLength {
 			break
 		}
 		line := body[offset+4 : end]
@@ -315,9 +316,10 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 	// the flush packet is never read by this loop.
 	allowed := "refs/heads/polecat/" + cnName + "-"
 	offset := 0
-	for offset < len(body) {
+	bodyLength := len(body)
+	for offset < bodyLength {
 		// Guard: need at least 4 bytes for the length field.
-		if offset+4 > len(body) {
+		if offset+4 > bodyLength {
 			return fmt.Errorf("malformed pkt-line: truncated length field at offset %d", offset)
 		}
 		lenHex := body[offset : offset+4]

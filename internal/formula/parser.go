@@ -338,7 +338,10 @@ func (f *Formula) TopologicalSort() ([]string, error) {
 	}
 
 	var result []string
-	for len(queue) > 0 {
+	for {
+		if len(queue) == 0 {
+			break
+		}
 		// Pop from queue
 		id := queue[0]
 		queue = queue[1:]

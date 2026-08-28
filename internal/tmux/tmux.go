@@ -1653,10 +1653,11 @@ func (t *Tmux) sendMessageToTarget(target, text string) error {
 	}
 	// Send in chunks to avoid tmux send-keys argument length limits.
 	// Each chunk is sent with a small delay to let the terminal process it.
-	for i := 0; i < len(text); i += sendKeysChunkSize {
+	textLength := len(text)
+	for i := 0; i < textLength; i += sendKeysChunkSize {
 		end := i + sendKeysChunkSize
-		if end > len(text) {
-			end = len(text)
+		if end > textLength {
+			end = textLength
 		}
 		chunk := text[i:end]
 		if i == 0 {
