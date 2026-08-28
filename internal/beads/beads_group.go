@@ -316,25 +316,12 @@ func (b *Beads) UpdateGroupMembers(name string, members []string) (*Issue, error
 
 // AddGroupMember adds a member to a group if not already present.
 func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
-	if err := ValidateGroupName(name); err != nil {
-		return nil, err
-	}
-	if err := ValidateGroupStorage(name, []string{member}); err != nil {
-		return nil, err
-	}
-	issue, fields, err := b.GetGroupByName(name)
+	issue, fields, err := b.groupForMemberChange(name, member)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, fmt.Errorf("group %q not found", name)
-		}
 		return nil, err
 	}
-
-	// Check if already a member
-	for _, m := range fields.Members {
-		if m == member {
-			return issue, nil // Already a member
-		}
+	if groupHasMember(fields.Members, member) {
+		return issue, nil
 	}
 
 	fields.Members = append(fields.Members, member)
@@ -352,6 +339,29 @@ func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
 		return nil, fmt.Errorf("fetching updated group: %w", err)
 	}
 	return updated, nil
+}
+
+func (b *Beads) groupForMemberChange(name, member string) (*Issue, *GroupFields, error) {
+	if err := ValidateGroupName(name); err != nil {
+		return nil, nil, err
+	}
+	if err := ValidateGroupStorage(name, []string{member}); err != nil {
+		return nil, nil, err
+	}
+	issue, fields, err := b.GetGroupByName(name)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil, fmt.Errorf("group %q not found", name)
+	}
+	return issue, fields, err
+}
+
+func groupHasMember(members []string, member string) bool {
+	for _, existing := range members {
+		if existing == member {
+			return true
+		}
+	}
+	return false
 }
 
 // RemoveGroupMember removes a member from a group.
