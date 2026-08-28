@@ -271,138 +271,125 @@ func gitOutputSuffix(out []byte) string {
 // Returns the redirect target path (e.g., "../../.beads" or "../../mayor/rig/.beads"),
 // or an error if the path is invalid or no beads location exists.
 func ComputeRedirectTarget(townRoot, worktreePath string) (string, error) {
-	townRootAbs, err := filepath.Abs(townRoot)
+	location, err := redirectWorktreeLocation(townRoot, worktreePath)
 	if err != nil {
-		return "", fmt.Errorf("resolving town root: %w", err)
+		return "", err
 	}
-	worktreeAbs, err := filepath.Abs(worktreePath)
-	if err != nil {
-		return "", fmt.Errorf("resolving worktree path: %w", err)
-	}
-	if worktreeAbs == townRootAbs {
-		return "", fmt.Errorf("cannot create redirect at town root")
-	}
-	if rel, err := filepath.Rel(townRootAbs, worktreeAbs); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("worktree path %s is outside town root %s", worktreePath, townRoot)
-	}
-
-	// Get rig root from worktree path
-	// worktreePath = <town>/<rig>/crew/<name> or <town>/<rig>/refinery/rig etc.
-	relPath, err := filepath.Rel(townRootAbs, worktreeAbs)
-	if err != nil {
-		return "", fmt.Errorf("computing relative path: %w", err)
-	}
-	parts := strings.Split(filepath.ToSlash(relPath), "/")
-	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid worktree path: must be at least 2 levels deep from town root")
-	}
-
-	// Safety check: prevent creating redirect in canonical beads location (mayor/rig).
-	// This would create a circular redirect chain since rig/.beads redirects to mayor/rig/.beads.
-	// Check both parts[0] (worktree IS the mayor dir, e.g., <town>/mayor/rig) and
-	// parts[1] (worktree is inside a rig's mayor, e.g., <town>/<rig>/mayor/rig).
-	if parts[0] == "mayor" || (len(parts) >= 2 && parts[1] == "mayor") {
-		return "", fmt.Errorf("cannot create redirect in canonical beads location (mayor/rig)")
-	}
-
-	rigName := parts[0]
-	rigRoot := filepath.Join(townRootAbs, rigName)
-	townBeadsPath := filepath.Join(townRootAbs, ".beads")
-	rigBeadsPath := filepath.Join(rigRoot, ".beads")
-	mayorBeadsPath := filepath.Join(rigRoot, "mayor", "rig", ".beads")
+	paths := newRedirectPaths(location)
 
 	// Check rig-level .beads first: if the rig has its own database
 	// (metadata.json with dolt_database), crew must use rig-level beads
 	// so they see the correct prefix (e.g., lc- for laneassist, not hq-).
 	// If the rig-level .beads is itself a redirect, flatten it here: bd does
 	// not support redirect chains and will ignore the worktree redirect.
-	if rigHasOwnDB(rigBeadsPath) {
-		depth := len(parts) - 1
-		upPath := strings.Repeat("../", depth)
-		if redirectPath, ok := directRigRedirectTarget(upPath, filepath.Join(rigBeadsPath, "redirect")); ok {
-			return redirectPath, nil
-		}
-		return upPath + ".beads", nil
+	if rigHasOwnDB(paths.rigBeads) {
+		return ownRigRedirectTarget(location, paths), nil
 	}
 
 	// Rig has no own database — try town-level .beads (has routes.jsonl,
 	// config.yaml, Dolt server info, and hq- prefix).
-	townBeadsHasDB := false
-	if info, err := os.Stat(townBeadsPath); err == nil && info.IsDir() {
-		if _, err := os.Stat(filepath.Join(townBeadsPath, "dolt")); err == nil {
-			townBeadsHasDB = true
-		} else if _, err := os.Stat(filepath.Join(townBeadsPath, "config.yaml")); err == nil {
-			townBeadsHasDB = true
-		}
-	}
-
 	// Only use town-level beads if the rig doesn't have its own redirect chain.
 	// Rigs using Dolt server (not embedded DB) have a .beads/redirect file pointing
 	// to mayor/rig/.beads — this must take priority over the town fallback.
-	rigHasRedirect := false
-	if _, err := os.Stat(filepath.Join(rigBeadsPath, "redirect")); err == nil {
-		rigHasRedirect = true
+	if townHasBeadsDatabase(paths.townBeads) && !redirectFileExists(paths.rigBeads) {
+		return location.upPath() + "../.beads", nil
 	}
 
-	if townBeadsHasDB && !rigHasRedirect {
-		depth := len(parts)
-		upPath := strings.Repeat("../", depth)
-		return upPath + ".beads", nil
-	}
+	return fallbackRedirectTarget(location, paths)
+}
 
-	// Neither rig nor town has a database — fall back to rig-level beads.
-	usesMayorFallback := false
-	rigBeadsExists := false
-	if _, err := os.Stat(rigBeadsPath); err == nil {
-		rigBeadsExists = true
+type redirectLocation struct {
+	townRoot string
+	parts    []string
+}
+
+func redirectWorktreeLocation(townRoot, worktreePath string) (redirectLocation, error) {
+	townRootAbs, err := filepath.Abs(townRoot)
+	if err != nil {
+		return redirectLocation{}, fmt.Errorf("resolving town root: %w", err)
 	}
-	rigHasDB := false
-	if rigBeadsExists {
-		// Check for actual database: dolt/ directory
-		if _, err := os.Stat(filepath.Join(rigBeadsPath, "dolt")); err == nil {
-			rigHasDB = true
-		} else if _, err := os.Stat(filepath.Join(rigBeadsPath, "redirect")); err == nil {
-			// A redirect file is a valid beads configuration (tracked beads case).
-			// initBeads creates this to point to mayor/rig/.beads.
-			rigHasDB = true
+	worktreeAbs, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return redirectLocation{}, fmt.Errorf("resolving worktree path: %w", err)
+	}
+	relPath, err := worktreePathWithinTown(townRootAbs, worktreeAbs, townRoot, worktreePath)
+	if err != nil {
+		return redirectLocation{}, err
+	}
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	if len(parts) < 2 {
+		return redirectLocation{}, fmt.Errorf("invalid worktree path: must be at least 2 levels deep from town root")
+	}
+	if parts[0] == "mayor" || parts[1] == "mayor" {
+		return redirectLocation{}, fmt.Errorf("cannot create redirect in canonical beads location (mayor/rig)")
+	}
+	return redirectLocation{townRoot: townRootAbs, parts: parts}, nil
+}
+
+func worktreePathWithinTown(townRootAbs, worktreeAbs, townRoot, worktreePath string) (string, error) {
+	if worktreeAbs == townRootAbs {
+		return "", fmt.Errorf("cannot create redirect at town root")
+	}
+	relPath, err := filepath.Rel(townRootAbs, worktreeAbs)
+	if err != nil || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("worktree path %s is outside town root %s", worktreePath, townRoot)
+	}
+	return relPath, nil
+}
+
+func (l redirectLocation) upPath() string { return strings.Repeat("../", len(l.parts)-1) }
+
+type redirectPaths struct {
+	townBeads  string
+	rigBeads   string
+	mayorBeads string
+}
+
+func newRedirectPaths(location redirectLocation) redirectPaths {
+	rigRoot := filepath.Join(location.townRoot, location.parts[0])
+	return redirectPaths{
+		townBeads:  filepath.Join(location.townRoot, ".beads"),
+		rigBeads:   filepath.Join(rigRoot, ".beads"),
+		mayorBeads: filepath.Join(rigRoot, "mayor", "rig", ".beads"),
+	}
+}
+
+func ownRigRedirectTarget(location redirectLocation, paths redirectPaths) string {
+	if target, ok := directRigRedirectTarget(location.upPath(), filepath.Join(paths.rigBeads, "redirect")); ok {
+		return target
+	}
+	return location.upPath() + ".beads"
+}
+
+func townHasBeadsDatabase(townBeadsPath string) bool {
+	info, err := os.Stat(townBeadsPath)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	return pathExists(filepath.Join(townBeadsPath, "dolt")) || pathExists(filepath.Join(townBeadsPath, "config.yaml"))
+}
+
+func redirectFileExists(rigBeadsPath string) bool {
+	return pathExists(filepath.Join(rigBeadsPath, "redirect"))
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func fallbackRedirectTarget(location redirectLocation, paths redirectPaths) (string, error) {
+	rigBeadsExists := pathExists(paths.rigBeads)
+	rigHasDatabase := pathExists(filepath.Join(paths.rigBeads, "dolt")) || redirectFileExists(paths.rigBeads)
+	if !rigBeadsExists || !rigHasDatabase {
+		if _, err := os.Stat(paths.mayorBeads); !os.IsNotExist(err) {
+			return location.upPath() + "mayor/rig/.beads", nil
+		}
+		if !rigBeadsExists {
+			return "", fmt.Errorf("no beads found at %s, %s, or %s", paths.townBeads, paths.rigBeads, paths.mayorBeads)
 		}
 	}
-
-	if !rigBeadsExists || !rigHasDB {
-		// Rig .beads doesn't exist or has no database — check mayor/rig/.beads
-		if _, err := os.Stat(mayorBeadsPath); os.IsNotExist(err) {
-			if !rigBeadsExists {
-				return "", fmt.Errorf("no beads found at %s, %s, or %s", townBeadsPath, rigBeadsPath, mayorBeadsPath)
-			}
-			// Rig .beads exists but has no DB and mayor path doesn't exist either.
-			// Fall through to use rig path (best effort).
-		} else {
-			usesMayorFallback = true
-		}
-	}
-
-	// Compute relative path from worktree to rig root
-	// e.g., crew/<name> (depth 2) -> ../../.beads
-	//       refinery/rig (depth 2) -> ../../.beads
-	depth := len(parts) - 1 // subtract 1 for rig name itself
-	upPath := strings.Repeat("../", depth)
-
-	var redirectPath string
-	if usesMayorFallback {
-		// Direct redirect to mayor/rig/.beads since rig/.beads doesn't exist
-		redirectPath = upPath + "mayor/rig/.beads"
-	} else {
-		redirectPath = upPath + ".beads"
-
-		// Check if rig-level beads has a redirect (tracked beads case).
-		// If so, redirect directly to the final destination to avoid chains.
-		// The bd CLI doesn't support redirect chains, so we must skip intermediate hops.
-		if target, ok := directRigRedirectTarget(upPath, filepath.Join(rigBeadsPath, "redirect")); ok {
-			redirectPath = target
-		}
-	}
-
-	return redirectPath, nil
+	return ownRigRedirectTarget(location, paths), nil
 }
 
 func directRigRedirectTarget(upPath, rigRedirectPath string) (string, bool) {
