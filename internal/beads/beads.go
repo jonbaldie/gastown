@@ -1090,7 +1090,7 @@ func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeListedIssues(out)
+	return decodeIssues(out, "bd list")
 }
 
 func listIssueArgs(opts ListOptions) []string {
@@ -1132,7 +1132,7 @@ func appendListIssueLimit(args []string, limit int) []string {
 	return append(args, "--limit=0")
 }
 
-func decodeListedIssues(out []byte) ([]*Issue, error) {
+func decodeIssues(out []byte, command string) ([]*Issue, error) {
 	// bd list --json may return plain text (e.g., "No issues found.") instead
 	// of an empty JSON array when there are no results. Handle gracefully.
 	if len(out) == 0 || !isJSONBytes(out) {
@@ -1141,7 +1141,7 @@ func decodeListedIssues(out []byte) ([]*Issue, error) {
 
 	var issues []*Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
-		return nil, fmt.Errorf("parsing bd list output: %w", err)
+		return nil, fmt.Errorf("parsing %s output: %w", command, err)
 	}
 
 	return issues, nil
@@ -1216,9 +1216,25 @@ func (b *Beads) queryIssueStatuses(statuses []IssueStatus) ([]*Issue, error) {
 // not support an --ephemeral flag. Wisps (ephemeral issues like merge-request
 // beads) live in a separate table since beads v0.59.
 func (b *Beads) listEphemeral(opts ListOptions) ([]*Issue, error) {
-	// Build query expression: ephemeral=true AND <filters>
-	clauses := []string{"ephemeral=true"}
+	args := ephemeralIssueArgs(opts)
+	out, err := b.run(args...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeIssues(out, "bd query")
+}
 
+func ephemeralIssueArgs(opts ListOptions) []string {
+	queryExpr := strings.Join(ephemeralIssueClauses(opts), " AND ")
+	args := []string{"query", "--json", queryExpr}
+	if opts.Status == "all" {
+		args = append(args, "--all")
+	}
+	return appendListIssueLimit(args, opts.Limit)
+}
+
+func ephemeralIssueClauses(opts ListOptions) []string {
+	clauses := []string{"ephemeral=true"}
 	if opts.Label != "" {
 		clauses = append(clauses, "label="+quoteBDQueryValue(opts.Label))
 	} else if opts.Type != "" {
@@ -1236,35 +1252,7 @@ func (b *Beads) listEphemeral(opts ListOptions) ([]*Issue, error) {
 	if opts.Assignee != "" {
 		clauses = append(clauses, "assignee="+quoteBDQueryValue(opts.Assignee))
 	}
-
-	queryExpr := strings.Join(clauses, " AND ")
-	args := []string{"query", "--json", queryExpr}
-
-	if opts.Status == "all" {
-		args = append(args, "--all")
-	}
-	if opts.Limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", opts.Limit))
-	} else {
-		// Match List's no-truncation default; bd query otherwise silently caps at 50.
-		args = append(args, "--limit=0")
-	}
-
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(out) == 0 || !isJSONBytes(out) {
-		return nil, nil
-	}
-
-	var issues []*Issue
-	if err := json.Unmarshal(out, &issues); err != nil {
-		return nil, fmt.Errorf("parsing bd query output: %w", err)
-	}
-
-	return issues, nil
+	return clauses
 }
 
 func quoteBDQueryValue(value string) string {
