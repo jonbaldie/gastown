@@ -664,9 +664,11 @@ func collectEpicChildren(epicID string) ([]string, error) {
 	queue := []string{epicID}
 	visited[epicID] = true
 
-	for len(queue) > 0 {
-		parentID := queue[0]
-		queue = queue[1:]
+	for {
+		parentID, ok := popEpicQueue(&queue)
+		if !ok {
+			break
+		}
 
 		children, err := bdListChildren(parentID)
 		if err != nil {
@@ -675,17 +677,7 @@ func collectEpicChildren(epicID string) ([]string, error) {
 		}
 
 		for _, child := range children {
-			if visited[child.ID] {
-				continue
-			}
-			visited[child.ID] = true
-
-			if convoyops.IsSlingableType(child.IssueType) {
-				issueIDs = append(issueIDs, child.ID)
-			} else {
-				// Non-slingable types (sub-epics, decisions) — recurse to find slingable descendants
-				queue = append(queue, child.ID)
-			}
+			visitEpicChild(child, visited, &issueIDs, &queue)
 		}
 	}
 
@@ -693,6 +685,28 @@ func collectEpicChildren(epicID string) ([]string, error) {
 		return nil, fmt.Errorf("epic '%s' has no slingable children (task, bug, feature, chore)", epicID)
 	}
 	return issueIDs, nil
+}
+
+func popEpicQueue(queue *[]string) (string, bool) {
+	if len(*queue) == 0 {
+		return "", false
+	}
+	parentID := (*queue)[0]
+	*queue = (*queue)[1:]
+	return parentID, true
+}
+
+func visitEpicChild(child bdShowResult, visited map[string]bool, issueIDs, queue *[]string) {
+	if visited[child.ID] {
+		return
+	}
+	visited[child.ID] = true
+	if convoyops.IsSlingableType(child.IssueType) {
+		*issueIDs = append(*issueIDs, child.ID)
+		return
+	}
+	// Non-slingable types (sub-epics, decisions) — recurse to find slingable descendants.
+	*queue = append(*queue, child.ID)
 }
 
 func validateEpicType(id, issueType string) error {
@@ -711,7 +725,17 @@ func validateConvoyMerge(merge string) error {
 	}
 }
 
-func runConvoyCreate(cmd *cobra.Command, args []string) error {
+type convoyCreateOptions struct {
+	molecule   string
+	notify     string
+	owner      string
+	owned      bool
+	merge      string
+	baseBranch string
+	fromEpic   string
+}
+
+func convoyCreateOptionsFrom(cmd *cobra.Command) convoyCreateOptions {
 	molecule, _ := cmd.Flags().GetString("molecule")
 	notify, _ := cmd.Flags().GetString("notify")
 	owner, _ := cmd.Flags().GetString("owner")
@@ -719,100 +743,112 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 	merge, _ := cmd.Flags().GetString("merge")
 	baseBranch, _ := cmd.Flags().GetString("base-branch")
 	fromEpic, _ := cmd.Flags().GetString("from-epic")
+	return convoyCreateOptions{
+		molecule:   molecule,
+		notify:     notify,
+		owner:      owner,
+		owned:      owned,
+		merge:      merge,
+		baseBranch: baseBranch,
+		fromEpic:   fromEpic,
+	}
+}
 
-	if err := validateConvoyMerge(merge); err != nil {
+func runConvoyCreate(cmd *cobra.Command, args []string) error {
+	options := convoyCreateOptionsFrom(cmd)
+	if err := validateConvoyMerge(options.merge); err != nil {
 		return err
 	}
 
-	var name string
-	var trackedIssues []string
-
-	if fromEpic != "" {
-		// --from-epic mode: auto-discover children
-		epicIssues, err := collectEpicChildren(fromEpic)
-		if err != nil {
-			return err
-		}
-		trackedIssues = epicIssues
-
-		// Use epic title as convoy name unless a name arg was provided
-		if len(args) > 0 {
-			name = args[0]
-		} else {
-			if epic, err := bdShow(fromEpic); err == nil {
-				name = epic.Title
-			} else {
-				name = fmt.Sprintf("From epic %s", fromEpic)
-			}
-		}
-	} else {
-		// Standard mode: explicit issue list
-		if len(args) == 0 {
-			return fmt.Errorf("at least one argument is required\nUsage: gt convoy create <name> <issue-id> [issue-id...]\n       gt convoy create --from-epic <epic-id>")
-		}
-		name = args[0]
-		trackedIssues = args[1:]
-
-		// If first arg looks like an issue ID (has beads prefix), treat all args as issues
-		// and auto-generate a name from the first issue's title
-		if looksLikeIssueID(name) {
-			trackedIssues = args
-			if details := getIssueDetails(args[0]); details != nil && details.Title != "" {
-				name = details.Title
-			} else {
-				name = fmt.Sprintf("Tracking %s", args[0])
-			}
-		}
-
-		if len(trackedIssues) == 0 {
-			return fmt.Errorf("at least one issue ID is required\nUsage: gt convoy create <name> <issue-id> [issue-id...]")
-		}
+	name, trackedIssues, err := convoyCreateTargets(options.fromEpic, args)
+	if err != nil {
+		return err
 	}
-
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
 	}
-
-	// Resolve the actual .beads directory (follows redirects) before calling
-	// EnsureCustomTypes/Statuses, which expect a .beads path, not a workspace root.
-	resolvedBeads := beads.ResolveBeadsDir(townBeads)
-
-	// Ensure custom types (including 'convoy') are registered in town beads.
-	// This handles cases where install didn't complete or beads was initialized manually.
-	if err := beads.EnsureCustomTypes(resolvedBeads); err != nil {
-		return fmt.Errorf("ensuring custom types: %w", err)
+	if err := ensureConvoyConfiguration(townBeads); err != nil {
+		return err
 	}
-
-	// Ensure custom statuses (staged_ready, staged_warnings) are registered.
-	if err := beads.EnsureCustomStatuses(resolvedBeads); err != nil {
-		return fmt.Errorf("ensuring custom statuses: %w", err)
-	}
-
-	// Create convoy issue in town beads
-	description := fmt.Sprintf("Convoy tracking %d issues", len(trackedIssues))
-
-	// Default owner to creator identity if not specified
-	if owner == "" {
-		owner = detectSender()
-	}
-	convoyFieldValues := &beads.ConvoyFields{
-		Owner:      owner,
-		Notify:     notify,
-		Merge:      merge,
-		Molecule:   molecule,
-		BaseBranch: baseBranch,
-	}
-	description = beads.SetConvoyFields(&beads.Issue{Description: description}, convoyFieldValues)
-
-	// Guard against flag-like convoy names (gt-e0kx5)
+	description := buildConvoyDescription(&options, len(trackedIssues))
 	if beads.IsFlagLikeTitle(name) {
 		return fmt.Errorf("refusing to create convoy: name %q looks like a CLI flag", name)
 	}
+	convoyID, err := createConvoyIssue(townBeads, name, description, options.owned)
+	if err != nil {
+		return err
+	}
+	trackedCount := addConvoyTracking(townBeads, convoyID, trackedIssues)
+	printConvoyCreated(name, options, options.fromEpic, trackedIssues, trackedCount, convoyID)
+	return nil
+}
 
-	// Generate convoy ID with cv- prefix
+func convoyCreateTargets(fromEpic string, args []string) (string, []string, error) {
+	if fromEpic != "" {
+		return convoyTargetsFromEpic(fromEpic, args)
+	}
+	if len(args) == 0 {
+		return "", nil, fmt.Errorf("at least one argument is required\nUsage: gt convoy create <name> <issue-id> [issue-id...]\n       gt convoy create --from-epic <epic-id>")
+	}
+	name := args[0]
+	trackedIssues := args[1:]
+	if looksLikeIssueID(name) {
+		trackedIssues = args
+		if details := getIssueDetails(args[0]); details != nil && details.Title != "" {
+			name = details.Title
+		} else {
+			name = fmt.Sprintf("Tracking %s", args[0])
+		}
+	}
+	if len(trackedIssues) == 0 {
+		return "", nil, fmt.Errorf("at least one issue ID is required\nUsage: gt convoy create <name> <issue-id> [issue-id...]")
+	}
+	return name, trackedIssues, nil
+}
+
+func convoyTargetsFromEpic(epicID string, args []string) (string, []string, error) {
+	issues, err := collectEpicChildren(epicID)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(args) > 0 {
+		return args[0], issues, nil
+	}
+	if epic, err := bdShow(epicID); err == nil {
+		return epic.Title, issues, nil
+	}
+	return fmt.Sprintf("From epic %s", epicID), issues, nil
+}
+
+func ensureConvoyConfiguration(townBeads string) error {
+	resolvedBeads := beads.ResolveBeadsDir(townBeads)
+	if err := beads.EnsureCustomTypes(resolvedBeads); err != nil {
+		return fmt.Errorf("ensuring custom types: %w", err)
+	}
+	if err := beads.EnsureCustomStatuses(resolvedBeads); err != nil {
+		return fmt.Errorf("ensuring custom statuses: %w", err)
+	}
+	return nil
+}
+
+func buildConvoyDescription(options *convoyCreateOptions, issueCount int) string {
+	if options.owner == "" {
+		options.owner = detectSender()
+	}
+	fields := &beads.ConvoyFields{
+		Owner:      options.owner,
+		Notify:     options.notify,
+		Merge:      options.merge,
+		Molecule:   options.molecule,
+		BaseBranch: options.baseBranch,
+	}
+	description := fmt.Sprintf("Convoy tracking %d issues", issueCount)
+	return beads.SetConvoyFields(&beads.Issue{Description: description}, fields)
+}
+
+func createConvoyIssue(townBeads, name, description string, owned bool) (string, error) {
 	convoyID := fmt.Sprintf("hq-cv-%s", generateShortID())
-
 	createArgs := []string{
 		"create",
 		"--type=task",
@@ -825,29 +861,26 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 	if beads.NeedsForceForID(convoyID) {
 		createArgs = append(createArgs, "--force")
 	}
-
 	var stderr bytes.Buffer
-	if err := BdCmd(createArgs...).
-		WithAutoCommit().
-		Dir(townBeads).
-		Stderr(&stderr).
-		Run(); err != nil {
-		return fmt.Errorf("creating convoy: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	if err := BdCmd(createArgs...).WithAutoCommit().Dir(townBeads).Stderr(&stderr).Run(); err != nil {
+		return "", fmt.Errorf("creating convoy: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
+	return convoyID, nil
+}
 
-	// Notify address is stored in description (line 166-168) and read from there
-
-	// Add 'tracks' relations for each tracked issue
+func addConvoyTracking(townBeads, convoyID string, issues []string) int {
 	trackedCount := 0
-	for _, issueID := range trackedIssues {
+	for _, issueID := range issues {
 		if err := addTrackingRelationFn(townBeads, convoyID, issueID); err != nil {
 			style.PrintWarning("couldn't track %s: %s", issueID, err)
 		} else {
 			trackedCount++
 		}
 	}
+	return trackedCount
+}
 
-	// Output
+func printConvoyCreated(name string, options convoyCreateOptions, fromEpic string, trackedIssues []string, trackedCount int, convoyID string) {
 	fmt.Printf("%s Created convoy 🚚 %s\n\n", style.Bold.Render("✓"), convoyID)
 	fmt.Printf("  Name:     %s\n", name)
 	if fromEpic != "" {
@@ -857,32 +890,33 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 	if fromEpic == "" && len(trackedIssues) > 0 {
 		fmt.Printf("  Issues:   %s\n", strings.Join(trackedIssues, ", "))
 	}
-	if owner != "" {
-		fmt.Printf("  Owner:    %s\n", owner)
-	}
-	if notify != "" {
-		fmt.Printf("  Notify:   %s\n", notify)
-	}
-	if merge != "" {
-		fmt.Printf("  Merge:    %s\n", merge)
-	}
-	if molecule != "" {
-		fmt.Printf("  Molecule: %s\n", molecule)
-	}
-	if baseBranch != "" {
-		fmt.Printf("  Base:     %s\n", baseBranch)
-	}
-	if owned {
-		fmt.Printf("  Owned:    %s\n", style.Warning.Render("caller-managed lifecycle"))
-	}
-
-	if owned {
+	printConvoyCreateFields(options)
+	if options.owned {
 		fmt.Printf("\n  %s\n", style.Dim.Render("Owned convoy: caller manages lifecycle via gt convoy land"))
 	} else {
 		fmt.Printf("\n  %s\n", style.Dim.Render("Convoy auto-closes when all tracked issues complete"))
 	}
+}
 
-	return nil
+func printConvoyCreateFields(options convoyCreateOptions) {
+	if options.owner != "" {
+		fmt.Printf("  Owner:    %s\n", options.owner)
+	}
+	if options.notify != "" {
+		fmt.Printf("  Notify:   %s\n", options.notify)
+	}
+	if options.merge != "" {
+		fmt.Printf("  Merge:    %s\n", options.merge)
+	}
+	if options.molecule != "" {
+		fmt.Printf("  Molecule: %s\n", options.molecule)
+	}
+	if options.baseBranch != "" {
+		fmt.Printf("  Base:     %s\n", options.baseBranch)
+	}
+	if options.owned {
+		fmt.Printf("  Owned:    %s\n", style.Warning.Render("caller-managed lifecycle"))
+	}
 }
 
 func collectConvoyAddIssues(args, addIssues []string) (convoyID string, issues []string, err error) {
