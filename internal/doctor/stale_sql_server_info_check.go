@@ -36,65 +36,85 @@ func NewStaleSQLServerInfoCheck() *StaleSQLServerInfoCheck {
 func (c *StaleSQLServerInfoCheck) Run(ctx *CheckContext) *CheckResult {
 	c.staleFiles = nil
 
-	// Find sql-server.info files in known .beads/dolt/.dolt/ locations.
-	// Avoids filepath.Walk over the entire town root, which is extremely slow
-	// on Docker bind mounts (macOS VirtioFS).
-	var details []string
+	locations := sqlServerInfoLocations(ctx.TownRoot)
+	details := c.findStaleSQLServerInfo(ctx.TownRoot, locations)
+	return staleSQLServerInfoResult(c.Name(), c.staleFiles, details)
+}
 
+func sqlServerInfoLocations(townRoot string) []string {
 	locations := []string{
-		filepath.Join(ctx.TownRoot, ".beads", "dolt", ".dolt", "sql-server.info"),
+		filepath.Join(townRoot, ".beads", "dolt", ".dolt", "sql-server.info"),
 	}
-
-	// Collect rig names from rigs.json and top-level directories.
-	rigNames := make(map[string]struct{})
-	rigsConfig := filepath.Join(ctx.TownRoot, "mayor", "rigs.json")
-	if data, err := os.ReadFile(rigsConfig); err == nil {
-		var rigs struct {
-			Rigs map[string]struct{} `json:"rigs"`
-		}
-		if json.Unmarshal(data, &rigs) == nil {
-			for name := range rigs.Rigs {
-				rigNames[name] = struct{}{}
-			}
-		}
-	}
-	// Also scan top-level directories as fallback (handles rigs not yet in rigs.json).
-	if entries, err := os.ReadDir(ctx.TownRoot); err == nil {
-		for _, e := range entries {
-			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-				rigNames[e.Name()] = struct{}{}
-			}
-		}
-	}
-	for rigName := range rigNames {
+	for rigName := range knownRigNames(townRoot) {
 		locations = append(locations,
-			filepath.Join(ctx.TownRoot, rigName, ".beads", "dolt", ".dolt", "sql-server.info"),
+			filepath.Join(townRoot, rigName, ".beads", "dolt", ".dolt", "sql-server.info"),
 		)
 	}
+	return locations
+}
 
-	for _, path := range locations {
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		if c.isStale(path) {
-			c.staleFiles = append(c.staleFiles, path)
-			relPath, _ := filepath.Rel(ctx.TownRoot, path)
-			details = append(details, fmt.Sprintf("Stale sql-server.info: %s", relPath))
+func knownRigNames(townRoot string) map[string]struct{} {
+	rigNames := make(map[string]struct{})
+	addRegisteredRigNames(townRoot, rigNames)
+	addTopLevelRigNames(townRoot, rigNames)
+	return rigNames
+}
+
+func addRegisteredRigNames(townRoot string, rigNames map[string]struct{}) {
+	rigsConfig := filepath.Join(townRoot, "mayor", "rigs.json")
+	data, err := os.ReadFile(rigsConfig)
+	if err != nil {
+		return
+	}
+	var rigs struct {
+		Rigs map[string]struct{} `json:"rigs"`
+	}
+	if json.Unmarshal(data, &rigs) != nil {
+		return
+	}
+	for name := range rigs.Rigs {
+		rigNames[name] = struct{}{}
+	}
+}
+
+func addTopLevelRigNames(townRoot string, rigNames map[string]struct{}) {
+	entries, err := os.ReadDir(townRoot)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			rigNames[entry.Name()] = struct{}{}
 		}
 	}
+}
 
-	if len(c.staleFiles) == 0 {
+func (c *StaleSQLServerInfoCheck) findStaleSQLServerInfo(townRoot string, locations []string) []string {
+	var details []string
+	for _, path := range locations {
+		if _, err := os.Stat(path); err != nil || !c.isStale(path) {
+			continue
+		}
+		c.staleFiles = append(c.staleFiles, path)
+		relPath, _ := filepath.Rel(townRoot, path)
+		details = append(details, fmt.Sprintf("Stale sql-server.info: %s", relPath))
+	}
+	return details
+}
+
+func staleSQLServerInfoResult(name string, staleFiles, details []string) *CheckResult {
+	if len(staleFiles) == 0 {
 		return &CheckResult{
-			Name:    c.Name(),
+			Name:    name,
 			Status:  StatusOK,
 			Message: "No stale sql-server.info files found",
 		}
 	}
 
 	return &CheckResult{
-		Name:    c.Name(),
+		Name:    name,
 		Status:  StatusWarning,
-		Message: fmt.Sprintf("%d stale sql-server.info file(s) from dead Dolt servers", len(c.staleFiles)),
+		Message: fmt.Sprintf("%d stale sql-server.info file(s) from dead Dolt servers", len(staleFiles)),
 		Details: details,
 		FixHint: "Restart the Dolt server to clear stale sql-server.info files (Dolt writes and cleans these itself)",
 	}
