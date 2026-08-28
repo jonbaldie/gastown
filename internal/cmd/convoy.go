@@ -1077,35 +1077,10 @@ func closeConvoyIfComplete(townBeads, convoyID, title string, tracked []trackedI
 		return false, nil
 	}
 
-	allClosed := true
-	openCount := 0
-	unknownCount := 0
-	for _, t := range tracked {
-		switch t.Status {
-		case "closed", "tombstone":
-			// counted as complete
-		case trackedStatusUnknown:
-			// Cross-rig DB unreachable — can't verify completion. Leave convoy
-			// open, treat as Info (not a convoy-level failure). (gt-bs6)
-			allClosed = false
-			unknownCount++
-		default:
-			allClosed = false
-			openCount++
-		}
-	}
+	allClosed, openCount, unknownCount := convoyCompletionCounts(tracked)
 
 	if !allClosed {
-		switch {
-		case unknownCount > 0 && openCount > 0:
-			fmt.Printf("%s Convoy %s has %d open, %d unknown (cross-rig unreachable) issue(s) remaining\n",
-				style.Dim.Render("○"), convoyID, openCount, unknownCount)
-		case unknownCount > 0:
-			fmt.Printf("%s Convoy %s has %d tracked issue(s) with unknown status (cross-rig unreachable)\n",
-				style.Dim.Render("○"), convoyID, unknownCount)
-		default:
-			fmt.Printf("%s Convoy %s has %d open issue(s) remaining\n", style.Dim.Render("○"), convoyID, openCount)
-		}
+		printConvoyIncomplete(convoyID, openCount, unknownCount)
 		return false, nil
 	}
 
@@ -1123,6 +1098,38 @@ func closeConvoyIfComplete(townBeads, convoyID, title string, tracked []trackedI
 	fmt.Printf("%s Auto-closed convoy 🚚 %s: %s\n", style.Bold.Render("✓"), convoyID, title)
 	notifyConvoyCompletion(townBeads, convoyID, title)
 	return true, nil
+}
+
+func convoyCompletionCounts(tracked []trackedIssueInfo) (allClosed bool, openCount, unknownCount int) {
+	allClosed = true
+	for _, t := range tracked {
+		switch t.Status {
+		case "closed", "tombstone":
+			// counted as complete
+		case trackedStatusUnknown:
+			// Cross-rig DB unreachable — can't verify completion. Leave convoy
+			// open, treat as Info (not a convoy-level failure). (gt-bs6)
+			allClosed = false
+			unknownCount++
+		default:
+			allClosed = false
+			openCount++
+		}
+	}
+	return allClosed, openCount, unknownCount
+}
+
+func printConvoyIncomplete(convoyID string, openCount, unknownCount int) {
+	switch {
+	case unknownCount > 0 && openCount > 0:
+		fmt.Printf("%s Convoy %s has %d open, %d unknown (cross-rig unreachable) issue(s) remaining\n",
+			style.Dim.Render("○"), convoyID, openCount, unknownCount)
+	case unknownCount > 0:
+		fmt.Printf("%s Convoy %s has %d tracked issue(s) with unknown status (cross-rig unreachable)\n",
+			style.Dim.Render("○"), convoyID, unknownCount)
+	default:
+		fmt.Printf("%s Convoy %s has %d open issue(s) remaining\n", style.Dim.Render("○"), convoyID, openCount)
+	}
 }
 
 // checkSingleConvoy checks a specific convoy and closes it if all tracked issues are complete.
