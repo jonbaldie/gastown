@@ -1617,23 +1617,42 @@ func runConvoyStranded(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	printStrandedConvoys(stranded)
+	printStrandedAdvice(groupStrandedConvoys(stranded))
+	return nil
+}
+
+func printStrandedConvoys(stranded []strandedConvoyInfo) {
 	fmt.Printf("%s Found %d stranded convoy(s):\n\n", style.Warning.Render("⚠"), len(stranded))
 	for _, s := range stranded {
 		fmt.Printf("  🚚 %s: %s\n", s.ID, s.Title)
-		if s.ReadyCount == 0 && s.TrackedCount == 0 {
-			fmt.Printf("     Empty convoy (0 tracked issues) — needs cleanup\n")
-		} else if s.ReadyCount == 0 && s.TrackedCount > 0 {
-			fmt.Printf("     %d tracked issues, 0 ready — needs agent review\n", s.TrackedCount)
-		} else {
-			fmt.Printf("     Ready issues: %d (of %d tracked)\n", s.ReadyCount, s.TrackedCount)
-			for _, issueID := range s.ReadyIssues {
-				fmt.Printf("       • %s\n", issueID)
-			}
-		}
+		printStrandedConvoyState(s)
 		fmt.Println()
 	}
+}
 
-	// Separate feed advice, needs-attention convoys, and cleanup advice.
+func printStrandedConvoyState(convoy strandedConvoyInfo) {
+	if convoy.ReadyCount == 0 && convoy.TrackedCount == 0 {
+		fmt.Printf("     Empty convoy (0 tracked issues) — needs cleanup\n")
+		return
+	}
+	if convoy.ReadyCount == 0 {
+		fmt.Printf("     %d tracked issues, 0 ready — needs agent review\n", convoy.TrackedCount)
+		return
+	}
+	fmt.Printf("     Ready issues: %d (of %d tracked)\n", convoy.ReadyCount, convoy.TrackedCount)
+	for _, issueID := range convoy.ReadyIssues {
+		fmt.Printf("       • %s\n", issueID)
+	}
+}
+
+type strandedConvoyGroups struct {
+	feedable       []strandedConvoyInfo
+	needsAttention []strandedConvoyInfo
+	empty          []strandedConvoyInfo
+}
+
+func groupStrandedConvoys(stranded []strandedConvoyInfo) strandedConvoyGroups {
 	var feedable, needsAttention, empty []strandedConvoyInfo
 	for _, s := range stranded {
 		if s.ReadyCount > 0 {
@@ -1644,35 +1663,36 @@ func runConvoyStranded(cmd *cobra.Command, _ []string) error {
 			empty = append(empty, s)
 		}
 	}
+	return strandedConvoyGroups{feedable: feedable, needsAttention: needsAttention, empty: empty}
+}
 
-	if len(feedable) > 0 {
+func printStrandedAdvice(groups strandedConvoyGroups) {
+	if len(groups.feedable) > 0 {
 		fmt.Println("To feed stranded convoys, run:")
-		for _, s := range feedable {
+		for _, s := range groups.feedable {
 			fmt.Printf("  gt sling mol-convoy-feed deacon/dogs --var convoy=%s\n", s.ID)
 		}
 	}
-	if len(needsAttention) > 0 {
-		if len(feedable) > 0 {
+	if len(groups.needsAttention) > 0 {
+		if len(groups.feedable) > 0 {
 			fmt.Println()
 		}
 		fmt.Println("Needs agent review (tracked issues exist but none are ready):")
-		for _, s := range needsAttention {
+		for _, s := range groups.needsAttention {
 			fmt.Printf("  🚚 %s (%d tracked, 0 ready)\n", s.ID, s.TrackedCount)
 		}
 	}
-	if len(empty) > 0 {
-		if len(feedable) > 0 || len(needsAttention) > 0 {
+	if len(groups.empty) > 0 {
+		if len(groups.feedable) > 0 || len(groups.needsAttention) > 0 {
 			fmt.Println()
 		}
 		fmt.Println("To close empty convoys, run:")
-		for _, s := range empty {
+		for _, s := range groups.empty {
 			fmt.Printf("  gt convoy check %s\n", s.ID)
 		}
 	}
 	fmt.Println()
 	fmt.Println(style.Dim.Render("  Note: Pool dispatch auto-creates dogs if pool is under capacity."))
-
-	return nil
 }
 
 // findStrandedConvoys finds convoys with ready work but no workers,
