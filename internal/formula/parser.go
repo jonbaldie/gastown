@@ -87,36 +87,50 @@ func (f *Formula) validateConvoy() error {
 		return fmt.Errorf("convoy formula requires at least one leg")
 	}
 
-	// Check leg IDs are unique
+	seen, err := validateLegIDs(f.Legs)
+	if err != nil {
+		return err
+	}
+	if err := validateSynthesisDependencies(f.Synthesis, seen); err != nil {
+		return err
+	}
+	return validateRequiredUnless(f.Inputs)
+}
+
+func validateLegIDs(legs []Leg) (map[string]bool, error) {
 	seen := make(map[string]bool)
-	for _, leg := range f.Legs {
+	for _, leg := range legs {
 		if leg.ID == "" {
-			return fmt.Errorf("leg missing required id field")
+			return nil, fmt.Errorf("leg missing required id field")
 		}
 		if seen[leg.ID] {
-			return fmt.Errorf("duplicate leg id: %s", leg.ID)
+			return nil, fmt.Errorf("duplicate leg id: %s", leg.ID)
 		}
 		seen[leg.ID] = true
 	}
+	return seen, nil
+}
 
-	// Validate synthesis depends_on references valid legs
-	if f.Synthesis != nil {
-		for _, dep := range f.Synthesis.DependsOn {
-			if !seen[dep] {
-				return fmt.Errorf("synthesis depends_on references unknown leg: %s", dep)
-			}
+func validateSynthesisDependencies(synthesis *Synthesis, legIDs map[string]bool) error {
+	if synthesis == nil {
+		return nil
+	}
+	for _, dep := range synthesis.DependsOn {
+		if !legIDs[dep] {
+			return fmt.Errorf("synthesis depends_on references unknown leg: %s", dep)
 		}
 	}
+	return nil
+}
 
-	// Validate RequiredUnless references point to existing input keys
-	for name, input := range f.Inputs {
+func validateRequiredUnless(inputs map[string]Input) error {
+	for name, input := range inputs {
 		for _, ref := range input.RequiredUnless {
-			if _, ok := f.Inputs[ref]; !ok {
+			if _, ok := inputs[ref]; !ok {
 				return fmt.Errorf("input %q has required_unless referencing unknown input %q", name, ref)
 			}
 		}
 	}
-
 	return nil
 }
 
