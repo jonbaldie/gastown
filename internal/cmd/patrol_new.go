@@ -8,8 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var patrolNewRole string
-
 var patrolNewCmd = &cobra.Command{
 	Use:   "new",
 	Short: "Create a new patrol wisp with config variables",
@@ -29,10 +27,11 @@ Examples:
 }
 
 func init() {
-	patrolNewCmd.Flags().StringVar(&patrolNewRole, "role", "", "Role override (deacon, witness, refinery)")
+	patrolNewCmd.Flags().String("role", "", "Role override (deacon, witness, refinery)")
 }
 
-func runPatrolNew(_ *cobra.Command, _ []string) error {
+func runPatrolNew(cmd *cobra.Command, _ []string) error {
+	patrolNewRole, _ := cmd.Flags().GetString("role")
 	// Resolve role
 	roleInfo, err := GetRole()
 	if err != nil {
