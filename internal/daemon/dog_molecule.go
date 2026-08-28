@@ -395,13 +395,14 @@ func parseWispID(output string) string {
 func stripANSI(s string) string {
 	var result strings.Builder
 	i := 0
-	for i < len(s) {
+	sLength := len(s)
+	for i < sLength {
 		if s[i] == '\033' {
 			// Skip escape sequence.
 			i++
 			if i < len(s) && s[i] == '[' {
 				i++
-				for i < len(s) && !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z')) {
+				for i < sLength && !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z')) {
 					i++
 				}
 				if i < len(s) {

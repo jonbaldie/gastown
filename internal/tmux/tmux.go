@@ -75,7 +75,8 @@ func validateCommandBinary(command string) error {
 	// Skip past "exec" and "env" prefixes, KEY=VAL assignments,
 	// and PowerShell $env: assignments and call operator (&).
 	i := 0
-	for i < len(fields) {
+	fieldCount := len(fields)
+	for i < fieldCount {
 		f := fields[i]
 		if f == "exec" || f == "env" || f == "&" {
 			i++
@@ -90,7 +91,7 @@ func validateCommandBinary(command string) error {
 		if strings.HasPrefix(f, "$env:") {
 			i++
 			// Skip continuation fields until we see a semicolon-terminated one
-			for i < len(fields) && !strings.HasSuffix(fields[i-1], ";") {
+			for i < fieldCount && !strings.HasSuffix(fields[i-1], ";") {
 				i++
 			}
 			continue
