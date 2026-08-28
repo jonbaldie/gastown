@@ -8,11 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	cleanupDryRun bool
-	cleanupForce  bool
-)
-
 var cleanupCmd = &cobra.Command{
 	Use:     "cleanup",
 	GroupID: GroupWork,
@@ -36,13 +31,35 @@ Examples:
 }
 
 func init() {
-	cleanupCmd.Flags().BoolVar(&cleanupDryRun, "dry-run", false, "Show what would be killed without killing")
-	cleanupCmd.Flags().BoolVarP(&cleanupForce, "force", "f", false, "Kill without confirmation")
+	cleanupCmd.Flags().Bool("dry-run", false, "Show what would be killed without killing")
+	cleanupCmd.Flags().BoolP("force", "f", false, "Kill without confirmation")
 
 	rootCmd.AddCommand(cleanupCmd)
 }
 
-func runCleanup(_ *cobra.Command, _ []string) error {
+type cleanupOptions struct {
+	dryRun bool
+	force  bool
+}
+
+func cleanupOptionsFromCommand(cmd *cobra.Command) (cleanupOptions, error) {
+	dryRun, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return cleanupOptions{}, err
+	}
+	force, err := cmd.Flags().GetBool("force")
+	if err != nil {
+		return cleanupOptions{}, err
+	}
+	return cleanupOptions{dryRun: dryRun, force: force}, nil
+}
+
+func runCleanup(cmd *cobra.Command, _ []string) error {
+	opts, err := cleanupOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
 	// Find orphaned processes using aggressive zombie detection
 	zombies, err := util.FindZombieClaudeProcesses()
 	if err != nil {
@@ -54,6 +71,29 @@ func runCleanup(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	printCleanupZombies(zombies)
+
+	if opts.dryRun {
+		fmt.Printf("%s Dry run - no processes killed\n", style.Dim.Render("ℹ"))
+		return nil
+	}
+
+	// Confirm unless --force
+	if !opts.force && !confirmCleanup(len(zombies)) {
+		return nil
+	}
+
+	// Kill the processes using the standard cleanup function
+	results, err := util.CleanupZombieClaudeProcesses()
+	if err != nil {
+		return fmt.Errorf("cleaning up processes: %w", err)
+	}
+
+	reportCleanupResults(results)
+	return nil
+}
+
+func printCleanupZombies(zombies []util.ZombieProcess) {
 	// Show what we found
 	fmt.Printf("%s Found %d orphaned Claude process(es):\n\n", style.Warning.Render("⚠"), len(zombies))
 	for _, z := range zombies {
@@ -65,29 +105,20 @@ func runCleanup(_ *cobra.Command, _ []string) error {
 			z.TTY)
 	}
 	fmt.Println()
+}
 
-	if cleanupDryRun {
-		fmt.Printf("%s Dry run - no processes killed\n", style.Dim.Render("ℹ"))
-		return nil
+func confirmCleanup(count int) bool {
+	fmt.Printf("Kill these %d process(es)? [y/N] ", count)
+	var response string
+	_, _ = fmt.Scanln(&response)
+	confirmed := response == "y" || response == "Y" || response == "yes" || response == "Yes"
+	if !confirmed {
+		fmt.Println("Aborted")
 	}
+	return confirmed
+}
 
-	// Confirm unless --force
-	if !cleanupForce {
-		fmt.Printf("Kill these %d process(es)? [y/N] ", len(zombies))
-		var response string
-		_, _ = fmt.Scanln(&response)
-		if response != "y" && response != "Y" && response != "yes" && response != "Yes" {
-			fmt.Println("Aborted")
-			return nil
-		}
-	}
-
-	// Kill the processes using the standard cleanup function
-	results, err := util.CleanupZombieClaudeProcesses()
-	if err != nil {
-		return fmt.Errorf("cleaning up processes: %w", err)
-	}
-
+func reportCleanupResults(results []util.ZombieCleanupResult) {
 	// Report results
 	var killed, escalated int
 	for _, r := range results {
@@ -109,8 +140,6 @@ func runCleanup(_ *cobra.Command, _ []string) error {
 		fmt.Printf(", %d unkillable", escalated)
 	}
 	fmt.Println()
-
-	return nil
 }
 
 // formatProcessAgeCleanup formats seconds into a human-readable age string
