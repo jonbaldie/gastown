@@ -45,70 +45,94 @@ func NewSocketSplitBrainCheck() *SocketSplitBrainCheck {
 // Run checks for Gas Town sessions on the "default" socket that duplicate
 // sessions on the town socket.
 func (c *SocketSplitBrainCheck) Run(_ *CheckContext) *CheckResult {
-	townSocket := tmux.GetDefaultSocket()
-	if c.useSocketForTest {
-		townSocket = c.socketForTest
-	}
+	townSocket := c.townSocket()
 	if townSocket == "" || townSocket == "default" {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "Town socket is default — no split-brain possible",
-		}
+		return socketSplitBrainDefaultResult(c)
 	}
 
-	var townLister socketSessionLister = tmux.NewTmux()
-	if c.townListerForTest != nil {
-		townLister = c.townListerForTest
-	}
-
-	var defaultLister socketSessionLister = tmux.NewTmuxWithSocket("default")
-	if c.defaultListerForTest != nil {
-		defaultLister = c.defaultListerForTest
-	}
+	townLister, defaultLister := c.socketListers()
 
 	townSessions, err := townLister.ListSessions()
 	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "Could not list town socket sessions (server may not be running)",
-		}
+		return socketSplitBrainTownErrorResult(c)
 	}
 
 	defaultSessions, err := defaultLister.ListSessions()
 	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No default socket server running — no split-brain",
-		}
+		return socketSplitBrainDefaultErrorResult(c)
 	}
 
-	// Build set of town socket sessions
-	townSet := make(map[string]bool, len(townSessions))
-	for _, s := range townSessions {
-		townSet[s] = true
-	}
-
-	// Find Gas Town sessions on default that are duplicates or orphans
-	var duplicates []string
-	var orphans []string
-
-	for _, s := range defaultSessions {
-		if !session.IsKnownSession(s) {
-			continue // Not a Gas Town session
-		}
-		if townSet[s] {
-			duplicates = append(duplicates, s)
-		} else {
-			orphans = append(orphans, s)
-		}
-	}
+	duplicates, orphans := splitBrainSessions(townSessions, defaultSessions)
 
 	c.staleSessions = append(duplicates, orphans...)
 	sort.Strings(c.staleSessions)
+	return c.socketSplitBrainResult(townSocket, duplicates, orphans)
+}
 
+func (c *SocketSplitBrainCheck) townSocket() string {
+	if c.useSocketForTest {
+		return c.socketForTest
+	}
+	return tmux.GetDefaultSocket()
+}
+
+func (c *SocketSplitBrainCheck) socketListers() (socketSessionLister, socketSessionLister) {
+	townLister := socketSessionLister(tmux.NewTmux())
+	if c.townListerForTest != nil {
+		townLister = c.townListerForTest
+	}
+	defaultLister := socketSessionLister(tmux.NewTmuxWithSocket("default"))
+	if c.defaultListerForTest != nil {
+		defaultLister = c.defaultListerForTest
+	}
+	return townLister, defaultLister
+}
+
+func socketSplitBrainDefaultResult(c *SocketSplitBrainCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "Town socket is default — no split-brain possible",
+	}
+}
+
+func socketSplitBrainTownErrorResult(c *SocketSplitBrainCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "Could not list town socket sessions (server may not be running)",
+	}
+}
+
+func socketSplitBrainDefaultErrorResult(c *SocketSplitBrainCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "No default socket server running — no split-brain",
+	}
+}
+
+func splitBrainSessions(townSessions, defaultSessions []string) ([]string, []string) {
+	townSet := make(map[string]bool, len(townSessions))
+	for _, name := range townSessions {
+		townSet[name] = true
+	}
+	var duplicates []string
+	var orphans []string
+	for _, name := range defaultSessions {
+		if !session.IsKnownSession(name) {
+			continue
+		}
+		if townSet[name] {
+			duplicates = append(duplicates, name)
+			continue
+		}
+		orphans = append(orphans, name)
+	}
+	return duplicates, orphans
+}
+
+func (c *SocketSplitBrainCheck) socketSplitBrainResult(townSocket string, duplicates, orphans []string) *CheckResult {
 	if len(c.staleSessions) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -117,21 +141,24 @@ func (c *SocketSplitBrainCheck) Run(_ *CheckContext) *CheckResult {
 		}
 	}
 
-	var details []string
-	for _, s := range duplicates {
-		details = append(details, fmt.Sprintf("DUPLICATE: %s exists on both %q and \"default\" sockets", s, townSocket))
-	}
-	for _, s := range orphans {
-		details = append(details, fmt.Sprintf("ORPHAN: %s only on \"default\" socket (should be on %q)", s, townSocket))
-	}
-
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusError,
 		Message: fmt.Sprintf("Found %d Gas Town session(s) on wrong socket — nudge/discovery will fail", len(c.staleSessions)),
-		Details: details,
+		Details: socketSplitBrainDetails(townSocket, duplicates, orphans),
 		FixHint: "Run 'gt doctor --fix' to kill stale sessions on wrong socket",
 	}
+}
+
+func socketSplitBrainDetails(townSocket string, duplicates, orphans []string) []string {
+	var details []string
+	for _, name := range duplicates {
+		details = append(details, fmt.Sprintf("DUPLICATE: %s exists on both %q and \"default\" sockets", name, townSocket))
+	}
+	for _, name := range orphans {
+		details = append(details, fmt.Sprintf("ORPHAN: %s only on \"default\" socket (should be on %q)", name, townSocket))
+	}
+	return details
 }
 
 // Fix kills Gas Town sessions on the "default" socket that shouldn't be there.
