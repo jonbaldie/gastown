@@ -31,20 +31,19 @@ var validMemoryTypes = map[string]string{
 // Feedback first (behavioral corrections), then user context, then the rest.
 var memoryTypeOrder = []string{"feedback", "user", "project", "reference", "general"}
 
-var rememberKey string
-var rememberType string
-
 func init() {
-	rememberCmd.Flags().StringVar(&rememberKey, "key", "", "Explicit key slug (default: auto-generated from content)")
-	rememberCmd.Flags().StringVar(&rememberType, "type", "", "Memory type: feedback, project, user, reference (default: general)")
-	rememberCmd.GroupID = GroupWork
-	rootCmd.AddCommand(rememberCmd)
+	cmd := newRememberCommand()
+	cmd.Flags().String("key", "", "Explicit key slug (default: auto-generated from content)")
+	cmd.Flags().String("type", "", "Memory type: feedback, project, user, reference (default: general)")
+	cmd.GroupID = GroupWork
+	rootCmd.AddCommand(cmd)
 }
 
-var rememberCmd = &cobra.Command{
-	Use:   `remember "insight"`,
-	Short: "Store a persistent memory",
-	Long: `Store a persistent memory in the beads key-value store.
+func newRememberCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   `remember "insight"`,
+		Short: "Store a persistent memory",
+		Long: `Store a persistent memory in the beads key-value store.
 
 Memories persist across sessions and are injected during gt prime.
 This replaces filesystem-based MEMORY.md with bead-backed storage.
@@ -63,34 +62,39 @@ Examples:
   gt remember --type feedback "Don't mock the database in integration tests"
   gt remember --type user --key senior-go-dev "User has 10 years Go experience"
   gt remember --key refinery-worktree "Refinery uses worktree, cannot checkout main"`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRemember,
+		Args: cobra.ExactArgs(1),
+		RunE: runRemember,
+	}
 }
 
-func runRemember(_ *cobra.Command, args []string) error {
+type rememberOptions struct {
+	key      string
+	typeName string
+}
+
+func rememberOptionsFromCommand(cmd *cobra.Command) (rememberOptions, error) {
+	key, err := cmd.Flags().GetString("key")
+	if err != nil {
+		return rememberOptions{}, err
+	}
+	typeName, err := cmd.Flags().GetString("type")
+	if err != nil {
+		return rememberOptions{}, err
+	}
+	return rememberOptions{key: key, typeName: typeName}, nil
+}
+
+func runRemember(cmd *cobra.Command, args []string) error {
+	opts, err := rememberOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
 	content := args[0]
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("memory content cannot be empty")
+	memType, key, err := prepareRemember(content, opts)
+	if err != nil {
+		return err
 	}
-
-	// Validate --type if provided
-	memType := strings.ToLower(strings.TrimSpace(rememberType))
-	if memType != "" {
-		if _, ok := validMemoryTypes[memType]; !ok {
-			return fmt.Errorf("invalid memory type %q — valid types: feedback, project, user, reference", memType)
-		}
-	}
-	if memType == "" {
-		memType = "general"
-	}
-
-	key := rememberKey
-	if key == "" {
-		key = autoKey(content)
-	}
-
-	// Sanitize key: lowercase, hyphens instead of spaces, strip dots
-	key = sanitizeKey(key)
 
 	fullKey := memoryKeyPrefix + memType + "." + key
 
@@ -111,6 +115,34 @@ func runRemember(_ *cobra.Command, args []string) error {
 	}
 	fmt.Printf("%s %s memory: %s\n", style.Success.Render("✓"), verb, style.Bold.Render(displayKey))
 	return nil
+}
+
+func prepareRemember(content string, opts rememberOptions) (string, string, error) {
+	if strings.TrimSpace(content) == "" {
+		return "", "", fmt.Errorf("memory content cannot be empty")
+	}
+
+	memType, err := resolveMemoryType(opts.typeName)
+	if err != nil {
+		return "", "", err
+	}
+
+	key := opts.key
+	if key == "" {
+		key = autoKey(content)
+	}
+	return memType, sanitizeKey(key), nil
+}
+
+func resolveMemoryType(typeName string) (string, error) {
+	memType := strings.ToLower(strings.TrimSpace(typeName))
+	if memType == "" {
+		return "general", nil
+	}
+	if _, ok := validMemoryTypes[memType]; !ok {
+		return "", fmt.Errorf("invalid memory type %q — valid types: feedback, project, user, reference", memType)
+	}
+	return memType, nil
 }
 
 // parseMemoryKey extracts the type and short key from a full kv key.
@@ -141,19 +173,7 @@ func autoKey(content string) string {
 		words = words[:5]
 	}
 
-	// Strip non-alphanumeric chars from each word
-	var clean []string
-	for _, w := range words {
-		w = strings.Map(func(r rune) rune {
-			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-				return r
-			}
-			return -1
-		}, w)
-		if w != "" {
-			clean = append(clean, w)
-		}
-	}
+	clean := cleanMemoryWords(words)
 
 	if len(clean) == 0 {
 		// Fallback to hash
@@ -167,6 +187,26 @@ func autoKey(content string) string {
 		slug = slug[:40]
 	}
 	return slug
+}
+
+func cleanMemoryWords(words []string) []string {
+	var clean []string
+	for _, word := range words {
+		word = cleanMemoryWord(word)
+		if word != "" {
+			clean = append(clean, word)
+		}
+	}
+	return clean
+}
+
+func cleanMemoryWord(word string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, word)
 }
 
 // sanitizeKey normalizes a key slug.
