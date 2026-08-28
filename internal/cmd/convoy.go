@@ -944,89 +944,91 @@ func runConvoyAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Validate convoy exists and get its status
-	showOut, err := BdCmd("show", convoyID, "--json").
-		Dir(townBeads).
-		Stderr(io.Discard).
-		Output()
+	convoy, err := loadConvoyForAdd(townBeads, convoyID)
 	if err != nil {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
+		return err
 	}
+	reopened, err := reopenConvoyIfClosed(townBeads, convoyID, convoy)
+	if err != nil {
+		return err
+	}
+	addedCount := addConvoyIssues(townBeads, convoyID, issuesToAdd)
+	printConvoyAddResult(convoyID, issuesToAdd, addedCount, reopened)
+	return nil
+}
 
-	var convoys []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Status      string   `json:"status"`
-		Type        string   `json:"issue_type"`
-		Description string   `json:"description"`
-		Labels      []string `json:"labels"`
+type convoyActionIssue struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Status      string   `json:"status"`
+	Type        string   `json:"issue_type"`
+	Description string   `json:"description"`
+	Labels      []string `json:"labels"`
+}
+
+func loadConvoyForAdd(townBeads, convoyID string) (convoyActionIssue, error) {
+	showOut, err := BdCmd("show", convoyID, "--json").Dir(townBeads).Stderr(io.Discard).Output()
+	if err != nil {
+		return convoyActionIssue{}, fmt.Errorf("convoy '%s' not found", convoyID)
 	}
+	var convoys []convoyActionIssue
 	if err := json.Unmarshal(showOut, &convoys); err != nil {
-		return fmt.Errorf("parsing convoy data: %w", err)
+		return convoyActionIssue{}, fmt.Errorf("parsing convoy data: %w", err)
 	}
-
 	if len(convoys) == 0 {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
+		return convoyActionIssue{}, fmt.Errorf("convoy '%s' not found", convoyID)
 	}
-
 	convoy := convoys[0]
-
-	// Verify it's actually a convoy type
 	if !isConvoyIssue(convoy.Type, convoy.Labels) {
-		return fmt.Errorf("'%s' is not a convoy (type: %s)", convoyID, convoy.Type)
+		return convoyActionIssue{}, fmt.Errorf("'%s' is not a convoy (type: %s)", convoyID, convoy.Type)
 	}
 	if err := ensureKnownConvoyStatus(convoy.Status); err != nil {
-		return fmt.Errorf("convoy '%s' has invalid lifecycle state: %w", convoyID, err)
+		return convoyActionIssue{}, fmt.Errorf("convoy '%s' has invalid lifecycle state: %w", convoyID, err)
 	}
+	return convoy, nil
+}
 
-	// If convoy is closed, reopen it
-	reopened := false
-	if normalizeConvoyStatus(convoy.Status) == convoyStatusClosed {
-		// closed→open is always valid; ensureKnownConvoyStatus above guarantees
-		// the current status is known, so no additional transition check needed.
-		if err := BdCmd("update", convoyID, "--status=open").
-			Dir(townBeads).
-			WithAutoCommit().
-			Run(); err != nil {
-			return fmt.Errorf("couldn't reopen convoy: %w", err)
-		}
-		if fields := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description}); fields != nil && fields.CompletionNotifiedAt != "" {
-			fields.CompletionNotifiedAt = ""
-			newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoy.Description}, fields)
-			if err := BdCmd("update", convoyID, "--description="+newDesc).
-				Dir(townBeads).
-				WithAutoCommit().
-				Run(); err != nil {
-				return fmt.Errorf("couldn't clear convoy completion notification state: %w", err)
-			}
-		}
-		if err := persistTownBeadsJSONL(townBeads); err != nil {
-			return fmt.Errorf("couldn't persist reopened convoy to JSONL: %w", err)
-		}
-		reopened = true
-		fmt.Printf("%s Reopened convoy %s\n", style.Bold.Render("↺"), convoyID)
+func reopenConvoyIfClosed(townBeads, convoyID string, convoy convoyActionIssue) (bool, error) {
+	if normalizeConvoyStatus(convoy.Status) != convoyStatusClosed {
+		return false, nil
 	}
+	if err := BdCmd("update", convoyID, "--status=open").Dir(townBeads).WithAutoCommit().Run(); err != nil {
+		return false, fmt.Errorf("couldn't reopen convoy: %w", err)
+	}
+	if fields := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description}); fields != nil && fields.CompletionNotifiedAt != "" {
+		fields.CompletionNotifiedAt = ""
+		newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoy.Description}, fields)
+		if err := BdCmd("update", convoyID, "--description="+newDesc).Dir(townBeads).WithAutoCommit().Run(); err != nil {
+			return false, fmt.Errorf("couldn't clear convoy completion notification state: %w", err)
+		}
+	}
+	if err := persistTownBeadsJSONL(townBeads); err != nil {
+		return false, fmt.Errorf("couldn't persist reopened convoy to JSONL: %w", err)
+	}
+	fmt.Printf("%s Reopened convoy %s\n", style.Bold.Render("↺"), convoyID)
+	return true, nil
+}
 
-	// Add 'tracks' relations for each issue
+func addConvoyIssues(townBeads, convoyID string, issues []string) int {
 	addedCount := 0
-	for _, issueID := range issuesToAdd {
+	for _, issueID := range issues {
 		if err := addTrackingRelationFn(townBeads, convoyID, issueID); err != nil {
 			style.PrintWarning("couldn't add %s: %s", issueID, err)
 		} else {
 			addedCount++
 		}
 	}
+	return addedCount
+}
 
-	// Output
+func printConvoyAddResult(convoyID string, issues []string, addedCount int, reopened bool) {
 	if reopened {
 		fmt.Println()
 	}
 	fmt.Printf("%s Added %d issue(s) to convoy 🚚 %s\n", style.Bold.Render("✓"), addedCount, convoyID)
 	if addedCount > 0 {
-		fmt.Printf("  Issues: %s\n", strings.Join(issuesToAdd[:addedCount], ", "))
+		fmt.Printf("  Issues: %s\n", strings.Join(issues[:addedCount], ", "))
 	}
-
-	return nil
 }
 
 func runConvoyCheck(cmd *cobra.Command, args []string) error {
