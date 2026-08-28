@@ -33,13 +33,13 @@ func NewUnregisteredBeadsDirsCheck() *UnregisteredBeadsDirsCheck {
 // knownSystemDirs are directories at town root that are expected to exist
 // without being registered in rigs.json.
 var knownSystemDirs = map[string]bool{
-	"mayor":     true,
-	"deacon":    true,
-	".beads":    true,
+	"mayor":      true,
+	"deacon":     true,
+	".beads":     true,
 	".dolt-data": true,
-	".runtime":  true,
-	".git":      true,
-	".github":   true,
+	".runtime":   true,
+	".git":       true,
+	".github":    true,
 }
 
 // Run checks for unregistered directories with beads metadata.
@@ -49,8 +49,6 @@ func (c *UnregisteredBeadsDirsCheck) Run(ctx *CheckContext) *CheckResult {
 
 	// Read town-level database name for deacon mismatch detection
 	townDB := readDoltDatabase(filepath.Join(ctx.TownRoot, ".beads"))
-
-	var details []string
 
 	// Scan town root for directories with .beads/metadata.json
 	entries, err := os.ReadDir(ctx.TownRoot)
@@ -63,6 +61,12 @@ func (c *UnregisteredBeadsDirsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	details := unregisteredBeadsDetails(ctx.TownRoot, entries, registeredRigs, townDB)
+	return unregisteredBeadsResult(c.Name(), details)
+}
+
+func unregisteredBeadsDetails(townRoot string, entries []os.DirEntry, registeredRigs map[string]bool, townDB string) []string {
+	var details []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -75,7 +79,7 @@ func (c *UnregisteredBeadsDirsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 
 		// Check if this directory has .beads/metadata.json
-		db := readDoltDatabase(filepath.Join(ctx.TownRoot, name, ".beads"))
+		db := readDoltDatabase(filepath.Join(townRoot, name, ".beads"))
 		if db != "" {
 			details = append(details, fmt.Sprintf(
 				"%s/ has .beads/metadata.json pointing to database %q (not a registered rig)",
@@ -83,20 +87,30 @@ func (c *UnregisteredBeadsDirsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Check deacon database mismatch
-	if townDB != "" {
-		deaconDB := readDoltDatabase(filepath.Join(ctx.TownRoot, "deacon", ".beads"))
-		if deaconDB != "" && deaconDB != townDB {
-			details = append(details, fmt.Sprintf(
-				"deacon/.beads/metadata.json points to %q but town beads uses %q",
-				deaconDB, townDB))
-		}
+	if mismatch := deaconDatabaseMismatch(townRoot, townDB); mismatch != "" {
+		details = append(details, mismatch)
 	}
+	return details
+}
 
+func deaconDatabaseMismatch(townRoot, townDB string) string {
+	if townDB == "" {
+		return ""
+	}
+	deaconDB := readDoltDatabase(filepath.Join(townRoot, "deacon", ".beads"))
+	if deaconDB == "" || deaconDB == townDB {
+		return ""
+	}
+	return fmt.Sprintf(
+		"deacon/.beads/metadata.json points to %q but town beads uses %q",
+		deaconDB, townDB)
+}
+
+func unregisteredBeadsResult(name string, details []string) *CheckResult {
 	if len(details) > 0 {
 		sort.Strings(details)
 		return &CheckResult{
-			Name:    c.Name(),
+			Name:    name,
 			Status:  StatusWarning,
 			Message: fmt.Sprintf("%d unregistered directory(ies) with beads metadata", len(details)),
 			Details: details,
@@ -105,7 +119,7 @@ func (c *UnregisteredBeadsDirsCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	return &CheckResult{
-		Name:    c.Name(),
+		Name:    name,
 		Status:  StatusOK,
 		Message: "No unregistered beads directories found",
 	}
