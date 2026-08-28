@@ -217,7 +217,7 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 		return nil, fmt.Errorf("refusing to create agent bead: %w (got %q)", ErrFlagTitle, title)
 	}
 
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 	targetDir := target.getResolvedBeadsDir()
 
 	description := FormatAgentDescription(title, fields)
@@ -329,7 +329,7 @@ func (b *Beads) CreateOrReopenAgentBead(id, title string, fields *AgentFields) (
 	// Create failed - check if bead already exists (handles both open and closed states)
 	createErr := err
 
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 
 	existing, showErr := target.Show(id)
 	if showErr != nil {
@@ -400,7 +400,7 @@ func (b *Beads) ResetAgentBeadForReuse(id, _ string) error {
 	}
 	defer func() { _ = fl.Unlock() }()
 
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 
 	// Get current issue to preserve immutable fields (title, role_type, rig)
 	issue, err := target.Show(id)
@@ -444,7 +444,7 @@ func (b *Beads) ResetAgentBeadForReuse(id, _ string) error {
 // when the agent bead routes to a different beads dir via routes.jsonl.
 func (b *Beads) UpdateAgentState(id string, state string) (retErr error) {
 	defer func() { telemetry.RecordAgentStateChange(context.Background(), id, state, nil, retErr) }()
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 	return target.UpdateAgentDescriptionFields(id, AgentFieldUpdates{AgentState: &state})
 }
 
@@ -478,7 +478,7 @@ type AgentFieldUpdates struct {
 // condition where concurrent callers updating different fields overwrite each
 // other because the entire description is replaced.
 func (b *Beads) UpdateAgentDescriptionFields(id string, updates AgentFieldUpdates) error {
-	if target := b.agentBeadTarget(); target != b {
+	if target := b.AgentBeadTarget(); target != b {
 		return target.UpdateAgentDescriptionFields(id, updates)
 	}
 
@@ -568,7 +568,7 @@ func (b *Beads) UpdateAgentActiveMR(id string, activeMR string) error {
 // ClearAgentActiveMRIfMatches clears active_mr only when it still references
 // expectedMR. It returns true when a clear was written.
 func (b *Beads) ClearAgentActiveMRIfMatches(id string, expectedMR string) (bool, error) {
-	if target := b.agentBeadTarget(); target != b {
+	if target := b.AgentBeadTarget(); target != b {
 		return target.ClearAgentActiveMRIfMatches(id, expectedMR)
 	}
 
@@ -680,7 +680,7 @@ func (b *Beads) GetAgentNotificationLevel(id string) (string, error) {
 // GetAgentBead retrieves an agent bead by ID.
 // Returns nil if not found.
 func (b *Beads) GetAgentBead(id string) (*Issue, *AgentFields, error) {
-	if target := b.agentBeadTarget(); target != b {
+	if target := b.AgentBeadTarget(); target != b {
 		return target.GetAgentBead(id)
 	}
 

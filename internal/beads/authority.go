@@ -149,7 +149,7 @@ func (s Session) WithStore(store beadsdk.Storage) Session {
 	return s
 }
 
-func (a *Authority) withFallback(dir string) *Authority {
+func (a *Authority) WithFallback(dir string) *Authority {
 	if a == nil {
 		return &Authority{fallbackDir: dir}
 	}

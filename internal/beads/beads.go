@@ -627,7 +627,7 @@ func (b *Beads) ForAgentBead() *Beads {
 	}
 }
 
-func (b *Beads) agentBeadTarget() *Beads {
+func (b *Beads) AgentBeadTarget() *Beads {
 	if b.noRoute {
 		return b
 	}
@@ -2068,7 +2068,7 @@ func (b *Beads) Comments(id string) ([]Comment, error) {
 	return comments, nil
 }
 
-func (b *Beads) deleteBead(id string) error {
+func (b *Beads) DeleteBead(id string) error {
 	_, err := b.run("delete", id, "--force")
 	return err
 }

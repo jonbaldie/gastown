@@ -246,7 +246,7 @@ func (b *Beads) UpdateRigBead(name string, fields *RigFields) (*Issue, error) {
 // DeleteRigBead permanently deletes a rig bead.
 func (b *Beads) DeleteRigBead(name string) error {
 	id := RigBeadID(name)
-	return b.deleteBead(id)
+	return b.DeleteBead(id)
 }
 
 // ListRigBeads returns all rig beads.

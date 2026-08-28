@@ -322,7 +322,7 @@ func (b *Beads) UpdateChannelStatus(name, status string) error {
 // DeleteChannelBead permanently deletes a channel bead.
 func (b *Beads) DeleteChannelBead(name string) error {
 	id := ChannelBeadID(name)
-	return b.deleteBead(id)
+	return b.DeleteBead(id)
 }
 
 // ListChannelBeads returns all channel beads.

@@ -292,7 +292,7 @@ func (b *Beads) ListQueueBeads() (map[string]*Issue, error) {
 
 // DeleteQueueBead permanently deletes a queue bead.
 func (b *Beads) DeleteQueueBead(id string) error {
-	return b.deleteBead(id)
+	return b.DeleteBead(id)
 }
 
 // LookupQueueByName finds a queue by its name field (not by ID).
