@@ -299,81 +299,115 @@ func checkDependencyCycles(deps map[string][]string) error {
 // Only applicable to workflow and expansion formulas.
 // Returns an error if there are cycles.
 func (f *Formula) TopologicalSort() ([]string, error) {
-	var items []string
-	var deps map[string][]string
+	items, deps, err := topologicalData(f)
+	if err != nil {
+		return nil, err
+	}
+	return topologicalOrder(items, deps)
+}
 
+func topologicalData(f *Formula) ([]string, map[string][]string, error) {
 	switch f.Type {
 	case TypeWorkflow:
-		for _, step := range f.Steps {
-			items = append(items, step.ID)
-		}
-		deps = make(map[string][]string)
-		for _, step := range f.Steps {
-			deps[step.ID] = step.Needs
-		}
+		return workflowTopologicalData(f.Steps)
 	case TypeExpansion:
-		for _, tmpl := range f.Template {
-			items = append(items, tmpl.ID)
-		}
-		deps = make(map[string][]string)
-		for _, tmpl := range f.Template {
-			deps[tmpl.ID] = tmpl.Needs
-		}
+		return expansionTopologicalData(f.Template)
 	case TypeConvoy:
-		// Convoy legs are parallel; return all leg IDs
-		for _, leg := range f.Legs {
-			items = append(items, leg.ID)
-		}
-		return items, nil
+		return legIDs(f.Legs), nil, nil
 	case TypeAspect:
-		// Aspect aspects are parallel; return all aspect IDs
-		for _, aspect := range f.Aspects {
-			items = append(items, aspect.ID)
-		}
-		return items, nil
+		return aspectIDs(f.Aspects), nil, nil
 	default:
-		return nil, fmt.Errorf("unsupported formula type for topological sort")
+		return nil, nil, fmt.Errorf("unsupported formula type for topological sort")
 	}
+}
 
-	// Kahn's algorithm
+func workflowTopologicalData(steps []Step) ([]string, map[string][]string, error) {
+	items := make([]string, 0, len(steps))
+	deps := make(map[string][]string, len(steps))
+	for _, step := range steps {
+		items = append(items, step.ID)
+		deps[step.ID] = step.Needs
+	}
+	return items, deps, nil
+}
+
+func expansionTopologicalData(templates []Template) ([]string, map[string][]string, error) {
+	items := make([]string, 0, len(templates))
+	deps := make(map[string][]string, len(templates))
+	for _, tmpl := range templates {
+		items = append(items, tmpl.ID)
+		deps[tmpl.ID] = tmpl.Needs
+	}
+	return items, deps, nil
+}
+
+func legIDs(legs []Leg) []string {
+	items := make([]string, 0, len(legs))
+	for _, leg := range legs {
+		items = append(items, leg.ID)
+	}
+	return items
+}
+
+func aspectIDs(aspects []Aspect) []string {
+	items := make([]string, 0, len(aspects))
+	for _, aspect := range aspects {
+		items = append(items, aspect.ID)
+	}
+	return items
+}
+
+func topologicalOrder(items []string, deps map[string][]string) ([]string, error) {
 	inDegree := make(map[string]int)
 	for _, id := range items {
 		inDegree[id] = 0
 	}
 	for _, id := range items {
-		for _, dep := range deps[id] {
+		for range deps[id] {
 			inDegree[id]++
-			_ = dep // dep already exists (validated)
 		}
 	}
 
-	// Find all nodes with no dependencies
+	queue := topologicalQueue(items, inDegree)
+	dependents := reverseDependencies(items, deps)
+	result := drainTopologicalQueue(queue, inDegree, dependents)
+
+	if len(result) != len(items) {
+		return nil, fmt.Errorf("cycle detected in dependencies")
+	}
+
+	return result, nil
+}
+
+func topologicalQueue(items []string, inDegree map[string]int) []string {
 	var queue []string
 	for _, id := range items {
 		if inDegree[id] == 0 {
 			queue = append(queue, id)
 		}
 	}
+	return queue
+}
 
-	// Build reverse adjacency (who depends on me)
+func reverseDependencies(items []string, deps map[string][]string) map[string][]string {
 	dependents := make(map[string][]string)
 	for _, id := range items {
 		for _, dep := range deps[id] {
 			dependents[dep] = append(dependents[dep], id)
 		}
 	}
+	return dependents
+}
 
+func drainTopologicalQueue(queue []string, inDegree map[string]int, dependents map[string][]string) []string {
 	var result []string
 	for {
 		if len(queue) == 0 {
 			break
 		}
-		// Pop from queue
 		id := queue[0]
 		queue = queue[1:]
 		result = append(result, id)
-
-		// Reduce in-degree of dependents
 		for _, dependent := range dependents[id] {
 			inDegree[dependent]--
 			if inDegree[dependent] == 0 {
@@ -381,12 +415,7 @@ func (f *Formula) TopologicalSort() ([]string, error) {
 			}
 		}
 	}
-
-	if len(result) != len(items) {
-		return nil, fmt.Errorf("cycle detected in dependencies")
-	}
-
-	return result, nil
+	return result
 }
 
 // ReadySteps returns steps that have no unmet dependencies.
