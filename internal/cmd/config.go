@@ -202,22 +202,27 @@ func runConfigCostTier(_ *cobra.Command, args []string) error {
 	}
 
 	if len(args) == 0 {
-		// Show current tier and role assignments
-		current := config.GetCurrentTier(townSettings)
-		if current == "" {
-			fmt.Println("Cost tier: " + style.Bold.Render("custom") + " (manual role_agents configuration)")
-		} else {
-			tier := config.CostTier(current)
-			fmt.Printf("Cost tier: %s\n", style.Bold.Render(current))
-			fmt.Printf("  %s\n\n", config.TierDescription(tier))
-			fmt.Println("Role assignments:")
-			fmt.Println(config.FormatTierRoleTable(tier))
-		}
+		return showCostTier(townSettings)
+	}
+	return applyCostTier(settingsPath, townSettings, args[0])
+}
+
+func showCostTier(townSettings *config.TownSettings) error {
+	current := config.GetCurrentTier(townSettings)
+	if current == "" {
+		fmt.Println("Cost tier: " + style.Bold.Render("custom") + " (manual role_agents configuration)")
 		return nil
 	}
 
-	// Apply tier
-	tierName := args[0]
+	tier := config.CostTier(current)
+	fmt.Printf("Cost tier: %s\n", style.Bold.Render(current))
+	fmt.Printf("  %s\n\n", config.TierDescription(tier))
+	fmt.Println("Role assignments:")
+	fmt.Println(config.FormatTierRoleTable(tier))
+	return nil
+}
+
+func applyCostTier(settingsPath string, townSettings *config.TownSettings, tierName string) error {
 	if !config.IsValidTier(tierName) {
 		return fmt.Errorf("invalid cost tier %q (valid: %s)", tierName, strings.Join(config.ValidCostTiers(), ", "))
 	}
