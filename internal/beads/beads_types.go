@@ -83,62 +83,57 @@ func EnsureCustomTypes(beadsDir string) error {
 	ensuredMu.Lock()
 	defer ensuredMu.Unlock()
 
-	// Fast path: in-memory cache (same CLI invocation)
-	if ensuredDirs[beadsDir] {
+	if customTypesCached(beadsDir, sentinelValue) {
 		return nil
 	}
-
-	// Fast path: sentinel file matches current types list (previous CLI invocation).
-	// The sentinel stores the type configuration that was applied. If types have
-	// changed, the sentinel won't match and we'll re-configure. Legacy "v1\n" and
-	// custom-types-only sentinels also won't match.
-	sentinelPath := filepath.Join(beadsDir, typesSentinel)
-	if data, err := os.ReadFile(sentinelPath); err == nil {
-		if strings.TrimSpace(string(data)) == sentinelValue {
-			ensuredDirs[beadsDir] = true
-			return nil
-		}
-		// Sentinel exists but is stale — fall through to re-configure
+	if err := validateBeadsDirectory(beadsDir); err != nil {
+		return err
 	}
-
-	// Verify beads directory exists
-	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		return fmt.Errorf("beads directory does not exist: %s", beadsDir)
-	}
-
-	// Check if database exists and initialize if needed
 	if err := ensureDatabaseInitialized(beadsDir); err != nil {
 		return fmt.Errorf("ensure database initialized: %w", err)
 	}
-
-	// Configure custom and infra types via bd CLI. Rig is a durable custom type,
-	// not an infra/wisp type.
-	bdEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-	if err := setBDConfig(beadsDir, bdEnv, "types.custom", customTypes); err != nil {
+	if err := configureCustomTypes(beadsDir, customTypes, infraTypes); err != nil {
 		return err
 	}
-	if err := setBDConfig(beadsDir, bdEnv, "types.infra", infraTypes); err != nil {
-		return err
-	}
-
-	// Verify the config was actually persisted in the database (GH#2637).
-	// bd config set can exit 0 but fail to write if it targets the wrong
-	// database (redirect mismatch, stale metadata, server not running).
-	// Without this check, the sentinel file below would cache a lie,
-	// causing all future EnsureCustomTypes calls to skip re-configuration.
-	if err := verifyBDConfig(beadsDir, bdEnv, "types.custom", customTypes); err != nil {
-		return err
-	}
-	if err := verifyBDConfig(beadsDir, bdEnv, "types.infra", infraTypes); err != nil {
-		return err
-	}
-
-	// Write sentinel file with the type config for staleness detection. On next
-	// invocation, if types have changed, the sentinel won't match and we'll
-	// re-configure automatically.
+	sentinelPath := filepath.Join(beadsDir, typesSentinel)
 	_ = os.WriteFile(sentinelPath, []byte(sentinelValue+"\n"), 0644)
-
 	ensuredDirs[beadsDir] = true
+	return nil
+}
+
+func customTypesCached(beadsDir, sentinelValue string) bool {
+	if ensuredDirs[beadsDir] {
+		return true
+	}
+	data, err := os.ReadFile(filepath.Join(beadsDir, typesSentinel))
+	if err != nil || strings.TrimSpace(string(data)) != sentinelValue {
+		return false
+	}
+	ensuredDirs[beadsDir] = true
+	return true
+}
+
+func validateBeadsDirectory(beadsDir string) error {
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		return fmt.Errorf("beads directory does not exist: %s", beadsDir)
+	}
+	return nil
+}
+
+func configureCustomTypes(beadsDir, customTypes, infraTypes string) error {
+	configs := []struct{ key, value string }{
+		{key: "types.custom", value: customTypes},
+		{key: "types.infra", value: infraTypes},
+	}
+	bdEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	for _, config := range configs {
+		if err := setBDConfig(beadsDir, bdEnv, config.key, config.value); err != nil {
+			return err
+		}
+		if err := verifyBDConfig(beadsDir, bdEnv, config.key, config.value); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
