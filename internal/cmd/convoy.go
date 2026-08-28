@@ -2804,19 +2804,44 @@ func getWorkersForIssues(issueIDs []string) map[string]*workerInfo {
 		return result
 	}
 
-	// Find town root
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil || townRoot == "" {
 		return result
 	}
 
-	// Build a set of target issue IDs for fast lookup
+	targetIDs := workerTargetIDs(issueIDs)
+	beadsDirs := workerBeadsDirs(townRoot)
+	if len(beadsDirs) == 0 {
+		return result
+	}
+
+	for _, rig := range queryWorkerRigs(beadsDirs) {
+		for _, agent := range rig.agents {
+			addWorkerResult(result, targetIDs, agent)
+		}
+	}
+	return result
+}
+
+type workerAgentInfo struct {
+	ID           string `json:"id"`
+	HookBead     string `json:"hook_bead"`
+	LastActivity string `json:"last_activity"`
+}
+
+type workerRigResult struct {
+	agents []workerAgentInfo
+}
+
+func workerTargetIDs(issueIDs []string) map[string]bool {
 	targetIDs := make(map[string]bool, len(issueIDs))
 	for _, id := range issueIDs {
 		targetIDs[id] = true
 	}
+	return targetIDs
+}
 
-	// Discover rigs with beads directories
+func workerBeadsDirs(townRoot string) []string {
 	rigDirs, _ := filepath.Glob(filepath.Join(townRoot, "*", "polecats"))
 	var beadsDirs []string
 	for _, polecatsDir := range rigDirs {
@@ -2826,21 +2851,11 @@ func getWorkersForIssues(issueIDs []string) map[string]*workerInfo {
 			beadsDirs = append(beadsDirs, filepath.Join(rigDir, "mayor", "rig"))
 		}
 	}
+	return beadsDirs
+}
 
-	if len(beadsDirs) == 0 {
-		return result
-	}
-
-	// Query all rigs in parallel using bd list
-	type rigResult struct {
-		agents []struct {
-			ID           string `json:"id"`
-			HookBead     string `json:"hook_bead"`
-			LastActivity string `json:"last_activity"`
-		}
-	}
-
-	resultChan := make(chan rigResult, len(beadsDirs))
+func queryWorkerRigs(beadsDirs []string) []workerRigResult {
+	resultChan := make(chan workerRigResult, len(beadsDirs))
 	var wg sync.WaitGroup
 
 	for _, dir := range beadsDirs {
@@ -2854,13 +2869,13 @@ func getWorkersForIssues(issueIDs []string) map[string]*workerInfo {
 				Stderr(io.Discard).
 				Output()
 			if err != nil {
-				resultChan <- rigResult{}
+				resultChan <- workerRigResult{}
 				return
 			}
 
-			var rr rigResult
+			var rr workerRigResult
 			if err := json.Unmarshal(out, &rr.agents); err != nil {
-				resultChan <- rigResult{}
+				resultChan <- workerRigResult{}
 				return
 			}
 			resultChan <- rr
@@ -2873,41 +2888,36 @@ func getWorkersForIssues(issueIDs []string) map[string]*workerInfo {
 		close(resultChan)
 	}()
 
-	// Collect results from all rigs, filtering by target issue IDs
+	var results []workerRigResult
 	for rr := range resultChan {
-		for _, agent := range rr.agents {
-			// Only include agents working on issues we care about
-			if !targetIDs[agent.HookBead] {
-				continue
-			}
-
-			// Skip if we already found a worker for this issue
-			if _, ok := result[agent.HookBead]; ok {
-				continue
-			}
-
-			// Parse agent ID to get worker identity
-			workerID := parseWorkerFromAgentBead(agent.ID)
-			if workerID == "" {
-				continue
-			}
-
-			// Calculate age from last_activity
-			age := ""
-			if agent.LastActivity != "" {
-				if t, err := time.Parse(time.RFC3339, agent.LastActivity); err == nil {
-					age = formatWorkerAge(time.Since(t))
-				}
-			}
-
-			result[agent.HookBead] = &workerInfo{
-				Worker: workerID,
-				Age:    age,
-			}
-		}
+		results = append(results, rr)
 	}
+	return results
+}
 
-	return result
+func addWorkerResult(result map[string]*workerInfo, targetIDs map[string]bool, agent workerAgentInfo) {
+	if !targetIDs[agent.HookBead] {
+		return
+	}
+	if _, ok := result[agent.HookBead]; ok {
+		return
+	}
+	workerID := parseWorkerFromAgentBead(agent.ID)
+	if workerID == "" {
+		return
+	}
+	result[agent.HookBead] = &workerInfo{Worker: workerID, Age: workerAge(agent.LastActivity)}
+}
+
+func workerAge(lastActivity string) string {
+	if lastActivity == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, lastActivity)
+	if err != nil {
+		return ""
+	}
+	return formatWorkerAge(time.Since(t))
 }
 
 // parseWorkerFromAgentBead extracts worker identity from agent bead ID.
