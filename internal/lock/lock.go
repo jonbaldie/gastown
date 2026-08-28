@@ -376,7 +376,8 @@ func (c *execCmdWrapper) Output() ([]byte, error) {
 func splitLines(s string) []string {
 	var lines []string
 	var current []byte
-	for i := 0; i < len(s); i++ {
+	sLength := len(s)
+	for i := 0; i < sLength; i++ {
 		if s[i] == '\n' {
 			lines = append(lines, string(current))
 			current = nil

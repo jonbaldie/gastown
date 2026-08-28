@@ -252,7 +252,8 @@ func (g *Git) guardUnsafeTownRootMutation(args []string) error {
 
 func gitEffectiveWorkDir(args []string, workDir string) string {
 	effective := workDir
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		switch {
 		case arg == "-C" && i+1 < len(args):
@@ -321,7 +322,8 @@ func fileExists(path string) bool {
 }
 
 func gitSubcommand(args []string) (string, []string) {
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		switch {
 		case arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--config-env" || arg == "--exec-path":

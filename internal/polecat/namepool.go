@@ -264,7 +264,8 @@ func (p *NamePool) Allocate() (string, error) {
 	names := p.getNames()
 
 	// Try to find first available name from the theme
-	for i := 0; i < len(names) && i < p.MaxSize; i++ {
+	nameCount := len(names)
+	for i := 0; i < nameCount && i < p.MaxSize; i++ {
 		name := names[i]
 		if !p.InUse[name] {
 			p.InUse[name] = true
