@@ -16,10 +16,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// crewAtRetried tracks if we've already retried after stale session cleanup
-var crewAtRetried bool
-
 func runCrewAt(cmd *cobra.Command, args []string) error {
+	return runCrewAtWithRetry(cmd, args, false)
+}
+
+func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 	var name string
 
 	// Debug mode: --debug flag or GT_DEBUG env var
@@ -326,16 +327,14 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 			if err := t.RespawnPane(paneID, startupCmd); err != nil {
 				// If pane is stale (session exists but pane doesn't), recreate the session
 				if strings.Contains(err.Error(), "can't find pane") {
-					if crewAtRetried {
+					if retried {
 						return fmt.Errorf("stale session persists after cleanup: %w", err)
 					}
 					fmt.Printf("Stale session detected, recreating...\n")
 					if killErr := t.KillSession(sessionID); killErr != nil && killErr != tmux.ErrSessionNotFound {
 						return fmt.Errorf("failed to kill stale session: %w", killErr)
 					}
-					crewAtRetried = true
-					defer func() { crewAtRetried = false }()
-					return runCrewAt(cmd, args) // Retry with fresh session
+					return runCrewAtWithRetry(cmd, args, true) // Retry with fresh session
 				}
 				return fmt.Errorf("restarting runtime: %w", err)
 			}
