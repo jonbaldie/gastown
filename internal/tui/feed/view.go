@@ -68,8 +68,6 @@ func (m *Model) renderHeader() string {
 			AgentActiveStyle.Render("●"), ok,
 			EventFailStyle.Render("●"), stuck,
 			idle)
-	} else if m.filter != "" {
-		stats = FilterStyle.Render(fmt.Sprintf("Filter: %s", m.filter))
 	} else {
 		stats = FilterStyle.Render("Filter: all")
 	}

@@ -77,10 +77,10 @@ type Daemon struct {
 	// Note: Only accessed from heartbeat loop goroutine - no sync needed.
 	deaconLastStarted time.Time
 
-	// syncFailures tracks consecutive git pull failures per workdir.
+	// SyncFailures tracks consecutive git pull failures per workdir.
 	// Used to escalate logging from WARN to ERROR after repeated failures.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
-	syncFailures map[string]int
+	SyncFailures map[string]int
 
 	// PATCH-006: Resolved binary paths to avoid PATH issues in subprocesses.
 	gtPath string
@@ -98,18 +98,18 @@ type Daemon struct {
 	otelProvider *telemetry.Provider
 	metrics      *daemonMetrics
 
-	// jsonlPushFailures tracks consecutive git push failures for JSONL backup.
+	// JSONLPushFailures tracks consecutive git push failures for JSONL backup.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
-	jsonlPushFailures int
+	JSONLPushFailures int
 
 	// lastDoctorMolTime tracks when the last mol-dog-doctor molecule was poured.
 	// Option B throttling: only pour when anomaly detected AND cooldown elapsed.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
 	lastDoctorMolTime time.Time
 
-	// lastMaintenanceRun tracks when scheduled maintenance last ran.
+	// LastMaintenanceRun tracks when scheduled maintenance last ran.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
-	lastMaintenanceRun time.Time
+	LastMaintenanceRun time.Time
 
 	// mayorZombieCount tracks consecutive patrol cycles where the Mayor tmux
 	// session exists but the agent process is not detected. A count >= 3

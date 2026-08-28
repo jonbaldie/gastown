@@ -191,15 +191,15 @@ func (d *Daemon) syncJsonlGitBackup() {
 		d.logger.Printf("jsonl_git_backup: git operations failed: %v", err)
 		pushStatus = "failed"
 		mol.FailStep("push", err.Error())
-		d.jsonlPushFailures++
-		if d.jsonlPushFailures >= maxConsecutivePushFailures {
-			d.logger.Printf("jsonl_git_backup: ESCALATION: %d consecutive push failures", d.jsonlPushFailures)
-			d.escalate("jsonl_git_backup", fmt.Sprintf("git push failed %d consecutive times", d.jsonlPushFailures))
+		d.JSONLPushFailures++
+		if d.JSONLPushFailures >= maxConsecutivePushFailures {
+			d.logger.Printf("jsonl_git_backup: ESCALATION: %d consecutive push failures", d.JSONLPushFailures)
+			d.escalate("jsonl_git_backup", fmt.Sprintf("git push failed %d consecutive times", d.JSONLPushFailures))
 			// Reset to avoid flooding escalations every tick.
-			d.jsonlPushFailures = 0
+			d.JSONLPushFailures = 0
 		}
 	} else {
-		d.jsonlPushFailures = 0
+		d.JSONLPushFailures = 0
 		mol.CloseStep("push")
 	}
 

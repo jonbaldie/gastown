@@ -853,12 +853,12 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 	return stripStdoutWarnings(stdout.Bytes()), nil
 }
 
-// runWithRouting executes a bd command without setting BEADS_DIR, allowing bd's
+// RunWithRouting executes a bd command without setting BEADS_DIR, allowing bd's
 // native prefix-based routing via routes.jsonl to resolve cross-prefix beads.
 // This is needed for slot operations that reference beads with different prefixes
 // (e.g., setting an hq-* hook bead on a gt-* agent bead).
 // See: sling_helpers.go verifyBeadExists/hookBeadWithRetry for the same pattern.
-func (b *Beads) runWithRouting(args ...string) (_ []byte, retErr error) { //nolint:unparam // mirrors run() signature for consistency
+func (b *Beads) RunWithRouting(args ...string) (_ []byte, retErr error) { //nolint:unparam // mirrors run() signature for consistency
 	start := time.Now()
 	var stdout, stderr bytes.Buffer
 	defer func() {

@@ -744,26 +744,26 @@ func (d *Daemon) isWorkingTreeDirty(workDir string) bool {
 
 // recordSyncFailure increments the consecutive failure counter for a workdir.
 func (d *Daemon) recordSyncFailure(workDir string) {
-	if d.syncFailures == nil {
-		d.syncFailures = make(map[string]int)
+	if d.SyncFailures == nil {
+		d.SyncFailures = make(map[string]int)
 	}
-	d.syncFailures[workDir]++
+	d.SyncFailures[workDir]++
 }
 
 // getSyncFailures returns the consecutive failure count for a workdir.
 func (d *Daemon) getSyncFailures(workDir string) int {
-	if d.syncFailures == nil {
+	if d.SyncFailures == nil {
 		return 0
 	}
-	return d.syncFailures[workDir]
+	return d.SyncFailures[workDir]
 }
 
 // resetSyncFailures clears the failure counter for a workdir after a successful sync.
 func (d *Daemon) resetSyncFailures(workDir string) {
-	if d.syncFailures == nil {
+	if d.SyncFailures == nil {
 		return
 	}
-	delete(d.syncFailures, workDir)
+	delete(d.SyncFailures, workDir)
 }
 
 // closeMessage removes a lifecycle mail message after processing.

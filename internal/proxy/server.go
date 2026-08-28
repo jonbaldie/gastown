@@ -74,8 +74,8 @@ type Server struct {
 	execSem chan struct{}
 	// execTimeout is the per-command deadline; derived from Config.ExecTimeout.
 	execTimeout time.Duration
-	// rateLimiters holds a *rate.Limiter per client identity (cert CN).
-	rateLimiters sync.Map
+	// RateLimiters holds a *rate.Limiter per client identity (cert CN).
+	RateLimiters sync.Map
 	rateLimit    rate.Limit
 	rateBurst    int
 
