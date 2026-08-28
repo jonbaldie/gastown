@@ -197,7 +197,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 				settingsPath := filepath.Join(r.Path, "settings", "config.json")
 				polecatIntegrationEnabled := true
 				if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.MergeQueue != nil {
-					polecatIntegrationEnabled = settings.MergeQueue.IsPolecatIntegrationEnabled()
+					polecatIntegrationEnabled = config.IsPolecatIntegrationEnabled(settings.MergeQueue)
 				}
 				if polecatIntegrationEnabled {
 					repoGit, repoErr := getRigGit(r.Path)
@@ -302,7 +302,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 			settingsPath := filepath.Join(r.Path, "settings", "config.json")
 			polecatIntegrationEnabled := true
 			if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.MergeQueue != nil {
-				polecatIntegrationEnabled = settings.MergeQueue.IsPolecatIntegrationEnabled()
+				polecatIntegrationEnabled = config.IsPolecatIntegrationEnabled(settings.MergeQueue)
 			}
 			if polecatIntegrationEnabled {
 				repoGit, repoErr := getRigGit(r.Path)

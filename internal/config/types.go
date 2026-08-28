@@ -1488,8 +1488,8 @@ const (
 
 // IsPolecatIntegrationEnabled returns whether polecat integration branch
 // sourcing is enabled. Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsPolecatIntegrationEnabled() bool {
-	if c.IntegrationBranchPolecatEnabled == nil {
+func IsPolecatIntegrationEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.IntegrationBranchPolecatEnabled == nil {
 		return true
 	}
 	return *c.IntegrationBranchPolecatEnabled
@@ -1497,8 +1497,8 @@ func (c *MergeQueueConfig) IsPolecatIntegrationEnabled() bool {
 
 // IsRefineryIntegrationEnabled returns whether refinery/submit integration
 // branch auto-detection is enabled. Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsRefineryIntegrationEnabled() bool {
-	if c.IntegrationBranchRefineryEnabled == nil {
+func IsRefineryIntegrationEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.IntegrationBranchRefineryEnabled == nil {
 		return true
 	}
 	return *c.IntegrationBranchRefineryEnabled
@@ -1507,8 +1507,8 @@ func (c *MergeQueueConfig) IsRefineryIntegrationEnabled() bool {
 // IsIntegrationBranchAutoLandEnabled returns whether the refinery should
 // auto-land integration branches when all epic children are closed.
 // Nil-safe, defaults to false (manual landing required).
-func (c *MergeQueueConfig) IsIntegrationBranchAutoLandEnabled() bool {
-	if c.IntegrationBranchAutoLand == nil {
+func IsIntegrationBranchAutoLandEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.IntegrationBranchAutoLand == nil {
 		return false
 	}
 	return *c.IntegrationBranchAutoLand
@@ -1516,8 +1516,8 @@ func (c *MergeQueueConfig) IsIntegrationBranchAutoLandEnabled() bool {
 
 // IsRunTestsEnabled returns whether tests should run before merging.
 // Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsRunTestsEnabled() bool {
-	if c.RunTests == nil {
+func IsRunTestsEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.RunTests == nil {
 		return true
 	}
 	return *c.RunTests
@@ -1525,8 +1525,8 @@ func (c *MergeQueueConfig) IsRunTestsEnabled() bool {
 
 // IsDeleteMergedBranchesEnabled returns whether merged branches should be deleted.
 // Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsDeleteMergedBranchesEnabled() bool {
-	if c.DeleteMergedBranches == nil {
+func IsDeleteMergedBranchesEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.DeleteMergedBranches == nil {
 		return true
 	}
 	return *c.DeleteMergedBranches
@@ -1534,8 +1534,8 @@ func (c *MergeQueueConfig) IsDeleteMergedBranchesEnabled() bool {
 
 // IsJudgmentEnabled returns whether quality review is enabled for merges.
 // Nil-safe, defaults to false.
-func (c *MergeQueueConfig) IsJudgmentEnabled() bool {
-	if c.JudgmentEnabled == nil {
+func IsJudgmentEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.JudgmentEnabled == nil {
 		return false
 	}
 	return *c.JudgmentEnabled
@@ -1543,8 +1543,8 @@ func (c *MergeQueueConfig) IsJudgmentEnabled() bool {
 
 // IsRequireReviewEnabled returns whether PR reviews are required before merging.
 // Nil-safe, defaults to false.
-func (c *MergeQueueConfig) IsRequireReviewEnabled() bool {
-	if c.RequireReview == nil {
+func IsRequireReviewEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.RequireReview == nil {
 		return false
 	}
 	return *c.RequireReview
@@ -1552,8 +1552,8 @@ func (c *MergeQueueConfig) IsRequireReviewEnabled() bool {
 
 // GetReviewDepth returns the configured review depth.
 // Nil-safe, defaults to "standard".
-func (c *MergeQueueConfig) GetReviewDepth() string {
-	if c.ReviewDepth == "" {
+func GetReviewDepth(c *MergeQueueConfig) string {
+	if c == nil || c.ReviewDepth == "" {
 		return "standard"
 	}
 	return c.ReviewDepth

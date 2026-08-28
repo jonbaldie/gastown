@@ -176,7 +176,7 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 			rigPath := filepath.Join(townRoot, rigName)
 			settingsPath := filepath.Join(rigPath, "settings", "config.json")
 			if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.MergeQueue != nil {
-				refineryEnabled = settings.MergeQueue.IsRefineryIntegrationEnabled()
+				refineryEnabled = config.IsRefineryIntegrationEnabled(settings.MergeQueue)
 			}
 			if refineryEnabled {
 				autoTarget, err := beads.DetectIntegrationBranch(sourceBD, g, issueID)

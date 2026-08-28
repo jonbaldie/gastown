@@ -971,7 +971,7 @@ func runMqIntegrationStatus(_ *cobra.Command, args []string) error {
 	settings, _ := config.LoadRigSettings(settingsPath) // Ignore error, use defaults
 	autoLandEnabled := false
 	if settings != nil && settings.MergeQueue != nil {
-		autoLandEnabled = settings.MergeQueue.IsIntegrationBranchAutoLandEnabled()
+		autoLandEnabled = config.IsIntegrationBranchAutoLandEnabled(settings.MergeQueue)
 	}
 
 	// Query children of the epic to determine if ready to land

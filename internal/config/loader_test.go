@@ -410,22 +410,22 @@ func TestDefaultMergeQueueConfig(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("Enabled should be true by default")
 	}
-	if !cfg.IsPolecatIntegrationEnabled() {
+	if !IsPolecatIntegrationEnabled(cfg) {
 		t.Error("IsPolecatIntegrationEnabled should be true by default")
 	}
-	if !cfg.IsRefineryIntegrationEnabled() {
+	if !IsRefineryIntegrationEnabled(cfg) {
 		t.Error("IsRefineryIntegrationEnabled should be true by default")
 	}
 	if cfg.OnConflict != OnConflictAssignBack {
 		t.Errorf("OnConflict = %q, want %q", cfg.OnConflict, OnConflictAssignBack)
 	}
-	if !cfg.IsRunTestsEnabled() {
+	if !IsRunTestsEnabled(cfg) {
 		t.Error("IsRunTestsEnabled should be true by default")
 	}
 	if cfg.TestCommand != "" {
 		t.Errorf("TestCommand = %q, want empty (language-agnostic default)", cfg.TestCommand)
 	}
-	if !cfg.IsDeleteMergedBranchesEnabled() {
+	if !IsDeleteMergedBranchesEnabled(cfg) {
 		t.Error("IsDeleteMergedBranchesEnabled should be true by default")
 	}
 	if cfg.RetryFlakyTests != 1 {
@@ -5404,19 +5404,19 @@ func TestMergeQueueConfig_PartialJSON_BoolDefaults(t *testing.T) {
 				t.Fatalf("json.Unmarshal: %v", err)
 			}
 
-			if got := cfg.IsRunTestsEnabled(); got != tt.wantRunTests {
+			if got := IsRunTestsEnabled(&cfg); got != tt.wantRunTests {
 				t.Errorf("IsRunTestsEnabled() = %v, want %v", got, tt.wantRunTests)
 			}
-			if got := cfg.IsDeleteMergedBranchesEnabled(); got != tt.wantDeleteMerged {
+			if got := IsDeleteMergedBranchesEnabled(&cfg); got != tt.wantDeleteMerged {
 				t.Errorf("IsDeleteMergedBranchesEnabled() = %v, want %v", got, tt.wantDeleteMerged)
 			}
-			if got := cfg.IsPolecatIntegrationEnabled(); got != tt.wantPolecatIntegration {
+			if got := IsPolecatIntegrationEnabled(&cfg); got != tt.wantPolecatIntegration {
 				t.Errorf("IsPolecatIntegrationEnabled() = %v, want %v", got, tt.wantPolecatIntegration)
 			}
-			if got := cfg.IsRefineryIntegrationEnabled(); got != tt.wantRefineryIntegration {
+			if got := IsRefineryIntegrationEnabled(&cfg); got != tt.wantRefineryIntegration {
 				t.Errorf("IsRefineryIntegrationEnabled() = %v, want %v", got, tt.wantRefineryIntegration)
 			}
-			if got := cfg.IsIntegrationBranchAutoLandEnabled(); got != tt.wantAutoLand {
+			if got := IsIntegrationBranchAutoLandEnabled(&cfg); got != tt.wantAutoLand {
 				t.Errorf("IsIntegrationBranchAutoLandEnabled() = %v, want %v", got, tt.wantAutoLand)
 			}
 		})

@@ -448,9 +448,9 @@ func buildRefineryPatrolVars(ctx RoleContext) []string {
 	settings, sErr := config.LoadRigSettings(settingsPath)
 	if sErr == nil && settings != nil && settings.MergeQueue != nil {
 		mq := settings.MergeQueue
-		vars = append(vars, fmt.Sprintf("integration_branch_refinery_enabled=%t", mq.IsRefineryIntegrationEnabled()))
-		vars = append(vars, fmt.Sprintf("integration_branch_auto_land=%t", mq.IsIntegrationBranchAutoLandEnabled()))
-		vars = append(vars, fmt.Sprintf("run_tests=%t", mq.IsRunTestsEnabled()))
+		vars = append(vars, fmt.Sprintf("integration_branch_refinery_enabled=%t", config.IsRefineryIntegrationEnabled(mq)))
+		vars = append(vars, fmt.Sprintf("integration_branch_auto_land=%t", config.IsIntegrationBranchAutoLandEnabled(mq)))
+		vars = append(vars, fmt.Sprintf("run_tests=%t", config.IsRunTestsEnabled(mq)))
 		if mq.SetupCommand != "" {
 			vars = append(vars, fmt.Sprintf("setup_command=%s", mq.SetupCommand))
 		}
@@ -466,13 +466,13 @@ func buildRefineryPatrolVars(ctx RoleContext) []string {
 		if mq.BuildCommand != "" {
 			vars = append(vars, fmt.Sprintf("build_command=%s", mq.BuildCommand))
 		}
-		vars = append(vars, fmt.Sprintf("delete_merged_branches=%t", mq.IsDeleteMergedBranchesEnabled()))
-		vars = append(vars, fmt.Sprintf("judgment_enabled=%t", mq.IsJudgmentEnabled()))
-		vars = append(vars, fmt.Sprintf("review_depth=%s", mq.GetReviewDepth()))
+		vars = append(vars, fmt.Sprintf("delete_merged_branches=%t", config.IsDeleteMergedBranchesEnabled(mq)))
+		vars = append(vars, fmt.Sprintf("judgment_enabled=%t", config.IsJudgmentEnabled(mq)))
+		vars = append(vars, fmt.Sprintf("review_depth=%s", config.GetReviewDepth(mq)))
 		if mq.MergeStrategy != "" {
 			vars = append(vars, fmt.Sprintf("merge_strategy=%s", mq.MergeStrategy))
 		}
-		vars = append(vars, fmt.Sprintf("require_review=%t", mq.IsRequireReviewEnabled()))
+		vars = append(vars, fmt.Sprintf("require_review=%t", config.IsRequireReviewEnabled(mq)))
 		return vars
 	}
 

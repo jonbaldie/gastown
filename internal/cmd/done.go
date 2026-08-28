@@ -1666,7 +1666,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 			refineryEnabled := true
 			settingsPath := filepath.Join(townRoot, rigName, "settings", "config.json")
 			if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.MergeQueue != nil {
-				refineryEnabled = settings.MergeQueue.IsRefineryIntegrationEnabled()
+				refineryEnabled = config.IsRefineryIntegrationEnabled(settings.MergeQueue)
 			}
 			if refineryEnabled {
 				autoTarget, err := beads.DetectIntegrationBranch(sourceBD, g, issueID)

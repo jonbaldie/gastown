@@ -682,5 +682,5 @@ func mqDeleteMergedBranchesEnabled(rigPath string) bool {
 	if err != nil || settings.MergeQueue == nil {
 		return true
 	}
-	return settings.MergeQueue.IsDeleteMergedBranchesEnabled()
+	return config.IsDeleteMergedBranchesEnabled(settings.MergeQueue)
 }
