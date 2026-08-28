@@ -421,8 +421,8 @@ func init() {
 
 	// Add --session flag to next/prev commands for tmux key binding support
 	// When run via run-shell, tmux session context may be wrong, so we pass it explicitly
-	crewNextCmd.Flags().StringVarP(&crewCycleSession, "session", "s", "", "tmux session name (for key bindings)")
-	crewPrevCmd.Flags().StringVarP(&crewCycleSession, "session", "s", "", "tmux session name (for key bindings)")
+	crewNextCmd.Flags().StringP("session", "s", "", "tmux session name (for key bindings)")
+	crewPrevCmd.Flags().StringP("session", "s", "", "tmux session name (for key bindings)")
 	crewCmd.AddCommand(crewNextCmd)
 	crewCmd.AddCommand(crewPrevCmd)
 	crewCmd.AddCommand(crewStartCmd)
