@@ -300,111 +300,100 @@ var prefixRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]{0,19}$`)
 // Uses --server mode to match all production bd init callers (gastown uses a
 // centralized Dolt sql-server). JSONL auto-import is handled by bd init itself.
 func ensureDatabaseInitialized(beadsDir string) error {
-	// If this beads dir has a redirect, the database lives elsewhere.
-	// Never create a new database for a redirected location (polecats, crew, refinery).
-	redirectFile := filepath.Join(beadsDir, "redirect")
-	if _, err := os.Stat(redirectFile); err == nil {
+	if databaseAlreadyInitialized(beadsDir) {
 		return nil
 	}
+	return initializeBeadsDatabase(beadsDir)
+}
 
-	// Check for Dolt database directory (embedded mode)
-	doltDir := filepath.Join(beadsDir, "dolt")
-	if _, err := os.Stat(doltDir); err == nil {
-		return nil
+func databaseAlreadyInitialized(beadsDir string) bool {
+	return beadsRedirectExists(beadsDir) || beadsDoltDirectoryExists(beadsDir) || serverBeadsDatabaseExists(beadsDir)
+}
+
+func beadsRedirectExists(beadsDir string) bool {
+	_, err := os.Stat(filepath.Join(beadsDir, "redirect"))
+	return err == nil
+}
+
+func beadsDoltDirectoryExists(beadsDir string) bool {
+	_, err := os.Stat(filepath.Join(beadsDir, "dolt"))
+	return err == nil
+}
+
+func serverBeadsDatabaseExists(beadsDir string) bool {
+	data, err := os.ReadFile(filepath.Join(beadsDir, "metadata.json"))
+	if err != nil {
+		return false
 	}
-
-	// Check for metadata.json (server mode — gastown's exclusive mode).
-	// In server mode, .beads/ may contain only metadata.json with no local dolt/ dir.
-	// This mirrors the deep check in bdDatabaseExists (internal/rig/manager.go):
-	// parse metadata.json and verify the referenced database exists in .dolt-data/.
-	// metadata.json can be git-tracked from another workspace where the Dolt server
-	// had this database, but this may be a fresh server without it.
-	metadataFile := filepath.Join(beadsDir, "metadata.json")
-	if data, err := os.ReadFile(metadataFile); err == nil {
-		var meta struct {
-			DoltMode     string `json:"dolt_mode"`
-			DoltDatabase string `json:"dolt_database"`
-		}
-		if err := json.Unmarshal(data, &meta); err != nil {
-			return nil // Can't parse — assume initialized (backward compat)
-		}
-		if meta.DoltMode == "server" && meta.DoltDatabase != "" {
-			townRoot := FindTownRoot(filepath.Dir(beadsDir))
-			if townRoot == "" {
-				return nil // Can't find town root — assume initialized
-			}
-			dbDir := filepath.Join(townRoot, ".dolt-data", meta.DoltDatabase)
-			if _, err := os.Stat(dbDir); !os.IsNotExist(err) {
-				return nil // Database exists (or stat error — assume initialized)
-			}
-			// metadata.json exists but database doesn't — fall through to init
-		} else {
-			return nil // Non-server mode or no database ref — assume initialized
-		}
+	var metadata struct {
+		DoltMode     string `json:"dolt_mode"`
+		DoltDatabase string `json:"dolt_database"`
 	}
+	if json.Unmarshal(data, &metadata) != nil || metadata.DoltMode != "server" || metadata.DoltDatabase == "" {
+		return true
+	}
+	townRoot := FindTownRoot(filepath.Dir(beadsDir))
+	if townRoot == "" {
+		return true
+	}
+	_, err = os.Stat(filepath.Join(townRoot, ".dolt-data", metadata.DoltDatabase))
+	return !os.IsNotExist(err)
+}
 
-	// No database found — need to initialize.
+func initializeBeadsDatabase(beadsDir string) error {
 	prefix := detectPrefix(beadsDir)
-
-	// bd init must run from the parent directory (not inside .beads/).
-	// Use --server to match all production callers (rig/manager.go, doctor/rig_check.go, cmd/install.go).
 	parentDir := filepath.Dir(beadsDir)
-	initArgs := []string{"init"}
-	if prefix != "" {
-		initArgs = append(initArgs, "--prefix", prefix)
+	if err := runBeadsDatabaseInit(beadsDir, parentDir, prefix); err != nil {
+		return err
 	}
-	initArgs = append(initArgs, "--server")
-	cmd := Spawn(initArgs...)
-	cmd.Dir = parentDir
-	util.SetDetachedProcessGroup(cmd)
-	initEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-	cmd.Env = initEnv
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Handle "already initialized" gracefully, matching install.go behavior.
-		// This can happen due to race conditions or if detection heuristics miss
-		// a valid database state.
-		outputStr := string(output)
-		if strings.Contains(outputStr, "already initialized") {
-			return nil
-		}
-		return fmt.Errorf("bd init: %s: %w", strings.TrimSpace(outputStr), err)
-	}
-
-	// Explicitly set issue_prefix — bd init --prefix may not persist it
-	// in newer versions (see rig/manager.go InitBeads).
-	if prefix != "" {
-		pfxCmd := Spawn("config", "set", "issue_prefix", prefix)
-		pfxCmd.Dir = parentDir
-		util.SetDetachedProcessGroup(pfxCmd)
-		pfxEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-		pfxCmd.Env = pfxEnv
-		_, _ = pfxCmd.CombinedOutput() // Best effort — crash prevention guard
-	}
-
-	// Run bd migrate to ensure the wisps table and auxiliary tables exist.
-	// Without this, bd create --ephemeral crashes with a Dolt nil pointer
-	// dereference when the wisps table is missing (GH#1769).
-	//
-	// After bd init --server, the Dolt SQL server may need time to register
-	// the new database in its catalog. Retry once after a short delay if the
-	// first migrate attempt fails (GH#1769).
-	migrateEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-	migrateCmd := Spawn("migrate", "--yes")
-	migrateCmd.Dir = parentDir
-	migrateCmd.Env = migrateEnv
-	util.SetDetachedProcessGroup(migrateCmd)
-	if _, err := migrateCmd.CombinedOutput(); err != nil {
-		// First attempt failed — server may not have registered the database yet.
-		// Wait briefly and retry once.
-		time.Sleep(500 * time.Millisecond)
-		retryCmd := Spawn("migrate", "--yes")
-		retryCmd.Dir = parentDir
-		retryCmd.Env = migrateEnv
-		util.SetDetachedProcessGroup(retryCmd)
-		_, _ = retryCmd.CombinedOutput() // Best effort on retry — CreateAgentBead fallback handles failure
-	}
-
+	persistBeadsIssuePrefix(beadsDir, parentDir, prefix)
+	migrateBeadsDatabase(beadsDir, parentDir)
 	return nil
+}
+
+func runBeadsDatabaseInit(beadsDir, parentDir, prefix string) error {
+	args := []string{"init"}
+	if prefix != "" {
+		args = append(args, "--prefix", prefix)
+	}
+	cmd := Spawn(append(args, "--server")...)
+	cmd.Dir = parentDir
+	cmd.Env = BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	util.SetDetachedProcessGroup(cmd)
+	output, err := cmd.CombinedOutput()
+	if err == nil || strings.Contains(string(output), "already initialized") {
+		return nil
+	}
+	return fmt.Errorf("bd init: %s: %w", strings.TrimSpace(string(output)), err)
+}
+
+func persistBeadsIssuePrefix(beadsDir, parentDir, prefix string) {
+	if prefix == "" {
+		return
+	}
+	cmd := Spawn("config", "set", "issue_prefix", prefix)
+	cmd.Dir = parentDir
+	cmd.Env = BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	util.SetDetachedProcessGroup(cmd)
+	_, _ = cmd.CombinedOutput()
+}
+
+func migrateBeadsDatabase(beadsDir, parentDir string) {
+	env := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	if runBeadsMigration(parentDir, env) == nil {
+		return
+	}
+	time.Sleep(500 * time.Millisecond)
+	_ = runBeadsMigration(parentDir, env)
+}
+
+func runBeadsMigration(parentDir string, env []string) error {
+	cmd := Spawn("migrate", "--yes")
+	cmd.Dir = parentDir
+	cmd.Env = env
+	util.SetDetachedProcessGroup(cmd)
+	_, err := cmd.CombinedOutput()
+	return err
 }
 
 // detectPrefix determines the beads prefix for a directory.
