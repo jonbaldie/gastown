@@ -305,7 +305,9 @@ func setConvoyField(fields *ConvoyFields, line string) {
 }
 
 func convoyFieldKey(key string) string {
-	return strings.NewReplacer("-", "_", "_", "", " ", "").Replace(key)
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, "_", "")
+	return strings.ReplaceAll(key, " ", "")
 }
 
 func convoyFieldDestinations(fields *ConvoyFields) map[string]*string {
@@ -624,97 +626,48 @@ func ParseMRFields(issue *Issue) *MRFields {
 	}
 
 	fields := &MRFields{}
-	hasFields := false
-
 	for _, line := range strings.Split(issue.Description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// Look for "key: value" pattern
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "" || strings.EqualFold(value, "null") {
-			continue
-		}
-
-		// Map keys to fields (case-insensitive)
-		switch strings.ToLower(key) {
-		case "branch":
-			fields.Branch = value
-			hasFields = true
-		case "target":
-			fields.Target = value
-			hasFields = true
-		case "source_issue", "source-issue", "sourceissue":
-			fields.SourceIssue = value
-			hasFields = true
-		case "worker":
-			fields.Worker = value
-			hasFields = true
-		case "rig":
-			fields.Rig = value
-			hasFields = true
-		case "commit_sha", "commit-sha", "commitsha":
-			fields.CommitSHA = value
-			hasFields = true
-		case "pr_url", "pr-url", "prurl":
-			fields.PRURL = value
-			hasFields = true
-		case "pr_number", "pr-number", "prnumber":
-			if n, err := parseIntField(value); err == nil {
-				fields.PRNumber = n
-				hasFields = true
-			}
-		case "merge_commit", "merge-commit", "mergecommit":
-			fields.MergeCommit = value
-			hasFields = true
-		case "close_reason", "close-reason", "closereason":
-			fields.CloseReason = value
-			hasFields = true
-		case "agent_bead", "agent-bead", "agentbead":
-			fields.AgentBead = value
-			hasFields = true
-		case "retry_count", "retry-count", "retrycount":
-			if n, err := parseIntField(value); err == nil {
-				fields.RetryCount = n
-				hasFields = true
-			}
-		case "last_conflict_sha", "last-conflict-sha", "lastconflictsha":
-			fields.LastConflictSHA = value
-			hasFields = true
-		case "conflict_task_id", "conflict-task-id", "conflicttaskid":
-			fields.ConflictTaskID = value
-			hasFields = true
-		case "convoy_id", "convoy-id", "convoyid", "convoy":
-			fields.ConvoyID = value
-			hasFields = true
-		case "convoy_created_at", "convoy-created-at", "convoycreatedat":
-			fields.ConvoyCreatedAt = value
-			hasFields = true
-		case "pre_verified", "pre-verified", "preverified":
-			fields.PreVerified = strings.ToLower(value) == "true"
-			hasFields = true
-		case "pre_verified_at", "pre-verified-at", "preverifiedat":
-			fields.PreVerifiedAt = value
-			hasFields = true
-		case "pre_verified_base", "pre-verified-base", "preverifiedbase":
-			fields.PreVerifiedBase = value
-			hasFields = true
-		}
+		setMRField(fields, line)
 	}
-
-	if !hasFields {
+	if !hasMRFields(fields) {
 		return nil
 	}
 	return fields
 }
+
+func setMRField(fields *MRFields, line string) {
+	key, value, ok := agentDescriptionFieldLine(line)
+	if !ok || value == "" {
+		return
+	}
+	key = convoyFieldKey(key)
+	if key == "convoy" {
+		key = "convoyid"
+	}
+	if destination, ok := mrStringFields(fields)[key]; ok {
+		*destination = value
+		return
+	}
+	if destination, ok := mrIntFields(fields)[key]; ok {
+		if value, err := parseIntField(value); err == nil {
+			*destination = value
+		}
+		return
+	}
+	if key == "preverified" {
+		fields.PreVerified = strings.EqualFold(value, "true")
+	}
+}
+
+func mrStringFields(fields *MRFields) map[string]*string {
+	return map[string]*string{
+		"branch": &fields.Branch, "target": &fields.Target, "sourceissue": &fields.SourceIssue, "worker": &fields.Worker, "rig": &fields.Rig, "commitsha": &fields.CommitSHA, "prurl": &fields.PRURL, "mergecommit": &fields.MergeCommit, "closereason": &fields.CloseReason, "agentbead": &fields.AgentBead, "lastconflictsha": &fields.LastConflictSHA, "conflicttaskid": &fields.ConflictTaskID, "convoyid": &fields.ConvoyID, "convoycreatedat": &fields.ConvoyCreatedAt, "preverifiedat": &fields.PreVerifiedAt, "preverifiedbase": &fields.PreVerifiedBase,
+	}
+}
+func mrIntFields(fields *MRFields) map[string]*int {
+	return map[string]*int{"prnumber": &fields.PRNumber, "retrycount": &fields.RetryCount}
+}
+func hasMRFields(fields *MRFields) bool { return FormatMRFields(fields) != "" }
 
 // parseIntField parses an integer from a string, returning 0 on error.
 func parseIntField(s string) (int, error) {
