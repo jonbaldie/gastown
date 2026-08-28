@@ -98,36 +98,53 @@ type RollbackResult struct {
 // This resets metadata.json to the pre-migration state since the backup
 // contains the original metadata.json files.
 func RestoreFromBackup(townRoot, backupPath string) (*RollbackResult, error) {
-	// Verify backup directory exists
-	info, err := os.Stat(backupPath)
-	if err != nil {
-		return nil, fmt.Errorf("backup not found: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("backup path is not a directory: %s", backupPath)
+	if err := validateBackupPath(backupPath); err != nil {
+		return nil, err
 	}
 
 	result := &RollbackResult{
 		BackupPath: backupPath,
 	}
 
-	// Restore town-level beads
-	townBackup := filepath.Join(backupPath, "town-beads")
-	if _, err := os.Stat(townBackup); err == nil {
-		townBeads := filepath.Join(townRoot, ".beads")
-		if err := replaceDir(townBeads, townBackup); err != nil {
-			return result, fmt.Errorf("restoring town beads: %w", err)
-		}
-		result.RestoredTown = true
-		result.MetadataReset = append(result.MetadataReset, "town (.beads)")
+	if err := restoreTownBackup(townRoot, backupPath, result); err != nil {
+		return result, err
 	}
 
-	// Restore rig-level beads: try formula-style first (<rigname>-beads/)
 	entries, err := os.ReadDir(backupPath)
 	if err != nil {
 		return result, fmt.Errorf("reading backup directory: %w", err)
 	}
+	restoreFormulaRigs(townRoot, backupPath, entries, result)
+	restoreTestRigs(townRoot, backupPath, result)
+	return result, nil
+}
 
+func validateBackupPath(backupPath string) error {
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		return fmt.Errorf("backup not found: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("backup path is not a directory: %s", backupPath)
+	}
+	return nil
+}
+
+func restoreTownBackup(townRoot, backupPath string, result *RollbackResult) error {
+	townBackup := filepath.Join(backupPath, "town-beads")
+	if _, err := os.Stat(townBackup); err != nil {
+		return nil
+	}
+	townBeads := filepath.Join(townRoot, ".beads")
+	if err := replaceDir(townBeads, townBackup); err != nil {
+		return fmt.Errorf("restoring town beads: %w", err)
+	}
+	result.RestoredTown = true
+	result.MetadataReset = append(result.MetadataReset, "town (.beads)")
+	return nil
+}
+
+func restoreFormulaRigs(townRoot, backupPath string, entries []os.DirEntry, result *RollbackResult) {
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -152,7 +169,9 @@ func RestoreFromBackup(townRoot, backupPath string) (*RollbackResult, error) {
 			result.MetadataReset = append(result.MetadataReset, rigName)
 		}
 	}
+}
 
+func restoreTestRigs(townRoot, backupPath string, result *RollbackResult) {
 	// Also check test-backup style: rigs/<rigname>/.beads
 	rigsDir := filepath.Join(backupPath, "rigs")
 	if rigEntries, err := os.ReadDir(rigsDir); err == nil {
@@ -174,8 +193,6 @@ func RestoreFromBackup(townRoot, backupPath string) (*RollbackResult, error) {
 			result.MetadataReset = append(result.MetadataReset, rigName)
 		}
 	}
-
-	return result, nil
 }
 
 // replaceDir removes dst (if it exists) and copies src to dst.
