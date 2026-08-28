@@ -17,14 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	changelogToday bool
-	changelogWeek  bool
-	changelogSince string
-	changelogRig   string
-	changelogJSON  bool
-)
-
 var changelogCmd = &cobra.Command{
 	Use:     "changelog",
 	GroupID: GroupWork,
@@ -45,11 +37,11 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(changelogCmd)
-	changelogCmd.Flags().BoolVar(&changelogToday, "today", false, "Show today's completions")
-	changelogCmd.Flags().BoolVar(&changelogWeek, "week", false, "Show this week's completions")
-	changelogCmd.Flags().StringVar(&changelogSince, "since", "", "Show completions since date (YYYY-MM-DD)")
-	changelogCmd.Flags().StringVar(&changelogRig, "rig", "", "Filter by rig name")
-	changelogCmd.Flags().BoolVar(&changelogJSON, "json", false, "Output as JSON")
+	changelogCmd.Flags().Bool("today", false, "Show today's completions")
+	changelogCmd.Flags().Bool("week", false, "Show this week's completions")
+	changelogCmd.Flags().String("since", "", "Show completions since date (YYYY-MM-DD)")
+	changelogCmd.Flags().String("rig", "", "Filter by rig name")
+	changelogCmd.Flags().Bool("json", false, "Output as JSON")
 }
 
 // ChangelogEntry is a single completed bead for changelog output.
@@ -73,31 +65,63 @@ type closedBead struct {
 	Labels      []string `json:"labels"`
 }
 
-func runChangelog(_ *cobra.Command, _ []string) error {
+type changelogOptions struct {
+	today bool
+	week  bool
+	since string
+	rig   string
+	json  bool
+}
+
+func changelogOptionsFromCommand(cmd *cobra.Command) (changelogOptions, error) {
+	today, err := cmd.Flags().GetBool("today")
+	if err != nil {
+		return changelogOptions{}, err
+	}
+	week, err := cmd.Flags().GetBool("week")
+	if err != nil {
+		return changelogOptions{}, err
+	}
+	since, err := cmd.Flags().GetString("since")
+	if err != nil {
+		return changelogOptions{}, err
+	}
+	rig, err := cmd.Flags().GetString("rig")
+	if err != nil {
+		return changelogOptions{}, err
+	}
+	jsonOutput, err := cmd.Flags().GetBool("json")
+	if err != nil {
+		return changelogOptions{}, err
+	}
+	return changelogOptions{today: today, week: week, since: since, rig: rig, json: jsonOutput}, nil
+}
+
+func runChangelog(cmd *cobra.Command, _ []string) error {
+	opts, err := changelogOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	since, err := changelogSinceTime()
+	since, err := changelogSinceTimeAt(time.Now(), opts.today, opts.since)
 	if err != nil {
 		return err
 	}
 
-	entries, err := collectChangelogEntries(townRoot, since)
+	entries, err := collectChangelogEntries(townRoot, since, opts.rig)
 	if err != nil {
 		return err
 	}
 
-	if changelogJSON {
+	if opts.json {
 		return printChangelogJSON(entries)
 	}
 	return printChangelog(entries, since)
-}
-
-// changelogSinceTime returns the cutoff time based on flags.
-func changelogSinceTime() (time.Time, error) {
-	return changelogSinceTimeAt(time.Now(), changelogToday, changelogSince)
 }
 
 func changelogSinceTimeAt(now time.Time, today bool, since string) (time.Time, error) {
@@ -123,7 +147,7 @@ func changelogSinceTimeAt(now time.Time, today bool, since string) (time.Time, e
 }
 
 // collectChangelogEntries gathers closed beads from town + all rigs since the cutoff.
-func collectChangelogEntries(townRoot string, since time.Time) ([]ChangelogEntry, error) {
+func collectChangelogEntries(townRoot string, since time.Time, rigFilter string) ([]ChangelogEntry, error) {
 	type location struct {
 		path string
 		rig  string // empty = HQ
@@ -131,7 +155,7 @@ func collectChangelogEntries(townRoot string, since time.Time) ([]ChangelogEntry
 
 	locations := []location{{path: townRoot, rig: "hq"}}
 
-	if changelogRig == "" {
+	if rigFilter == "" {
 		rigsConfigPath := filepath.Join(townRoot, constants.DirMayor, constants.FileRigsJSON)
 		rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
 		if err == nil && rigsConfig != nil {
@@ -143,11 +167,11 @@ func collectChangelogEntries(townRoot string, since time.Time) ([]ChangelogEntry
 			}
 		}
 	} else {
-		rigPath := filepath.Join(townRoot, changelogRig)
+		rigPath := filepath.Join(townRoot, rigFilter)
 		if _, statErr := os.Stat(filepath.Join(rigPath, constants.DirBeads)); statErr != nil {
-			return nil, fmt.Errorf("rig %q not found or has no beads database", changelogRig)
+			return nil, fmt.Errorf("rig %q not found or has no beads database", rigFilter)
 		}
-		locations = []location{{path: rigPath, rig: changelogRig}}
+		locations = []location{{path: rigPath, rig: rigFilter}}
 	}
 
 	var all []ChangelogEntry
