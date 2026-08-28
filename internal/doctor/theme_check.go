@@ -42,13 +42,7 @@ func (c *ThemeCheck) Run(_ *CheckContext) *CheckResult {
 		}
 	}
 
-	// Check for Gas Town sessions
-	var gtSessions []string
-	for _, s := range sessions {
-		if session.IsKnownSession(s) {
-			gtSessions = append(gtSessions, s)
-		}
-	}
+	gtSessions := knownGasTownSessions(sessions)
 
 	if len(gtSessions) == 0 {
 		return &CheckResult{
@@ -58,18 +52,7 @@ func (c *ThemeCheck) Run(_ *CheckContext) *CheckResult {
 		}
 	}
 
-	// Check if sessions have proper status-left format (no brackets = new format)
-	var needsUpdate []string
-	for _, session := range gtSessions {
-		statusLeft, err := getSessionStatusLeft(session)
-		if err != nil {
-			continue
-		}
-		// Old format had brackets like [Mayor] or [gastown/crew]
-		if strings.Contains(statusLeft, "[") && strings.Contains(statusLeft, "]") {
-			needsUpdate = append(needsUpdate, session)
-		}
-	}
+	needsUpdate := outdatedThemeSessions(gtSessions)
 
 	if len(needsUpdate) > 0 {
 		details := make([]string, len(needsUpdate))
@@ -90,6 +73,34 @@ func (c *ThemeCheck) Run(_ *CheckContext) *CheckResult {
 		Status:  StatusOK,
 		Message: fmt.Sprintf("%d session(s) have correct themes", len(gtSessions)),
 	}
+}
+
+func knownGasTownSessions(sessions []string) []string {
+	var known []string
+	for _, name := range sessions {
+		if session.IsKnownSession(name) {
+			known = append(known, name)
+		}
+	}
+	return known
+}
+
+func outdatedThemeSessions(sessions []string) []string {
+	var outdated []string
+	for _, name := range sessions {
+		statusLeft, err := getSessionStatusLeft(name)
+		if err != nil {
+			continue
+		}
+		if hasLegacyThemeFormat(statusLeft) {
+			outdated = append(outdated, name)
+		}
+	}
+	return outdated
+}
+
+func hasLegacyThemeFormat(statusLeft string) bool {
+	return strings.Contains(statusLeft, "[") && strings.Contains(statusLeft, "]")
 }
 
 // Fix applies themes to all sessions.
