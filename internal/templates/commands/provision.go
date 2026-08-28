@@ -38,39 +38,41 @@ func getAgentConfigDir(agent string, townSettings *config.TownSettings) string {
 	return preset.ConfigDir
 }
 
-// Commands is the registry of available commands.
-var Commands = []Command{
-	{
-		Name:        "done",
-		Description: "Signal work complete and submit to merge queue",
-		AgentFields: map[string][]Field{
-			"claude": {
-				{"allowed-tools", "Bash(gt done:*), Bash(git status:*), Bash(git log:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(bd close:*)"},
-				{"argument-hint", "[--status COMPLETED|ESCALATED|DEFERRED] [--pre-verified]"},
+// Commands returns the registry of available commands.
+func Commands() []Command {
+	return []Command{
+		{
+			Name:        "done",
+			Description: "Signal work complete and submit to merge queue",
+			AgentFields: map[string][]Field{
+				"claude": {
+					{"allowed-tools", "Bash(gt done:*), Bash(git status:*), Bash(git log:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(bd close:*)"},
+					{"argument-hint", "[--status COMPLETED|ESCALATED|DEFERRED] [--pre-verified]"},
+				},
 			},
 		},
-	},
-	{
-		Name:        "handoff",
-		Description: "Hand off to fresh session, work continues from hook",
-		AgentFields: map[string][]Field{
-			"claude": {
-				{"allowed-tools", "Bash(gt handoff:*)"},
-				{"argument-hint", "[message]"},
-			},
-			// opencode: no extra fields, just description
-		},
-	},
-	{
-		Name:        "review",
-		Description: "Review code changes with structured grading (A-F)",
-		AgentFields: map[string][]Field{
-			"claude": {
-				{"allowed-tools", "Bash(git diff:*), Bash(git rev-parse:*), Bash(gh pr diff:*)"},
-				{"argument-hint", "[--staged | --branch | --pr <url>]"},
+		{
+			Name:        "handoff",
+			Description: "Hand off to fresh session, work continues from hook",
+			AgentFields: map[string][]Field{
+				"claude": {
+					{"allowed-tools", "Bash(gt handoff:*)"},
+					{"argument-hint", "[message]"},
+				},
+				// opencode: no extra fields, just description
 			},
 		},
-	},
+		{
+			Name:        "review",
+			Description: "Review code changes with structured grading (A-F)",
+			AgentFields: map[string][]Field{
+				"claude": {
+					{"allowed-tools", "Bash(git diff:*), Bash(git rev-parse:*), Bash(gh pr diff:*)"},
+					{"argument-hint", "[--staged | --branch | --pr <url>]"},
+				},
+			},
+		},
+	}
 }
 
 // BuildCommand assembles frontmatter + body for an agent.
@@ -120,7 +122,7 @@ func ProvisionForSettings(workspacePath, agent string, townSettings *config.Town
 	}
 
 	runtimeName := string(preset.Name)
-	for _, cmd := range Commands {
+	for _, cmd := range Commands() {
 		path := filepath.Join(dir, cmd.Name+".md")
 
 		// Don't overwrite existing
@@ -152,7 +154,7 @@ func MissingFor(workspacePath, agent string) []string {
 	dir := filepath.Join(workspacePath, configDir, "commands")
 	var missing []string
 
-	for _, cmd := range Commands {
+	for _, cmd := range Commands() {
 		path := filepath.Join(dir, cmd.Name+".md")
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			missing = append(missing, cmd.Name)
@@ -164,9 +166,10 @@ func MissingFor(workspacePath, agent string) []string {
 
 // FindByName returns the command with the given name, or nil if not found.
 func FindByName(name string) *Command {
-	for i := range Commands {
-		if Commands[i].Name == name {
-			return &Commands[i]
+	commands := Commands()
+	for i := range commands {
+		if commands[i].Name == name {
+			return &commands[i]
 		}
 	}
 	return nil
@@ -174,8 +177,9 @@ func FindByName(name string) *Command {
 
 // Names returns the names of all registered commands.
 func Names() []string {
-	names := make([]string, len(Commands))
-	for i, cmd := range Commands {
+	commands := Commands()
+	names := make([]string, len(commands))
+	for i, cmd := range commands {
 		names[i] = cmd.Name
 	}
 	return names
