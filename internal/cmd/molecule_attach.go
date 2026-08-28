@@ -12,63 +12,15 @@ import (
 )
 
 func runMoleculeAttach(_ *cobra.Command, args []string) error {
-	var pinnedBeadID, moleculeID string
-
 	workDir, err := findLocalBeadsDir()
 	if err != nil {
 		return fmt.Errorf("not in a beads workspace: %w", err)
 	}
 
 	b := beads.New(workDir)
-
-	if len(args) == 2 {
-		// Explicit: gt mol attach <pinned-bead-id> <molecule-id>
-		pinnedBeadID = args[0]
-		moleculeID = args[1]
-	} else {
-		// Auto-detect: gt mol attach <molecule-id>
-		// Find the agent's pinned handoff bead (same pattern as mol burn/squash)
-		moleculeID = args[0]
-
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting current directory: %w", err)
-		}
-
-		townRoot, err := workspace.FindFromCwd()
-		if err != nil {
-			return fmt.Errorf("finding workspace: %w", err)
-		}
-		if townRoot == "" {
-			return fmt.Errorf("not in a Gas Town workspace")
-		}
-
-		roleInfo, err := GetRoleWithContext(cwd, townRoot)
-		if err != nil {
-			return fmt.Errorf("detecting role: %w", err)
-		}
-		roleCtx := RoleContext{
-			Role:     roleInfo.Role,
-			Rig:      roleInfo.Rig,
-			Polecat:  roleInfo.Polecat,
-			TownRoot: townRoot,
-			WorkDir:  cwd,
-		}
-		target := buildAgentIdentity(roleCtx)
-		if target == "" {
-			return fmt.Errorf("cannot determine agent identity (role: %s)", roleCtx.Role)
-		}
-
-		role := extractRoleFromIdentity(target)
-
-		handoff, err := b.FindHandoffBead(role)
-		if err != nil {
-			return fmt.Errorf("finding handoff bead: %w", err)
-		}
-		if handoff == nil {
-			return fmt.Errorf("no handoff bead found for %s (looked for %q with pinned status)", target, beads.HandoffBeadTitle(role))
-		}
-		pinnedBeadID = handoff.ID
+	pinnedBeadID, moleculeID, err := resolveMoleculeAttachment(b, args)
+	if err != nil {
+		return err
 	}
 
 	// Attach the molecule
@@ -84,6 +36,57 @@ func runMoleculeAttach(_ *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func resolveMoleculeAttachment(b *beads.Beads, args []string) (string, string, error) {
+	if len(args) == 2 {
+		// Explicit: gt mol attach <pinned-bead-id> <molecule-id>
+		return args[0], args[1], nil
+	}
+	return resolveAutoMoleculeAttachment(b, args[0])
+}
+
+func resolveAutoMoleculeAttachment(b *beads.Beads, moleculeID string) (string, string, error) {
+	// Auto-detect: gt mol attach <molecule-id>
+	// Find the agent's pinned handoff bead (same pattern as mol burn/squash)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("getting current directory: %w", err)
+	}
+
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return "", "", fmt.Errorf("finding workspace: %w", err)
+	}
+	if townRoot == "" {
+		return "", "", fmt.Errorf("not in a Gas Town workspace")
+	}
+
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("detecting role: %w", err)
+	}
+	roleCtx := RoleContext{
+		Role:     roleInfo.Role,
+		Rig:      roleInfo.Rig,
+		Polecat:  roleInfo.Polecat,
+		TownRoot: townRoot,
+		WorkDir:  cwd,
+	}
+	target := buildAgentIdentity(roleCtx)
+	if target == "" {
+		return "", "", fmt.Errorf("cannot determine agent identity (role: %s)", roleCtx.Role)
+	}
+
+	role := extractRoleFromIdentity(target)
+	handoff, err := b.FindHandoffBead(role)
+	if err != nil {
+		return "", "", fmt.Errorf("finding handoff bead: %w", err)
+	}
+	if handoff == nil {
+		return "", "", fmt.Errorf("no handoff bead found for %s (looked for %q with pinned status)", target, beads.HandoffBeadTitle(role))
+	}
+	return handoff.ID, moleculeID, nil
 }
 
 func runMoleculeDetach(_ *cobra.Command, args []string) error {
