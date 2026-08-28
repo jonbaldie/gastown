@@ -18,12 +18,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	dashboardPort int
-	dashboardBind string
-	dashboardOpen bool
-)
-
 var dashboardCmd = &cobra.Command{
 	Use:     "dashboard",
 	GroupID: GroupDiag,
@@ -45,17 +39,58 @@ Example:
 }
 
 func init() {
-	dashboardCmd.Flags().IntVar(&dashboardPort, "port", 8080, "HTTP port to listen on")
+	dashboardCmd.Flags().Int("port", 8080, "HTTP port to listen on")
 	defaultBind := "127.0.0.1"
 	if os.Getenv("IS_SANDBOX") != "" {
 		defaultBind = "0.0.0.0"
 	}
-	dashboardCmd.Flags().StringVar(&dashboardBind, "bind", defaultBind, "Address to bind to (use 0.0.0.0 for all interfaces)")
-	dashboardCmd.Flags().BoolVar(&dashboardOpen, "open", false, "Open browser automatically")
+	dashboardCmd.Flags().String("bind", defaultBind, "Address to bind to (use 0.0.0.0 for all interfaces)")
+	dashboardCmd.Flags().Bool("open", false, "Open browser automatically")
 	rootCmd.AddCommand(dashboardCmd)
 }
 
+type dashboardOptions struct {
+	port int
+	bind string
+	open bool
+}
+
+func readDashboardOptions(cmd *cobra.Command) (dashboardOptions, error) {
+	port, err := cmd.Flags().GetInt("port")
+	if err != nil {
+		return dashboardOptions{}, err
+	}
+	bind, err := cmd.Flags().GetString("bind")
+	if err != nil {
+		return dashboardOptions{}, err
+	}
+	open, err := cmd.Flags().GetBool("open")
+	if err != nil {
+		return dashboardOptions{}, err
+	}
+	return dashboardOptions{port: port, bind: bind, open: open}, nil
+}
+
 func runDashboard(cmd *cobra.Command, _ []string) error {
+	opts, err := readDashboardOptions(cmd)
+	if err != nil {
+		return err
+	}
+	handler, webCfg, err := dashboardHandler(cmd)
+	if err != nil {
+		return err
+	}
+
+	listenAddr, url := dashboardAddresses(opts)
+	if opts.open {
+		go openBrowser(url)
+	}
+
+	printDashboardBanner(url, listenAddr)
+	return newDashboardServer(listenAddr, handler, webCfg).ListenAndServe()
+}
+
+func dashboardHandler(cmd *cobra.Command) (http.Handler, *config.WebTimeoutsConfig, error) {
 	// Check if we're in a workspace - if not, run in setup mode
 	var handler http.Handler
 	var err error
@@ -66,7 +101,7 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 		// No workspace - run in setup mode
 		handler, err = web.NewSetupMux()
 		if err != nil {
-			return fmt.Errorf("creating setup handler: %w", err)
+			return nil, nil, fmt.Errorf("creating setup handler: %w", err)
 		}
 	} else {
 		// In a workspace - run normal dashboard
@@ -78,7 +113,7 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 
 		fetcher, fetchErr := web.NewLiveConvoyFetcher()
 		if fetchErr != nil {
-			return fmt.Errorf("creating convoy fetcher: %w", fetchErr)
+			return nil, nil, fmt.Errorf("creating convoy fetcher: %w", fetchErr)
 		}
 
 		// Load web timeouts config (nil-safe: NewDashboardMux applies defaults)
@@ -92,34 +127,46 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 
 		handler, err = web.NewDashboardMux(fetcher, webCfg)
 		if err != nil {
-			return fmt.Errorf("creating dashboard handler: %w", err)
+			return nil, nil, fmt.Errorf("creating dashboard handler: %w", err)
 		}
 	}
-
-	// Build the listen address and display URL
-	listenAddr := fmt.Sprintf("%s:%d", dashboardBind, dashboardPort)
-	displayHost := dashboardBind
+	return handler, webCfg, nil
+}
+func dashboardAddresses(opts dashboardOptions) (listenAddr, url string) {
+	listenAddr = fmt.Sprintf("%s:%d", opts.bind, opts.port)
+	displayHost := opts.bind
 	if displayHost == "0.0.0.0" {
-		if hostname, err := os.Hostname(); err == nil {
-			displayHost = hostname
-		} else {
-			displayHost = "localhost"
-		}
+		displayHost = dashboardDisplayHost()
 	}
-	url := fmt.Sprintf("http://%s:%d", displayHost, dashboardPort)
+	return listenAddr, fmt.Sprintf("http://%s:%d", displayHost, opts.port)
+}
 
-	// Open browser if requested
-	if dashboardOpen {
-		go openBrowser(url)
+func dashboardDisplayHost() string {
+	hostname, err := os.Hostname()
+	if err == nil {
+		return hostname
 	}
+	return "localhost"
+}
 
+func newDashboardServer(listenAddr string, handler http.Handler, webCfg *config.WebTimeoutsConfig) *http.Server {
 	maxRunTimeout := config.ParseDurationOrDefault(webCfg.MaxRunTimeout, 120*time.Second)
 	writeTimeout := maxRunTimeout + 15*time.Second
 	if writeTimeout < 60*time.Second {
 		writeTimeout = 60 * time.Second
 	}
 
-	// Start the server with timeouts
+	return &http.Server{
+		Addr:              listenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
+func printDashboardBanner(url, listenAddr string) {
 	// Only show the large banner if the terminal is wide enough (98 cols)
 	width, _, err := term.GetSize(int(os.Stdout.Fd()))
 	if err == nil && width >= 98 {
@@ -149,16 +196,6 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 		fmt.Print("\n  WELCOME TO GASTOWN\n\n")
 	}
 	fmt.Printf("  launching dashboard at %s  •  api: %s/api/  •  listening on %s  •  ctrl+c to stop\n", url, url, listenAddr)
-
-	server := &http.Server{
-		Addr:              listenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       120 * time.Second,
-	}
-	return server.ListenAndServe()
 }
 
 // ensureDoltPortEnv sets GT_DOLT_PORT, BEADS_DOLT_SERVER_PORT,
