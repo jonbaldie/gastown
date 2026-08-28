@@ -164,51 +164,8 @@ func polecatCapacitySnapshotForTownNoCleanup(townRoot string) (polecatCapacitySn
 		return snapshot, nil
 	}
 
-	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err != nil {
-		return snapshot, fmt.Errorf("loading rigs config for polecat capacity: %w", err)
-	}
-
-	tmuxClient := tmux.NewTmux()
-	sessionNames, err := tmuxClient.ListSessions()
-	if err != nil {
-		return snapshot, fmt.Errorf("listing tmux sessions for polecat capacity: %w", err)
-	}
-	sessions := newPolecatSessionSet(sessionNames)
-	for rigName := range rigsConfig.Rigs {
-		rigPath := filepath.Join(townRoot, rigName)
-		if _, err := os.Stat(rigPath); err != nil {
-			if !os.IsNotExist(err) {
-				return snapshot, fmt.Errorf("stat rig path for %s capacity: %w", rigName, err)
-			}
-			continue
-		}
-		polecatNames, err := listPolecatDirectoryNames(rigPath)
-		if err != nil {
-			return snapshot, fmt.Errorf("listing polecat dirs for %s capacity: %w", rigName, err)
-		}
-		if len(polecatNames) == 0 {
-			continue
-		}
-
-		rigBeads := beads.New(rigPath)
-		agents, err := rigBeads.ListAgentBeads()
-		if err != nil {
-			return snapshot, fmt.Errorf("listing agent beads for %s capacity: %w", rigName, err)
-		}
-		activeWork, err := listActivePolecatWorkByName(rigBeads, rigName)
-		if err != nil {
-			return snapshot, fmt.Errorf("listing active polecat work for %s capacity: %w", rigName, err)
-		}
-		prefix := beads.GetPrefixForRig(townRoot, rigName)
-		for _, name := range polecatNames {
-			agentID := beads.PolecatBeadIDWithPrefix(prefix, rigName, name)
-			issue := agents[agentID]
-			fields := parsePolecatAgentFields(issue)
-			clonePath := polecat.ClonePathFor(rigPath, rigName, name)
-			applyAgentFieldsToCapacitySnapshot(&snapshot, rigName, name, clonePath, rigBeads, fields, activeWork[name], sessions)
-		}
+	if err := scanPolecatCapacityRigs(townRoot, &snapshot); err != nil {
+		return snapshot, err
 	}
 
 	reservations, err := readPolecatAdmissionReservations(townRoot)
@@ -223,6 +180,63 @@ func polecatCapacitySnapshotForTownNoCleanup(townRoot string) (polecatCapacitySn
 		}
 	}
 	return snapshot, nil
+}
+
+func scanPolecatCapacityRigs(townRoot string, snapshot *polecatCapacitySnapshot) error {
+	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	if err != nil {
+		return fmt.Errorf("loading rigs config for polecat capacity: %w", err)
+	}
+
+	tmuxClient := tmux.NewTmux()
+	sessionNames, err := tmuxClient.ListSessions()
+	if err != nil {
+		return fmt.Errorf("listing tmux sessions for polecat capacity: %w", err)
+	}
+	sessions := newPolecatSessionSet(sessionNames)
+	for rigName := range rigsConfig.Rigs {
+		if err := scanPolecatCapacityRig(townRoot, rigName, snapshot, sessions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanPolecatCapacityRig(townRoot, rigName string, snapshot *polecatCapacitySnapshot, sessions polecatSessionSet) error {
+	rigPath := filepath.Join(townRoot, rigName)
+	if _, err := os.Stat(rigPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat rig path for %s capacity: %w", rigName, err)
+		}
+		return nil
+	}
+	polecatNames, err := listPolecatDirectoryNames(rigPath)
+	if err != nil {
+		return fmt.Errorf("listing polecat dirs for %s capacity: %w", rigName, err)
+	}
+	if len(polecatNames) == 0 {
+		return nil
+	}
+
+	rigBeads := beads.New(rigPath)
+	agents, err := rigBeads.ListAgentBeads()
+	if err != nil {
+		return fmt.Errorf("listing agent beads for %s capacity: %w", rigName, err)
+	}
+	activeWork, err := listActivePolecatWorkByName(rigBeads, rigName)
+	if err != nil {
+		return fmt.Errorf("listing active polecat work for %s capacity: %w", rigName, err)
+	}
+	prefix := beads.GetPrefixForRig(townRoot, rigName)
+	for _, name := range polecatNames {
+		agentID := beads.PolecatBeadIDWithPrefix(prefix, rigName, name)
+		issue := agents[agentID]
+		fields := parsePolecatAgentFields(issue)
+		clonePath := polecat.ClonePathFor(rigPath, rigName, name)
+		applyAgentFieldsToCapacitySnapshot(snapshot, rigName, name, clonePath, rigBeads, fields, activeWork[name], sessions)
+	}
+	return nil
 }
 
 func listPolecatDirectoryNames(rigPath string) ([]string, error) {
@@ -341,23 +355,30 @@ func readPolecatAdmissionReservations(townRoot string) ([]polecatAdmissionReserv
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			_ = os.Remove(path)
-			continue
+		reservation, ok := readPolecatAdmissionReservation(path, entry.Name())
+		if ok {
+			reservations = append(reservations, reservation)
 		}
-		var reservation polecatAdmissionReservation
-		if err := json.Unmarshal(data, &reservation); err != nil {
-			_ = os.Remove(path)
-			continue
-		}
-		if reservation.ID == "" || reservation.PID <= 0 || reservation.CreatedAt.IsZero() || reservation.ID+".json" != entry.Name() {
-			_ = os.Remove(path)
-			continue
-		}
-		reservations = append(reservations, reservation)
 	}
 	return reservations, nil
+}
+
+func readPolecatAdmissionReservation(path, fileName string) (polecatAdmissionReservation, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		_ = os.Remove(path)
+		return polecatAdmissionReservation{}, false
+	}
+	var reservation polecatAdmissionReservation
+	if err := json.Unmarshal(data, &reservation); err != nil {
+		_ = os.Remove(path)
+		return polecatAdmissionReservation{}, false
+	}
+	if reservation.ID == "" || reservation.PID <= 0 || reservation.CreatedAt.IsZero() || reservation.ID+".json" != fileName {
+		_ = os.Remove(path)
+		return polecatAdmissionReservation{}, false
+	}
+	return reservation, true
 }
 
 func cleanupStalePolecatAdmissionReservations(townRoot string, now time.Time) error {
