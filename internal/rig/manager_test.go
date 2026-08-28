@@ -485,7 +485,7 @@ func TestRigSummary(t *testing.T) {
 		HasRefinery: false,
 	}
 
-	summary := rig.Summary()
+	summary := Summary(rig)
 
 	if summary.Name != "test" {
 		t.Errorf("Name = %q, want test", summary.Name)

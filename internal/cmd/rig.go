@@ -785,7 +785,7 @@ func runRigList(_ *cobra.Command, _ []string) error {
 			refineryStatus = "running"
 		}
 
-		summary := r.Summary()
+		summary := rig.Summary(r)
 		rigs = append(rigs, rigInfo{
 			Name:        name,
 			BeadsPrefix: prefix,
