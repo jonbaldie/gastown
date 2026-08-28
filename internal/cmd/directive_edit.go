@@ -29,38 +29,66 @@ Examples:
 	RunE: runDirectiveEdit,
 }
 
-var (
-	directiveEditRig  string
-	directiveEditTown bool
-)
-
 func init() {
 	directiveCmd.AddCommand(directiveEditCmd)
-	directiveEditCmd.Flags().StringVar(&directiveEditRig, "rig", "", "Rig name (default: auto-detect from cwd)")
-	directiveEditCmd.Flags().BoolVar(&directiveEditTown, "town", false, "Edit town-level directive instead of rig-level")
+	directiveEditCmd.Flags().String("rig", "", "Rig name (default: auto-detect from cwd)")
+	directiveEditCmd.Flags().Bool("town", false, "Edit town-level directive instead of rig-level")
 }
 
-func runDirectiveEdit(_ *cobra.Command, args []string) error {
+type directiveEditOptions struct {
+	rig  string
+	town bool
+}
+
+func readDirectiveEditOptions(cmd *cobra.Command) (directiveEditOptions, error) {
+	rig, err := cmd.Flags().GetString("rig")
+	if err != nil {
+		return directiveEditOptions{}, err
+	}
+	town, err := cmd.Flags().GetBool("town")
+	if err != nil {
+		return directiveEditOptions{}, err
+	}
+	return directiveEditOptions{rig: rig, town: town}, nil
+}
+
+func runDirectiveEdit(cmd *cobra.Command, args []string) error {
+	opts, err := readDirectiveEditOptions(cmd)
+	if err != nil {
+		return err
+	}
 	role := args[0]
 
 	if !isValidRole(role) {
 		return fmt.Errorf("unknown role %q — valid roles: %s", role, strings.Join(config.AllRoles(), ", "))
 	}
 
-	townRoot, rigName, err := resolveDirectiveContext(directiveEditRig)
+	townRoot, rigName, err := resolveDirectiveContext(opts.rig)
 	if err != nil {
 		return err
 	}
 
-	// Determine which file to edit
-	var path string
-	if directiveEditTown || rigName == "" {
-		path = filepath.Join(townRoot, "directives", role+".md")
-	} else {
-		path = filepath.Join(townRoot, rigName, "directives", role+".md")
+	path := directivePath(townRoot, rigName, role, opts.town)
+	if err := ensureDirectiveFile(path, role); err != nil {
+		return err
+	}
+	if err := openDirectiveEditor(path); err != nil {
+		return err
 	}
 
-	// Create directory and file if needed
+	fmt.Printf("Directive updated: %s\n", path)
+	fmt.Println("Changes take effect at next 'gt prime'.")
+	return nil
+}
+
+func directivePath(townRoot, rigName, role string, town bool) string {
+	if town || rigName == "" {
+		return filepath.Join(townRoot, "directives", role+".md")
+	}
+	return filepath.Join(townRoot, rigName, "directives", role+".md")
+}
+
+func ensureDirectiveFile(path, role string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating directory %s: %w", dir, err)
@@ -74,8 +102,10 @@ func runDirectiveEdit(_ *cobra.Command, args []string) error {
 		}
 		fmt.Printf("Created new directive: %s\n", path)
 	}
+	return nil
+}
 
-	// Open in editor
+func openDirectiveEditor(path string) error {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
@@ -88,8 +118,5 @@ func runDirectiveEdit(_ *cobra.Command, args []string) error {
 	if err := editorCmd.Run(); err != nil {
 		return fmt.Errorf("running editor: %w", err)
 	}
-
-	fmt.Printf("Directive updated: %s\n", path)
-	fmt.Println("Changes take effect at next 'gt prime'.")
 	return nil
 }
