@@ -152,6 +152,17 @@ func (d *Daemon) dispatchReaperDog(vars map[string]string) error {
 	return nil
 }
 
+type inlineReapStats struct {
+	totalReaped         int
+	totalMoleculeSteps  int
+	totalOpen           int
+	totalPurged         int
+	totalMailPurged     int
+	totalPluginClosed   int
+	totalDispatchClosed int
+	totalAutoClosed     int
+}
+
 // reapWispsInline is the fallback that runs the reaper cycle inline when
 // Dog dispatch is unavailable. Delegates to the reaper package for SQL execution.
 func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge time.Duration, mol *dogMol) {
@@ -170,10 +181,46 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 
 	port := d.doltServerPort()
 	dryRun := config.DryRun
-	var totalReaped, totalMoleculeSteps, totalOpen, totalPurged, totalMailPurged, totalAutoClosed int
+	stats := &inlineReapStats{}
 
 	// Step 2: Reap
-	reapErrors := 0
+	reapErrors := d.reapInlineWisps(databases, host, port, maxAge, dryRun, stats)
+	if reapErrors > 0 {
+		mol.FailStep("reap", fmt.Sprintf("%d databases had reap errors", reapErrors))
+	} else {
+		mol.CloseStep("reap")
+	}
+
+	// Step 3: Purge
+	purgeErrors := d.purgeInlineWisps(databases, host, port, deleteAge, dryRun, stats)
+	if purgeErrors > 0 {
+		mol.FailStep("purge", fmt.Sprintf("%d databases had purge errors", purgeErrors))
+	} else {
+		mol.CloseStep("purge")
+	}
+
+	// Step 3b: Close plugin receipts (fast-track — 1h instead of 7d stale age)
+	pluginReceiptAge := 1 * time.Hour
+	d.closeInlinePluginReceipts(databases, host, port, pluginReceiptAge, dryRun, stats)
+
+	// Step 3c: Close plugin dispatch mails (daemon→dog instruction beads that are never closed)
+	pluginDispatchAge := 1 * time.Hour
+	d.closeInlinePluginDispatches(databases, host, port, pluginDispatchAge, dryRun, stats)
+
+	// Step 4: Auto-close
+	autoCloseErrors := d.autoCloseInlineIssues(databases, host, port, dryRun, stats)
+	if autoCloseErrors > 0 {
+		mol.FailStep("auto-close", fmt.Sprintf("%d databases had auto-close errors", autoCloseErrors))
+	} else {
+		mol.CloseStep("auto-close")
+	}
+
+	// Step 5: Report
+	d.reportInlineReap(stats, len(databases), dryRun, mol)
+}
+
+func (d *Daemon) reapInlineWisps(databases []string, host string, port int, maxAge time.Duration, dryRun bool, stats *inlineReapStats) int {
+	errors := 0
 	for _, dbName := range databases {
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
@@ -181,7 +228,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: connect error: %v", dbName, err)
-			reapErrors++
+			errors++
 			continue
 		}
 		if ok, _ := reaper.HasReaperSchema(db); !ok {
@@ -193,35 +240,36 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		db.Close()
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: reap error: %v", dbName, err)
-			reapErrors++
+			errors++
 			continue
 		}
-		totalReaped += result.Reaped
-		totalMoleculeSteps += result.MoleculeStepsClosed
-		totalOpen += result.OpenRemain
+		stats.totalReaped += result.Reaped
+		stats.totalMoleculeSteps += result.MoleculeStepsClosed
+		stats.totalOpen += result.OpenRemain
 		if result.Reaped > 0 || result.MoleculeStepsClosed > 0 {
-			reapSummary := fmt.Sprintf("wisp_reaper: %s: reaped %d stale wisps", dbName, result.Reaped)
-			if result.MoleculeStepsClosed > 0 {
-				reapSummary += fmt.Sprintf(", closed %d molecule steps", result.MoleculeStepsClosed)
-			}
-			d.logger.Printf("%s, %d open remain", reapSummary, result.OpenRemain)
+			d.logInlineReapResult(dbName, result.Reaped, result.MoleculeStepsClosed, result.OpenRemain)
 		}
 	}
-	if reapErrors > 0 {
-		mol.FailStep("reap", fmt.Sprintf("%d databases had reap errors", reapErrors))
-	} else {
-		mol.CloseStep("reap")
-	}
+	return errors
+}
 
-	// Step 3: Purge
-	purgeErrors := 0
+func (d *Daemon) logInlineReapResult(dbName string, reaped, moleculeSteps, openRemain int) {
+	summary := fmt.Sprintf("wisp_reaper: %s: reaped %d stale wisps", dbName, reaped)
+	if moleculeSteps > 0 {
+		summary += fmt.Sprintf(", closed %d molecule steps", moleculeSteps)
+	}
+	d.logger.Printf("%s, %d open remain", summary, openRemain)
+}
+
+func (d *Daemon) purgeInlineWisps(databases []string, host string, port int, deleteAge time.Duration, dryRun bool, stats *inlineReapStats) int {
+	errors := 0
 	for _, dbName := range databases {
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
 		db, err := reaper.OpenDB(host, port, dbName, 30*time.Second, 30*time.Second)
 		if err != nil {
-			purgeErrors++
+			errors++
 			continue
 		}
 		if ok, _ := reaper.HasReaperSchema(db); !ok {
@@ -232,24 +280,19 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		db.Close()
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: purge error: %v", dbName, err)
-			purgeErrors++
+			errors++
 			continue
 		}
-		totalPurged += result.WispsPurged
-		totalMailPurged += result.MailPurged
-		for _, a := range result.Anomalies {
-			d.logger.Printf("wisp_reaper: %s: ANOMALY: %s", dbName, a.Message)
+		stats.totalPurged += result.WispsPurged
+		stats.totalMailPurged += result.MailPurged
+		for _, anomaly := range result.Anomalies {
+			d.logger.Printf("wisp_reaper: %s: ANOMALY: %s", dbName, anomaly.Message)
 		}
 	}
-	if purgeErrors > 0 {
-		mol.FailStep("purge", fmt.Sprintf("%d databases had purge errors", purgeErrors))
-	} else {
-		mol.CloseStep("purge")
-	}
+	return errors
+}
 
-	// Step 3b: Close plugin receipts (fast-track — 1h instead of 7d stale age)
-	pluginReceiptAge := 1 * time.Hour
-	var totalPluginClosed int
+func (d *Daemon) closeInlinePluginReceipts(databases []string, host string, port int, age time.Duration, dryRun bool, stats *inlineReapStats) {
 	for _, dbName := range databases {
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
@@ -262,21 +305,20 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 			db.Close()
 			continue
 		}
-		result, err := reaper.ClosePluginReceipts(db, dbName, pluginReceiptAge, dryRun)
+		result, err := reaper.ClosePluginReceipts(db, dbName, age, dryRun)
 		db.Close()
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: plugin receipt close error: %v", dbName, err)
 			continue
 		}
-		totalPluginClosed += result.Closed
+		stats.totalPluginClosed += result.Closed
 		if result.Closed > 0 {
 			d.logger.Printf("wisp_reaper: %s: closed %d plugin receipts", dbName, result.Closed)
 		}
 	}
+}
 
-	// Step 3c: Close plugin dispatch mails (daemon→dog instruction beads that are never closed)
-	pluginDispatchAge := 1 * time.Hour
-	var totalDispatchClosed int
+func (d *Daemon) closeInlinePluginDispatches(databases []string, host string, port int, age time.Duration, dryRun bool, stats *inlineReapStats) {
 	for _, dbName := range databases {
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
@@ -289,31 +331,30 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 			db.Close()
 			continue
 		}
-		result, err := reaper.ClosePluginDispatches(db, dbName, pluginDispatchAge, dryRun)
+		result, err := reaper.ClosePluginDispatches(db, dbName, age, dryRun)
 		db.Close()
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: plugin dispatch close error: %v", dbName, err)
 			continue
 		}
-		totalDispatchClosed += result.Closed
+		stats.totalDispatchClosed += result.Closed
 		if result.Closed > 0 {
 			d.logger.Printf("wisp_reaper: %s: closed %d plugin dispatches", dbName, result.Closed)
 		}
 	}
+}
 
-	// Step 4: Auto-close
-	autoCloseErrors := 0
+func (d *Daemon) autoCloseInlineIssues(databases []string, host string, port int, dryRun bool, stats *inlineReapStats) int {
+	errors := 0
 	for _, dbName := range databases {
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
 		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
 		if err != nil {
-			autoCloseErrors++
+			errors++
 			continue
 		}
-		// Auto-close operates on the issues table, not wisps, but if the database
-		// has no beads schema at all we should skip it too.
 		if ok, _ := reaper.HasReaperSchema(db); !ok {
 			db.Close()
 			continue
@@ -322,28 +363,25 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		db.Close()
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: auto-close error: %v", dbName, err)
-			autoCloseErrors++
+			errors++
 			continue
 		}
-		totalAutoClosed += result.Closed
+		stats.totalAutoClosed += result.Closed
 	}
-	if autoCloseErrors > 0 {
-		mol.FailStep("auto-close", fmt.Sprintf("%d databases had auto-close errors", autoCloseErrors))
-	} else {
-		mol.CloseStep("auto-close")
-	}
+	return errors
+}
 
-	// Step 5: Report
-	if totalOpen > wispAlertThreshold {
+func (d *Daemon) reportInlineReap(stats *inlineReapStats, databaseCount int, dryRun bool, mol *dogMol) {
+	if stats.totalOpen > wispAlertThreshold {
 		d.logger.Printf("wisp_reaper: WARNING: %d open wisps exceed threshold %d — investigate wisp lifecycle",
-			totalOpen, wispAlertThreshold)
+			stats.totalOpen, wispAlertThreshold)
 	}
-	summary := fmt.Sprintf("wisp_reaper: cycle complete — reaped=%d", totalReaped)
-	if totalMoleculeSteps > 0 {
-		summary += fmt.Sprintf(" molecule_steps_closed=%d", totalMoleculeSteps)
+	summary := fmt.Sprintf("wisp_reaper: cycle complete — reaped=%d", stats.totalReaped)
+	if stats.totalMoleculeSteps > 0 {
+		summary += fmt.Sprintf(" molecule_steps_closed=%d", stats.totalMoleculeSteps)
 	}
 	summary += fmt.Sprintf(" purged=%d mail_purged=%d plugin_closed=%d dispatch_closed=%d auto_closed=%d open=%d databases=%d dryRun=%v",
-		totalPurged, totalMailPurged, totalPluginClosed, totalDispatchClosed, totalAutoClosed, totalOpen, len(databases), dryRun)
+		stats.totalPurged, stats.totalMailPurged, stats.totalPluginClosed, stats.totalDispatchClosed, stats.totalAutoClosed, stats.totalOpen, databaseCount, dryRun)
 	d.logger.Printf("%s", summary)
 	mol.CloseStep("report")
 }
