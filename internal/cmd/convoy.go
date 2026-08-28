@@ -1860,56 +1860,73 @@ func persistAndNotifyConvoyCompletion(townBeads, convoyID, title string) error {
 
 // notifyConvoyCompletion sends notifications to owner, any notify addresses, and mayor/.
 func notifyConvoyCompletion(townBeads, convoyID, title string) {
-	stdout, err := runBdJSON(townBeads, "show", convoyID, "--json")
-	if err != nil {
+	data, ok := loadConvoyCompletionData(townBeads, convoyID)
+	if !ok {
 		return
 	}
+	mayorBody := convoyCompletionMayorBody(townBeads, convoyID, data.createdAt)
+	notified := notifyConvoyAddresses(data.fields, convoyID, title)
+	notifyConvoyNudgeAddresses(data.fields, convoyID, title)
+	notifyConvoyMayor(convoyID, title, mayorBody, notified)
+	notifyMayorSession(townBeads, convoyID, title)
+	recordConvoyCompletionNotification(townBeads, convoyID, data)
+}
 
+type convoyCompletionData struct {
+	description string
+	createdAt   string
+	fields      *beads.ConvoyFields
+}
+
+func loadConvoyCompletionData(townBeads, convoyID string) (convoyCompletionData, bool) {
+	stdout, err := runBdJSON(townBeads, "show", convoyID, "--json")
+	if err != nil {
+		return convoyCompletionData{}, false
+	}
 	var convoys []struct {
 		Description string `json:"description"`
 		CreatedAt   string `json:"created_at"`
 	}
 	if err := json.Unmarshal(stdout, &convoys); err != nil || len(convoys) == 0 {
-		return
+		return convoyCompletionData{}, false
 	}
+	data := convoyCompletionData{
+		description: convoys[0].Description,
+		createdAt:   convoys[0].CreatedAt,
+		fields:      beads.ParseConvoyFields(&beads.Issue{Description: convoys[0].Description}),
+	}
+	if data.fields == nil {
+		data.fields = &beads.ConvoyFields{}
+	}
+	if data.fields.CompletionNotifiedAt != "" {
+		return convoyCompletionData{}, false
+	}
+	return data, true
+}
 
-	// ZFC: Use typed accessor instead of parsing description text
-	fields := beads.ParseConvoyFields(&beads.Issue{Description: convoys[0].Description})
-	if fields == nil {
-		fields = &beads.ConvoyFields{}
+func convoyCompletionMayorBody(townBeads, convoyID, createdAt string) string {
+	duration := ""
+	if created, err := time.Parse(time.RFC3339, createdAt); err == nil {
+		duration = formatWorkerAge(time.Since(created).Round(time.Minute))
 	}
-	if fields.CompletionNotifiedAt != "" {
-		return
-	}
-
-	// Compute duration since convoy was created.
-	var durationStr string
-	if t, err := time.Parse(time.RFC3339, convoys[0].CreatedAt); err == nil {
-		d := time.Since(t).Round(time.Minute)
-		durationStr = formatWorkerAge(d)
-	}
-
-	// Count tracked issues (best-effort; 0 on error is fine for display).
 	trackedIDs, _ := bdDepListRawIDs(townBeads, convoyID, "down", "tracks")
-	issueCount := len(trackedIDs)
-
-	// Build enriched body for mayor notification.
-	mayorBody := fmt.Sprintf("Convoy %s has completed. All tracked issues are now closed.", convoyID)
-	if issueCount > 0 || durationStr != "" {
-		mayorBody += "\n"
-		if issueCount > 0 {
-			mayorBody += fmt.Sprintf("\nIssues: %d", issueCount)
+	body := fmt.Sprintf("Convoy %s has completed. All tracked issues are now closed.", convoyID)
+	if len(trackedIDs) > 0 || duration != "" {
+		body += "\n"
+		if len(trackedIDs) > 0 {
+			body += fmt.Sprintf("\nIssues: %d", len(trackedIDs))
 		}
-		if durationStr != "" {
-			mayorBody += fmt.Sprintf("\nDuration: %s", durationStr)
+		if duration != "" {
+			body += fmt.Sprintf("\nDuration: %s", duration)
 		}
 	}
+	return body
+}
 
-	// Track notified addresses to avoid duplicate mayor/ notification.
-	notifiedAddrs := make(map[string]bool)
-
+func notifyConvoyAddresses(fields *beads.ConvoyFields, convoyID, title string) map[string]bool {
+	notified := make(map[string]bool)
 	for _, addr := range fields.NotificationAddresses() {
-		notifiedAddrs[addr] = true
+		notified[addr] = true
 		mailArgs := convoyMailArgs(addr,
 			fmt.Sprintf("🚚 Convoy landed: %s", title),
 			fmt.Sprintf("Convoy %s has completed.\n\nAll tracked issues are now closed.", convoyID),
@@ -1919,8 +1936,10 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 			style.PrintWarning("could not notify %s: %v", addr, err)
 		}
 	}
+	return notified
+}
 
-	// Send nudge notifications to nudge watchers.
+func notifyConvoyNudgeAddresses(fields *beads.ConvoyFields, convoyID, title string) {
 	for _, addr := range fields.NudgeNotificationAddresses() {
 		nudgeMsg := fmt.Sprintf("🚚 Convoy landed: %s — Convoy %s has completed. All tracked issues are now closed.", title, convoyID)
 		nudgeCmd := exec.Command("gt", "nudge", addr, "-m", nudgeMsg)
@@ -1929,24 +1948,24 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 			style.PrintWarning("could not nudge %s: %v", addr, err)
 		}
 	}
+}
 
-	// Always notify mayor/ for strategic visibility, unless already notified above.
-	if !notifiedAddrs["mayor/"] {
-		mailArgs := convoyMailArgs("mayor/", fmt.Sprintf("Convoy complete: %s", title), mayorBody, convoyID)
-		mailCmd := exec.Command("gt", mailArgs...)
-		if err := mailCmd.Run(); err != nil {
-			style.PrintWarning("could not notify mayor/ of convoy completion: %v", err)
-		}
+func notifyConvoyMayor(convoyID, title, body string, notified map[string]bool) {
+	if notified["mayor/"] {
+		return
 	}
+	mailArgs := convoyMailArgs("mayor/", fmt.Sprintf("Convoy complete: %s", title), body, convoyID)
+	mailCmd := exec.Command("gt", mailArgs...)
+	if err := mailCmd.Run(); err != nil {
+		style.PrintWarning("could not notify mayor/ of convoy completion: %v", err)
+	}
+}
 
-	// Push notification to active Mayor session if configured.
-	notifyMayorSession(townBeads, convoyID, title)
-
-	fields.CompletionNotifiedAt = time.Now().UTC().Format(time.RFC3339)
-	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoys[0].Description}, fields)
+func recordConvoyCompletionNotification(townBeads, convoyID string, data convoyCompletionData) {
+	data.fields.CompletionNotifiedAt = time.Now().UTC().Format(time.RFC3339)
+	newDesc := beads.SetConvoyFields(&beads.Issue{Description: data.description}, data.fields)
 	if err := runTownMutationAndExport(townBeads, "update", convoyID, "--description="+newDesc); err != nil {
 		style.PrintWarning("could not record convoy completion notification state for %s: %v", convoyID, err)
-		return
 	}
 }
 
