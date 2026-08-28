@@ -37,22 +37,25 @@ Commands:
   gt account status            Show current account info`,
 }
 
-var accountListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List registered accounts",
-	Long: `List all registered Claude Code accounts.
+func newAccountListCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List registered accounts",
+		Long: `List all registered Claude Code accounts.
 
 Shows account handles, emails, and which is the default.
 
 Examples:
   gt account list           # Text output
   gt account list --json    # JSON output`,
+	}
 }
 
-var accountAddCmd = &cobra.Command{
-	Use:   "add <handle>",
-	Short: "Add a new account",
-	Long: `Add a new Claude Code account.
+func newAccountAddCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "add <handle>",
+		Short: "Add a new account",
+		Long: `Add a new Claude Code account.
 
 Creates a config directory at ~/.claude-accounts/<handle> and registers
 the account. You'll need to run 'claude' with CLAUDE_CONFIG_DIR set to
@@ -62,7 +65,8 @@ Examples:
   gt account add work
   gt account add work --email steve@company.com
   gt account add work --email steve@company.com --desc "Work account"`,
-	Args: cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
+	}
 }
 
 var accountDefaultCmd = &cobra.Command{
@@ -97,23 +101,29 @@ func runAccountList(opts *accountOptions) error {
 
 	accountsPath := constants.MayorAccountsPath(townRoot)
 	cfg, err := config.LoadAccountsConfig(accountsPath)
-	if err != nil {
-		// If file doesn't exist, show empty message
-		fmt.Println("No accounts configured.")
-		fmt.Println("\nTo add an account:")
-		fmt.Println("  gt account add <handle>")
+	if err != nil || len(cfg.Accounts) == 0 {
+		printNoAccountsConfigured()
 		return nil
 	}
 
-	if len(cfg.Accounts) == 0 {
-		fmt.Println("No accounts configured.")
-		fmt.Println("\nTo add an account:")
-		fmt.Println("  gt account add <handle>")
-		return nil
+	items := accountListItems(cfg)
+
+	if opts.json {
+		return encodeAccountList(items)
 	}
 
-	// Build list items
-	var items []AccountListItem
+	printAccountList(items)
+	return nil
+}
+
+func printNoAccountsConfigured() {
+	fmt.Println("No accounts configured.")
+	fmt.Println("\nTo add an account:")
+	fmt.Println("  gt account add <handle>")
+}
+
+func accountListItems(cfg *config.AccountsConfig) []AccountListItem {
+	items := make([]AccountListItem, 0, len(cfg.Accounts))
 	for handle, acct := range cfg.Accounts {
 		items = append(items, AccountListItem{
 			Handle:      handle,
@@ -124,18 +134,19 @@ func runAccountList(opts *accountOptions) error {
 		})
 	}
 
-	// Sort by handle for consistent output
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].Handle < items[j].Handle
 	})
+	return items
+}
 
-	if opts.json {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(items)
-	}
+func encodeAccountList(items []AccountListItem) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(items)
+}
 
-	// Text output
+func printAccountList(items []AccountListItem) {
 	fmt.Printf("%s\n\n", style.Bold.Render("Claude Code Accounts"))
 	for _, item := range items {
 		marker := "  "
@@ -156,8 +167,6 @@ func runAccountList(opts *accountOptions) error {
 			fmt.Printf("    %s\n", style.Dim.Render(item.Description))
 		}
 	}
-
-	return nil
 }
 
 func runAccountAdd(opts *accountOptions, args []string) error {
@@ -169,37 +178,16 @@ func runAccountAdd(opts *accountOptions, args []string) error {
 	}
 
 	accountsPath := constants.MayorAccountsPath(townRoot)
-
-	// Load existing config or create new
-	cfg, err := config.LoadAccountsConfig(accountsPath)
-	if err != nil {
-		cfg = config.NewAccountsConfig()
-	}
+	cfg := loadAccountsConfigOrNew(accountsPath)
 
 	// Check if account already exists
 	if _, exists := cfg.Accounts[handle]; exists {
 		return fmt.Errorf("account '%s' already exists", handle)
 	}
 
-	// Build config directory path
-	baseDir, err := config.DefaultAccountsConfigDir()
+	configDir, err := createAccountConfigDir(handle)
 	if err != nil {
-		return fmt.Errorf("determining accounts config directory: %w", err)
-	}
-	configDir := baseDir + "/" + handle
-
-	// Create the config directory
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
-	}
-
-	// Symlink global commands (e.g., SuperClaude) so they're available
-	// when CLAUDE_CONFIG_DIR points at this account directory.
-	if err := ensureSharedCommandsSymlink(configDir); err != nil {
-		style.PrintWarning("could not symlink global commands: %v", err)
-	}
-	if err := skills.ProvisionUserDir(configDir); err != nil {
-		style.PrintWarning("could not provision mattpocock skills: %v", err)
+		return err
 	}
 
 	// Add account
@@ -227,6 +215,33 @@ func runAccountAdd(opts *accountOptions, args []string) error {
 	fmt.Println("Then use /login to authenticate.")
 
 	return nil
+}
+
+func loadAccountsConfigOrNew(accountsPath string) *config.AccountsConfig {
+	cfg, err := config.LoadAccountsConfig(accountsPath)
+	if err != nil {
+		return config.NewAccountsConfig()
+	}
+	return cfg
+}
+
+func createAccountConfigDir(handle string) (string, error) {
+	baseDir, err := config.DefaultAccountsConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("determining accounts config directory: %w", err)
+	}
+	configDir := baseDir + "/" + handle
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return "", fmt.Errorf("creating config directory: %w", err)
+	}
+
+	if err := ensureSharedCommandsSymlink(configDir); err != nil {
+		style.PrintWarning("could not symlink global commands: %v", err)
+	}
+	if err := skills.ProvisionUserDir(configDir); err != nil {
+		style.PrintWarning("could not provision mattpocock skills: %v", err)
+	}
+	return configDir, nil
 }
 
 func runAccountDefault(_ *cobra.Command, args []string) error {
@@ -329,6 +344,11 @@ func runAccountStatus(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("account '%s' not found", handle)
 	}
 
+	printAccountStatus(handle, configDir, envAccount, cfg.Default, acct)
+	return nil
+}
+
+func printAccountStatus(handle, configDir, envAccount, defaultHandle string, acct *config.Account) {
 	fmt.Printf("%s\n\n", style.Bold.Render("Current Account"))
 	fmt.Printf("Handle:     %s\n", style.Bold.Render(handle))
 	if acct.Email != "" {
@@ -341,111 +361,42 @@ func runAccountStatus(_ *cobra.Command, _ []string) error {
 
 	if envAccount != "" {
 		fmt.Printf("\n%s\n", style.Dim.Render("(set via GT_ACCOUNT environment variable)"))
-	} else if handle == cfg.Default {
+	} else if handle == defaultHandle {
 		fmt.Printf("\n%s\n", style.Dim.Render("(default account)"))
 	}
-
-	return nil
 }
 
 func runAccountSwitch(_ *cobra.Command, args []string) error {
 	targetHandle := args[0]
 
-	townRoot, err := workspace.FindFromCwd()
+	cfg, accountsPath, targetAcct, err := accountSwitchTarget(targetHandle)
 	if err != nil {
-		return fmt.Errorf("finding town root: %w", err)
+		return err
 	}
 
-	accountsPath := constants.MayorAccountsPath(townRoot)
-	cfg, err := config.LoadAccountsConfig(accountsPath)
+	claudeDir, err := claudeConfigDir()
 	if err != nil {
-		return fmt.Errorf("loading accounts config: %w", err)
+		return err
 	}
-
-	// Check if target account exists
-	targetAcct := cfg.GetAccount(targetHandle)
-	if targetAcct == nil {
-		// List available accounts
-		var handles []string
-		for h := range cfg.Accounts {
-			handles = append(handles, h)
-		}
-		sort.Strings(handles)
-		return fmt.Errorf("account '%s' not found. Available accounts: %v", targetHandle, handles)
-	}
-
-	// Get ~/.claude path
-	home, err := os.UserHomeDir()
+	fileInfo, err := inspectClaudeConfigDir(claudeDir)
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
-	}
-	claudeDir := home + "/.claude"
-
-	// Check current state of ~/.claude
-	fileInfo, err := os.Lstat(claudeDir)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("checking ~/.claude: %w", err)
+		return err
 	}
 
-	// Determine current account (if any) by checking symlink target
-	var currentHandle string
-	if err == nil && fileInfo.Mode()&os.ModeSymlink != 0 {
-		// It's a symlink - find which account it points to
-		linkTarget, err := os.Readlink(claudeDir)
-		if err != nil {
-			return fmt.Errorf("reading symlink: %w", err)
-		}
-		for h, acct := range cfg.Accounts {
-			if acct.ConfigDir == linkTarget {
-				currentHandle = h
-				break
-			}
-		}
+	currentHandle, err := currentAccountFromClaudeSymlink(claudeDir, fileInfo, cfg)
+	if err != nil {
+		return err
 	}
 
-	// Check if already on target account
 	if currentHandle == targetHandle {
 		fmt.Printf("Already on account '%s'\n", targetHandle)
 		return nil
 	}
 
-	// Handle the case where ~/.claude is a real directory (not a symlink)
-	if err == nil && fileInfo.Mode()&os.ModeSymlink == 0 && fileInfo.IsDir() {
-		// It's a real directory - need to move it
-		// Try to find which account it belongs to based on default
-		if currentHandle == "" && cfg.Default != "" {
-			currentHandle = cfg.Default
-		}
-
-		if currentHandle != "" {
-			currentAcct := cfg.GetAccount(currentHandle)
-			if currentAcct != nil {
-				// Move ~/.claude to the current account's config_dir
-				fmt.Printf("Moving ~/.claude to %s...\n", currentAcct.ConfigDir)
-
-				// Remove the target config dir if it exists (it might be empty from account add)
-				if _, err := os.Stat(currentAcct.ConfigDir); err == nil {
-					if err := os.RemoveAll(currentAcct.ConfigDir); err != nil {
-						return fmt.Errorf("removing existing config dir: %w", err)
-					}
-				}
-
-				if err := os.Rename(claudeDir, currentAcct.ConfigDir); err != nil {
-					return fmt.Errorf("moving ~/.claude to %s: %w", currentAcct.ConfigDir, err)
-				}
-			}
-		} else {
-			return fmt.Errorf("~/.claude is a directory but no default account is set. Please set a default account first with 'gt account default <handle>'")
-		}
-	} else if err == nil && fileInfo.Mode()&os.ModeSymlink != 0 {
-		// It's a symlink - remove it so we can create a new one
-		if err := os.Remove(claudeDir); err != nil {
-			return fmt.Errorf("removing existing symlink: %w", err)
-		}
+	if err := prepareClaudeConfigDir(claudeDir, fileInfo, cfg, currentHandle); err != nil {
+		return err
 	}
-	// If ~/.claude doesn't exist, that's fine - we'll create the symlink
 
-	// Create symlink to target account
 	if err := os.Symlink(targetAcct.ConfigDir, claudeDir); err != nil {
 		return fmt.Errorf("creating symlink to %s: %w", targetAcct.ConfigDir, err)
 	}
@@ -461,6 +412,102 @@ func runAccountSwitch(_ *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Println(style.Warning.Render("⚠️  Restart Claude Code for the change to take effect"))
 
+	return nil
+}
+
+func accountSwitchTarget(targetHandle string) (*config.AccountsConfig, string, *config.Account, error) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("finding town root: %w", err)
+	}
+	accountsPath := constants.MayorAccountsPath(townRoot)
+	cfg, err := config.LoadAccountsConfig(accountsPath)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("loading accounts config: %w", err)
+	}
+	targetAcct := cfg.GetAccount(targetHandle)
+	if targetAcct == nil {
+		handles := make([]string, 0, len(cfg.Accounts))
+		for handle := range cfg.Accounts {
+			handles = append(handles, handle)
+		}
+		sort.Strings(handles)
+		return nil, "", nil, fmt.Errorf("account '%s' not found. Available accounts: %v", targetHandle, handles)
+	}
+	return cfg, accountsPath, targetAcct, nil
+}
+
+func claudeConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return home + "/.claude", nil
+}
+
+func inspectClaudeConfigDir(path string) (os.FileInfo, error) {
+	fileInfo, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checking ~/.claude: %w", err)
+	}
+	return fileInfo, nil
+}
+
+func currentAccountFromClaudeSymlink(path string, fileInfo os.FileInfo, cfg *config.AccountsConfig) (string, error) {
+	if fileInfo == nil || fileInfo.Mode()&os.ModeSymlink == 0 {
+		return "", nil
+	}
+	linkTarget, err := os.Readlink(path)
+	if err != nil {
+		return "", fmt.Errorf("reading symlink: %w", err)
+	}
+	for handle, acct := range cfg.Accounts {
+		if acct.ConfigDir == linkTarget {
+			return handle, nil
+		}
+	}
+	return "", nil
+}
+
+func prepareClaudeConfigDir(path string, fileInfo os.FileInfo, cfg *config.AccountsConfig, currentHandle string) error {
+	if fileInfo == nil {
+		return nil
+	}
+	if fileInfo.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("removing existing symlink: %w", err)
+		}
+		return nil
+	}
+	if !fileInfo.IsDir() {
+		return nil
+	}
+	if currentHandle == "" {
+		currentHandle = cfg.Default
+	}
+	if currentHandle == "" {
+		return fmt.Errorf("~/.claude is a directory but no default account is set. Please set a default account first with 'gt account default <handle>'")
+	}
+	currentAcct := cfg.GetAccount(currentHandle)
+	if currentAcct == nil {
+		return nil
+	}
+	return moveClaudeConfigDir(path, currentAcct.ConfigDir)
+}
+
+func moveClaudeConfigDir(path, destination string) error {
+	fmt.Printf("Moving ~/.claude to %s...\n", destination)
+	if _, err := os.Stat(destination); err == nil {
+		if err := os.RemoveAll(destination); err != nil {
+			return fmt.Errorf("removing existing config dir: %w", err)
+		}
+	}
+	if err := os.Rename(path, destination); err != nil {
+		return fmt.Errorf("moving ~/.claude to %s: %w", destination, err)
+	}
 	return nil
 }
 
@@ -505,6 +552,8 @@ func ensureSharedCommandsSymlink(configDir string) error {
 
 func init() {
 	opts := &accountOptions{}
+	accountListCmd := newAccountListCommand()
+	accountAddCmd := newAccountAddCommand()
 	accountListCmd.RunE = func(_ *cobra.Command, _ []string) error { return runAccountList(opts) }
 	accountAddCmd.RunE = func(_ *cobra.Command, args []string) error { return runAccountAdd(opts, args) }
 	// Add flags
