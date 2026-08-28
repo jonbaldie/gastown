@@ -579,39 +579,34 @@ func (p *Proxy) forwardAgentStderr() {
 			continue
 		}
 
-		lineLen := len(line)
-
-		// DROP very large lines entirely (likely permission ruleset dumps)
-		// These can be 50KB+ and serve no debugging purpose
-		if lineLen > 50000 {
-			p.stderrBytesDropped.Add(int64(lineLen))
-			p.stderrLinesTruncated.Add(1)
-
-			// Only log the first few drops to avoid cascading saturation
-			if p.stderrLinesTruncated.Load() <= 3 {
-				debugLog(p.townRoot, "[Proxy] Dropping massive stderr line (%d bytes) to prevent pipe saturation", lineLen)
-			}
+		if p.writeStderrLine(line) {
 			continue
 		}
-
-		// Truncate large lines to prevent pipe saturation
-		// Keep more context than debug logs (5000 vs 2000 chars)
-		outputLine := line
-		if lineLen > 5000 {
-			outputLine = line[:5000] + fmt.Sprintf("... (truncated from %d bytes)", lineLen)
-			p.stderrLinesTruncated.Add(1)
-		}
-
-		// ALWAYS use truncated/tracked version to prevent pipe saturation
-		fmt.Fprintln(os.Stderr, outputLine)
-
-		// For debug log, use more aggressive truncation
-		debugLine := line
-		if lineLen > 2000 {
-			debugLine = line[:2000] + "... (truncated)"
-		}
-		debugLog(p.townRoot, "[Agent] %s", debugLine)
 	}
+}
+
+func (p *Proxy) writeStderrLine(line string) bool {
+	lineLen := len(line)
+	if lineLen > 50000 {
+		p.stderrBytesDropped.Add(int64(lineLen))
+		p.stderrLinesTruncated.Add(1)
+		if p.stderrLinesTruncated.Load() <= 3 {
+			debugLog(p.townRoot, "[Proxy] Dropping massive stderr line (%d bytes) to prevent pipe saturation", lineLen)
+		}
+		return true
+	}
+	outputLine := line
+	if lineLen > 5000 {
+		outputLine = line[:5000] + fmt.Sprintf("... (truncated from %d bytes)", lineLen)
+		p.stderrLinesTruncated.Add(1)
+	}
+	fmt.Fprintln(os.Stderr, outputLine)
+	debugLine := line
+	if lineLen > 2000 {
+		debugLine = line[:2000] + "... (truncated)"
+	}
+	debugLog(p.townRoot, "[Agent] %s", debugLine)
+	return false
 }
 
 func (p *Proxy) logStderrStatistics() {
