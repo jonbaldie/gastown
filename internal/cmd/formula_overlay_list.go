@@ -26,66 +26,61 @@ func init() {
 	formulaOverlayCmd.AddCommand(formulaOverlayListCmd)
 }
 
+type formulaOverlayListEntry struct {
+	scope   string // "town" or rig name
+	formula string
+	path    string
+}
+
 func runFormulaOverlayList(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
+	entries := collectFormulaOverlayEntries(townRoot)
+	printFormulaOverlayEntries(entries)
+	return nil
+}
 
-	type entry struct {
-		scope   string // "town" or rig name
-		formula string
-		path    string
-	}
-
-	var entries []entry
-
-	// Town-level overlays
-	townDir := filepath.Join(townRoot, "formula-overlays")
-	if files, err := os.ReadDir(townDir); err == nil {
-		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".toml") {
-				continue
-			}
-			name := strings.TrimSuffix(f.Name(), ".toml")
-			path := filepath.Join(townDir, f.Name())
-			entries = append(entries, entry{scope: "town", formula: name, path: path})
-		}
-	}
-
-	// Rig-level overlays — scan each rig directory
+func collectFormulaOverlayEntries(townRoot string) []formulaOverlayListEntry {
+	entries := collectFormulaOverlayFiles(filepath.Join(townRoot, "formula-overlays"), "town")
 	rigDirs, err := os.ReadDir(townRoot)
-	if err == nil {
-		for _, d := range rigDirs {
-			if !d.IsDir() {
-				continue
-			}
-			rigName := d.Name()
-			rigConfigPath := filepath.Join(townRoot, rigName, "config.json")
-			if _, err := os.Stat(rigConfigPath); err != nil {
-				continue
-			}
-
-			rigDir := filepath.Join(townRoot, rigName, "formula-overlays")
-			files, err := os.ReadDir(rigDir)
-			if err != nil {
-				continue
-			}
-			for _, f := range files {
-				if f.IsDir() || !strings.HasSuffix(f.Name(), ".toml") {
-					continue
-				}
-				name := strings.TrimSuffix(f.Name(), ".toml")
-				path := filepath.Join(rigDir, f.Name())
-				entries = append(entries, entry{scope: rigName, formula: name, path: path})
-			}
-		}
+	if err != nil {
+		return entries
 	}
+	for _, d := range rigDirs {
+		if !d.IsDir() || !hasRigConfig(townRoot, d.Name()) {
+			continue
+		}
+		entries = append(entries, collectFormulaOverlayFiles(filepath.Join(townRoot, d.Name(), "formula-overlays"), d.Name())...)
+	}
+	return entries
+}
 
+func collectFormulaOverlayFiles(dir, scope string) []formulaOverlayListEntry {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	entries := make([]formulaOverlayListEntry, 0, len(files))
+	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".toml") {
+			continue
+		}
+		entries = append(entries, formulaOverlayListEntry{
+			scope:   scope,
+			formula: strings.TrimSuffix(f.Name(), ".toml"),
+			path:    filepath.Join(dir, f.Name()),
+		})
+	}
+	return entries
+}
+
+func printFormulaOverlayEntries(entries []formulaOverlayListEntry) {
 	if len(entries) == 0 {
 		fmt.Println("No overlay files found.")
 		fmt.Println("\nUse 'gt formula overlay edit <formula>' to create one.")
-		return nil
+		return
 	}
 
 	fmt.Printf("Formula overlay files (%d):\n\n", len(entries))
@@ -94,6 +89,4 @@ func runFormulaOverlayList(_ *cobra.Command, _ []string) error {
 	for _, e := range entries {
 		fmt.Printf("  %-10s %-30s %s\n", e.scope, e.formula, e.path)
 	}
-
-	return nil
 }
