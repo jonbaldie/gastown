@@ -1,14 +1,8 @@
 package cli
 
-import (
-	"sync"
-	"testing"
-)
+import "testing"
 
 func TestName_DefaultIsGt(t *testing.T) {
-	// Reset singleton for test isolation
-	nameOnce = sync.Once{}
-	name = ""
 	t.Setenv("GT_COMMAND", "")
 
 	got := Name()
@@ -18,8 +12,6 @@ func TestName_DefaultIsGt(t *testing.T) {
 }
 
 func TestName_RespectsGT_COMMAND(t *testing.T) {
-	nameOnce = sync.Once{}
-	name = ""
 	t.Setenv("GT_COMMAND", "gastown")
 
 	got := Name()
@@ -28,9 +20,7 @@ func TestName_RespectsGT_COMMAND(t *testing.T) {
 	}
 }
 
-func TestName_OnceSemantics(t *testing.T) {
-	nameOnce = sync.Once{}
-	name = ""
+func TestName_ReflectsEnvironment(t *testing.T) {
 	t.Setenv("GT_COMMAND", "first")
 
 	first := Name()
@@ -38,10 +28,9 @@ func TestName_OnceSemantics(t *testing.T) {
 		t.Fatalf("Name() = %q, want %q", first, "first")
 	}
 
-	// Changing env after first call should have no effect (sync.Once)
 	t.Setenv("GT_COMMAND", "second")
 	second := Name()
-	if second != "first" {
-		t.Errorf("Name() returned %q after env change, want %q (sync.Once should cache)", second, "first")
+	if second != "second" {
+		t.Errorf("Name() returned %q after env change, want %q", second, "second")
 	}
 }
