@@ -31,75 +31,43 @@ func NewFormulaCheck() *FormulaCheck {
 func (c *FormulaCheck) Run(ctx *CheckContext) *CheckResult {
 	report, err := formula.CheckFormulaHealth(ctx.TownRoot)
 	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: fmt.Sprintf("Could not check formulas: %v", err),
-		}
+		return formulaCheckErrorResult(c, err)
 	}
 
-	// All good
-	if report.Outdated == 0 && report.Missing == 0 && report.Modified == 0 && report.New == 0 && report.Untracked == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: fmt.Sprintf("%d formulas up-to-date", report.OK),
-		}
+	if formulasHealthy(report) {
+		return formulaHealthyResult(c, report)
 	}
+	return formulaHealthResult(c, report)
+}
 
-	// Build details
+func formulaCheckErrorResult(c *FormulaCheck, err error) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: fmt.Sprintf("Could not check formulas: %v", err),
+	}
+}
+
+func formulasHealthy(report *formula.HealthReport) bool {
+	return report.Outdated == 0 && report.Missing == 0 && report.Modified == 0 && report.New == 0 && report.Untracked == 0
+}
+
+func formulaHealthyResult(c *FormulaCheck, report *formula.HealthReport) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: fmt.Sprintf("%d formulas up-to-date", report.OK),
+	}
+}
+
+func formulaHealthResult(c *FormulaCheck, report *formula.HealthReport) *CheckResult {
 	var details []string
-	var needsFix bool
-
-	for _, f := range report.Formulas {
-		switch f.Status {
-		case "outdated":
-			details = append(details, fmt.Sprintf("  %s: update available", f.Name))
-			needsFix = true
-		case "missing":
-			details = append(details, fmt.Sprintf("  %s: missing (will reinstall)", f.Name))
-			needsFix = true
-		case "modified":
-			details = append(details, fmt.Sprintf("  %s: locally modified (skipping)", f.Name))
-		case "new":
-			details = append(details, fmt.Sprintf("  %s: new formula available", f.Name))
-			needsFix = true
-		case "untracked":
-			details = append(details, fmt.Sprintf("  %s: untracked (will update)", f.Name))
-			needsFix = true
-		}
-	}
-
-	// Determine status
-	status := StatusOK
-	if needsFix {
-		status = StatusWarning
-	}
-
-	// Build message
-	var parts []string
-	if report.Outdated > 0 {
-		parts = append(parts, fmt.Sprintf("%d outdated", report.Outdated))
-	}
-	if report.Missing > 0 {
-		parts = append(parts, fmt.Sprintf("%d missing", report.Missing))
-	}
-	if report.New > 0 {
-		parts = append(parts, fmt.Sprintf("%d new", report.New))
-	}
-	if report.Untracked > 0 {
-		parts = append(parts, fmt.Sprintf("%d untracked", report.Untracked))
-	}
-	if report.Modified > 0 {
-		parts = append(parts, fmt.Sprintf("%d modified", report.Modified))
-	}
-
-	message := fmt.Sprintf("Formulas: %s", strings.Join(parts, ", "))
+	details, needsFix := formulaDetails(report)
 
 	result := &CheckResult{
 		Name:    c.Name(),
-		Status:  status,
-		Message: message,
+		Status:  formulaStatus(needsFix),
+		Message: formulaMessage(report),
 		Details: details,
 	}
 
@@ -108,6 +76,59 @@ func (c *FormulaCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	return result
+}
+
+func formulaDetails(report *formula.HealthReport) ([]string, bool) {
+	var details []string
+	var needsFix bool
+	for _, status := range report.Formulas {
+		detail, fix := formulaDetail(status)
+		if detail != "" {
+			details = append(details, detail)
+		}
+		needsFix = needsFix || fix
+	}
+	return details, needsFix
+}
+
+func formulaDetail(status formula.FormulaStatus) (string, bool) {
+	switch status.Status {
+	case "outdated":
+		return fmt.Sprintf("  %s: update available", status.Name), true
+	case "missing":
+		return fmt.Sprintf("  %s: missing (will reinstall)", status.Name), true
+	case "modified":
+		return fmt.Sprintf("  %s: locally modified (skipping)", status.Name), false
+	case "new":
+		return fmt.Sprintf("  %s: new formula available", status.Name), true
+	case "untracked":
+		return fmt.Sprintf("  %s: untracked (will update)", status.Name), true
+	default:
+		return "", false
+	}
+}
+
+func formulaStatus(needsFix bool) CheckStatus {
+	if needsFix {
+		return StatusWarning
+	}
+	return StatusOK
+}
+
+func formulaMessage(report *formula.HealthReport) string {
+	var parts []string
+	appendFormulaCount(&parts, "outdated", report.Outdated)
+	appendFormulaCount(&parts, "missing", report.Missing)
+	appendFormulaCount(&parts, "new", report.New)
+	appendFormulaCount(&parts, "untracked", report.Untracked)
+	appendFormulaCount(&parts, "modified", report.Modified)
+	return fmt.Sprintf("Formulas: %s", strings.Join(parts, ", "))
+}
+
+func appendFormulaCount(parts *[]string, label string, count int) {
+	if count > 0 {
+		*parts = append(*parts, fmt.Sprintf("%d %s", count, label))
+	}
 }
 
 // Fix updates outdated and missing formulas.
