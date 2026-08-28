@@ -297,14 +297,9 @@ func provisionLaunchd(data SupervisorData) (string, error) {
 
 // provisionSystemd creates and enables a systemd user unit on Linux.
 func provisionSystemd(data SupervisorData) (string, error) {
-	// Get XDG_DATA_HOME or use ~/.local/share
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("finding home directory: %w", err)
-		}
-		dataHome = filepath.Join(homeDir, ".local", "share")
+	dataHome, err := systemdDataHome()
+	if err != nil {
+		return "", err
 	}
 
 	systemdDir := filepath.Join(dataHome, "systemd", "user")
@@ -336,20 +331,37 @@ func provisionSystemd(data SupervisorData) (string, error) {
 		return "", fmt.Errorf("writing service file: %w", err)
 	}
 
-	// Reload systemd daemon
-	if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("reloading systemd: %s", string(output))
-	}
-
-	// Enable the service
-	if output, err := exec.Command("systemctl", "--user", "enable", "gastown-daemon.service").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("enabling systemd service: %s", string(output))
-	}
-
-	// Start the service
-	if output, err := exec.Command("systemctl", "--user", "start", "gastown-daemon.service").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("starting systemd service: %s", string(output))
+	for _, operation := range []struct {
+		args   []string
+		action string
+	}{
+		{[]string{"daemon-reload"}, "reloading systemd"},
+		{[]string{"enable", "gastown-daemon.service"}, "enabling systemd service"},
+		{[]string{"start", "gastown-daemon.service"}, "starting systemd service"},
+	} {
+		if err := runSystemctl(operation.args...); err != nil {
+			return "", fmt.Errorf("%s: %w", operation.action, err)
+		}
 	}
 
 	return "Created and enabled systemd user service: gastown-daemon.service", nil
+}
+
+func runSystemctl(args ...string) error {
+	output, err := exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", string(output))
+	}
+	return nil
+}
+
+func systemdDataHome() (string, error) {
+	if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
+		return dataHome, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("finding home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".local", "share"), nil
 }
