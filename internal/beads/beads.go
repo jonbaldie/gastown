@@ -811,17 +811,7 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 	// causing prefix mismatches. Use explicit beadsDir if set, otherwise
 	// resolve from working directory.
 	cmd := SpawnContext(ctx, fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
-	util.SetDetachedProcessGroup(cmd)
-	cmd.Dir = b.workDir
-
-	cmd.Env = runEnv
-	cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
-
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if stdinData != nil {
-		cmd.Stdin = bytes.NewReader(stdinData)
-	}
+	b.configureBDCommand(cmd, runEnv, stdinData, &stdout, &stderr)
 
 	err := cmd.Run()
 
@@ -838,15 +828,7 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 		stdout.Reset()
 		stderr.Reset()
 		cmd = SpawnContext(ctx, retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
-		util.SetDetachedProcessGroup(cmd)
-		cmd.Dir = b.workDir
-		cmd.Env = runEnv
-		cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if stdinData != nil {
-			cmd.Stdin = bytes.NewReader(stdinData)
-		}
+		b.configureBDCommand(cmd, runEnv, stdinData, &stdout, &stderr)
 		err = cmd.Run()
 	}
 
@@ -862,6 +844,17 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 	}
 
 	return stripStdoutWarnings(stdout.Bytes()), nil
+}
+
+func (b *Beads) configureBDCommand(cmd *exec.Cmd, runEnv []string, stdinData []byte, stdout, stderr *bytes.Buffer) {
+	util.SetDetachedProcessGroup(cmd)
+	cmd.Dir = b.workDir
+	cmd.Env = append(runEnv, telemetry.OTELEnvForSubprocess()...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if stdinData != nil {
+		cmd.Stdin = bytes.NewReader(stdinData)
+	}
 }
 
 // RunWithRouting executes a bd command without setting BEADS_DIR, allowing bd's
