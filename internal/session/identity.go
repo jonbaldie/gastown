@@ -3,6 +3,7 @@ package session
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -18,6 +19,18 @@ func (r *PrefixRegistry) matchPrefix(session string) (prefix, rest string, match
 		}
 	}
 	return "", "", false
+}
+
+// sortedPrefixes returns prefixes sorted longest-first. The caller holds r.mu.
+func (r *PrefixRegistry) sortedPrefixes() []string {
+	prefixes := make([]string, 0, len(r.prefixToRig))
+	for p := range r.prefixToRig {
+		prefixes = append(prefixes, p)
+	}
+	sort.Slice(prefixes, func(i, j int) bool {
+		return len(prefixes[i]) > len(prefixes[j])
+	})
+	return prefixes
 }
 
 // Role represents the type of Gas Town agent.

@@ -306,18 +306,6 @@ func IsKnownSession(sess string) bool {
 	return DefaultRegistry().HasPrefix(sess)
 }
 
-// sortedPrefixes returns prefixes sorted longest-first (must hold read lock).
-func (r *PrefixRegistry) sortedPrefixes() []string {
-	prefixes := make([]string, 0, len(r.prefixToRig))
-	for p := range r.prefixToRig {
-		prefixes = append(prefixes, p)
-	}
-	sort.Slice(prefixes, func(i, j int) bool {
-		return len(prefixes[i]) > len(prefixes[j])
-	})
-	return prefixes
-}
-
 // copyFileIfNewer copies src to dst if src is newer or dst doesn't exist.
 // Errors are silently ignored — this is a best-effort resilience mechanism.
 func copyFileIfNewer(src, dst string) {
