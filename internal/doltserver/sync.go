@@ -319,36 +319,34 @@ func skipDatabaseSync(db, dbDir, filter string) bool {
 // PushDatabaseSQL pushes a database to its remote via SQL (CALL DOLT_PUSH) through
 // the running Dolt server. This avoids stopping the server and crashing all agents.
 func PushDatabaseSQL(townRoot, db, remote string, force bool) error {
-	if !validSQLName(db) {
-		return fmt.Errorf("invalid database name %q: must match [a-zA-Z0-9_.-]+", db)
+	if err := validateSQLNames(db, remote); err != nil {
+		return err
 	}
-	if !validSQLName(remote) {
-		return fmt.Errorf("invalid remote name %q: must match [a-zA-Z0-9_.-]+", remote)
-	}
+	stageAndCommitDatabase(townRoot, db)
+	return executePushDatabaseSQL(townRoot, db, remote, force)
+}
 
-	// Stage any unstaged changes
+func stageAndCommitDatabase(townRoot, db string) {
 	addQuery := fmt.Sprintf("USE `%s`; CALL DOLT_ADD('-A')", db)
-	if err := serverExecSQL(townRoot, addQuery); err != nil {
-		// Non-fatal — may have nothing to stage
-		errStr := err.Error()
-		if !strings.Contains(errStr, "nothing to commit") && !strings.Contains(errStr, "no changes") {
-			fmt.Fprintf(os.Stderr, "  %s: add (non-fatal): %v\n", db, err)
-		}
-	}
+	reportNonFatalSQL(townRoot, db, "add", addQuery)
 
-	// Commit working set
 	commitQuery := fmt.Sprintf(
 		"USE `%s`; CALL DOLT_COMMIT('-m', 'gt dolt sync: auto-commit working changes', '--allow-empty', '--author', 'Gas Town Sync <sync@gastown.local>')",
 		db,
 	)
-	if err := serverExecSQL(townRoot, commitQuery); err != nil {
+	reportNonFatalSQL(townRoot, db, "commit", commitQuery)
+}
+
+func reportNonFatalSQL(townRoot, db, action, query string) {
+	if err := serverExecSQL(townRoot, query); err != nil {
 		errStr := err.Error()
 		if !strings.Contains(errStr, "nothing to commit") && !strings.Contains(errStr, "no changes") {
-			fmt.Fprintf(os.Stderr, "  %s: commit (non-fatal): %v\n", db, err)
+			fmt.Fprintf(os.Stderr, "  %s: %s (non-fatal): %v\n", db, action, err)
 		}
 	}
+}
 
-	// Push via SQL — this works through the running server
+func executePushDatabaseSQL(townRoot, db, remote string, force bool) error {
 	pushQuery := fmt.Sprintf("USE `%s`; CALL DOLT_PUSH('%s', 'main')", db, remote)
 	if force {
 		pushQuery = fmt.Sprintf("USE `%s`; CALL DOLT_PUSH('--force', '%s', 'main')", db, remote)
@@ -365,6 +363,16 @@ func PushDatabaseSQL(townRoot, db, remote string, force bool) error {
 		return fmt.Errorf("DOLT_PUSH: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 
+	return nil
+}
+
+func validateSQLNames(db, remote string) error {
+	if !validSQLName(db) {
+		return fmt.Errorf("invalid database name %q: must match [a-zA-Z0-9_.-]+", db)
+	}
+	if !validSQLName(remote) {
+		return fmt.Errorf("invalid remote name %q: must match [a-zA-Z0-9_.-]+", remote)
+	}
 	return nil
 }
 
