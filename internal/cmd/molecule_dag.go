@@ -55,65 +55,79 @@ Examples:
 	RunE: runMoleculeDag,
 }
 
-var (
-	dagShowTiers bool
-	dagTreeView  bool
-)
-
 func init() {
-	moleculeDagCmd.Flags().BoolVar(&dagShowTiers, "tiers", false, "Group output by execution tier")
-	moleculeDagCmd.Flags().BoolVar(&dagTreeView, "tree", true, "Show tree view (default)")
-	moleculeDagCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	moleculeDagCmd.Flags().Bool("tiers", false, "Group output by execution tier")
+	moleculeDagCmd.Flags().Bool("tree", true, "Show tree view (default)")
+	moleculeDagCmd.Flags().Bool("json", false, "Output as JSON")
 }
 
-func runMoleculeDag(_ *cobra.Command, args []string) error {
-	rootID := args[0]
+func runMoleculeDag(cmd *cobra.Command, args []string) error {
+	jsonOutput, showTiers, err := moleculeDagOptions(cmd)
+	if err != nil {
+		return err
+	}
+	dag, err := loadMoleculeDAG(args[0])
+	if err != nil {
+		return err
+	}
 
+	if jsonOutput {
+		return writeDAGJSON(dag)
+	}
+
+	if showTiers {
+		return outputDAGTiers(dag)
+	}
+	return outputDAGTree(dag)
+}
+
+func loadMoleculeDAG(rootID string) (*DAGInfo, error) {
 	workDir, err := findLocalBeadsDir()
 	if err != nil {
-		return fmt.Errorf("not in a beads workspace: %w", err)
+		return nil, fmt.Errorf("not in a beads workspace: %w", err)
 	}
 
 	b := beads.New(workDir)
-
-	// Get the root issue
 	root, err := b.Show(rootID)
 	if err != nil {
-		return fmt.Errorf("getting root issue: %w", err)
+		return nil, fmt.Errorf("getting root issue: %w", err)
 	}
 
-	// Find all children of the root issue
 	children, err := b.List(beads.ListOptions{
 		Parent:   rootID,
 		Status:   "all",
 		Priority: -1,
 	})
 	if err != nil {
-		return fmt.Errorf("listing children: %w", err)
+		return nil, fmt.Errorf("listing children: %w", err)
 	}
-
 	if len(children) == 0 {
-		return fmt.Errorf("no steps found for %s (not a molecule root?)", rootID)
+		return nil, fmt.Errorf("no steps found for %s (not a molecule root?)", rootID)
 	}
 
-	// Build the DAG
 	dag, err := buildDAG(b, root, children)
 	if err != nil {
-		return fmt.Errorf("building DAG: %w", err)
+		return nil, fmt.Errorf("building DAG: %w", err)
 	}
+	return dag, nil
+}
 
-	// JSON output
-	if moleculeJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(dag)
-	}
+func writeDAGJSON(dag *DAGInfo) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(dag)
+}
 
-	// Human-readable output
-	if dagShowTiers {
-		return outputDAGTiers(dag)
+func moleculeDagOptions(cmd *cobra.Command) (jsonOutput, showTiers bool, err error) {
+	if cmd == nil {
+		return false, false, nil
 	}
-	return outputDAGTree(dag)
+	jsonOutput, err = cmd.Flags().GetBool("json")
+	if err != nil {
+		return false, false, err
+	}
+	showTiers, err = cmd.Flags().GetBool("tiers")
+	return jsonOutput, showTiers, err
 }
 
 // buildDAG constructs the DAG from molecule children.
@@ -124,80 +138,18 @@ func buildDAG(b *beads.Beads, root *beads.Issue, children []*beads.Issue) (*DAGI
 		Nodes:     make(map[string]*DAGNode),
 	}
 
-	// Get IDs for batch fetch
-	var stepIDs []string
-	for _, child := range children {
-		stepIDs = append(stepIDs, child.ID)
-	}
-
-	// Fetch full details for all steps
-	stepsMap, err := b.ShowMultiple(stepIDs)
+	stepsMap, err := b.ShowMultiple(dagStepIDs(children))
 	if err != nil {
 		return nil, fmt.Errorf("fetching step details: %w", err)
 	}
 
-	// Build closed set for status checking
-	closedIDs := make(map[string]bool)
+	closedIDs := closedDAGIDs(children)
 	for _, child := range children {
-		if child.Status == "closed" {
-			closedIDs[child.ID] = true
-		}
-	}
-
-	// Create nodes
-	for _, child := range children {
-		step := stepsMap[child.ID]
-		if step == nil {
-			step = child
-		}
-
-		node := &DAGNode{
-			ID:     child.ID,
-			Title:  child.Title,
-			Status: child.Status,
-		}
-
-		// Extract dependencies (all blocking types)
-		for _, dep := range step.Dependencies {
-			if isBlockingDepType(dep.DependencyType) {
-				node.Dependencies = append(node.Dependencies, dep.ID)
-			}
-		}
-
-		// Check if parallel flag is set (from description)
-		if strings.Contains(step.Description, "parallel: true") ||
-			strings.Contains(step.Description, "parallel=true") {
-			node.Parallel = true
-		}
-
-		// Compute ready status for open steps
-		if child.Status == "open" {
-			allDepsClosed := true
-			for _, depID := range node.Dependencies {
-				if !closedIDs[depID] {
-					allDepsClosed = false
-					break
-				}
-			}
-			if allDepsClosed {
-				node.Status = "ready"
-			} else {
-				node.Status = "blocked"
-			}
-		}
-
-		dag.Nodes[child.ID] = node
+		dag.Nodes[child.ID] = buildDAGNode(child, stepsMap[child.ID], closedIDs)
 		dag.TotalNodes++
 	}
 
-	// Build dependents (reverse edges)
-	for id, node := range dag.Nodes {
-		for _, depID := range node.Dependencies {
-			if depNode, ok := dag.Nodes[depID]; ok {
-				depNode.Dependents = append(depNode.Dependents, id)
-			}
-		}
-	}
+	linkDAGDependents(dag)
 
 	// Compute tiers using topological sort
 	computeTiers(dag)
@@ -206,6 +158,65 @@ func buildDAG(b *beads.Beads, root *beads.Issue, children []*beads.Issue) (*DAGI
 	dag.CriticalPath = findCriticalPath(dag)
 
 	return dag, nil
+}
+
+func dagStepIDs(children []*beads.Issue) []string {
+	stepIDs := make([]string, 0, len(children))
+	for _, child := range children {
+		stepIDs = append(stepIDs, child.ID)
+	}
+	return stepIDs
+}
+
+func closedDAGIDs(children []*beads.Issue) map[string]bool {
+	closedIDs := make(map[string]bool)
+	for _, child := range children {
+		if child.Status == "closed" {
+			closedIDs[child.ID] = true
+		}
+	}
+	return closedIDs
+}
+
+func buildDAGNode(child, step *beads.Issue, closedIDs map[string]bool) *DAGNode {
+	if step == nil {
+		step = child
+	}
+
+	node := &DAGNode{
+		ID:       child.ID,
+		Title:    child.Title,
+		Status:   child.Status,
+		Parallel: strings.Contains(step.Description, "parallel: true") || strings.Contains(step.Description, "parallel=true"),
+	}
+	for _, dep := range step.Dependencies {
+		if isBlockingDepType(dep.DependencyType) {
+			node.Dependencies = append(node.Dependencies, dep.ID)
+		}
+	}
+	if node.Status == "open" {
+		node.Status = dagNodeStatus(node.Dependencies, closedIDs)
+	}
+	return node
+}
+
+func dagNodeStatus(dependencies []string, closedIDs map[string]bool) string {
+	for _, depID := range dependencies {
+		if !closedIDs[depID] {
+			return "blocked"
+		}
+	}
+	return "ready"
+}
+
+func linkDAGDependents(dag *DAGInfo) {
+	for id, node := range dag.Nodes {
+		for _, depID := range node.Dependencies {
+			if depNode, ok := dag.Nodes[depID]; ok {
+				depNode.Dependents = append(depNode.Dependents, id)
+			}
+		}
+	}
 }
 
 // computeTiers assigns execution tiers to each node.
@@ -347,47 +358,48 @@ func printNode(dag *DAGInfo, id, prefix string, isLast bool, visited map[string]
 		return
 	}
 
-	// Connector
-	connector := "├─"
-	if isLast {
-		connector = "└─"
-	}
-
-	// Status icon
-	var icon string
-	switch node.Status {
-	case "closed":
-		icon = style.Bold.Render("✓")
-	case "in_progress":
-		icon = style.Bold.Render("⧖")
-	case "ready":
-		icon = style.Bold.Render("○")
-	default:
-		icon = style.Dim.Render("◌")
-	}
-
-	// Parallel marker
-	parallelMark := ""
-	if node.Parallel {
-		parallelMark = " ∥"
-	}
-
-	// Print node
-	fmt.Printf("%s%s %s %s%s\n", prefix, connector, icon, node.ID, parallelMark)
-
-	// Child prefix
-	childPrefix := prefix
-	if isLast {
-		childPrefix += "   "
-	} else {
-		childPrefix += "│  "
-	}
+	fmt.Printf("%s%s %s %s%s\n", prefix, dagConnector(isLast), dagStatusIcon(node.Status), node.ID, dagParallelMark(node, " ∥"))
 
 	// Print dependents (children in the DAG)
+	childPrefix := dagChildPrefix(prefix, isLast)
 	for i, depID := range node.Dependents {
 		isLastChild := i == len(node.Dependents)-1
 		printNode(dag, depID, childPrefix, isLastChild, visited)
 	}
+}
+
+func dagConnector(isLast bool) string {
+	if isLast {
+		return "└─"
+	}
+	return "├─"
+}
+
+func dagStatusIcon(status string) string {
+	switch status {
+	case "closed":
+		return style.Bold.Render("✓")
+	case "in_progress":
+		return style.Bold.Render("⧖")
+	case "ready":
+		return style.Bold.Render("○")
+	default:
+		return style.Dim.Render("◌")
+	}
+}
+
+func dagParallelMark(node *DAGNode, mark string) string {
+	if node.Parallel {
+		return mark
+	}
+	return ""
+}
+
+func dagChildPrefix(prefix string, isLast bool) string {
+	if isLast {
+		return prefix + "   "
+	}
+	return prefix + "│  "
 }
 
 // outputDAGTiers outputs the DAG grouped by execution tier.
@@ -398,47 +410,7 @@ func outputDAGTiers(dag *DAGInfo) error {
 	fmt.Println()
 
 	for tier, nodes := range dag.TierGroups {
-		fmt.Printf("   %s Tier %d", style.Bold.Render("─"), tier)
-		if tier == 0 {
-			fmt.Printf(" (entry)")
-		} else if tier == dag.Tiers-1 {
-			fmt.Printf(" (exit)")
-		}
-		fmt.Println()
-
-		for _, id := range nodes {
-			node := dag.Nodes[id]
-			if node == nil {
-				continue
-			}
-
-			// Status icon
-			var icon string
-			switch node.Status {
-			case "closed":
-				icon = style.Bold.Render("✓")
-			case "in_progress":
-				icon = style.Bold.Render("⧖")
-			case "ready":
-				icon = style.Bold.Render("○")
-			default:
-				icon = style.Dim.Render("◌")
-			}
-
-			// Parallel marker
-			parallelMark := ""
-			if node.Parallel {
-				parallelMark = " [parallel]"
-			}
-
-			// Dependencies
-			depStr := ""
-			if len(node.Dependencies) > 0 {
-				depStr = fmt.Sprintf(" ← %s", strings.Join(node.Dependencies, ", "))
-			}
-
-			fmt.Printf("       %s %s%s%s\n", icon, id, parallelMark, depStr)
-		}
+		printDAGTier(dag, tier, nodes)
 		fmt.Println()
 	}
 
@@ -453,4 +425,34 @@ func outputDAGTiers(dag *DAGInfo) error {
 		style.Bold.Render("✓"), style.Bold.Render("⧖"), style.Bold.Render("○"), style.Dim.Render("◌"))
 
 	return nil
+}
+
+func printDAGTier(dag *DAGInfo, tier int, nodes []string) {
+	fmt.Printf("   %s Tier %d%s\n", style.Bold.Render("─"), tier, dagTierLabel(tier, dag.Tiers))
+	for _, id := range nodes {
+		if line, ok := formatDAGTierNode(dag.Nodes[id]); ok {
+			fmt.Println(line)
+		}
+	}
+}
+
+func dagTierLabel(tier, total int) string {
+	if tier == 0 {
+		return " (entry)"
+	}
+	if tier == total-1 {
+		return " (exit)"
+	}
+	return ""
+}
+
+func formatDAGTierNode(node *DAGNode) (string, bool) {
+	if node == nil {
+		return "", false
+	}
+	depStr := ""
+	if len(node.Dependencies) > 0 {
+		depStr = fmt.Sprintf(" ← %s", strings.Join(node.Dependencies, ", "))
+	}
+	return fmt.Sprintf("       %s %s%s%s", dagStatusIcon(node.Status), node.ID, dagParallelMark(node, " [parallel]"), depStr), true
 }
