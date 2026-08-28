@@ -74,62 +74,16 @@ func FormatAgentDescription(title string, fields *AgentFields) string {
 		return title
 	}
 
-	var lines []string
-	lines = append(lines, title)
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("role_type: %s", fields.RoleType))
-
-	if fields.Rig != "" {
-		lines = append(lines, fmt.Sprintf("rig: %s", fields.Rig))
-	} else {
-		lines = append(lines, "rig: null")
+	lines := []string{title, "", "role_type: " + fields.RoleType}
+	lines = appendAgentNullableField(lines, "rig", fields.Rig)
+	lines = append(lines, "agent_state: "+fields.AgentState)
+	for _, field := range []agentDescriptionField{
+		{"hook_bead", fields.HookBead}, {"cleanup_status", fields.CleanupStatus},
+		{"active_mr", fields.ActiveMR}, {"notification_level", fields.NotificationLevel},
+	} {
+		lines = appendAgentNullableField(lines, field.key, field.value)
 	}
-
-	lines = append(lines, fmt.Sprintf("agent_state: %s", fields.AgentState))
-
-	if fields.HookBead != "" {
-		lines = append(lines, fmt.Sprintf("hook_bead: %s", fields.HookBead))
-	} else {
-		lines = append(lines, "hook_bead: null")
-	}
-
-	// Note: role_bead field no longer written - role definitions are config-based
-
-	if fields.CleanupStatus != "" {
-		lines = append(lines, fmt.Sprintf("cleanup_status: %s", fields.CleanupStatus))
-	} else {
-		lines = append(lines, "cleanup_status: null")
-	}
-
-	if fields.ActiveMR != "" {
-		lines = append(lines, fmt.Sprintf("active_mr: %s", fields.ActiveMR))
-	} else {
-		lines = append(lines, "active_mr: null")
-	}
-
-	if fields.NotificationLevel != "" {
-		lines = append(lines, fmt.Sprintf("notification_level: %s", fields.NotificationLevel))
-	} else {
-		lines = append(lines, "notification_level: null")
-	}
-
-	if fields.Mode != "" {
-		lines = append(lines, fmt.Sprintf("mode: %s", fields.Mode))
-	}
-
-	// Completion metadata fields (gt-x7t9)
-	if fields.ExitType != "" {
-		lines = append(lines, fmt.Sprintf("exit_type: %s", fields.ExitType))
-	}
-	if fields.MRID != "" {
-		lines = append(lines, fmt.Sprintf("mr_id: %s", fields.MRID))
-	}
-	if fields.Branch != "" {
-		lines = append(lines, fmt.Sprintf("branch: %s", fields.Branch))
-	}
-	if fields.LastSourceIssue != "" {
-		lines = append(lines, fmt.Sprintf("last_source_issue: %s", fields.LastSourceIssue))
-	}
+	lines = appendAgentOptionalFields(lines, fields)
 	if fields.MRFailed {
 		lines = append(lines, "mr_failed: true")
 	}
@@ -137,69 +91,81 @@ func FormatAgentDescription(title string, fields *AgentFields) string {
 		lines = append(lines, "push_failed: true")
 	}
 	if fields.CompletionTime != "" {
-		lines = append(lines, fmt.Sprintf("completion_time: %s", fields.CompletionTime))
+		lines = append(lines, "completion_time: "+fields.CompletionTime)
 	}
-
 	return strings.Join(lines, "\n")
+}
+
+type agentDescriptionField struct{ key, value string }
+
+func appendAgentNullableField(lines []string, key, value string) []string {
+	if value == "" {
+		value = "null"
+	}
+	return append(lines, key+": "+value)
+}
+
+func appendAgentOptionalFields(lines []string, fields *AgentFields) []string {
+	for _, field := range []agentDescriptionField{
+		{"mode", fields.Mode}, {"exit_type", fields.ExitType}, {"mr_id", fields.MRID},
+		{"branch", fields.Branch}, {"last_source_issue", fields.LastSourceIssue},
+	} {
+		if field.value != "" {
+			lines = append(lines, field.key+": "+field.value)
+		}
+	}
+	return lines
 }
 
 // ParseAgentFields extracts agent fields from an issue's description.
 func ParseAgentFields(description string) *AgentFields {
 	fields := &AgentFields{}
-
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "null" || value == "" {
-			value = ""
-		}
-
-		switch strings.ToLower(key) {
-		case "role_type":
-			fields.RoleType = value
-		case "rig":
-			fields.Rig = value
-		case "agent_state":
-			fields.AgentState = value
-		case "hook_bead":
-			fields.HookBead = value
-		case "cleanup_status":
-			fields.CleanupStatus = value
-		case "active_mr":
-			fields.ActiveMR = value
-		case "notification_level":
-			fields.NotificationLevel = value
-		case "mode":
-			fields.Mode = value
-		// Completion metadata fields (gt-x7t9)
-		case "exit_type":
-			fields.ExitType = value
-		case "mr_id":
-			fields.MRID = value
-		case "branch":
-			fields.Branch = value
-		case "last_source_issue":
-			fields.LastSourceIssue = value
-		case "mr_failed":
-			fields.MRFailed = value == "true"
-		case "push_failed":
-			fields.PushFailed = value == "true"
-		case "completion_time":
-			fields.CompletionTime = value
-		}
+		setAgentDescriptionField(fields, line)
 	}
-
 	return fields
+}
+
+func setAgentDescriptionField(fields *AgentFields, line string) {
+	key, value, ok := agentDescriptionFieldLine(line)
+	if !ok {
+		return
+	}
+	if destination, ok := agentStringFields(fields)[key]; ok {
+		*destination = value
+		return
+	}
+	if destination, ok := agentBooleanFields(fields)[key]; ok {
+		*destination = value == "true"
+	}
+}
+
+func agentDescriptionFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIndex := strings.Index(line, ":")
+	if line == "" || colonIndex == -1 {
+		return "", "", false
+	}
+	value := strings.TrimSpace(line[colonIndex+1:])
+	if value == "null" {
+		value = ""
+	}
+	return strings.ToLower(strings.TrimSpace(line[:colonIndex])), value, true
+}
+
+func agentStringFields(fields *AgentFields) map[string]*string {
+	return map[string]*string{
+		"role_type": &fields.RoleType, "rig": &fields.Rig, "agent_state": &fields.AgentState,
+		"hook_bead": &fields.HookBead, "cleanup_status": &fields.CleanupStatus,
+		"active_mr": &fields.ActiveMR, "notification_level": &fields.NotificationLevel,
+		"mode": &fields.Mode, "exit_type": &fields.ExitType, "mr_id": &fields.MRID,
+		"branch": &fields.Branch, "last_source_issue": &fields.LastSourceIssue,
+		"completion_time": &fields.CompletionTime,
+	}
+}
+
+func agentBooleanFields(fields *AgentFields) map[string]*bool {
+	return map[string]*bool{"mr_failed": &fields.MRFailed, "push_failed": &fields.PushFailed}
 }
 
 // CreateAgentBead creates an agent bead for tracking agent lifecycle.
