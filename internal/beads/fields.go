@@ -275,6 +275,8 @@ type ConvoyFields struct {
 	CompletionNotifiedAt string // RFC3339 timestamp when completion notifications were claimed/sent
 }
 
+type optionalDescriptionField struct{ key, value string }
+
 // ParseConvoyFields extracts convoy fields from an issue's description.
 // Returns nil if no convoy fields found.
 func ParseConvoyFields(issue *Issue) *ConvoyFields {
@@ -283,57 +285,40 @@ func ParseConvoyFields(issue *Issue) *ConvoyFields {
 	}
 
 	fields := &ConvoyFields{}
-	hasFields := false
-
 	for _, line := range strings.Split(issue.Description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "" {
-			continue
-		}
-
-		switch strings.ToLower(key) {
-		case "owner":
-			fields.Owner = value
-			hasFields = true
-		case "notify":
-			fields.Notify = value
-			hasFields = true
-		case "molecule":
-			fields.Molecule = value
-			hasFields = true
-		case "merge":
-			fields.Merge = value
-			hasFields = true
-		case "base_branch", "base-branch", "basebranch":
-			fields.BaseBranch = value
-			hasFields = true
-		case "watchers":
-			fields.Watchers = value
-			hasFields = true
-		case "nudge_watchers", "nudge-watchers", "nudgewatchers":
-			fields.NudgeWatchers = value
-			hasFields = true
-		case "completion_notified_at", "completion-notified-at", "completionnotifiedat":
-			fields.CompletionNotifiedAt = value
-			hasFields = true
-		}
+		setConvoyField(fields, line)
 	}
-
-	if !hasFields {
+	if !hasConvoyFields(fields) {
 		return nil
 	}
 	return fields
+}
+
+func setConvoyField(fields *ConvoyFields, line string) {
+	key, value, ok := agentDescriptionFieldLine(line)
+	if !ok || value == "" {
+		return
+	}
+	if destination, ok := convoyFieldDestinations(fields)[convoyFieldKey(key)]; ok {
+		*destination = value
+	}
+}
+
+func convoyFieldKey(key string) string {
+	return strings.NewReplacer("-", "_", "_", "", " ", "").Replace(key)
+}
+
+func convoyFieldDestinations(fields *ConvoyFields) map[string]*string {
+	return map[string]*string{
+		"owner": &fields.Owner, "notify": &fields.Notify, "molecule": &fields.Molecule,
+		"merge": &fields.Merge, "basebranch": &fields.BaseBranch, "watchers": &fields.Watchers,
+		"nudgewatchers": &fields.NudgeWatchers, "completionnotifiedat": &fields.CompletionNotifiedAt,
+	}
+}
+
+func hasConvoyFields(fields *ConvoyFields) bool {
+	return fields.Owner != "" || fields.Notify != "" || fields.Molecule != "" || fields.Merge != "" ||
+		fields.BaseBranch != "" || fields.Watchers != "" || fields.NudgeWatchers != "" || fields.CompletionNotifiedAt != ""
 }
 
 // NotificationAddresses returns deduplicated mail notification addresses from convoy fields.
@@ -364,9 +349,20 @@ func (f *ConvoyFields) NudgeNotificationAddresses() []string {
 	if f == nil {
 		return nil
 	}
+	return notificationAddresses(*f.watcherField(true))
+}
+
+func (f *ConvoyFields) watcherField(nudge bool) *string {
+	if nudge {
+		return &f.NudgeWatchers
+	}
+	return &f.Watchers
+}
+
+func notificationAddresses(watchers string) []string {
 	seen := make(map[string]bool)
 	var addrs []string
-	for _, addr := range splitWatchers(f.NudgeWatchers) {
+	for _, addr := range splitWatchers(watchers) {
 		if addr != "" && !seen[addr] {
 			addrs = append(addrs, addr)
 			seen[addr] = true
@@ -378,52 +374,39 @@ func (f *ConvoyFields) NudgeNotificationAddresses() []string {
 // AddWatcher adds a mail watcher address to the comma-separated Watchers field.
 // Returns true if the address was added (false if already present).
 func (f *ConvoyFields) AddWatcher(addr string) bool {
-	existing := splitWatchers(f.Watchers)
-	for _, w := range existing {
-		if w == addr {
-			return false
-		}
-	}
-	existing = append(existing, addr)
-	f.Watchers = strings.Join(existing, ",")
-	return true
+	return addWatcher(f.watcherField(false), addr)
 }
 
 // AddNudgeWatcher adds a nudge watcher address to the comma-separated NudgeWatchers field.
 // Returns true if the address was added (false if already present).
 func (f *ConvoyFields) AddNudgeWatcher(addr string) bool {
-	existing := splitWatchers(f.NudgeWatchers)
+	return addWatcher(f.watcherField(true), addr)
+}
+
+func addWatcher(watchers *string, addr string) bool {
+	existing := splitWatchers(*watchers)
 	for _, w := range existing {
 		if w == addr {
 			return false
 		}
 	}
 	existing = append(existing, addr)
-	f.NudgeWatchers = strings.Join(existing, ",")
+	*watchers = strings.Join(existing, ",")
 	return true
 }
 
 // RemoveWatcher removes a mail watcher address. Returns true if it was present.
 func (f *ConvoyFields) RemoveWatcher(addr string) bool {
-	existing := splitWatchers(f.Watchers)
-	var remaining []string
-	found := false
-	for _, w := range existing {
-		if w == addr {
-			found = true
-		} else {
-			remaining = append(remaining, w)
-		}
-	}
-	if found {
-		f.Watchers = strings.Join(remaining, ",")
-	}
-	return found
+	return removeWatcher(f.watcherField(false), addr)
 }
 
 // RemoveNudgeWatcher removes a nudge watcher address. Returns true if it was present.
 func (f *ConvoyFields) RemoveNudgeWatcher(addr string) bool {
-	existing := splitWatchers(f.NudgeWatchers)
+	return removeWatcher(f.watcherField(true), addr)
+}
+
+func removeWatcher(watchers *string, addr string) bool {
+	existing := splitWatchers(*watchers)
 	var remaining []string
 	found := false
 	for _, w := range existing {
@@ -434,7 +417,7 @@ func (f *ConvoyFields) RemoveNudgeWatcher(addr string) bool {
 		}
 	}
 	if found {
-		f.NudgeWatchers = strings.Join(remaining, ",")
+		*watchers = strings.Join(remaining, ",")
 	}
 	return found
 }
@@ -462,32 +445,20 @@ func FormatConvoyFields(fields *ConvoyFields) string {
 		return ""
 	}
 
-	var lines []string
-	if fields.Owner != "" {
-		lines = append(lines, "Owner: "+fields.Owner)
-	}
-	if fields.Notify != "" {
-		lines = append(lines, "Notify: "+fields.Notify)
-	}
-	if fields.Merge != "" {
-		lines = append(lines, "Merge: "+fields.Merge)
-	}
-	if fields.Molecule != "" {
-		lines = append(lines, "Molecule: "+fields.Molecule)
-	}
-	if fields.BaseBranch != "" {
-		lines = append(lines, "base_branch: "+fields.BaseBranch)
-	}
-	if fields.Watchers != "" {
-		lines = append(lines, "Watchers: "+fields.Watchers)
-	}
-	if fields.NudgeWatchers != "" {
-		lines = append(lines, "nudge_watchers: "+fields.NudgeWatchers)
-	}
-	if fields.CompletionNotifiedAt != "" {
-		lines = append(lines, "completion_notified_at: "+fields.CompletionNotifiedAt)
-	}
+	return formatOptionalDescriptionFields([]optionalDescriptionField{
+		{"Owner", fields.Owner}, {"Notify", fields.Notify}, {"Merge", fields.Merge}, {"Molecule", fields.Molecule},
+		{"base_branch", fields.BaseBranch}, {"Watchers", fields.Watchers}, {"nudge_watchers", fields.NudgeWatchers},
+		{"completion_notified_at", fields.CompletionNotifiedAt},
+	})
+}
 
+func formatOptionalDescriptionFields(fields []optionalDescriptionField) string {
+	var lines []string
+	for _, field := range fields {
+		if field.value != "" {
+			lines = append(lines, field.key+": "+field.value)
+		}
+	}
 	return strings.Join(lines, "\n")
 }
 
