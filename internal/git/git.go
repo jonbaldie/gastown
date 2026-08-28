@@ -1748,27 +1748,6 @@ func (g *Git) HasOpenPR(branch string) bool {
 	return g.HasOpenPullRequest(PullRequestRef{Branch: branch})
 }
 
-// FindPRNumber returns the GitHub PR number for the given branch, or 0 if none exists.
-func (g *Git) FindPRNumber(branch string) (int, error) {
-	return g.FindPRNumberForRef(PullRequestRef{Branch: branch})
-}
-
-// FindPRNumberForRef returns an open GitHub PR number using recorded PR identity
-// before falling back to an unambiguous target-repo branch lookup.
-func (g *Git) FindPRNumberForRef(ref PullRequestRef) (int, error) {
-	pr, err := g.LookupPullRequest(ref)
-	if err != nil {
-		if errors.Is(err, ErrPullRequestNotFound) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	if !pr.Open() {
-		return 0, nil
-	}
-	return pr.Number, nil
-}
-
 // IsPRApproved checks whether a GitHub PR has at least one approving review.
 // Returns true if approved, false if not (or on error).
 func (g *Git) IsPRApproved(prNumber int) (bool, error) {
