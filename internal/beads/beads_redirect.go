@@ -404,27 +404,37 @@ func SetupRedirect(townRoot, worktreePath string) error {
 	if err != nil {
 		return err
 	}
+	warnMayorFallback(townRoot, worktreePath, redirectPath)
+	worktreeBeadsDir := filepath.Join(worktreePath, ".beads")
+	if err := prepareRedirectDirectory(worktreeBeadsDir); err != nil {
+		return err
+	}
+	return writeBeadsRedirect(worktreeBeadsDir, redirectPath)
+}
 
+func warnMayorFallback(townRoot, worktreePath, redirectPath string) {
 	// Warn only when using mayor fallback WITHOUT a redirect file.
 	// When rig/.beads/redirect exists pointing to mayor/rig/.beads, that's the
 	// intended configuration for tracked beads — not a fallback worth warning about.
-	if strings.Contains(redirectPath, "mayor/rig/.beads") {
-		relPath, _ := filepath.Rel(townRoot, worktreePath)
-		parts := strings.Split(filepath.ToSlash(relPath), "/")
-		rigRoot := filepath.Join(townRoot, parts[0])
-		rigRedirectPath := filepath.Join(rigRoot, ".beads", "redirect")
-		if _, err := os.Stat(rigRedirectPath); os.IsNotExist(err) {
-			// No redirect file — this is an unexpected fallback
-			rigBeadsPath := filepath.Join(rigRoot, ".beads")
-			mayorBeadsPath := filepath.Join(rigRoot, "mayor", "rig", ".beads")
-			fmt.Fprintf(os.Stderr, "Warning: rig .beads not found at %s, using %s\n", rigBeadsPath, mayorBeadsPath)
-			fmt.Fprintf(os.Stderr, "  Run 'bd doctor' to fix rig beads configuration\n")
-		}
+	if !strings.Contains(redirectPath, "mayor/rig/.beads") {
+		return
 	}
+	relPath, _ := filepath.Rel(townRoot, worktreePath)
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	rigRoot := filepath.Join(townRoot, parts[0])
+	rigRedirectPath := filepath.Join(rigRoot, ".beads", "redirect")
+	if _, err := os.Stat(rigRedirectPath); !os.IsNotExist(err) {
+		return
+	}
+	// No redirect file — this is an unexpected fallback.
+	rigBeadsPath := filepath.Join(rigRoot, ".beads")
+	mayorBeadsPath := filepath.Join(rigRoot, "mayor", "rig", ".beads")
+	fmt.Fprintf(os.Stderr, "Warning: rig .beads not found at %s, using %s\n", rigBeadsPath, mayorBeadsPath)
+	fmt.Fprintf(os.Stderr, "  Run 'bd doctor' to fix rig beads configuration\n")
+}
 
+func prepareRedirectDirectory(worktreeBeadsDir string) error {
 	// Clean up runtime/identity files in .beads/ but preserve tracked docs (formulas/, README.md, etc.)
-	worktreeBeadsDir := filepath.Join(worktreePath, ".beads")
-
 	// Handle edge cases: if .beads exists as a file or symlink, remove that path.
 	// This can happen with stale state from previous failed operations or
 	// unusual clone state. MkdirAll would fail with "file exists" in this case.
@@ -442,8 +452,10 @@ func SetupRedirect(townRoot, worktreePath string) error {
 	if err := EnsureDir(worktreeBeadsDir); err != nil {
 		return err
 	}
+	return nil
+}
 
-	// Create redirect file
+func writeBeadsRedirect(worktreeBeadsDir, redirectPath string) error {
 	redirectFile := filepath.Join(worktreeBeadsDir, "redirect")
 	if err := os.WriteFile(redirectFile, []byte(redirectPath+"\n"), 0644); err != nil {
 		return fmt.Errorf("creating redirect file: %w", err)
