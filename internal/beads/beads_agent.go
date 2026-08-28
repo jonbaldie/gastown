@@ -448,12 +448,8 @@ func (b *Beads) UpdateAgentDescriptionFields(id string, updates AgentFieldUpdate
 		return target.UpdateAgentDescriptionFields(id, updates)
 	}
 
-	// Validate notification level if provided
-	if updates.NotificationLevel != nil {
-		level := *updates.NotificationLevel
-		if level != "" && level != NotifyVerbose && level != NotifyNormal && level != NotifyMuted {
-			return fmt.Errorf("invalid notification level %q: must be verbose, normal, or muted", level)
-		}
+	if err := validateAgentFieldUpdates(updates); err != nil {
+		return err
 	}
 
 	// Lock the agent bead to prevent concurrent read-modify-write races.
@@ -471,50 +467,48 @@ func (b *Beads) UpdateAgentDescriptionFields(id string, updates AgentFieldUpdate
 	}
 
 	fields := ParseAgentFields(issue.Description)
-
-	if updates.AgentState != nil {
-		fields.AgentState = *updates.AgentState
-	}
-	if updates.CleanupStatus != nil {
-		fields.CleanupStatus = *updates.CleanupStatus
-	}
-	if updates.ActiveMR != nil {
-		fields.ActiveMR = *updates.ActiveMR
-	}
-	if updates.NotificationLevel != nil {
-		fields.NotificationLevel = *updates.NotificationLevel
-	}
-	if updates.Mode != nil {
-		fields.Mode = *updates.Mode
-	}
-	if updates.HookBead != nil {
-		fields.HookBead = *updates.HookBead
-	}
-	// Completion metadata fields (gt-x7t9)
-	if updates.ExitType != nil {
-		fields.ExitType = *updates.ExitType
-	}
-	if updates.MRID != nil {
-		fields.MRID = *updates.MRID
-	}
-	if updates.Branch != nil {
-		fields.Branch = *updates.Branch
-	}
-	if updates.LastSourceIssue != nil {
-		fields.LastSourceIssue = *updates.LastSourceIssue
-	}
-	if updates.MRFailed != nil {
-		fields.MRFailed = *updates.MRFailed
-	}
-	if updates.PushFailed != nil {
-		fields.PushFailed = *updates.PushFailed
-	}
-	if updates.CompletionTime != nil {
-		fields.CompletionTime = *updates.CompletionTime
-	}
+	applyAgentFieldUpdates(fields, updates)
 
 	description := FormatAgentDescription(issue.Title, fields)
 	return b.Update(id, UpdateOptions{Description: &description})
+}
+
+func validateAgentFieldUpdates(updates AgentFieldUpdates) error {
+	if updates.NotificationLevel == nil {
+		return nil
+	}
+	level := *updates.NotificationLevel
+	if level == "" || level == NotifyVerbose || level == NotifyNormal || level == NotifyMuted {
+		return nil
+	}
+	return fmt.Errorf("invalid notification level %q: must be verbose, normal, or muted", level)
+}
+
+func applyAgentFieldUpdates(fields *AgentFields, updates AgentFieldUpdates) {
+	for key, value := range agentStringFieldUpdates(updates) {
+		if value != nil {
+			*agentStringFields(fields)[key] = *value
+		}
+	}
+	for key, value := range agentBooleanFieldUpdates(updates) {
+		if value != nil {
+			*agentBooleanFields(fields)[key] = *value
+		}
+	}
+}
+
+func agentStringFieldUpdates(updates AgentFieldUpdates) map[string]*string {
+	return map[string]*string{
+		"agent_state": updates.AgentState, "cleanup_status": updates.CleanupStatus,
+		"active_mr": updates.ActiveMR, "notification_level": updates.NotificationLevel,
+		"mode": updates.Mode, "hook_bead": updates.HookBead, "exit_type": updates.ExitType,
+		"mr_id": updates.MRID, "branch": updates.Branch, "last_source_issue": updates.LastSourceIssue,
+		"completion_time": updates.CompletionTime,
+	}
+}
+
+func agentBooleanFieldUpdates(updates AgentFieldUpdates) map[string]*bool {
+	return map[string]*bool{"mr_failed": updates.MRFailed, "push_failed": updates.PushFailed}
 }
 
 // UpdateAgentCleanupStatus updates the cleanup_status field in an agent bead.
