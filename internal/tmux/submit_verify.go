@@ -66,26 +66,31 @@ func applySGR(params string, dim bool) bool {
 	fields := strings.Split(params, ";")
 	fieldCount := len(fields)
 	for i := 0; i < fieldCount; i++ {
-		switch fields[i] {
-		case "", "0":
-			dim = false
-		case "2":
-			dim = true
-		case "22":
-			dim = false
-		case "38", "48", "58":
-			if i+1 >= len(fields) {
-				continue
-			}
-			switch fields[i+1] {
-			case "5":
-				i += 2
-			case "2":
-				i += 4
-			}
-		}
+		var skip int
+		dim, skip = applySGRField(fields, i, dim)
+		i += skip
 	}
 	return dim
+}
+
+func applySGRField(fields []string, index int, dim bool) (bool, int) {
+	switch fields[index] {
+	case "", "0", "22":
+		return false, 0
+	case "2":
+		return true, 0
+	case "38", "48", "58":
+		if index+1 >= len(fields) {
+			return dim, 0
+		}
+		switch fields[index+1] {
+		case "5":
+			return dim, 2
+		case "2":
+			return dim, 4
+		}
+	}
+	return dim, 0
 }
 
 func stripAnsiTrackDim(s string) ([]rune, []bool) {
@@ -96,31 +101,21 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 	for i := 0; i < sLength; {
 		if s[i] == 0x1b {
 			if i+1 < len(s) && s[i+1] == '[' {
-				j := i + 2
-				for j < sLength && (s[j] < 0x40 || s[j] > 0x7e) {
-					j++
-				}
-				if j >= len(s) {
+				next, nextDim, complete := consumeCSISequence(s, i, curDim)
+				if !complete {
 					break
 				}
-				if s[j] == 'm' {
-					curDim = applySGR(s[i+2:j], curDim)
-				}
-				i = j + 1
+				i = next
+				curDim = nextDim
 				continue
 			}
 			if i+1 < sLength && s[i+1] == ']' {
-				j := i + 2
-				for j < sLength && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < sLength && s[j+1] == '\\') {
-					j++
-				}
-				if j >= len(s) {
+				next, nextDim, complete := consumeOSCSequence(s, i, curDim)
+				if !complete {
 					break
 				}
-				if s[j] == 0x1b {
-					j++
-				}
-				i = j + 1
+				i = next
+				curDim = nextDim
 				continue
 			}
 			i += 2
@@ -132,6 +127,36 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 		i += size
 	}
 	return plain, dim
+}
+
+func consumeCSISequence(s string, start int, dim bool) (int, bool, bool) {
+	sLength := len(s)
+	j := start + 2
+	for j < sLength && (s[j] < 0x40 || s[j] > 0x7e) {
+		j++
+	}
+	if j >= sLength {
+		return 0, dim, false
+	}
+	if s[j] == 'm' {
+		dim = applySGR(s[start+2:j], dim)
+	}
+	return j + 1, dim, true
+}
+
+func consumeOSCSequence(s string, start int, dim bool) (int, bool, bool) {
+	sLength := len(s)
+	j := start + 2
+	for j < sLength && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < sLength && s[j+1] == '\\') {
+		j++
+	}
+	if j >= sLength {
+		return 0, dim, false
+	}
+	if s[j] == 0x1b {
+		j++
+	}
+	return j + 1, dim, true
 }
 
 func runeIndex(haystack, needle []rune) int {
