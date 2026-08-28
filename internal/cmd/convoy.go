@@ -1982,43 +1982,14 @@ func runConvoyStatus(cmd *cobra.Command, args []string) error {
 		return showAllConvoyStatus(townBeads, jsonOutput)
 	}
 
-	convoyID := args[0]
-
-	// Check if it's a numeric shortcut (e.g., "1" instead of "hq-cv-xyz")
-	if n, err := strconv.Atoi(convoyID); err == nil && n > 0 {
-		resolved, err := resolveConvoyNumber(townBeads, n)
-		if err != nil {
-			return err
-		}
-		convoyID = resolved
-	}
-
-	// Get convoy details
-	showOut, err := runBdJSON(townBeads, "show", convoyID, "--json")
+	convoyID, err := resolveConvoyStatusID(townBeads, args[0])
 	if err != nil {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
+		return err
 	}
-
-	// Parse convoy data
-	var convoys []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Status      string   `json:"status"`
-		Description string   `json:"description"`
-		CreatedAt   string   `json:"created_at"`
-		ClosedAt    string   `json:"closed_at,omitempty"`
-		DependsOn   []string `json:"depends_on,omitempty"`
-		Labels      []string `json:"labels,omitempty"`
+	convoy, err := getConvoyIssue(townBeads, convoyID)
+	if err != nil {
+		return err
 	}
-	if err := json.Unmarshal(showOut, &convoys); err != nil {
-		return fmt.Errorf("parsing convoy data: %w", err)
-	}
-
-	if len(convoys) == 0 {
-		return fmt.Errorf("convoy '%s' not found", convoyID)
-	}
-
-	convoy := convoys[0]
 
 	// Check if convoy is owned (caller-managed lifecycle)
 	isOwned := hasLabel(convoy.Labels, "gt:owned")
@@ -2028,106 +1999,147 @@ func runConvoyStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting tracked issues for %s: %w", convoyID, err)
 	}
 
-	// Count completed
+	completed := countCompletedTrackedIssues(tracked)
+
+	if jsonOutput {
+		return printConvoyStatusJSON(convoy, isOwned, tracked, completed)
+	}
+
+	printConvoyStatusHuman(convoy, convoyID, isOwned, tracked, completed)
+	return nil
+}
+
+func resolveConvoyStatusID(townBeads, convoyID string) (string, error) {
+	n, err := strconv.Atoi(convoyID)
+	if err != nil || n <= 0 {
+		return convoyID, nil
+	}
+	return resolveConvoyNumber(townBeads, n)
+}
+
+func countCompletedTrackedIssues(tracked []trackedIssueInfo) int {
 	completed := 0
-	for _, t := range tracked {
-		if t.Status == "closed" {
+	for _, issue := range tracked {
+		if issue.Status == "closed" {
 			completed++
 		}
 	}
+	return completed
+}
 
-	if jsonOutput {
-		lifecycle := "system-managed"
-		if isOwned {
-			lifecycle = "caller-managed"
-		}
-		type jsonStatus struct {
-			ID            string             `json:"id"`
-			Title         string             `json:"title"`
-			Status        string             `json:"status"`
-			Owned         bool               `json:"owned"`
-			Lifecycle     string             `json:"lifecycle"`
-			MergeStrategy string             `json:"merge_strategy,omitempty"`
-			Tracked       []trackedIssueInfo `json:"tracked"`
-			Completed     int                `json:"completed"`
-			Total         int                `json:"total"`
-		}
-		out := jsonStatus{
-			ID:            convoy.ID,
-			Title:         convoy.Title,
-			Status:        convoy.Status,
-			Owned:         isOwned,
-			Lifecycle:     lifecycle,
-			MergeStrategy: convoyMergeFromFields(convoy.Description),
-			Tracked:       tracked,
-			Completed:     completed,
-			Total:         len(tracked),
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+type convoyStatusOutput struct {
+	ID            string             `json:"id"`
+	Title         string             `json:"title"`
+	Status        string             `json:"status"`
+	Owned         bool               `json:"owned"`
+	Lifecycle     string             `json:"lifecycle"`
+	MergeStrategy string             `json:"merge_strategy,omitempty"`
+	Tracked       []trackedIssueInfo `json:"tracked"`
+	Completed     int                `json:"completed"`
+	Total         int                `json:"total"`
+}
+
+func printConvoyStatusJSON(convoy convoyListIssue, isOwned bool, tracked []trackedIssueInfo, completed int) error {
+	lifecycle := "system-managed"
+	if isOwned {
+		lifecycle = "caller-managed"
 	}
+	out := convoyStatusOutput{
+		ID:            convoy.ID,
+		Title:         convoy.Title,
+		Status:        convoy.Status,
+		Owned:         isOwned,
+		Lifecycle:     lifecycle,
+		MergeStrategy: convoyMergeFromFields(convoy.Description),
+		Tracked:       tracked,
+		Completed:     completed,
+		Total:         len(tracked),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
 
-	// Human-readable output
+func printConvoyStatusHuman(convoy convoyListIssue, convoyID string, isOwned bool, tracked []trackedIssueInfo, completed int) {
 	fmt.Printf("🚚 %s %s\n\n", style.Bold.Render(convoy.ID+":"), convoy.Title)
 	fmt.Printf("  Status:    %s\n", formatConvoyStatus(convoy.Status))
 	fmt.Printf("  Owned:     %s\n", formatYesNo(isOwned))
-	if isOwned {
-		fmt.Printf("  Lifecycle: %s\n", style.Warning.Render("caller-managed"))
-	} else {
-		fmt.Printf("  Lifecycle: %s\n", "system-managed")
-	}
-	merge := convoyMergeFromFields(convoy.Description)
-	if merge != "" {
-		fmt.Printf("  Merge:     %s\n", merge)
-	}
+	printConvoyLifecycle(isOwned)
+	printConvoyMerge(convoy.Description)
 	fmt.Printf("  Progress:  %d/%d completed\n", completed, len(tracked))
 	fmt.Printf("  Created:   %s\n", convoy.CreatedAt)
 	if convoy.ClosedAt != "" {
 		fmt.Printf("  Closed:    %s\n", convoy.ClosedAt)
 	}
+	printTrackedIssues(tracked)
+	printConvoyLandHint(convoy, convoyID, isOwned, tracked, completed)
+}
 
-	if len(tracked) > 0 {
-		fmt.Printf("\n  %s\n", style.Bold.Render("Tracked Issues:"))
-		for _, t := range tracked {
-			// Status symbol: ✓ closed, ▶ in_progress/hooked, ? unknown (cross-rig unreachable), ○ other
-			status := "○"
-			switch t.Status {
-			case "closed":
-				status = "✓"
-			case "in_progress", "hooked":
-				status = "▶"
-			case trackedStatusUnknown:
-				status = "?"
-			}
-
-			// Show assignee in brackets (extract short name from path like gastown/polecats/goose -> goose)
-			bracketContent := t.IssueType
-			if t.Assignee != "" {
-				parts := strings.Split(t.Assignee, "/")
-				bracketContent = parts[len(parts)-1] // Last part of path
-			} else if bracketContent == "" {
-				bracketContent = "unassigned"
-			}
-
-			line := fmt.Sprintf("    %s %s: %s [%s]", status, t.ID, t.Title, bracketContent)
-			if t.Worker != "" {
-				workerDisplay := "@" + t.Worker
-				if t.WorkerAge != "" {
-					workerDisplay += fmt.Sprintf(" (%s)", t.WorkerAge)
-				}
-				line += fmt.Sprintf("  %s", style.Dim.Render(workerDisplay))
-			}
-			fmt.Println(line)
-		}
+func printConvoyLifecycle(isOwned bool) {
+	if isOwned {
+		fmt.Printf("  Lifecycle: %s\n", style.Warning.Render("caller-managed"))
+		return
 	}
+	fmt.Printf("  Lifecycle: %s\n", "system-managed")
+}
 
-	// Hint for owned convoys when all issues are complete
+func printConvoyMerge(description string) {
+	merge := convoyMergeFromFields(description)
+	if merge != "" {
+		fmt.Printf("  Merge:     %s\n", merge)
+	}
+}
+
+func printTrackedIssues(tracked []trackedIssueInfo) {
+	if len(tracked) == 0 {
+		return
+	}
+	fmt.Printf("\n  %s\n", style.Bold.Render("Tracked Issues:"))
+	for _, issue := range tracked {
+		printTrackedIssue(issue)
+	}
+}
+
+func printTrackedIssue(issue trackedIssueInfo) {
+	line := fmt.Sprintf("    %s %s: %s [%s]", trackedStatusSymbol(issue.Status), issue.ID, issue.Title, trackedAssignee(issue))
+	if issue.Worker != "" {
+		workerDisplay := "@" + issue.Worker
+		if issue.WorkerAge != "" {
+			workerDisplay += fmt.Sprintf(" (%s)", issue.WorkerAge)
+		}
+		line += fmt.Sprintf("  %s", style.Dim.Render(workerDisplay))
+	}
+	fmt.Println(line)
+}
+
+func trackedStatusSymbol(status string) string {
+	switch status {
+	case "closed":
+		return "✓"
+	case "in_progress", "hooked":
+		return "▶"
+	case trackedStatusUnknown:
+		return "?"
+	default:
+		return "○"
+	}
+}
+
+func trackedAssignee(issue trackedIssueInfo) string {
+	if issue.Assignee != "" {
+		parts := strings.Split(issue.Assignee, "/")
+		return parts[len(parts)-1]
+	}
+	if issue.IssueType == "" {
+		return "unassigned"
+	}
+	return issue.IssueType
+}
+
+func printConvoyLandHint(convoy convoyListIssue, convoyID string, isOwned bool, tracked []trackedIssueInfo, completed int) {
 	if isOwned && completed == len(tracked) && len(tracked) > 0 && normalizeConvoyStatus(convoy.Status) == convoyStatusOpen {
 		fmt.Printf("\n  %s\n", style.Dim.Render("All issues complete. Land with: gt convoy land "+convoyID))
 	}
-
-	return nil
 }
 
 func showAllConvoyStatus(townBeads string, jsonOutput bool) error {
@@ -2316,6 +2328,8 @@ type convoyListIssue struct {
 	Title       string   `json:"title"`
 	Status      string   `json:"status"`
 	CreatedAt   string   `json:"created_at"`
+	ClosedAt    string   `json:"closed_at,omitempty"`
+	DependsOn   []string `json:"depends_on,omitempty"`
 	Description string   `json:"description"`
 	IssueType   string   `json:"issue_type"`
 	Labels      []string `json:"labels"`
