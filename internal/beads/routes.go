@@ -435,18 +435,22 @@ func countBDRepoFlags(argv []string, start int) int {
 }
 
 func isRepoPathLike(value string) bool {
-	if value == "" || filepath.IsAbs(value) {
-		return true
-	}
-	if strings.HasPrefix(value, ".") || strings.HasPrefix(value, "~") {
-		return true
-	}
-	if strings.ContainsAny(value, `/\\`) || strings.Contains(value, "://") {
-		return true
-	}
-	if len(value) >= 2 && value[1] == ':' {
-		return true
-	}
+	return isLocalRepoPath(value) || hasRepoPathSyntax(value) || isWindowsRepoPath(value) || isSSHRepoPath(value)
+}
+
+func isLocalRepoPath(value string) bool {
+	return value == "" || filepath.IsAbs(value) || strings.HasPrefix(value, ".") || strings.HasPrefix(value, "~")
+}
+
+func hasRepoPathSyntax(value string) bool {
+	return strings.ContainsAny(value, `/\\`) || strings.Contains(value, "://")
+}
+
+func isWindowsRepoPath(value string) bool {
+	return len(value) >= 2 && value[1] == ':'
+}
+
+func isSSHRepoPath(value string) bool {
 	return strings.Contains(value, "@") && strings.Contains(value, ":")
 }
 
