@@ -1009,31 +1009,33 @@ func filterBeadsEnv(environ []string) []string {
 			filtered = append(filtered, env)
 			continue
 		}
-		// Preserve Dolt connection env vars needed to reach test/remote Dolt servers.
-		// These must be checked before the broad BEADS_ prefix strip below.
-		if envKeyMatches(keyName, "GT_DOLT_HOST") ||
-			envKeyMatches(keyName, "GT_DOLT_PORT") ||
-			envKeyMatches(keyName, "BEADS_DOLT_PORT") ||
-			envKeyMatches(keyName, "BEADS_DOLT_SERVER_PORT") ||
-			envKeyMatches(keyName, "BEADS_DOLT_SERVER_HOST") ||
-			envKeyMatches(keyName, "BEADS_DOLT_AUTO_START") {
+		if preservesDoltConnection(keyName) {
 			filtered = append(filtered, env)
 			continue
 		}
-		// Skip beads-related env vars that could interfere with test isolation
-		// BD_ACTOR, BEADS_* - direct beads config
-		// GT_ROOT - causes bd to find global routes file
-		// HOME - causes bd to find ~/.beads-planning routing
-		if envKeyMatches(keyName, "BD_ACTOR") ||
-			envKeyHasPrefix(keyName, "BEADS_") ||
-			envKeyMatches(keyName, "GT_DOLT_DATA") ||
-			envKeyMatches(keyName, "GT_ROOT") ||
-			envKeyMatches(keyName, "HOME") {
+		if filtersBeadsEnvironment(keyName) {
 			continue
 		}
 		filtered = append(filtered, env)
 	}
 	return filtered
+}
+
+func preservesDoltConnection(keyName string) bool {
+	return envKeyMatches(keyName, "GT_DOLT_HOST") ||
+		envKeyMatches(keyName, "GT_DOLT_PORT") ||
+		envKeyMatches(keyName, "BEADS_DOLT_PORT") ||
+		envKeyMatches(keyName, "BEADS_DOLT_SERVER_PORT") ||
+		envKeyMatches(keyName, "BEADS_DOLT_SERVER_HOST") ||
+		envKeyMatches(keyName, "BEADS_DOLT_AUTO_START")
+}
+
+func filtersBeadsEnvironment(keyName string) bool {
+	return envKeyMatches(keyName, "BD_ACTOR") ||
+		envKeyHasPrefix(keyName, "BEADS_") ||
+		envKeyMatches(keyName, "GT_DOLT_DATA") ||
+		envKeyMatches(keyName, "GT_ROOT") ||
+		envKeyMatches(keyName, "HOME")
 }
 
 // stripEnvPrefixes removes entries matching any of the given prefixes from an
