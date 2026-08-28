@@ -18,12 +18,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	bootStatusJSON    bool
-	bootDegraded      bool
-	bootAgentOverride string
-)
-
 var bootCmd = &cobra.Command{
 	Use:     "boot",
 	GroupID: GroupAgents,
@@ -88,9 +82,9 @@ Use --degraded flag when running in degraded mode.`,
 }
 
 func init() {
-	bootStatusCmd.Flags().BoolVar(&bootStatusJSON, "json", false, "Output as JSON")
-	bootTriageCmd.Flags().BoolVar(&bootDegraded, "degraded", false, "Run in degraded mode (no tmux)")
-	bootSpawnCmd.Flags().StringVar(&bootAgentOverride, "agent", "", "Agent alias to run Boot with (overrides town default)")
+	bootStatusCmd.Flags().Bool("json", false, "Output as JSON")
+	bootTriageCmd.Flags().Bool("degraded", false, "Run in degraded mode (no tmux)")
+	bootSpawnCmd.Flags().String("agent", "", "Agent alias to run Boot with (overrides town default)")
 
 	bootCmd.AddCommand(bootStatusCmd)
 	bootCmd.AddCommand(bootSpawnCmd)
@@ -108,7 +102,7 @@ func getBootManager() (*boot.Boot, error) {
 	return boot.New(townRoot), nil
 }
 
-func runBootStatus(_ *cobra.Command, _ []string) error {
+func runBootStatus(cmd *cobra.Command, _ []string) error {
 	b, err := getBootManager()
 	if err != nil {
 		return err
@@ -122,20 +116,34 @@ func runBootStatus(_ *cobra.Command, _ []string) error {
 	isRunning := b.IsRunning()
 	sessionAlive := b.IsSessionAlive()
 
-	if bootStatusJSON {
-		output := map[string]interface{}{
-			"running":       isRunning,
-			"session_alive": sessionAlive,
-			"degraded":      b.IsDegraded(),
-			"boot_dir":      b.Dir(),
-			"last_status":   status,
+	jsonOutput := false
+	if cmd != nil {
+		jsonOutput, err = cmd.Flags().GetBool("json")
+		if err != nil {
+			return err
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(output)
 	}
+	if jsonOutput {
+		return writeBootStatusJSON(b, status, isRunning, sessionAlive)
+	}
+	printBootStatus(b, status, isRunning, sessionAlive)
+	return nil
+}
 
-	// Pretty print
+func writeBootStatusJSON(b *boot.Boot, status *boot.Status, isRunning, sessionAlive bool) error {
+	output := map[string]interface{}{
+		"running":       isRunning,
+		"session_alive": sessionAlive,
+		"degraded":      b.IsDegraded(),
+		"boot_dir":      b.Dir(),
+		"last_status":   status,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(output)
+}
+
+func printBootStatus(b *boot.Boot, status *boot.Status, isRunning, sessionAlive bool) {
 	fmt.Println(style.Bold.Render("Boot Status"))
 	fmt.Println()
 
@@ -159,40 +167,43 @@ func runBootStatus(_ *cobra.Command, _ []string) error {
 
 	fmt.Println()
 	fmt.Println(style.Dim.Render("Last Execution:"))
-
-	if status.StartedAt.IsZero() {
-		fmt.Printf("  %s\n", style.Dim.Render("(no executions recorded)"))
-	} else {
-		if !status.CompletedAt.IsZero() {
-			duration := status.CompletedAt.Sub(status.StartedAt)
-			fmt.Printf("  Completed: %s (%s ago)\n",
-				status.CompletedAt.Format("15:04:05"),
-				formatDurationAgo(time.Since(status.CompletedAt)))
-			fmt.Printf("  Duration:  %s\n", duration.Round(time.Millisecond))
-		} else {
-			fmt.Printf("  Started: %s\n", status.StartedAt.Format("15:04:05"))
-		}
-
-		if status.LastAction != "" {
-			fmt.Printf("  Action:  %s", status.LastAction)
-			if status.Target != "" {
-				fmt.Printf(" → %s", status.Target)
-			}
-			fmt.Println()
-		}
-
-		if status.Error != "" {
-			fmt.Printf("  Error:   %s\n", style.Bold.Render(status.Error))
-		}
-	}
-
+	printBootExecution(status)
 	fmt.Println()
 	fmt.Printf("  Dir: %s\n", b.Dir())
-
-	return nil
 }
 
-func runBootSpawn(_ *cobra.Command, _ []string) error {
+func printBootExecution(status *boot.Status) {
+	if status.StartedAt.IsZero() {
+		fmt.Printf("  %s\n", style.Dim.Render("(no executions recorded)"))
+		return
+	}
+	if !status.CompletedAt.IsZero() {
+		duration := status.CompletedAt.Sub(status.StartedAt)
+		fmt.Printf("  Completed: %s (%s ago)\n",
+			status.CompletedAt.Format("15:04:05"),
+			formatDurationAgo(time.Since(status.CompletedAt)))
+		fmt.Printf("  Duration:  %s\n", duration.Round(time.Millisecond))
+	} else {
+		fmt.Printf("  Started: %s\n", status.StartedAt.Format("15:04:05"))
+	}
+	printBootAction(status)
+	if status.Error != "" {
+		fmt.Printf("  Error:   %s\n", style.Bold.Render(status.Error))
+	}
+}
+
+func printBootAction(status *boot.Status) {
+	if status.LastAction == "" {
+		return
+	}
+	fmt.Printf("  Action:  %s", status.LastAction)
+	if status.Target != "" {
+		fmt.Printf(" → %s", status.Target)
+	}
+	fmt.Println()
+}
+
+func runBootSpawn(cmd *cobra.Command, _ []string) error {
 	b, err := getBootManager()
 	if err != nil {
 		return err
@@ -211,8 +222,16 @@ func runBootSpawn(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("saving status: %w", err)
 	}
 
+	agentOverride := ""
+	if cmd != nil {
+		agentOverride, err = cmd.Flags().GetString("agent")
+		if err != nil {
+			return err
+		}
+	}
+
 	// Spawn Boot
-	if err := b.Spawn(bootAgentOverride); err != nil {
+	if err := b.Spawn(agentOverride); err != nil {
 		status.Error = err.Error()
 		status.CompletedAt = time.Now()
 		_ = b.SaveStatus(status)
