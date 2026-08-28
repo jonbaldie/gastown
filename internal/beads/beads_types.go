@@ -428,43 +428,61 @@ func ensureDatabaseInitialized(beadsDir string) error {
 // directory tree to resolve the actual rig name, which is out of scope for
 // this crash-prevention guard.
 func detectPrefix(beadsDir string) string {
-	// 1. Try authoritative source: rigs.json via town root
 	rigDir := filepath.Dir(beadsDir)
-	if townRoot := FindTownRoot(rigDir); townRoot != "" {
-		rigName := filepath.Base(rigDir)
-		if prefix := config.GetRigPrefix(townRoot, rigName); prefix != "" && prefixRe.MatchString(prefix) {
+	if prefix := townPrefix(rigDir); prefix != "" {
+		return prefix
+	}
+	if prefix := configPrefix(beadsDir); prefix != "" {
+		return prefix
+	}
+	return "gt"
+}
+
+func townPrefix(rigDir string) string {
+	townRoot := FindTownRoot(rigDir)
+	if townRoot == "" {
+		return ""
+	}
+	prefix := config.GetRigPrefix(townRoot, filepath.Base(rigDir))
+	if prefixRe.MatchString(prefix) {
+		return prefix
+	}
+	return ""
+}
+
+func configPrefix(beadsDir string) string {
+	data, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if prefix := configPrefixFromLine(line); prefix != "" {
 			return prefix
 		}
 	}
+	return ""
+}
 
-	// 2. Fallback: read from config.yaml.
-	// NOTE: Inside towns, this is typically unreachable because GetRigPrefix
-	// always returns at least "gt" (the default) when a rig isn't found in
-	// rigs.json. This fallback is primarily for standalone rigs outside towns.
-	configPath := filepath.Join(beadsDir, "config.yaml")
-	if data, err := os.ReadFile(configPath); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			for _, key := range []string{"issue-prefix:", "prefix:"} {
-				if strings.HasPrefix(line, key) {
-					parts := strings.SplitN(line, ":", 2)
-					if len(parts) == 2 {
-						candidate := strings.TrimSpace(parts[1])
-						// Strip quotes first, then trailing dash — matches
-						// detectBeadsPrefixFromConfig in rig/manager.go.
-						candidate = stripYAMLQuotes(candidate)
-						candidate = strings.TrimSuffix(candidate, "-")
-						if candidate != "" && prefixRe.MatchString(candidate) {
-							return candidate
-						}
-					}
-				}
-			}
+func configPrefixFromLine(line string) string {
+	line = strings.TrimSpace(line)
+	for _, key := range []string{"issue-prefix:", "prefix:"} {
+		if strings.HasPrefix(line, key) {
+			return validConfigPrefix(line)
 		}
 	}
+	return ""
+}
 
-	// 3. Default
-	return "gt"
+func validConfigPrefix(line string) string {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	candidate := strings.TrimSuffix(stripYAMLQuotes(strings.TrimSpace(parts[1])), "-")
+	if candidate != "" && prefixRe.MatchString(candidate) {
+		return candidate
+	}
+	return ""
 }
 
 // stripYAMLQuotes removes surrounding single or double quotes from a string.
