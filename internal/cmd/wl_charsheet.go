@@ -14,8 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var wlCharsheetJSON bool
-
 var wlCharsheetCmd = &cobra.Command{
 	Use:   "charsheet [handle]",
 	Short: "Display a rig's character sheet",
@@ -33,11 +31,19 @@ EXAMPLES:
 }
 
 func init() {
-	wlCharsheetCmd.Flags().BoolVar(&wlCharsheetJSON, "json", false, "Output as JSON")
+	wlCharsheetCmd.Flags().Bool("json", false, "Output as JSON")
 	wlCmd.AddCommand(wlCharsheetCmd)
 }
 
-func runWlCharsheet(_ *cobra.Command, args []string) error {
+func wlCharsheetJSONEnabled(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	jsonOutput, err := cmd.Flags().GetBool("json")
+	return err == nil && jsonOutput
+}
+
+func runWlCharsheet(cmd *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -65,7 +71,7 @@ func runWlCharsheet(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("assembling character sheet: %w", err)
 	}
 
-	if wlCharsheetJSON {
+	if wlCharsheetJSONEnabled(cmd) {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(sheet)
@@ -76,11 +82,20 @@ func runWlCharsheet(_ *cobra.Command, args []string) error {
 }
 
 func renderCharsheetASCII(sheet *doltserver.CharacterSheet) {
-	// Header
+	renderCharsheetHeader(sheet)
+	renderStampGeometry(sheet)
+	renderSkillCoverage(sheet)
+	renderTopStamps(sheet)
+	renderCharsheetWarnings(sheet)
+	renderCharsheetBadges(sheet)
+}
+
+func renderCharsheetHeader(sheet *doltserver.CharacterSheet) {
 	fmt.Printf("=== %s (%s) ===\n", style.Bold.Render(sheet.Handle), sheet.Tier)
 	fmt.Printf("Stamps: %d | Clusters: %d\n", sheet.StampCount, sheet.ClusterBreadth)
+}
 
-	// Stamp Geometry
+func renderStampGeometry(sheet *doltserver.CharacterSheet) {
 	fmt.Printf("\n%s\n", style.Bold.Render("Value Dimensions:"))
 	if len(sheet.StampGeometry) == 0 {
 		fmt.Printf("  %s\n", style.Dim.Render("(no stamps yet)"))
@@ -93,8 +108,9 @@ func renderCharsheetASCII(sheet *doltserver.CharacterSheet) {
 			}
 		}
 	}
+}
 
-	// Skill Coverage
+func renderSkillCoverage(sheet *doltserver.CharacterSheet) {
 	fmt.Printf("\n%s\n", style.Bold.Render("Top Skills:"))
 	if len(sheet.SkillCoverage) == 0 {
 		fmt.Printf("  %s\n", style.Dim.Render("(no skills recorded)"))
@@ -122,8 +138,9 @@ func renderCharsheetASCII(sheet *doltserver.CharacterSheet) {
 			fmt.Printf("  %s\n", style.Dim.Render("(no skills recorded)"))
 		}
 	}
+}
 
-	// Top Stamps
+func renderTopStamps(sheet *doltserver.CharacterSheet) {
 	if len(sheet.TopStamps) > 0 {
 		fmt.Printf("\n%s\n", style.Bold.Render("Top Stamps:"))
 		for _, s := range sheet.TopStamps {
@@ -138,16 +155,18 @@ func renderCharsheetASCII(sheet *doltserver.CharacterSheet) {
 			fmt.Printf("  %s: %q  [%s]\n", s.Author, msg, valParts)
 		}
 	}
+}
 
-	// Warnings
+func renderCharsheetWarnings(sheet *doltserver.CharacterSheet) {
 	if len(sheet.Warnings) > 0 {
 		fmt.Printf("\n%s\n", style.Warning.Render("WARNINGS:"))
 		for _, w := range sheet.Warnings {
 			fmt.Printf("  [%s] %s: %q  [%s]\n", w.Severity, w.Author, w.Message, w.Date)
 		}
 	}
+}
 
-	// Badges
+func renderCharsheetBadges(sheet *doltserver.CharacterSheet) {
 	fmt.Printf("\n%s ", style.Bold.Render("Badges:"))
 	if len(sheet.Badges) == 0 {
 		fmt.Printf("%s\n", style.Dim.Render("(none)"))
@@ -159,7 +178,6 @@ func renderCharsheetASCII(sheet *doltserver.CharacterSheet) {
 		fmt.Printf("%s\n", strings.Join(names, ", "))
 	}
 
-	// Tier
 	tierUnlocks := map[string]string{
 		"newcomer":    "browse, fork, claim work",
 		"contributor": "post wanted items, endorse others",
