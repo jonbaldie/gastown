@@ -94,48 +94,54 @@ func similarity(a, b string) int {
 		return ScoreExactMatch
 	}
 
-	score := 0
+	return prefixScore(a, b) + suffixScore(a, b) + containsScore(a, b) +
+		distanceScore(a, b) + commonCharsScore(a, b) + lengthPenalty(a, b)
+}
 
-	// Prefix matching - high value
-	prefixLen := commonPrefixLength(a, b)
-	if prefixLen > 0 {
-		score += prefixLen * ScorePrefixWeight
+func prefixScore(a, b string) int {
+	return weightedMatchScore(commonPrefixLength(a, b), ScorePrefixWeight)
+}
+
+func suffixScore(a, b string) int {
+	return weightedMatchScore(commonSuffixLength(a, b), ScoreSuffixWeight)
+}
+
+func weightedMatchScore(matchLength, weight int) int {
+	if matchLength == 0 {
+		return 0
 	}
+	return matchLength * weight
+}
 
-	// Suffix matching
-	suffixLen := commonSuffixLength(a, b)
-	if suffixLen > 0 {
-		score += suffixLen * ScoreSuffixWeight
-	}
-
-	// Contains matching
+func containsScore(a, b string) int {
 	if strings.Contains(b, a) {
-		score += len(a) * ScoreContainsFullWeight
-	} else if strings.Contains(a, b) {
-		score += len(b) * ScoreContainsPartialWeight
+		return len(a) * ScoreContainsFullWeight
 	}
+	if strings.Contains(a, b) {
+		return len(b) * ScoreContainsPartialWeight
+	}
+	return 0
+}
 
-	// Levenshtein distance for close matches
-	dist := levenshteinDistance(a, b)
+func distanceScore(a, b string) int {
+	distance := levenshteinDistance(a, b)
 	maxLen := max(len(a), len(b))
-	if maxLen > 0 && dist <= maxLen/2 {
-		// Closer distance = higher score
-		score += (maxLen - dist) * ScoreDistanceWeight
+	if maxLen == 0 || distance > maxLen/2 {
+		return 0
 	}
+	return (maxLen - distance) * ScoreDistanceWeight
+}
 
-	// Common characters bonus (order-independent)
-	common := commonChars(a, b)
-	if common > 0 {
-		score += common * ScoreCommonCharsWeight
+func commonCharsScore(a, b string) int {
+	return weightedMatchScore(commonChars(a, b), ScoreCommonCharsWeight)
+}
+
+func lengthPenalty(a, b string) int {
+	lengthDifference := abs(len(a) - len(b))
+	if lengthDifference <= LengthDiffThreshold {
+		return 0
 	}
-
-	// Penalize very different lengths
-	lenDiff := abs(len(a) - len(b))
-	if lenDiff > LengthDiffThreshold {
-		score -= lenDiff * LengthDiffPenalty
-	}
-
-	return score
+	return -lengthDifference * LengthDiffPenalty
 }
 
 // commonPrefixLength returns the length of the common prefix.
