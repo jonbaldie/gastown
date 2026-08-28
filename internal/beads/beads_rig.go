@@ -128,56 +128,52 @@ func (b *Beads) EnsureRigBead(name string, fields *RigFields) (*Issue, error) {
 // The ID is constructed internally from fields.Prefix and name.
 // The created_by field is populated from BD_ACTOR env var for provenance tracking.
 func (b *Beads) CreateRigBead(name string, fields *RigFields) (*Issue, error) {
-	// Guard against flag-like rig names (gt-e0kx5: --help garbage beads)
-	if IsFlagLikeTitle(name) {
-		return nil, fmt.Errorf("refusing to create rig bead: %w (got %q)", ErrFlagTitle, name)
+	id, err := rigBeadID(name, fields)
+	if err != nil {
+		return nil, err
 	}
-
-	if fields != nil && fields.State != "" && !ValidRigState(fields.State) {
-		return nil, fmt.Errorf("invalid rig state %q: must be one of active, archived, maintenance", fields.State)
-	}
-
-	prefix := "gt"
-	if fields != nil && fields.Prefix != "" {
-		prefix = fields.Prefix
-	}
-	id := RigBeadIDWithPrefix(prefix, name)
-	description := FormatRigDescription(name, fields)
-
-	// Ensure target database keeps rig as a durable custom type, not an
-	// infra/wisp type. Failing closed avoids silently creating ephemeral rig
-	// identity beads when type config cannot be persisted.
 	if err := EnsureCustomTypes(b.getResolvedBeadsDir()); err != nil {
 		return nil, fmt.Errorf("ensuring rig bead types: %w", err)
 	}
 
-	args := []string{"create", "--json",
-		"--id=" + id,
-		"--title=" + name,
-		"--description=" + description,
-		"--labels=gt:rig",
-		"--type=rig",
-	}
-	if NeedsForceForID(id) {
-		args = append(args, "--force")
-	}
-
-	// Default actor from BD_ACTOR env var for provenance tracking
-	// Uses getActor() to respect isolated mode (tests)
-	if actor := b.getActor(); actor != "" {
-		args = append(args, "--actor="+actor)
-	}
-
-	out, err := b.run(args...)
+	out, err := b.run(rigBeadCreateArgs(id, name, fields, b.getActor())...)
 	if err != nil {
 		return nil, err
 	}
+	return decodeCreatedRigBead(out)
+}
 
+func rigBeadID(name string, fields *RigFields) (string, error) {
+	if IsFlagLikeTitle(name) {
+		return "", fmt.Errorf("refusing to create rig bead: %w (got %q)", ErrFlagTitle, name)
+	}
+	if fields != nil && fields.State != "" && !ValidRigState(fields.State) {
+		return "", fmt.Errorf("invalid rig state %q: must be one of active, archived, maintenance", fields.State)
+	}
+	prefix := "gt"
+	if fields != nil && fields.Prefix != "" {
+		prefix = fields.Prefix
+	}
+	return RigBeadIDWithPrefix(prefix, name), nil
+}
+
+func rigBeadCreateArgs(id, name string, fields *RigFields, actor string) []string {
+	args := []string{"create", "--json", "--id=" + id, "--title=" + name,
+		"--description=" + FormatRigDescription(name, fields), "--labels=gt:rig", "--type=rig"}
+	if NeedsForceForID(id) {
+		args = append(args, "--force")
+	}
+	if actor != "" {
+		args = append(args, "--actor="+actor)
+	}
+	return args
+}
+
+func decodeCreatedRigBead(out []byte) (*Issue, error) {
 	var issue Issue
 	if err := json.Unmarshal(out, &issue); err != nil {
 		return nil, fmt.Errorf("parsing bd create output: %w", err)
 	}
-
 	return &issue, nil
 }
 
