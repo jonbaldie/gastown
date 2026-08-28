@@ -77,13 +77,7 @@ func runSignalStop(_ *cobra.Command, _ []string) error {
 
 	wg.Wait()
 
-	// Determine the block reason (mail takes priority)
-	var reason string
-	if mailReason != "" {
-		reason = mailReason
-	} else if workReason != "" {
-		reason = workReason
-	}
+	reason := stopReason(mailReason, workReason)
 
 	statePath := stopStateFilePath(address)
 
@@ -96,8 +90,7 @@ func runSignalStop(_ *cobra.Command, _ []string) error {
 	// Check if we've already notified about this exact condition.
 	// This prevents infinite loops where the same block reason fires
 	// at every turn boundary, consuming the entire agent context.
-	state := loadStopState(statePath)
-	if state != nil && state.LastReason == reason {
+	if stopReasonAlreadyNotified(statePath, reason) {
 		// Already notified — don't re-block (prevents infinite loop)
 		return outputStopAllow()
 	}
@@ -105,6 +98,19 @@ func runSignalStop(_ *cobra.Command, _ []string) error {
 	// New or changed condition — block and record what we notified about
 	saveStopState(statePath, &stopState{LastReason: reason})
 	return outputStopBlock(reason)
+}
+
+func stopReason(mailReason, workReason string) string {
+	// Mail takes priority when both checks find work.
+	if mailReason != "" {
+		return mailReason
+	}
+	return workReason
+}
+
+func stopReasonAlreadyNotified(path, reason string) bool {
+	state := loadStopState(path)
+	return state != nil && state.LastReason == reason
 }
 
 // checkUnreadMail checks for unread mail and returns a block reason if found.
@@ -168,25 +174,32 @@ func checkStopSlungWork(townRoot string) string {
 		return ""
 	}
 
+	return lookupStopSlungWork(beads.New(townRoot), agentBeadID, identity)
+}
+
+func lookupStopSlungWork(b *beads.Beads, agentBeadID, identity string) string {
 	// Check agent bead for hook_bead field (preferred, fast path)
-	b := beads.New(townRoot)
 	agentBead, err := b.Show(agentBeadID)
 	if err == nil && agentBead != nil && agentBead.HookBead != "" {
 		// Agent has hooked work — check if it's actually something new
 		// (vs. work already being processed in this session)
-		hookBead, err := b.Show(agentBead.HookBead)
-		if err == nil && hookBead != nil {
-			// Only block if the hooked work is in "hooked" status (not yet claimed)
-			if hookBead.Status == beads.StatusHooked {
-				return fmt.Sprintf("[gt signal stop] Work slung to you: %s — \"%s\"\n\n"+
-					"Run `gt hook` to see details, then execute the work.",
-					hookBead.ID, hookBead.Title)
-			}
-		}
-		// Agent bead found with hook — no need for fallback
-		return ""
+		return hookedStopWorkReason(b, agentBead.HookBead)
 	}
 
+	return listStopSlungWork(b, identity)
+}
+
+func hookedStopWorkReason(b *beads.Beads, hookBeadID string) string {
+	hookBead, err := b.Show(hookBeadID)
+	if err != nil || hookBead == nil || hookBead.Status != beads.StatusHooked {
+		return ""
+	}
+	return fmt.Sprintf("[gt signal stop] Work slung to you: %s — \"%s\"\n\n"+
+		"Run `gt hook` to see details, then execute the work.",
+		hookBead.ID, hookBead.Title)
+}
+
+func listStopSlungWork(b *beads.Beads, identity string) string {
 	// Fallback: query for any hooked beads assigned to this agent.
 	// This catches cases where the agent bead doesn't exist yet.
 	hookedBeads, err := b.List(beads.ListOptions{
@@ -195,14 +208,14 @@ func checkStopSlungWork(townRoot string) string {
 		Priority: -1,
 		Limit:    1,
 	})
-	if err == nil && len(hookedBeads) > 0 {
-		bead := hookedBeads[0]
-		return fmt.Sprintf("[gt signal stop] Work slung to you: %s — \"%s\"\n\n"+
-			"Run `gt hook` to see details, then execute the work.",
-			bead.ID, bead.Title)
+	if err != nil || len(hookedBeads) == 0 {
+		return ""
 	}
 
-	return ""
+	bead := hookedBeads[0]
+	return fmt.Sprintf("[gt signal stop] Work slung to you: %s — \"%s\"\n\n"+
+		"Run `gt hook` to see details, then execute the work.",
+		bead.ID, bead.Title)
 }
 
 // stopState tracks the last block reason to prevent infinite notification loops.
