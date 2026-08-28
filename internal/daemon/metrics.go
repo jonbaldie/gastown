@@ -14,6 +14,10 @@ const meterName = "github.com/jonbaldie/gastown/daemon"
 // daemonMetrics holds OTel instruments for the daemon.
 // All methods are nil-safe so callers don't need to guard against disabled telemetry.
 type daemonMetrics struct {
+	*daemonMetricState
+}
+
+type daemonMetricState struct {
 	// heartbeatTotal counts daemon heartbeat cycles.
 	heartbeatTotal metric.Int64Counter
 
@@ -37,7 +41,8 @@ type daemonMetrics struct {
 // Returns a no-op struct if no provider is configured.
 func newDaemonMetrics() (*daemonMetrics, error) {
 	m := otel.GetMeterProvider().Meter(meterName)
-	dm := &daemonMetrics{}
+	state := &daemonMetricState{}
+	dm := &daemonMetrics{daemonMetricState: state}
 
 	var err error
 
@@ -102,13 +107,13 @@ func newDaemonMetrics() (*daemonMetrics, error) {
 	}
 
 	_, err = m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
-		dm.doltMu.RLock()
-		defer dm.doltMu.RUnlock()
-		o.ObserveInt64(connGauge, dm.doltConnections)
-		o.ObserveInt64(maxConnGauge, dm.doltMaxConnections)
-		o.ObserveFloat64(latencyGauge, dm.doltLatencyMs)
-		o.ObserveInt64(diskGauge, dm.doltDiskBytes)
-		o.ObserveInt64(healthyGauge, dm.doltHealthy)
+		state.doltMu.RLock()
+		defer state.doltMu.RUnlock()
+		o.ObserveInt64(connGauge, state.doltConnections)
+		o.ObserveInt64(maxConnGauge, state.doltMaxConnections)
+		o.ObserveFloat64(latencyGauge, state.doltLatencyMs)
+		o.ObserveInt64(diskGauge, state.doltDiskBytes)
+		o.ObserveInt64(healthyGauge, state.doltHealthy)
 		return nil
 	}, connGauge, maxConnGauge, latencyGauge, diskGauge, healthyGauge)
 	if err != nil {
@@ -120,7 +125,7 @@ func newDaemonMetrics() (*daemonMetrics, error) {
 
 // RecordHeartbeat increments the heartbeat counter.
 func (dm *daemonMetrics) RecordHeartbeat(ctx context.Context) {
-	if dm == nil {
+	if dm == nil || dm.daemonMetricState == nil {
 		return
 	}
 	dm.heartbeatTotal.Add(ctx, 1)
@@ -129,7 +134,7 @@ func (dm *daemonMetrics) RecordHeartbeat(ctx context.Context) {
 // RecordRestart increments the restart counter, labeled with the agent type
 // (e.g. "deacon", "witness", "refinery", "polecat").
 func (dm *daemonMetrics) RecordRestart(ctx context.Context, agentType string) {
-	if dm == nil {
+	if dm == nil || dm.daemonMetricState == nil {
 		return
 	}
 	dm.restartTotal.Add(ctx, 1,
@@ -139,7 +144,7 @@ func (dm *daemonMetrics) RecordRestart(ctx context.Context, agentType string) {
 
 // RecordPolecatSpawn increments the polecat spawn counter, labeled with the rig name.
 func (dm *daemonMetrics) RecordPolecatSpawn(ctx context.Context, rigName string) {
-	if dm == nil {
+	if dm == nil || dm.daemonMetricState == nil {
 		return
 	}
 	dm.polecatSpawns.Add(ctx, 1,
@@ -149,7 +154,7 @@ func (dm *daemonMetrics) RecordPolecatSpawn(ctx context.Context, rigName string)
 
 // UpdateDoltHealth stores the latest Dolt health snapshot for observable gauges.
 func (dm *daemonMetrics) UpdateDoltHealth(conns, maxConns int64, latencyMs float64, diskBytes int64, healthy bool) {
-	if dm == nil {
+	if dm == nil || dm.daemonMetricState == nil {
 		return
 	}
 	var healthyInt int64
