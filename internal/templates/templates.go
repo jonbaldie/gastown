@@ -26,9 +26,10 @@ func CmdName() string {
 	return "gt"
 }
 
-// templateFuncs provides custom functions for templates.
-var templateFuncs = template.FuncMap{
-	"cmd": CmdName, // {{ cmd }} returns the CLI command name
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"cmd": CmdName, // {{ cmd }} returns the CLI command name
+	}
 }
 
 //go:embed roles/*.md.tmpl messages/*.md.tmpl
@@ -119,14 +120,14 @@ func New() (*Templates, error) {
 	t := &Templates{}
 
 	// Parse role templates with custom functions
-	roleTempl, err := template.New("").Funcs(templateFuncs).ParseFS(templateFS, "roles/*.md.tmpl")
+	roleTempl, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "roles/*.md.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parsing role templates: %w", err)
 	}
 	t.roleTemplates = roleTempl
 
 	// Parse message templates with custom functions
-	msgTempl, err := template.New("").Funcs(templateFuncs).ParseFS(templateFS, "messages/*.md.tmpl")
+	msgTempl, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "messages/*.md.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parsing message templates: %w", err)
 	}
