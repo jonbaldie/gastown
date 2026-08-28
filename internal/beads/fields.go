@@ -599,19 +599,27 @@ type MRFields struct {
 	MergeCommit string // SHA of merge commit (set on close)
 	CloseReason string // Reason for closing: merged, rejected, conflict, superseded
 	AgentBead   string // Agent bead ID that created this MR (for traceability)
+	MRConflictFields
+	MRConvoyFields
+	MRPreVerificationFields
+}
 
-	// Conflict resolution fields (for priority scoring)
+// MRConflictFields records conflict-resolution metadata used for priority scoring.
+type MRConflictFields struct {
 	RetryCount      int    // Number of conflict-resolution cycles
 	LastConflictSHA string // SHA of main when conflict occurred
 	ConflictTaskID  string // Link to conflict-resolution task (if any)
+}
 
-	// Convoy tracking (for priority scoring - convoy starvation prevention)
+// MRConvoyFields records convoy metadata used to prevent starvation in priority scoring.
+type MRConvoyFields struct {
 	ConvoyID        string // Parent convoy ID if part of a convoy
 	ConvoyCreatedAt string // Convoy creation time (ISO 8601) for starvation prevention
+}
 
-	// Pre-verification fields (Phase 3: polecat-owned rebasing)
-	// When a polecat rebases onto the target and runs gates before submission,
-	// these fields allow the refinery to fast-path merge without re-running gates.
+// MRPreVerificationFields records verification completed after rebasing onto the target.
+// It lets the Refinery fast-path a merge without rerunning its gates.
+type MRPreVerificationFields struct {
 	PreVerified     bool   // Polecat ran full gates after rebasing onto target
 	PreVerifiedAt   string // ISO 8601 timestamp when verification completed
 	PreVerifiedBase string // Target branch SHA at verification time
