@@ -45,6 +45,10 @@ func (r *tmuxEnvReaderWriter) SetEnvironment(session, key, value string) error {
 // EnvVarsCheck verifies that tmux session environment variables match expected values.
 type EnvVarsCheck struct {
 	FixableCheck
+	dependencies envVarsDependencies
+}
+
+type envVarsDependencies struct {
 	reader   SessionEnvReader   // nil means use real tmux
 	accessor SessionEnvAccessor // non-nil when Fix() support is needed
 }
@@ -65,21 +69,21 @@ func NewEnvVarsCheck() *EnvVarsCheck {
 // NewEnvVarsCheckWithReader creates a check with a custom reader (for testing Run()).
 func NewEnvVarsCheckWithReader(reader SessionEnvReader) *EnvVarsCheck {
 	c := NewEnvVarsCheck()
-	c.reader = reader
+	c.dependencies.reader = reader
 	return c
 }
 
 // NewEnvVarsCheckWithAccessor creates a check with a custom accessor (for testing Fix()).
 func NewEnvVarsCheckWithAccessor(accessor SessionEnvAccessor) *EnvVarsCheck {
 	c := NewEnvVarsCheck()
-	c.accessor = accessor
-	c.reader = accessor
+	c.dependencies.accessor = accessor
+	c.dependencies.reader = accessor
 	return c
 }
 
 // Run checks environment variables for all Gas Town sessions.
 func (c *EnvVarsCheck) Run(ctx *CheckContext) *CheckResult {
-	reader := c.reader
+	reader := c.dependencies.reader
 	if reader == nil {
 		reader = &tmuxEnvReaderWriter{t: tmux.NewTmux()}
 	}
@@ -213,7 +217,7 @@ func (c *EnvVarsCheck) Run(ctx *CheckContext) *CheckResult {
 // The running Claude process is unaffected (it already has env vars from startup);
 // this updates the tmux session store so future processes and gt doctor agree.
 func (c *EnvVarsCheck) Fix(ctx *CheckContext) error {
-	accessor := c.accessor
+	accessor := c.dependencies.accessor
 	if accessor == nil {
 		accessor = &tmuxEnvReaderWriter{t: tmux.NewTmux()}
 	}
