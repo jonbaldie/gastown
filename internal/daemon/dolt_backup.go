@@ -44,10 +44,7 @@ func doltBackupInterval(config *DaemonPatrolConfig) time.Duration {
 func (d *Daemon) syncDoltBackups() {
 	// Dolt backup uses iCloud Drive for offsite sync — only available on macOS.
 	// On Linux this generates HIGH priority escalation spam every ~15 minutes.
-	if runtime.GOOS != "darwin" {
-		return
-	}
-	if !d.isPatrolActive("dolt_backup") {
+	if !d.canSyncDoltBackups() {
 		return
 	}
 
@@ -55,24 +52,14 @@ func (d *Daemon) syncDoltBackups() {
 	mol := d.pourDogMolecule(constants.MolDogBackup, nil)
 	defer mol.Close()
 
-	// Resolve data dir: use DoltServerManager if available, else conventional path.
-	var dataDir string
-	if d.doltServer != nil && d.doltServer.IsEnabled() && d.doltServer.config.DataDir != "" {
-		dataDir = d.doltServer.config.DataDir
-	} else {
-		dataDir = filepath.Join(d.config.TownRoot, ".dolt-data")
-	}
+	dataDir := d.doltBackupDataDir()
 	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
 		d.logger.Printf("dolt_backup: data dir %s does not exist, skipping", dataDir)
 		mol.FailStep("sync", "data dir does not exist")
 		return
 	}
 
-	config := d.patrolConfig.Patrols.DoltBackup
-	databases := config.Databases
-	if len(databases) == 0 {
-		databases = d.discoverDatabasesWithBackups(dataDir)
-	}
+	databases := d.doltBackupDatabases(dataDir)
 
 	if len(databases) == 0 {
 		d.logger.Printf("dolt_backup: no databases with backup remotes found")
@@ -80,38 +67,61 @@ func (d *Daemon) syncDoltBackups() {
 		return
 	}
 
-	d.logger.Printf("dolt_backup: syncing %d database(s)", len(databases))
-
-	synced := 0
-	var failures []string
-	for _, db := range databases {
-		backupName := db + "-backup"
-		if err := d.syncBackup(dataDir, db, backupName); err != nil {
-			d.logger.Printf("dolt_backup: %s: sync failed: %v", db, err)
-			failures = append(failures, db)
-		} else {
-			synced++
-		}
-	}
+	synced, failures := d.syncDoltBackupDatabases(dataDir, databases)
 
 	d.logger.Printf("dolt_backup: synced %d/%d database(s)", synced, len(databases))
-
-	if len(failures) > 0 {
-		mol.FailStep("sync", fmt.Sprintf("synced %d/%d, failures: %s", synced, len(databases), strings.Join(failures, "; ")))
-	} else {
-		mol.CloseStep("sync")
-	}
+	d.recordDoltBackupResult(mol, synced, len(databases), failures)
 
 	// Offsite sync: rsync local backups to iCloud Drive for cloud replication.
 	// This is a stopgap until proper dolt remote push is configured.
 	if synced > 0 {
 		d.syncOffsiteBackup()
-		mol.CloseStep("offsite")
-	} else {
-		mol.CloseStep("offsite")
 	}
-
+	mol.CloseStep("offsite")
 	mol.CloseStep("report")
+}
+
+func (d *Daemon) canSyncDoltBackups() bool {
+	return runtime.GOOS == "darwin" && d.isPatrolActive("dolt_backup")
+}
+
+func (d *Daemon) doltBackupDataDir() string {
+	if d.doltServer != nil && d.doltServer.IsEnabled() && d.doltServer.config.DataDir != "" {
+		return d.doltServer.config.DataDir
+	}
+	return filepath.Join(d.config.TownRoot, ".dolt-data")
+}
+
+func (d *Daemon) doltBackupDatabases(dataDir string) []string {
+	databases := d.patrolConfig.Patrols.DoltBackup.Databases
+	if len(databases) > 0 {
+		return databases
+	}
+	return d.discoverDatabasesWithBackups(dataDir)
+}
+
+func (d *Daemon) syncDoltBackupDatabases(dataDir string, databases []string) (int, []string) {
+	d.logger.Printf("dolt_backup: syncing %d database(s)", len(databases))
+
+	synced := 0
+	var failures []string
+	for _, db := range databases {
+		if err := d.syncBackup(dataDir, db, db+"-backup"); err != nil {
+			d.logger.Printf("dolt_backup: %s: sync failed: %v", db, err)
+			failures = append(failures, db)
+			continue
+		}
+		synced++
+	}
+	return synced, failures
+}
+
+func (d *Daemon) recordDoltBackupResult(mol *dogMol, synced, total int, failures []string) {
+	if len(failures) == 0 {
+		mol.CloseStep("sync")
+		return
+	}
+	mol.FailStep("sync", fmt.Sprintf("synced %d/%d, failures: %s", synced, total, strings.Join(failures, "; ")))
 }
 
 // syncBackup runs `dolt backup sync <backup-name>` for a single database,
