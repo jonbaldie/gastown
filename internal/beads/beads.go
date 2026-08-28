@@ -1086,18 +1086,19 @@ func (b *Beads) List(opts ListOptions) ([]*Issue, error) {
 }
 
 func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
-	args := []string{"list", "--json"}
+	out, err := b.run(listIssueArgs(opts)...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeListedIssues(out)
+}
 
+func listIssueArgs(opts ListOptions) []string {
+	args := []string{"list", "--json"}
 	if opts.Status != "" {
 		args = append(args, "--status="+opts.Status)
 	}
-	// Prefer Label over Type (Type is deprecated)
-	if opts.Label != "" {
-		args = append(args, "--label="+opts.Label)
-	} else if opts.Type != "" {
-		// Deprecated: convert type to label for backward compatibility
-		args = append(args, "--label=gt:"+opts.Type)
-	}
+	args = appendListIssueLabel(args, opts)
 	if opts.Priority >= 0 {
 		args = append(args, fmt.Sprintf("--priority=%d", opts.Priority))
 	}
@@ -1110,18 +1111,28 @@ func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
 	if opts.NoAssignee {
 		args = append(args, "--no-assignee")
 	}
-	if opts.Limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", opts.Limit))
-	} else {
-		// Override bd's default limit of 50 to avoid silent truncation
-		args = append(args, "--limit=0")
-	}
+	return appendListIssueLimit(args, opts.Limit)
+}
 
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
+func appendListIssueLabel(args []string, opts ListOptions) []string {
+	if opts.Label != "" {
+		return append(args, "--label="+opts.Label)
 	}
+	if opts.Type != "" {
+		return append(args, "--label=gt:"+opts.Type)
+	}
+	return args
+}
 
+func appendListIssueLimit(args []string, limit int) []string {
+	if limit > 0 {
+		return append(args, fmt.Sprintf("--limit=%d", limit))
+	}
+	// Override bd's default limit of 50 to avoid silent truncation.
+	return append(args, "--limit=0")
+}
+
+func decodeListedIssues(out []byte) ([]*Issue, error) {
 	// bd list --json may return plain text (e.g., "No issues found.") instead
 	// of an empty JSON array when there are no results. Handle gracefully.
 	if len(out) == 0 || !isJSONBytes(out) {
