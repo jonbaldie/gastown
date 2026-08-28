@@ -63,21 +63,7 @@ func runMQPRStatus(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve PR status: %w", err)
 	}
 
-	prURL := firstNonEmpty(mqPRStatusPRURL, mr.PRURL)
-	prNumber := mqPRStatusPRNumber
-	if prNumber == 0 {
-		prNumber = mr.PRNumber
-	}
-	if mr.IssueID != "" && (prURL == "" || prNumber == 0) {
-		if source, showErr := beads.New(r.BeadsPath()).Show(mr.IssueID); showErr == nil && source != nil {
-			if prURL == "" && looksLikeGitHubPRURL(source.ExternalRef) {
-				prURL = source.ExternalRef
-			}
-			if prNumber == 0 {
-				prNumber = prNumberFromLabels(source.Labels)
-			}
-		}
-	}
+	prURL, prNumber := resolveMQPRIdentity(mr.IssueID, mr.PRURL, mr.PRNumber, r.BeadsPath())
 
 	pr, err := rigGit.LookupPullRequest(git.PullRequestRef{
 		URL:        prURL,
@@ -94,6 +80,41 @@ func runMQPRStatus(_ *cobra.Command, args []string) error {
 		return err
 	}
 	return printMQPRStatus(mqPRStatusResult{Found: true, PR: pr})
+}
+
+func resolveMQPRIdentity(issueID, recordedURL string, recordedNumber int, beadsPath string) (string, int) {
+	prURL := firstNonEmpty(mqPRStatusPRURL, recordedURL)
+	prNumber := mqPRStatusPRNumber
+	if prNumber == 0 {
+		prNumber = recordedNumber
+	}
+	if issueID == "" || (prURL != "" && prNumber != 0) {
+		return prURL, prNumber
+	}
+
+	sourceURL, sourceNumber, ok := loadMQPRSourceIdentity(issueID, beadsPath)
+	if !ok {
+		return prURL, prNumber
+	}
+	if prURL == "" {
+		prURL = sourceURL
+	}
+	if prNumber == 0 {
+		prNumber = sourceNumber
+	}
+	return prURL, prNumber
+}
+
+func loadMQPRSourceIdentity(issueID, beadsPath string) (string, int, bool) {
+	source, err := beads.New(beadsPath).Show(issueID)
+	if err != nil || source == nil {
+		return "", 0, false
+	}
+	sourceURL := ""
+	if looksLikeGitHubPRURL(source.ExternalRef) {
+		sourceURL = source.ExternalRef
+	}
+	return sourceURL, prNumberFromLabels(source.Labels), true
 }
 
 func printMQPRStatus(result mqPRStatusResult) error {
