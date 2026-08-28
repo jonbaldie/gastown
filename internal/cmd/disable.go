@@ -12,8 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var disableClean bool
-
 var disableCmd = &cobra.Command{
 	Use:     "disable",
 	GroupID: GroupConfig,
@@ -39,17 +37,21 @@ Environment overrides still work:
 }
 
 func init() {
-	disableCmd.Flags().BoolVar(&disableClean, "clean", false,
+	disableCmd.Flags().Bool("clean", false,
 		"Remove shell integration from RC files")
 	rootCmd.AddCommand(disableCmd)
 }
 
-func runDisable(_ *cobra.Command, _ []string) error {
+func runDisable(cmd *cobra.Command, _ []string) error {
+	clean, err := cmd.Flags().GetBool("clean")
+	if err != nil {
+		return fmt.Errorf("reading clean flag: %w", err)
+	}
 	if err := state.Disable(); err != nil {
 		return fmt.Errorf("disabling Gas Town: %w", err)
 	}
 
-	if disableClean {
+	if clean {
 		if err := removeShellIntegration(); err != nil {
 			fmt.Printf("%s Could not clean shell integration: %v\n",
 				style.Warning.Render("!"), err)
@@ -61,7 +63,7 @@ func runDisable(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s Gas Town disabled\n", style.Success.Render("✓"))
 	fmt.Println()
 	fmt.Println("All agentic coding tools now work vanilla.")
-	if !disableClean {
+	if !clean {
 		fmt.Printf("Use %s to also remove shell hooks\n",
 			style.Dim.Render("gt disable --clean"))
 	}
