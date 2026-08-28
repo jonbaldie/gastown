@@ -217,7 +217,7 @@ func TestProblemAgentNeedsAttention(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.state.String(), func(t *testing.T) {
 			agent := &ProblemAgent{State: tt.state}
-			if got := agent.NeedsAttention(); got != tt.expected {
+			if got := agent.State.NeedsAttention(); got != tt.expected {
 				t.Errorf("ProblemAgent{State: %s}.NeedsAttention() = %v, want %v",
 					tt.state, got, tt.expected)
 			}

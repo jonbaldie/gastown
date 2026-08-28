@@ -124,11 +124,6 @@ type ProblemAgent struct {
 	HasHookedWork bool
 }
 
-// NeedsAttention returns true if agent requires user action.
-func (p *ProblemAgent) NeedsAttention() bool {
-	return p.State.NeedsAttention()
-}
-
 // DurationDisplay returns human-readable duration since last progress.
 func (p *ProblemAgent) DurationDisplay() string {
 	mins := p.IdleMinutes
@@ -154,8 +149,10 @@ type StuckDetector struct {
 // NewStuckDetector creates a new stuck detector with default data sources.
 func NewStuckDetector(bd *beads.Beads) *StuckDetector {
 	return NewStuckDetectorWithSource(&defaultHealthSource{
-		bd:   bd,
-		tmux: tmux.NewTmux(),
+		dependencies: healthSourceDependencies{
+			bd:   bd,
+			tmux: tmux.NewTmux(),
+		},
 	})
 }
 
@@ -329,18 +326,22 @@ func sortProblemAgents(agents []*ProblemAgent) {
 
 // defaultHealthSource implements HealthDataSource using real beads and tmux.
 type defaultHealthSource struct {
+	dependencies healthSourceDependencies
+}
+
+type healthSourceDependencies struct {
 	bd   *beads.Beads
 	tmux *tmux.Tmux
 }
 
 func (s *defaultHealthSource) ListAgentBeads() (map[string]*beads.Issue, error) {
-	return s.bd.ListAgentBeads()
+	return s.dependencies.bd.ListAgentBeads()
 }
 
 func (s *defaultHealthSource) IsSessionAlive(sessionName string) (bool, error) {
 	// Check both session existence AND agent process liveness.
 	// HasSession alone misses zombie sessions where tmux is alive
 	// but Claude has crashed inside the pane.
-	status := s.tmux.CheckSessionHealth(sessionName, 0)
+	status := s.dependencies.tmux.CheckSessionHealth(sessionName, 0)
 	return status == tmux.SessionHealthy, nil
 }
