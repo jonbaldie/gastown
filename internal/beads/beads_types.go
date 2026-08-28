@@ -212,43 +212,50 @@ func EnsureCustomStatuses(beadsDir string) error {
 	defer ensuredMu.Unlock()
 
 	cacheKey := beadsDir + ":statuses"
-
-	// Fast path: in-memory cache (same CLI invocation)
-	if ensuredDirs[cacheKey] {
+	if customStatusesCached(cacheKey, beadsDir, statusesList) {
 		return nil
 	}
-
-	// Fast path: sentinel file matches current statuses list
-	sentinelPath := filepath.Join(beadsDir, statusesSentinel)
-	if data, err := os.ReadFile(sentinelPath); err == nil {
-		if strings.TrimSpace(string(data)) == statusesList {
-			ensuredDirs[cacheKey] = true
-			return nil
-		}
-		// Sentinel exists but is stale — fall through to re-configure
+	if err := validateBeadsDirectory(beadsDir); err != nil {
+		return err
 	}
-
-	// Verify beads directory exists
-	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		return fmt.Errorf("beads directory does not exist: %s", beadsDir)
-	}
-
-	// Check if database exists and initialize if needed
 	if err := ensureDatabaseInitialized(beadsDir); err != nil {
 		return fmt.Errorf("ensure database initialized: %w", err)
 	}
+	mergedStatuses := mergedCustomStatuses(beadsDir)
+	if err := setCustomStatuses(beadsDir, mergedStatuses); err != nil {
+		return err
+	}
+	sentinelPath := filepath.Join(beadsDir, statusesSentinel)
+	_ = os.WriteFile(sentinelPath, []byte(statusesList+"\n"), 0644)
+	ensuredDirs[cacheKey] = true
+	return nil
+}
 
-	// Read current custom statuses and merge with required ones
+func customStatusesCached(cacheKey, beadsDir, statusesList string) bool {
+	if ensuredDirs[cacheKey] {
+		return true
+	}
+	data, err := os.ReadFile(filepath.Join(beadsDir, statusesSentinel))
+	if err != nil || strings.TrimSpace(string(data)) != statusesList {
+		return false
+	}
+	ensuredDirs[cacheKey] = true
+	return true
+}
+
+func mergedCustomStatuses(beadsDir string) string {
 	getCmd := Spawn("config", "get", "status.custom")
 	getCmd.Dir = beadsDir
 	util.SetDetachedProcessGroup(getCmd)
 	getEnv := BuildReadOnlyPinnedBDEnv(os.Environ(), beadsDir)
 	getCmd.Env = getEnv
 	existingOutput, _ := getCmd.Output()
+	return mergeCustomStatuses(ParseConfigOutput(existingOutput))
+}
 
-	// Build merged set: existing + required
+func mergeCustomStatuses(existing string) string {
 	statusSet := make(map[string]bool)
-	if existing := ParseConfigOutput(existingOutput); existing != "" {
+	if existing != "" {
 		for _, s := range strings.Split(existing, ",") {
 			s = strings.TrimSpace(s)
 			if s != "" {
@@ -259,17 +266,16 @@ func EnsureCustomStatuses(beadsDir string) error {
 	for _, s := range constants.BeadsCustomStatusesList() {
 		statusSet[s] = true
 	}
-
-	// Build merged list (sorted for deterministic output)
 	var merged []string
 	for s := range statusSet {
 		merged = append(merged, s)
 	}
 	sort.Strings(merged)
-	mergedStr := strings.Join(merged, ",")
+	return strings.Join(merged, ",")
+}
 
-	// Configure custom statuses via bd CLI
-	cmd := Spawn("config", "set", "status.custom", mergedStr)
+func setCustomStatuses(beadsDir, statuses string) error {
+	cmd := Spawn("config", "set", "status.custom", statuses)
 	cmd.Dir = beadsDir
 	util.SetDetachedProcessGroup(cmd)
 	setEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
@@ -278,11 +284,6 @@ func EnsureCustomStatuses(beadsDir string) error {
 		return fmt.Errorf("configure custom statuses in %s: %s: %w",
 			beadsDir, strings.TrimSpace(string(output)), err)
 	}
-
-	// Write sentinel file
-	_ = os.WriteFile(sentinelPath, []byte(statusesList+"\n"), 0644)
-
-	ensuredDirs[cacheKey] = true
 	return nil
 }
 
