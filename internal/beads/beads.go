@@ -1052,14 +1052,26 @@ func stripEnvPrefixes(environ []string, prefixes ...string) []string {
 }
 
 func matchesEnvPrefix(env, keyName string, hasKey bool, prefixes []string) bool {
+	if hasKey {
+		return matchesEnvironmentKeyPrefix(keyName, prefixes)
+	}
 	for _, prefix := range prefixes {
-		if hasKey && strings.HasSuffix(prefix, "=") && envKeyMatches(keyName, strings.TrimSuffix(prefix, "=")) {
+		if strings.HasPrefix(env, prefix) {
 			return true
 		}
-		if hasKey && !strings.HasSuffix(prefix, "=") && envKeyHasPrefix(keyName, prefix) {
-			return true
+	}
+	return false
+}
+
+func matchesEnvironmentKeyPrefix(keyName string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasSuffix(prefix, "=") {
+			if envKeyMatches(keyName, strings.TrimSuffix(prefix, "=")) {
+				return true
+			}
+			continue
 		}
-		if !hasKey && strings.HasPrefix(env, prefix) {
+		if envKeyHasPrefix(keyName, prefix) {
 			return true
 		}
 	}
