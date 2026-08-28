@@ -468,14 +468,6 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	return nil
 }
 
-// isSessionStale checks if a tmux session's pane process has died.
-// A stale session exists in tmux but its main process (the agent) is no longer running.
-// This happens when the agent crashes during startup but tmux keeps the dead pane.
-// Delegates to isSessionProcessDead to avoid duplicating process-check logic (gt-qgzj1h).
-func (m *SessionManager) isSessionStale(sessionID string) bool {
-	return isSessionProcessDead(m.tmux, sessionID, filepath.Dir(m.rig.Path))
-}
-
 // Stop terminates a polecat session.
 func (m *SessionManager) Stop(polecat string, force bool) error {
 	sessionID := m.SessionName(polecat)

@@ -14,6 +14,11 @@ import (
 	"github.com/jonbaldie/gastown/internal/events"
 )
 
+func (c *Client) ping(ctx context.Context) error {
+	_, err := c.call(ctx, TownRequest{Op: opPing})
+	return err
+}
+
 // Worker is the town module for session talk. Nudge, prime, mail, sling,
 // witness, cost ingest, and session start call this type.
 type Worker struct {

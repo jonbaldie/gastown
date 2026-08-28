@@ -19,6 +19,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// userDSN returns the user[:password] portion of a MySQL DSN.
+func (c *Config) userDSN() string {
+	if c.Password != "" {
+		return c.User + ":" + c.Password
+	}
+	return c.User
+}
+
 // =============================================================================
 // Health metrics tests
 // =============================================================================

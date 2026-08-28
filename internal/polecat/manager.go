@@ -31,6 +31,12 @@ import (
 	"github.com/jonbaldie/gastown/internal/util"
 )
 
+// isSessionStale checks if a tmux session's pane process has died.
+// A stale session exists in tmux but its main process is no longer running.
+func (m *SessionManager) isSessionStale(sessionID string) bool {
+	return isSessionProcessDead(m.tmux, sessionID, filepath.Dir(m.rig.Path))
+}
+
 // Retry constants for Dolt operations (matching hook update pattern in sling.go).
 // Configurable via operational.polecat in settings/config.json.
 const (

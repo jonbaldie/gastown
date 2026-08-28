@@ -6,6 +6,20 @@ import (
 	"strings"
 )
 
+// matchPrefix finds the prefix in a session name suffix using the registry.
+// It tries registered prefixes longest first.
+func (r *PrefixRegistry) matchPrefix(session string) (prefix, rest string, matched bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.sortedPrefixes() {
+		candidate := p + "-"
+		if strings.HasPrefix(session, candidate) {
+			return p, session[len(candidate):], true
+		}
+	}
+	return "", "", false
+}
+
 // Role represents the type of Gas Town agent.
 type Role string
 

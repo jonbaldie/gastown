@@ -458,14 +458,6 @@ func (c *Config) SQLArgs() []string {
 	}
 }
 
-// userDSN returns the user[:password] portion of a MySQL DSN.
-func (c *Config) userDSN() string {
-	if c.Password != "" {
-		return c.User + ":" + c.Password
-	}
-	return c.User
-}
-
 // EffectiveHost returns the configured host, defaulting to "127.0.0.1" when empty.
 func (c *Config) EffectiveHost() string {
 	if c.Host == "" {
