@@ -50,58 +50,15 @@ func runHooksDiff(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("discovering targets: %w", err)
 	}
-
-	// Filter to specific target if provided
-	if len(args) > 0 {
-		filter := args[0]
-		var filtered []hooks.Target
-		for _, t := range targets {
-			if t.Key == filter || t.DisplayKey() == filter {
-				filtered = append(filtered, t)
-			}
-		}
-		if len(filtered) == 0 {
-			return fmt.Errorf("no targets match %q", filter)
-		}
-		targets = filtered
+	targets, err = filterHooksDiffTargets(targets, args)
+	if err != nil {
+		return err
 	}
 
-	hasChanges := false
-
-	for _, target := range targets {
-		expected, err := hooks.ComputeExpected(target.Key)
-		if err != nil {
-			return fmt.Errorf("computing expected config for %s: %w", target.DisplayKey(), err)
-		}
-
-		current, err := hooks.LoadSettings(target.Path)
-		if err != nil {
-			return fmt.Errorf("loading current settings for %s: %w", target.DisplayKey(), err)
-		}
-
-		if hooks.HooksEqual(expected, &current.Hooks) {
-			continue
-		}
-
-		// Compute relative path from town root for display
-		relPath, err := filepath.Rel(townRoot, target.Path)
-		if err != nil {
-			relPath = target.Path
-		}
-
-		changes := diffHooksConfigs(&current.Hooks, expected)
-		if len(changes) == 0 {
-			continue
-		}
-
-		hasChanges = true
-		fmt.Printf("%s:\n", style.Bold.Render(relPath))
-		for _, change := range changes {
-			fmt.Print(change)
-		}
-		fmt.Println()
+	hasChanges, err := printHooksDiffs(townRoot, targets)
+	if err != nil {
+		return err
 	}
-
 	if !hasChanges {
 		fmt.Println(style.Dim.Render("No changes pending - all targets in sync"))
 		return nil
@@ -109,6 +66,70 @@ func runHooksDiff(_ *cobra.Command, args []string) error {
 
 	// Exit with code 1 to indicate changes pending (for scripting)
 	return NewSilentExit(1)
+}
+
+func filterHooksDiffTargets(targets []hooks.Target, args []string) ([]hooks.Target, error) {
+	if len(args) == 0 {
+		return targets, nil
+	}
+	filter := args[0]
+	var filtered []hooks.Target
+	for _, target := range targets {
+		if target.Key == filter || target.DisplayKey() == filter {
+			filtered = append(filtered, target)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("no targets match %q", filter)
+	}
+	return filtered, nil
+}
+
+func printHooksDiffs(townRoot string, targets []hooks.Target) (bool, error) {
+	hasChanges := false
+	for _, target := range targets {
+		changed, err := printHooksTargetDiff(townRoot, target)
+		if err != nil {
+			return false, err
+		}
+		hasChanges = hasChanges || changed
+	}
+	return hasChanges, nil
+}
+
+func printHooksTargetDiff(townRoot string, target hooks.Target) (bool, error) {
+	expected, err := hooks.ComputeExpected(target.Key)
+	if err != nil {
+		return false, fmt.Errorf("computing expected config for %s: %w", target.DisplayKey(), err)
+	}
+
+	current, err := hooks.LoadSettings(target.Path)
+	if err != nil {
+		return false, fmt.Errorf("loading current settings for %s: %w", target.DisplayKey(), err)
+	}
+	if hooks.HooksEqual(expected, &current.Hooks) {
+		return false, nil
+	}
+
+	changes := diffHooksConfigs(&current.Hooks, expected)
+	if len(changes) == 0 {
+		return false, nil
+	}
+	fmt.Printf("%s:\n", style.Bold.Render(hooksDiffRelativePath(townRoot, target.Path)))
+	for _, change := range changes {
+		fmt.Print(change)
+	}
+	fmt.Println()
+	return true, nil
+}
+
+func hooksDiffRelativePath(townRoot, targetPath string) string {
+	// Compute relative path from town root for display.
+	relPath, err := filepath.Rel(townRoot, targetPath)
+	if err != nil {
+		return targetPath
+	}
+	return relPath
 }
 
 // diffHooksConfigs compares current and expected configs, returning formatted diff lines.
