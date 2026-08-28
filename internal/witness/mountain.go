@@ -41,47 +41,54 @@ type ConvoyFailureResult struct {
 // Called from DetectZombiePolecats after all zombies are collected.
 func trackConvoyFailures(bd *BdCli, workDir string, result *DetectZombiePolecatsResult) {
 	for i := range result.Zombies {
-		zombie := &result.Zombies[i]
-
-		// Only track failures for zombies that had active work on an issue and
-		// didn't complete it. Submitted/orphan cleanup states can still carry a
-		// hook_bead for traceability, but they must not increment mountain failure
-		// counts.
-		if zombie.HookBead == "" || !zombieImpliesActiveFailure(*zombie) {
-			continue
-		}
-		townRoot, findErr := workspace.Find(workDir)
-		if findErr != nil || townRoot == "" {
-			townRoot = workDir
-		}
-		if !worker.StoppedWithoutDone(townRoot, zombie.HookBead) {
-			continue
-		}
-
-		cfr := TrackConvoyFailure(bd, workDir, zombie.HookBead)
+		cfr := convoyFailureForZombie(bd, workDir, result.Zombies[i])
 		if cfr == nil {
-			continue // Not convoy-tracked
+			continue
 		}
-
-		if cfr.IsMountain {
-			if cfr.Skipped {
-				fmt.Fprintf(os.Stderr, "witness: Mountain: skipped %s after %d failures (convoy %s)\n",
-					cfr.IssueID, cfr.FailureCount, cfr.ConvoyID)
-			} else {
-				fmt.Fprintf(os.Stderr, "witness: Mountain: %s failure %d/%d (convoy %s)\n",
-					cfr.IssueID, cfr.FailureCount, MountainMaxFailures, cfr.ConvoyID)
-			}
-		} else if cfr.Warning != "" {
-			fmt.Fprintf(os.Stderr, "witness: %s\n", cfr.Warning)
-		}
-
-		if cfr.Error != nil {
-			fmt.Fprintf(os.Stderr, "witness: convoy failure tracking error for %s: %v\n",
-				cfr.IssueID, cfr.Error)
-		}
-
+		reportConvoyFailure(cfr)
 		result.ConvoyFailures = append(result.ConvoyFailures, *cfr)
 	}
+}
+
+func convoyFailureForZombie(bd *BdCli, workDir string, zombie ZombieResult) *ConvoyFailureResult {
+	// Only track failures for zombies that had active work on an issue and
+	// didn't complete it. Submitted/orphan cleanup states can still carry a
+	// hook_bead for traceability, but they must not increment mountain failure
+	// counts.
+	if zombie.HookBead == "" || !zombieImpliesActiveFailure(zombie) {
+		return nil
+	}
+	townRoot, findErr := workspace.Find(workDir)
+	if findErr != nil || townRoot == "" {
+		townRoot = workDir
+	}
+	if !worker.StoppedWithoutDone(townRoot, zombie.HookBead) {
+		return nil
+	}
+	return TrackConvoyFailure(bd, workDir, zombie.HookBead)
+}
+
+func reportConvoyFailure(cfr *ConvoyFailureResult) {
+	if cfr.IsMountain {
+		reportMountainFailure(cfr)
+	} else if cfr.Warning != "" {
+		fmt.Fprintf(os.Stderr, "witness: %s\n", cfr.Warning)
+	}
+
+	if cfr.Error != nil {
+		fmt.Fprintf(os.Stderr, "witness: convoy failure tracking error for %s: %v\n",
+			cfr.IssueID, cfr.Error)
+	}
+}
+
+func reportMountainFailure(cfr *ConvoyFailureResult) {
+	if cfr.Skipped {
+		fmt.Fprintf(os.Stderr, "witness: Mountain: skipped %s after %d failures (convoy %s)\n",
+			cfr.IssueID, cfr.FailureCount, cfr.ConvoyID)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "witness: Mountain: %s failure %d/%d (convoy %s)\n",
+		cfr.IssueID, cfr.FailureCount, MountainMaxFailures, cfr.ConvoyID)
 }
 
 func zombieImpliesActiveFailure(zombie ZombieResult) bool {
