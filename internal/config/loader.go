@@ -245,38 +245,57 @@ var ErrInvalidOnConflict = errors.New("invalid on_conflict strategy")
 
 // validateMergeQueueConfig validates a MergeQueueConfig.
 func validateMergeQueueConfig(c *MergeQueueConfig) error {
-	// Validate on_conflict strategy
-	if c.OnConflict != "" && c.OnConflict != OnConflictAssignBack && c.OnConflict != OnConflictAutoRebase {
-		return fmt.Errorf("%w: got '%s', want '%s' or '%s'",
-			ErrInvalidOnConflict, c.OnConflict, OnConflictAssignBack, OnConflictAutoRebase)
-	}
-
-	// Validate poll_interval if specified
-	if c.PollInterval != "" {
-		if _, err := time.ParseDuration(c.PollInterval); err != nil {
-			return fmt.Errorf("invalid poll_interval: %w", err)
+	for _, validate := range []func(*MergeQueueConfig) error{
+		validateMergeQueueConflict,
+		validateMergeQueuePollInterval,
+		validateMergeQueueStaleClaimTimeout,
+		validateMergeQueueLimits,
+	} {
+		if err := validate(c); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Validate stale_claim_timeout if specified
-	if c.StaleClaimTimeout != "" {
-		dur, err := time.ParseDuration(c.StaleClaimTimeout)
-		if err != nil {
-			return fmt.Errorf("invalid stale_claim_timeout: %w", err)
-		}
-		if dur <= 0 {
-			return fmt.Errorf("stale_claim_timeout must be positive, got %v", dur)
-		}
+func validateMergeQueueConflict(c *MergeQueueConfig) error {
+	if c.OnConflict == "" || c.OnConflict == OnConflictAssignBack || c.OnConflict == OnConflictAutoRebase {
+		return nil
 	}
+	return fmt.Errorf("%w: got '%s', want '%s' or '%s'", ErrInvalidOnConflict, c.OnConflict, OnConflictAssignBack, OnConflictAutoRebase)
+}
 
-	// Validate non-negative values
+func validateMergeQueuePollInterval(c *MergeQueueConfig) error {
+	if c.PollInterval == "" {
+		return nil
+	}
+	if _, err := time.ParseDuration(c.PollInterval); err != nil {
+		return fmt.Errorf("invalid poll_interval: %w", err)
+	}
+	return nil
+}
+
+func validateMergeQueueStaleClaimTimeout(c *MergeQueueConfig) error {
+	if c.StaleClaimTimeout == "" {
+		return nil
+	}
+	duration, err := time.ParseDuration(c.StaleClaimTimeout)
+	if err != nil {
+		return fmt.Errorf("invalid stale_claim_timeout: %w", err)
+	}
+	if duration <= 0 {
+		return fmt.Errorf("stale_claim_timeout must be positive, got %v", duration)
+	}
+	return nil
+}
+
+func validateMergeQueueLimits(c *MergeQueueConfig) error {
 	if c.RetryFlakyTests < 0 {
 		return fmt.Errorf("%w: retry_flaky_tests must be non-negative", ErrMissingField)
 	}
 	if c.MaxConcurrent < 0 {
 		return fmt.Errorf("%w: max_concurrent must be non-negative", ErrMissingField)
 	}
-
 	return nil
 }
 

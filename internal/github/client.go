@@ -71,8 +71,8 @@ func NewClient(opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// restRequest makes an authenticated REST API request and decodes the JSON response.
-func (c *Client) restRequest(ctx context.Context, method, path string, body any, result any) error {
+// Request makes an authenticated REST API request and decodes the JSON response.
+func (c *Client) Request(ctx context.Context, method, path string, body any, result any) error {
 	var reqBody io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -122,8 +122,8 @@ func (c *Client) restRequest(ctx context.Context, method, path string, body any,
 	return nil
 }
 
-// graphqlRequest makes an authenticated GraphQL request.
-func (c *Client) graphqlRequest(ctx context.Context, query string, variables map[string]any, result any) error {
+// GraphQLRequest makes an authenticated GraphQL request.
+func (c *Client) GraphQLRequest(ctx context.Context, query string, variables map[string]any, result any) error {
 	payload := map[string]any{
 		"query":     query,
 		"variables": variables,

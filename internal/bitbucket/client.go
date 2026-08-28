@@ -9,7 +9,11 @@
 package bitbucket
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 )
@@ -56,6 +60,71 @@ func NewClient(opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("bitbucket: BITBUCKET_TOKEN is required (set env var or use WithToken)")
 	}
 	return c, nil
+}
+
+// Request makes an authenticated REST API request and decodes the JSON response.
+func (c *Client) Request(ctx context.Context, method, path string, body any, result any) error {
+	req, err := c.newRequest(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("bitbucket: %s %s: %w", method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeResponse(resp, method, path, result)
+}
+
+func (c *Client) newRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
+	reqBody, err := requestBody(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.restBase+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("bitbucket: create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
+func requestBody(body any) (io.Reader, error) {
+	if body == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("bitbucket: marshal request: %w", err)
+	}
+	return bytes.NewReader(b), nil
+}
+
+func decodeResponse(resp *http.Response, method, path string, result any) error {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("bitbucket: read response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &APIError{
+			Method:     method,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       string(respBody),
+		}
+	}
+
+	if result != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("bitbucket: decode response: %w", err)
+		}
+	}
+	return nil
 }
 
 // APIError represents a non-2xx response from the Bitbucket API.

@@ -137,16 +137,16 @@ func (d *Daemon) runCompactorDog() {
 	}
 
 	mol := d.pourDogMolecule(constants.MolDogCompactor, nil)
-	defer mol.close()
+	defer mol.Close()
 
 	databases := d.compactorDatabases()
 	if len(databases) == 0 {
 		d.logger.Printf("compactor_dog: no databases to compact")
-		mol.failStep("inspect", "no databases found")
+		mol.FailStep("inspect", "no databases found")
 		return
 	}
 
-	mol.closeStep("inspect")
+	mol.CloseStep("inspect")
 
 	compacted := 0
 	skipped := 0
@@ -215,16 +215,16 @@ func (d *Daemon) runCompactorDog() {
 	}
 
 	if errors > 0 {
-		mol.failStep("compact", fmt.Sprintf("%d databases had errors", errors))
+		mol.FailStep("compact", fmt.Sprintf("%d databases had errors", errors))
 	} else {
-		mol.closeStep("compact")
+		mol.CloseStep("compact")
 	}
 
-	mol.closeStep("verify")
+	mol.CloseStep("verify")
 
 	d.logger.Printf("compactor_dog: cycle complete — compacted=%d skipped=%d errors=%d",
 		compacted, skipped, errors)
-	mol.closeStep("report")
+	mol.CloseStep("report")
 }
 
 // compactorDatabases returns the list of databases to consider for compaction.

@@ -299,7 +299,8 @@ func wlParseCSVLine(line string) []string {
 	var field strings.Builder
 	inQuote := false
 
-	for i := 0; i < len(line); i++ {
+	lineLength := len(line)
+	for i := 0; i < lineLength; i++ {
 		ch := line[i]
 		switch {
 		case ch == '"' && !inQuote:

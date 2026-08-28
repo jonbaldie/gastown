@@ -43,12 +43,12 @@ func Open(townRoot string) (*Worker, error) {
 	client := newClient(townRoot)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := client.ping(ctx); err != nil {
+	if err := client.Ping(ctx); err != nil {
 		httpClient, httpErr := newHTTPClient(townRoot)
 		if httpErr != nil {
 			return nil, fmt.Errorf("worker open: %w", err)
 		}
-		if pingErr := httpClient.ping(ctx); pingErr != nil {
+		if pingErr := httpClient.Ping(ctx); pingErr != nil {
 			return nil, fmt.Errorf("%w: %v", ErrServerDown, pingErr)
 		}
 		client = httpClient
@@ -64,7 +64,7 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 		return nil, err
 	}
 	client := newClient(townRoot)
-	if !srv.unixActive() {
+	if !srv.UnixActive() {
 		httpClient, err := newHTTPClient(townRoot)
 		if err != nil {
 			_ = srv.Close()
@@ -86,7 +86,7 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 // unavailable. The two are returned separately because a socket path and a
 // host and port are not interchangeable to a caller that wants to connect.
 func (w *Worker) Endpoint() (network, address string) {
-	if w.local == nil || w.local.unixActive() {
+	if w.local == nil || w.local.UnixActive() {
 		return "unix", SocketPath(w.townRoot)
 	}
 	return "tcp", fmt.Sprintf("127.0.0.1:%d", w.local.port)
@@ -223,33 +223,33 @@ func (w *Worker) Costs(ctx context.Context) ([]CostRecord, error) {
 
 // ReadCosts reads the production cost store without a live server.
 func ReadCosts(townRoot string) ([]CostRecord, error) {
-	return newStore(townRoot).readCosts()
+	return newStore(townRoot).ReadCosts()
 }
 
 // ReadEvents reads persisted Worker events without a live server.
 func ReadEvents(townRoot string) ([]Event, error) {
-	return newStore(townRoot).readEvents()
+	return newStore(townRoot).ReadEvents()
 }
 
 // ReadRun loads one run from the production store.
 func ReadRun(townRoot, runID string) (*Run, error) {
-	return newStore(townRoot).getRun(runID)
+	return newStore(townRoot).GetRun(runID)
 }
 
 // LiveRunFromStore returns the live run for a bead from the production store.
 func LiveRunFromStore(townRoot, beadID string) (*Run, error) {
-	return newStore(townRoot).liveRunForBead(beadID)
+	return newStore(townRoot).LiveRunForBead(beadID)
 }
 
 // LatestRunForBead returns the most recently updated run for a bead.
 func LatestRunForBead(townRoot, beadID string) (*Run, error) {
-	return newStore(townRoot).latestRunForBead(beadID)
+	return newStore(townRoot).LatestRunForBead(beadID)
 }
 
 // StoppedWithoutDone reports whether the bead's latest run stopped without
 // gt done. Mountain failure counts rise only in this case.
 func StoppedWithoutDone(townRoot, beadID string) bool {
-	run, err := newStore(townRoot).latestRunForBead(beadID)
+	run, err := newStore(townRoot).LatestRunForBead(beadID)
 	if err != nil || run == nil {
 		return false
 	}
@@ -258,12 +258,12 @@ func StoppedWithoutDone(townRoot, beadID string) bool {
 
 // RunBySession returns the live run for a session from the production store.
 func RunBySession(townRoot, sessionID string) (*Run, error) {
-	return newStore(townRoot).getRunBySession(sessionID)
+	return newStore(townRoot).GetRunBySession(sessionID)
 }
 
 // LatestRunForSession returns the most recently updated run for a session.
 func LatestRunForSession(townRoot, sessionID string) (*Run, error) {
-	return newStore(townRoot).latestRunForSession(sessionID)
+	return newStore(townRoot).LatestRunForSession(sessionID)
 }
 
 // MarkSessionStopped closes the latest live run for a session after its runtime
@@ -271,7 +271,7 @@ func LatestRunForSession(townRoot, sessionID string) (*Run, error) {
 // no-ops so legacy sessions can use the same shutdown path.
 func MarkSessionStopped(townRoot, sessionID string) error {
 	store := newStore(townRoot)
-	run, err := store.latestRunForSession(sessionID)
+	run, err := store.LatestRunForSession(sessionID)
 	if errors.Is(err, ErrRunNotFound) {
 		return nil
 	}
@@ -292,10 +292,10 @@ func markRunStopped(store *Store, run *Run) error {
 	run.State = StateStopped
 	run.UpdatedAt = now
 	run.StoppedAt = now
-	if err := store.putRun(run); err != nil {
+	if err := store.PutRun(run); err != nil {
 		return err
 	}
-	return store.appendEvent(Event{
+	return store.AppendEvent(Event{
 		Type: EventStopped, RunID: run.RunID, BeadID: run.BeadID,
 		SessionID: run.SessionID, Timestamp: now,
 	})
@@ -326,7 +326,7 @@ func PersistRun(townRoot string, run *Run) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
-	return s.putRun(run)
+	return s.PutRun(run)
 }
 
 // StoreHealth reports health from persisted run data. No health reply after
@@ -335,7 +335,7 @@ func StoreHealth(townRoot, sessionID string, grace time.Duration) (*Health, erro
 	if grace <= 0 {
 		grace = healthGrace()
 	}
-	run, err := newStore(townRoot).getRunBySession(sessionID)
+	run, err := newStore(townRoot).GetRunBySession(sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +375,7 @@ func serverLive(townRoot string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	return c.ping(ctx) == nil
+	return c.Ping(ctx) == nil
 }
 
 // EnsureServer starts `gt worker serve` when no transport is live.

@@ -277,8 +277,8 @@ func setNestedValue(obj interface{}, keyPath string, value interface{}) error {
 
 	// Navigate to the parent of the target key
 	current := m
-	for i := 0; i < len(keys)-1; i++ {
-		key := keys[i]
+	parentKeys := keys[:len(keys)-1]
+	for _, key := range parentKeys {
 		if val, ok := current[key]; ok {
 			// Check if it's a map
 			if nestedMap, ok := val.(map[string]interface{}); ok {
@@ -394,8 +394,8 @@ func unsetNestedValue(obj interface{}, keyPath string) error {
 
 	// Navigate to the parent of the target key
 	current := m
-	for i := 0; i < len(keys)-1; i++ {
-		key := keys[i]
+	parentKeys := keys[:len(keys)-1]
+	for _, key := range parentKeys {
 		if val, ok := current[key]; ok {
 			if nestedMap, ok := val.(map[string]interface{}); ok {
 				current = nestedMap

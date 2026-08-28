@@ -258,7 +258,14 @@ func ConcreteWorkIssueRejectReason(issue *Issue) string {
 	if InternalIssueType(issue.Type) {
 		return "internal-type:" + strings.ToLower(strings.TrimSpace(issue.Type))
 	}
-	for _, label := range issue.Labels {
+	if reason := labelRejectReason(issue.Labels); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+func labelRejectReason(labels []string) string {
+	for _, label := range labels {
 		if InternalIssueLabel(label) {
 			return "internal-label:" + strings.ToLower(strings.TrimSpace(label))
 		}
@@ -445,15 +452,19 @@ func unresolvedBlockingDependencyIDs(issue *Issue) ([]string, int) {
 		return ids, count
 	}
 
+	return unresolvedDetailedDependencyIDs(issue.Dependencies)
+}
+
+func unresolvedDetailedDependencyIDs(dependencies []IssueDep) ([]string, int) {
 	seen := make(map[string]bool)
-	ids := make([]string, 0, len(issue.Dependencies))
+	ids := make([]string, 0, len(dependencies))
 	count := 0
-	for _, dep := range issue.Dependencies {
-		if !isBlockingDependencyType(dep.DependencyType) || isResolvedDependency(dep) {
+	for _, dependency := range dependencies {
+		if !isBlockingDependencyType(dependency.DependencyType) || isResolvedDependency(dependency) {
 			continue
 		}
 		count++
-		id := ExtractIssueID(dep.ID)
+		id := ExtractIssueID(dependency.ID)
 		if id == "" || seen[id] {
 			continue
 		}
@@ -627,6 +638,13 @@ func (b *Beads) ForAgentBead() *Beads {
 	}
 }
 
+func (b *Beads) AgentBeadTarget() *Beads {
+	if b.noRoute {
+		return b
+	}
+	return b.ForAgentBead()
+}
+
 // getActor returns the BD_ACTOR value for this context.
 // Returns empty string when in isolated mode (tests) to prevent
 // inherited actors from routing to production databases.
@@ -793,17 +811,7 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 	// causing prefix mismatches. Use explicit beadsDir if set, otherwise
 	// resolve from working directory.
 	cmd := SpawnContext(ctx, fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
-	util.SetDetachedProcessGroup(cmd)
-	cmd.Dir = b.workDir
-
-	cmd.Env = runEnv
-	cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
-
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if stdinData != nil {
-		cmd.Stdin = bytes.NewReader(stdinData)
-	}
+	b.configureBDCommand(cmd, runEnv, stdinData, &stdout, &stderr)
 
 	err := cmd.Run()
 
@@ -820,15 +828,7 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 		stdout.Reset()
 		stderr.Reset()
 		cmd = SpawnContext(ctx, retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
-		util.SetDetachedProcessGroup(cmd)
-		cmd.Dir = b.workDir
-		cmd.Env = runEnv
-		cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if stdinData != nil {
-			cmd.Stdin = bytes.NewReader(stdinData)
-		}
+		b.configureBDCommand(cmd, runEnv, stdinData, &stdout, &stderr)
 		err = cmd.Run()
 	}
 
@@ -839,6 +839,57 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 	// Handle bd exit code 0 bug: when issue not found,
 	// bd may exit 0 but write error to stderr with empty stdout.
 	// Detect this case and treat as error to avoid JSON parse failures.
+	if stdout.Len() == 0 && stderr.Len() > 0 {
+		return nil, b.wrapError(fmt.Errorf("command produced no output"), stderr.String(), args)
+	}
+
+	return stripStdoutWarnings(stdout.Bytes()), nil
+}
+
+func (b *Beads) configureBDCommand(cmd *exec.Cmd, runEnv []string, stdinData []byte, stdout, stderr *bytes.Buffer) {
+	util.SetDetachedProcessGroup(cmd)
+	cmd.Dir = b.workDir
+	cmd.Env = append(runEnv, telemetry.OTELEnvForSubprocess()...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if stdinData != nil {
+		cmd.Stdin = bytes.NewReader(stdinData)
+	}
+}
+
+// RunWithRouting executes a bd command without setting BEADS_DIR, allowing bd's
+// native prefix-based routing via routes.jsonl to resolve cross-prefix beads.
+// This is needed for slot operations that reference beads with different prefixes
+// (e.g., setting an hq-* hook bead on a gt-* agent bead).
+// See: sling_helpers.go verifyBeadExists/hookBeadWithRetry for the same pattern.
+func (b *Beads) RunWithRouting(args ...string) (_ []byte, retErr error) { //nolint:unparam // mirrors run() signature for consistency
+	start := time.Now()
+	var stdout, stderr bytes.Buffer
+	defer func() {
+		telemetry.RecordBDCall(context.Background(), args, float64(time.Since(start).Milliseconds()), retErr, stdout.Bytes(), stderr.String())
+	}()
+	runEnv := b.buildRoutingEnv()
+	fullArgs := MaybePrependAllowStaleWithEnv(runEnv, args)
+
+	// Bound subprocess runtime — see bdSubprocessTimeout doc comment.
+	ctx, cancel := context.WithTimeout(context.Background(), resolveBdSubprocessTimeout())
+	defer cancel()
+
+	cmd := SpawnContext(ctx, fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+	util.SetDetachedProcessGroup(cmd)
+	cmd.Dir = b.workDir
+
+	cmd.Env = runEnv
+	cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return nil, b.wrapError(err, stderr.String(), args)
+	}
+
 	if stdout.Len() == 0 && stderr.Len() > 0 {
 		return nil, b.wrapError(fmt.Errorf("command produced no output"), stderr.String(), args)
 	}
@@ -919,6 +970,24 @@ func (b *Beads) buildRunEnv() []string {
 	return env
 }
 
+// buildRoutingEnv builds the environment for runWithRouting() calls.
+// Always strips BEADS_DIR so bd uses native routing.
+// In isolated mode: also strips BD_ACTOR, BEADS_*, GT_ROOT, HOME.
+func (b *Beads) buildRoutingEnv() []string {
+	if b.isolated {
+		env := filterBeadsEnv(os.Environ())
+		if b.serverPort > 0 {
+			env = stripEnvPrefixes(env, "GT_DOLT_PORT=", "BEADS_DOLT_SERVER_PORT=", "BEADS_DOLT_PORT=", "BEADS_DOLT_AUTO_START=")
+			env = append(env, fmt.Sprintf("GT_DOLT_PORT=%d", b.serverPort))
+			env = append(env, fmt.Sprintf("BEADS_DOLT_SERVER_PORT=%d", b.serverPort))
+			env = append(env, fmt.Sprintf("BEADS_DOLT_PORT=%d", b.serverPort))
+			env = append(env, "BEADS_DOLT_AUTO_START=0")
+		}
+		return SuppressBDSideEffects(env)
+	}
+	return BuildRoutingBDEnv(os.Environ(), b.getResolvedBeadsDir())
+}
+
 // filterBeadsEnv removes beads-related environment variables from the given
 // environment slice. This ensures test isolation by preventing inherited
 // BD_ACTOR, BEADS_DB, GT_ROOT, HOME etc. from routing commands to production databases.
@@ -933,26 +1002,11 @@ func filterBeadsEnv(environ []string) []string {
 			filtered = append(filtered, env)
 			continue
 		}
-		// Preserve Dolt connection env vars needed to reach test/remote Dolt servers.
-		// These must be checked before the broad BEADS_ prefix strip below.
-		if envKeyMatches(keyName, "GT_DOLT_HOST") ||
-			envKeyMatches(keyName, "GT_DOLT_PORT") ||
-			envKeyMatches(keyName, "BEADS_DOLT_PORT") ||
-			envKeyMatches(keyName, "BEADS_DOLT_SERVER_PORT") ||
-			envKeyMatches(keyName, "BEADS_DOLT_SERVER_HOST") ||
-			envKeyMatches(keyName, "BEADS_DOLT_AUTO_START") {
+		if preservesDoltConnection(keyName) {
 			filtered = append(filtered, env)
 			continue
 		}
-		// Skip beads-related env vars that could interfere with test isolation
-		// BD_ACTOR, BEADS_* - direct beads config
-		// GT_ROOT - causes bd to find global routes file
-		// HOME - causes bd to find ~/.beads-planning routing
-		if envKeyMatches(keyName, "BD_ACTOR") ||
-			envKeyHasPrefix(keyName, "BEADS_") ||
-			envKeyMatches(keyName, "GT_DOLT_DATA") ||
-			envKeyMatches(keyName, "GT_ROOT") ||
-			envKeyMatches(keyName, "HOME") {
+		if filtersBeadsEnvironment(keyName) {
 			continue
 		}
 		filtered = append(filtered, env)
@@ -960,40 +1014,61 @@ func filterBeadsEnv(environ []string) []string {
 	return filtered
 }
 
+func preservesDoltConnection(keyName string) bool {
+	return envKeyMatches(keyName, "GT_DOLT_HOST") ||
+		envKeyMatches(keyName, "GT_DOLT_PORT") ||
+		envKeyMatches(keyName, "BEADS_DOLT_PORT") ||
+		envKeyMatches(keyName, "BEADS_DOLT_SERVER_PORT") ||
+		envKeyMatches(keyName, "BEADS_DOLT_SERVER_HOST") ||
+		envKeyMatches(keyName, "BEADS_DOLT_AUTO_START")
+}
+
+func filtersBeadsEnvironment(keyName string) bool {
+	return envKeyMatches(keyName, "BD_ACTOR") ||
+		envKeyHasPrefix(keyName, "BEADS_") ||
+		envKeyMatches(keyName, "GT_DOLT_DATA") ||
+		envKeyMatches(keyName, "GT_ROOT") ||
+		envKeyMatches(keyName, "HOME")
+}
+
 // stripEnvPrefixes removes entries matching any of the given prefixes from an
-// environment variable slice.
+// environment variable slice. Used by runWithRouting to strip BEADS_DIR.
 func stripEnvPrefixes(environ []string, prefixes ...string) []string {
 	filtered := make([]string, 0, len(environ))
 	for _, env := range environ {
 		keyName, _, ok := strings.Cut(env, "=")
-		skip := false
-		if ok {
-			for _, prefix := range prefixes {
-				if strings.HasSuffix(prefix, "=") {
-					if envKeyMatches(keyName, strings.TrimSuffix(prefix, "=")) {
-						skip = true
-						break
-					}
-					continue
-				}
-				if envKeyHasPrefix(keyName, prefix) {
-					skip = true
-					break
-				}
-			}
-		} else {
-			for _, prefix := range prefixes {
-				if strings.HasPrefix(env, prefix) {
-					skip = true
-					break
-				}
-			}
-		}
-		if !skip {
+		if !matchesEnvPrefix(env, keyName, ok, prefixes) {
 			filtered = append(filtered, env)
 		}
 	}
 	return filtered
+}
+
+func matchesEnvPrefix(env, keyName string, hasKey bool, prefixes []string) bool {
+	if hasKey {
+		return matchesEnvironmentKeyPrefix(keyName, prefixes)
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(env, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesEnvironmentKeyPrefix(keyName string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasSuffix(prefix, "=") {
+			if envKeyMatches(keyName, strings.TrimSuffix(prefix, "=")) {
+				return true
+			}
+			continue
+		}
+		if envKeyHasPrefix(keyName, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // List returns issues matching the given options.
@@ -1011,18 +1086,19 @@ func (b *Beads) List(opts ListOptions) ([]*Issue, error) {
 }
 
 func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
-	args := []string{"list", "--json"}
+	out, err := b.run(listIssueArgs(opts)...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeIssues(out, "bd list")
+}
 
+func listIssueArgs(opts ListOptions) []string {
+	args := []string{"list", "--json"}
 	if opts.Status != "" {
 		args = append(args, "--status="+opts.Status)
 	}
-	// Prefer Label over Type (Type is deprecated)
-	if opts.Label != "" {
-		args = append(args, "--label="+opts.Label)
-	} else if opts.Type != "" {
-		// Deprecated: convert type to label for backward compatibility
-		args = append(args, "--label=gt:"+opts.Type)
-	}
+	args = appendListIssueLabel(args, opts)
 	if opts.Priority >= 0 {
 		args = append(args, fmt.Sprintf("--priority=%d", opts.Priority))
 	}
@@ -1035,18 +1111,28 @@ func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
 	if opts.NoAssignee {
 		args = append(args, "--no-assignee")
 	}
-	if opts.Limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", opts.Limit))
-	} else {
-		// Override bd's default limit of 50 to avoid silent truncation
-		args = append(args, "--limit=0")
-	}
+	return appendListIssueLimit(args, opts.Limit)
+}
 
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
+func appendListIssueLabel(args []string, opts ListOptions) []string {
+	if opts.Label != "" {
+		return append(args, "--label="+opts.Label)
 	}
+	if opts.Type != "" {
+		return append(args, "--label=gt:"+opts.Type)
+	}
+	return args
+}
 
+func appendListIssueLimit(args []string, limit int) []string {
+	if limit > 0 {
+		return append(args, fmt.Sprintf("--limit=%d", limit))
+	}
+	// Override bd's default limit of 50 to avoid silent truncation.
+	return append(args, "--limit=0")
+}
+
+func decodeIssues(out []byte, command string) ([]*Issue, error) {
 	// bd list --json may return plain text (e.g., "No issues found.") instead
 	// of an empty JSON array when there are no results. Handle gracefully.
 	if len(out) == 0 || !isJSONBytes(out) {
@@ -1055,7 +1141,7 @@ func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
 
 	var issues []*Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
-		return nil, fmt.Errorf("parsing bd list output: %w", err)
+		return nil, fmt.Errorf("parsing %s output: %w", command, err)
 	}
 
 	return issues, nil
@@ -1065,9 +1151,18 @@ func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
 // statuses with one bd query. Summary paths use this to avoid multiplying bd
 // subprocesses by status and polecat count.
 func (b *Beads) ListIssueStatuses(statuses ...IssueStatus) ([]*Issue, error) {
-	if len(statuses) == 0 {
+	unique := uniqueIssueStatuses(statuses)
+	if len(unique) == 0 {
 		return nil, nil
 	}
+
+	if b.store != nil {
+		return b.storeIssuesForStatuses(unique)
+	}
+	return b.queryIssueStatuses(unique)
+}
+
+func uniqueIssueStatuses(statuses []IssueStatus) []IssueStatus {
 	unique := make([]IssueStatus, 0, len(statuses))
 	seen := make(map[IssueStatus]bool, len(statuses))
 	for _, status := range statuses {
@@ -1077,24 +1172,24 @@ func (b *Beads) ListIssueStatuses(statuses ...IssueStatus) ([]*Issue, error) {
 		seen[status] = true
 		unique = append(unique, status)
 	}
-	if len(unique) == 0 {
-		return nil, nil
-	}
+	return unique
+}
 
-	if b.store != nil {
-		var all []*Issue
-		for _, status := range unique {
-			issues, err := b.storeList(ListOptions{Status: string(status), Priority: -1})
-			if err != nil {
-				return nil, err
-			}
-			all = append(all, issues...)
+func (b *Beads) storeIssuesForStatuses(statuses []IssueStatus) ([]*Issue, error) {
+	var all []*Issue
+	for _, status := range statuses {
+		issues, err := b.storeList(ListOptions{Status: string(status), Priority: -1})
+		if err != nil {
+			return nil, err
 		}
-		return all, nil
+		all = append(all, issues...)
 	}
+	return all, nil
+}
 
-	statusClauses := make([]string, 0, len(unique))
-	for _, status := range unique {
+func (b *Beads) queryIssueStatuses(statuses []IssueStatus) ([]*Issue, error) {
+	statusClauses := make([]string, 0, len(statuses))
+	for _, status := range statuses {
 		statusClauses = append(statusClauses, "status="+quoteBDQueryValue(string(status)))
 	}
 	expr := "ephemeral=false AND (" + strings.Join(statusClauses, " OR ") + ")"
@@ -1121,9 +1216,25 @@ func (b *Beads) ListIssueStatuses(statuses ...IssueStatus) ([]*Issue, error) {
 // not support an --ephemeral flag. Wisps (ephemeral issues like merge-request
 // beads) live in a separate table since beads v0.59.
 func (b *Beads) listEphemeral(opts ListOptions) ([]*Issue, error) {
-	// Build query expression: ephemeral=true AND <filters>
-	clauses := []string{"ephemeral=true"}
+	args := ephemeralIssueArgs(opts)
+	out, err := b.run(args...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeIssues(out, "bd query")
+}
 
+func ephemeralIssueArgs(opts ListOptions) []string {
+	queryExpr := strings.Join(ephemeralIssueClauses(opts), " AND ")
+	args := []string{"query", "--json", queryExpr}
+	if opts.Status == "all" {
+		args = append(args, "--all")
+	}
+	return appendListIssueLimit(args, opts.Limit)
+}
+
+func ephemeralIssueClauses(opts ListOptions) []string {
+	clauses := []string{"ephemeral=true"}
 	if opts.Label != "" {
 		clauses = append(clauses, "label="+quoteBDQueryValue(opts.Label))
 	} else if opts.Type != "" {
@@ -1141,35 +1252,7 @@ func (b *Beads) listEphemeral(opts ListOptions) ([]*Issue, error) {
 	if opts.Assignee != "" {
 		clauses = append(clauses, "assignee="+quoteBDQueryValue(opts.Assignee))
 	}
-
-	queryExpr := strings.Join(clauses, " AND ")
-	args := []string{"query", "--json", queryExpr}
-
-	if opts.Status == "all" {
-		args = append(args, "--all")
-	}
-	if opts.Limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", opts.Limit))
-	} else {
-		// Match List's no-truncation default; bd query otherwise silently caps at 50.
-		args = append(args, "--limit=0")
-	}
-
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(out) == 0 || !isJSONBytes(out) {
-		return nil, nil
-	}
-
-	var issues []*Issue
-	if err := json.Unmarshal(out, &issues); err != nil {
-		return nil, fmt.Errorf("parsing bd query output: %w", err)
-	}
-
-	return issues, nil
+	return clauses
 }
 
 func quoteBDQueryValue(value string) string {
@@ -1231,14 +1314,25 @@ func (b *Beads) ListMergeRequests(opts ListOptions) ([]*Issue, error) {
 	if err != nil {
 		return nil, err
 	}
+	issueResults = b.appendMergeRequestWisps(issueResults, opts)
+	issueResults = filterMergeRequestsByRig(issueResults, opts.Rig)
+	return b.hydrateMergeRequestDetails(issueResults)
+}
 
-	// Build dedup map from issues
+func (b *Beads) appendMergeRequestWisps(issueResults []*Issue, opts ListOptions) []*Issue {
 	seen := make(map[string]bool, len(issueResults))
 	for _, issue := range issueResults {
 		seen[issue.ID] = true
 	}
 
-	// 2. Query wisps table via SQL for merge-request wisps with full data
+	sqlOut, err := b.run("sql", "--json", mergeRequestWispQuery(opts))
+	if err != nil || len(sqlOut) == 0 || !isJSONBytes(sqlOut) {
+		return issueResults
+	}
+	return appendMergeRequestWispRows(issueResults, seen, parseMergeRequestWispRows(sqlOut))
+}
+
+func mergeRequestWispQuery(opts ListOptions) string {
 	statusFilter := "w.status = 'open'"
 	if opts.Status != "" && strings.EqualFold(opts.Status, "all") {
 		statusFilter = "1=1"
@@ -1251,7 +1345,7 @@ func (b *Beads) ListMergeRequests(opts ListOptions) ([]*Issue, error) {
 		labelFilter = fmt.Sprintf("l.label = '%s'", strings.ReplaceAll(opts.Label, "'", "''"))
 	}
 
-	query := fmt.Sprintf(
+	return fmt.Sprintf(
 		"SELECT w.id, w.title, w.description, w.status, w.priority, w.assignee, "+
 			"w.created_at, w.updated_at, w.created_by, "+
 			"GROUP_CONCAT(al.label) as labels_csv "+
@@ -1261,48 +1355,57 @@ func (b *Beads) ListMergeRequests(opts ListOptions) ([]*Issue, error) {
 			"WHERE %s AND %s "+
 			"GROUP BY w.id, w.title, w.description, w.status, w.priority, w.assignee, w.created_at, w.updated_at, w.created_by",
 		labelFilter, statusFilter)
+}
 
-	sqlOut, sqlErr := b.run("sql", "--json", query)
-	if sqlErr == nil && len(sqlOut) > 0 && isJSONBytes(sqlOut) {
-		var rows []struct {
-			ID          string `json:"id"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Status      string `json:"status"`
-			Priority    int    `json:"priority"`
-			Assignee    string `json:"assignee"`
-			CreatedAt   string `json:"created_at"`
-			UpdatedAt   string `json:"updated_at"`
-			CreatedBy   string `json:"created_by"`
-			LabelsCSV   string `json:"labels_csv"`
-		}
-		if jsonErr := json.Unmarshal(sqlOut, &rows); jsonErr == nil {
-			for _, row := range rows {
-				if seen[row.ID] {
-					continue
-				}
-				issue := &Issue{
-					ID:          row.ID,
-					Title:       row.Title,
-					Description: row.Description,
-					Status:      row.Status,
-					Priority:    row.Priority,
-					Assignee:    row.Assignee,
-					CreatedAt:   row.CreatedAt,
-					UpdatedAt:   row.UpdatedAt,
-					CreatedBy:   row.CreatedBy,
-					Ephemeral:   true,
-				}
-				if row.LabelsCSV != "" {
-					issue.Labels = strings.Split(row.LabelsCSV, ",")
-				}
-				issueResults = append(issueResults, issue)
-			}
-		}
+type mergeRequestWispRow struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	Priority    int    `json:"priority"`
+	Assignee    string `json:"assignee"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	CreatedBy   string `json:"created_by"`
+	LabelsCSV   string `json:"labels_csv"`
+}
+
+func parseMergeRequestWispRows(sqlOut []byte) []mergeRequestWispRow {
+	var rows []mergeRequestWispRow
+	if json.Unmarshal(sqlOut, &rows) != nil {
+		return nil
 	}
+	return rows
+}
 
-	issueResults = filterMergeRequestsByRig(issueResults, opts.Rig)
-	return b.hydrateMergeRequestDetails(issueResults)
+func appendMergeRequestWispRows(issues []*Issue, seen map[string]bool, rows []mergeRequestWispRow) []*Issue {
+	for _, row := range rows {
+		if seen[row.ID] {
+			continue
+		}
+		issue := issueFromMergeRequestWispRow(row)
+		issues = append(issues, issue)
+	}
+	return issues
+}
+
+func issueFromMergeRequestWispRow(row mergeRequestWispRow) *Issue {
+	issue := &Issue{
+		ID:          row.ID,
+		Title:       row.Title,
+		Description: row.Description,
+		Status:      row.Status,
+		Priority:    row.Priority,
+		Assignee:    row.Assignee,
+		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
+		CreatedBy:   row.CreatedBy,
+		Ephemeral:   true,
+	}
+	if row.LabelsCSV != "" {
+		issue.Labels = strings.Split(row.LabelsCSV, ",")
+	}
+	return issue
 }
 
 func filterMergeRequestsByRig(issues []*Issue, rigName string) []*Issue {
@@ -1325,12 +1428,7 @@ func (b *Beads) hydrateMergeRequestDetails(issues []*Issue) ([]*Issue, error) {
 		return issues, nil
 	}
 
-	ids := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		if issue != nil && issue.ID != "" {
-			ids = append(ids, issue.ID)
-		}
-	}
+	ids := mergeRequestIDs(issues)
 	if len(ids) == 0 {
 		return issues, nil
 	}
@@ -1339,7 +1437,20 @@ func (b *Beads) hydrateMergeRequestDetails(issues []*Issue) ([]*Issue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hydrating merge-request dependencies: %w", err)
 	}
+	return hydrateMergeRequestIssues(issues, details)
+}
 
+func mergeRequestIDs(issues []*Issue) []string {
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue != nil && issue.ID != "" {
+			ids = append(ids, issue.ID)
+		}
+	}
+	return ids
+}
+
+func hydrateMergeRequestIssues(issues []*Issue, details map[string]*Issue) ([]*Issue, error) {
 	hydrated := make([]*Issue, 0, len(issues))
 	for _, issue := range issues {
 		if issue == nil || issue.ID == "" {
@@ -1362,6 +1473,11 @@ func (b *Beads) hydrateMergeRequestDetails(issues []*Issue) ([]*Issue, error) {
 
 func mergeListIssueFields(detail, listed *Issue) {
 	detail.Ephemeral = detail.Ephemeral || listed.Ephemeral
+	mergeIssueTextFields(detail, listed)
+	mergeIssueMetadataFields(detail, listed)
+}
+
+func mergeIssueTextFields(detail, listed *Issue) {
 	if detail.Title == "" {
 		detail.Title = listed.Title
 	}
@@ -1374,6 +1490,9 @@ func mergeListIssueFields(detail, listed *Issue) {
 	if detail.Assignee == "" {
 		detail.Assignee = listed.Assignee
 	}
+}
+
+func mergeIssueMetadataFields(detail, listed *Issue) {
 	if detail.CreatedAt == "" {
 		detail.CreatedAt = listed.CreatedAt
 	}
@@ -1540,6 +1659,14 @@ func (b *Beads) FindLatestIssueByTitleAndAssignee(title, assignee string) (*Issu
 		return nil, ErrNotFound
 	}
 
+	newest := newestIssueForTitleAndAssignee(issues, title, assignee)
+	if newest == nil {
+		return nil, ErrNotFound
+	}
+	return newest, nil
+}
+
+func newestIssueForTitleAndAssignee(issues []*Issue, title, assignee string) *Issue {
 	var newest *Issue
 	for _, issue := range issues {
 		if issue.Title != title || issue.Assignee != assignee {
@@ -1549,10 +1676,7 @@ func (b *Beads) FindLatestIssueByTitleAndAssignee(title, assignee string) (*Issu
 			newest = issue
 		}
 	}
-	if newest == nil {
-		return nil, ErrNotFound
-	}
-	return newest, nil
+	return newest
 }
 
 // ShowMultiple fetches multiple issues by ID, grouped by routed database.
@@ -1563,38 +1687,55 @@ func (b *Beads) ShowMultiple(ids []string) (map[string]*Issue, error) {
 		return make(map[string]*Issue), nil
 	}
 
-	if !b.noRoute {
-		fallbackDir := b.getResolvedBeadsDir()
-		groups := make(map[string][]string)
-		for _, id := range ids {
-			targetDir := ResolveRoutingTarget(b.getTownRoot(), id, fallbackDir)
-			groups[targetDir] = append(groups[targetDir], id)
-		}
+	result, routed, err := b.showMultipleRouted(ids)
+	if routed {
+		return result, err
+	}
+	return b.showMultipleLocal(ids)
+}
 
-		if len(groups) > 1 || groups[fallbackDir] == nil {
-			result := make(map[string]*Issue, len(ids))
-			var firstErr error
-			for targetDir, groupIDs := range groups {
-				target := b
-				if targetDir != fallbackDir {
-					target = NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
-				}
-				issues, err := target.showMultipleLocal(groupIDs)
-				if err != nil {
-					if firstErr == nil {
-						firstErr = err
-					}
-					continue
-				}
-				for id, issue := range issues {
-					result[id] = issue
-				}
+func (b *Beads) showMultipleRouted(ids []string) (map[string]*Issue, bool, error) {
+	if b.noRoute {
+		return nil, false, nil
+	}
+	fallbackDir := b.getResolvedBeadsDir()
+	groups := b.showMultipleGroupsByTarget(ids, fallbackDir)
+	if len(groups) <= 1 && groups[fallbackDir] != nil {
+		return nil, false, nil
+	}
+	result, err := b.showMultipleGroups(groups, fallbackDir, len(ids))
+	return result, true, err
+}
+
+func (b *Beads) showMultipleGroupsByTarget(ids []string, fallbackDir string) map[string][]string {
+	groups := make(map[string][]string)
+	for _, id := range ids {
+		targetDir := ResolveRoutingTarget(b.getTownRoot(), id, fallbackDir)
+		groups[targetDir] = append(groups[targetDir], id)
+	}
+	return groups
+}
+
+func (b *Beads) showMultipleGroups(groups map[string][]string, fallbackDir string, resultSize int) (map[string]*Issue, error) {
+	result := make(map[string]*Issue, resultSize)
+	var firstErr error
+	for targetDir, groupIDs := range groups {
+		target := b
+		if targetDir != fallbackDir {
+			target = NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
+		}
+		issues, err := target.showMultipleLocal(groupIDs)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
 			}
-			return result, firstErr
+			continue
+		}
+		for id, issue := range issues {
+			result[id] = issue
 		}
 	}
-
-	return b.showMultipleLocal(ids)
+	return result, firstErr
 }
 
 func (b *Beads) showMultipleLocal(ids []string) (map[string]*Issue, error) {
@@ -1672,52 +1813,7 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 		return b.storeCreate(opts)
 	}
 
-	args := []string{"create", "--json"}
-
-	if opts.Title != "" {
-		args = append(args, "--title="+opts.Title)
-	}
-	// Labels takes precedence; fall back to deprecated single-label/Type fields.
-	if len(opts.Labels) > 0 {
-		args = append(args, "--labels="+strings.Join(opts.Labels, ","))
-	} else if opts.Label != "" {
-		args = append(args, "--labels="+opts.Label)
-	} else if opts.Type != "" {
-		args = append(args, "--labels=gt:"+opts.Type)
-	}
-	if opts.Priority >= 0 {
-		args = append(args, fmt.Sprintf("--priority=%d", opts.Priority))
-	}
-	if opts.Description != "" {
-		args = append(args, "--description="+opts.Description)
-	}
-	if opts.Parent != "" {
-		args = append(args, "--parent="+opts.Parent)
-	}
-	if opts.Ephemeral {
-		args = append(args, "--ephemeral")
-	}
-	// Default Actor from BD_ACTOR env var if not specified
-	// Uses getActor() to respect isolated mode (tests)
-	actor := opts.Actor
-	if actor == "" {
-		actor = b.getActor()
-	}
-	if actor != "" {
-		args = append(args, "--actor="+actor)
-	}
-
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
-	}
-
-	var issue Issue
-	if err := json.Unmarshal(out, &issue); err != nil {
-		return nil, fmt.Errorf("parsing bd create output: %w", err)
-	}
-
-	return &issue, nil
+	return b.createIssue(createArgs(opts, b.createActor(opts), true))
 }
 
 // CreateWithID creates an issue with a specific ID.
@@ -1747,18 +1843,26 @@ func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
 	if NeedsForceForID(id) {
 		args = append(args, "--force")
 	}
+	args = appendCreateOptions(args, opts, b.createActor(opts), false)
+	return b.createIssue(args)
+}
 
+func (b *Beads) createActor(opts CreateOptions) string {
+	if opts.Actor != "" {
+		return opts.Actor
+	}
+	return b.getActor()
+}
+
+func createArgs(opts CreateOptions, actor string, ephemeral bool) []string {
+	return appendCreateOptions([]string{"create", "--json"}, opts, actor, ephemeral)
+}
+
+func appendCreateOptions(args []string, opts CreateOptions, actor string, ephemeral bool) []string {
 	if opts.Title != "" {
 		args = append(args, "--title="+opts.Title)
 	}
-	// Labels takes precedence; fall back to deprecated single-label/Type fields.
-	if len(opts.Labels) > 0 {
-		args = append(args, "--labels="+strings.Join(opts.Labels, ","))
-	} else if opts.Label != "" {
-		args = append(args, "--labels="+opts.Label)
-	} else if opts.Type != "" {
-		args = append(args, "--labels=gt:"+opts.Type)
-	}
+	args = appendCreateLabels(args, opts)
 	if opts.Priority >= 0 {
 		args = append(args, fmt.Sprintf("--priority=%d", opts.Priority))
 	}
@@ -1768,16 +1872,29 @@ func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
 	if opts.Parent != "" {
 		args = append(args, "--parent="+opts.Parent)
 	}
-	// Default Actor from BD_ACTOR env var if not specified
-	// Uses getActor() to respect isolated mode (tests)
-	actor := opts.Actor
-	if actor == "" {
-		actor = b.getActor()
+	if ephemeral && opts.Ephemeral {
+		args = append(args, "--ephemeral")
 	}
 	if actor != "" {
 		args = append(args, "--actor="+actor)
 	}
+	return args
+}
 
+func appendCreateLabels(args []string, opts CreateOptions) []string {
+	if len(opts.Labels) > 0 {
+		return append(args, "--labels="+strings.Join(opts.Labels, ","))
+	}
+	if opts.Label != "" {
+		return append(args, "--labels="+opts.Label)
+	}
+	if opts.Type != "" {
+		return append(args, "--labels=gt:"+opts.Type)
+	}
+	return args
+}
+
+func (b *Beads) createIssue(args []string) (*Issue, error) {
 	out, err := b.run(args...)
 	if err != nil {
 		return nil, err
@@ -1806,8 +1923,15 @@ func (b *Beads) Search(opts SearchOptions) ([]*Issue, error) {
 		return b.storeSearch(opts)
 	}
 
-	args := []string{"search", "--json"}
+	out, err := b.run(searchArgs(opts)...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSearchIssues(out)
+}
 
+func searchArgs(opts SearchOptions) []string {
+	args := []string{"search", "--json"}
 	if opts.Query != "" {
 		args = append(args, opts.Query)
 	}
@@ -1823,12 +1947,10 @@ func (b *Beads) Search(opts SearchOptions) ([]*Issue, error) {
 	if opts.DescContains != "" {
 		args = append(args, "--desc-contains="+opts.DescContains)
 	}
+	return args
+}
 
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
-	}
-
+func decodeSearchIssues(out []byte) ([]*Issue, error) {
 	var issues []*Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
 		return nil, fmt.Errorf("parsing bd search output: %w", err)
@@ -1916,9 +2038,18 @@ func (b *Beads) Update(id string, opts UpdateOptions) error {
 		return b.storeUpdate(id, opts)
 	}
 
-	args := []string{"update", id}
-	var stdinData []byte
+	args, stdinData := updateArgs(id, opts)
+	_, err := b.runWithStdin(stdinData, args...)
+	return err
+}
 
+func updateArgs(id string, opts UpdateOptions) ([]string, []byte) {
+	args := appendUpdateFields([]string{"update", id}, opts)
+	args = appendUpdateLabels(args, opts)
+	return args, updateDescriptionStdin(opts)
+}
+
+func appendUpdateFields(args []string, opts UpdateOptions) []string {
 	if opts.Title != nil {
 		args = append(args, "--title="+*opts.Title)
 	}
@@ -1930,16 +2061,33 @@ func (b *Beads) Update(id string, opts UpdateOptions) error {
 	}
 	if opts.Description != nil {
 		args = append(args, "--body-file=-")
-		stdinData = []byte(*opts.Description)
-		if *opts.Description == "" {
-			args = append(args, "--allow-empty-description")
-			stdinData = []byte{}
-		}
+		args = appendEmptyDescriptionFlag(args, *opts.Description)
 	}
 	if opts.Assignee != nil {
 		args = append(args, "--assignee="+*opts.Assignee)
 	}
-	// Label operations: set-labels replaces all, otherwise use add/remove
+	return args
+}
+
+func appendEmptyDescriptionFlag(args []string, description string) []string {
+	if description == "" {
+		return append(args, "--allow-empty-description")
+	}
+	return args
+}
+
+func updateDescriptionStdin(opts UpdateOptions) []byte {
+	if opts.Description == nil {
+		return nil
+	}
+	if *opts.Description == "" {
+		return []byte{}
+	}
+	return []byte(*opts.Description)
+}
+
+func appendUpdateLabels(args []string, opts UpdateOptions) []string {
+	// Set-labels replaces all labels; otherwise apply add/remove operations.
 	if len(opts.SetLabels) > 0 {
 		for _, label := range opts.SetLabels {
 			args = append(args, "--set-labels="+label)
@@ -1952,9 +2100,7 @@ func (b *Beads) Update(id string, opts UpdateOptions) error {
 			args = append(args, "--remove-label="+label)
 		}
 	}
-
-	_, err := b.runWithStdin(stdinData, args...)
-	return err
+	return args
 }
 
 // AddComment appends a comment to an issue, routing by issue ID when needed.
@@ -2001,6 +2147,11 @@ func (b *Beads) Comments(id string) ([]Comment, error) {
 		return nil, fmt.Errorf("parsing comments: %w", err)
 	}
 	return comments, nil
+}
+
+func (b *Beads) DeleteBead(id string) error {
+	_, err := b.run("delete", id, "--force")
+	return err
 }
 
 type closeOptions struct {

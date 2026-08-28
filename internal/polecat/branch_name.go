@@ -31,28 +31,33 @@ func ParseBranchName(branch string) (BranchNameMeta, bool) {
 	if !strings.HasPrefix(branch, polecatBranchPrefix) {
 		return BranchNameMeta{}, false
 	}
-
 	rest := branch[len(polecatBranchPrefix):]
 	if rest == "" {
 		return BranchNameMeta{}, false
 	}
-
-	if slash := strings.Index(rest, "/"); slash >= 0 {
-		if slash == 0 {
-			return BranchNameMeta{}, false
-		}
-		polecatName := rest[:slash]
-		issueTail := rest[slash+1:]
-		if issueTail == "" || strings.Contains(issueTail, "/") {
-			return BranchNameMeta{}, false
-		}
-		issue, generated, ok := parseIssueTail(issueTail)
-		if !ok {
-			return BranchNameMeta{}, false
-		}
-		return BranchNameMeta{Polecat: polecatName, Issue: issue, Generated: generated}, true
+	if strings.Contains(rest, "/") {
+		return parseIssueBranch(rest)
 	}
+	return parseGeneratedBranch(rest)
+}
 
+func parseIssueBranch(rest string) (BranchNameMeta, bool) {
+	slash := strings.Index(rest, "/")
+	if slash <= 0 {
+		return BranchNameMeta{}, false
+	}
+	polecatName, issueTail := rest[:slash], rest[slash+1:]
+	if issueTail == "" || strings.Contains(issueTail, "/") {
+		return BranchNameMeta{}, false
+	}
+	issue, generated, ok := parseIssueTail(issueTail)
+	if !ok {
+		return BranchNameMeta{}, false
+	}
+	return BranchNameMeta{Polecat: polecatName, Issue: issue, Generated: generated}, true
+}
+
+func parseGeneratedBranch(rest string) (BranchNameMeta, bool) {
 	dash := strings.LastIndex(rest, "-")
 	if dash <= 0 || dash == len(rest)-1 {
 		return BranchNameMeta{}, false

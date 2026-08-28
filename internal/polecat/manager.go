@@ -2706,7 +2706,7 @@ func (m *Manager) polecatSessionState(name string) (running bool, stale bool) {
 		return false, false
 	}
 
-	return true, NewSessionManager(m.tmux, m.rig).isSessionStale(sessionName)
+	return true, NewSessionManager(m.tmux, m.rig).IsSessionStale(sessionName)
 }
 
 func isCurrentHookedIssueForAssignee(issue *beads.Issue, assignee string) bool {

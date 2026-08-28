@@ -1562,7 +1562,8 @@ func (r *Router) pruneAnnounce(announceName string, retainCount int) error {
 	}
 
 	// Delete oldest messages
-	for i := 0; i < toDelete && i < len(messages); i++ {
+	messageCount := len(messages)
+	for i := 0; i < toDelete && i < messageCount; i++ {
 		deleteArgs := []string{"close", messages[i].ID, "--reason=retention pruning"}
 		// Best-effort deletion - don't fail if one delete fails
 		delCtx, delCancel := bdWriteCtx()

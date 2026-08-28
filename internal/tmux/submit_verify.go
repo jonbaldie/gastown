@@ -64,7 +64,8 @@ func applySGR(params string, dim bool) bool {
 		return false
 	}
 	fields := strings.Split(params, ";")
-	for i := 0; i < len(fields); i++ {
+	fieldCount := len(fields)
+	for i := 0; i < fieldCount; i++ {
 		switch fields[i] {
 		case "", "0":
 			dim = false
@@ -91,11 +92,12 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 	var plain []rune
 	var dim []bool
 	curDim := false
-	for i := 0; i < len(s); {
+	sLength := len(s)
+	for i := 0; i < sLength; {
 		if s[i] == 0x1b {
 			if i+1 < len(s) && s[i+1] == '[' {
 				j := i + 2
-				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				for j < sLength && (s[j] < 0x40 || s[j] > 0x7e) {
 					j++
 				}
 				if j >= len(s) {
@@ -107,9 +109,9 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 				i = j + 1
 				continue
 			}
-			if i+1 < len(s) && s[i+1] == ']' {
+			if i+1 < sLength && s[i+1] == ']' {
 				j := i + 2
-				for j < len(s) && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\') {
+				for j < sLength && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < sLength && s[j+1] == '\\') {
 					j++
 				}
 				if j >= len(s) {
@@ -133,10 +135,12 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 }
 
 func runeIndex(haystack, needle []rune) int {
-	if len(needle) == 0 || len(needle) > len(haystack) {
+	needleCount := len(needle)
+	haystackCount := len(haystack)
+	if needleCount == 0 || needleCount > haystackCount {
 		return -1
 	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
+	for i := 0; i+needleCount <= haystackCount; i++ {
 		match := true
 		for j := range needle {
 			if haystack[i+j] != needle[j] {
@@ -167,8 +171,9 @@ func splitRunesAndDim(plain []rune, dim []bool) ([][]rune, [][]bool) {
 	var lines [][]rune
 	var lineDims [][]bool
 	start := 0
-	for i := 0; i <= len(plain); i++ {
-		if i == len(plain) || plain[i] == '\n' {
+	plainCount := len(plain)
+	for i := 0; i <= plainCount; i++ {
+		if i == plainCount || plain[i] == '\n' {
 			lines = append(lines, plain[start:i])
 			lineDims = append(lineDims, dim[start:i])
 			start = i + 1
@@ -179,11 +184,17 @@ func splitRunesAndDim(plain []rune, dim []bool) ([][]rune, [][]bool) {
 
 func trimRunesAndDim(runes []rune, dim []bool) ([]rune, []bool) {
 	isSpace := func(r rune) bool { return r == ' ' || r == '\t' || r == '\u00a0' }
-	for len(runes) > 0 && isSpace(runes[0]) {
+	for {
+		if len(runes) == 0 || !isSpace(runes[0]) {
+			break
+		}
 		runes = runes[1:]
 		dim = dim[1:]
 	}
-	for len(runes) > 0 && isSpace(runes[len(runes)-1]) {
+	for {
+		if len(runes) == 0 || !isSpace(runes[len(runes)-1]) {
+			break
+		}
 		runes = runes[:len(runes)-1]
 		dim = dim[:len(dim)-1]
 	}
@@ -283,7 +294,7 @@ func (t *Tmux) pollSubmission(target, needle, promptPrefix string, attempts int)
 }
 
 func (t *Tmux) submitComposer(target, message, promptPrefix string) error {
-	enterErr := t.sendEnterVerified(target)
+	enterErr := t.SendEnterVerified(target)
 	needle := submitNeedle(message)
 	if needle == "" {
 		return enterErr
@@ -317,7 +328,7 @@ func (t *Tmux) recoverStrandedComposer(target, message, needle, promptPrefix str
 			return fmt.Errorf("%w (retype failed: %v)", ErrSubmitNotVerified, err)
 		}
 		time.Sleep(adaptiveTextDelay(len(message)))
-		_ = t.sendEnterVerified(target)
+		_ = t.SendEnterVerified(target)
 	case probeStranded, probeComposerDirty, probeUnknown:
 		return fmt.Errorf("%w (composer state after C-j: %s)", ErrSubmitNotVerified, probe)
 	}

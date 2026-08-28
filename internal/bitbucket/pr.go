@@ -100,7 +100,7 @@ func (c *Client) CreateDraftPR(ctx context.Context, workspace, repoSlug, source,
 		} `json:"links"`
 	}
 	path := fmt.Sprintf("/repositories/%s/%s/pullrequests", workspace, repoSlug)
-	if err := c.restRequest(ctx, "POST", path, reqBody, &resp); err != nil {
+	if err := c.Request(ctx, "POST", path, reqBody, &resp); err != nil {
 		return PRResult{}, fmt.Errorf("create draft PR: %w", err)
 	}
 	return PRResult{ID: resp.ID, URL: resp.Links.HTML.Href}, nil
@@ -110,7 +110,7 @@ func (c *Client) CreateDraftPR(ctx context.Context, workspace, repoSlug, source,
 func (c *Client) UpdatePRDescription(ctx context.Context, workspace, repoSlug string, prID int, description string) error {
 	reqBody := map[string]any{"description": description}
 	path := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d", workspace, repoSlug, prID)
-	if err := c.restRequest(ctx, "PUT", path, reqBody, nil); err != nil {
+	if err := c.Request(ctx, "PUT", path, reqBody, nil); err != nil {
 		return fmt.Errorf("update PR description: %w", err)
 	}
 	return nil
@@ -130,7 +130,7 @@ func (c *Client) GetPRApprovalStatus(ctx context.Context, workspace, repoSlug st
 		} `json:"participants"`
 	}
 	path := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d", workspace, repoSlug, prID)
-	if err := c.restRequest(ctx, "GET", path, nil, &pr); err != nil {
+	if err := c.Request(ctx, "GET", path, nil, &pr); err != nil {
 		return "", fmt.Errorf("get PR approval status: %w", err)
 	}
 
@@ -180,7 +180,7 @@ func (c *Client) GetPRComments(ctx context.Context, workspace, repoSlug string, 
 		} `json:"values"`
 	}
 	path := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d/comments", workspace, repoSlug, prID)
-	if err := c.restRequest(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.Request(ctx, "GET", path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("get PR comments: %w", err)
 	}
 
@@ -209,7 +209,7 @@ func (c *Client) ReplyToPRComment(ctx context.Context, workspace, repoSlug strin
 		"parent":  map[string]any{"id": parentID},
 	}
 	path := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d/comments", workspace, repoSlug, prID)
-	if err := c.restRequest(ctx, "POST", path, reqBody, nil); err != nil {
+	if err := c.Request(ctx, "POST", path, reqBody, nil); err != nil {
 		return fmt.Errorf("reply to PR comment: %w", err)
 	}
 	return nil
@@ -223,7 +223,7 @@ func (c *Client) MergePR(ctx context.Context, workspace, repoSlug string, prID i
 		"close_source_branch": false,
 	}
 	path := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d/merge", workspace, repoSlug, prID)
-	if err := c.restRequest(ctx, "POST", path, reqBody, nil); err != nil {
+	if err := c.Request(ctx, "POST", path, reqBody, nil); err != nil {
 		return fmt.Errorf("merge PR: %w", err)
 	}
 	return nil
@@ -239,7 +239,7 @@ func (c *Client) GetRepoMergeStrategies(ctx context.Context, workspace, repoSlug
 		} `json:"development"`
 	}
 	path := fmt.Sprintf("/repositories/%s/%s/branching-model", workspace, repoSlug)
-	if err := c.restRequest(ctx, "GET", path, nil, &branchingModel); err != nil {
+	if err := c.Request(ctx, "GET", path, nil, &branchingModel); err != nil {
 		// Fallback: if branching model is not configured, default to squash.
 		return "squash", nil
 	}

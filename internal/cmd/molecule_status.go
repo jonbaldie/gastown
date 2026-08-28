@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -897,14 +898,10 @@ func showRecentTrailSummary() {
 	for name, count := range authorCounts {
 		authors = append(authors, authorCount{name, count})
 	}
-	// Sort by count descending
-	for i := 0; i < len(authors); i++ {
-		for j := i + 1; j < len(authors); j++ {
-			if authors[j].count > authors[i].count {
-				authors[i], authors[j] = authors[j], authors[i]
-			}
-		}
-	}
+	// Sort by count descending.
+	sort.Slice(authors, func(i, j int) bool {
+		return authors[i].count > authors[j].count
+	})
 
 	var parts []string
 	for i, a := range authors {

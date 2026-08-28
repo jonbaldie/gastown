@@ -131,7 +131,7 @@ func writeFileAtomic(path string, data []byte) error {
 	return os.Rename(name, path)
 }
 
-func (s *Store) putRun(run *Run) error {
+func (s *Store) PutRun(run *Run) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putRunLocked(run)
@@ -147,7 +147,7 @@ func (s *Store) putRunLocked(run *Run) error {
 	return s.saveIndex(idx)
 }
 
-func (s *Store) getRun(runID string) (*Run, error) {
+func (s *Store) GetRun(runID string) (*Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx, err := s.loadIndex()
@@ -162,7 +162,7 @@ func (s *Store) getRun(runID string) (*Run, error) {
 	return &cp, nil
 }
 
-func (s *Store) getRunBySession(sessionID string) (*Run, error) {
+func (s *Store) GetRunBySession(sessionID string) (*Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx, err := s.loadIndex()
@@ -183,7 +183,7 @@ func (s *Store) getRunBySession(sessionID string) (*Run, error) {
 	return found, nil
 }
 
-func (s *Store) latestRunForBead(beadID string) (*Run, error) {
+func (s *Store) LatestRunForBead(beadID string) (*Run, error) {
 	if beadID == "" {
 		return nil, nil
 	}
@@ -206,7 +206,7 @@ func (s *Store) latestRunForBead(beadID string) (*Run, error) {
 	return found, nil
 }
 
-func (s *Store) latestRunForSession(sessionID string) (*Run, error) {
+func (s *Store) LatestRunForSession(sessionID string) (*Run, error) {
 	if sessionID == "" {
 		return nil, ErrRunNotFound
 	}
@@ -232,7 +232,7 @@ func (s *Store) latestRunForSession(sessionID string) (*Run, error) {
 	return found, nil
 }
 
-func (s *Store) liveRunForBead(beadID string) (*Run, error) {
+func (s *Store) LiveRunForBead(beadID string) (*Run, error) {
 	if beadID == "" {
 		return nil, nil
 	}
@@ -251,7 +251,7 @@ func (s *Store) liveRunForBead(beadID string) (*Run, error) {
 	return nil, nil
 }
 
-func (s *Store) listRuns() ([]*Run, error) {
+func (s *Store) ListRuns() ([]*Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx, err := s.loadIndex()
@@ -266,7 +266,7 @@ func (s *Store) listRuns() ([]*Run, error) {
 	return out, nil
 }
 
-func (s *Store) appendEvent(ev Event) error {
+func (s *Store) AppendEvent(ev Event) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
@@ -290,7 +290,7 @@ func (s *Store) appendEvent(ev Event) error {
 	return nil
 }
 
-func (s *Store) readEvents() ([]Event, error) {
+func (s *Store) ReadEvents() ([]Event, error) {
 	data, err := os.ReadFile(s.eventsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -313,7 +313,7 @@ func (s *Store) readEvents() ([]Event, error) {
 	return out, nil
 }
 
-func (s *Store) appendCost(rec CostRecord) error {
+func (s *Store) AppendCost(rec CostRecord) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
@@ -337,7 +337,7 @@ func (s *Store) appendCost(rec CostRecord) error {
 	return nil
 }
 
-func (s *Store) readCosts() ([]CostRecord, error) {
+func (s *Store) ReadCosts() ([]CostRecord, error) {
 	data, err := os.ReadFile(s.costsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -396,7 +396,7 @@ func (s *Store) saveQueue(q *queueFile) error {
 	return nil
 }
 
-func (s *Store) enqueue(item QueuedPrompt) (int, error) {
+func (s *Store) Enqueue(item QueuedPrompt) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()
@@ -410,7 +410,7 @@ func (s *Store) enqueue(item QueuedPrompt) (int, error) {
 	return len(q.Items), nil
 }
 
-func (s *Store) pendingFor(runID string) []QueuedPrompt {
+func (s *Store) PendingFor(runID string) []QueuedPrompt {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()
@@ -431,7 +431,7 @@ func (s *Store) pendingFor(runID string) []QueuedPrompt {
 	return out
 }
 
-func (s *Store) drainDue(runID string) ([]QueuedPrompt, error) {
+func (s *Store) DrainDue(runID string) ([]QueuedPrompt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()
@@ -457,7 +457,7 @@ func (s *Store) drainDue(runID string) ([]QueuedPrompt, error) {
 	return due, nil
 }
 
-func (s *Store) expireStale(now time.Time) ([]QueuedPrompt, error) {
+func (s *Store) ExpireStale(now time.Time) ([]QueuedPrompt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()

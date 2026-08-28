@@ -116,7 +116,7 @@ func cleanupDelayedDogFormulaFailure(currentErr error, delayedDogInfo *DogDispat
 	// Keep typed dog state authoritative if source cleanup failed. Returning the
 	// dog to the pool while its wisp remains hooked would create split ownership.
 	if cleanupErr == nil {
-		if err := delayedDogInfo.clearWorkIfMatches(); err != nil {
+		if err := delayedDogInfo.ClearWorkIfMatches(); err != nil {
 			cleanupErr = fmt.Errorf("clearing failed dog assignment: %w", err)
 		}
 	}
@@ -289,7 +289,7 @@ func shouldReuseExistingFormula(existing *beads.Issue, delayedDogInfo *DogDispat
 	if delayedDogInfo.ownsWork {
 		return false
 	}
-	return delayedDogInfo.worksOnHook(existing)
+	return delayedDogInfo.WorksOnHook(existing)
 }
 
 func rollbackIncompleteFormulaSling(dispatchBeadID, wispRootID, formulaWorkDir, reason string) error {
@@ -533,7 +533,7 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 		if delayedDogInfo == nil {
 			return lockErr
 		}
-		if clearErr := delayedDogInfo.clearWorkIfMatches(); clearErr != nil {
+		if clearErr := delayedDogInfo.ClearWorkIfMatches(); clearErr != nil {
 			return errors.Join(lockErr, fmt.Errorf("clearing failed dog assignment: %w", clearErr))
 		}
 		return lockErr
@@ -582,7 +582,7 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 		fmt.Printf("%s Formula %s already hooked to %s via %s, no-op\n",
 			style.Dim.Render("○"), formulaName, targetAgent, existing.ID)
 		if delayedDogInfo != nil {
-			if _, err := delayedDogInfo.completeFormulaStartup(existing.ID); err != nil {
+			if _, err := delayedDogInfo.CompleteFormulaStartup(existing.ID); err != nil {
 				return fmt.Errorf("completing existing dog formula dispatch: %w", err)
 			}
 			if os.Getenv("GT_TEST_NO_NUDGE") == "" {
@@ -594,7 +594,7 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 		}
 		return nil
 	}
-	if delayedDogInfo != nil && !delayedDogInfo.ownsWork && !delayedDogInfo.worksOnHook(existing) {
+	if delayedDogInfo != nil && !delayedDogInfo.ownsWork && !delayedDogInfo.WorksOnHook(existing) {
 		return fmt.Errorf("dog formula reuse became stale before hook verification; retry dispatch")
 	}
 	if existing != nil && !slingForce && delayedDogInfo != nil && delayedDogInfo.ownsWork {
@@ -695,7 +695,7 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 	}
 
 	if delayedDogInfo != nil {
-		pane, err := delayedDogInfo.completeFormulaStartup(dispatchBeadID)
+		pane, err := delayedDogInfo.CompleteFormulaStartup(dispatchBeadID)
 		if err != nil {
 			return fmt.Errorf("completing dog formula dispatch: %w", err)
 		}

@@ -217,33 +217,33 @@ type IdlePassivatedPayload struct {
 
 // ClassifyMessage determines the protocol type from a message subject.
 func ClassifyMessage(subject string) ProtocolType {
-	switch {
-	case PatternPolecatDone.MatchString(subject):
-		return ProtoPolecatDone
-	case PatternLifecycleShutdown.MatchString(subject):
-		return ProtoLifecycleShutdown
-	case PatternHelp.MatchString(subject):
-		return ProtoHelp
-	case PatternMerged.MatchString(subject):
-		return ProtoMerged
-	case PatternMergeFailed.MatchString(subject):
-		return ProtoMergeFailed
-	case PatternMergeReady.MatchString(subject):
-		return ProtoMergeReady
-	case PatternHandoff.MatchString(subject):
-		return ProtoHandoff
-	case PatternSwarmStart.MatchString(subject):
-		return ProtoSwarmStart
-	case PatternDispatchAttempt.MatchString(subject):
-		return ProtoDispatchAttempt
-	case PatternDispatchOK.MatchString(subject):
-		return ProtoDispatchOK
-	case PatternDispatchFail.MatchString(subject):
-		return ProtoDispatchFail
-	case PatternIdlePassivated.MatchString(subject):
-		return ProtoIdlePassivated
-	default:
-		return ProtoUnknown
+	for _, matcher := range protocolMessageMatchers() {
+		if matcher.pattern.MatchString(subject) {
+			return matcher.protocolType
+		}
+	}
+	return ProtoUnknown
+}
+
+type protocolMessageMatcher struct {
+	pattern      *regexp.Regexp
+	protocolType ProtocolType
+}
+
+func protocolMessageMatchers() []protocolMessageMatcher {
+	return []protocolMessageMatcher{
+		{PatternPolecatDone, ProtoPolecatDone},
+		{PatternLifecycleShutdown, ProtoLifecycleShutdown},
+		{PatternHelp, ProtoHelp},
+		{PatternMerged, ProtoMerged},
+		{PatternMergeFailed, ProtoMergeFailed},
+		{PatternMergeReady, ProtoMergeReady},
+		{PatternHandoff, ProtoHandoff},
+		{PatternSwarmStart, ProtoSwarmStart},
+		{PatternDispatchAttempt, ProtoDispatchAttempt},
+		{PatternDispatchOK, ProtoDispatchOK},
+		{PatternDispatchFail, ProtoDispatchFail},
+		{PatternIdlePassivated, ProtoIdlePassivated},
 	}
 }
 

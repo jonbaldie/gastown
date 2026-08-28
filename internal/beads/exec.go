@@ -106,8 +106,8 @@ func BDSubcommandIndex(argv []string) (int, bool) {
 	if len(argv) < 2 || argv[0] != "bd" {
 		return 0, false
 	}
-	for i := 1; i < len(argv); i++ {
-		arg := argv[i]
+	for i, arg := range argv[1:] {
+		i++
 		if arg == "--" {
 			return 0, false
 		}
@@ -132,8 +132,7 @@ func HasBDTargetSelectorFlag(argv []string) bool {
 	if len(argv) == 0 || argv[0] != "bd" {
 		return false
 	}
-	for i := 1; i < len(argv); i++ {
-		arg := argv[i]
+	for _, arg := range argv[1:] {
 		if arg == "--" {
 			return false
 		}

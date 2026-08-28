@@ -417,11 +417,11 @@ func parseIntSimple(s string) (int, error) {
 		return 0, fmt.Errorf("empty string")
 	}
 	n := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
+	for _, char := range s {
+		if char < '0' || char > '9' {
 			return 0, fmt.Errorf("invalid integer: %s", s)
 		}
-		n = n*10 + int(s[i]-'0')
+		n = n*10 + int(char-'0')
 	}
 	return n, nil
 }

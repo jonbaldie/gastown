@@ -252,7 +252,8 @@ func (g *Git) guardUnsafeTownRootMutation(args []string) error {
 
 func gitEffectiveWorkDir(args []string, workDir string) string {
 	effective := workDir
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		switch {
 		case arg == "-C" && i+1 < len(args):
@@ -321,7 +322,8 @@ func fileExists(path string) bool {
 }
 
 func gitSubcommand(args []string) (string, []string) {
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		switch {
 		case arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--config-env" || arg == "--exec-path":
@@ -387,7 +389,8 @@ func submoduleArgsMutate(args []string) bool {
 }
 
 func firstNonOptionSubcommand(args []string) string {
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		if arg == "--" {
 			if i+1 < len(args) {
@@ -494,7 +497,8 @@ func firstNonOptionPath(args []string, valueOptions map[string]bool) string {
 
 func nonOptionPaths(args []string, valueOptions map[string]bool, limit int) []string {
 	paths := make([]string, 0, limit)
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		if valueOptions[arg] {
 			i++
@@ -2935,31 +2939,6 @@ func (g *Git) UnpushedCommits() (int, error) {
 	return status.UnpreservedPatchCount, nil
 }
 
-func (g *Git) countCommitsAhead(base string) (int, error) {
-	out, err := g.run("rev-list", "--count", base+"..HEAD")
-	if err != nil {
-		return 0, err
-	}
-
-	var count int
-	_, err = fmt.Sscanf(out, "%d", &count)
-	if err != nil {
-		return 0, fmt.Errorf("parsing unpushed count: %w", err)
-	}
-
-	return count, nil
-}
-
-func (g *Git) unpushedFromExactRemoteBranch(localBranch, remote string) (int, bool, error) {
-	remoteSHA, err := g.PushRemoteBranchTip(remote, localBranch)
-	if err != nil || remoteSHA == "" {
-		return 0, false, err
-	}
-
-	count, err := g.countCommitsAhead(remoteSHA)
-	return count, true, err
-}
-
 // BranchPreservationStatus describes whether HEAD is already preserved on a
 // durable branch, and how many patch-unique commits remain if it is not.
 type BranchPreservationStatus struct {
@@ -3130,10 +3109,6 @@ func (g *Git) preservationOfRefAgainstRef(head, ref string) (BranchPreservationS
 		status.Evidence = "cherry"
 	}
 	return status, nil
-}
-
-func (g *Git) mergeTreeNoopAgainstRef(ref string) (bool, error) {
-	return g.mergeTreeNoopBetweenRefs("HEAD", ref)
 }
 
 func (g *Git) mergeTreeNoopBetweenRefs(head, ref string) (bool, error) {

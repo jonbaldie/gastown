@@ -443,7 +443,8 @@ func parseRuntimeInfo(cmdline string) string {
 	// Extract model and provider from flags
 	model := ""
 	provider := ""
-	for i := startIdx; i < len(parts); i++ {
+	partCount := len(parts)
+	for i := startIdx; i < partCount; i++ {
 		arg := parts[i]
 		if (arg == "--model" || arg == "-m") && i+1 < len(parts) && parts[i+1] != "" {
 			model = parts[i+1]

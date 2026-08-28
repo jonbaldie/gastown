@@ -75,7 +75,8 @@ func validateCommandBinary(command string) error {
 	// Skip past "exec" and "env" prefixes, KEY=VAL assignments,
 	// and PowerShell $env: assignments and call operator (&).
 	i := 0
-	for i < len(fields) {
+	fieldCount := len(fields)
+	for i < fieldCount {
 		f := fields[i]
 		if f == "exec" || f == "env" || f == "&" {
 			i++
@@ -90,7 +91,7 @@ func validateCommandBinary(command string) error {
 		if strings.HasPrefix(f, "$env:") {
 			i++
 			// Skip continuation fields until we see a semicolon-terminated one
-			for i < len(fields) && !strings.HasSuffix(fields[i-1], ";") {
+			for i < fieldCount && !strings.HasSuffix(fields[i-1], ";") {
 				i++
 			}
 			continue
@@ -184,9 +185,9 @@ func BuildCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 type Tmux struct {
 	socketName   string // tmux socket name (-L flag), empty = default socket
 	binary       string // optional tmux executable override; empty means "tmux"
-	capsOnce     sync.Once
-	caps         Capabilities
-	capsOverride *Capabilities
+	CapsOnce     sync.Once
+	Caps         Capabilities
+	CapsOverride *Capabilities
 }
 
 // noTownSocket is a sentinel socket name used when no town socket is configured.
@@ -1233,7 +1234,7 @@ func (t *Tmux) GetSessionSet() (*SessionSet, error) {
 	}
 
 	// Parse directly without intermediate slice allocation
-	for len(out) > 0 {
+	for out != "" {
 		idx := strings.IndexByte(out, '\n')
 		var line string
 		if idx >= 0 {
@@ -1561,7 +1562,7 @@ func (t *Tmux) dismissRewindMode(target string) {
 	time.Sleep(300 * time.Millisecond)
 }
 
-// sendEnterVerified sends a submit keystroke to a tmux target and verifies it
+// SendEnterVerified sends a submit keystroke to a tmux target and verifies it
 // was processed by checking that the pane content changes. Under load, tmux may
 // buffer keystrokes, causing the submit to race with text delivery.
 //
@@ -1570,7 +1571,7 @@ func (t *Tmux) dismissRewindMode(target string) {
 // Max 3 retries before returning an error.
 //
 // Falls back to best-effort (no verification) if pane capture fails.
-func (t *Tmux) sendEnterVerified(target string) error {
+func (t *Tmux) SendEnterVerified(target string) error {
 	const (
 		maxRetries     = 3
 		initialBackoff = 500 * time.Millisecond
@@ -1652,10 +1653,11 @@ func (t *Tmux) sendMessageToTarget(target, text string) error {
 	}
 	// Send in chunks to avoid tmux send-keys argument length limits.
 	// Each chunk is sent with a small delay to let the terminal process it.
-	for i := 0; i < len(text); i += sendKeysChunkSize {
+	textLength := len(text)
+	for i := 0; i < textLength; i += sendKeysChunkSize {
 		end := i + sendKeysChunkSize
-		if end > len(text) {
-			end = len(text)
+		if end > textLength {
+			end = textLength
 		}
 		chunk := text[i:end]
 		if i == 0 {
@@ -3043,13 +3045,6 @@ func (t *Tmux) IsRuntimeRunningChecked(session string, processNames []string) (b
 	return false, nil
 }
 
-// checkTargetPaneForRuntime checks if a specific pane (by ID, e.g., "%5") is
-// running a matching process. Used by the ZFC path when GT_PANE_ID is declared.
-func (t *Tmux) checkTargetPaneForRuntime(session, paneID string, processNames []string) bool {
-	running, _ := t.checkTargetPaneForRuntimeChecked(session, paneID, processNames)
-	return running
-}
-
 func (t *Tmux) checkTargetPaneForRuntimeChecked(session, paneID string, processNames []string) (bool, error) {
 	cmd, err := t.run("display-message", "-t", paneID, "-p", "#{pane_current_command}")
 	if err != nil {
@@ -3065,12 +3060,6 @@ func (t *Tmux) checkTargetPaneForRuntimeChecked(session, paneID string, processN
 		return false, err
 	}
 	return t.matchesPaneRuntimeChecked(session, strings.TrimSpace(cmd), strings.TrimSpace(pid), processNames)
-}
-
-// checkPaneForRuntime checks if the first window's pane is running a matching process.
-func (t *Tmux) checkPaneForRuntime(session string, processNames []string) bool {
-	running, _ := t.checkPaneForRuntimeChecked(session, processNames)
-	return running
 }
 
 func (t *Tmux) checkPaneForRuntimeChecked(session string, processNames []string) (bool, error) {

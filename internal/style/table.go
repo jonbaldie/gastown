@@ -59,7 +59,7 @@ func (t *Table) SetHeaderSeparator(enabled bool) *Table {
 // AddRow adds a row of values to the table.
 func (t *Table) AddRow(values ...string) *Table {
 	// Pad with empty strings if needed
-	for len(values) < len(t.columns) {
+	for missing := len(t.columns) - len(values); missing > 0; missing-- {
 		values = append(values, "")
 	}
 	t.rows = append(t.rows, values)
@@ -156,4 +156,3 @@ var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 func stripAnsi(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
 }
-

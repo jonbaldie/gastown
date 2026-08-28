@@ -686,10 +686,12 @@ func runDogDone(_ *cobra.Command, args []string) error {
 
 		// Look for /deacon/dogs/<name>/ in path
 		parts := splitPathComponents(cwd)
-		for i := 0; i < len(parts)-1; i++ {
-			if parts[i] == "dogs" && i > 0 && parts[i-1] == "deacon" {
-				name = parts[i+1]
-				break
+		if len(parts) > 1 {
+			for i := range parts[:len(parts)-1] {
+				if parts[i] == "dogs" && i > 0 && parts[i-1] == "deacon" {
+					name = parts[i+1]
+					break
+				}
 			}
 		}
 

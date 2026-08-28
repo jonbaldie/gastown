@@ -283,7 +283,7 @@ func dogWorksOnHook(d *dog.Dog, work string, hooked *beads.Issue) bool {
 	return !attachedAt.Before(d.WorkStartedAt.UTC())
 }
 
-func (d *DogDispatchInfo) worksOnHook(hooked *beads.Issue) bool {
+func (d *DogDispatchInfo) WorksOnHook(hooked *beads.Issue) bool {
 	if d == nil {
 		return false
 	}
@@ -324,7 +324,7 @@ func (d *DogDispatchInfo) completeStartup(sourceID string, kind dog.WorkKind) (s
 	return d.StartDelayedSession()
 }
 
-func (d *DogDispatchInfo) completeFormulaStartup(sourceID string) (string, error) {
+func (d *DogDispatchInfo) CompleteFormulaStartup(sourceID string) (string, error) {
 	d.requireHook = true
 	return d.completeStartup(sourceID, dog.WorkKindFormula)
 }
@@ -504,7 +504,7 @@ func (d *DogDispatchInfo) StartDelayedSession() (string, error) {
 	return pane, nil
 }
 
-func (d *DogDispatchInfo) clearWorkIfMatches() error {
+func (d *DogDispatchInfo) ClearWorkIfMatches() error {
 	_, err := d.clearWorkIfMatchesResult()
 	return err
 }
@@ -517,7 +517,7 @@ func (d *DogDispatchInfo) clearWorkIfMatchesResult() (bool, error) {
 	return mgr.ClearWorkIfMatches(d.DogName, d.workDesc, d.workStartedAt)
 }
 
-func (d *DogDispatchInfo) clearWorkIfMatchesAfter(beforeClear func() bool) (bool, error) {
+func (d *DogDispatchInfo) ClearWorkIfMatchesAfter(beforeClear func() bool) (bool, error) {
 	if d == nil || !d.ownsWork {
 		return false, nil
 	}

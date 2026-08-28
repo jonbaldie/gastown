@@ -15,12 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Account command flags
-var (
-	accountJSON        bool
-	accountEmail       string
-	accountDescription string
-)
+type accountOptions struct {
+	json               bool
+	email, description string
+}
 
 var accountCmd = &cobra.Command{
 	Use:     "account",
@@ -49,7 +47,6 @@ Shows account handles, emails, and which is the default.
 Examples:
   gt account list           # Text output
   gt account list --json    # JSON output`,
-	RunE: runAccountList,
 }
 
 var accountAddCmd = &cobra.Command{
@@ -66,7 +63,6 @@ Examples:
   gt account add work --email steve@company.com
   gt account add work --email steve@company.com --desc "Work account"`,
 	Args: cobra.ExactArgs(1),
-	RunE: runAccountAdd,
 }
 
 var accountDefaultCmd = &cobra.Command{
@@ -93,7 +89,7 @@ type AccountListItem struct {
 	IsDefault   bool   `json:"is_default"`
 }
 
-func runAccountList(_ *cobra.Command, _ []string) error {
+func runAccountList(opts *accountOptions) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -133,7 +129,7 @@ func runAccountList(_ *cobra.Command, _ []string) error {
 		return items[i].Handle < items[j].Handle
 	})
 
-	if accountJSON {
+	if opts.json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(items)
@@ -164,7 +160,7 @@ func runAccountList(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runAccountAdd(_ *cobra.Command, args []string) error {
+func runAccountAdd(opts *accountOptions, args []string) error {
 	handle := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -208,8 +204,8 @@ func runAccountAdd(_ *cobra.Command, args []string) error {
 
 	// Add account
 	cfg.Accounts[handle] = config.Account{
-		Email:       accountEmail,
-		Description: accountDescription,
+		Email:       opts.email,
+		Description: opts.description,
 		ConfigDir:   configDir,
 	}
 
@@ -508,11 +504,14 @@ func ensureSharedCommandsSymlink(configDir string) error {
 }
 
 func init() {
+	opts := &accountOptions{}
+	accountListCmd.RunE = func(_ *cobra.Command, _ []string) error { return runAccountList(opts) }
+	accountAddCmd.RunE = func(_ *cobra.Command, args []string) error { return runAccountAdd(opts, args) }
 	// Add flags
-	accountListCmd.Flags().BoolVar(&accountJSON, "json", false, "Output as JSON")
+	accountListCmd.Flags().BoolVar(&opts.json, "json", false, "Output as JSON")
 
-	accountAddCmd.Flags().StringVar(&accountEmail, "email", "", "Account email address")
-	accountAddCmd.Flags().StringVar(&accountDescription, "desc", "", "Account description")
+	accountAddCmd.Flags().StringVar(&opts.email, "email", "", "Account email address")
+	accountAddCmd.Flags().StringVar(&opts.description, "desc", "", "Account description")
 
 	// Add subcommands
 	accountCmd.AddCommand(accountListCmd)

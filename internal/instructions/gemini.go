@@ -46,7 +46,7 @@ func geminiAction(snap dirSnap, canonical string, createIfMissing bool) geminiOp
 }
 
 func canonicalPresent(snap dirSnap, canonical string) bool {
-	entry := entry(snap, canonical)
+	entry := snap.Entry(canonical)
 	return entry.regular || entry.symlink
 }
 

@@ -77,10 +77,10 @@ type Daemon struct {
 	// Note: Only accessed from heartbeat loop goroutine - no sync needed.
 	deaconLastStarted time.Time
 
-	// syncFailures tracks consecutive git pull failures per workdir.
+	// SyncFailures tracks consecutive git pull failures per workdir.
 	// Used to escalate logging from WARN to ERROR after repeated failures.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
-	syncFailures map[string]int
+	SyncFailures map[string]int
 
 	// PATCH-006: Resolved binary paths to avoid PATH issues in subprocesses.
 	gtPath string
@@ -98,18 +98,18 @@ type Daemon struct {
 	otelProvider *telemetry.Provider
 	metrics      *daemonMetrics
 
-	// jsonlPushFailures tracks consecutive git push failures for JSONL backup.
+	// JSONLPushFailures tracks consecutive git push failures for JSONL backup.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
-	jsonlPushFailures int
+	JSONLPushFailures int
 
 	// lastDoctorMolTime tracks when the last mol-dog-doctor molecule was poured.
 	// Option B throttling: only pour when anomaly detected AND cooldown elapsed.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
 	lastDoctorMolTime time.Time
 
-	// lastMaintenanceRun tracks when scheduled maintenance last ran.
+	// LastMaintenanceRun tracks when scheduled maintenance last ran.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
-	lastMaintenanceRun time.Time
+	LastMaintenanceRun time.Time
 
 	// mayorZombieCount tracks consecutive patrol cycles where the Mayor tmux
 	// session exists but the agent process is not detected. A count >= 3
@@ -868,7 +868,7 @@ func (d *Daemon) heartbeat(state *State) {
 		return
 	}
 
-	d.metrics.recordHeartbeat(d.ctx)
+	d.metrics.RecordHeartbeat(d.ctx)
 	d.logger.Println("Heartbeat starting (recovery-focused)")
 
 	// Invalidate the per-tick rigs cache so this heartbeat re-reads from disk.
@@ -1050,7 +1050,7 @@ func (d *Daemon) ensureDoltServerRunning() {
 	// Update OTel gauges with the latest Dolt health snapshot.
 	if d.metrics != nil {
 		h := doltserver.GetHealthMetrics(d.config.TownRoot)
-		d.metrics.updateDoltHealth(
+		d.metrics.UpdateDoltHealth(
 			int64(h.Connections),
 			int64(h.MaxConnections),
 			float64(h.QueryLatency.Milliseconds()),
@@ -1066,18 +1066,18 @@ func (d *Daemon) pourDoctorMolecule(warnings []string) {
 	mol := d.pourDogMolecule(constants.MolDogDoctor, map[string]string{
 		"port": strconv.Itoa(d.doltServer.config.Port),
 	})
-	defer mol.close()
+	defer mol.Close()
 
 	// Step 1: probe — connectivity was already checked (we got here because it passed).
-	mol.closeStep("probe")
+	mol.CloseStep("probe")
 
 	// Step 2: inspect — resource checks produced the warnings.
-	mol.closeStep("inspect")
+	mol.CloseStep("inspect")
 
 	// Step 3: report — log the warning summary.
 	summary := strings.Join(warnings, "; ")
 	d.logger.Printf("Doctor molecule: %d warning(s): %s", len(warnings), summary)
-	mol.closeStep("report")
+	mol.CloseStep("report")
 }
 
 // checkAllRigsDolt verifies all rigs are using the Dolt backend.
@@ -1501,7 +1501,7 @@ func (d *Daemon) ensureDeaconRunning() {
 	// Track when we started the Deacon to prevent race condition in checkDeaconHeartbeat.
 	// The heartbeat file will still be stale until the Deacon runs a full patrol cycle.
 	d.deaconLastStarted = time.Now()
-	d.metrics.recordRestart(d.ctx, "deacon")
+	d.metrics.RecordRestart(d.ctx, "deacon")
 	telemetry.RecordDaemonRestart(d.ctx, "deacon")
 	d.logger.Println("Deacon started successfully")
 }
@@ -1722,7 +1722,7 @@ func (d *Daemon) notifySlack(channel, priority, message string) {
 // Respects the rigs filter in daemon.json patrol config.
 func (d *Daemon) ensureWitnessesRunning() {
 	rigs := d.getPatrolRigs("witness")
-	d.rigPool.runPerRig(d.ctx, rigs, func(ctx context.Context, rigName string) error {
+	d.rigPool.RunPerRig(d.ctx, rigs, func(ctx context.Context, rigName string) error {
 		d.ensureWitnessRunning(rigName)
 		return nil
 	})
@@ -1789,7 +1789,7 @@ func (d *Daemon) ensureWitnessRunning(rigName string) {
 		return
 	}
 
-	d.metrics.recordRestart(d.ctx, "witness")
+	d.metrics.RecordRestart(d.ctx, "witness")
 	telemetry.RecordDaemonRestart(d.ctx, "witness-"+rigName)
 	d.logger.Printf("Witness session for %s started successfully", rigName)
 }
@@ -1799,7 +1799,7 @@ func (d *Daemon) ensureWitnessRunning(rigName string) {
 // Respects the rigs filter in daemon.json patrol config.
 func (d *Daemon) ensureRefineriesRunning() {
 	rigs := d.getPatrolRigs("refinery")
-	d.rigPool.runPerRig(d.ctx, rigs, func(ctx context.Context, rigName string) error {
+	d.rigPool.RunPerRig(d.ctx, rigs, func(ctx context.Context, rigName string) error {
 		d.ensureRefineryRunning(rigName)
 		return nil
 	})
@@ -1888,7 +1888,7 @@ func (d *Daemon) ensureRefineryRunning(rigName string) {
 		return
 	}
 
-	d.metrics.recordRestart(d.ctx, "refinery")
+	d.metrics.RecordRestart(d.ctx, "refinery")
 	telemetry.RecordDaemonRestart(d.ctx, "refinery-"+rigName)
 	d.logger.Printf("Refinery session for %s started successfully", rigName)
 }
@@ -1960,7 +1960,7 @@ func (d *Daemon) killDeaconSessions() {
 // killWitnessSessions kills leftover witness tmux sessions for all rigs.
 // Called when the witness patrol is disabled. (hq-2mstj)
 func (d *Daemon) killWitnessSessions() {
-	d.rigPool.runPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
+	d.rigPool.RunPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
 		name := session.WitnessSessionName(session.PrefixFor(rigName))
 		exists, _ := d.tmux.HasSession(name)
 		if exists {
@@ -1976,7 +1976,7 @@ func (d *Daemon) killWitnessSessions() {
 // killRefinerySessions kills leftover refinery tmux sessions for all rigs.
 // Called when the refinery patrol is disabled. (hq-2mstj)
 func (d *Daemon) killRefinerySessions() {
-	d.rigPool.runPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
+	d.rigPool.RunPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
 		name := session.RefinerySessionName(session.PrefixFor(rigName))
 		exists, _ := d.tmux.HasSession(name)
 		if exists {
@@ -2591,7 +2591,7 @@ func KillOrphanedDaemons(townRoot string) (int, error) {
 // When a crash is detected, the polecat is automatically restarted.
 // This provides faster recovery than waiting for GUPP timeout or Witness detection.
 func (d *Daemon) checkPolecatSessionHealth() {
-	d.rigPool.runPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
+	d.rigPool.RunPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
 		d.checkRigPolecatHealth(rigName)
 		return nil
 	})
@@ -2877,7 +2877,7 @@ func (d *Daemon) reapIdlePolecats() {
 	opCfg := d.loadOperationalConfig().GetDaemonConfig()
 	idleTimeout := opCfg.PolecatIdleSessionTimeoutD()
 
-	d.rigPool.runPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
+	d.rigPool.RunPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
 		d.reapRigIdlePolecats(rigName, idleTimeout)
 		return nil
 	})
@@ -3061,7 +3061,7 @@ func (d *Daemon) pruneStaleBranches() {
 	}
 
 	// Prune in each rig's git directory (parallel — each rig is independent).
-	d.rigPool.runPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
+	d.rigPool.RunPerRig(d.ctx, d.getKnownRigs(), func(ctx context.Context, rigName string) error {
 		rigPath := filepath.Join(d.config.TownRoot, rigName)
 		pruneInDir(rigPath, rigName)
 		return nil

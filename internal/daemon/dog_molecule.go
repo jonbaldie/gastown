@@ -99,15 +99,15 @@ func (d *Daemon) pourDogMolecule(formulaName string, vars map[string]string) *do
 	return dm
 }
 
-// closeStep marks a molecule step as closed.
-func (dm *dogMol) closeStep(stepSlug string) {
+// CloseStep marks a molecule step as closed.
+func (dm *dogMol) CloseStep(stepSlug string) {
 	if dm.rootID == "" {
 		return // No molecule — graceful degradation.
 	}
 
 	stepID, ok := dm.stepIDs[stepSlug]
 	if !ok {
-		dm.logger.Printf("dog_molecule: closeStep %q: unknown step (known: %v)", stepSlug, dm.knownSteps())
+		dm.logger.Printf("dog_molecule: CloseStep %q: unknown step (known: %v)", stepSlug, dm.knownSteps())
 		return
 	}
 
@@ -117,15 +117,15 @@ func (dm *dogMol) closeStep(stepSlug string) {
 	}
 }
 
-// failStep marks a molecule step as failed with a reason.
-func (dm *dogMol) failStep(stepSlug, reason string) {
+// FailStep marks a molecule step as failed with a reason.
+func (dm *dogMol) FailStep(stepSlug, reason string) {
 	if dm.rootID == "" {
 		return
 	}
 
 	stepID, ok := dm.stepIDs[stepSlug]
 	if !ok {
-		dm.logger.Printf("dog_molecule: failStep %q: unknown step", stepSlug)
+		dm.logger.Printf("dog_molecule: FailStep %q: unknown step", stepSlug)
 		return
 	}
 
@@ -134,10 +134,10 @@ func (dm *dogMol) failStep(stepSlug, reason string) {
 	}
 }
 
-// close closes all remaining open child step wisps, then closes the root molecule wisp.
+// Close closes all remaining open child step wisps, then closes the root molecule wisp.
 // This prevents orphan step wisps from accumulating when callers forget to
 // explicitly close individual steps (the root cause of gt-3o59).
-func (dm *dogMol) close() {
+func (dm *dogMol) Close() {
 	if dm.rootID == "" {
 		return
 	}
@@ -395,13 +395,14 @@ func parseWispID(output string) string {
 func stripANSI(s string) string {
 	var result strings.Builder
 	i := 0
-	for i < len(s) {
+	sLength := len(s)
+	for i < sLength {
 		if s[i] == '\033' {
 			// Skip escape sequence.
 			i++
 			if i < len(s) && s[i] == '[' {
 				i++
-				for i < len(s) && !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z')) {
+				for i < sLength && !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z')) {
 					i++
 				}
 				if i < len(s) {

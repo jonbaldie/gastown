@@ -259,11 +259,11 @@ func (s *Server) isAllowed(cmd string) bool {
 // Acceptable for typical deployments (dozens of polecats); consider adding a
 // periodic sweep if the server handles thousands of unique certs.
 func (s *Server) limiterFor(identity string) *rate.Limiter {
-	if v, ok := s.rateLimiters.Load(identity); ok {
+	if v, ok := s.RateLimiters.Load(identity); ok {
 		return v.(*rate.Limiter)
 	}
 	l := rate.NewLimiter(s.rateLimit, s.rateBurst)
-	v, _ := s.rateLimiters.LoadOrStore(identity, l)
+	v, _ := s.RateLimiters.LoadOrStore(identity, l)
 	return v.(*rate.Limiter)
 }
 

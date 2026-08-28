@@ -3868,7 +3868,7 @@ func TestUserDSN(t *testing.T) {
 	}
 	for _, tt := range tests {
 		c := &Config{User: tt.user, Password: tt.password}
-		got := c.userDSN()
+		got := c.UserDSN()
 		if got != tt.want {
 			t.Errorf("Config{User:%q, Password:%q}.userDSN() = %q, want %q",
 				tt.user, tt.password, got, tt.want)

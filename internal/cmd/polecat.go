@@ -2151,13 +2151,16 @@ func runPolecatPoolInit(_ *cobra.Command, args []string) error {
 		// Use name pool allocation for new names
 		namePool := mgr.GetNamePool()
 		namePool.Reconcile(existingNamesList(existing))
-		for len(namesToCreate)+len(existingNames) < poolSize {
+		nameCount := len(namesToCreate)
+		existingCount := len(existingNames)
+		for nameCount+existingCount < poolSize {
 			name, allocErr := namePool.Allocate()
 			if allocErr != nil {
 				return fmt.Errorf("allocating polecat name: %w", allocErr)
 			}
 			if !existingNames[name] {
 				namesToCreate = append(namesToCreate, name)
+				nameCount++
 			}
 		}
 	}

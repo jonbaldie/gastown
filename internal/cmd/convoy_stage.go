@@ -1030,8 +1030,9 @@ func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 	var waves []Wave
 	processed := 0
 	waveNum := 0
+	slingableCount := len(slingable)
 
-	for processed < len(slingable) {
+	for processed < slingableCount {
 		// Collect nodes with in-degree 0.
 		var ready []string
 		for id, deg := range inDegree {
@@ -1666,7 +1667,10 @@ func collectEpicBeads(epicID string) ([]BeadInfo, []DepInfo, error) {
 	// BFS queue for recursive tree walk.
 	queue := []bdShowResult{*root}
 
-	for len(queue) > 0 {
+	for {
+		if len(queue) == 0 {
+			break
+		}
 		current := queue[0]
 		queue = queue[1:]
 

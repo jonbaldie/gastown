@@ -169,7 +169,8 @@ func commandBase(command string) string {
 
 func replaceOrAppendArg(rc *RuntimeConfig, flag, value string) {
 	var args []string
-	for i := 0; i < len(rc.Args); i++ {
+	argCount := len(rc.Args)
+	for i := 0; i < argCount; i++ {
 		arg := rc.Args[i]
 		if arg == flag {
 			i++

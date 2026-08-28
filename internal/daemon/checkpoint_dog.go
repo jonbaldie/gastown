@@ -55,7 +55,7 @@ func (d *Daemon) runCheckpointDog() {
 	d.logger.Printf("checkpoint_dog: starting cycle")
 
 	mol := d.pourDogMolecule(constants.MolDogCheckpoint, nil)
-	defer mol.close()
+	defer mol.Close()
 
 	rigs := d.getKnownRigs()
 	totalScanned := 0
@@ -67,12 +67,12 @@ func (d *Daemon) runCheckpointDog() {
 		totalCheckpointed += checkpointed
 	}
 
-	mol.closeStep("scan")
-	mol.closeStep("checkpoint")
+	mol.CloseStep("scan")
+	mol.CloseStep("checkpoint")
 
 	d.logger.Printf("checkpoint_dog: cycle complete — scanned %d worktrees, checkpointed %d",
 		totalScanned, totalCheckpointed)
-	mol.closeStep("report")
+	mol.CloseStep("report")
 }
 
 // checkpointRigPolecats checkpoints dirty polecat worktrees in a single rig.

@@ -48,7 +48,7 @@ func (c *Client) CreateDraftPR(ctx context.Context, owner, repo, head, base, tit
 		HTMLURL string `json:"html_url"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
-	if err := c.restRequest(ctx, "POST", path, reqBody, &resp); err != nil {
+	if err := c.Request(ctx, "POST", path, reqBody, &resp); err != nil {
 		return PRResult{}, fmt.Errorf("create draft PR: %w", err)
 	}
 	return PRResult{Number: resp.Number, URL: resp.HTMLURL}, nil
@@ -58,7 +58,7 @@ func (c *Client) CreateDraftPR(ctx context.Context, owner, repo, head, base, tit
 func (c *Client) UpdatePRDescription(ctx context.Context, owner, repo string, prNumber int, body string) error {
 	reqBody := map[string]any{"body": body}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, prNumber)
-	if err := c.restRequest(ctx, "PATCH", path, reqBody, nil); err != nil {
+	if err := c.Request(ctx, "PATCH", path, reqBody, nil); err != nil {
 		return fmt.Errorf("update PR description: %w", err)
 	}
 	return nil
@@ -79,7 +79,7 @@ func (c *Client) ConvertDraftToReady(ctx context.Context, owner, repo string, pr
 		}
 	}`
 	vars := map[string]any{"id": nodeID}
-	if err := c.graphqlRequest(ctx, mutation, vars, nil); err != nil {
+	if err := c.GraphQLRequest(ctx, mutation, vars, nil); err != nil {
 		return fmt.Errorf("convert draft to ready: %w", err)
 	}
 	return nil
@@ -95,7 +95,7 @@ func (c *Client) GetPRReviewStatus(ctx context.Context, owner, repo string, prNu
 		} `json:"user"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
-	if err := c.restRequest(ctx, "GET", path, nil, &reviews); err != nil {
+	if err := c.Request(ctx, "GET", path, nil, &reviews); err != nil {
 		return "", fmt.Errorf("get PR review status: %w", err)
 	}
 
@@ -140,7 +140,7 @@ func (c *Client) GetPRReviewComments(ctx context.Context, owner, repo string, pr
 		} `json:"user"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments", owner, repo, prNumber)
-	if err := c.restRequest(ctx, "GET", path, nil, &raw); err != nil {
+	if err := c.Request(ctx, "GET", path, nil, &raw); err != nil {
 		return nil, fmt.Errorf("get PR review comments: %w", err)
 	}
 
@@ -162,11 +162,11 @@ func (c *Client) GetPRReviewComments(ctx context.Context, owner, repo string, pr
 // ReplyToPRComment posts a reply to an existing review comment.
 func (c *Client) ReplyToPRComment(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) error {
 	reqBody := map[string]any{
-		"body":         body,
-		"in_reply_to":  commentID,
+		"body":        body,
+		"in_reply_to": commentID,
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments", owner, repo, prNumber)
-	if err := c.restRequest(ctx, "POST", path, reqBody, nil); err != nil {
+	if err := c.Request(ctx, "POST", path, reqBody, nil); err != nil {
 		return fmt.Errorf("reply to PR comment: %w", err)
 	}
 	return nil
@@ -177,7 +177,7 @@ func (c *Client) ReplyToPRComment(ctx context.Context, owner, repo string, prNum
 func (c *Client) MergePR(ctx context.Context, owner, repo string, prNumber int, method string) error {
 	reqBody := map[string]any{"merge_method": method}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, prNumber)
-	if err := c.restRequest(ctx, "PUT", path, reqBody, nil); err != nil {
+	if err := c.Request(ctx, "PUT", path, reqBody, nil); err != nil {
 		return fmt.Errorf("merge PR: %w", err)
 	}
 	return nil
@@ -193,7 +193,7 @@ func (c *Client) GetRepoMergeMethod(ctx context.Context, owner, repo string) (st
 		AllowRebaseMerge bool `json:"allow_rebase_merge"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s", owner, repo)
-	if err := c.restRequest(ctx, "GET", path, nil, &repoInfo); err != nil {
+	if err := c.Request(ctx, "GET", path, nil, &repoInfo); err != nil {
 		return "", fmt.Errorf("get repo merge method: %w", err)
 	}
 
@@ -215,7 +215,7 @@ func (c *Client) getPRNodeID(ctx context.Context, owner, repo string, prNumber i
 		NodeID string `json:"node_id"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, prNumber)
-	if err := c.restRequest(ctx, "GET", path, nil, &pr); err != nil {
+	if err := c.Request(ctx, "GET", path, nil, &pr); err != nil {
 		return "", fmt.Errorf("get PR node ID: %w", err)
 	}
 	if pr.NodeID == "" {

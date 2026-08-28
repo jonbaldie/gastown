@@ -436,11 +436,11 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			PromptFlag: "-p",
 		},
 		// Runtime defaults
-		PromptMode:         "arg",
-		ConfigDirEnv:       "COPILOT_HOME", // GA: overrides ~/.copilot/ config directory
-		ConfigDir:          ".copilot",
-		HooksProvider:      "copilot",
-		HooksDir:           ".github/hooks",
+		PromptMode:           "arg",
+		ConfigDirEnv:         "COPILOT_HOME", // GA: overrides ~/.copilot/ config directory
+		ConfigDir:            ".copilot",
+		HooksProvider:        "copilot",
+		HooksDir:             ".github/hooks",
 		HooksSettingsFile:    "gastown.json",
 		HooksInformational:   false,
 		ReadyPromptPrefix:    "",   // GA: no ❯ prompt; Copilot uses hint text, not a detectable prefix
@@ -1001,7 +1001,8 @@ func lookupProcessNamesByBinary(realBin string) []string {
 // assignments (env only), and treats `--` as an end-of-options separator.
 func extractWrappedBinary(wrapper string, args []string) string {
 	flagsTakeValue := wrapperFlagsTakeValue(wrapper)
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		a := args[i]
 		if a == "--" {
 			if i+1 < len(args) {
@@ -1222,21 +1223,26 @@ func ResolveACPConfig(agentName, command string) *ACPConfig {
 	initRegistryLocked()
 	defer registryMu.Unlock()
 
-	// 1. Check if agentName matches a registered preset with ACP config.
-	if info, ok := globalRegistry.Agents[agentName]; ok && info.ACP != nil && info.ACP.Command != "" {
+	if info, ok := globalRegistry.Agents[agentName]; ok && hasACPConfig(info) {
 		return info.ACP
 	}
+	return findACPConfigByCommand(globalRegistry.Agents, command)
+}
 
-	// 2. Otherwise, find a registered preset whose Command matches and has ACP.
-	if command != "" {
-		cmdBase := filepath.Base(command)
-		for _, info := range globalRegistry.Agents {
-			if (info.Command == command || filepath.Base(info.Command) == cmdBase) && info.ACP != nil && info.ACP.Command != "" {
-				return info.ACP
-			}
+func hasACPConfig(info *AgentPresetInfo) bool {
+	return info != nil && info.ACP != nil && info.ACP.Command != ""
+}
+
+func findACPConfigByCommand(agents map[string]*AgentPresetInfo, command string) *ACPConfig {
+	if command == "" {
+		return nil
+	}
+	commandBase := filepath.Base(command)
+	for _, info := range agents {
+		if (info.Command == command || filepath.Base(info.Command) == commandBase) && hasACPConfig(info) {
+			return info.ACP
 		}
 	}
-
 	return nil
 }
 

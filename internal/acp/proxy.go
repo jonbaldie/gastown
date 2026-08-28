@@ -262,18 +262,7 @@ func (p *Proxy) writeToAgent(msg any) error {
 		return fmt.Errorf("agent process is not running")
 	}
 
-	isPrompt := false
-	if m, ok := msg.(*JSONRPCMessage); ok && m.Method == "session/prompt" && m.ID != nil {
-		isPrompt = true
-		p.promptMux.Lock()
-		if idStr, ok := m.ID.(string); ok {
-			p.activePromptID = idStr
-		} else {
-			p.activePromptID = fmt.Sprintf("%v", m.ID)
-		}
-		debugLog(p.townRoot, "[Proxy] writeToAgent: marking busy (id=%s)", p.activePromptID)
-		p.promptMux.Unlock()
-	}
+	isPrompt := p.markPromptBusy(msg)
 
 	p.lastActivity.Store(time.Now().UnixNano())
 	debugLog(p.townRoot, "[Proxy] writeToAgent: encoding message (method=%s id=%v)", method, id)
@@ -290,6 +279,22 @@ func (p *Proxy) writeToAgent(msg any) error {
 	}
 
 	return nil
+}
+
+func (p *Proxy) markPromptBusy(msg any) bool {
+	m, ok := msg.(*JSONRPCMessage)
+	if !ok || m.Method != "session/prompt" || m.ID == nil {
+		return false
+	}
+	p.promptMux.Lock()
+	if id, ok := m.ID.(string); ok {
+		p.activePromptID = id
+	} else {
+		p.activePromptID = fmt.Sprintf("%v", m.ID)
+	}
+	debugLog(p.townRoot, "[Proxy] writeToAgent: marking busy (id=%s)", p.activePromptID)
+	p.promptMux.Unlock()
+	return true
 }
 
 func (p *Proxy) Forward() error {
@@ -375,18 +380,7 @@ func (p *Proxy) forwardToAgent() {
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
-				if !receivedInput && p.handshakeState == handshakeInit {
-					logEvent(p.townRoot, "acp_error", "stdin closed before handshake - no ACP client connected")
-					debugLog(p.townRoot, "[Proxy] stdin closed before handshake - no ACP client connected?")
-				} else {
-					logEvent(p.townRoot, "acp_shutdown", "stdin EOF - ACP client disconnected")
-					debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin EOF (client disconnected)")
-				}
-			} else {
-				debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin read error: %v", err)
-				p.markDone()
-			}
+			p.handleInputReadError(err, receivedInput)
 			return
 		}
 
@@ -410,6 +404,21 @@ func (p *Proxy) forwardToAgent() {
 			return
 		}
 	}
+}
+
+func (p *Proxy) handleInputReadError(err error, receivedInput bool) {
+	if err != io.EOF {
+		debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin read error: %v", err)
+		p.markDone()
+		return
+	}
+	if !receivedInput && p.handshakeState == handshakeInit {
+		logEvent(p.townRoot, "acp_error", "stdin closed before handshake - no ACP client connected")
+		debugLog(p.townRoot, "[Proxy] stdin closed before handshake - no ACP client connected?")
+		return
+	}
+	logEvent(p.townRoot, "acp_shutdown", "stdin EOF - ACP client disconnected")
+	debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin EOF (client disconnected)")
 }
 
 func (p *Proxy) trackHandshakeRequest(msg *JSONRPCMessage) {
@@ -550,20 +559,10 @@ func (p *Proxy) forwardAgentStderr() {
 	for {
 		select {
 		case <-p.done:
-			// Log final statistics on exit
-			dropped := p.stderrBytesDropped.Load()
-			truncated := p.stderrLinesTruncated.Load()
-			if dropped > 0 || truncated > 0 {
-				debugLog(p.townRoot, "[Proxy] Stderr statistics: %d lines truncated, %d bytes dropped", truncated, dropped)
-			}
+			p.logStderrStatistics()
 			return
 		case <-statsTicker.C:
-			// Log statistics periodically if there's activity
-			dropped := p.stderrBytesDropped.Load()
-			truncated := p.stderrLinesTruncated.Load()
-			if dropped > 0 || truncated > 0 {
-				debugLog(p.townRoot, "[Proxy] Stderr statistics: %d lines truncated, %d bytes dropped", truncated, dropped)
-			}
+			p.logStderrStatistics()
 		default:
 		}
 
@@ -580,38 +579,41 @@ func (p *Proxy) forwardAgentStderr() {
 			continue
 		}
 
-		lineLen := len(line)
-
-		// DROP very large lines entirely (likely permission ruleset dumps)
-		// These can be 50KB+ and serve no debugging purpose
-		if lineLen > 50000 {
-			p.stderrBytesDropped.Add(int64(lineLen))
-			p.stderrLinesTruncated.Add(1)
-
-			// Only log the first few drops to avoid cascading saturation
-			if p.stderrLinesTruncated.Load() <= 3 {
-				debugLog(p.townRoot, "[Proxy] Dropping massive stderr line (%d bytes) to prevent pipe saturation", lineLen)
-			}
+		if p.writeStderrLine(line) {
 			continue
 		}
+	}
+}
 
-		// Truncate large lines to prevent pipe saturation
-		// Keep more context than debug logs (5000 vs 2000 chars)
-		outputLine := line
-		if lineLen > 5000 {
-			outputLine = line[:5000] + fmt.Sprintf("... (truncated from %d bytes)", lineLen)
-			p.stderrLinesTruncated.Add(1)
+func (p *Proxy) writeStderrLine(line string) bool {
+	lineLen := len(line)
+	if lineLen > 50000 {
+		p.stderrBytesDropped.Add(int64(lineLen))
+		p.stderrLinesTruncated.Add(1)
+		if p.stderrLinesTruncated.Load() <= 3 {
+			debugLog(p.townRoot, "[Proxy] Dropping massive stderr line (%d bytes) to prevent pipe saturation", lineLen)
 		}
+		return true
+	}
+	outputLine := line
+	if lineLen > 5000 {
+		outputLine = line[:5000] + fmt.Sprintf("... (truncated from %d bytes)", lineLen)
+		p.stderrLinesTruncated.Add(1)
+	}
+	fmt.Fprintln(os.Stderr, outputLine)
+	debugLine := line
+	if lineLen > 2000 {
+		debugLine = line[:2000] + "... (truncated)"
+	}
+	debugLog(p.townRoot, "[Agent] %s", debugLine)
+	return false
+}
 
-		// ALWAYS use truncated/tracked version to prevent pipe saturation
-		fmt.Fprintln(os.Stderr, outputLine)
-
-		// For debug log, use more aggressive truncation
-		debugLine := line
-		if lineLen > 2000 {
-			debugLine = line[:2000] + "... (truncated)"
-		}
-		debugLog(p.townRoot, "[Agent] %s", debugLine)
+func (p *Proxy) logStderrStatistics() {
+	dropped := p.stderrBytesDropped.Load()
+	truncated := p.stderrLinesTruncated.Load()
+	if dropped > 0 || truncated > 0 {
+		debugLog(p.townRoot, "[Proxy] Stderr statistics: %d lines truncated, %d bytes dropped", truncated, dropped)
 	}
 }
 
@@ -635,87 +637,67 @@ func (p *Proxy) runKeepAlive(tickerChan <-chan time.Time) {
 				continue
 			}
 
-			// Don't send heartbeat if we're currently in a turn
-			p.promptMux.Lock()
-			busyID := p.activePromptID
-			p.promptMux.Unlock()
-
 			last := p.lastActivity.Load()
 			idleTime := time.Since(time.Unix(0, last))
 
-			if busyID != "" {
-				// FORCE RECOVERY: If busy but no activity for 60s, clear state and heartbeat
-				if idleTime > 60*time.Second {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: busy state stuck (id=%s) for %v, forcing recovery", busyID, idleTime)
-					p.promptMux.Lock()
-					p.activePromptID = ""
-					p.promptMux.Unlock()
-				} else {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, agent is busy (id=%s)", busyID)
-					continue
-				}
+			if p.keepAliveBusy(idleTime) {
+				continue
 			}
 
-			// If idle for more than 45 seconds, send a heartbeat
-			if idleTime > 45*time.Second {
-				p.sessionMux.RLock()
-				sid := p.sessionID
-				p.sessionMux.RUnlock()
-
-				if sid == "" {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, no sessionID available")
-					continue
-				}
-
-				// Check if heartbeat is supported and which method to use
-				if !p.heartbeatSupported.Load() {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat not supported by agent, skipping")
-					continue
-				}
-
-				p.modeMux.RLock()
-				method := p.heartbeatMethod
-				currentMode := p.currentModeID
-				p.modeMux.RUnlock()
-
-				id := fmt.Sprintf("gt-inject-keepalive-%d", time.Now().UnixNano())
-
-				var msg *JSONRPCMessage
-
-				// Try session/set_mode with current mode (no-op that resets timer)
-				if method == "set_mode" && currentMode != "" {
-					params := map[string]any{
-						"sessionId": sid,
-						"modeId":    currentMode, // Set to current mode = no-op
-					}
-					paramsBytes, _ := json.Marshal(params)
-
-					msg = &JSONRPCMessage{
-						JSONRPC: "2.0",
-						Method:  "session/set_mode",
-						ID:      id,
-						Params:  paramsBytes,
-					}
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (session/set_mode mode=%s, idle=%v)", currentMode, idleTime)
-				} else {
-					// Fallback: try custom _ping method (ACP allows custom methods prefixed with _)
-					msg = &JSONRPCMessage{
-						JSONRPC: "2.0",
-						Method:  "_ping",
-						ID:      id,
-						Params:  json.RawMessage("{}"),
-					}
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (_ping, idle=%v)", idleTime)
-				}
-
-				if err := p.writeToAgent(msg); err != nil {
-					debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat failed: %v", err)
-				}
-			} else {
-				debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, idle time (%v) < threshold (45s)", idleTime)
-			}
+			p.sendKeepAliveIfIdle(idleTime)
 		}
 	}
+}
+
+func (p *Proxy) sendKeepAliveIfIdle(idleTime time.Duration) {
+	if idleTime <= 45*time.Second {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, idle time (%v) < threshold (45s)", idleTime)
+		return
+	}
+	p.sessionMux.RLock()
+	sessionID := p.sessionID
+	p.sessionMux.RUnlock()
+	if sessionID == "" {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, no sessionID available")
+		return
+	}
+	if !p.heartbeatSupported.Load() {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat not supported by agent, skipping")
+		return
+	}
+	p.modeMux.RLock()
+	method, modeID := p.heartbeatMethod, p.currentModeID
+	p.modeMux.RUnlock()
+	if err := p.writeToAgent(p.keepAliveMessage(sessionID, method, modeID, idleTime)); err != nil {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat failed: %v", err)
+	}
+}
+
+func (p *Proxy) keepAliveBusy(idleTime time.Duration) bool {
+	p.promptMux.Lock()
+	busyID := p.activePromptID
+	if busyID != "" && idleTime > 60*time.Second {
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: busy state stuck (id=%s) for %v, forcing recovery", busyID, idleTime)
+		p.activePromptID = ""
+		busyID = ""
+	}
+	p.promptMux.Unlock()
+	if busyID == "" {
+		return false
+	}
+	debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, agent is busy (id=%s)", busyID)
+	return true
+}
+
+func (p *Proxy) keepAliveMessage(sessionID, method, modeID string, idleTime time.Duration) *JSONRPCMessage {
+	id := fmt.Sprintf("gt-inject-keepalive-%d", time.Now().UnixNano())
+	if method == "set_mode" && modeID != "" {
+		paramsBytes, _ := json.Marshal(map[string]any{"sessionId": sessionID, "modeId": modeID})
+		debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (session/set_mode mode=%s, idle=%v)", modeID, idleTime)
+		return &JSONRPCMessage{JSONRPC: "2.0", Method: "session/set_mode", ID: id, Params: paramsBytes}
+	}
+	debugLog(p.townRoot, "[Proxy] runKeepAlive: sending heartbeat (_ping, idle=%v)", idleTime)
+	return &JSONRPCMessage{JSONRPC: "2.0", Method: "_ping", ID: id, Params: json.RawMessage("{}")}
 }
 
 func (p *Proxy) trackPromptResponse(msg *JSONRPCMessage) {
@@ -854,34 +836,33 @@ func (p *Proxy) InjectNotificationToUI(method string, params any) error {
 		return fmt.Errorf("cannot inject session/update: empty sessionID")
 	}
 
-	msg := JSONRPCMessage{
-		JSONRPC: "2.0",
-		Method:  method,
-	}
-
-	if sessionID != "" || params != nil {
-		paramMap := make(map[string]any)
-		if sessionID != "" {
-			paramMap["sessionId"] = sessionID
-		}
-		if params != nil {
-			if v, ok := params.(map[string]any); ok {
-				for k, val := range v {
-					paramMap[k] = val
-				}
-			} else {
-				paramMap["params"] = params
-			}
-		}
-		rawParams, _ := json.Marshal(paramMap)
-		msg.Params = rawParams
-	}
+	msg := notificationMessage(method, sessionID, params)
 
 	debugLog(p.townRoot, "[Proxy] Injecting notification to UI: method=%s sessionId=%s", method, sessionID)
 	p.stdoutMux.Lock()
 	err := p.uiEncoder.Encode(&msg)
 	p.stdoutMux.Unlock()
 	return err
+}
+
+func notificationMessage(method, sessionID string, params any) JSONRPCMessage {
+	msg := JSONRPCMessage{JSONRPC: "2.0", Method: method}
+	if sessionID == "" && params == nil {
+		return msg
+	}
+	paramMap := make(map[string]any)
+	if sessionID != "" {
+		paramMap["sessionId"] = sessionID
+	}
+	if values, ok := params.(map[string]any); ok {
+		for key, value := range values {
+			paramMap[key] = value
+		}
+	} else if params != nil {
+		paramMap["params"] = params
+	}
+	msg.Params, _ = json.Marshal(paramMap)
+	return msg
 }
 
 func (p *Proxy) InjectPrompt(prompt string) error {
@@ -976,12 +957,7 @@ func (p *Proxy) WaitForReady(ctx context.Context) error {
 			return fmt.Errorf("proxy is shutting down")
 		}
 
-		p.promptMux.Lock()
-		busy := p.activePromptID != ""
-		p.promptMux.Unlock()
-
-		state := p.getStartupPromptState()
-		if !busy && (state == startupPromptStateIdle || state == startupPromptStateComplete || state == startupPromptStateFailed) {
+		if p.readyForInteraction() {
 			return nil
 		}
 
@@ -992,6 +968,18 @@ func (p *Proxy) WaitForReady(ctx context.Context) error {
 			return fmt.Errorf("proxy shutting down")
 		case <-ticker.C:
 		}
+	}
+}
+
+func (p *Proxy) readyForInteraction() bool {
+	if p.IsBusy() {
+		return false
+	}
+	switch p.getStartupPromptState() {
+	case startupPromptStateIdle, startupPromptStateComplete, startupPromptStateFailed:
+		return true
+	default:
+		return false
 	}
 }
 

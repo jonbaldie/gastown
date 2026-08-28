@@ -186,11 +186,12 @@ func printThanksColumns(names []string, cols int) {
 		maxWidth = 20
 	}
 	colWidth := maxWidth + 2
+	nameCount := len(names)
 
 	// print in rows, reading left to right (matches bd thanks)
-	for i := 0; i < len(names); i += cols {
+	for i := 0; i < nameCount; i += cols {
 		fmt.Print("  ")
-		for j := 0; j < cols && i+j < len(names); j++ {
+		for j := 0; j < cols && i+j < nameCount; j++ {
 			name := names[i+j]
 			if len(name) > 20 {
 				name = name[:17] + "..."

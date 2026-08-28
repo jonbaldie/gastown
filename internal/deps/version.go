@@ -28,7 +28,8 @@ func CompareVersions(a, b string) int {
 func ParseVersion(v string) [3]int {
 	var parts [3]int
 	split := strings.Split(v, ".")
-	for i := 0; i < 3 && i < len(split); i++ {
+	splitCount := len(split)
+	for i := 0; i < 3 && i < splitCount; i++ {
 		parts[i], _ = strconv.Atoi(split[i])
 	}
 	return parts

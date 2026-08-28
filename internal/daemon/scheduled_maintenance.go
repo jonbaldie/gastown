@@ -164,7 +164,7 @@ func (d *Daemon) runScheduledMaintenance() {
 
 	// Check if we already ran recently (respect interval).
 	interval := maintenanceInterval(d.patrolConfig)
-	if !shouldRunMaintenance(now, d.lastMaintenanceRun, interval) {
+	if !shouldRunMaintenance(now, d.LastMaintenanceRun, interval) {
 		return // Already ran this window
 	}
 
@@ -197,7 +197,7 @@ func (d *Daemon) runScheduledMaintenance() {
 
 	if !needsMaintenance {
 		d.logger.Printf("scheduled_maintenance: all databases below threshold, skipping")
-		d.lastMaintenanceRun = now // Don't re-check until next interval
+		d.LastMaintenanceRun = now // Don't re-check until next interval
 		return
 	}
 
@@ -227,5 +227,5 @@ func (d *Daemon) runScheduledMaintenance() {
 		}
 	}
 
-	d.lastMaintenanceRun = now
+	d.LastMaintenanceRun = now
 }

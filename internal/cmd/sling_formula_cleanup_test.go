@@ -115,7 +115,7 @@ func TestRunSlingFormulaExistingHookedDogStartsDelayedSession(t *testing.T) {
 		t.Fatal("could not isolate existing hooked formula block")
 	}
 	existingBlock = existingBlock[:stepIdx]
-	startIdx := strings.Index(existingBlock, "delayedDogInfo.completeFormulaStartup(existing.ID)")
+	startIdx := strings.Index(existingBlock, "delayedDogInfo.CompleteFormulaStartup(existing.ID)")
 	completeIdx := strings.Index(existingBlock, "delayedDogComplete = true")
 	nudgeIdx := strings.Index(existingBlock, "nudgeFormulaDog(delayedDogInfo, formulaSlingPrompt(formulaName))")
 	returnIdx := strings.LastIndex(existingBlock, "return nil")

@@ -53,7 +53,7 @@ func (d *Daemon) syncDoltBackups() {
 
 	// Pour molecule for observability (nil-safe — all methods are no-ops on nil).
 	mol := d.pourDogMolecule(constants.MolDogBackup, nil)
-	defer mol.close()
+	defer mol.Close()
 
 	// Resolve data dir: use DoltServerManager if available, else conventional path.
 	var dataDir string
@@ -64,7 +64,7 @@ func (d *Daemon) syncDoltBackups() {
 	}
 	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
 		d.logger.Printf("dolt_backup: data dir %s does not exist, skipping", dataDir)
-		mol.failStep("sync", "data dir does not exist")
+		mol.FailStep("sync", "data dir does not exist")
 		return
 	}
 
@@ -76,7 +76,7 @@ func (d *Daemon) syncDoltBackups() {
 
 	if len(databases) == 0 {
 		d.logger.Printf("dolt_backup: no databases with backup remotes found")
-		mol.failStep("sync", "no databases with backup remotes")
+		mol.FailStep("sync", "no databases with backup remotes")
 		return
 	}
 
@@ -97,21 +97,21 @@ func (d *Daemon) syncDoltBackups() {
 	d.logger.Printf("dolt_backup: synced %d/%d database(s)", synced, len(databases))
 
 	if len(failures) > 0 {
-		mol.failStep("sync", fmt.Sprintf("synced %d/%d, failures: %s", synced, len(databases), strings.Join(failures, "; ")))
+		mol.FailStep("sync", fmt.Sprintf("synced %d/%d, failures: %s", synced, len(databases), strings.Join(failures, "; ")))
 	} else {
-		mol.closeStep("sync")
+		mol.CloseStep("sync")
 	}
 
 	// Offsite sync: rsync local backups to iCloud Drive for cloud replication.
 	// This is a stopgap until proper dolt remote push is configured.
 	if synced > 0 {
 		d.syncOffsiteBackup()
-		mol.closeStep("offsite")
+		mol.CloseStep("offsite")
 	} else {
-		mol.closeStep("offsite")
+		mol.CloseStep("offsite")
 	}
 
-	mol.closeStep("report")
+	mol.CloseStep("report")
 }
 
 // syncBackup runs `dolt backup sync <backup-name>` for a single database,

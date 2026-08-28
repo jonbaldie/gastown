@@ -877,46 +877,37 @@ func (rc *RuntimeConfig) BuildCommand() string {
 func (rc *RuntimeConfig) BuildCommandWithPrompt(prompt string) string {
 	resolved := normalizeRuntimeConfig(rc)
 	base := resolved.BuildCommand()
-
-	// Use provided prompt or fall back to config
-	p := prompt
-	if p == "" {
-		p = resolved.InitialPrompt
-	}
-
-	if p == "" || resolved.PromptMode == "none" {
-		if p != "" {
-			// A non-empty prompt was silently dropped because prompt_mode is "none".
-			// This commonly happens when a user copies a codex agent entry (which ships
-			// with prompt_mode: "none") to create a claude override, inadvertently
-			// suppressing the daemon's startup beacon injection and causing a crash-loop
-			// that looks like a deacon failure. Warn so misconfiguration is self-diagnosing.
-			fmt.Fprintf(os.Stderr, "warning: agent %q has prompt_mode: \"none\" — startup prompt dropped (agent may not bootstrap correctly)\n", resolved.Command)
-		}
+	prompt = resolvedPrompt(prompt, resolved.InitialPrompt)
+	if prompt == "" || resolved.PromptMode == "none" {
+		warnDroppedPrompt(resolved, prompt)
 		return base
 	}
+	return base + runtimePromptArgument(resolved.Command, prompt)
+}
 
-	// OpenCode requires --prompt flag for initial prompt in interactive mode.
-	// Positional argument causes opencode to exit immediately.
-	// Match both "opencode" and full paths like "/home/user/.opencode/bin/opencode".
-	if resolved.Command == "opencode" || filepath.Base(resolved.Command) == "opencode" {
-		return base + " --prompt " + quoteForShell(p)
+func resolvedPrompt(prompt, initialPrompt string) string {
+	if prompt != "" {
+		return prompt
 	}
+	return initialPrompt
+}
 
-	// Copilot requires -i flag for initial prompt in interactive mode.
-	if resolved.Command == "copilot" || filepath.Base(resolved.Command) == "copilot" {
-		return base + " -i " + quoteForShell(p)
+func warnDroppedPrompt(rc *RuntimeConfig, prompt string) {
+	if prompt != "" {
+		fmt.Fprintf(os.Stderr, "warning: agent %q has prompt_mode: \"none\" — startup prompt dropped (agent may not bootstrap correctly)\n", rc.Command)
 	}
+}
 
-	// Gemini requires -i (--prompt-interactive) to auto-execute the prompt
-	// while staying in interactive mode. Positional args populate the input
-	// field but don't execute, and -p runs headless (exits after completion).
-	if resolved.Command == "gemini" || filepath.Base(resolved.Command) == "gemini" {
-		return base + " -i " + quoteForShell(p)
+func runtimePromptArgument(command, prompt string) string {
+	quotedPrompt := quoteForShell(prompt)
+	switch filepath.Base(command) {
+	case "opencode":
+		return " --prompt " + quotedPrompt
+	case "copilot", "gemini":
+		return " -i " + quotedPrompt
+	default:
+		return " " + quotedPrompt
 	}
-
-	// Quote the prompt for shell safety (positional arg for claude and others)
-	return base + " " + quoteForShell(p)
 }
 
 // BuildArgsWithPrompt returns the runtime command and args suitable for exec.

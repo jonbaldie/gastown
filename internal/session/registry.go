@@ -306,6 +306,39 @@ func IsKnownSession(sess string) bool {
 	return DefaultRegistry().HasPrefix(sess)
 }
 
+// MatchPrefix finds the prefix in a session name suffix using the registry.
+// Returns the prefix and the remaining string after the prefix dash.
+// Tries longest prefix match first.
+// Only matches sessions with registered prefixes - does NOT fall back to
+// splitting on dashes, as that would incorrectly match non-gastown sessions
+// (e.g., "gs-1923" or "dotfiles-main" would be parsed as gastown sessions).
+func (r *PrefixRegistry) MatchPrefix(session string) (prefix, rest string, matched bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Try known prefixes, longest first
+	for _, p := range r.sortedPrefixes() {
+		candidate := p + "-"
+		if strings.HasPrefix(session, candidate) {
+			return p, session[len(candidate):], true
+		}
+	}
+
+	return "", "", false
+}
+
+// sortedPrefixes returns prefixes sorted longest-first (must hold read lock).
+func (r *PrefixRegistry) sortedPrefixes() []string {
+	prefixes := make([]string, 0, len(r.prefixToRig))
+	for p := range r.prefixToRig {
+		prefixes = append(prefixes, p)
+	}
+	sort.Slice(prefixes, func(i, j int) bool {
+		return len(prefixes[i]) > len(prefixes[j])
+	})
+	return prefixes
+}
+
 // copyFileIfNewer copies src to dst if src is newer or dst doesn't exist.
 // Errors are silently ignored — this is a best-effort resilience mechanism.
 func copyFileIfNewer(src, dst string) {

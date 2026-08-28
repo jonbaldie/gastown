@@ -1663,7 +1663,8 @@ func runtimeLabelFromConfig(command string, args []string, fallback string) stri
 		cmd = filepath.Base(args[0])
 	}
 
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		if (arg == "--model" || arg == "-m") && i+1 < len(args) && strings.TrimSpace(args[i+1]) != "" {
 			return cmd + "/" + stripModelSuffix(strings.TrimSpace(args[i+1]))

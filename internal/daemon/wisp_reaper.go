@@ -112,7 +112,7 @@ func (d *Daemon) reapWisps() {
 
 	// Pour the molecule for observability tracking.
 	mol := d.pourDogMolecule(constants.MolDogReaper, vars)
-	defer mol.close()
+	defer mol.Close()
 
 	if config.DryRun {
 		d.logger.Printf("wisp_reaper: DRY RUN — reporting only, no changes will be made")
@@ -122,7 +122,7 @@ func (d *Daemon) reapWisps() {
 	if err := d.dispatchReaperDog(vars); err != nil {
 		if actErr := dog.RequireActivationAllowed(d.config.TownRoot); actErr != nil {
 			d.logger.Printf("wisp_reaper: Dog dispatch failed (%v); inline fallback blocked by guardian: %v", err, actErr)
-			mol.failStep("dispatch", actErr.Error())
+			mol.FailStep("dispatch", actErr.Error())
 			return
 		}
 		d.logger.Printf("wisp_reaper: Dog dispatch failed (%v), running inline fallback", err)
@@ -162,11 +162,11 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 	}
 	if len(databases) == 0 {
 		d.logger.Printf("wisp_reaper: no databases to reap")
-		mol.failStep("scan", "no databases found")
+		mol.FailStep("scan", "no databases found")
 		return
 	}
 	d.logger.Printf("wisp_reaper: scanning %d databases (inline fallback)", len(databases))
-	mol.closeStep("scan")
+	mol.CloseStep("scan")
 
 	port := d.doltServerPort()
 	dryRun := config.DryRun
@@ -208,9 +208,9 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		}
 	}
 	if reapErrors > 0 {
-		mol.failStep("reap", fmt.Sprintf("%d databases had reap errors", reapErrors))
+		mol.FailStep("reap", fmt.Sprintf("%d databases had reap errors", reapErrors))
 	} else {
-		mol.closeStep("reap")
+		mol.CloseStep("reap")
 	}
 
 	// Step 3: Purge
@@ -242,9 +242,9 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		}
 	}
 	if purgeErrors > 0 {
-		mol.failStep("purge", fmt.Sprintf("%d databases had purge errors", purgeErrors))
+		mol.FailStep("purge", fmt.Sprintf("%d databases had purge errors", purgeErrors))
 	} else {
-		mol.closeStep("purge")
+		mol.CloseStep("purge")
 	}
 
 	// Step 3b: Close plugin receipts (fast-track — 1h instead of 7d stale age)
@@ -328,9 +328,9 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		totalAutoClosed += result.Closed
 	}
 	if autoCloseErrors > 0 {
-		mol.failStep("auto-close", fmt.Sprintf("%d databases had auto-close errors", autoCloseErrors))
+		mol.FailStep("auto-close", fmt.Sprintf("%d databases had auto-close errors", autoCloseErrors))
 	} else {
-		mol.closeStep("auto-close")
+		mol.CloseStep("auto-close")
 	}
 
 	// Step 5: Report
@@ -345,7 +345,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 	summary += fmt.Sprintf(" purged=%d mail_purged=%d plugin_closed=%d dispatch_closed=%d auto_closed=%d open=%d databases=%d dryRun=%v",
 		totalPurged, totalMailPurged, totalPluginClosed, totalDispatchClosed, totalAutoClosed, totalOpen, len(databases), dryRun)
 	d.logger.Printf("%s", summary)
-	mol.closeStep("report")
+	mol.CloseStep("report")
 }
 
 // doltServerPort returns the configured Dolt server port.

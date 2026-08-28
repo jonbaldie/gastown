@@ -93,7 +93,6 @@ type Model struct {
 	keys     KeyMap
 	help     help.Model
 	showHelp bool
-	filter   string
 
 	// View mode
 	viewMode ViewMode
@@ -114,7 +113,7 @@ type Model struct {
 
 	// mu protects all fields read by View() from concurrent access:
 	// events, rigs, convoyState, eventChan, townRoot, width, height,
-	// focusedPanel, showHelp, help, filter, viewMode, problemAgents,
+	// focusedPanel, showHelp, help, viewMode, problemAgents,
 	// selectedProblem, selectedBeadID, problemsError, lastProblemsCheck,
 	// and all viewports. Write lock is held during Update/handleKey
 	// mutations; read lock is held during View/render.

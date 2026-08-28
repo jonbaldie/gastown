@@ -279,7 +279,7 @@ func truncateOutput(s string, max int) string {
 	}
 	// Walk back from the cut point to avoid splitting a multi-byte rune.
 	truncated := s[:max]
-	for len(truncated) > 0 && !utf8.ValidString(truncated) {
+	for !utf8.ValidString(truncated) {
 		truncated = truncated[:len(truncated)-1]
 	}
 	return truncated + "…"

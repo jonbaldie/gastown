@@ -458,6 +458,14 @@ func (c *Config) SQLArgs() []string {
 	}
 }
 
+// UserDSN returns the user[:password] portion of a MySQL DSN.
+func (c *Config) UserDSN() string {
+	if c.Password != "" {
+		return c.User + ":" + c.Password
+	}
+	return c.User
+}
+
 // EffectiveHost returns the configured host, defaulting to "127.0.0.1" when empty.
 func (c *Config) EffectiveHost() string {
 	if c.Host == "" {
@@ -1309,7 +1317,8 @@ func containsPathBoundary(line, path string) bool {
 	if path == "" {
 		return false
 	}
-	for start := 0; start < len(line); {
+	lineLength := len(line)
+	for start := 0; start < lineLength; {
 		idx := strings.Index(line[start:], path)
 		if idx < 0 {
 			return false

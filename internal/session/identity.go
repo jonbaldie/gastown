@@ -3,7 +3,6 @@ package session
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -19,18 +18,6 @@ func (r *PrefixRegistry) matchPrefix(session string) (prefix, rest string, match
 		}
 	}
 	return "", "", false
-}
-
-// sortedPrefixes returns prefixes sorted longest-first. The caller holds r.mu.
-func (r *PrefixRegistry) sortedPrefixes() []string {
-	prefixes := make([]string, 0, len(r.prefixToRig))
-	for p := range r.prefixToRig {
-		prefixes = append(prefixes, p)
-	}
-	sort.Slice(prefixes, func(i, j int) bool {
-		return len(prefixes[i]) > len(prefixes[j])
-	})
-	return prefixes
 }
 
 // Role represents the type of Gas Town agent.
@@ -188,7 +175,7 @@ func ParseSessionNameWithRegistry(session string, registry *PrefixRegistry) (*Ag
 
 	// Rig-level roles: <prefix>-<rest>
 	// Use registry to identify the prefix boundary
-	prefix, rest, _ := registry.matchPrefix(session)
+	prefix, rest, _ := registry.MatchPrefix(session)
 	if prefix == "" || rest == "" {
 		return nil, fmt.Errorf("invalid session name %q: cannot determine prefix", session)
 	}

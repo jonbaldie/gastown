@@ -79,6 +79,11 @@ func (c *Client) call(ctx context.Context, req TownRequest) (TownResponse, error
 	return out, nil
 }
 
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.call(ctx, TownRequest{Op: opPing})
+	return err
+}
+
 // AgentClient is used by a runtime or test-agent to speak the protocol.
 type AgentClient struct {
 	http *http.Client

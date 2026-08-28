@@ -68,15 +68,6 @@ func (m *Manager) startNudgePoller(sessionID string) {
 	}
 }
 
-func (m *Manager) stopNudgePoller(sessionID string) {
-	if m.stopPoller == nil {
-		return
-	}
-	if pollerErr := m.stopPoller(m.townRoot, sessionID); pollerErr != nil {
-		fmt.Printf("warning: could not stop nudge poller for %s: %v\n", sessionID, pollerErr)
-	}
-}
-
 // Start starts the deacon session.
 // agentOverride allows specifying an alternate agent alias (e.g., for testing).
 // Restarts are handled by daemon via ensureDeaconRunning on each heartbeat.

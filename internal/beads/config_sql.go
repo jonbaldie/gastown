@@ -22,26 +22,8 @@ func EnsureDoltConfigValue(beadsDir, key, value string) error {
 		return fmt.Errorf("missing dolt_database in %s", beadsDir)
 	}
 	meta := readDoltMetadata(beadsDir)
-	host := meta.Host
-	if host == "" {
-		host = os.Getenv("GT_DOLT_HOST")
-	}
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	port := meta.Port
-	if port == "" {
-		port = os.Getenv("BEADS_DOLT_SERVER_PORT")
-	}
-	if port == "" {
-		port = os.Getenv("BEADS_DOLT_PORT")
-	}
-	if port == "" {
-		port = os.Getenv("GT_DOLT_PORT")
-	}
-	if port == "" {
-		port = "3307"
-	}
+	host := doltConfigHost(meta.Host)
+	port := doltConfigPort(meta.Port)
 	if _, err := strconv.Atoi(port); err != nil {
 		return fmt.Errorf("invalid Dolt port %q: %w", port, err)
 	}
@@ -54,4 +36,27 @@ func EnsureDoltConfigValue(beadsDir, key, value string) error {
 	defer db.Close()
 	_, err = db.Exec("REPLACE INTO config (`key`, `value`) VALUES (?, ?)", key, value)
 	return err
+}
+
+func doltConfigHost(metadataHost string) string {
+	return firstNonEmpty(metadataHost, os.Getenv("GT_DOLT_HOST"), "127.0.0.1")
+}
+
+func doltConfigPort(metadataPort string) string {
+	return firstNonEmpty(
+		metadataPort,
+		os.Getenv("BEADS_DOLT_SERVER_PORT"),
+		os.Getenv("BEADS_DOLT_PORT"),
+		os.Getenv("GT_DOLT_PORT"),
+		"3307",
+	)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

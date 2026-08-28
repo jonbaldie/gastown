@@ -49,7 +49,7 @@ const (
 type Event struct {
 	Timestamp time.Time `json:"timestamp"`
 	Type      EventType `json:"type"`
-	Agent     string    `json:"agent"`            // e.g., "gastown/crew/max" or "gastown/polecats/Toast"
+	Agent     string    `json:"agent"`             // e.g., "gastown/crew/max" or "gastown/polecats/Toast"
 	Context   string    `json:"context,omitempty"` // Additional context (issue ID, error message, etc.)
 }
 
@@ -328,7 +328,8 @@ func parseLogLine(line string) (Event, error) {
 func splitLines(s string) []string {
 	var lines []string
 	start := 0
-	for i := 0; i < len(s); i++ {
+	sLength := len(s)
+	for i := 0; i < sLength; i++ {
 		if s[i] == '\n' {
 			lines = append(lines, s[start:i])
 			start = i + 1
