@@ -908,7 +908,7 @@ func runDeaconHealthCheck(_ *cobra.Command, args []string) error {
 	}
 
 	// Record ping
-	agentState.RecordPing()
+	deacon.RecordPing(agentState)
 
 	// Send health check nudge via immediate delivery (not queued).
 	// Health checks MUST interrupt to test liveness — queued delivery would
