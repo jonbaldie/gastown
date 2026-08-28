@@ -70,6 +70,21 @@ func TestParseClaudeCodeLine_ToolUse(t *testing.T) {
 	}
 }
 
+func TestParseClaudeCodeLine_UsageUsesConversationMetadata(t *testing.T) {
+	line := `{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":12,"output_tokens":34,"cache_read_input_tokens":56,"cache_creation_input_tokens":78}},"timestamp":"2026-02-23T10:00:00Z"}`
+	events := parseClaudeCodeLine(line, "hq-mayor", "claudecode", "test-uuid")
+	if len(events) != 1 {
+		t.Fatalf("expected 1 usage event, got %d", len(events))
+	}
+	event := events[0]
+	if event.AgentType != "claudecode" || event.SessionID != "hq-mayor" || event.NativeSessionID != "test-uuid" {
+		t.Errorf("usage event metadata = %#v", event)
+	}
+	if event.EventType != "usage" || event.InputTokens != 12 || event.OutputTokens != 34 || event.CacheReadTokens != 56 || event.CacheCreationTokens != 78 {
+		t.Errorf("usage event = %#v", event)
+	}
+}
+
 func TestParseClaudeCodeLine_SkipsUnknownTypes(t *testing.T) {
 	line := `{"type":"summary","content":"some summary"}`
 	events := parseClaudeCodeLine(line, "s1", "claudecode", "test-uuid")
