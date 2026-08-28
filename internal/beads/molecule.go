@@ -517,11 +517,7 @@ func ValidateMolecule(mol *Issue) error {
 // detectCycles checks for circular dependencies in the step graph using DFS.
 // Returns an error describing the cycle if one is found.
 func detectCycles(steps []MoleculeStep) error {
-	// Build adjacency list: step -> steps it depends on
-	deps := make(map[string][]string)
-	for _, step := range steps {
-		deps[step.Ref] = step.Needs
-	}
+	deps := moleculeStepDependencies(steps)
 
 	// Track visit state: 0 = unvisited, 1 = visiting (in stack), 2 = visited
 	state := make(map[string]int)
@@ -535,17 +531,7 @@ func detectCycles(steps []MoleculeStep) error {
 			return nil // Already fully processed
 		}
 		if state[node] == 1 {
-			// Found a back edge - there's a cycle
-			// Build cycle path for error message
-			cycleStart := -1
-			for i, n := range path {
-				if n == node {
-					cycleStart = i
-					break
-				}
-			}
-			cycle := append(path[cycleStart:], node)
-			return fmt.Errorf("cycle detected in step dependencies: %s", formatCycle(cycle))
+			return cycleDependencyError(path, node)
 		}
 
 		state[node] = 1 // Mark as visiting
@@ -571,6 +557,24 @@ func detectCycles(steps []MoleculeStep) error {
 	}
 
 	return nil
+}
+
+func cycleDependencyError(path []string, node string) error {
+	for index, pathNode := range path {
+		if pathNode == node {
+			cycle := append(path[index:], node)
+			return fmt.Errorf("cycle detected in step dependencies: %s", formatCycle(cycle))
+		}
+	}
+	return fmt.Errorf("cycle detected in step dependencies: %s", node)
+}
+
+func moleculeStepDependencies(steps []MoleculeStep) map[string][]string {
+	deps := make(map[string][]string, len(steps))
+	for _, step := range steps {
+		deps[step.Ref] = step.Needs
+	}
+	return deps
 }
 
 // formatCycle formats a cycle path as "a -> b -> c -> a".
