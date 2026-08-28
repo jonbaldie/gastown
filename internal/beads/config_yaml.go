@@ -33,6 +33,15 @@ func EnsureConfigYAMLValue(beadsDir, key, value string) error {
 	}
 
 	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	newContent := updatedConfigYAMLValue(content, key, value)
+	if newContent == content {
+		return nil
+	}
+	return os.WriteFile(configPath, []byte(newContent), 0644)
+}
+
+func updatedConfigYAMLValue(content, key, value string) string {
+	wantLine := key + ": " + value
 	lines := strings.Split(content, "\n")
 	found := false
 	for i, line := range lines {
@@ -52,10 +61,7 @@ func EnsureConfigYAMLValue(beadsDir, key, value string) error {
 	if !strings.HasSuffix(newContent, "\n") {
 		newContent += "\n"
 	}
-	if newContent == content {
-		return nil
-	}
-	return os.WriteFile(configPath, []byte(newContent), 0644)
+	return newContent
 }
 
 // EnsureConfigYAMLIfMissing creates config.yaml with the required defaults when
