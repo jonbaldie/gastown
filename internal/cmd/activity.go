@@ -10,20 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Activity emit command flags
-var (
-	activityEventType string
-	activityActor     string
-	activityRig       string
-	activityPolecat   string
-	activityTarget    string
-	activityReason    string
-	activityMessage   string
-	activityStatus    string
-	activityIssue     string
-	activityTo        string
-	activityCount     int
-)
+type activityOptions struct {
+	actor, rig, polecat, target, reason, message, status, issue, to string
+	count                                                           int
+}
 
 var activityCmd = &cobra.Command{
 	Use:     "activity",
@@ -67,27 +57,28 @@ Examples:
   gt activity emit escalation_sent --rig greenplace --target Toast --to mayor --reason "unresponsive"
   gt activity emit patrol_complete --rig greenplace --count 3 --message "All polecats healthy"`,
 	Args: cobra.ExactArgs(1),
-	RunE: runActivityEmit,
 }
 
 func init() {
+	opts := &activityOptions{}
+	activityEmitCmd.RunE = func(_ *cobra.Command, args []string) error { return runActivityEmit(opts, args) }
 	// Emit command flags
-	activityEmitCmd.Flags().StringVar(&activityActor, "actor", "", "Actor emitting the event (auto-detected if not set)")
-	activityEmitCmd.Flags().StringVar(&activityRig, "rig", "", "Rig the event is about")
-	activityEmitCmd.Flags().StringVar(&activityPolecat, "polecat", "", "Polecat involved (for polecat_checked, polecat_nudged)")
-	activityEmitCmd.Flags().StringVar(&activityTarget, "target", "", "Target of the action (for escalation)")
-	activityEmitCmd.Flags().StringVar(&activityReason, "reason", "", "Reason for the action")
-	activityEmitCmd.Flags().StringVar(&activityMessage, "message", "", "Human-readable message")
-	activityEmitCmd.Flags().StringVar(&activityStatus, "status", "", "Status (for polecat_checked: working, idle, stuck)")
-	activityEmitCmd.Flags().StringVar(&activityIssue, "issue", "", "Issue ID (for polecat_checked)")
-	activityEmitCmd.Flags().StringVar(&activityTo, "to", "", "Escalation target (for escalation_sent: mayor, deacon)")
-	activityEmitCmd.Flags().IntVar(&activityCount, "count", 0, "Polecat count (for patrol events)")
+	activityEmitCmd.Flags().StringVar(&opts.actor, "actor", "", "Actor emitting the event (auto-detected if not set)")
+	activityEmitCmd.Flags().StringVar(&opts.rig, "rig", "", "Rig the event is about")
+	activityEmitCmd.Flags().StringVar(&opts.polecat, "polecat", "", "Polecat involved (for polecat_checked, polecat_nudged)")
+	activityEmitCmd.Flags().StringVar(&opts.target, "target", "", "Target of the action (for escalation)")
+	activityEmitCmd.Flags().StringVar(&opts.reason, "reason", "", "Reason for the action")
+	activityEmitCmd.Flags().StringVar(&opts.message, "message", "", "Human-readable message")
+	activityEmitCmd.Flags().StringVar(&opts.status, "status", "", "Status (for polecat_checked: working, idle, stuck)")
+	activityEmitCmd.Flags().StringVar(&opts.issue, "issue", "", "Issue ID (for polecat_checked)")
+	activityEmitCmd.Flags().StringVar(&opts.to, "to", "", "Escalation target (for escalation_sent: mayor, deacon)")
+	activityEmitCmd.Flags().IntVar(&opts.count, "count", 0, "Polecat count (for patrol events)")
 
 	activityCmd.AddCommand(activityEmitCmd)
 	rootCmd.AddCommand(activityCmd)
 }
 
-func runActivityEmit(_ *cobra.Command, args []string) error {
+func runActivityEmit(opts *activityOptions, args []string) error {
 	eventType := args[0]
 
 	// Validate we're in a Gas Town workspace
@@ -97,7 +88,7 @@ func runActivityEmit(_ *cobra.Command, args []string) error {
 	}
 
 	// Auto-detect actor if not provided
-	actor := activityActor
+	actor := opts.actor
 	if actor == "" {
 		actor = detectActor()
 	}
@@ -107,77 +98,77 @@ func runActivityEmit(_ *cobra.Command, args []string) error {
 
 	switch eventType {
 	case events.TypePatrolStarted, events.TypePatrolComplete:
-		if activityRig == "" {
+		if opts.rig == "" {
 			return fmt.Errorf("--rig is required for %s events", eventType)
 		}
-		payload = events.PatrolPayload(activityRig, activityCount, activityMessage)
+		payload = events.PatrolPayload(opts.rig, opts.count, opts.message)
 
 	case events.TypePolecatChecked:
-		if activityRig == "" || activityPolecat == "" {
+		if opts.rig == "" || opts.polecat == "" {
 			return fmt.Errorf("--rig and --polecat are required for polecat_checked events")
 		}
-		if activityStatus == "" {
-			activityStatus = "checked"
+		if opts.status == "" {
+			opts.status = "checked"
 		}
-		payload = events.PolecatCheckPayload(activityRig, activityPolecat, activityStatus, activityIssue)
+		payload = events.PolecatCheckPayload(opts.rig, opts.polecat, opts.status, opts.issue)
 
 	case events.TypePolecatNudged:
-		if activityRig == "" || activityPolecat == "" {
+		if opts.rig == "" || opts.polecat == "" {
 			return fmt.Errorf("--rig and --polecat are required for polecat_nudged events")
 		}
-		payload = events.NudgePayload(activityRig, activityPolecat, activityReason)
+		payload = events.NudgePayload(opts.rig, opts.polecat, opts.reason)
 
 	case events.TypeEscalationSent:
-		if activityRig == "" || activityTarget == "" || activityTo == "" {
+		if opts.rig == "" || opts.target == "" || opts.to == "" {
 			return fmt.Errorf("--rig, --target, and --to are required for escalation_sent events")
 		}
-		payload = events.EscalationPayload(activityRig, activityTarget, activityTo, activityReason)
+		payload = events.EscalationPayload(opts.rig, opts.target, opts.to, opts.reason)
 
 	case events.TypeMergeStarted, events.TypeMerged, events.TypeMergeFailed, events.TypeMergeSkipped:
 		// Refinery events - flexible payload
 		payload = make(map[string]interface{})
-		if activityRig != "" {
-			payload["rig"] = activityRig
+		if opts.rig != "" {
+			payload["rig"] = opts.rig
 		}
-		if activityMessage != "" {
-			payload["message"] = activityMessage
+		if opts.message != "" {
+			payload["message"] = opts.message
 		}
-		if activityTarget != "" {
-			payload["branch"] = activityTarget
+		if opts.target != "" {
+			payload["branch"] = opts.target
 		}
-		if activityReason != "" {
-			payload["reason"] = activityReason
+		if opts.reason != "" {
+			payload["reason"] = opts.reason
 		}
 
 	default:
 		// Generic event - use whatever flags are provided
 		payload = make(map[string]interface{})
-		if activityRig != "" {
-			payload["rig"] = activityRig
+		if opts.rig != "" {
+			payload["rig"] = opts.rig
 		}
-		if activityPolecat != "" {
-			payload["polecat"] = activityPolecat
+		if opts.polecat != "" {
+			payload["polecat"] = opts.polecat
 		}
-		if activityTarget != "" {
-			payload["target"] = activityTarget
+		if opts.target != "" {
+			payload["target"] = opts.target
 		}
-		if activityReason != "" {
-			payload["reason"] = activityReason
+		if opts.reason != "" {
+			payload["reason"] = opts.reason
 		}
-		if activityMessage != "" {
-			payload["message"] = activityMessage
+		if opts.message != "" {
+			payload["message"] = opts.message
 		}
-		if activityStatus != "" {
-			payload["status"] = activityStatus
+		if opts.status != "" {
+			payload["status"] = opts.status
 		}
-		if activityIssue != "" {
-			payload["issue"] = activityIssue
+		if opts.issue != "" {
+			payload["issue"] = opts.issue
 		}
-		if activityTo != "" {
-			payload["to"] = activityTo
+		if opts.to != "" {
+			payload["to"] = opts.to
 		}
-		if activityCount > 0 {
-			payload["count"] = activityCount
+		if opts.count > 0 {
+			payload["count"] = opts.count
 		}
 	}
 
