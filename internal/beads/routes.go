@@ -410,16 +410,18 @@ func RewriteBDCreateRepoAlias(townRoot string, argv []string) ([]string, string)
 
 func countBDRepoFlags(argv []string, start int) int {
 	count := 0
-	for i := start; i < len(argv); i++ {
-		arg := argv[i]
+	skipValue := false
+	for _, arg := range argv[start:] {
+		if skipValue {
+			skipValue = false
+			continue
+		}
 		if arg == "--" {
 			break
 		}
 		if arg == "--repo" {
 			count++
-			if i+1 < len(argv) {
-				i++
-			}
+			skipValue = true
 			continue
 		}
 		if strings.HasPrefix(arg, "--repo=") {
