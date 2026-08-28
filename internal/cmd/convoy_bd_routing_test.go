@@ -136,20 +136,29 @@ esac
 `, expectedWD, expectedWD, expectedWD, expectedWD)
 	writeRoutingBdStub(t, scriptBody)
 
-	oldJSON, oldAll, oldStatus, oldTree := convoyListJSON, convoyListAll, convoyListStatus, convoyListTree
-	convoyListJSON = true
-	convoyListAll = true
-	convoyListStatus = ""
-	convoyListTree = false
+	for name, value := range map[string]string{
+		"json":   "true",
+		"all":    "true",
+		"status": "",
+		"tree":   "false",
+	} {
+		if err := convoyListCmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set --%s: %v", name, err)
+		}
+	}
 	t.Cleanup(func() {
-		convoyListJSON = oldJSON
-		convoyListAll = oldAll
-		convoyListStatus = oldStatus
-		convoyListTree = oldTree
+		for name, value := range map[string]string{
+			"json":   "false",
+			"all":    "false",
+			"status": "",
+			"tree":   "false",
+		} {
+			_ = convoyListCmd.Flags().Set(name, value)
+		}
 	})
 
 	out, err := captureConvoyStdoutErr(t, func() error {
-		return runConvoyList(nil, nil)
+		return runConvoyList(convoyListCmd, nil)
 	})
 	if err != nil {
 		t.Fatalf("runConvoyList: %v", err)
@@ -202,12 +211,12 @@ esac
 `, expectedWD, expectedWD, expectedWD)
 	writeRoutingBdStub(t, scriptBody)
 
-	oldJSON := convoyStatusJSON
-	convoyStatusJSON = false
-	t.Cleanup(func() { convoyStatusJSON = oldJSON })
+	if err := convoyStatusCmd.Flags().Set("json", "false"); err != nil {
+		t.Fatalf("reset --json: %v", err)
+	}
 
 	out, err := captureConvoyStdoutErr(t, func() error {
-		return runConvoyStatus(nil, []string{"hq-cv-status"})
+		return runConvoyStatus(convoyStatusCmd, []string{"hq-cv-status"})
 	})
 	if err != nil {
 		t.Fatalf("runConvoyStatus: %v", err)
@@ -264,7 +273,7 @@ esac
 	t.Cleanup(func() { convoyIDEntropy = oldEntropy })
 
 	_, err := captureConvoyStdoutErr(t, func() error {
-		return runConvoyCreate(nil, []string{"test-convoy", "mo-2sh.1"})
+		return runConvoyCreate(convoyCreateCmd, []string{"test-convoy", "mo-2sh.1"})
 	})
 	if err != nil {
 		t.Fatalf("runConvoyCreate: %v", err)
@@ -318,7 +327,7 @@ esac
 	writeRoutingBdStub(t, scriptBody)
 
 	_, err := captureConvoyStdoutErr(t, func() error {
-		return runConvoyAdd(nil, []string{"hq-cv-test", "ag-95s.1", "ag-95s.2"})
+		return runConvoyAdd(convoyAddCmd, []string{"hq-cv-test", "ag-95s.1", "ag-95s.2"})
 	})
 	if err != nil {
 		t.Fatalf("runConvoyAdd: %v", err)
