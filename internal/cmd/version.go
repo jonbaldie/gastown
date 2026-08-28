@@ -22,9 +22,6 @@ var (
 	Branch = ""
 )
 
-var versionVerbose bool
-var versionShort bool
-
 var versionCmd = &cobra.Command{
 	Use:         "version",
 	GroupID:     GroupDiag,
@@ -35,7 +32,8 @@ var versionCmd = &cobra.Command{
 Output includes the semantic version, whether this is a dev or release build,
 and the git revision the binary was built from (if available).`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if versionShort {
+		short, _ := cmd.Flags().GetBool("short")
+		if short {
 			fmt.Printf("%s-%s\n", Version, Build)
 			return
 		}
@@ -51,7 +49,8 @@ and the git revision the binary was built from (if available).`,
 			fmt.Printf("gt version %s (%s)\n", Version, Build)
 		}
 
-		if versionVerbose {
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		if verbose {
 			fmt.Printf("Timestamp: %s\n", time.Now().Format(time.RFC3339))
 			fmt.Printf("Go version: %s\n", runtime.Version())
 		}
@@ -60,8 +59,8 @@ and the git revision the binary was built from (if available).`,
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
-	versionCmd.Flags().BoolVarP(&versionVerbose, "verbose", "v", false, "Show extended version info including timestamp")
-	versionCmd.Flags().BoolVar(&versionShort, "short", false, "Output only the version number (e.g., 0.5.0-362)")
+	versionCmd.Flags().BoolP("verbose", "v", false, "Show extended version info including timestamp")
+	versionCmd.Flags().Bool("short", false, "Output only the version number (e.g., 0.5.0-362)")
 
 	// Pass the build-time commit to the version package for stale binary checks
 	if Commit != "" {
