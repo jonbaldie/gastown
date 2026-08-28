@@ -61,45 +61,62 @@ func ParseMixSpecs(specs []string) ([]MixAssignment, error) {
 //	crew:name=agent
 //	default=agent
 func ParseMixSpec(spec string) (MixAssignment, error) {
-	target, agentSpec, ok := strings.Cut(strings.TrimSpace(spec), "=")
-	if !ok {
-		return MixAssignment{}, fmt.Errorf("expected target=agent (got %q)", spec)
+	target, agentSpec, err := splitMixSpec(spec)
+	if err != nil {
+		return MixAssignment{}, err
 	}
-	target = strings.TrimSpace(target)
-	agentSpec = strings.TrimSpace(agentSpec)
-	if target == "" {
-		return MixAssignment{}, fmt.Errorf("empty target in %q", spec)
-	}
-	if agentSpec == "" {
-		return MixAssignment{}, fmt.Errorf("empty agent in %q", spec)
-	}
-
 	agent, effort, err := splitAgentEffort(agentSpec)
 	if err != nil {
 		return MixAssignment{}, err
 	}
+	return mixAssignmentForTarget(target, agent, effort, spec)
+}
 
-	switch {
-	case target == MixKindDefault:
-		if effort != "" {
-			return MixAssignment{}, fmt.Errorf("default agent cannot set effort")
-		}
-		return MixAssignment{Kind: MixKindDefault, Agent: agent}, nil
-	case strings.HasPrefix(target, "crew:"):
-		name := strings.TrimSpace(strings.TrimPrefix(target, "crew:"))
-		if name == "" {
-			return MixAssignment{}, fmt.Errorf("empty crew name in %q", spec)
-		}
-		if err := validateMixCrewName(name); err != nil {
-			return MixAssignment{}, err
-		}
-		if effort != "" {
-			return MixAssignment{}, fmt.Errorf("crew assignment cannot set effort")
-		}
-		return MixAssignment{Kind: MixKindCrew, Name: name, Agent: agent}, nil
-	default:
-		return MixAssignment{Kind: MixKindRole, Name: target, Agent: agent, Effort: effort}, nil
+func splitMixSpec(spec string) (string, string, error) {
+	target, agentSpec, found := strings.Cut(strings.TrimSpace(spec), "=")
+	target = strings.TrimSpace(target)
+	agentSpec = strings.TrimSpace(agentSpec)
+	if !found {
+		return "", "", fmt.Errorf("expected target=agent (got %q)", spec)
 	}
+	if target == "" {
+		return "", "", fmt.Errorf("empty target in %q", spec)
+	}
+	if agentSpec == "" {
+		return "", "", fmt.Errorf("empty agent in %q", spec)
+	}
+	return target, agentSpec, nil
+}
+
+func mixAssignmentForTarget(target, agent, effort, spec string) (MixAssignment, error) {
+	if target == MixKindDefault {
+		return defaultMixAssignment(agent, effort)
+	}
+	if strings.HasPrefix(target, "crew:") {
+		return crewMixAssignment(target, agent, effort, spec)
+	}
+	return MixAssignment{Kind: MixKindRole, Name: target, Agent: agent, Effort: effort}, nil
+}
+
+func defaultMixAssignment(agent, effort string) (MixAssignment, error) {
+	if effort != "" {
+		return MixAssignment{}, fmt.Errorf("default agent cannot set effort")
+	}
+	return MixAssignment{Kind: MixKindDefault, Agent: agent}, nil
+}
+
+func crewMixAssignment(target, agent, effort, spec string) (MixAssignment, error) {
+	name := strings.TrimSpace(strings.TrimPrefix(target, "crew:"))
+	if name == "" {
+		return MixAssignment{}, fmt.Errorf("empty crew name in %q", spec)
+	}
+	if err := validateMixCrewName(name); err != nil {
+		return MixAssignment{}, err
+	}
+	if effort != "" {
+		return MixAssignment{}, fmt.Errorf("crew assignment cannot set effort")
+	}
+	return MixAssignment{Kind: MixKindCrew, Name: name, Agent: agent}, nil
 }
 
 func splitAgentEffort(agentSpec string) (string, string, error) {
