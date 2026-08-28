@@ -584,7 +584,7 @@ func ValidateRigPrefix(townRoot, rigName, beadID string) error {
 // a fallback if prefix resolution fails.
 func ResolveHookDir(townRoot, beadID, hookWorkDir string) string {
 	s := NewAuthority(townRoot).ForBead(beadID)
-	if s.Routed() && s.WorkDir() != "" {
+	if s.routed && s.WorkDir() != "" {
 		return s.WorkDir()
 	}
 	if hookWorkDir != "" {

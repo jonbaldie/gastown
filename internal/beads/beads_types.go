@@ -38,7 +38,7 @@ func FindTownRoot(startDir string) string {
 func ResolveRoutingTarget(townRoot, beadID, fallbackDir string) string {
 	auth := NewAuthority(townRoot).WithFallback(fallbackDir)
 	s := auth.ForBead(beadID)
-	if s.Routed() {
+	if s.routed {
 		return s.BeadsDir()
 	}
 	if townRoot != "" {

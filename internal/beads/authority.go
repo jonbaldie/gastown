@@ -171,9 +171,6 @@ func (s Session) BeadsDir() string { return s.beadsDir }
 // This is the parent of BeadsDir, after redirects.
 func (s Session) WorkDir() string { return s.workDir }
 
-// Routed reports whether prefix routing found an owning rig or town path.
-func (s Session) Routed() bool { return s.routed }
-
 // WithStore binds an in-process beads SDK adapter. Show, Update, Close, and
 // Hook then use the store instead of the bd CLI.
 func (s Session) WithStore(store beadsdk.Storage) Session {
