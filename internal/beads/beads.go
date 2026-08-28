@@ -1453,6 +1453,11 @@ func hydrateMergeRequestIssues(issues []*Issue, details map[string]*Issue) ([]*I
 
 func mergeListIssueFields(detail, listed *Issue) {
 	detail.Ephemeral = detail.Ephemeral || listed.Ephemeral
+	mergeIssueTextFields(detail, listed)
+	mergeIssueMetadataFields(detail, listed)
+}
+
+func mergeIssueTextFields(detail, listed *Issue) {
 	if detail.Title == "" {
 		detail.Title = listed.Title
 	}
@@ -1465,6 +1470,9 @@ func mergeListIssueFields(detail, listed *Issue) {
 	if detail.Assignee == "" {
 		detail.Assignee = listed.Assignee
 	}
+}
+
+func mergeIssueMetadataFields(detail, listed *Issue) {
 	if detail.CreatedAt == "" {
 		detail.CreatedAt = listed.CreatedAt
 	}
