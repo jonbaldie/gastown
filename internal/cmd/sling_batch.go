@@ -21,211 +21,248 @@ import (
 
 // runBatchSling handles slinging multiple beads to a rig.
 // Each bead gets its own freshly spawned polecat.
+type batchSlingResult struct {
+	beadID  string
+	polecat string
+	success bool
+	errMsg  string
+}
+
 func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error {
-	// Validate all beads exist before spawning any polecats
-	for _, beadID := range beadIDs {
-		if err := verifyBeadExists(beadID); err != nil {
-			return fmt.Errorf("bead '%s' not found", beadID)
-		}
-	}
 	townRoot := filepath.Dir(townBeadsDir)
-	for i, beadID := range beadIDs {
-		movedID, err := ensureBeadInTargetRig(beadID, rigName, townRoot, slingDryRun)
-		if err != nil {
-			return err
-		}
-		beadIDs[i] = movedID
+	if err := validateBatchSlingBeads(beadIDs); err != nil {
+		return err
+	}
+	var err error
+	beadIDs, err = moveBatchSlingBeads(beadIDs, rigName, townRoot)
+	if err != nil {
+		return err
 	}
 
-	// Cross-rig guard: check all beads match the target rig before spawning (gt-myecw)
-	if !slingForce {
-		for _, beadID := range beadIDs {
-			prefix := beads.ExtractPrefix(beadID)
-			beadRig := beads.GetRigNameForPrefix(townRoot, prefix)
-			if prefix != "" && beadRig != "" && beadRig != rigName {
-				others := make([]string, 0, len(beadIDs)-1)
-				for _, id := range beadIDs {
-					if id != beadID {
-						others = append(others, id)
-					}
-				}
-				// Build the full command suggestion safely — avoid appending to
-				// beadIDs which may share a backing array with the caller's args.
-				allArgs := make([]string, len(beadIDs)+1)
-				copy(allArgs, beadIDs)
-				allArgs[len(beadIDs)] = rigName
-				return fmt.Errorf("bead %s (prefix %q) belongs to rig %q, but target is %q\n\n"+
-					"  Options:\n"+
-					"    1. Remove the mismatched bead from this batch:\n"+
-					"         gt sling %s\n"+
-					"    2. Sling the mismatched bead to its own rig:\n"+
-					"         gt sling %s %s\n"+
-					"    3. Use --force to override the cross-rig guard:\n"+
-					"         gt sling %s --force\n",
-					beadID, strings.TrimSuffix(prefix, "-"), beadRig, rigName,
-					strings.Join(others, " "),
-					beadID, beadRig,
-					strings.Join(allArgs, " "))
-			} else if err := checkCrossRigGuard(beadID, rigName+"/polecats/_", townRoot); err != nil {
-				// Fall back to generic guard for edge cases (empty prefix, town-level beads)
-				return err
-			}
-		}
+	if err := checkBatchSlingRigs(beadIDs, rigName, townRoot); err != nil {
+		return err
 	}
 
 	// Issue #288: Auto-apply formula for batch sling (resolved via flags)
 	formulaName := resolveFormula(slingFormula, slingHookRawBead, filepath.Dir(townBeadsDir), rigName)
 
 	if slingDryRun {
-		fmt.Printf("%s Batch slinging %d beads to rig '%s':\n", style.Bold.Render("🎯"), len(beadIDs), rigName)
-		if formulaName != "" {
-			fmt.Printf("  Would cook %s formula once\n", formulaName)
-		} else {
-			fmt.Printf("  Would hook raw beads (no formula)\n")
-		}
-		for _, beadID := range beadIDs {
-			if formulaName != "" {
-				fmt.Printf("  Would spawn polecat and apply %s to: %s\n", formulaName, beadID)
-			} else {
-				fmt.Printf("  Would spawn polecat and hook raw: %s\n", beadID)
-			}
-		}
+		printBatchSlingDryRun(beadIDs, rigName, formulaName)
 		return nil
 	}
 
-	fmt.Printf("%s Batch slinging %d beads to rig '%s'...\n", style.Bold.Render("🎯"), len(beadIDs), rigName)
+	return executeBatchSling(beadIDs, rigName, townRoot, formulaName, townBeadsDir)
+}
 
+func executeBatchSling(beadIDs []string, rigName, townRoot, formulaName, townBeadsDir string) error {
+	fmt.Printf("%s Batch slinging %d beads to rig '%s'...\n", style.Bold.Render("🎯"), len(beadIDs), rigName)
 	if slingMaxConcurrent > 0 {
 		fmt.Printf("  Spawn batch size: %d (spawns N, pauses, spawns N more)\n", slingMaxConcurrent)
 	}
-
-	// Cook formula once before the loop for efficiency
-	formulaCooked := false
-
-	// Pre-cook formula before the loop (batch optimization: cook once, instantiate many)
-	if formulaName != "" {
-		workDir := beads.ResolveHookDir(townRoot, beadIDs[0], "")
-		if err := CookFormula(formulaName, workDir, townRoot); err != nil {
-			fmt.Printf("  %s Could not pre-cook formula %s: %v\n", style.Dim.Render("Warning:"), formulaName, err)
-			// Fall back: each executeSling call will try to cook individually
-		} else {
-			formulaCooked = true
-		}
-	}
-
-	// Track results for summary
-	type batchResult struct {
-		beadID  string
-		polecat string
-		success bool
-		errMsg  string
-	}
-	results := make([]batchResult, 0, len(beadIDs))
-	activeCount := 0 // Track active spawns for --max-concurrent throttling
-
-	var slingMode string
-	if slingRalph {
-		slingMode = "ralph"
-	}
-
-	// Dispatch each bead via executeSling
-	for i, beadID := range beadIDs {
-		// Spawn-rate throttle: when --max-concurrent is set, pause between batches
-		// of N spawns. This does NOT limit total concurrent polecats — all spawned
-		// polecats remain running. It only slows down how fast they are created.
-		if slingMaxConcurrent > 0 && activeCount >= slingMaxConcurrent {
-			fmt.Printf("\n%s Spawn batch of %d complete, pausing before next batch...\n",
-				style.Warning.Render("⏳"), slingMaxConcurrent)
-			// Wait for sessions to settle before spawning more
-			for wait := 0; wait < 30; wait++ {
-				time.Sleep(2 * time.Second)
-				if wait >= 2 {
-					break
-				}
-			}
-			// Reset counter after cooldown — polecats become self-sufficient
-			// quickly, so we use time-based batching rather than precise counting
-			activeCount = 0
-		}
-
-		fmt.Printf("\n[%d/%d] Slinging %s...\n", i+1, len(beadIDs), beadID)
-
-		params := sling.Intent{
-			BeadID:           beadID,
-			Formula:          formulaName,
-			RigName:          rigName,
-			Args:             slingArgs,
-			Vars:             slingVars,
-			Merge:            slingMerge,
-			BaseBranch:       slingBaseBranch,
-			Account:          slingAccount,
-			Agent:            slingAgent,
-			NoConvoy:         slingNoConvoy,
-			Owned:            slingOwned,
-			NoMerge:          slingNoMerge,
-			ReviewOnly:       slingReviewOnly,
-			Force:            slingForce,
-			HookRawBead:      slingHookRawBead,
-			NoBoot:           true, // coalesced after the loop
-			Mode:             slingMode,
-			SkipCook:         formulaCooked,
-			FormulaFailFatal: false, // Batch: warn + hook raw on formula failure
-			CallerContext:    "batch-sling",
-			TownRoot:         townRoot,
-			BeadsDir:         townBeadsDir,
-		}
-
-		outcome, err := executeDeepSling(context.Background(), params)
-		if err != nil {
-			errMsg := err.Error()
-			polecatName := ""
-			if outcome != nil {
-				polecatName = outcome.PolecatName
-			}
-			results = append(results, batchResult{beadID: beadID, polecat: polecatName, success: false, errMsg: errMsg})
-			fmt.Printf("  %s %s\n", style.Dim.Render("✗"), errMsg)
-			continue
-		}
-
-		polecatName := ""
-		if outcome != nil {
-			polecatName = outcome.PolecatName
-		}
-		activeCount++
-		results = append(results, batchResult{beadID: beadID, polecat: polecatName, success: true})
-
-		// Delay between spawns to prevent Dolt lock contention — sequential
-		// spawns without delay cause database lock timeouts when multiple bd
-		// operations (agent bead creation, hook setting) overlap.
-		if i < len(beadIDs)-1 {
-			time.Sleep(2 * time.Second)
-		}
-	}
-
+	formulaCooked := preCookBatchSlingFormula(formulaName, townRoot, beadIDs)
+	results := spawnBatchSling(beadIDs, rigName, townRoot, townBeadsDir, formulaName, formulaCooked)
 	if !slingNoBoot {
 		wakeRigAgents(rigName)
 	}
+	return summarizeBatchSling(beadIDs, results)
+}
 
-	// Print summary
+func validateBatchSlingBeads(beadIDs []string) error {
+	// Validate all beads exist before spawning any polecats.
+	for _, beadID := range beadIDs {
+		if err := verifyBeadExists(beadID); err != nil {
+			return fmt.Errorf("bead '%s' not found", beadID)
+		}
+	}
+	return nil
+}
+
+func moveBatchSlingBeads(beadIDs []string, rigName, townRoot string) ([]string, error) {
+	for i, beadID := range beadIDs {
+		movedID, err := ensureBeadInTargetRig(beadID, rigName, townRoot, slingDryRun)
+		if err != nil {
+			return nil, err
+		}
+		beadIDs[i] = movedID
+	}
+	return beadIDs, nil
+}
+
+func checkBatchSlingRigs(beadIDs []string, rigName, townRoot string) error {
+	// Cross-rig guard: check all beads match the target rig before spawning (gt-myecw).
+	if slingForce {
+		return nil
+	}
+	for _, beadID := range beadIDs {
+		prefix := beads.ExtractPrefix(beadID)
+		beadRig := beads.GetRigNameForPrefix(townRoot, prefix)
+		if prefix != "" && beadRig != "" && beadRig != rigName {
+			return batchSlingCrossRigError(beadIDs, beadID, prefix, beadRig, rigName)
+		}
+		if err := checkCrossRigGuard(beadID, rigName+"/polecats/_", townRoot); err != nil {
+			// Fall back to generic guard for edge cases (empty prefix, town-level beads).
+			return err
+		}
+	}
+	return nil
+}
+
+func batchSlingCrossRigError(beadIDs []string, beadID, prefix, beadRig, rigName string) error {
+	others := make([]string, 0, len(beadIDs)-1)
+	for _, id := range beadIDs {
+		if id != beadID {
+			others = append(others, id)
+		}
+	}
+	// Build the full command suggestion safely — avoid appending to beadIDs which
+	// may share a backing array with the caller's args.
+	allArgs := make([]string, len(beadIDs)+1)
+	copy(allArgs, beadIDs)
+	allArgs[len(beadIDs)] = rigName
+	return fmt.Errorf("bead %s (prefix %q) belongs to rig %q, but target is %q\n\n"+
+		"  Options:\n"+
+		"    1. Remove the mismatched bead from this batch:\n"+
+		"         gt sling %s\n"+
+		"    2. Sling the mismatched bead to its own rig:\n"+
+		"         gt sling %s %s\n"+
+		"    3. Use --force to override the cross-rig guard:\n"+
+		"         gt sling %s --force\n",
+		beadID, strings.TrimSuffix(prefix, "-"), beadRig, rigName,
+		strings.Join(others, " "),
+		beadID, beadRig,
+		strings.Join(allArgs, " "))
+}
+
+func printBatchSlingDryRun(beadIDs []string, rigName, formulaName string) {
+	fmt.Printf("%s Batch slinging %d beads to rig '%s':\n", style.Bold.Render("🎯"), len(beadIDs), rigName)
+	if formulaName != "" {
+		fmt.Printf("  Would cook %s formula once\n", formulaName)
+	} else {
+		fmt.Printf("  Would hook raw beads (no formula)\n")
+	}
+	for _, beadID := range beadIDs {
+		if formulaName != "" {
+			fmt.Printf("  Would spawn polecat and apply %s to: %s\n", formulaName, beadID)
+		} else {
+			fmt.Printf("  Would spawn polecat and hook raw: %s\n", beadID)
+		}
+	}
+}
+
+func preCookBatchSlingFormula(formulaName, townRoot string, beadIDs []string) bool {
+	if formulaName == "" {
+		return false
+	}
+	workDir := beads.ResolveHookDir(townRoot, beadIDs[0], "")
+	if err := CookFormula(formulaName, workDir, townRoot); err != nil {
+		fmt.Printf("  %s Could not pre-cook formula %s: %v\n", style.Dim.Render("Warning:"), formulaName, err)
+		// Fall back: each executeSling call will try to cook individually.
+		return false
+	}
+	return true
+}
+
+func batchSlingMode() string {
+	if slingRalph {
+		return "ralph"
+	}
+	return ""
+}
+
+func throttleBatchSling(activeCount int) int {
+	if slingMaxConcurrent <= 0 || activeCount < slingMaxConcurrent {
+		return activeCount
+	}
+	fmt.Printf("\n%s Spawn batch of %d complete, pausing before next batch...\n",
+		style.Warning.Render("⏳"), slingMaxConcurrent)
+	for wait := 0; wait < 30; wait++ {
+		time.Sleep(2 * time.Second)
+		if wait >= 2 {
+			break
+		}
+	}
+	return 0
+}
+
+func batchSlingIntent(beadID, rigName, townRoot, townBeadsDir, formulaName string, formulaCooked bool, slingMode string) sling.Intent {
+	return sling.Intent{
+		BeadID:           beadID,
+		Formula:          formulaName,
+		RigName:          rigName,
+		Args:             slingArgs,
+		Vars:             slingVars,
+		Merge:            slingMerge,
+		BaseBranch:       slingBaseBranch,
+		Account:          slingAccount,
+		Agent:            slingAgent,
+		NoConvoy:         slingNoConvoy,
+		Owned:            slingOwned,
+		NoMerge:          slingNoMerge,
+		ReviewOnly:       slingReviewOnly,
+		Force:            slingForce,
+		HookRawBead:      slingHookRawBead,
+		NoBoot:           true, // coalesced after the loop
+		Mode:             slingMode,
+		SkipCook:         formulaCooked,
+		FormulaFailFatal: false, // Batch: warn + hook raw on formula failure
+		CallerContext:    "batch-sling",
+		TownRoot:         townRoot,
+		BeadsDir:         townBeadsDir,
+	}
+}
+
+func batchSlingPolecatName(outcome *sling.Outcome) string {
+	if outcome == nil {
+		return ""
+	}
+	return outcome.PolecatName
+}
+
+func spawnBatchSling(beadIDs []string, rigName, townRoot, townBeadsDir, formulaName string, formulaCooked bool) []batchSlingResult {
+	results := make([]batchSlingResult, 0, len(beadIDs))
+	activeCount := 0
+	slingMode := batchSlingMode()
+	for i, beadID := range beadIDs {
+		activeCount = throttleBatchSling(activeCount)
+		fmt.Printf("\n[%d/%d] Slinging %s...\n", i+1, len(beadIDs), beadID)
+		params := batchSlingIntent(beadID, rigName, townRoot, townBeadsDir, formulaName, formulaCooked, slingMode)
+		outcome, err := executeDeepSling(context.Background(), params)
+		if err != nil {
+			errMsg := err.Error()
+			results = append(results, batchSlingResult{beadID: beadID, polecat: batchSlingPolecatName(outcome), errMsg: errMsg})
+			fmt.Printf("  %s %s\n", style.Dim.Render("✗"), errMsg)
+			continue
+		}
+		activeCount++
+		results = append(results, batchSlingResult{beadID: beadID, polecat: batchSlingPolecatName(outcome), success: true})
+		if i < len(beadIDs)-1 {
+			// Delay between spawns to prevent Dolt lock contention — sequential
+			// spawns without delay cause database lock timeouts when multiple bd
+			// operations (agent bead creation, hook setting) overlap.
+			time.Sleep(2 * time.Second)
+		}
+	}
+	return results
+}
+
+func summarizeBatchSling(beadIDs []string, results []batchSlingResult) error {
 	successCount := 0
-	for _, r := range results {
-		if r.success {
+	for _, result := range results {
+		if result.success {
 			successCount++
 		}
 	}
-
 	fmt.Printf("\n%s Batch sling complete: %d/%d succeeded\n", style.Bold.Render("📊"), successCount, len(beadIDs))
 	if successCount < len(beadIDs) {
-		for _, r := range results {
-			if !r.success {
-				fmt.Printf("  %s %s: %s\n", style.Dim.Render("✗"), r.beadID, r.errMsg)
+		for _, result := range results {
+			if !result.success {
+				fmt.Printf("  %s %s: %s\n", style.Dim.Render("✗"), result.beadID, result.errMsg)
 			}
 		}
 	}
 	if successCount == 0 && len(beadIDs) > 0 {
 		return fmt.Errorf("batch sling failed: 0/%d succeeded", len(beadIDs))
 	}
-
 	return nil
 }
 
