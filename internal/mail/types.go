@@ -571,29 +571,40 @@ func ParseMessageType(s string) MessageType {
 //   - "gastown/Toast" → "gastown/Toast" (already canonical)
 //   - "gastown/refinery" → "gastown/refinery"
 func normalizeAddress(s string) string {
-	// Overseer (human operator) - no trailing slash, distinct from agents
-	if s == "overseer" {
-		return "overseer"
+	if normalized, ok := normalizeSingletonAddress(s); ok {
+		return normalized
 	}
 
-	// Town-level agents: mayor and deacon keep trailing slash
-	if s == "mayor" || s == "mayor/" {
-		return "mayor/"
+	parts := strings.Split(s, "/")
+	if normalized, ok := normalizeScopedAddress(parts); ok {
+		return normalized
 	}
-	if s == "deacon" || s == "deacon/" {
-		return "deacon/"
-	}
+	return s
+}
 
+func normalizeSingletonAddress(s string) (string, bool) {
+	switch s {
+	case "overseer":
+		return "overseer", true
+	case "mayor", "mayor/":
+		return "mayor/", true
+	case "deacon", "deacon/":
+		return "deacon/", true
+	default:
+		return "", false
+	}
+}
+
+func normalizeScopedAddress(parts []string) (string, bool) {
 	// Resolve rig-scoped town-level roles to their canonical form (gt-te23).
 	// "gastown/mayor" → "mayor/", "gastown/deacon" → "deacon/"
 	// Mayor and deacon are town-level singletons, not rig-level agents.
-	parts := strings.Split(s, "/")
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "mayor":
-			return "mayor/"
+			return "mayor/", true
 		case "deacon":
-			return "deacon/"
+			return "deacon/", true
 		}
 	}
 
@@ -602,10 +613,9 @@ func normalizeAddress(s string) string {
 	// "rig/polecat/name" → "rig/name" (legacy singular input)
 	// "rig/polecats/name" → "rig/name"
 	if len(parts) == 3 && (parts[1] == "crew" || parts[1] == "polecat" || parts[1] == "polecats") {
-		return parts[0] + "/" + parts[2]
+		return parts[0] + "/" + parts[2], true
 	}
-
-	return s
+	return "", false
 }
 
 // hasUnsafeAddressSegment reports whether an agent address could escape or
