@@ -1685,87 +1685,63 @@ func findStrandedConvoys(townBeads string) ([]strandedConvoyInfo, error) {
 		return nil, fmt.Errorf("listing convoys: %w", err)
 	}
 
-	// Check each convoy for stranded state
 	for _, convoy := range convoys {
-		// Extract base_branch from convoy description fields
-		var baseBranch string
-		if cf := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description}); cf != nil {
-			baseBranch = cf.BaseBranch
-		}
-
-		tracked, err := getTrackedIssues(townBeads, convoy.ID)
+		info, err := strandedInfoForConvoy(townBeads, convoy)
 		if err != nil {
 			// Write to stderr explicitly — stdout may be consumed as JSON
 			// by the daemon's JSON parser (fixes #2142).
 			fmt.Fprintf(os.Stderr, "⚠ Warning: skipping convoy %s: %v\n", convoy.ID, err)
 			continue
 		}
-		// Empty convoys (0 tracked issues) are stranded — they need
-		// attention (auto-close via convoy check or manual cleanup).
-		if len(tracked) == 0 {
-			stranded = append(stranded, strandedConvoyInfo{
-				ID:           convoy.ID,
-				Title:        convoy.Title,
-				TrackedCount: 0,
-				ReadyCount:   0,
-				ReadyIssues:  []string{},
-				CreatedAt:    convoy.CreatedAt,
-				BaseBranch:   baseBranch,
-			})
-			continue
-		}
-
-		// Find ready issues (open, not blocked, no live assignee, slingable).
-		// Town-level beads (hq- prefix with path=".") are excluded because
-		// they can't be dispatched via gt sling -- they're handled by the deacon.
-		// Non-slingable types (epics, convoys, etc.) are also excluded.
-
-		// Batch-check scheduling status for all tracked issues (single DB query).
-		var trackedIDs []string
-		for _, t := range tracked {
-			trackedIDs = append(trackedIDs, t.ID)
-		}
-		scheduledSet := areScheduledForTown(townBeads, trackedIDs)
-
-		var readyIssues []string
-		for _, t := range tracked {
-			if isReadyIssue(t, scheduledSet) {
-				if !isSlingableBead(townBeads, t.ID) {
-					continue
-				}
-				if !convoyops.IsSlingableType(t.IssueType) {
-					continue
-				}
-				readyIssues = append(readyIssues, t.ID)
-			}
-		}
-
-		if len(readyIssues) > 0 {
-			stranded = append(stranded, strandedConvoyInfo{
-				ID:           convoy.ID,
-				Title:        convoy.Title,
-				TrackedCount: len(tracked),
-				ReadyCount:   len(readyIssues),
-				ReadyIssues:  readyIssues,
-				CreatedAt:    convoy.CreatedAt,
-				BaseBranch:   baseBranch,
-			})
-		} else {
-			// Has tracked issues but none are ready — include in stranded
-			// list so callers can distinguish from truly empty convoys.
-			stranded = append(stranded, strandedConvoyInfo{
-				ID:           convoy.ID,
-				Title:        convoy.Title,
-				TrackedCount: len(tracked),
-				ReadyCount:   0,
-				ReadyIssues:  []string{},
-				CreatedAt:    convoy.CreatedAt,
-				BaseBranch:   baseBranch,
-			})
-		}
+		stranded = append(stranded, info)
 	}
 
 	return stranded, nil
+}
+
+func strandedInfoForConvoy(townBeads string, convoy convoyListIssue) (strandedConvoyInfo, error) {
+	baseBranch := ""
+	if fields := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description}); fields != nil {
+		baseBranch = fields.BaseBranch
+	}
+
+	tracked, err := getTrackedIssues(townBeads, convoy.ID)
+	if err != nil {
+		return strandedConvoyInfo{}, err
+	}
+	readyIssues := readyIssuesForConvoy(townBeads, tracked)
+	if readyIssues == nil {
+		readyIssues = []string{}
+	}
+	return strandedConvoyInfo{
+		ID:           convoy.ID,
+		Title:        convoy.Title,
+		TrackedCount: len(tracked),
+		ReadyCount:   len(readyIssues),
+		ReadyIssues:  readyIssues,
+		CreatedAt:    convoy.CreatedAt,
+		BaseBranch:   baseBranch,
+	}, nil
+}
+
+func readyIssuesForConvoy(townBeads string, tracked []trackedIssueInfo) []string {
+	if len(tracked) == 0 {
+		return nil
+	}
+	trackedIDs := make([]string, 0, len(tracked))
+	for _, issue := range tracked {
+		trackedIDs = append(trackedIDs, issue.ID)
+	}
+	scheduledSet := areScheduledForTown(townBeads, trackedIDs)
+
+	var readyIssues []string
+	for _, issue := range tracked {
+		if !isReadyIssue(issue, scheduledSet) || !isSlingableBead(townBeads, issue.ID) || !convoyops.IsSlingableType(issue.IssueType) {
+			continue
+		}
+		readyIssues = append(readyIssues, issue.ID)
+	}
+	return readyIssues
 }
 
 // isReadyIssue checks if an issue is ready for dispatch (stranded).
