@@ -37,26 +37,6 @@ func (s polecatCapacitySnapshot) occupied() int {
 	return s.capacityUsed + s.Reservations
 }
 
-func (s *polecatCapacitySnapshot) addWorking() {
-	s.Working++
-	s.capacityUsed++
-}
-
-func (s *polecatCapacitySnapshot) addRecoveryBlocked(countsTowardCapacity bool) {
-	s.RecoveryBlocked++
-	if countsTowardCapacity {
-		s.capacityUsed++
-	}
-}
-
-func (s *polecatCapacitySnapshot) addReusableIdle() {
-	s.ReusableIdle++
-}
-
-func (s *polecatCapacitySnapshot) addPendingMR() {
-	s.PendingMR++
-}
-
 type polecatAdmissionReservation struct {
 	ID        string    `json:"id"`
 	PID       int       `json:"pid"`
@@ -270,23 +250,28 @@ func applyAgentFieldsToCapacitySnapshot(snapshot *polecatCapacitySnapshot, rigNa
 
 func applyWorkstateDispositionToCapacitySnapshot(snapshot *polecatCapacitySnapshot, state polecat.State, disposition polecat.WorkstateDisposition) {
 	if disposition.ReuseStatus == "idle-pr-open" {
-		snapshot.addPendingMR()
+		snapshot.PendingMR++
 		return
 	}
 	if disposition.Reusable {
-		snapshot.addReusableIdle()
+		snapshot.ReusableIdle++
 		return
 	}
 	if disposition.NeedsRecovery {
-		snapshot.addRecoveryBlocked(disposition.CountsTowardCapacity)
+		snapshot.RecoveryBlocked++
+		if disposition.CountsTowardCapacity {
+			snapshot.capacityUsed++
+		}
 		return
 	}
 	if state == polecat.StateWorking || disposition.Verdict == polecat.WorkstateVerdictWorking {
-		snapshot.addWorking()
+		snapshot.Working++
+		snapshot.capacityUsed++
 		return
 	}
 	if disposition.CountsTowardCapacity {
-		snapshot.addRecoveryBlocked(true)
+		snapshot.RecoveryBlocked++
+		snapshot.capacityUsed++
 	}
 }
 
