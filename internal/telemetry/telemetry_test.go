@@ -7,20 +7,21 @@ import (
 	"testing"
 )
 
-// resetInitState resets the package-level telemetry init guard so tests run
-// independently of each other.
+// resetInitState resets the telemetry init guard so tests run independently
+// of each other.
 func resetInitState(t *testing.T) {
 	t.Helper()
-	initMu.Lock()
-	initDone = false
-	globalProvider = nil
-	initMu.Unlock()
+	resetTelemetryInit()
 	t.Cleanup(func() {
-		initMu.Lock()
-		initDone = false
-		globalProvider = nil
-		initMu.Unlock()
+		resetTelemetryInit()
 	})
+}
+
+func resetTelemetryInit() {
+	telemetryInit.mu.Lock()
+	telemetryInit.done = false
+	telemetryInit.provider = nil
+	telemetryInit.mu.Unlock()
 }
 
 func TestInit_BothURLsUnset_ReturnsNil(t *testing.T) {
