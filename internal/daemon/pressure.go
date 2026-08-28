@@ -52,42 +52,61 @@ func (d *Daemon) checkPressure(_ string) PressureResult {
 		return PressureResult{OK: true}
 	}
 
-	var result PressureResult
-	result.OK = true
-
-	// Tier 1: CPU pressure (load average per core)
-	if cpuThreshold > 0 {
-		result.LoadAvg1 = loadAverage1()
-		numCPU := float64(runtime.NumCPU())
-		loadPerCore := result.LoadAvg1 / numCPU
-		if loadPerCore > cpuThreshold {
-			result.OK = false
-			result.Reason = fmt.Sprintf("cpu pressure: load/core %.2f exceeds threshold %.2f (load=%.1f, cores=%d)", loadPerCore, cpuThreshold, result.LoadAvg1, int(numCPU))
-			return result
-		}
+	result := PressureResult{OK: true}
+	result, blocked := checkCPUPressure(result, cpuThreshold)
+	if blocked {
+		return result
 	}
-
-	// Tier 1: Memory pressure
-	if memThreshold > 0 {
-		result.MemAvailableGB = availableMemoryGB()
-		if result.MemAvailableGB > 0 && result.MemAvailableGB < memThreshold {
-			result.OK = false
-			result.Reason = fmt.Sprintf("memory pressure: %.1fGB available, minimum %.1fGB", result.MemAvailableGB, memThreshold)
-			return result
-		}
+	result, blocked = checkMemoryPressure(result, memThreshold)
+	if blocked {
+		return result
 	}
-
-	// Tier 2: Session concurrency cap
-	if maxSessions > 0 {
-		result.ActiveSessions = d.countAgentSessions()
-		if result.ActiveSessions >= maxSessions {
-			result.OK = false
-			result.Reason = fmt.Sprintf("session cap: %d active sessions, max %d", result.ActiveSessions, maxSessions)
-			return result
-		}
+	result, blocked = d.checkSessionPressure(result, maxSessions)
+	if blocked {
+		return result
 	}
-
 	return result
+}
+
+func checkCPUPressure(result PressureResult, threshold float64) (PressureResult, bool) {
+	if threshold <= 0 {
+		return result, false
+	}
+	result.LoadAvg1 = loadAverage1()
+	numCPU := float64(runtime.NumCPU())
+	loadPerCore := result.LoadAvg1 / numCPU
+	if loadPerCore <= threshold {
+		return result, false
+	}
+	result.OK = false
+	result.Reason = fmt.Sprintf("cpu pressure: load/core %.2f exceeds threshold %.2f (load=%.1f, cores=%d)", loadPerCore, threshold, result.LoadAvg1, int(numCPU))
+	return result, true
+}
+
+func checkMemoryPressure(result PressureResult, threshold float64) (PressureResult, bool) {
+	if threshold <= 0 {
+		return result, false
+	}
+	result.MemAvailableGB = availableMemoryGB()
+	if result.MemAvailableGB <= 0 || result.MemAvailableGB >= threshold {
+		return result, false
+	}
+	result.OK = false
+	result.Reason = fmt.Sprintf("memory pressure: %.1fGB available, minimum %.1fGB", result.MemAvailableGB, threshold)
+	return result, true
+}
+
+func (d *Daemon) checkSessionPressure(result PressureResult, maximum int) (PressureResult, bool) {
+	if maximum <= 0 {
+		return result, false
+	}
+	result.ActiveSessions = d.countAgentSessions()
+	if result.ActiveSessions < maximum {
+		return result, false
+	}
+	result.OK = false
+	result.Reason = fmt.Sprintf("session cap: %d active sessions, max %d", result.ActiveSessions, maximum)
+	return result, true
 }
 
 // countAgentSessions counts active tmux sessions that belong to Gas Town agents.
