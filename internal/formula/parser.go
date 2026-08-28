@@ -421,57 +421,70 @@ func drainTopologicalQueue(queue []string, inDegree map[string]int, dependents m
 // ReadySteps returns steps that have no unmet dependencies.
 // completed is a set of step IDs that have been completed.
 func (f *Formula) ReadySteps(completed map[string]bool) []string {
-	var ready []string
-
 	switch f.Type {
 	case TypeWorkflow:
-		for _, step := range f.Steps {
-			if completed[step.ID] {
-				continue
-			}
-			allMet := true
-			for _, need := range step.Needs {
-				if !completed[need] {
-					allMet = false
-					break
-				}
-			}
-			if allMet {
-				ready = append(ready, step.ID)
-			}
-		}
+		return readyWorkflowSteps(f.Steps, completed)
 	case TypeExpansion:
-		for _, tmpl := range f.Template {
-			if completed[tmpl.ID] {
-				continue
-			}
-			allMet := true
-			for _, need := range tmpl.Needs {
-				if !completed[need] {
-					allMet = false
-					break
-				}
-			}
-			if allMet {
-				ready = append(ready, tmpl.ID)
-			}
-		}
+		return readyExpansionSteps(f.Template, completed)
 	case TypeConvoy:
 		// All legs are ready unless already completed
-		for _, leg := range f.Legs {
-			if !completed[leg.ID] {
-				ready = append(ready, leg.ID)
-			}
-		}
+		return readyLegs(f.Legs, completed)
 	case TypeAspect:
 		// All aspects are ready unless already completed
-		for _, aspect := range f.Aspects {
-			if !completed[aspect.ID] {
-				ready = append(ready, aspect.ID)
-			}
-		}
+		return readyAspects(f.Aspects, completed)
 	}
 
+	return nil
+}
+
+func readyWorkflowSteps(steps []Step, completed map[string]bool) []string {
+	var ready []string
+	for _, step := range steps {
+		if completed[step.ID] || !needsCompleted(step.Needs, completed) {
+			continue
+		}
+		ready = append(ready, step.ID)
+	}
+	return ready
+}
+
+func readyExpansionSteps(templates []Template, completed map[string]bool) []string {
+	var ready []string
+	for _, tmpl := range templates {
+		if completed[tmpl.ID] || !needsCompleted(tmpl.Needs, completed) {
+			continue
+		}
+		ready = append(ready, tmpl.ID)
+	}
+	return ready
+}
+
+func needsCompleted(needs []string, completed map[string]bool) bool {
+	for _, need := range needs {
+		if !completed[need] {
+			return false
+		}
+	}
+	return true
+}
+
+func readyLegs(legs []Leg, completed map[string]bool) []string {
+	var ready []string
+	for _, leg := range legs {
+		if !completed[leg.ID] {
+			ready = append(ready, leg.ID)
+		}
+	}
+	return ready
+}
+
+func readyAspects(aspects []Aspect, completed map[string]bool) []string {
+	var ready []string
+	for _, aspect := range aspects {
+		if !completed[aspect.ID] {
+			ready = append(ready, aspect.ID)
+		}
+	}
 	return ready
 }
 
