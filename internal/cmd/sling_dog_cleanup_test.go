@@ -50,7 +50,7 @@ func TestDogDispatchInfoClearWorkIfMatchesUsesAssignmentTimestamp(t *testing.T) 
 		ownsWork:      true,
 		rigsConfig:    rigsConfig,
 	}
-	if err := staleDispatch.clearWorkIfMatches(); err != nil {
+	if err := staleDispatch.ClearWorkIfMatches(); err != nil {
 		t.Fatalf("clearWorkIfMatches stale dispatch error = %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestDogDispatchInfoClearWorkIfMatchesUsesAssignmentTimestamp(t *testing.T) 
 		ownsWork:      true,
 		rigsConfig:    rigsConfig,
 	}
-	if err := matchingDispatch.clearWorkIfMatches(); err != nil {
+	if err := matchingDispatch.ClearWorkIfMatches(); err != nil {
 		t.Fatalf("clearWorkIfMatches matching dispatch error = %v", err)
 	}
 	got, err = mgr.Get("alpha")
@@ -106,7 +106,7 @@ func TestDogDispatchInfoClearWorkIfMatchesSkipsReusedWork(t *testing.T) {
 		ownsWork:      false,
 		rigsConfig:    rigsConfig,
 	}
-	if err := reusedDispatch.clearWorkIfMatches(); err != nil {
+	if err := reusedDispatch.ClearWorkIfMatches(); err != nil {
 		t.Fatalf("clearWorkIfMatches reused dispatch error = %v", err)
 	}
 

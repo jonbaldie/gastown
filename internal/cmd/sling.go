@@ -817,7 +817,7 @@ func rollbackFailedDogDispatch(dispatch *DogDispatchInfo, townRoot, beadID, hook
 	}
 	fmt.Printf("%s Dog dispatch did not complete; rolling back %s...\n", style.Warning.Render("⚠"), dispatch.DogName)
 	restored := false
-	cleared, err := dispatch.clearWorkIfMatchesAfter(func() bool {
+	cleared, err := dispatch.ClearWorkIfMatchesAfter(func() bool {
 		restored = restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, dispatch.AgentID, expectedDescription, status, assignee, originalInfo)
 		return restored
 	})
