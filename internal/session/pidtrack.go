@@ -97,66 +97,88 @@ func KillTrackedPIDs(townRoot string) (killed int, errSessions []string) {
 			continue
 		}
 
-		sessionID := strings.TrimSuffix(entry.Name(), ".pid")
-		path := filepath.Join(dir, entry.Name())
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			errSessions = append(errSessions, fmt.Sprintf("%s: read error: %v", sessionID, err))
-			continue
+		killedOne, errSession := killTrackedPID(dir, entry)
+		killed += killedOne
+		if errSession != "" {
+			errSessions = append(errSessions, errSession)
 		}
-
-		record, err := parseTrackedPID(strings.TrimSpace(string(data)))
-		if err != nil {
-			// Corrupt PID file — remove it
-			_ = os.Remove(path)
-			continue
-		}
-		pid := record.PID
-
-		// Check if process is still alive
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			_ = os.Remove(path)
-			continue
-		}
-
-		// Signal 0 checks existence without killing
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
-			// Process is already dead — clean up PID file
-			_ = os.Remove(path)
-			continue
-		}
-
-		// If we have process birth info, verify this is still the same process.
-		// If PID was reused, skip killing to avoid terminating an active unrelated process.
-		if record.StartTime != "" {
-			currentStart, startErr := pidStartTimeFunc(pid)
-			if startErr != nil {
-				// Cannot verify process identity — leave the PID file so a
-				// future cleanup attempt can retry once ps is available again.
-				errSessions = append(errSessions, fmt.Sprintf("%s (PID %d): cannot verify start time: %v — skipping kill, preserving tracking file", sessionID, pid, startErr))
-				continue
-			}
-			if currentStart != record.StartTime {
-				// Confirmed PID reuse — safe to remove tracking file.
-				_ = os.Remove(path)
-				continue
-			}
-		}
-
-		// Process is alive — kill it
-		if err := proc.Signal(syscall.SIGTERM); err != nil {
-			errSessions = append(errSessions, fmt.Sprintf("%s (PID %d): SIGTERM failed: %v", sessionID, pid, err))
-		} else {
-			killed++
-		}
-
-		// Clean up PID file regardless
-		_ = os.Remove(path)
 	}
 
 	return killed, errSessions
+}
+
+func killTrackedPID(dir string, entry os.DirEntry) (int, string) {
+	sessionID := strings.TrimSuffix(entry.Name(), ".pid")
+	path := filepath.Join(dir, entry.Name())
+	record, ok, errSession := readTrackedPID(path, sessionID)
+	if errSession != "" || !ok {
+		return 0, errSession
+	}
+
+	proc, ok, errSession := findTrackedProcess(path, sessionID, record)
+	if errSession != "" || !ok {
+		return 0, errSession
+	}
+	return terminateTrackedProcess(path, sessionID, record.PID, proc)
+}
+
+func readTrackedPID(path, sessionID string) (trackedPID, bool, string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return trackedPID{}, false, fmt.Sprintf("%s: read error: %v", sessionID, err)
+	}
+	record, err := parseTrackedPID(strings.TrimSpace(string(data)))
+	if err != nil {
+		// Corrupt PID file — remove it.
+		_ = os.Remove(path)
+		return trackedPID{}, false, ""
+	}
+	return record, true, ""
+}
+
+func findTrackedProcess(path, sessionID string, record trackedPID) (*os.Process, bool, string) {
+	// Check if process is still alive.
+	proc, err := os.FindProcess(record.PID)
+	if err != nil {
+		_ = os.Remove(path)
+		return nil, false, ""
+	}
+
+	// Signal 0 checks existence without killing.
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		// Process is already dead — clean up PID file.
+		_ = os.Remove(path)
+		return nil, false, ""
+	}
+
+	return verifyTrackedProcess(path, sessionID, record, proc)
+}
+
+func verifyTrackedProcess(path, sessionID string, record trackedPID, proc *os.Process) (*os.Process, bool, string) {
+	if record.StartTime == "" {
+		return proc, true, ""
+	}
+
+	currentStart, err := pidStartTimeFunc(record.PID)
+	if err != nil {
+		// Cannot verify process identity — leave the PID file so a future cleanup
+		// attempt can retry once ps is available again.
+		return nil, false, fmt.Sprintf("%s (PID %d): cannot verify start time: %v — skipping kill, preserving tracking file", sessionID, record.PID, err)
+	}
+	if currentStart != record.StartTime {
+		// Confirmed PID reuse — safe to remove tracking file.
+		_ = os.Remove(path)
+		return nil, false, ""
+	}
+	return proc, true, ""
+}
+
+func terminateTrackedProcess(path, sessionID string, pid int, proc *os.Process) (int, string) {
+	defer func() { _ = os.Remove(path) }()
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return 0, fmt.Sprintf("%s (PID %d): SIGTERM failed: %v", sessionID, pid, err)
+	}
+	return 1, ""
 }
 
 func parseTrackedPID(value string) (trackedPID, error) {
