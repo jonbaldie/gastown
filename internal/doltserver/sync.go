@@ -308,10 +308,12 @@ func skipDatabaseSync(db, dbDir, filter string) bool {
 	if filter != "" && db != filter {
 		return true
 	}
-	if filter == "" {
-		if _, err := os.Stat(filepath.Join(dbDir, ".no-sync")); err == nil {
-			return true
-		}
+	return filter == "" && hasNoSyncMarker(dbDir)
+}
+
+func hasNoSyncMarker(dbDir string) bool {
+	if _, err := os.Stat(filepath.Join(dbDir, ".no-sync")); err == nil {
+		return true
 	}
 	return false
 }
@@ -416,87 +418,79 @@ func SyncDatabases(townRoot string, opts SyncOptions) []SyncResult {
 		}}
 	}
 
-	var results []SyncResult
-
+	results := make([]SyncResult, 0, len(databases))
 	for _, db := range databases {
-		// Apply filter if set
-		if opts.Filter != "" && db != opts.Filter {
-			continue
-		}
-
-		dbDir := RigDatabaseDir(townRoot, db)
-		result := SyncResult{Database: db}
-
-		// Skip databases with a .no-sync marker file (local-only databases),
-		// unless explicitly requested via Filter (--db flag).
-		if opts.Filter == "" {
-			if _, err := os.Stat(filepath.Join(dbDir, ".no-sync")); err == nil {
-				result.Skipped = true
-				results = append(results, result)
-				continue
-			}
-		}
-
-		// Check for remote (any name — "origin", "github", etc.)
-		remoteName, remoteURL, err := FindRemote(dbDir)
-		if err != nil {
-			result.Error = fmt.Errorf("checking remote: %w", err)
+		result, include := syncDatabase(townRoot, opts, db)
+		if include {
 			results = append(results, result)
-			continue
 		}
-		result.Remote = remoteURL
+	}
+	return results
+}
 
-		if remoteURL == "" {
-			// Auto-setup DoltHub remote if credentials are available.
-			token := DoltHubToken()
-			org := DoltHubOrg()
-			if token != "" && org != "" {
-				if err := SetupDoltHubRemote(dbDir, org, db, token); err != nil {
-					// Setup failed — skip this database for now.
-					result.Error = fmt.Errorf("auto-setup DoltHub remote: %w", err)
-					results = append(results, result)
-					continue
-				}
-				// Remote is now configured; re-read it.
-				remoteName, remoteURL, err = FindRemote(dbDir)
-				if err != nil || remoteURL == "" {
-					result.Error = fmt.Errorf("remote not found after auto-setup")
-					results = append(results, result)
-					continue
-				}
-				result.Remote = remoteURL
-			} else {
-				result.Skipped = true
-				results = append(results, result)
-				continue
-			}
-		}
-
-		if opts.DryRun {
-			result.DryRun = true
-			results = append(results, result)
-			continue
-		}
-
-		// Commit working set
-		if err := CommitWorkingSet(dbDir); err != nil {
-			result.Error = fmt.Errorf("committing: %w", err)
-			results = append(results, result)
-			continue
-		}
-
-		// Push
-		if err := PushDatabase(dbDir, remoteName, opts.Force); err != nil {
-			result.Error = err
-			results = append(results, result)
-			continue
-		}
-
-		result.Pushed = true
-		results = append(results, result)
+func syncDatabase(townRoot string, opts SyncOptions, db string) (SyncResult, bool) {
+	if opts.Filter != "" && db != opts.Filter {
+		return SyncResult{}, false
 	}
 
-	return results
+	dbDir := RigDatabaseDir(townRoot, db)
+	result := SyncResult{Database: db}
+	if opts.Filter == "" && hasNoSyncMarker(dbDir) {
+		result.Skipped = true
+		return result, true
+	}
+
+	remoteName, remoteURL, skipped, err := resolveSyncRemote(dbDir, db)
+	if err != nil {
+		result.Error = err
+		return result, true
+	}
+	result.Remote = remoteURL
+	if skipped {
+		result.Skipped = true
+		return result, true
+	}
+	if opts.DryRun {
+		result.DryRun = true
+		return result, true
+	}
+	if err := commitAndPushDatabase(dbDir, remoteName, opts.Force); err != nil {
+		result.Error = err
+		return result, true
+	}
+	result.Pushed = true
+	return result, true
+}
+
+func resolveSyncRemote(dbDir, db string) (name, url string, skipped bool, err error) {
+	name, url, err = FindRemote(dbDir)
+	if err != nil {
+		return "", "", false, fmt.Errorf("checking remote: %w", err)
+	}
+	if url != "" {
+		return name, url, false, nil
+	}
+
+	token := DoltHubToken()
+	org := DoltHubOrg()
+	if token == "" || org == "" {
+		return "", "", true, nil
+	}
+	if err := SetupDoltHubRemote(dbDir, org, db, token); err != nil {
+		return "", "", false, fmt.Errorf("auto-setup DoltHub remote: %w", err)
+	}
+	name, url, err = FindRemote(dbDir)
+	if err != nil || url == "" {
+		return "", "", false, fmt.Errorf("remote not found after auto-setup")
+	}
+	return name, url, false, nil
+}
+
+func commitAndPushDatabase(dbDir, remoteName string, force bool) error {
+	if err := CommitWorkingSet(dbDir); err != nil {
+		return fmt.Errorf("committing: %w", err)
+	}
+	return PushDatabase(dbDir, remoteName, force)
 }
 
 // SyncDatabasesSQL iterates all databases (or a filtered subset) and pushes via SQL
@@ -511,77 +505,73 @@ func SyncDatabasesSQL(townRoot string, opts SyncOptions) []SyncResult {
 		}}
 	}
 
-	var results []SyncResult
-
+	results := make([]SyncResult, 0, len(databases))
 	for _, db := range databases {
-		if opts.Filter != "" && db != opts.Filter {
-			continue
-		}
-
-		result := SyncResult{Database: db}
-
-		// Skip databases with a .no-sync marker file (local-only databases),
-		// unless explicitly requested via Filter (--db flag).
-		dbDir := RigDatabaseDir(townRoot, db)
-		if opts.Filter == "" {
-			if _, err := os.Stat(filepath.Join(dbDir, ".no-sync")); err == nil {
-				result.Skipped = true
-				results = append(results, result)
-				continue
-			}
-		}
-
-		// Check for remote via SQL
-		remoteName, remoteURL, err := FindRemoteSQL(townRoot, db)
-		if err != nil {
-			result.Error = fmt.Errorf("checking remote: %w", err)
+		result, include := syncDatabaseSQL(townRoot, opts, db)
+		if include {
 			results = append(results, result)
-			continue
 		}
-		result.Remote = remoteURL
+	}
+	return results
+}
 
-		if remoteURL == "" {
-			// Try auto-setup if credentials are available
-			token := DoltHubToken()
-			org := DoltHubOrg()
-			if token != "" && org != "" {
-				if err := SetupDoltHubRemote(dbDir, org, db, token); err != nil {
-					result.Error = fmt.Errorf("auto-setup DoltHub remote: %w", err)
-					results = append(results, result)
-					continue
-				}
-				remoteName, remoteURL, err = FindRemoteSQL(townRoot, db)
-				if err != nil || remoteURL == "" {
-					result.Error = fmt.Errorf("remote not found after auto-setup")
-					results = append(results, result)
-					continue
-				}
-				result.Remote = remoteURL
-			} else {
-				result.Skipped = true
-				results = append(results, result)
-				continue
-			}
-		}
-
-		if opts.DryRun {
-			result.DryRun = true
-			results = append(results, result)
-			continue
-		}
-
-		// Push via SQL (server stays running)
-		if err := PushDatabaseSQL(townRoot, db, remoteName, opts.Force); err != nil {
-			result.Error = err
-			results = append(results, result)
-			continue
-		}
-
-		result.Pushed = true
-		results = append(results, result)
+func syncDatabaseSQL(townRoot string, opts SyncOptions, db string) (SyncResult, bool) {
+	if opts.Filter != "" && db != opts.Filter {
+		return SyncResult{}, false
 	}
 
-	return results
+	dbDir := RigDatabaseDir(townRoot, db)
+	result := SyncResult{Database: db}
+	if opts.Filter == "" && hasNoSyncMarker(dbDir) {
+		result.Skipped = true
+		return result, true
+	}
+
+	remoteName, remoteURL, skipped, err := resolveSyncRemoteSQL(townRoot, db)
+	if err != nil {
+		result.Error = err
+		return result, true
+	}
+	result.Remote = remoteURL
+	if skipped {
+		result.Skipped = true
+		return result, true
+	}
+	if opts.DryRun {
+		result.DryRun = true
+		return result, true
+	}
+	if err := PushDatabaseSQL(townRoot, db, remoteName, opts.Force); err != nil {
+		result.Error = err
+		return result, true
+	}
+	result.Pushed = true
+	return result, true
+}
+
+func resolveSyncRemoteSQL(townRoot, db string) (name, url string, skipped bool, err error) {
+	name, url, err = FindRemoteSQL(townRoot, db)
+	if err != nil {
+		return "", "", false, fmt.Errorf("checking remote: %w", err)
+	}
+	if url != "" {
+		return name, url, false, nil
+	}
+
+	token := DoltHubToken()
+	org := DoltHubOrg()
+	if token == "" || org == "" {
+		return "", "", true, nil
+	}
+	dbDir := RigDatabaseDir(townRoot, db)
+	if err := SetupDoltHubRemote(dbDir, org, db, token); err != nil {
+		return "", "", false, fmt.Errorf("auto-setup DoltHub remote: %w", err)
+	}
+	name, url, err = FindRemoteSQL(townRoot, db)
+	if err != nil || url == "" {
+		return "", "", false, fmt.Errorf("remote not found after auto-setup")
+	}
+	return name, url, false, nil
 }
 
 // PurgeClosedEphemerals runs "bd purge" for a specific rig database to remove
