@@ -20,24 +20,9 @@ import (
 // inherited automatically — no need for this function in that case.
 func CleanGTEnv(extraEnv ...string) []string {
 	var clean []string
-	hasAutoStart := false
-	for _, e := range extraEnv {
-		if strings.HasPrefix(e, "BEADS_DOLT_AUTO_START=") {
-			hasAutoStart = true
-			break
-		}
-	}
+	hasAutoStart := hasAutoStartOverride(extraEnv)
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "GT_") &&
-			!strings.HasPrefix(e, "GT_DOLT_PORT=") &&
-			!strings.HasPrefix(e, "GT_DOLT_HOST=") &&
-			!strings.HasPrefix(e, "GT_TEST_EXTERNAL_DOLT=") {
-			continue
-		}
-		if strings.HasPrefix(e, "BD_") {
-			continue
-		}
-		if strings.HasPrefix(e, "BEADS_DOLT_AUTO_START=") {
+		if !keepCleanGTEnvEntry(e) {
 			continue
 		}
 		clean = append(clean, e)
@@ -46,6 +31,27 @@ func CleanGTEnv(extraEnv ...string) []string {
 		clean = append(clean, "BEADS_DOLT_AUTO_START=0")
 	}
 	return append(clean, extraEnv...)
+}
+
+func hasAutoStartOverride(extraEnv []string) bool {
+	for _, e := range extraEnv {
+		if strings.HasPrefix(e, "BEADS_DOLT_AUTO_START=") {
+			return true
+		}
+	}
+	return false
+}
+
+func keepCleanGTEnvEntry(value string) bool {
+	if strings.HasPrefix(value, "GT_") {
+		return strings.HasPrefix(value, "GT_DOLT_PORT=") ||
+			strings.HasPrefix(value, "GT_DOLT_HOST=") ||
+			strings.HasPrefix(value, "GT_TEST_EXTERNAL_DOLT=")
+	}
+	if strings.HasPrefix(value, "BD_") {
+		return false
+	}
+	return !strings.HasPrefix(value, "BEADS_DOLT_AUTO_START=")
 }
 
 // NewBDCommand creates an exec.Command for the bd CLI. Dolt targeting comes

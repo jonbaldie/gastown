@@ -330,29 +330,39 @@ func (c *PatrolNotStuckCheck) checkStuckWispsDolt(rigPath string, rigName string
 	cutoff := time.Now().UTC().Add(-c.stuckThreshold)
 
 	for _, rec := range records[1:] { // Skip CSV header
-		if len(rec) < 4 {
-			continue
-		}
-		id := strings.TrimSpace(rec[0])
-		title := strings.TrimSpace(rec[1])
-		updatedAt := strings.TrimSpace(rec[3])
-
-		t, err := time.Parse("2006-01-02 15:04:05", updatedAt)
-		if err != nil {
-			// Try RFC3339 as fallback
-			t, err = time.Parse(time.RFC3339, updatedAt)
-			if err != nil {
-				continue
-			}
-		}
-
-		if !t.IsZero() && t.Before(cutoff) {
-			stuck = append(stuck, fmt.Sprintf("%s: %s (%s) - stale since %s UTC",
-				rigName, id, title, t.UTC().Format("2006-01-02 15:04")))
+		if detail, ok := stuckWispDetail(rec, rigName, cutoff); ok {
+			stuck = append(stuck, detail)
 		}
 	}
 
 	return stuck, nil
+}
+
+func stuckWispDetail(record []string, rigName string, cutoff time.Time) (string, bool) {
+	if len(record) < 4 {
+		return "", false
+	}
+
+	t, ok := parseStuckWispTime(strings.TrimSpace(record[3]))
+	if !ok || t.IsZero() || !t.Before(cutoff) {
+		return "", false
+	}
+
+	id := strings.TrimSpace(record[0])
+	title := strings.TrimSpace(record[1])
+	return fmt.Sprintf("%s: %s (%s) - stale since %s UTC",
+		rigName, id, title, t.UTC().Format("2006-01-02 15:04")), true
+}
+
+func parseStuckWispTime(value string) (time.Time, bool) {
+	t, err := time.Parse("2006-01-02 15:04:05", value)
+	if err == nil {
+		return t, true
+	}
+
+	// Try RFC3339 as fallback
+	t, err = time.Parse(time.RFC3339, value)
+	return t, err == nil
 }
 
 // PatrolPluginsAccessibleCheck verifies plugin directories exist and are readable.
