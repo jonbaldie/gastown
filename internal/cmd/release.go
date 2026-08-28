@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var releaseReason string
-
 var releaseCmd = &cobra.Command{
 	Use:     "release <issue-id>...",
 	GroupID: GroupWork,
@@ -33,11 +31,12 @@ retried by releasing and reclaiming stuck steps.`,
 }
 
 func init() {
-	releaseCmd.Flags().StringVarP(&releaseReason, "reason", "r", "", "Reason for releasing (added as note)")
+	releaseCmd.Flags().StringP("reason", "r", "", "Reason for releasing (added as note)")
 	rootCmd.AddCommand(releaseCmd)
 }
 
-func runRelease(_ *cobra.Command, args []string) error {
+func runRelease(cmd *cobra.Command, args []string) error {
+	releaseReason, _ := cmd.Flags().GetString("reason")
 	// Get working directory for beads
 	cwd, err := os.Getwd()
 	if err != nil {
