@@ -87,7 +87,7 @@ func (d *Daemon) syncJsonlGitBackup() {
 
 	// Pour molecule for observability (nil-safe — all methods are no-ops on nil).
 	mol := d.pourDogMolecule(constants.MolDogJSONL, nil)
-	defer mol.close()
+	defer mol.Close()
 
 	config := d.patrolConfig.Patrols.JsonlGitBackup
 
@@ -151,11 +151,11 @@ func (d *Daemon) syncJsonlGitBackup() {
 
 	if exported == 0 {
 		d.logger.Printf("jsonl_git_backup: no databases exported successfully")
-		mol.failStep("export", "no databases exported successfully")
+		mol.FailStep("export", "no databases exported successfully")
 		return
 	}
 
-	mol.closeStep("export")
+	mol.CloseStep("export")
 
 	// Phase D: Pollution firewall — filter test data from exports.
 	removed := d.applyPollutionFilter(gitRepo, databases)
@@ -171,7 +171,7 @@ func (d *Daemon) syncJsonlGitBackup() {
 		d.escalate("jsonl_git_backup", fmt.Sprintf("post-scrub verification found %d suspicious records — review JSONL exports", remaining))
 	}
 
-	mol.closeStep("verify")
+	mol.CloseStep("verify")
 
 	// Phase D: Spike detection — compare current counts to previous commit.
 	threshold := spikeThreshold(config)
@@ -180,7 +180,7 @@ func (d *Daemon) syncJsonlGitBackup() {
 		report := formatSpikeReport(spikes)
 		d.logger.Printf("jsonl_git_backup: HALTING — spike detected:\n%s", report)
 		d.escalate("jsonl_git_backup", report)
-		mol.failStep("push", "spike detected")
+		mol.FailStep("push", "spike detected")
 		return // Do NOT commit — spike detected.
 	}
 
@@ -190,7 +190,7 @@ func (d *Daemon) syncJsonlGitBackup() {
 	if err := d.commitAndPushJsonlBackup(gitRepo, databases, counts, failed); err != nil {
 		d.logger.Printf("jsonl_git_backup: git operations failed: %v", err)
 		pushStatus = "failed"
-		mol.failStep("push", err.Error())
+		mol.FailStep("push", err.Error())
 		d.jsonlPushFailures++
 		if d.jsonlPushFailures >= maxConsecutivePushFailures {
 			d.logger.Printf("jsonl_git_backup: ESCALATION: %d consecutive push failures", d.jsonlPushFailures)
@@ -200,11 +200,11 @@ func (d *Daemon) syncJsonlGitBackup() {
 		}
 	} else {
 		d.jsonlPushFailures = 0
-		mol.closeStep("push")
+		mol.CloseStep("push")
 	}
 
 	d.logger.Printf("jsonl_git_backup: exported %d/%d database(s), push=%s", exported, len(databases), pushStatus)
-	mol.closeStep("report")
+	mol.CloseStep("report")
 }
 
 // supplementalTables lists non-issues tables to include in JSONL backup.

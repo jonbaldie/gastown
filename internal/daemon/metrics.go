@@ -118,17 +118,17 @@ func newDaemonMetrics() (*daemonMetrics, error) {
 	return dm, nil
 }
 
-// recordHeartbeat increments the heartbeat counter.
-func (dm *daemonMetrics) recordHeartbeat(ctx context.Context) {
+// RecordHeartbeat increments the heartbeat counter.
+func (dm *daemonMetrics) RecordHeartbeat(ctx context.Context) {
 	if dm == nil {
 		return
 	}
 	dm.heartbeatTotal.Add(ctx, 1)
 }
 
-// recordRestart increments the restart counter, labeled with the agent type
+// RecordRestart increments the restart counter, labeled with the agent type
 // (e.g. "deacon", "witness", "refinery", "polecat").
-func (dm *daemonMetrics) recordRestart(ctx context.Context, agentType string) {
+func (dm *daemonMetrics) RecordRestart(ctx context.Context, agentType string) {
 	if dm == nil {
 		return
 	}
@@ -137,8 +137,8 @@ func (dm *daemonMetrics) recordRestart(ctx context.Context, agentType string) {
 	)
 }
 
-// recordPolecatSpawn increments the polecat spawn counter, labeled with the rig name.
-func (dm *daemonMetrics) recordPolecatSpawn(ctx context.Context, rigName string) {
+// RecordPolecatSpawn increments the polecat spawn counter, labeled with the rig name.
+func (dm *daemonMetrics) RecordPolecatSpawn(ctx context.Context, rigName string) {
 	if dm == nil {
 		return
 	}
@@ -147,8 +147,8 @@ func (dm *daemonMetrics) recordPolecatSpawn(ctx context.Context, rigName string)
 	)
 }
 
-// updateDoltHealth stores the latest Dolt health snapshot for observable gauges.
-func (dm *daemonMetrics) updateDoltHealth(conns, maxConns int64, latencyMs float64, diskBytes int64, healthy bool) {
+// UpdateDoltHealth stores the latest Dolt health snapshot for observable gauges.
+func (dm *daemonMetrics) UpdateDoltHealth(conns, maxConns int64, latencyMs float64, diskBytes int64, healthy bool) {
 	if dm == nil {
 		return
 	}
