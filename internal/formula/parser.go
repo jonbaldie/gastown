@@ -717,76 +717,93 @@ func loadFormulaByName(name string, searchPaths []string) (*Formula, error) {
 // expansion formula.  Steps that depended on the target are updated to depend on
 // the last expanded step instead.
 func applyExpandRule(steps []Step, rule *ExpandRule, searchPaths []string) ([]Step, error) {
-	// Load the expansion formula.
-	expansion, err := loadFormulaByName(rule.With, searchPaths)
+	expansion, err := loadExpansionFormula(rule.With, searchPaths)
 	if err != nil {
-		return nil, fmt.Errorf("expansion formula %q: %w", rule.With, err)
+		return nil, err
+	}
+	targetIdx, targetStep, err := findTargetStep(steps, rule.Target)
+	if err != nil {
+		return nil, err
+	}
+	expanded := buildExpandedSteps(expansion.Template, rule, targetStep)
+	return replaceExpandedStep(steps, targetIdx, expanded, rule.Target), nil
+}
+
+func loadExpansionFormula(name string, searchPaths []string) (*Formula, error) {
+	expansion, err := loadFormulaByName(name, searchPaths)
+	if err != nil {
+		return nil, fmt.Errorf("expansion formula %q: %w", name, err)
 	}
 	if expansion.Type != TypeExpansion {
-		return nil, fmt.Errorf("formula %q is type %q, want %q", rule.With, expansion.Type, TypeExpansion)
+		return nil, fmt.Errorf("formula %q is type %q, want %q", name, expansion.Type, TypeExpansion)
 	}
 	if len(expansion.Template) == 0 {
-		return nil, fmt.Errorf("expansion formula %q has no template steps", rule.With)
+		return nil, fmt.Errorf("expansion formula %q has no template steps", name)
 	}
+	return expansion, nil
+}
 
-	// Locate the target step.
-	targetIdx := -1
-	var targetStep Step
-	for i, s := range steps {
-		if s.ID == rule.Target {
-			targetIdx = i
-			targetStep = s
-			break
+func findTargetStep(steps []Step, target string) (int, Step, error) {
+	for i, step := range steps {
+		if step.ID == target {
+			return i, step, nil
 		}
 	}
-	if targetIdx == -1 {
-		return nil, fmt.Errorf("target step %q not found in formula steps", rule.Target)
-	}
+	return -1, Step{}, fmt.Errorf("target step %q not found in formula steps", target)
+}
 
-	// Build expanded steps from the expansion template.
-	expanded := make([]Step, 0, len(expansion.Template))
-	for _, tmpl := range expansion.Template {
-		newStep := Step{
-			ID:          expandPlaceholders(tmpl.ID, rule.Target, targetStep),
-			Title:       expandPlaceholders(tmpl.Title, rule.Target, targetStep),
-			Description: expandPlaceholders(tmpl.Description, rule.Target, targetStep),
-			Acceptance:  expandPlaceholders(tmpl.Acceptance, rule.Target, targetStep),
-		}
-		if len(tmpl.Needs) == 0 {
-			// First expanded step inherits the target's own needs.
-			newStep.Needs = append([]string(nil), targetStep.Needs...)
-		} else {
-			newStep.Needs = make([]string, len(tmpl.Needs))
-			for i, need := range tmpl.Needs {
-				newStep.Needs[i] = expandPlaceholders(need, rule.Target, targetStep)
-			}
-		}
-		expanded = append(expanded, newStep)
+func buildExpandedSteps(templates []Template, rule *ExpandRule, targetStep Step) []Step {
+	expanded := make([]Step, 0, len(templates))
+	for _, tmpl := range templates {
+		expanded = append(expanded, buildExpandedStep(tmpl, rule, targetStep))
 	}
+	return expanded
+}
 
+func buildExpandedStep(tmpl Template, rule *ExpandRule, targetStep Step) Step {
+	step := Step{
+		ID:          expandPlaceholders(tmpl.ID, rule.Target, targetStep),
+		Title:       expandPlaceholders(tmpl.Title, rule.Target, targetStep),
+		Description: expandPlaceholders(tmpl.Description, rule.Target, targetStep),
+		Acceptance:  expandPlaceholders(tmpl.Acceptance, rule.Target, targetStep),
+	}
+	if len(tmpl.Needs) == 0 {
+		// First expanded step inherits the target's own needs.
+		step.Needs = append([]string(nil), targetStep.Needs...)
+		return step
+	}
+	step.Needs = make([]string, len(tmpl.Needs))
+	for i, need := range tmpl.Needs {
+		step.Needs[i] = expandPlaceholders(need, rule.Target, targetStep)
+	}
+	return step
+}
+
+func replaceExpandedStep(steps []Step, targetIdx int, expanded []Step, target string) []Step {
 	lastExpanded := expanded[len(expanded)-1].ID
-
-	// Rebuild step list: replace target with expanded steps; update dependents.
 	result := make([]Step, 0, len(steps)-1+len(expanded))
 	for i, step := range steps {
 		if i == targetIdx {
 			result = append(result, expanded...)
 			continue
 		}
-		// Rewrite any needs that referenced the replaced target.
-		updated := false
-		for j, need := range step.Needs {
-			if need == rule.Target {
-				if !updated {
-					step.Needs = append([]string(nil), step.Needs...)
-					updated = true
-				}
-				step.Needs[j] = lastExpanded
-			}
-		}
-		result = append(result, step)
+		result = append(result, rewriteStepDependency(step, target, lastExpanded))
 	}
-	return result, nil
+	return result
+}
+
+func rewriteStepDependency(step Step, target, replacement string) Step {
+	updated := false
+	for j, need := range step.Needs {
+		if need == target {
+			if !updated {
+				step.Needs = append([]string(nil), step.Needs...)
+				updated = true
+			}
+			step.Needs[j] = replacement
+		}
+	}
+	return step
 }
 
 // expandPlaceholders replaces {target} and {target.title}/{target.description}
