@@ -11,24 +11,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	broadcastRig    string
-	broadcastAll    bool
-	broadcastDryRun bool
-)
-
 func init() {
-	broadcastCmd.Flags().StringVar(&broadcastRig, "rig", "", "Only broadcast to workers in this rig")
-	broadcastCmd.Flags().BoolVar(&broadcastAll, "all", false, "Include all agents (mayor, witness, etc.), not just workers")
-	broadcastCmd.Flags().BoolVar(&broadcastDryRun, "dry-run", false, "Show what would be sent without sending")
-	rootCmd.AddCommand(broadcastCmd)
+	cmd := newBroadcastCommand()
+	cmd.Flags().String("rig", "", "Only broadcast to workers in this rig")
+	cmd.Flags().Bool("all", false, "Include all agents (mayor, witness, etc.), not just workers")
+	cmd.Flags().Bool("dry-run", false, "Show what would be sent without sending")
+	rootCmd.AddCommand(cmd)
 }
 
-var broadcastCmd = &cobra.Command{
-	Use:     "broadcast <message>",
-	GroupID: GroupComm,
-	Short:   "Send a nudge message to all workers",
-	Long: `Broadcasts a message to all active workers (polecats and crew).
+func newBroadcastCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     "broadcast <message>",
+		GroupID: GroupComm,
+		Short:   "Send a nudge message to all workers",
+		Long: `Broadcasts a message to all active workers (polecats and crew).
 
 By default, only workers (polecats and crew) receive the message.
 Use --all to include infrastructure agents (mayor, deacon, witness, refinery).
@@ -40,11 +36,39 @@ Examples:
   gt broadcast --rig greenplace "New priority work available"
   gt broadcast --all "System maintenance in 5 minutes"
   gt broadcast --dry-run "Test message"`,
-	Args: cobra.ExactArgs(1),
-	RunE: runBroadcast,
+		Args: cobra.ExactArgs(1),
+		RunE: runBroadcast,
+	}
 }
 
-func runBroadcast(_ *cobra.Command, args []string) error {
+type broadcastOptions struct {
+	rig    string
+	all    bool
+	dryRun bool
+}
+
+func broadcastOptionsFromCommand(cmd *cobra.Command) (broadcastOptions, error) {
+	rig, err := cmd.Flags().GetString("rig")
+	if err != nil {
+		return broadcastOptions{}, err
+	}
+	all, err := cmd.Flags().GetBool("all")
+	if err != nil {
+		return broadcastOptions{}, err
+	}
+	dryRun, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return broadcastOptions{}, err
+	}
+	return broadcastOptions{rig: rig, all: all, dryRun: dryRun}, nil
+}
+
+func runBroadcast(cmd *cobra.Command, args []string) error {
+	opts, err := broadcastOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+
 	message := args[0]
 
 	if message == "" {
@@ -59,99 +83,129 @@ func runBroadcast(_ *cobra.Command, args []string) error {
 
 	// Get sender identity to exclude self
 	sender := os.Getenv("BD_ACTOR")
+	targets := selectBroadcastTargets(agents, opts, sender)
+	if len(targets) == 0 {
+		return reportNoBroadcastTargets(opts.rig)
+	}
 
-	// Filter to target agents
+	if opts.dryRun {
+		printBroadcastDryRun(targets, message)
+		return nil
+	}
+
+	result := sendBroadcast(targets, message)
+	return reportBroadcast(result)
+}
+
+func selectBroadcastTargets(agents []*AgentSession, opts broadcastOptions, sender string) []*AgentSession {
 	var targets []*AgentSession
 	for _, agent := range agents {
-		// Filter by rig if specified
-		if broadcastRig != "" && agent.Rig != broadcastRig {
+		if opts.rig != "" && agent.Rig != opts.rig {
 			continue
 		}
-
-		// Unless --all, only include workers (crew + polecats)
-		if !broadcastAll {
-			if agent.Type != AgentCrew && agent.Type != AgentPolecat {
-				continue
-			}
+		if !opts.all && agent.Type != AgentCrew && agent.Type != AgentPolecat {
+			continue
 		}
-
-		// Skip self to avoid interrupting own session
 		if sender != "" && formatAgentName(agent) == sender {
 			continue
 		}
-
 		targets = append(targets, agent)
 	}
+	return targets
+}
 
-	if len(targets) == 0 {
-		fmt.Println("No workers running to broadcast to.")
-		if broadcastRig != "" {
-			fmt.Printf("  (filtered by rig: %s)\n", broadcastRig)
-		}
-		return nil
+func reportNoBroadcastTargets(rig string) error {
+	fmt.Println("No workers running to broadcast to.")
+	if rig != "" {
+		fmt.Printf("  (filtered by rig: %s)\n", rig)
 	}
+	return nil
+}
 
-	// Dry run - just show what would be sent
-	if broadcastDryRun {
-		fmt.Printf("Would broadcast to %d agent(s):\n\n", len(targets))
-		for _, agent := range targets {
-			fmt.Printf("  %s %s\n", AgentTypeIcons[agent.Type], formatAgentName(agent))
-		}
-		fmt.Printf("\nMessage: %s\n", message)
-		return nil
+func printBroadcastDryRun(targets []*AgentSession, message string) {
+	fmt.Printf("Would broadcast to %d agent(s):\n\n", len(targets))
+	for _, agent := range targets {
+		fmt.Printf("  %s %s\n", AgentTypeIcons[agent.Type], formatAgentName(agent))
 	}
+	fmt.Printf("\nMessage: %s\n", message)
+}
 
-	// Send nudges
+type broadcastResult struct {
+	succeeded int
+	failed    int
+	skipped   int
+	failures  []string
+}
+
+func sendBroadcast(targets []*AgentSession, message string) broadcastResult {
 	t := tmux.NewTmux()
 	townRoot, _ := workspace.FindFromCwd()
-	var succeeded, failed, skipped int
-	var failures []string
+	result := broadcastResult{}
 
 	fmt.Printf("Broadcasting to %d agent(s)...\n\n", len(targets))
-
 	for i, agent := range targets {
-		agentName := formatAgentName(agent)
-
-		// Check DND status before nudging
-		if townRoot != "" {
-			if shouldSend, level, _ := shouldNudgeTarget(townRoot, agentName, false); !shouldSend {
-				skipped++
-				fmt.Printf("  %s %s %s (DND: %s)\n", style.Dim.Render("○"), AgentTypeIcons[agent.Type], agentName, level)
-				continue
-			}
-		}
-
-		if err := t.NudgeSession(agent.Name, message); err != nil {
-			failed++
-			failures = append(failures, fmt.Sprintf("%s: %v", agentName, err))
-			fmt.Printf("  %s %s %s\n", style.ErrorPrefix, AgentTypeIcons[agent.Type], agentName)
-		} else {
-			succeeded++
-			fmt.Printf("  %s %s %s\n", style.SuccessPrefix, AgentTypeIcons[agent.Type], agentName)
-		}
-
-		// Small delay between nudges to avoid overwhelming tmux
+		result.record(deliverBroadcast(t, townRoot, agent, message))
 		if i < len(targets)-1 {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
+	return result
+}
 
-	fmt.Println()
-	if failed > 0 {
-		summary := fmt.Sprintf("Broadcast complete: %d succeeded, %d failed", succeeded, failed)
-		if skipped > 0 {
-			summary += fmt.Sprintf(", %d skipped (DND)", skipped)
+type broadcastDelivery struct {
+	succeeded bool
+	failed    bool
+	skipped   bool
+	failure   string
+}
+
+func deliverBroadcast(t *tmux.Tmux, townRoot string, agent *AgentSession, message string) broadcastDelivery {
+	agentName := formatAgentName(agent)
+	if townRoot != "" {
+		if shouldSend, level, _ := shouldNudgeTarget(townRoot, agentName, false); !shouldSend {
+			fmt.Printf("  %s %s %s (DND: %s)\n", style.Dim.Render("○"), AgentTypeIcons[agent.Type], agentName, level)
+			return broadcastDelivery{skipped: true}
 		}
-		fmt.Printf("%s %s\n", style.WarningPrefix, summary)
-		for _, f := range failures {
-			fmt.Printf("  %s\n", style.Dim.Render(f))
-		}
-		return fmt.Errorf("%d nudge(s) failed", failed)
 	}
 
-	summary := fmt.Sprintf("Broadcast complete: %d agent(s) nudged", succeeded)
-	if skipped > 0 {
-		summary += fmt.Sprintf(", %d skipped (DND)", skipped)
+	if err := t.NudgeSession(agent.Name, message); err != nil {
+		fmt.Printf("  %s %s %s\n", style.ErrorPrefix, AgentTypeIcons[agent.Type], agentName)
+		return broadcastDelivery{failed: true, failure: fmt.Sprintf("%s: %v", agentName, err)}
+	}
+	fmt.Printf("  %s %s %s\n", style.SuccessPrefix, AgentTypeIcons[agent.Type], agentName)
+	return broadcastDelivery{succeeded: true}
+}
+
+func (r *broadcastResult) record(delivery broadcastDelivery) {
+	if delivery.succeeded {
+		r.succeeded++
+	}
+	if delivery.failed {
+		r.failed++
+		r.failures = append(r.failures, delivery.failure)
+	}
+	if delivery.skipped {
+		r.skipped++
+	}
+}
+
+func reportBroadcast(result broadcastResult) error {
+	fmt.Println()
+	if result.failed > 0 {
+		summary := fmt.Sprintf("Broadcast complete: %d succeeded, %d failed", result.succeeded, result.failed)
+		if result.skipped > 0 {
+			summary += fmt.Sprintf(", %d skipped (DND)", result.skipped)
+		}
+		fmt.Printf("%s %s\n", style.WarningPrefix, summary)
+		for _, failure := range result.failures {
+			fmt.Printf("  %s\n", style.Dim.Render(failure))
+		}
+		return fmt.Errorf("%d nudge(s) failed", result.failed)
+	}
+
+	summary := fmt.Sprintf("Broadcast complete: %d agent(s) nudged", result.succeeded)
+	if result.skipped > 0 {
+		summary += fmt.Sprintf(", %d skipped (DND)", result.skipped)
 	}
 	fmt.Printf("%s %s\n", style.SuccessPrefix, summary)
 	return nil
