@@ -1234,7 +1234,7 @@ func (t *Tmux) GetSessionSet() (*SessionSet, error) {
 	}
 
 	// Parse directly without intermediate slice allocation
-	for len(out) > 0 {
+	for out != "" {
 		idx := strings.IndexByte(out, '\n')
 		var line string
 		if idx >= 0 {

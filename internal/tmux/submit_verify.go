@@ -64,7 +64,8 @@ func applySGR(params string, dim bool) bool {
 		return false
 	}
 	fields := strings.Split(params, ";")
-	for i := 0; i < len(fields); i++ {
+	fieldCount := len(fields)
+	for i := 0; i < fieldCount; i++ {
 		switch fields[i] {
 		case "", "0":
 			dim = false
@@ -91,11 +92,12 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 	var plain []rune
 	var dim []bool
 	curDim := false
-	for i := 0; i < len(s); {
+	sLength := len(s)
+	for i := 0; i < sLength; {
 		if s[i] == 0x1b {
 			if i+1 < len(s) && s[i+1] == '[' {
 				j := i + 2
-				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				for j < sLength && (s[j] < 0x40 || s[j] > 0x7e) {
 					j++
 				}
 				if j >= len(s) {
@@ -167,8 +169,9 @@ func splitRunesAndDim(plain []rune, dim []bool) ([][]rune, [][]bool) {
 	var lines [][]rune
 	var lineDims [][]bool
 	start := 0
-	for i := 0; i <= len(plain); i++ {
-		if i == len(plain) || plain[i] == '\n' {
+	plainCount := len(plain)
+	for i := 0; i <= plainCount; i++ {
+		if i == plainCount || plain[i] == '\n' {
 			lines = append(lines, plain[start:i])
 			lineDims = append(lineDims, dim[start:i])
 			start = i + 1
