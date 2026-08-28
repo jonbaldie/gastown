@@ -8,6 +8,17 @@ import (
 	"strings"
 )
 
+func trimBlankLines(lines []string) []string {
+	start, end := 0, len(lines)
+	for start < end && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return lines[start:end]
+}
+
 // Note: AgentFields, ParseAgentFields, FormatAgentDescription, and CreateAgentBead are in beads.go
 
 // AttachmentFields holds the attachment info for pinned beads.
@@ -239,14 +250,7 @@ func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 	// Build new description: attachment fields first, then other content
 	formatted := FormatAttachmentFields(fields)
 
-	// Trim trailing blank lines from other content
-	for len(otherLines) > 0 && strings.TrimSpace(otherLines[len(otherLines)-1]) == "" {
-		otherLines = otherLines[:len(otherLines)-1]
-	}
-	// Trim leading blank lines from other content
-	for len(otherLines) > 0 && strings.TrimSpace(otherLines[0]) == "" {
-		otherLines = otherLines[1:]
-	}
+	otherLines = trimBlankLines(otherLines)
 
 	if formatted == "" {
 		return strings.Join(otherLines, "\n")
@@ -596,14 +600,7 @@ func SetConvoyFields(issue *Issue, fields *ConvoyFields) string {
 	// Build new description: other content first, then convoy fields
 	formatted := FormatConvoyFields(fields)
 
-	// Trim trailing blank lines from other content
-	for len(otherLines) > 0 && strings.TrimSpace(otherLines[len(otherLines)-1]) == "" {
-		otherLines = otherLines[:len(otherLines)-1]
-	}
-	// Trim leading blank lines from other content
-	for len(otherLines) > 0 && strings.TrimSpace(otherLines[0]) == "" {
-		otherLines = otherLines[1:]
-	}
+	otherLines = trimBlankLines(otherLines)
 
 	if len(otherLines) == 0 {
 		return formatted
@@ -916,14 +913,7 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 	// Build new description: MR fields first, then other content
 	formatted := FormatMRFields(fields)
 
-	// Trim trailing blank lines from other content
-	for len(otherLines) > 0 && strings.TrimSpace(otherLines[len(otherLines)-1]) == "" {
-		otherLines = otherLines[:len(otherLines)-1]
-	}
-	// Trim leading blank lines from other content
-	for len(otherLines) > 0 && strings.TrimSpace(otherLines[0]) == "" {
-		otherLines = otherLines[1:]
-	}
+	otherLines = trimBlankLines(otherLines)
 
 	if formatted == "" {
 		return strings.Join(otherLines, "\n")
