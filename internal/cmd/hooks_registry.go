@@ -28,6 +28,11 @@ type HookDefinition struct {
 	Enabled     bool     `toml:"enabled"`
 }
 
+type hookRegistryEntry struct {
+	name string
+	def  HookDefinition
+}
+
 var (
 	hooksRegistryAll     bool
 	hooksRegistryVerbose bool
@@ -92,75 +97,83 @@ func runHooksRegistry(_ *cobra.Command, _ []string) error {
 	fmt.Printf("\n%s Hook Registry\n", style.Bold.Render("📋"))
 	fmt.Printf("Source: %s\n\n", style.Dim.Render(filepath.Join(townRoot, "hooks", "registry.toml")))
 
-	// Group by event type
-	byEvent := make(map[string][]struct {
-		name string
-		def  HookDefinition
-	})
-	eventOrder := []string{"PreToolUse", "PostToolUse", "SessionStart", "PreCompact", "UserPromptSubmit", "Stop", "WorktreeCreate", "WorktreeRemove"}
-
-	for name, def := range registry.Hooks {
-		if !hooksRegistryAll && !def.Enabled {
-			continue
-		}
-		byEvent[def.Event] = append(byEvent[def.Event], struct {
-			name string
-			def  HookDefinition
-		}{name, def})
-	}
-
-	// Add any events not in the predefined order
-	for event := range byEvent {
-		found := false
-		for _, o := range eventOrder {
-			if event == o {
-				found = true
-				break
-			}
-		}
-		if !found {
-			eventOrder = append(eventOrder, event)
-		}
-	}
-
-	count := 0
-	for _, event := range eventOrder {
-		hooks := byEvent[event]
-		if len(hooks) == 0 {
-			continue
-		}
-
-		fmt.Printf("%s %s\n", style.Bold.Render("▸"), event)
-
-		for _, h := range hooks {
-			count++
-			statusIcon := "●"
-			statusColor := style.Success
-			if !h.def.Enabled {
-				statusIcon = "○"
-				statusColor = style.Dim
-			}
-
-			rolesStr := strings.Join(h.def.Roles, ", ")
-			scopeStr := h.def.Scope
-
-			fmt.Printf("  %s %s\n", statusColor.Render(statusIcon), style.Bold.Render(h.name))
-			fmt.Printf("    %s\n", h.def.Description)
-			fmt.Printf("    %s %s  %s %s\n",
-				style.Dim.Render("roles:"), rolesStr,
-				style.Dim.Render("scope:"), scopeStr)
-
-			if hooksRegistryVerbose {
-				fmt.Printf("    %s %s\n", style.Dim.Render("command:"), h.def.Command)
-				for _, m := range h.def.Matchers {
-					fmt.Printf("    %s %s\n", style.Dim.Render("matcher:"), m)
-				}
-			}
-		}
-		fmt.Println()
-	}
+	byEvent, eventOrder := groupRegistryHooks(registry)
+	count := printRegistryEvents(byEvent, eventOrder)
 
 	fmt.Printf("%s %d hooks in registry\n", style.Dim.Render("Total:"), count)
 
 	return nil
+}
+
+func groupRegistryHooks(registry *HookRegistry) (map[string][]hookRegistryEntry, []string) {
+	byEvent := make(map[string][]hookRegistryEntry)
+	for name, def := range registry.Hooks {
+		if !hooksRegistryAll && !def.Enabled {
+			continue
+		}
+		byEvent[def.Event] = append(byEvent[def.Event], hookRegistryEntry{name: name, def: def})
+	}
+	return byEvent, registryEventOrder(byEvent)
+}
+
+func registryEventOrder(byEvent map[string][]hookRegistryEntry) []string {
+	// Add any events not in the predefined order.
+	eventOrder := []string{"PreToolUse", "PostToolUse", "SessionStart", "PreCompact", "UserPromptSubmit", "Stop", "WorktreeCreate", "WorktreeRemove"}
+	for event := range byEvent {
+		if containsRegistryEvent(eventOrder, event) {
+			continue
+		}
+		eventOrder = append(eventOrder, event)
+	}
+	return eventOrder
+}
+
+func containsRegistryEvent(eventOrder []string, event string) bool {
+	for _, existing := range eventOrder {
+		if event == existing {
+			return true
+		}
+	}
+	return false
+}
+
+func printRegistryEvents(byEvent map[string][]hookRegistryEntry, eventOrder []string) int {
+	count := 0
+	for _, event := range eventOrder {
+		eventHooks := byEvent[event]
+		if len(eventHooks) == 0 {
+			continue
+		}
+
+		fmt.Printf("%s %s\n", style.Bold.Render("▸"), event)
+		for _, hook := range eventHooks {
+			printRegistryHook(hook)
+			count++
+		}
+		fmt.Println()
+	}
+	return count
+}
+
+func printRegistryHook(hook hookRegistryEntry) {
+	statusIcon := "●"
+	statusColor := style.Success
+	if !hook.def.Enabled {
+		statusIcon = "○"
+		statusColor = style.Dim
+	}
+
+	rolesStr := strings.Join(hook.def.Roles, ", ")
+	fmt.Printf("  %s %s\n", statusColor.Render(statusIcon), style.Bold.Render(hook.name))
+	fmt.Printf("    %s\n", hook.def.Description)
+	fmt.Printf("    %s %s  %s %s\n",
+		style.Dim.Render("roles:"), rolesStr,
+		style.Dim.Render("scope:"), hook.def.Scope)
+
+	if hooksRegistryVerbose {
+		fmt.Printf("    %s %s\n", style.Dim.Render("command:"), hook.def.Command)
+		for _, matcher := range hook.def.Matchers {
+			fmt.Printf("    %s %s\n", style.Dim.Render("matcher:"), matcher)
+		}
+	}
 }
