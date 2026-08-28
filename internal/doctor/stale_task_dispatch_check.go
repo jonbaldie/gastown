@@ -128,44 +128,8 @@ func (c *StaleTaskDispatchCheck) Fix(_ *CheckContext) error {
 
 	var errs []string
 	for _, target := range c.staleTargets {
-		expected, err := hooks.ComputeExpected(target.Key)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", target.DisplayKey(), err))
-			continue
-		}
-
-		// Strip task-dispatch from expected in case on-disk overrides re-inject it.
-		expected = stripTaskDispatch(expected)
-
-		current, err := hooks.LoadSettings(target.Path)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", target.DisplayKey(), err))
-			continue
-		}
-
-		current.Hooks = *expected
-
-		if current.EnabledPlugins == nil {
-			current.EnabledPlugins = make(map[string]bool)
-		}
-		current.EnabledPlugins["beads@beads-marketplace"] = false
-
-		claudeDir := filepath.Dir(target.Path)
-		if err := os.MkdirAll(claudeDir, 0755); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: creating dir: %v", target.DisplayKey(), err))
-			continue
-		}
-
-		data, err := hooks.MarshalSettings(current)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: marshal: %v", target.DisplayKey(), err))
-			continue
-		}
-		data = append(data, '\n')
-
-		if err := os.WriteFile(target.Path, data, 0644); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: write: %v", target.DisplayKey(), err))
-			continue
+		if err := fixStaleTaskDispatchTarget(target); err != nil {
+			errs = append(errs, err.Error())
 		}
 	}
 
@@ -173,4 +137,39 @@ func (c *StaleTaskDispatchCheck) Fix(_ *CheckContext) error {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func fixStaleTaskDispatchTarget(target hooks.Target) error {
+	expected, err := hooks.ComputeExpected(target.Key)
+	if err != nil {
+		return fmt.Errorf("%s: %v", target.DisplayKey(), err)
+	}
+	expected = stripTaskDispatch(expected)
+
+	current, err := hooks.LoadSettings(target.Path)
+	if err != nil {
+		return fmt.Errorf("%s: %v", target.DisplayKey(), err)
+	}
+	current.Hooks = *expected
+	ensureBeadsPluginDisabled(current)
+
+	if err := os.MkdirAll(filepath.Dir(target.Path), 0755); err != nil {
+		return fmt.Errorf("%s: creating dir: %v", target.DisplayKey(), err)
+	}
+	data, err := hooks.MarshalSettings(current)
+	if err != nil {
+		return fmt.Errorf("%s: marshal: %v", target.DisplayKey(), err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(target.Path, data, 0644); err != nil {
+		return fmt.Errorf("%s: write: %v", target.DisplayKey(), err)
+	}
+	return nil
+}
+
+func ensureBeadsPluginDisabled(settings *hooks.SettingsJSON) {
+	if settings.EnabledPlugins == nil {
+		settings.EnabledPlugins = make(map[string]bool)
+	}
+	settings.EnabledPlugins["beads@beads-marketplace"] = false
 }
