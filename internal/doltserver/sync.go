@@ -207,22 +207,12 @@ func PullDatabasesSQL(townRoot string, opts SyncOptions) []SyncResult {
 	var results []SyncResult
 
 	for _, db := range databases {
-		if opts.Filter != "" && db != opts.Filter {
+		dbDir := RigDatabaseDir(townRoot, db)
+		if skipDatabaseSync(db, dbDir, opts.Filter) {
 			continue
 		}
 
 		result := SyncResult{Database: db}
-
-		// Skip databases with a .no-sync marker file (local-only databases),
-		// unless explicitly requested via Filter (--db flag).
-		dbDir := RigDatabaseDir(townRoot, db)
-		if opts.Filter == "" {
-			if _, err := os.Stat(filepath.Join(dbDir, ".no-sync")); err == nil {
-				result.Skipped = true
-				results = append(results, result)
-				continue
-			}
-		}
 
 		// Check for remote via SQL
 		remoteName, remoteURL, err := FindRemoteSQL(townRoot, db)
@@ -273,22 +263,12 @@ func PullDatabases(townRoot string, opts SyncOptions) []SyncResult {
 	var results []SyncResult
 
 	for _, db := range databases {
-		if opts.Filter != "" && db != opts.Filter {
+		dbDir := RigDatabaseDir(townRoot, db)
+		if skipDatabaseSync(db, dbDir, opts.Filter) {
 			continue
 		}
 
-		dbDir := RigDatabaseDir(townRoot, db)
 		result := SyncResult{Database: db}
-
-		// Skip databases with a .no-sync marker file,
-		// unless explicitly requested via Filter (--db flag).
-		if opts.Filter == "" {
-			if _, err := os.Stat(filepath.Join(dbDir, ".no-sync")); err == nil {
-				result.Skipped = true
-				results = append(results, result)
-				continue
-			}
-		}
 
 		// Check for remote
 		remoteName, remoteURL, err := FindRemote(dbDir)
@@ -322,6 +302,18 @@ func PullDatabases(townRoot string, opts SyncOptions) []SyncResult {
 	}
 
 	return results
+}
+
+func skipDatabaseSync(db, dbDir, filter string) bool {
+	if filter != "" && db != filter {
+		return true
+	}
+	if filter == "" {
+		if _, err := os.Stat(filepath.Join(dbDir, ".no-sync")); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // PushDatabaseSQL pushes a database to its remote via SQL (CALL DOLT_PUSH) through
