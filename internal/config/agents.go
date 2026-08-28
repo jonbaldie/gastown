@@ -1001,7 +1001,8 @@ func lookupProcessNamesByBinary(realBin string) []string {
 // assignments (env only), and treats `--` as an end-of-options separator.
 func extractWrappedBinary(wrapper string, args []string) string {
 	flagsTakeValue := wrapperFlagsTakeValue(wrapper)
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		a := args[i]
 		if a == "--" {
 			if i+1 < len(args) {

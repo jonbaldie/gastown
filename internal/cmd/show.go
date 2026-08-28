@@ -50,7 +50,8 @@ func runShow(cmd *cobra.Command, args []string) error {
 // IDs before --id values even when --id appears earlier in argv.
 func extractBeadIDFromArgs(args []string) string {
 	idFlag := ""
-	for i := 0; i < len(args); i++ {
+	argCount := len(args)
+	for i := 0; i < argCount; i++ {
 		arg := args[i]
 		if arg == "--" {
 			if i+1 < len(args) {
