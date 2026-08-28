@@ -1564,7 +1564,7 @@ Examples:
 	// Add flags
 	configAgentListCmd.Flags().BoolVar(&configAgentListJSON, "json", false, "Output as JSON")
 	configDefaultAgentListCmd.Flags().BoolVar(&configDefaultAgentListJSON, "json", false, "Output as JSON")
-	configMixCmd.Flags().BoolVar(&configMixJSON, "json", false, "Output the effective mix as JSON")
+	configMixCmd.Flags().Bool("json", false, "Output the effective mix as JSON")
 	configAgentSetCmd.Flags().StringVar(&configAgentSetProvider, "provider", "", fmt.Sprintf("Agent provider preset (e.g. %s); inferred from command name if not set", presets))
 
 	// Add agent subcommands
