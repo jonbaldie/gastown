@@ -1927,8 +1927,15 @@ func (b *Beads) Search(opts SearchOptions) ([]*Issue, error) {
 		return b.storeSearch(opts)
 	}
 
-	args := []string{"search", "--json"}
+	out, err := b.run(searchArgs(opts)...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSearchIssues(out)
+}
 
+func searchArgs(opts SearchOptions) []string {
+	args := []string{"search", "--json"}
 	if opts.Query != "" {
 		args = append(args, opts.Query)
 	}
@@ -1944,12 +1951,10 @@ func (b *Beads) Search(opts SearchOptions) ([]*Issue, error) {
 	if opts.DescContains != "" {
 		args = append(args, "--desc-contains="+opts.DescContains)
 	}
+	return args
+}
 
-	out, err := b.run(args...)
-	if err != nil {
-		return nil, err
-	}
-
+func decodeSearchIssues(out []byte) ([]*Issue, error) {
 	var issues []*Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
 		return nil, fmt.Errorf("parsing bd search output: %w", err)
