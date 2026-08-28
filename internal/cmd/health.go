@@ -19,10 +19,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	healthJSON bool
-)
-
 // HealthReport is the machine-readable output of gt health --json.
 type HealthReport struct {
 	Timestamp string            `json:"timestamp"`
@@ -100,11 +96,15 @@ Use --json for machine-readable output.`,
 }
 
 func init() {
-	healthCmd.Flags().BoolVar(&healthJSON, "json", false, "Output as JSON")
+	healthCmd.Flags().Bool("json", false, "Output as JSON")
 	rootCmd.AddCommand(healthCmd)
 }
 
-func runHealth(_ *cobra.Command, _ []string) error {
+func runHealth(cmd *cobra.Command, _ []string) error {
+	jsonOutput, err := cmd.Flags().GetBool("json")
+	if err != nil {
+		return err
+	}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -136,7 +136,7 @@ func runHealth(_ *cobra.Command, _ []string) error {
 	// 6. Orphans
 	report.Orphans = checkOrphanDBs(townRoot)
 
-	if healthJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(report)
@@ -344,82 +344,94 @@ func checkOrphanDBs(townRoot string) []OrphanDB {
 }
 
 func printHealthReport(r *HealthReport) {
-	// 1. Server
+	printHealthServer(r.Server)
+	printHealthDatabases(r.Databases)
+	printHealthPollution(r.Pollution)
+	printHealthBackups(r.Backups)
+	printHealthProcesses(r.Processes)
+	printHealthOrphans(r.Orphans)
+	fmt.Println()
+}
+
+func printHealthServer(server *ServerHealth) {
 	fmt.Printf("\n%s Dolt Server\n", style.Bold.Render("●"))
-	if r.Server.Running {
-		fmt.Printf("  Status: %s (PID %d)\n", style.Bold.Render("running"), r.Server.PID)
-		if r.Server.Port > 0 {
-			fmt.Printf("  Port: %d\n", r.Server.Port)
+	if server.Running {
+		fmt.Printf("  Status: %s (PID %d)\n", style.Bold.Render("running"), server.PID)
+		if server.Port > 0 {
+			fmt.Printf("  Port: %d\n", server.Port)
 		}
-		fmt.Printf("  Latency: %dms\n", r.Server.LatencyMs)
-		fmt.Printf("  Connections: %d / %d\n", r.Server.Connections, r.Server.MaxConnections)
-		if r.Server.DiskUsageHuman != "" {
-			fmt.Printf("  Disk: %s\n", r.Server.DiskUsageHuman)
+		fmt.Printf("  Latency: %dms\n", server.LatencyMs)
+		fmt.Printf("  Connections: %d / %d\n", server.Connections, server.MaxConnections)
+		if server.DiskUsageHuman != "" {
+			fmt.Printf("  Disk: %s\n", server.DiskUsageHuman)
 		}
 	} else {
 		fmt.Printf("  Status: %s\n", style.Dim.Render("not running"))
 	}
+}
 
-	// 2. Databases
-	if len(r.Databases) > 0 {
+func printHealthDatabases(databases []DatabaseHealth) {
+	if len(databases) > 0 {
 		fmt.Printf("\n%s Databases\n", style.Bold.Render("●"))
-		for _, db := range r.Databases {
+		for _, db := range databases {
 			fmt.Printf("  %s: %d issues (%d open), %d wisps (%d open), %d commits\n",
 				style.Bold.Render(db.Name), db.Issues, db.OpenIssues,
 				db.Wisps, db.OpenWisps, db.Commits)
 		}
 	}
+}
 
-	// 3. Pollution
+func printHealthPollution(pollution []PollutionRecord) {
 	fmt.Printf("\n%s Pollution\n", style.Bold.Render("●"))
-	if len(r.Pollution) == 0 {
+	if len(pollution) == 0 {
 		fmt.Printf("  %s No pollution detected\n", style.Bold.Render("✓"))
 	} else {
-		fmt.Printf("  %s %d suspicious record(s):\n", style.Bold.Render("!"), len(r.Pollution))
-		for _, p := range r.Pollution {
+		fmt.Printf("  %s %d suspicious record(s):\n", style.Bold.Render("!"), len(pollution))
+		for _, p := range pollution {
 			fmt.Printf("    %s/%s: %q (%s)\n", p.Database, p.ID, p.Title, p.Pattern)
 		}
 	}
+}
 
-	// 4. Backups
+func printHealthBackups(backups *BackupHealth) {
 	fmt.Printf("\n%s Backups\n", style.Bold.Render("●"))
-	if r.Backups.DoltFreshness != "" {
+	if backups.DoltFreshness != "" {
 		icon := style.Bold.Render("✓")
-		if r.Backups.DoltStale {
+		if backups.DoltStale {
 			icon = style.Bold.Render("!")
 		}
-		fmt.Printf("  %s Dolt filesystem: %s ago\n", icon, r.Backups.DoltFreshness)
+		fmt.Printf("  %s Dolt filesystem: %s ago\n", icon, backups.DoltFreshness)
 	} else {
 		fmt.Printf("  %s Dolt filesystem: not found\n", style.Dim.Render("○"))
 	}
-	if r.Backups.JSONLFreshness != "" {
+	if backups.JSONLFreshness != "" {
 		icon := style.Bold.Render("✓")
-		if r.Backups.JSONLStale {
+		if backups.JSONLStale {
 			icon = style.Bold.Render("!")
 		}
-		fmt.Printf("  %s JSONL git: %s ago\n", icon, r.Backups.JSONLFreshness)
+		fmt.Printf("  %s JSONL git: %s ago\n", icon, backups.JSONLFreshness)
 	} else {
 		fmt.Printf("  %s JSONL git: not found\n", style.Dim.Render("○"))
 	}
+}
 
-	// 5. Processes
+func printHealthProcesses(processes *ProcessHealth) {
 	fmt.Printf("\n%s Processes\n", style.Bold.Render("●"))
-	if r.Processes.ZombieCount == 0 {
+	if processes.ZombieCount == 0 {
 		fmt.Printf("  %s No zombie processes\n", style.Bold.Render("✓"))
 	} else {
 		fmt.Printf("  %s %d zombie(s): %v\n", style.Bold.Render("!"),
-			r.Processes.ZombieCount, r.Processes.ZombiePIDs)
+			processes.ZombieCount, processes.ZombiePIDs)
 	}
+}
 
-	// 6. Orphans
+func printHealthOrphans(orphans []OrphanDB) {
 	fmt.Printf("\n%s Orphan DBs\n", style.Bold.Render("●"))
-	if len(r.Orphans) == 0 {
+	if len(orphans) == 0 {
 		fmt.Printf("  %s None\n", style.Bold.Render("✓"))
 	} else {
-		for _, o := range r.Orphans {
+		for _, o := range orphans {
 			fmt.Printf("  %s %s (%s)\n", style.Bold.Render("!"), o.Name, o.Size)
 		}
 	}
-
-	fmt.Println()
 }
