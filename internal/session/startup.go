@@ -67,51 +67,44 @@ type BeaconConfig struct {
 //   - [GAS TOWN] deacon <- daemon • 2025-12-30T08:00 • patrol
 //   - [GAS TOWN] gastown/witness <- deacon • 2025-12-30T14:00 • patrol
 func FormatStartupBeacon(cfg BeaconConfig) string {
-	// Use local time in compact format
 	timestamp := time.Now().Format("2006-01-02T15:04")
-
-	// Build topic string - append mol-id if provided
-	topic := cfg.Topic
-	if cfg.MolID != "" && cfg.Topic != "" {
-		topic = fmt.Sprintf("%s:%s", cfg.Topic, cfg.MolID)
-	} else if cfg.MolID != "" {
-		topic = cfg.MolID
-	} else if topic == "" {
-		topic = "ready"
-	}
-
-	// Build the beacon: [GAS TOWN] recipient <- sender • timestamp • topic
 	beacon := fmt.Sprintf("[GAS TOWN] %s <- %s • %s • %s",
-		cfg.Recipient, cfg.Sender, timestamp, topic)
-
-	// For non-hook agents, add "Run gt prime" instruction since there's no
-	// SessionStart hook to do it automatically. Work instructions will
-	// come as a separate nudge after gt prime completes.
+		cfg.Recipient, cfg.Sender, timestamp, startupTopic(cfg))
 	if cfg.IncludePrimeInstruction {
-		beacon += "\n\nRun `" + cli.Name() + " prime` to initialize your context."
-		// Don't add work instructions here - they come as a delayed nudge after gt prime
-		return beacon
+		return beacon + "\n\nRun `" + cli.Name() + " prime` to initialize your context."
 	}
+	return beacon + startupBeaconInstructions(cfg)
+}
 
-	// For handoff, cold-start, and attach, add explicit instructions so the agent knows
-	// what to do even if hooks haven't loaded CLAUDE.md yet
-	if cfg.Topic == "handoff" || cfg.Topic == "cold-start" || cfg.Topic == "attach" {
-		beacon += "\n\nCheck your hook and mail, then act on the hook if present:\n" +
+func startupTopic(cfg BeaconConfig) string {
+	if cfg.MolID == "" {
+		if cfg.Topic == "" {
+			return "ready"
+		}
+		return cfg.Topic
+	}
+	if cfg.Topic == "" {
+		return cfg.MolID
+	}
+	return fmt.Sprintf("%s:%s", cfg.Topic, cfg.MolID)
+}
+
+func startupBeaconInstructions(cfg BeaconConfig) string {
+	if isStartupHookTopic(cfg.Topic) {
+		return "\n\nCheck your hook and mail, then act on the hook if present:\n" +
 			"1. `" + cli.Name() + " hook` - shows hooked work (if any)\n" +
 			"2. `" + cli.Name() + " mail inbox` - check for messages\n" +
 			"3. If work is hooked → execute it immediately\n" +
 			"4. If nothing hooked → wait for instructions"
 	}
-
-	// For assigned, tell agent to prime then work on the hook.
-	// Prime must come first so the agent gets full role context (formula, commands, etc).
-	// Matches refinery pattern: short instruction with prime before action.
-	// Exclude work instructions only if explicitly set (non-hook agents get them via delayed nudge)
 	if cfg.Topic == "assigned" && !cfg.ExcludeWorkInstructions {
-		beacon += "\n\nRun `" + cli.Name() + " prime --hook` and begin work on your hook."
+		return "\n\nRun `" + cli.Name() + " prime --hook` and begin work on your hook."
 	}
+	return ""
+}
 
-	return beacon
+func isStartupHookTopic(topic string) bool {
+	return topic == "handoff" || topic == "cold-start" || topic == "attach"
 }
 
 // BuildStartupPrompt creates the CLI prompt for agent startup.
