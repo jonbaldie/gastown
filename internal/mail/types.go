@@ -341,31 +341,51 @@ func (bm *BeadsMessage) ParseLabels() {
 	bm.deliveryAckedAt = nil
 
 	for _, label := range bm.Labels {
-		if strings.HasPrefix(label, "from:") {
-			bm.sender = strings.TrimPrefix(label, "from:")
-		} else if strings.HasPrefix(label, "thread:") {
-			bm.threadID = strings.TrimPrefix(label, "thread:")
-		} else if strings.HasPrefix(label, "reply-to:") {
-			bm.replyTo = strings.TrimPrefix(label, "reply-to:")
-		} else if strings.HasPrefix(label, "msg-type:") {
-			bm.msgType = strings.TrimPrefix(label, "msg-type:")
-		} else if strings.HasPrefix(label, "cc:") {
-			bm.cc = append(bm.cc, strings.TrimPrefix(label, "cc:"))
-		} else if strings.HasPrefix(label, "queue:") {
-			bm.queue = strings.TrimPrefix(label, "queue:")
-		} else if strings.HasPrefix(label, "channel:") {
-			bm.channel = strings.TrimPrefix(label, "channel:")
-		} else if strings.HasPrefix(label, "claimed-by:") {
-			bm.claimedBy = strings.TrimPrefix(label, "claimed-by:")
-		} else if strings.HasPrefix(label, "claimed-at:") {
-			ts := strings.TrimPrefix(label, "claimed-at:")
-			if t, err := time.Parse(time.RFC3339, ts); err == nil {
-				bm.claimedAt = &t
-			}
-		}
+		bm.parseLabel(label)
 	}
 
 	bm.deliveryState, bm.deliveryAckedBy, bm.deliveryAckedAt = ParseDeliveryLabels(bm.Labels)
+}
+
+func (bm *BeadsMessage) parseLabel(label string) {
+	if bm.parseMessageLabel(label) {
+		return
+	}
+	bm.parseClaimedAtLabel(label)
+}
+
+func (bm *BeadsMessage) parseMessageLabel(label string) bool {
+	switch {
+	case strings.HasPrefix(label, "from:"):
+		bm.sender = strings.TrimPrefix(label, "from:")
+	case strings.HasPrefix(label, "thread:"):
+		bm.threadID = strings.TrimPrefix(label, "thread:")
+	case strings.HasPrefix(label, "reply-to:"):
+		bm.replyTo = strings.TrimPrefix(label, "reply-to:")
+	case strings.HasPrefix(label, "msg-type:"):
+		bm.msgType = strings.TrimPrefix(label, "msg-type:")
+	case strings.HasPrefix(label, "cc:"):
+		bm.cc = append(bm.cc, strings.TrimPrefix(label, "cc:"))
+	case strings.HasPrefix(label, "queue:"):
+		bm.queue = strings.TrimPrefix(label, "queue:")
+	case strings.HasPrefix(label, "channel:"):
+		bm.channel = strings.TrimPrefix(label, "channel:")
+	case strings.HasPrefix(label, "claimed-by:"):
+		bm.claimedBy = strings.TrimPrefix(label, "claimed-by:")
+	default:
+		return false
+	}
+	return true
+}
+
+func (bm *BeadsMessage) parseClaimedAtLabel(label string) {
+	if !strings.HasPrefix(label, "claimed-at:") {
+		return
+	}
+	ts := strings.TrimPrefix(label, "claimed-at:")
+	if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		bm.claimedAt = &t
+	}
 }
 
 // GetCC returns the parsed CC recipients.
