@@ -17,8 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var initForce bool
-
 var initCmd = &cobra.Command{
 	Use:     "init",
 	GroupID: GroupWorkspace,
@@ -34,40 +32,42 @@ an existing rig structure.`,
 }
 
 func init() {
-	initCmd.Flags().BoolVarP(&initForce, "force", "f", false, "Reinitialize existing structure")
+	initCmd.Flags().BoolP("force", "f", false, "Reinitialize existing structure")
 	rootCmd.AddCommand(initCmd)
 }
 
-func runInit(_ *cobra.Command, _ []string) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
+func initForceEnabled(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
 	}
+	force, err := cmd.Flags().GetBool("force")
+	return err == nil && force
+}
 
-	// Check if it's a git repository
+func ensureInitRepository(cwd string) error {
 	g := git.NewGit(cwd)
 	if _, err := g.CurrentBranch(); err != nil {
 		return fmt.Errorf("not a git repository (run 'git init' first)")
 	}
+	return nil
+}
 
-	// Check if already initialized
+func ensureInitStructure(cwd string, force bool) error {
 	polecatsDir := filepath.Join(cwd, "polecats")
-	if _, err := os.Stat(polecatsDir); err == nil && !initForce {
+	if _, err := os.Stat(polecatsDir); err == nil && !force {
 		return fmt.Errorf("rig already initialized (use --force to reinitialize)")
 	}
+	return nil
+}
 
-	fmt.Printf("%s Initializing Gas Town rig in %s\n\n",
-		style.Bold.Render("⚙️"), style.Dim.Render(cwd))
-
-	// Create agent directories
+func createInitAgentDirs(cwd string) (int, error) {
 	created := 0
 	for _, dir := range rig.AgentDirs {
 		dirPath := filepath.Join(cwd, dir)
 		if err := os.MkdirAll(dirPath, 0755); err != nil {
-			return fmt.Errorf("creating %s: %w", dir, err)
+			return 0, fmt.Errorf("creating %s: %w", dir, err)
 		}
 
-		// Create .gitkeep to ensure directory is tracked if needed (non-fatal)
 		gitkeep := filepath.Join(dirPath, ".gitkeep")
 		if _, err := os.Stat(gitkeep); os.IsNotExist(err) {
 			_ = os.WriteFile(gitkeep, []byte(""), 0644)
@@ -76,8 +76,10 @@ func runInit(_ *cobra.Command, _ []string) error {
 		fmt.Printf("   ✓ Created %s/\n", dir)
 		created++
 	}
+	return created, nil
+}
 
-	// Update .git/info/exclude
+func configureInitExtras(cwd string) {
 	if err := updateGitExclude(cwd); err != nil {
 		fmt.Printf("   %s Could not update .git/info/exclude: %v\n",
 			style.Dim.Render("⚠"), err)
@@ -85,9 +87,6 @@ func runInit(_ *cobra.Command, _ []string) error {
 		fmt.Printf("   ✓ Updated .git/info/exclude\n")
 	}
 
-	// Register custom beads types for Gas Town (agent, role, rig, convoy, slot).
-	// This is best-effort: if beads isn't installed or DB doesn't exist, we skip.
-	// The doctor check will catch missing types later.
 	if err := registerCustomTypes(cwd); err != nil {
 		fmt.Printf("   %s Could not register custom types: %v\n",
 			style.Dim.Render("⚠"), err)
@@ -95,10 +94,6 @@ func runInit(_ *cobra.Command, _ []string) error {
 		fmt.Printf("   ✓ Registered custom beads types\n")
 	}
 
-	// Auto-configure the six-stage Dolt lifecycle with sensible defaults.
-	// This sets up reaper, compactor, doctor, backup, and maintenance patrols
-	// in mayor/daemon.json so they run automatically. Only fills in missing
-	// config — never overwrites existing user settings.
 	if townRoot, err := workspace.FindFromCwd(); err == nil {
 		if err := daemon.EnsureLifecycleConfigFile(townRoot); err != nil {
 			fmt.Printf("   %s Could not configure lifecycle defaults: %v\n",
@@ -107,7 +102,9 @@ func runInit(_ *cobra.Command, _ []string) error {
 			fmt.Printf("   ✓ Configured Dolt lifecycle (reaper, compactor, doctor, backup)\n")
 		}
 	}
+}
 
+func printInitSummary(created int) {
 	fmt.Printf("\n%s Rig initialized with %d directories.\n",
 		style.Bold.Render("✓"), created)
 	fmt.Println()
@@ -116,6 +113,30 @@ func runInit(_ *cobra.Command, _ []string) error {
 		style.Dim.Render("gt rig add <name> <git-url>"))
 	fmt.Printf("  2. Create a polecat: %s\n",
 		style.Dim.Render("gt polecat identity add <rig> <name>"))
+}
+
+func runInit(cmd *cobra.Command, _ []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting current directory: %w", err)
+	}
+
+	if err := ensureInitRepository(cwd); err != nil {
+		return err
+	}
+	if err := ensureInitStructure(cwd, initForceEnabled(cmd)); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s Initializing Gas Town rig in %s\n\n",
+		style.Bold.Render("⚙️"), style.Dim.Render(cwd))
+
+	created, err := createInitAgentDirs(cwd)
+	if err != nil {
+		return err
+	}
+	configureInitExtras(cwd)
+	printInitSummary(created)
 
 	return nil
 }
