@@ -1140,9 +1140,18 @@ func (b *Beads) listIssues(opts ListOptions) ([]*Issue, error) {
 // statuses with one bd query. Summary paths use this to avoid multiplying bd
 // subprocesses by status and polecat count.
 func (b *Beads) ListIssueStatuses(statuses ...IssueStatus) ([]*Issue, error) {
-	if len(statuses) == 0 {
+	unique := uniqueIssueStatuses(statuses)
+	if len(unique) == 0 {
 		return nil, nil
 	}
+
+	if b.store != nil {
+		return b.storeIssuesForStatuses(unique)
+	}
+	return b.queryIssueStatuses(unique)
+}
+
+func uniqueIssueStatuses(statuses []IssueStatus) []IssueStatus {
 	unique := make([]IssueStatus, 0, len(statuses))
 	seen := make(map[IssueStatus]bool, len(statuses))
 	for _, status := range statuses {
@@ -1152,24 +1161,24 @@ func (b *Beads) ListIssueStatuses(statuses ...IssueStatus) ([]*Issue, error) {
 		seen[status] = true
 		unique = append(unique, status)
 	}
-	if len(unique) == 0 {
-		return nil, nil
-	}
+	return unique
+}
 
-	if b.store != nil {
-		var all []*Issue
-		for _, status := range unique {
-			issues, err := b.storeList(ListOptions{Status: string(status), Priority: -1})
-			if err != nil {
-				return nil, err
-			}
-			all = append(all, issues...)
+func (b *Beads) storeIssuesForStatuses(statuses []IssueStatus) ([]*Issue, error) {
+	var all []*Issue
+	for _, status := range statuses {
+		issues, err := b.storeList(ListOptions{Status: string(status), Priority: -1})
+		if err != nil {
+			return nil, err
 		}
-		return all, nil
+		all = append(all, issues...)
 	}
+	return all, nil
+}
 
-	statusClauses := make([]string, 0, len(unique))
-	for _, status := range unique {
+func (b *Beads) queryIssueStatuses(statuses []IssueStatus) ([]*Issue, error) {
+	statusClauses := make([]string, 0, len(statuses))
+	for _, status := range statuses {
 		statusClauses = append(statusClauses, "status="+quoteBDQueryValue(string(status)))
 	}
 	expr := "ephemeral=false AND (" + strings.Join(statusClauses, " OR ") + ")"
