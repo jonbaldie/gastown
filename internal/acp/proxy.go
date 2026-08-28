@@ -262,18 +262,7 @@ func (p *Proxy) writeToAgent(msg any) error {
 		return fmt.Errorf("agent process is not running")
 	}
 
-	isPrompt := false
-	if m, ok := msg.(*JSONRPCMessage); ok && m.Method == "session/prompt" && m.ID != nil {
-		isPrompt = true
-		p.promptMux.Lock()
-		if idStr, ok := m.ID.(string); ok {
-			p.activePromptID = idStr
-		} else {
-			p.activePromptID = fmt.Sprintf("%v", m.ID)
-		}
-		debugLog(p.townRoot, "[Proxy] writeToAgent: marking busy (id=%s)", p.activePromptID)
-		p.promptMux.Unlock()
-	}
+	isPrompt := p.markPromptBusy(msg)
 
 	p.lastActivity.Store(time.Now().UnixNano())
 	debugLog(p.townRoot, "[Proxy] writeToAgent: encoding message (method=%s id=%v)", method, id)
@@ -290,6 +279,22 @@ func (p *Proxy) writeToAgent(msg any) error {
 	}
 
 	return nil
+}
+
+func (p *Proxy) markPromptBusy(msg any) bool {
+	m, ok := msg.(*JSONRPCMessage)
+	if !ok || m.Method != "session/prompt" || m.ID == nil {
+		return false
+	}
+	p.promptMux.Lock()
+	if id, ok := m.ID.(string); ok {
+		p.activePromptID = id
+	} else {
+		p.activePromptID = fmt.Sprintf("%v", m.ID)
+	}
+	debugLog(p.townRoot, "[Proxy] writeToAgent: marking busy (id=%s)", p.activePromptID)
+	p.promptMux.Unlock()
+	return true
 }
 
 func (p *Proxy) Forward() error {
