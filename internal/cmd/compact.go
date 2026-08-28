@@ -15,13 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	compactDryRun  bool
-	compactVerbose bool
-	compactJSON    bool
-	compactRig     string
-)
-
 // Default TTLs per wisp type (from design doc WISP-COMPACTION-POLICY.md).
 var defaultTTLs = map[string]time.Duration{
 	"heartbeat":  6 * time.Hour,
@@ -41,6 +34,14 @@ type compactResult struct {
 	Skipped          int             `json:"skipped"`            // wisps still within TTL
 	OrphanedWispDeps int             `json:"orphaned_wisp_deps"` // stale wisp_dependencies removed
 	Errors           []string        `json:"errors,omitempty"`
+	options          compactOptions  `json:"-"`
+}
+
+type compactOptions struct {
+	dryRun  bool
+	verbose bool
+	json    bool
+	rig     string
 }
 
 type compactAction struct {
@@ -75,10 +76,10 @@ Examples:
 }
 
 func init() {
-	compactCmd.Flags().BoolVar(&compactDryRun, "dry-run", false, "Preview compaction without making changes")
-	compactCmd.Flags().BoolVarP(&compactVerbose, "verbose", "v", false, "Show each wisp decision")
-	compactCmd.Flags().BoolVar(&compactJSON, "json", false, "Output results as JSON")
-	compactCmd.Flags().StringVar(&compactRig, "rig", "", "Compact a specific rig (default: current rig)")
+	compactCmd.Flags().Bool("dry-run", false, "Preview compaction without making changes")
+	compactCmd.Flags().BoolP("verbose", "v", false, "Show each wisp decision")
+	compactCmd.Flags().Bool("json", false, "Output results as JSON")
+	compactCmd.Flags().String("rig", "", "Compact a specific rig (default: current rig)")
 
 	rootCmd.AddCommand(compactCmd)
 }
@@ -173,7 +174,31 @@ type compactIssue struct {
 	WispType     string `json:"wisp_type,omitempty"`
 }
 
-func runCompact(_ *cobra.Command, _ []string) error {
+func readCompactOptions(cmd *cobra.Command) compactOptions {
+	if cmd == nil {
+		return compactOptions{}
+	}
+	dryRun, dryRunErr := cmd.Flags().GetBool("dry-run")
+	if dryRunErr != nil {
+		dryRun = false
+	}
+	verbose, verboseErr := cmd.Flags().GetBool("verbose")
+	if verboseErr != nil {
+		verbose = false
+	}
+	jsonOutput, jsonErr := cmd.Flags().GetBool("json")
+	if jsonErr != nil {
+		jsonOutput = false
+	}
+	rig, rigErr := cmd.Flags().GetString("rig")
+	if rigErr != nil {
+		rig = ""
+	}
+	return compactOptions{dryRun: dryRun, verbose: verbose, json: jsonOutput, rig: rig}
+}
+
+func runCompact(cmd *cobra.Command, _ []string) error {
+	opts := readCompactOptions(cmd)
 	now := time.Now().UTC()
 
 	// Resolve working directory and town root
@@ -183,7 +208,7 @@ func runCompact(_ *cobra.Command, _ []string) error {
 	}
 
 	townRoot := beads.FindTownRoot(workDir)
-	rigName := compactRig
+	rigName := opts.rig
 	if rigName == "" {
 		rigName = os.Getenv("GT_RIG")
 	}
@@ -198,75 +223,26 @@ func runCompact(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("listing wisps: %w", err)
 	}
 
-	if !compactJSON && !compactDryRun {
+	if !opts.json && !opts.dryRun {
 		fmt.Printf("Compacting %d wisps...\n", len(allWisps))
 	}
 
-	result := &compactResult{}
+	result := &compactResult{options: opts}
 
 	for _, w := range allWisps {
-		age, err := wispAge(w, now)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", w.ID, err))
-			continue
-		}
-
-		ttl := getTTL(ttls, w.WispType)
-		shouldPromote := hasComments(w) || hasKeepLabel(w)
-
-		// Molecule step wisps (those with a Parent) should never be promoted.
-		// They are subordinate steps of a molecule and should be deleted when
-		// past TTL, not elevated to permanent beads. This prevents patrol
-		// molecule steps from polluting the issues table.
-		isMoleculeStep := w.Parent != ""
-
-		if w.Status != "closed" {
-			// Non-closed wisps
-			if shouldPromote && !isMoleculeStep {
-				promoteWisp(bd, w, "proven value", result)
-			} else if age > ttl {
-				if isMoleculeStep {
-					deleteWisp(bd, w, "molecule step past TTL", result)
-				} else {
-					reason := "open past TTL"
-					if w.Status == "in_progress" {
-						reason = "stuck in_progress past TTL"
-					}
-					promoteWisp(bd, w, reason, result)
-				}
-			} else {
-				result.Skipped++
-				if compactVerbose && !compactJSON {
-					fmt.Printf("  skip  %s %s (age: %s, ttl: %s)\n",
-						w.ID, compactTruncate(w.Title, 40), age.Round(time.Minute), ttl)
-				}
-			}
-		} else {
-			// Closed wisps
-			if shouldPromote && !isMoleculeStep {
-				promoteWisp(bd, w, "proven value", result)
-			} else if age > ttl {
-				deleteWisp(bd, w, "TTL expired", result)
-			} else {
-				result.Skipped++
-				if compactVerbose && !compactJSON {
-					fmt.Printf("  skip  %s %s (age: %s, ttl: %s)\n",
-						w.ID, compactTruncate(w.Title, 40), age.Round(time.Minute), ttl)
-				}
-			}
-		}
+		processCompactWisp(bd, w, now, ttls, result)
 	}
 
 	// Clean up orphaned wisp_dependencies left behind by deleted wisps.
 	// When bd delete removes a wisp, it doesn't cascade-delete dependency
 	// records in wisp_dependencies that reference the deleted wisp. Over many
 	// compaction cycles these accumulate as dangling refs. We sweep them here.
-	if !compactDryRun {
+	if !opts.dryRun {
 		cleanOrphanedWispDeps(bd, result)
 	}
 
 	// Output results
-	if compactJSON {
+	if opts.json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
@@ -345,13 +321,69 @@ func extractJSONArray(data []byte) []byte {
 	return data[idx:]
 }
 
+func processCompactWisp(bd *beads.Beads, w *compactIssue, now time.Time, ttls map[string]time.Duration, result *compactResult) {
+	age, err := wispAge(w, now)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", w.ID, err))
+		return
+	}
+	ttl := getTTL(ttls, w.WispType)
+	shouldPromote := hasComments(w) || hasKeepLabel(w)
+	isMoleculeStep := w.Parent != ""
+	if w.Status == "closed" {
+		processClosedCompactWisp(bd, w, age, ttl, shouldPromote, isMoleculeStep, result)
+		return
+	}
+	processOpenCompactWisp(bd, w, age, ttl, shouldPromote, isMoleculeStep, result)
+}
+
+func processOpenCompactWisp(bd *beads.Beads, w *compactIssue, age, ttl time.Duration, shouldPromote, isMoleculeStep bool, result *compactResult) {
+	if shouldPromote && !isMoleculeStep {
+		promoteWisp(bd, w, "proven value", result)
+		return
+	}
+	if age > ttl {
+		if isMoleculeStep {
+			deleteWisp(bd, w, "molecule step past TTL", result)
+			return
+		}
+		reason := "open past TTL"
+		if w.Status == "in_progress" {
+			reason = "stuck in_progress past TTL"
+		}
+		promoteWisp(bd, w, reason, result)
+		return
+	}
+	skipCompactWisp(w, age, ttl, result)
+}
+
+func processClosedCompactWisp(bd *beads.Beads, w *compactIssue, age, ttl time.Duration, shouldPromote, isMoleculeStep bool, result *compactResult) {
+	if shouldPromote && !isMoleculeStep {
+		promoteWisp(bd, w, "proven value", result)
+		return
+	}
+	if age > ttl {
+		deleteWisp(bd, w, "TTL expired", result)
+		return
+	}
+	skipCompactWisp(w, age, ttl, result)
+}
+
+func skipCompactWisp(w *compactIssue, age, ttl time.Duration, result *compactResult) {
+	result.Skipped++
+	if result.options.verbose && !result.options.json {
+		fmt.Printf("  skip  %s %s (age: %s, ttl: %s)\n",
+			w.ID, compactTruncate(w.Title, 40), age.Round(time.Minute), ttl)
+	}
+}
+
 // promoteWisp makes a wisp permanent by setting --persistent and adding a comment.
 func promoteWisp(bd *beads.Beads, w *compactIssue, reason string, result *compactResult) {
 	action := compactAction{ID: w.ID, Title: w.Title, Reason: reason, WispType: w.WispType}
 
-	if compactDryRun {
+	if result.options.dryRun {
 		result.Promoted = append(result.Promoted, action)
-		if !compactJSON {
+		if !result.options.json {
 			fmt.Printf("  %s promote %s %s (%s)\n",
 				style.Dim.Render("[dry-run]"), w.ID, compactTruncate(w.Title, 40), reason)
 		}
@@ -370,7 +402,7 @@ func promoteWisp(bd *beads.Beads, w *compactIssue, reason string, result *compac
 
 	result.Promoted = append(result.Promoted, action)
 
-	if compactVerbose && !compactJSON {
+	if result.options.verbose && !result.options.json {
 		fmt.Printf("  %s %s %s (%s)\n",
 			style.Success.Render("promote"), w.ID, compactTruncate(w.Title, 40), reason)
 	}
@@ -380,9 +412,9 @@ func promoteWisp(bd *beads.Beads, w *compactIssue, reason string, result *compac
 func deleteWisp(bd *beads.Beads, w *compactIssue, reason string, result *compactResult) {
 	action := compactAction{ID: w.ID, Title: w.Title, Reason: reason, WispType: w.WispType}
 
-	if compactDryRun {
+	if result.options.dryRun {
 		result.Deleted = append(result.Deleted, action)
-		if !compactJSON {
+		if !result.options.json {
 			fmt.Printf("  %s delete  %s %s (%s)\n",
 				style.Dim.Render("[dry-run]"), w.ID, compactTruncate(w.Title, 40), reason)
 		}
@@ -398,7 +430,7 @@ func deleteWisp(bd *beads.Beads, w *compactIssue, reason string, result *compact
 
 	result.Deleted = append(result.Deleted, action)
 
-	if compactVerbose && !compactJSON {
+	if result.options.verbose && !result.options.json {
 		fmt.Printf("  %s %s %s (%s)\n",
 			style.Warning.Render("delete "), w.ID, compactTruncate(w.Title, 40), reason)
 	}
@@ -409,7 +441,7 @@ func printCompactSummary(result *compactResult) {
 	deleted := len(result.Deleted)
 	total := promoted + deleted + result.Skipped
 
-	if compactDryRun {
+	if result.options.dryRun {
 		fmt.Printf("\n%s Dry run complete: %d wisps scanned\n",
 			style.Dim.Render("ℹ"), total)
 	} else {
@@ -431,7 +463,7 @@ func printCompactSummary(result *compactResult) {
 	}
 
 	// Show promotions if any
-	if promoted > 0 && !compactDryRun {
+	if promoted > 0 && !result.options.dryRun {
 		fmt.Printf("\nPromotions:\n")
 		for _, p := range result.Promoted {
 			fmt.Printf("  %s: %s (%s)\n", p.ID, compactTruncate(p.Title, 50), p.Reason)
