@@ -116,23 +116,38 @@ func resolveBeadsDirWithDepth(beadsDir string, maxDepth int) string {
 // the wrong database, so tracked identity files are hidden before removal.
 // This is safe to call even if the directory doesn't exist.
 func cleanBeadsRuntimeFiles(beadsDir string) error {
+	exists, err := beadsDirectoryExists(beadsDir)
+	if err != nil || !exists {
+		return err
+	}
+	worktreePath := filepath.Dir(beadsDir)
+	if err := removeWorktreeIdentityFiles(worktreePath, beadsDir); err != nil {
+		return err
+	}
+	return removeBeadsRuntimeFiles(beadsDir)
+}
+
+func beadsDirectoryExists(beadsDir string) (bool, error) {
 	info, err := os.Lstat(beadsDir)
 	if os.IsNotExist(err) {
-		return nil // Nothing to clean
-	} else if err != nil {
-		return err
-	} else if !info.IsDir() {
-		return nil
+		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
+}
 
-	worktreePath := filepath.Dir(beadsDir)
+func removeWorktreeIdentityFiles(worktreePath, beadsDir string) error {
 	for _, name := range []string{"metadata.json", "config.yaml"} {
 		if err := removeWorktreeIdentityFile(worktreePath, filepath.Join(beadsDir, name)); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	// Runtime files/patterns that are gitignored and safe to remove
+func removeBeadsRuntimeFiles(beadsDir string) error {
 	runtimePatterns := []string{
 		// Daemon runtime
 		"daemon.lock", "daemon.log", "daemon.pid", "bd.sock",
