@@ -185,7 +185,8 @@ func (m *Manager) LimitedAccounts(state *config.QuotaState) []string {
 // sortByLastUsed sorts handles by their LastUsed timestamp ascending.
 func sortByLastUsed(handles []string, state *config.QuotaState) {
 	// Simple insertion sort — handles list is small (3-5 accounts)
-	for i := 1; i < len(handles); i++ {
+	handleCount := len(handles)
+	for i := 1; i < handleCount; i++ {
 		key := handles[i]
 		j := i - 1
 		for j >= 0 && state.Accounts[handles[j]].LastUsed > state.Accounts[key].LastUsed {

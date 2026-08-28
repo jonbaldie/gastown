@@ -199,8 +199,10 @@ func levenshteinDistance(a, b string) int {
 	}
 
 	// Fill the matrix
-	for i := 1; i <= len(a); i++ {
-		for j := 1; j <= len(b); j++ {
+	aLength := len(a)
+	bLength := len(b)
+	for i := 1; i <= aLength; i++ {
+		for j := 1; j <= bLength; j++ {
 			cost := 1
 			if a[i-1] == b[j-1] {
 				cost = 0

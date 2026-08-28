@@ -95,7 +95,10 @@ func hasDescendantWithNamesWindows(ppidStr string, names []string, depth int) bo
 	// BFS from parentPid looking for matching descendants.
 	queue := []uint32{uint32(parentPid)}
 	visited := map[uint32]bool{uint32(parentPid): true}
-	for d := 0; d <= maxDepth-depth && len(queue) > 0; d++ {
+	for d := 0; d <= maxDepth-depth; d++ {
+		if len(queue) == 0 {
+			break
+		}
 		var nextQueue []uint32
 		for _, qpid := range queue {
 			for _, p := range procs {

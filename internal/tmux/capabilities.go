@@ -42,7 +42,8 @@ func ParseVersion(output string) (Version, bool) {
 	raw := fields[len(fields)-1]
 	raw = strings.TrimLeft(raw, "vV")
 	end := 0
-	for end < len(raw) && (raw[end] == '.' || (raw[end] >= '0' && raw[end] <= '9')) {
+	rawLength := len(raw)
+	for end < rawLength && (raw[end] == '.' || (raw[end] >= '0' && raw[end] <= '9')) {
 		end++
 	}
 	raw = raw[:end]
