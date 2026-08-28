@@ -192,22 +192,37 @@ func (t FormulaType) IsValid() bool {
 func (f *Formula) GetDependencies(id string) []string {
 	switch f.Type {
 	case TypeWorkflow:
-		for _, step := range f.Steps {
-			if step.ID == id {
-				return step.Needs
-			}
-		}
+		return workflowDependencies(f.Steps, id)
 	case TypeExpansion:
-		for _, tmpl := range f.Template {
-			if tmpl.ID == id {
-				return tmpl.Needs
-			}
-		}
+		return expansionDependencies(f.Template, id)
 	case TypeConvoy:
-		// Legs are parallel; synthesis depends on all legs
-		if f.Synthesis != nil && id == "synthesis" {
-			return f.Synthesis.DependsOn
+		return convoyDependencies(f.Synthesis, id)
+	}
+	return nil
+}
+
+func workflowDependencies(steps []Step, id string) []string {
+	for _, step := range steps {
+		if step.ID == id {
+			return step.Needs
 		}
+	}
+	return nil
+}
+
+func expansionDependencies(templates []Template, id string) []string {
+	for _, template := range templates {
+		if template.ID == id {
+			return template.Needs
+		}
+	}
+	return nil
+}
+
+func convoyDependencies(synthesis *Synthesis, id string) []string {
+	// Legs are parallel; synthesis depends on all legs.
+	if synthesis != nil && id == "synthesis" {
+		return synthesis.DependsOn
 	}
 	return nil
 }
