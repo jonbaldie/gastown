@@ -40,124 +40,90 @@ Examples:
 	RunE: runAssign,
 }
 
-var (
-	assignDescription string
-	assignType        string
-	assignPriority    string
-	assignLabels      []string
-	assignNudge       bool
-	assignRig         string
-	assignDryRun      bool
-	assignForce       bool
-)
-
 func init() {
-	assignCmd.Flags().StringVarP(&assignDescription, "description", "d", "", "Bead description")
-	assignCmd.Flags().StringVarP(&assignType, "type", "t", "task", "Bead type")
-	assignCmd.Flags().StringVarP(&assignPriority, "priority", "p", "2", "Priority 0-4")
-	assignCmd.Flags().StringArrayVarP(&assignLabels, "label", "l", nil, "Labels (repeatable)")
-	assignCmd.Flags().BoolVar(&assignNudge, "nudge", false, "Wake the agent after hooking")
-	assignCmd.Flags().StringVar(&assignRig, "rig", "", "Override rig inference")
-	assignCmd.Flags().BoolVarP(&assignDryRun, "dry-run", "n", false, "Show what would happen")
-	assignCmd.Flags().BoolVar(&assignForce, "force", false, "Replace existing hooked work")
+	assignCmd.Flags().StringP("description", "d", "", "Bead description")
+	assignCmd.Flags().StringP("type", "t", "task", "Bead type")
+	assignCmd.Flags().StringP("priority", "p", "2", "Priority 0-4")
+	assignCmd.Flags().StringArrayP("label", "l", nil, "Labels (repeatable)")
+	assignCmd.Flags().Bool("nudge", false, "Wake the agent after hooking")
+	assignCmd.Flags().String("rig", "", "Override rig inference")
+	assignCmd.Flags().BoolP("dry-run", "n", false, "Show what would happen")
+	assignCmd.Flags().Bool("force", false, "Replace existing hooked work")
 
 	rootCmd.AddCommand(assignCmd)
 }
 
-func runAssign(_ *cobra.Command, args []string) error {
-	crewName := args[0]
-	title := strings.Join(args[1:], " ")
+type assignOptions struct {
+	description string
+	typeName    string
+	priority    string
+	labels      []string
+	nudge       bool
+	rig         string
+	dryRun      bool
+}
 
-	// Find town root
-	townRoot, err := workspace.FindFromCwd()
+func readAssignOptions(cmd *cobra.Command) assignOptions {
+	if cmd == nil {
+		return assignOptions{typeName: "task", priority: "2"}
+	}
+	return assignOptions{
+		description: stringAssignFlag(cmd, "description", ""),
+		typeName:    stringAssignFlag(cmd, "type", "task"),
+		priority:    stringAssignFlag(cmd, "priority", "2"),
+		labels:      stringArrayAssignFlag(cmd, "label"),
+		nudge:       boolAssignFlag(cmd, "nudge", false),
+		rig:         stringAssignFlag(cmd, "rig", ""),
+		dryRun:      boolAssignFlag(cmd, "dry-run", false),
+	}
+}
+
+func stringAssignFlag(cmd *cobra.Command, name, fallback string) string {
+	value, err := cmd.Flags().GetString(name)
 	if err != nil {
-		return fmt.Errorf("finding town root: %w", err)
+		return fallback
+	}
+	return value
+}
+
+func stringArrayAssignFlag(cmd *cobra.Command, name string) []string {
+	value, err := cmd.Flags().GetStringArray(name)
+	if err != nil {
+		return nil
+	}
+	return value
+}
+
+func boolAssignFlag(cmd *cobra.Command, name string, fallback bool) bool {
+	value, err := cmd.Flags().GetBool(name)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func runAssign(cmd *cobra.Command, args []string) error {
+	opts := readAssignOptions(cmd)
+	townRoot, rigName, agentID, title, err := prepareAssign(opts, args)
+	if err != nil {
+		return err
 	}
 
-	// Determine rig
-	rigName := assignRig
-	if rigName == "" {
-		rigName, err = inferRigFromCwd(townRoot)
-		if err != nil {
-			// Fallback: scan all rigs for a crew member with this name
-			rigName, err = inferRigFromCrewName(townRoot, crewName)
-			if err != nil {
-				return fmt.Errorf("inferring rig (use --rig to specify): %w", err)
-			}
-		}
-	}
-
-	// Validate crew member exists
-	crewDir := filepath.Join(townRoot, rigName, "crew", crewName)
-	if _, err := os.Stat(crewDir); os.IsNotExist(err) {
-		return fmt.Errorf("crew member %q not found in rig %q (no directory %s)", crewName, rigName, crewDir)
-	}
-
-	agentID := rigName + "/crew/" + crewName
-
-	if assignDryRun {
-		fmt.Printf("Would create bead: %q (type=%s, priority=%s)\n", title, assignType, assignPriority)
-		fmt.Printf("Would hook to: %s\n", agentID)
-		if assignDescription != "" {
-			fmt.Printf("  description: %s\n", assignDescription)
-		}
-		for _, l := range assignLabels {
-			fmt.Printf("  label: %s\n", l)
-		}
-		if assignNudge {
-			fmt.Printf("Would nudge: %s\n", agentID)
-		}
+	if opts.dryRun {
+		printAssignDryRun(opts, title, agentID)
 		return nil
 	}
 
-	// Step 1: Create the bead
-	createArgs := []string{"create", "--title=" + title, "--type=" + assignType, "--priority=" + assignPriority, "--silent"}
-	if assignDescription != "" {
-		createArgs = append(createArgs, "--description="+assignDescription)
-	}
-	for _, l := range assignLabels {
-		createArgs = append(createArgs, "--label="+l)
-	}
-
 	fmt.Printf("%s Creating bead for %s...\n", style.Bold.Render("📋"), agentID)
-
-	out, err := BdCmd(createArgs...).
-		Dir(townRoot).
-		WithAutoCommit().
-		Output()
+	beadID, err := createAssignedBead(opts, title, townRoot)
 	if err != nil {
-		return fmt.Errorf("creating bead: %w", err)
+		return err
 	}
-
-	beadID := strings.TrimSpace(string(out))
-	if beadID == "" {
-		return fmt.Errorf("bd create returned empty ID")
-	}
-
 	fmt.Printf("  Created: %s\n", beadID)
 
-	// Step 2: Hook the bead to the agent with retry logic
 	fmt.Printf("%s Hooking %s to %s...\n", style.Bold.Render("🪝"), beadID, agentID)
-
-	const maxRetries = 5
-	const baseBackoff = 500 * time.Millisecond
-	const backoffMax = 10 * time.Second
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if err := BdCmd("update", beadID, "--status=hooked", "--assignee="+agentID).
-			Dir(townRoot).
-			WithAutoCommit().
-			Run(); err != nil {
-			lastErr = err
-			if attempt < maxRetries {
-				backoff := slingBackoff(attempt, baseBackoff, backoffMax)
-				fmt.Printf("%s Hook attempt %d failed, retrying in %v...\n", style.Warning.Render("⚠"), attempt, backoff)
-				time.Sleep(backoff)
-				continue
-			}
-			return fmt.Errorf("hooking bead after %d attempts: %w", maxRetries, lastErr)
-		}
-		break
+	if err := hookAssignedBead(beadID, agentID, townRoot); err != nil {
+		return err
 	}
 
 	// Step 3: Update agent hook_bead field so gt hook / gt mol status can find the work.
@@ -174,21 +140,114 @@ func runAssign(_ *cobra.Command, args []string) error {
 
 	fmt.Printf("%s Assigned %s to %s — %q\n", style.Bold.Render("✓"), beadID, agentID, title)
 
-	// Step 5: Nudge or warn
-	if !assignNudge {
-		fmt.Printf("  %s Agent won't be notified (use --nudge to wake them)\n", style.Dim.Render("ℹ"))
-	} else {
-		nudgeMsg := fmt.Sprintf("New work on your hook: %s", title)
-		nudgeCmd := exec.Command("gt", "nudge", agentID, "-m", nudgeMsg)
-		nudgeCmd.Stderr = os.Stderr
-		if out, err := nudgeCmd.Output(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s Warning: nudge failed: %v\n", style.Warning.Render("⚠"), err)
-		} else if len(out) > 0 {
-			fmt.Print(string(out))
-		} else {
-			fmt.Printf("  Nudged %s\n", agentID)
-		}
-	}
+	return notifyAssignedAgent(opts.nudge, agentID, title)
+}
 
+func prepareAssign(opts assignOptions, args []string) (townRoot, rigName, agentID, title string, err error) {
+	crewName := args[0]
+	title = strings.Join(args[1:], " ")
+	townRoot, err = workspace.FindFromCwd()
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("finding town root: %w", err)
+	}
+	rigName, err = resolveAssignRig(opts.rig, townRoot, crewName)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	crewDir := filepath.Join(townRoot, rigName, "crew", crewName)
+	if _, statErr := os.Stat(crewDir); os.IsNotExist(statErr) {
+		return "", "", "", "", fmt.Errorf("crew member %q not found in rig %q (no directory %s)", crewName, rigName, crewDir)
+	}
+	return townRoot, rigName, rigName + "/crew/" + crewName, title, nil
+}
+
+func resolveAssignRig(rigName, townRoot, crewName string) (string, error) {
+	if rigName != "" {
+		return rigName, nil
+	}
+	rigName, err := inferRigFromCwd(townRoot)
+	if err == nil {
+		return rigName, nil
+	}
+	rigName, err = inferRigFromCrewName(townRoot, crewName)
+	if err != nil {
+		return "", fmt.Errorf("inferring rig (use --rig to specify): %w", err)
+	}
+	return rigName, nil
+}
+
+func printAssignDryRun(opts assignOptions, title, agentID string) {
+	fmt.Printf("Would create bead: %q (type=%s, priority=%s)\n", title, opts.typeName, opts.priority)
+	fmt.Printf("Would hook to: %s\n", agentID)
+	if opts.description != "" {
+		fmt.Printf("  description: %s\n", opts.description)
+	}
+	for _, label := range opts.labels {
+		fmt.Printf("  label: %s\n", label)
+	}
+	if opts.nudge {
+		fmt.Printf("Would nudge: %s\n", agentID)
+	}
+}
+
+func createAssignedBead(opts assignOptions, title, townRoot string) (string, error) {
+	createArgs := []string{"create", "--title=" + title, "--type=" + opts.typeName, "--priority=" + opts.priority, "--silent"}
+	if opts.description != "" {
+		createArgs = append(createArgs, "--description="+opts.description)
+	}
+	for _, label := range opts.labels {
+		createArgs = append(createArgs, "--label="+label)
+	}
+	out, err := BdCmd(createArgs...).Dir(townRoot).WithAutoCommit().Output()
+	if err != nil {
+		return "", fmt.Errorf("creating bead: %w", err)
+	}
+	beadID := strings.TrimSpace(string(out))
+	if beadID == "" {
+		return "", fmt.Errorf("bd create returned empty ID")
+	}
+	return beadID, nil
+}
+
+func hookAssignedBead(beadID, agentID, townRoot string) error {
+	const maxRetries = 5
+	const baseBackoff = 500 * time.Millisecond
+	const backoffMax = 10 * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := BdCmd("update", beadID, "--status=hooked", "--assignee="+agentID).
+			Dir(townRoot).
+			WithAutoCommit().
+			Run()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt == maxRetries {
+			break
+		}
+		backoff := slingBackoff(attempt, baseBackoff, backoffMax)
+		fmt.Printf("%s Hook attempt %d failed, retrying in %v...\n", style.Warning.Render("⚠"), attempt, backoff)
+		time.Sleep(backoff)
+	}
+	return fmt.Errorf("hooking bead after %d attempts: %w", maxRetries, lastErr)
+}
+
+func notifyAssignedAgent(nudge bool, agentID, title string) error {
+	if !nudge {
+		fmt.Printf("  %s Agent won't be notified (use --nudge to wake them)\n", style.Dim.Render("ℹ"))
+		return nil
+	}
+	nudgeMsg := fmt.Sprintf("New work on your hook: %s", title)
+	nudgeCmd := exec.Command("gt", "nudge", agentID, "-m", nudgeMsg)
+	nudgeCmd.Stderr = os.Stderr
+	out, err := nudgeCmd.Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s Warning: nudge failed: %v\n", style.Warning.Render("⚠"), err)
+	} else if len(out) > 0 {
+		fmt.Print(string(out))
+	} else {
+		fmt.Printf("  Nudged %s\n", agentID)
+	}
 	return nil
 }
