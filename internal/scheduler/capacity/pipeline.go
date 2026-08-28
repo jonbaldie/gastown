@@ -147,33 +147,37 @@ func PlanDispatch(availableCapacity, batchSize int, ready []PendingBead) Dispatc
 		}
 	}
 
-	// Dispatch up to the smallest of capacity, batchSize, and readyBeads count
-	toDispatch := batchSize
-	if availableCapacity < toDispatch {
-		toDispatch = availableCapacity
-	}
-	if len(ready) < toDispatch {
-		toDispatch = len(ready)
-	}
-
-	reason := "batch"
-	if availableCapacity < batchSize && availableCapacity < len(ready) {
-		reason = "capacity"
-	}
-	if len(ready) < batchSize && len(ready) < availableCapacity {
-		reason = "ready"
-	}
-
-	skipped := len(ready) - toDispatch + msgSkipped
-	if msgSkipped > 0 {
-		reason = reason + "+messaging-filtered"
-	}
-
+	toDispatch := dispatchLimit(availableCapacity, batchSize, len(ready))
 	return DispatchPlan{
 		ToDispatch: ready[:toDispatch],
-		Skipped:    skipped,
-		Reason:     reason,
+		Skipped:    len(ready) - toDispatch + msgSkipped,
+		Reason:     dispatchReason(availableCapacity, batchSize, len(ready), msgSkipped),
 	}
+}
+
+func dispatchLimit(availableCapacity, batchSize, readyCount int) int {
+	limit := batchSize
+	if availableCapacity < limit {
+		limit = availableCapacity
+	}
+	if readyCount < limit {
+		return readyCount
+	}
+	return limit
+}
+
+func dispatchReason(availableCapacity, batchSize, readyCount, messagingSkipped int) string {
+	reason := "batch"
+	if availableCapacity < batchSize && availableCapacity < readyCount {
+		reason = "capacity"
+	}
+	if readyCount < batchSize && readyCount < availableCapacity {
+		reason = "ready"
+	}
+	if messagingSkipped > 0 {
+		return reason + "+messaging-filtered"
+	}
+	return reason
 }
 
 // NoRetryPolicy returns a FailurePolicy that always quarantines on first failure.
