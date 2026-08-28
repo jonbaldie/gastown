@@ -93,83 +93,9 @@ func runActivityEmit(opts *activityOptions, args []string) error {
 		actor = detectActor()
 	}
 
-	// Build payload based on event type
-	var payload map[string]interface{}
-
-	switch eventType {
-	case events.TypePatrolStarted, events.TypePatrolComplete:
-		if opts.rig == "" {
-			return fmt.Errorf("--rig is required for %s events", eventType)
-		}
-		payload = events.PatrolPayload(opts.rig, opts.count, opts.message)
-
-	case events.TypePolecatChecked:
-		if opts.rig == "" || opts.polecat == "" {
-			return fmt.Errorf("--rig and --polecat are required for polecat_checked events")
-		}
-		if opts.status == "" {
-			opts.status = "checked"
-		}
-		payload = events.PolecatCheckPayload(opts.rig, opts.polecat, opts.status, opts.issue)
-
-	case events.TypePolecatNudged:
-		if opts.rig == "" || opts.polecat == "" {
-			return fmt.Errorf("--rig and --polecat are required for polecat_nudged events")
-		}
-		payload = events.NudgePayload(opts.rig, opts.polecat, opts.reason)
-
-	case events.TypeEscalationSent:
-		if opts.rig == "" || opts.target == "" || opts.to == "" {
-			return fmt.Errorf("--rig, --target, and --to are required for escalation_sent events")
-		}
-		payload = events.EscalationPayload(opts.rig, opts.target, opts.to, opts.reason)
-
-	case events.TypeMergeStarted, events.TypeMerged, events.TypeMergeFailed, events.TypeMergeSkipped:
-		// Refinery events - flexible payload
-		payload = make(map[string]interface{})
-		if opts.rig != "" {
-			payload["rig"] = opts.rig
-		}
-		if opts.message != "" {
-			payload["message"] = opts.message
-		}
-		if opts.target != "" {
-			payload["branch"] = opts.target
-		}
-		if opts.reason != "" {
-			payload["reason"] = opts.reason
-		}
-
-	default:
-		// Generic event - use whatever flags are provided
-		payload = make(map[string]interface{})
-		if opts.rig != "" {
-			payload["rig"] = opts.rig
-		}
-		if opts.polecat != "" {
-			payload["polecat"] = opts.polecat
-		}
-		if opts.target != "" {
-			payload["target"] = opts.target
-		}
-		if opts.reason != "" {
-			payload["reason"] = opts.reason
-		}
-		if opts.message != "" {
-			payload["message"] = opts.message
-		}
-		if opts.status != "" {
-			payload["status"] = opts.status
-		}
-		if opts.issue != "" {
-			payload["issue"] = opts.issue
-		}
-		if opts.to != "" {
-			payload["to"] = opts.to
-		}
-		if opts.count > 0 {
-			payload["count"] = opts.count
-		}
+	payload, err := activityPayload(eventType, opts)
+	if err != nil {
+		return err
 	}
 
 	// Emit the event
@@ -184,6 +110,51 @@ func runActivityEmit(opts *activityOptions, args []string) error {
 	fmt.Printf("  Payload: %s\n", string(payloadJSON))
 
 	return nil
+}
+
+func activityPayload(eventType string, opts *activityOptions) (map[string]interface{}, error) {
+	switch eventType {
+	case events.TypePatrolStarted, events.TypePatrolComplete:
+		if opts.rig == "" {
+			return nil, fmt.Errorf("--rig is required for %s events", eventType)
+		}
+		return events.PatrolPayload(opts.rig, opts.count, opts.message), nil
+	case events.TypePolecatChecked:
+		if opts.rig == "" || opts.polecat == "" {
+			return nil, fmt.Errorf("--rig and --polecat are required for polecat_checked events")
+		}
+		if opts.status == "" {
+			opts.status = "checked"
+		}
+		return events.PolecatCheckPayload(opts.rig, opts.polecat, opts.status, opts.issue), nil
+	case events.TypePolecatNudged:
+		if opts.rig == "" || opts.polecat == "" {
+			return nil, fmt.Errorf("--rig and --polecat are required for polecat_nudged events")
+		}
+		return events.NudgePayload(opts.rig, opts.polecat, opts.reason), nil
+	case events.TypeEscalationSent:
+		if opts.rig == "" || opts.target == "" || opts.to == "" {
+			return nil, fmt.Errorf("--rig, --target, and --to are required for escalation_sent events")
+		}
+		return events.EscalationPayload(opts.rig, opts.target, opts.to, opts.reason), nil
+	case events.TypeMergeStarted, events.TypeMerged, events.TypeMergeFailed, events.TypeMergeSkipped:
+		return optionalActivityFields(map[string]string{"rig": opts.rig, "message": opts.message, "branch": opts.target, "reason": opts.reason}, opts.count), nil
+	default:
+		return optionalActivityFields(map[string]string{"rig": opts.rig, "polecat": opts.polecat, "target": opts.target, "reason": opts.reason, "message": opts.message, "status": opts.status, "issue": opts.issue, "to": opts.to}, opts.count), nil
+	}
+}
+
+func optionalActivityFields(fields map[string]string, count int) map[string]interface{} {
+	payload := make(map[string]interface{})
+	for key, value := range fields {
+		if value != "" {
+			payload[key] = value
+		}
+	}
+	if count > 0 {
+		payload["count"] = count
+	}
+	return payload
 }
 
 // Note: detectActor is defined in sling.go and reused here
