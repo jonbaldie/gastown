@@ -15,22 +15,24 @@ type activityOptions struct {
 	count                                                           int
 }
 
-var activityCmd = &cobra.Command{
-	Use:     "activity",
-	GroupID: GroupDiag,
-	Short:   "Emit and view activity events",
-	Long: `Emit and view activity events for the Gas Town activity feed.
+func init() {
+	opts := &activityOptions{}
+	activityCmd := &cobra.Command{
+		Use:     "activity",
+		GroupID: GroupDiag,
+		Short:   "Emit and view activity events",
+		Long: `Emit and view activity events for the Gas Town activity feed.
 
 Events are written to ~/gt/.events.jsonl and can be viewed with 'gt feed'.
 
 Subcommands:
   emit    Emit an activity event`,
-}
+	}
 
-var activityEmitCmd = &cobra.Command{
-	Use:   "emit <event-type>",
-	Short: "Emit an activity event",
-	Long: `Emit an activity event to the Gas Town activity feed.
+	activityEmitCmd := &cobra.Command{
+		Use:   "emit <event-type>",
+		Short: "Emit an activity event",
+		Long: `Emit an activity event to the Gas Town activity feed.
 
 Supported event types for witness patrol:
   patrol_started   - When witness begins patrol cycle
@@ -56,11 +58,9 @@ Examples:
   gt activity emit polecat_nudged --rig greenplace --polecat Toast --reason "idle for 10 minutes"
   gt activity emit escalation_sent --rig greenplace --target Toast --to mayor --reason "unresponsive"
   gt activity emit patrol_complete --rig greenplace --count 3 --message "All polecats healthy"`,
-	Args: cobra.ExactArgs(1),
-}
+		Args: cobra.ExactArgs(1),
+	}
 
-func init() {
-	opts := &activityOptions{}
 	activityEmitCmd.RunE = func(_ *cobra.Command, args []string) error { return runActivityEmit(opts, args) }
 	// Emit command flags
 	activityEmitCmd.Flags().StringVar(&opts.actor, "actor", "", "Actor emitting the event (auto-detected if not set)")
