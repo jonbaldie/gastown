@@ -25,14 +25,8 @@ import (
 // parent directory (passed via --settings flag), while workDir is the customer repo.
 // For mayor/deacon, settingsDir and workDir are the same.
 func EnsureSettingsForRole(settingsDir, workDir, role string, rc *config.RuntimeConfig) error {
-	if rc == nil {
-		rc = config.DefaultRuntimeConfig()
-	}
-
-	provider := ""
-	if rc.Hooks != nil {
-		provider = rc.Hooks.Provider
-	}
+	rc = runtimeConfigOrDefault(rc)
+	provider := runtimeProvider(rc)
 	if err := provisionRoleSkills(workDir, provider); err != nil {
 		return err
 	}
@@ -45,18 +39,30 @@ func EnsureSettingsForRole(settingsDir, workDir, role string, rc *config.Runtime
 		}
 	}
 
-	// 2. Slash commands (agent-agnostic, uses shared body with provider-specific frontmatter)
-	// Only provision for known agents to maintain backwards compatibility.
-	// Skip provisioning when workDir is nested inside a town root: Claude Code's
-	// path-hierarchy traversal already delivers the town root's .claude/commands/
-	// to the agent, so a duplicate copy in workDir causes each command to appear twice.
-	if commands.IsKnownAgent(provider) && !commandsInherited(workDir) {
-		if err := commands.ProvisionFor(workDir, provider); err != nil {
-			return err
-		}
-	}
+	return provisionRoleCommands(workDir, provider)
+}
 
-	return nil
+func runtimeConfigOrDefault(rc *config.RuntimeConfig) *config.RuntimeConfig {
+	if rc == nil {
+		return config.DefaultRuntimeConfig()
+	}
+	return rc
+}
+
+func runtimeProvider(rc *config.RuntimeConfig) string {
+	if rc.Hooks == nil {
+		return ""
+	}
+	return rc.Hooks.Provider
+}
+
+// provisionRoleCommands installs provider-specific slash commands when they are
+// not already inherited from the Town's command directory.
+func provisionRoleCommands(workDir, provider string) error {
+	if !commands.IsKnownAgent(provider) || commandsInherited(workDir) {
+		return nil
+	}
+	return commands.ProvisionFor(workDir, provider)
 }
 
 // EnsureHooksForRole writes the provider hook file the runtime needs to start.
