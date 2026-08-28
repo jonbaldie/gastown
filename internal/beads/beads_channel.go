@@ -437,8 +437,10 @@ func (b *Beads) EnforceChannelRetention(name string) error {
 	// Count-based retention: delete oldest messages beyond RetentionCount
 	if fields.RetentionCount > 0 {
 		toDeleteByCount := len(messages) - fields.RetentionCount
-		for i := 0; i < toDeleteByCount && i < len(messages); i++ {
-			toDeleteIDs[messages[i].ID] = true
+		if toDeleteByCount > 0 {
+			for _, message := range messages[:toDeleteByCount] {
+				toDeleteIDs[message.ID] = true
+			}
 		}
 	}
 
@@ -510,8 +512,8 @@ func (b *Beads) PruneAllChannels() (int, error) {
 			threshold := int(float64(fields.RetentionCount) * 1.1)
 			if len(messages) > threshold {
 				toDeleteByCount := len(messages) - fields.RetentionCount
-				for i := 0; i < toDeleteByCount && i < len(messages); i++ {
-					toDeleteIDs[messages[i].ID] = true
+				for _, message := range messages[:toDeleteByCount] {
+					toDeleteIDs[message.ID] = true
 				}
 			}
 		}
