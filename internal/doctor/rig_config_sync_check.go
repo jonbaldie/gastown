@@ -505,10 +505,11 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 		if running, pid, _ := doltserver.IsRunning(ctx.TownRoot); running && pid > 0 {
 			const minStableAge = 60 * time.Second
 			state, _ := doltserver.LoadState(ctx.TownRoot)
-			if state != nil && !state.StartedAt.IsZero() && time.Since(state.StartedAt) < minStableAge {
-				// Server started less than 60s ago — skip restart to avoid crash
-				// during Dolt startup churn. Databases will be picked up on next restart.
-			} else {
+			// Skip restart if the server started less than 60s ago, to avoid
+			// crash during Dolt startup churn. Databases will be picked up on
+			// the next restart.
+			stable := state == nil || state.StartedAt.IsZero() || time.Since(state.StartedAt) >= minStableAge
+			if stable {
 				// Stop the server
 				if err := doltserver.Stop(ctx.TownRoot); err != nil {
 					return fmt.Errorf("could not stop Dolt server for restart: %w", err)

@@ -948,16 +948,17 @@ func runDeaconHealthCheck(_ *cobra.Command, args []string) error {
 
 	responded := false
 
+waitLoop:
 	for {
 		select {
 		case <-ctx.Done():
-			goto Done
+			break waitLoop
 		case <-ticker.C:
 			// Primary signal: bead update (structured response channel)
 			newTime, err := getAgentBeadUpdateTime(townRoot, beadID)
 			if err == nil && newTime.After(baselineTime) {
 				responded = true
-				goto Done
+				break waitLoop
 			}
 
 			// Secondary signal: tmux session activity (prose/command response)
@@ -968,13 +969,12 @@ func runDeaconHealthCheck(_ *cobra.Command, args []string) error {
 				newActivity, err := t.GetSessionActivity(sessionName)
 				if err == nil && newActivity.After(baselineActivity) {
 					responded = true
-					goto Done
+					break waitLoop
 				}
 			}
 		}
 	}
 
-Done:
 	// Record result
 	if responded {
 		agentState.RecordResponse()

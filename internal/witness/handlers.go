@@ -1135,10 +1135,10 @@ func NukePolecat(bd *BdCli, workDir, rigName, polecatName string) error {
 		_ = t.SendKeysRaw(sessionName, "C-c")
 		// Brief delay for graceful handling
 		time.Sleep(100 * time.Millisecond)
-		// Force kill the session
+		// Force kill the session. Log but continue — the session might
+		// already be dead; the important thing is that we tried.
 		if err := t.KillSession(sessionName); err != nil {
-			// Log but continue - session might already be dead
-			// The important thing is we tried
+			_ = err
 		}
 	}
 

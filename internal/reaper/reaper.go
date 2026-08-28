@@ -707,8 +707,10 @@ func purgeOldMail(db *sql.DB, dbName string, mailDeleteAge time.Duration, dryRun
 			return totalDeleted, fmt.Errorf("sql commit: %w", err)
 		}
 		commitMsg := fmt.Sprintf("reaper: purge %d old mail from %s", totalDeleted, dbName)
+		// Non-fatal: a failed commit here leaves the purge uncommitted, but the
+		// rows are already removed from the working set for this session.
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_COMMIT('--allow-empty', '-Am', '%s')", commitMsg)); err != nil { //nolint:gosec // G201: commitMsg from safe values
-			// Non-fatal.
+			_ = err
 		}
 	}
 
@@ -880,8 +882,9 @@ func batchDeleteRows(ctx context.Context, db *sql.DB, idQuery string, cutoffArg 
 
 		for _, tbl := range auxTables {
 			delAux := fmt.Sprintf("DELETE FROM `%s` WHERE issue_id IN %s", tbl, inClause) //nolint:gosec // G201: tbl is internal
+			// Non-fatal: auxiliary-table cleanup is best-effort.
 			if _, err := db.ExecContext(ctx, delAux, args...); err != nil {
-				// Non-fatal: log and continue.
+				_ = err
 			}
 		}
 
@@ -900,8 +903,9 @@ func batchDeleteRows(ctx context.Context, db *sql.DB, idQuery string, cutoffArg 
 			}
 		}
 		for _, delReverse := range reverseDeletes {
+			// Non-fatal: reverse-dependency cleanup is best-effort.
 			if _, err := db.ExecContext(ctx, delReverse, args...); err != nil {
-				// Non-fatal.
+				_ = err
 			}
 		}
 

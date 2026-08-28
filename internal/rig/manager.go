@@ -1339,10 +1339,10 @@ func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
 	if err := beads.EnsureDir(beadsDir); err != nil {
 		return err
 	}
-	if bdInitErr != nil {
-		// bd might not be installed or failed — the shared helper below will
-		// create config.yaml with the required defaults as a fallback.
-	} else {
+	// If bd init failed (not installed or errored), the shared helper below
+		// creates config.yaml with the required defaults as a fallback. Otherwise
+		// configure the Dolt database now.
+	if bdInitErr == nil {
 		// bd init succeeded - configure the Dolt database
 
 		// Configure Gas Town bead types. Rig remains a custom durable type, not an

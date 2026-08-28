@@ -885,10 +885,9 @@ func runMqIntegrationStatus(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("initializing git: %w", err)
 	}
 
-	// Fetch from origin to ensure we have latest refs (needed for branch detection)
-	if err := g.Fetch("origin"); err != nil {
-		// Non-fatal, continue with local data
-	}
+	// Fetch from origin to ensure we have latest refs (needed for branch
+	// detection). Non-fatal: fall back to local data on failure.
+	_ = g.Fetch("origin")
 
 	// Fetch epic to get stored branch name
 	epic, err := bd.Show(epicID)
