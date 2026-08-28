@@ -687,7 +687,10 @@ func collectEpicChildren(epicID string) ([]string, error) {
 	queue := []string{epicID}
 	visited[epicID] = true
 
-	for len(queue) > 0 {
+	for {
+		if len(queue) == 0 {
+			break
+		}
 		parentID := queue[0]
 		queue = queue[1:]
 
