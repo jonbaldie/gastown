@@ -269,79 +269,124 @@ func refreshIssueStatus(ctx context.Context, tracked []struct {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.mu.Lock()
-		m.width = msg.Width
-		m.height = msg.Height
-		m.help.Width = msg.Width
-		m.mu.Unlock()
-		return m, nil
+		return m, m.updateWindowSize(msg)
 
 	case fetchConvoysMsg:
-		m.mu.Lock()
-		m.err = msg.err
-		m.convoys = msg.convoys
-		m.mu.Unlock()
-		return m, nil
+		return m, m.updateConvoys(msg)
 
 	case tea.KeyMsg:
-		switch {
-		case key.Matches(msg, m.keys.Quit):
-			return m, tea.Quit
-
-		case key.Matches(msg, m.keys.Help):
-			m.mu.Lock()
-			m.showHelp = !m.showHelp
-			m.mu.Unlock()
-			return m, nil
-
-		case key.Matches(msg, m.keys.Up):
-			m.mu.Lock()
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			m.mu.Unlock()
-			return m, nil
-
-		case key.Matches(msg, m.keys.Down):
-			m.mu.Lock()
-			max := m.maxCursorLocked()
-			if m.cursor < max {
-				m.cursor++
-			}
-			m.mu.Unlock()
-			return m, nil
-
-		case key.Matches(msg, m.keys.Top):
-			m.mu.Lock()
-			m.cursor = 0
-			m.mu.Unlock()
-			return m, nil
-
-		case key.Matches(msg, m.keys.Bottom):
-			m.mu.Lock()
-			m.cursor = m.maxCursorLocked()
-			m.mu.Unlock()
-			return m, nil
-
-		case key.Matches(msg, m.keys.Toggle):
-			m.mu.Lock()
-			m.toggleExpandLocked()
-			m.mu.Unlock()
-			return m, nil
-
-		// Number keys for direct convoy access
-		case msg.String() >= "1" && msg.String() <= "9":
-			n := int(msg.String()[0] - '0')
-			m.mu.Lock()
-			if n <= len(m.convoys) {
-				m.jumpToConvoyLocked(n - 1)
-			}
-			m.mu.Unlock()
-			return m, nil
-		}
+		return m, m.updateKey(msg)
 	}
 
 	return m, nil
+}
+
+func (m *Model) updateWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
+	m.mu.Lock()
+	m.width = msg.Width
+	m.height = msg.Height
+	m.help.Width = msg.Width
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Model) updateConvoys(msg fetchConvoysMsg) tea.Cmd {
+	m.mu.Lock()
+	m.err = msg.err
+	m.convoys = msg.convoys
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Model) updateKey(msg tea.KeyMsg) tea.Cmd {
+	handlers := []struct {
+		matches bool
+		handle  func() tea.Cmd
+	}{
+		{key.Matches(msg, m.keys.Quit), func() tea.Cmd { return tea.Quit }},
+		{key.Matches(msg, m.keys.Help), m.toggleHelp},
+		{key.Matches(msg, m.keys.Up), func() tea.Cmd {
+			m.moveCursor(-1)
+			return nil
+		}},
+		{key.Matches(msg, m.keys.Down), func() tea.Cmd {
+			m.moveCursor(1)
+			return nil
+		}},
+		{key.Matches(msg, m.keys.Top), func() tea.Cmd {
+			m.setCursor(0)
+			return nil
+		}},
+		{key.Matches(msg, m.keys.Bottom), m.moveCursorToBottom},
+		{key.Matches(msg, m.keys.Toggle), m.toggleExpand},
+		{isConvoyNumberKey(msg), func() tea.Cmd {
+			m.jumpToConvoy(numberKeyIndex(msg))
+			return nil
+		}},
+	}
+	for _, handler := range handlers {
+		if handler.matches {
+			return handler.handle()
+		}
+	}
+	return nil
+}
+
+func (m *Model) toggleHelp() tea.Cmd {
+	m.mu.Lock()
+	m.showHelp = !m.showHelp
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Model) moveCursor(delta int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if delta < 0 && m.cursor > 0 {
+		m.cursor--
+		return
+	}
+	if delta > 0 && m.cursor < m.maxCursorLocked() {
+		m.cursor++
+	}
+}
+
+func (m *Model) setCursor(cursor int) tea.Cmd {
+	m.mu.Lock()
+	m.cursor = cursor
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Model) moveCursorToBottom() tea.Cmd {
+	m.mu.Lock()
+	m.cursor = m.maxCursorLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Model) toggleExpand() tea.Cmd {
+	m.mu.Lock()
+	m.toggleExpandLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+func isConvoyNumberKey(msg tea.KeyMsg) bool {
+	value := msg.String()
+	return value >= "1" && value <= "9"
+}
+
+func numberKeyIndex(msg tea.KeyMsg) int {
+	return int(msg.String()[0] - '1')
+}
+
+func (m *Model) jumpToConvoy(convoyIndex int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if convoyIndex < len(m.convoys) {
+		m.jumpToConvoyLocked(convoyIndex)
+	}
 }
 
 // maxCursorLocked returns the maximum valid cursor position.
