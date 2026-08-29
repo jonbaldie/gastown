@@ -545,7 +545,7 @@ func init() {
 // runMailQueueCreate creates a new beads-native queue.
 func runMailQueueCreate(cmd *cobra.Command, args []string) error {
 	queueName := args[0]
-	claimers := mailStringFlag(cmd, "claimers")
+	claimers := commandStringFlag(cmd, "claimers")
 
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -615,7 +615,7 @@ func runMailQueueShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("queue %q not found", queueName)
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		output := map[string]interface{}{
 			"id":               issue.ID,
 			"name":             fields.Name,
@@ -678,7 +678,7 @@ func runMailQueueList(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		var output []map[string]interface{}
 		for _, issue := range queues {
 			fields := beads.ParseQueueFields(issue.Description)

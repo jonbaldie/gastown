@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var hooksInitDryRun bool
-
 var hooksInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Bootstrap base config from existing settings.json files",
@@ -30,10 +28,11 @@ Examples:
 
 func init() {
 	hooksCmd.AddCommand(hooksInitCmd)
-	hooksInitCmd.Flags().BoolVar(&hooksInitDryRun, "dry-run", false, "Show what would be written without writing")
+	hooksInitCmd.Flags().Bool("dry-run", false, "Show what would be written without writing")
 }
 
-func runHooksInit(_ *cobra.Command, _ []string) error {
+func runHooksInit(cmd *cobra.Command, _ []string) error {
+	dryRun := commandBoolFlag(cmd, "dry-run")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -76,7 +75,7 @@ func runHooksInit(_ *cobra.Command, _ []string) error {
 		fmt.Println("No existing hooks found in workspace settings files.")
 		fmt.Println("Creating default base config...")
 		base := hooks.DefaultBase()
-		if hooksInitDryRun {
+		if dryRun {
 			data, _ := hooks.MarshalConfig(base)
 			fmt.Printf("\nWould write to %s:\n%s\n", hooks.BasePath(), string(data))
 			return nil
@@ -115,7 +114,7 @@ func runHooksInit(_ *cobra.Command, _ []string) error {
 	}
 
 	// Display or write results
-	if hooksInitDryRun {
+	if dryRun {
 		data, _ := hooks.MarshalConfig(base)
 		fmt.Printf("Would write base config to %s:\n%s\n\n", hooks.BasePath(), string(data))
 

@@ -76,7 +76,7 @@ func isDrainableMessage(subject string) bool {
 }
 
 func runMailDrain(cmd *cobra.Command, _ []string) error {
-	maxAgeText := mailStringFlag(cmd, "max-age")
+	maxAgeText := commandStringFlag(cmd, "max-age")
 	// Parse max-age duration
 	maxAge, err := time.ParseDuration(maxAgeText)
 	if err != nil {
@@ -84,7 +84,7 @@ func runMailDrain(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Determine which inbox
-	address := mailStringFlag(cmd, "identity")
+	address := commandStringFlag(cmd, "identity")
 	if address == "" {
 		address = detectSender()
 	}
@@ -119,7 +119,7 @@ func runMailDrain(cmd *cobra.Command, _ []string) error {
 		}
 
 		// Check age unless --all
-		if !mailBoolFlag(cmd, "all") && msg.Timestamp.After(cutoff) {
+		if !commandBoolFlag(cmd, "all") && msg.Timestamp.After(cutoff) {
 			continue
 		}
 
@@ -135,7 +135,7 @@ func runMailDrain(cmd *cobra.Command, _ []string) error {
 		if isDrainableMessage(msg.Subject) {
 			continue // already handled above
 		}
-		if msg.Wisp && msg.Read && (mailBoolFlag(cmd, "all") || msg.Timestamp.Before(cutoff)) {
+		if msg.Wisp && msg.Read && (commandBoolFlag(cmd, "all") || msg.Timestamp.Before(cutoff)) {
 			candidates = append(candidates, drainCandidate{Message: msg, Reason: "read-wisp"})
 		}
 	}
@@ -147,7 +147,7 @@ func runMailDrain(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Dry run mode
-	if mailBoolFlag(cmd, "dry-run") {
+	if commandBoolFlag(cmd, "dry-run") {
 		fmt.Printf("%s Would drain %d/%d messages from %s:\n",
 			style.Dim.Render("(dry-run)"), len(candidates), len(messages), address)
 		for _, c := range candidates {

@@ -121,7 +121,7 @@ func runGroupList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("listing groups: %w", err)
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(groups)
@@ -162,7 +162,7 @@ func runGroupShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting group: %w", err)
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(fields)

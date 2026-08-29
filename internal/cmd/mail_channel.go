@@ -161,7 +161,7 @@ func runChannelList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("listing channels: %w", err)
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(channels)
@@ -216,7 +216,7 @@ func runChannelShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("listing channel messages: %w", err)
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		if messages == nil {
 			messages = []channelMessage{}
 		}
@@ -267,8 +267,8 @@ func runChannelShow(cmd *cobra.Command, args []string) error {
 
 func runChannelCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	retainCount := mailIntFlag(cmd, "retain-count")
-	retainHours := mailIntFlag(cmd, "retain-hours")
+	retainCount := commandIntFlag(cmd, "retain-count")
+	retainHours := commandIntFlag(cmd, "retain-hours")
 
 	if !isValidGroupName(name) { // Reuse group name validation
 		return fmt.Errorf("invalid channel name %q: must be alphanumeric with dashes/underscores", name)
@@ -448,7 +448,7 @@ func runChannelSubscribers(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("channel not found: %s", name)
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		subs := fields.Subscribers
 		if subs == nil {
 			subs = []string{}

@@ -16,9 +16,9 @@ import (
 )
 
 func runMailCheck(cmd *cobra.Command, _ []string) error {
-	inject := mailBoolFlag(cmd, "inject")
-	jsonOutput := mailBoolFlag(cmd, "json")
-	identity := mailStringAliasFlag(cmd, "identity", "address")
+	inject := commandBoolFlag(cmd, "inject")
+	jsonOutput := commandBoolFlag(cmd, "json")
+	identity := commandStringAliasFlag(cmd, "identity", "address")
 	address := mailCheckAddress(identity)
 	workDir, mailbox, messages, unread, handled, err := loadMailCheckInbox(address, inject)
 	if handled {

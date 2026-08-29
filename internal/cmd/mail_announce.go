@@ -19,7 +19,7 @@ import (
 
 // runMailAnnounces lists announce channels or reads messages from a channel.
 func runMailAnnounces(cmd *cobra.Command, args []string) error {
-	jsonOutput := mailBoolFlag(cmd, "json")
+	jsonOutput := commandBoolFlag(cmd, "json")
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

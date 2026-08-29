@@ -33,8 +33,8 @@ func getMailbox(address string) (*mail.Mailbox, error) {
 }
 
 func runMailInbox(cmd *cobra.Command, args []string) error {
-	showAll := mailBoolFlag(cmd, "all")
-	unreadOnly := mailBoolFlag(cmd, "unread")
+	showAll := commandBoolFlag(cmd, "all")
+	unreadOnly := commandBoolFlag(cmd, "unread")
 	// Check for mutually exclusive flags
 	if showAll && unreadOnly {
 		return errors.New("--all and --unread are mutually exclusive")
@@ -42,7 +42,7 @@ func runMailInbox(cmd *cobra.Command, args []string) error {
 
 	// Determine which inbox to check (priority: --identity flag, positional arg, auto-detect)
 	address := ""
-	identity := mailStringAliasFlag(cmd, "identity", "address")
+	identity := commandStringAliasFlag(cmd, "identity", "address")
 	if identity != "" {
 		address = identity
 	} else if len(args) > 0 {
@@ -64,7 +64,7 @@ func runMailInbox(cmd *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(messages); err != nil {
@@ -197,7 +197,7 @@ func runMailRead(cmd *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(msg); err != nil {
@@ -338,8 +338,8 @@ func runMailDelete(_ *cobra.Command, args []string) error {
 }
 
 func runMailArchive(cmd *cobra.Command, args []string) error {
-	stale := mailBoolFlag(cmd, "stale")
-	dryRun := mailBoolFlag(cmd, "dry-run")
+	stale := commandBoolFlag(cmd, "stale")
+	dryRun := commandBoolFlag(cmd, "dry-run")
 	// Determine which inbox
 	address := detectSender()
 
@@ -511,7 +511,7 @@ func runMailMarkRead(cmd *cobra.Command, args []string) error {
 	}
 
 	// --all: mark all unread messages as read
-	if mailBoolFlag(cmd, "all") {
+	if commandBoolFlag(cmd, "all") {
 		if len(args) > 0 {
 			return fmt.Errorf("--all cannot be combined with explicit message IDs")
 		}

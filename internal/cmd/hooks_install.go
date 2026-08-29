@@ -13,13 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	installRole    string
-	installAllRigs bool
-	installDryRun  bool
-	hooksInstForce bool
-)
-
 var hooksInstallCmd = &cobra.Command{
 	Use:   "install <hook-name>",
 	Short: "Install a hook from the registry",
@@ -39,13 +32,17 @@ Examples:
 
 func init() {
 	hooksCmd.AddCommand(hooksInstallCmd)
-	hooksInstallCmd.Flags().StringVar(&installRole, "role", "", "Install to all worktrees of this role (crew, polecat, witness, refinery)")
-	hooksInstallCmd.Flags().BoolVar(&installAllRigs, "all-rigs", false, "Install across all rigs (requires --role)")
-	hooksInstallCmd.Flags().BoolVar(&installDryRun, "dry-run", false, "Preview changes without writing files")
-	hooksInstallCmd.Flags().BoolVar(&hooksInstForce, "force", false, "Install even if hook is disabled in registry")
+	hooksInstallCmd.Flags().String("role", "", "Install to all worktrees of this role (crew, polecat, witness, refinery)")
+	hooksInstallCmd.Flags().Bool("all-rigs", false, "Install across all rigs (requires --role)")
+	hooksInstallCmd.Flags().Bool("dry-run", false, "Preview changes without writing files")
+	hooksInstallCmd.Flags().Bool("force", false, "Install even if hook is disabled in registry")
 }
 
-func runHooksInstall(_ *cobra.Command, args []string) error {
+func runHooksInstall(cmd *cobra.Command, args []string) error {
+	role := commandStringFlag(cmd, "role")
+	allRigs := commandBoolFlag(cmd, "all-rigs")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	force := commandBoolFlag(cmd, "force")
 	hookName := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -66,7 +63,7 @@ func runHooksInstall(_ *cobra.Command, args []string) error {
 	}
 
 	if !hookDef.Enabled {
-		if !hooksInstForce {
+		if !force {
 			return fmt.Errorf("hook %q is disabled in registry; use --force to install anyway", hookName)
 		}
 		fmt.Printf("%s Hook %q is disabled in registry, installing with --force.\n",
@@ -74,14 +71,14 @@ func runHooksInstall(_ *cobra.Command, args []string) error {
 	}
 
 	// Determine target worktrees
-	targets, err := determineTargets(townRoot, installRole, installAllRigs, hookDef.Roles)
+	targets, err := determineTargets(townRoot, role, allRigs, hookDef.Roles)
 	if err != nil {
 		return err
 	}
 
 	if len(targets) == 0 {
-		if installRole != "" {
-			return fmt.Errorf("no targets found for role %q in workspace", installRole)
+		if role != "" {
+			return fmt.Errorf("no targets found for role %q in workspace", role)
 		}
 		// No role specified — resolve CWD to the correct settings directory.
 		// For shared-parent roles (crew, polecats, witness, refinery), the
@@ -99,7 +96,7 @@ func runHooksInstall(_ *cobra.Command, args []string) error {
 	integrityErrors := 0
 	var failedTargets []string
 	for _, target := range targets {
-		if err := installHookTo(target, hookDef, installDryRun); err != nil {
+		if err := installHookTo(target, hookDef, dryRun); err != nil {
 			label := "install error"
 			if hooks.IsSettingsIntegrityError(err) {
 				label = "integrity violation"
@@ -113,7 +110,7 @@ func runHooksInstall(_ *cobra.Command, args []string) error {
 		installed++
 	}
 
-	if installDryRun {
+	if dryRun {
 		fmt.Printf("\n%s Would install %q to %d worktree(s)\n", style.Dim.Render("Dry run:"), hookName, installed)
 	} else {
 		fmt.Printf("\n%s Installed %q to %d worktree(s)\n", style.Success.Render("Done:"), hookName, installed)

@@ -51,55 +51,28 @@ type mailSendRoutingOptions struct {
 func mailSendOptionsFromCommand(cmd *cobra.Command) mailSendOptions {
 	return mailSendOptions{
 		content: mailSendContentOptions{
-			subject:  mailStringFlag(cmd, "subject"),
-			body:     mailStringAliasFlag(cmd, "message", "body"),
-			typeName: mailStringFlag(cmd, "type"),
-			replyTo:  mailStringFlag(cmd, "reply-to"),
+			subject:  commandStringFlag(cmd, "subject"),
+			body:     commandStringAliasFlag(cmd, "message", "body"),
+			typeName: commandStringFlag(cmd, "type"),
+			replyTo:  commandStringFlag(cmd, "reply-to"),
 		},
 		delivery: mailSendDeliveryOptions{
-			priority:  mailIntFlag(cmd, "priority"),
-			urgent:    mailBoolFlag(cmd, "urgent"),
-			pinned:    mailBoolFlag(cmd, "pinned"),
-			wisp:      mailBoolFlag(cmd, "wisp"),
-			permanent: mailBoolFlag(cmd, "permanent"),
-			notify:    mailBoolFlag(cmd, "notify"),
-			noNotify:  mailBoolFlag(cmd, "no-notify"),
-			cc:        mailStringArrayFlag(cmd, "cc"),
+			priority:  commandIntFlag(cmd, "priority"),
+			urgent:    commandBoolFlag(cmd, "urgent"),
+			pinned:    commandBoolFlag(cmd, "pinned"),
+			wisp:      commandBoolFlag(cmd, "wisp"),
+			permanent: commandBoolFlag(cmd, "permanent"),
+			notify:    commandBoolFlag(cmd, "notify"),
+			noNotify:  commandBoolFlag(cmd, "no-notify"),
+			cc:        commandStringArrayFlag(cmd, "cc"),
 		},
 		routing: mailSendRoutingOptions{
-			to:   mailStringFlag(cmd, "to"),
-			from: mailStringFlag(cmd, "from"),
-			self: mailBoolFlag(cmd, "self"),
+			to:   commandStringFlag(cmd, "to"),
+			from: commandStringFlag(cmd, "from"),
+			self: commandBoolFlag(cmd, "self"),
 		},
-		stdin: mailBoolFlag(cmd, "stdin"),
+		stdin: commandBoolFlag(cmd, "stdin"),
 	}
-}
-
-func mailStringFlag(cmd *cobra.Command, name string) string {
-	value, _ := cmd.Flags().GetString(name)
-	return value
-}
-
-func mailStringAliasFlag(cmd *cobra.Command, primary, alias string) string {
-	if cmd.Flags().Changed(alias) {
-		return mailStringFlag(cmd, alias)
-	}
-	return mailStringFlag(cmd, primary)
-}
-
-func mailBoolFlag(cmd *cobra.Command, name string) bool {
-	value, _ := cmd.Flags().GetBool(name)
-	return value
-}
-
-func mailIntFlag(cmd *cobra.Command, name string) int {
-	value, _ := cmd.Flags().GetInt(name)
-	return value
-}
-
-func mailStringArrayFlag(cmd *cobra.Command, name string) []string {
-	value, _ := cmd.Flags().GetStringArray(name)
-	return value
 }
 
 func runMailSend(cmd *cobra.Command, args []string) error {

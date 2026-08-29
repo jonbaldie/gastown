@@ -10,11 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	hooksScanJSON    bool
-	hooksScanVerbose bool
-)
-
 var hooksScanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Scan workspace for existing Claude Code hooks",
@@ -39,8 +34,8 @@ Examples:
 
 func init() {
 	hooksCmd.AddCommand(hooksScanCmd)
-	hooksScanCmd.Flags().BoolVar(&hooksScanJSON, "json", false, "Output as JSON")
-	hooksScanCmd.Flags().BoolVarP(&hooksScanVerbose, "verbose", "v", false, "Show hook commands")
+	hooksScanCmd.Flags().Bool("json", false, "Output as JSON")
+	hooksScanCmd.Flags().BoolP("verbose", "v", false, "Show hook commands")
 }
 
 // HookInfo contains information about a discovered hook.
@@ -60,7 +55,9 @@ type HooksOutput struct {
 	Count    int        `json:"count"`
 }
 
-func runHooksScan(_ *cobra.Command, _ []string) error {
+func runHooksScan(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	verbose := commandBoolFlag(cmd, "verbose")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -72,11 +69,11 @@ func runHooksScan(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("discovering hooks: %w", err)
 	}
 
-	if hooksScanJSON {
+	if jsonOutput {
 		return outputHooksJSON(townRoot, hookInfos)
 	}
 
-	return outputHooksHuman(townRoot, hookInfos)
+	return outputHooksHuman(townRoot, hookInfos, verbose)
 }
 
 // discoverHooks finds all Claude Code hooks in the workspace using hooks.DiscoverTargets.
@@ -158,7 +155,7 @@ func outputHooksJSON(townRoot string, hookInfos []HookInfo) error {
 	return nil
 }
 
-func outputHooksHuman(townRoot string, hookInfos []HookInfo) error {
+func outputHooksHuman(townRoot string, hookInfos []HookInfo, verbose bool) error {
 	if len(hookInfos) == 0 {
 		fmt.Println(style.Dim.Render("No Claude Code hooks found in workspace"))
 		return nil
@@ -170,7 +167,7 @@ func outputHooksHuman(townRoot string, hookInfos []HookInfo) error {
 	byType := groupHooksByType(hookInfos)
 	for _, hookType := range hookTypeOrder(byType) {
 		if typeHooks := byType[hookType]; len(typeHooks) > 0 {
-			printHookType(hookType, typeHooks)
+			printHookType(hookType, typeHooks, verbose)
 		}
 	}
 
@@ -209,15 +206,15 @@ func containsHookType(typeOrder []string, hookType string) bool {
 	return false
 }
 
-func printHookType(hookType string, typeHooks []HookInfo) {
+func printHookType(hookType string, typeHooks []HookInfo, verbose bool) {
 	fmt.Printf("%s %s\n", style.Bold.Render("▸"), hookType)
 	for _, hook := range typeHooks {
-		printHookInfo(hook)
+		printHookInfo(hook, verbose)
 	}
 	fmt.Println()
 }
 
-func printHookInfo(hook HookInfo) {
+func printHookInfo(hook HookInfo, verbose bool) {
 	statusIcon := "●"
 	if hook.Status != "active" {
 		statusIcon = "○"
@@ -229,7 +226,7 @@ func printHookInfo(hook HookInfo) {
 	}
 
 	fmt.Printf("  %s %-25s%s\n", statusIcon, hook.Agent, style.Dim.Render(matcherStr))
-	if hooksScanVerbose {
+	if verbose {
 		for _, command := range hook.Commands {
 			fmt.Printf("    %s %s\n", style.Dim.Render("→"), command)
 		}

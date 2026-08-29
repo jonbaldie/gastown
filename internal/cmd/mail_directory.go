@@ -48,7 +48,7 @@ func runMailDirectory(cmd *cobra.Command, _ []string) error {
 
 	entries, warnings := collectMailDirectoryEntries(beads.New(townRoot))
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		return writeMailDirectoryJSON(entries)
 	}
 	return writeMailDirectoryText(entries, warnings)

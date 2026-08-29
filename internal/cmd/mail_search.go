@@ -15,14 +15,14 @@ func runMailSearch(cmd *cobra.Command, args []string) error {
 	query := args[0]
 	address := detectSender()
 	messages, err := searchMailMessages(query, address,
-		mailStringFlag(cmd, "from"),
-		mailBoolFlag(cmd, "subject"),
-		mailBoolFlag(cmd, "body"))
+		commandStringFlag(cmd, "from"),
+		commandBoolFlag(cmd, "subject"),
+		commandBoolFlag(cmd, "body"))
 	if err != nil {
 		return err
 	}
 
-	if mailBoolFlag(cmd, "json") {
+	if commandBoolFlag(cmd, "json") {
 		return printMailSearchJSON(messages)
 	}
 	printMailSearchResults(address, messages)

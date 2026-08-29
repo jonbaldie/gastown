@@ -13,8 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var hooksSyncDryRun bool
-
 var hooksSyncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Regenerate all agent hook/settings files",
@@ -40,7 +38,7 @@ Examples:
 
 func init() {
 	hooksCmd.AddCommand(hooksSyncCmd)
-	hooksSyncCmd.Flags().BoolVar(&hooksSyncDryRun, "dry-run", false, "Show what would change without writing")
+	hooksSyncCmd.Flags().Bool("dry-run", false, "Show what would change without writing")
 }
 
 type hooksSyncSummary struct {
@@ -61,7 +59,8 @@ func (s *hooksSyncSummary) add(other hooksSyncSummary) {
 	s.failedTargets = append(s.failedTargets, other.failedTargets...)
 }
 
-func runHooksSync(_ *cobra.Command, _ []string) error {
+func runHooksSync(cmd *cobra.Command, _ []string) error {
+	dryRun := commandBoolFlag(cmd, "dry-run")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -72,16 +71,16 @@ func runHooksSync(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("discovering targets: %w", err)
 	}
 
-	if hooksSyncDryRun {
+	if dryRun {
 		fmt.Println("Dry run - showing what would change...")
 		fmt.Println()
 	} else {
 		fmt.Println("Syncing hooks...")
 	}
 
-	summary := syncClaudeHookTargets(townRoot, targets, hooksSyncDryRun)
-	summary.add(syncTemplateHookTargets(townRoot, hooksSyncDryRun))
-	return finishHooksSync(summary, hooksSyncDryRun)
+	summary := syncClaudeHookTargets(townRoot, targets, dryRun)
+	summary.add(syncTemplateHookTargets(townRoot, dryRun))
+	return finishHooksSync(summary, dryRun)
 }
 
 func syncClaudeHookTargets(townRoot string, targets []hooks.Target, dryRun bool) hooksSyncSummary {
