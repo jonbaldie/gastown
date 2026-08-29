@@ -25,11 +25,9 @@ Examples:
 	RunE: runTapList,
 }
 
-var tapListGuardsOnly bool
-
 func init() {
 	tapCmd.AddCommand(tapListCmd)
-	tapListCmd.Flags().BoolVar(&tapListGuardsOnly, "guards", false, "Show only guard handlers")
+	tapListCmd.Flags().Bool("guards", false, "Show only guard handlers")
 }
 
 // tapHandler describes a tap handler for display.
@@ -42,10 +40,11 @@ type tapHandler struct {
 	implemented bool
 }
 
-func runTapList(_ *cobra.Command, _ []string) error {
+func runTapList(cmd *cobra.Command, _ []string) error {
+	guardsOnly := commandBoolFlag(cmd, "guards")
 	handlers := builtInTapHandlers()
-	handlers = appendRegistryTapHandlers(handlers, tapListGuardsOnly)
-	handlers = prepareTapHandlers(handlers, tapListGuardsOnly)
+	handlers = appendRegistryTapHandlers(handlers, guardsOnly)
+	handlers = prepareTapHandlers(handlers, guardsOnly)
 	return renderTapHandlers(handlers)
 }
 
