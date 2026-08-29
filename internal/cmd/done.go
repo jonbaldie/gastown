@@ -155,53 +155,87 @@ func resolveDonePolecatWorktree() (donePolecatWorktree, error) {
 }
 
 func resolveDonePolecatWorktreeAt(cwd string) (donePolecatWorktree, error) {
+	absCwd, err := validateDoneWorktreeCwd(cwd)
+	if err != nil {
+		return donePolecatWorktree{}, err
+	}
+	townRoot, err := doneTownRootForWorktree(absCwd)
+	if err != nil {
+		return donePolecatWorktree{}, err
+	}
+	actorRig, actorName, err := resolveDonePolecatIdentity()
+	if err != nil {
+		return donePolecatWorktree{}, err
+	}
+	gitRoot, err := doneGitRootInWorktree(absCwd)
+	if err != nil {
+		return donePolecatWorktree{}, err
+	}
+	return matchDoneAssignedWorktree(townRoot, actorRig, actorName, gitRoot)
+}
+
+func validateDoneWorktreeCwd(cwd string) (string, error) {
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
-		return donePolecatWorktree{}, fmt.Errorf("gt done must be run from the assigned polecat worktree: current directory unavailable")
+		return "", fmt.Errorf("gt done must be run from the assigned polecat worktree: current directory unavailable")
 	}
 	absCwd, err := filepath.Abs(cwd)
 	if err != nil {
-		return donePolecatWorktree{}, fmt.Errorf("resolving current directory: %w", err)
+		return "", fmt.Errorf("resolving current directory: %w", err)
 	}
-	if info, err := os.Stat(absCwd); err != nil {
-		return donePolecatWorktree{}, fmt.Errorf("gt done must be run from the assigned polecat worktree: current directory unavailable: %w", err)
-	} else if !info.IsDir() {
-		return donePolecatWorktree{}, fmt.Errorf("gt done must be run from the assigned polecat worktree: current path is not a directory: %s", absCwd)
+	info, err := os.Stat(absCwd)
+	if err != nil {
+		return "", fmt.Errorf("gt done must be run from the assigned polecat worktree: current directory unavailable: %w", err)
 	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("gt done must be run from the assigned polecat worktree: current path is not a directory: %s", absCwd)
+	}
+	return absCwd, nil
+}
 
+func doneTownRootForWorktree(absCwd string) (string, error) {
 	townRoot, err := workspace.FindOrError(absCwd)
 	if err != nil {
-		return donePolecatWorktree{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return "", fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 	if err := doneValidateSessionTownRoot(townRoot); err != nil {
-		return donePolecatWorktree{}, err
+		return "", err
 	}
+	return townRoot, nil
+}
 
+func resolveDonePolecatIdentity() (string, string, error) {
 	actorRig, actorName, err := donePolecatActorIdentity(os.Getenv("BD_ACTOR"))
 	if err != nil {
-		return donePolecatWorktree{}, err
+		return "", "", err
 	}
 	roleRig, roleName, err := donePolecatEnvIdentity(os.Getenv("GT_ROLE"), os.Getenv("GT_RIG"), os.Getenv("GT_POLECAT"))
 	if err != nil {
-		return donePolecatWorktree{}, err
+		return "", "", err
 	}
 	if actorRig != roleRig || actorName != roleName {
-		return donePolecatWorktree{}, fmt.Errorf("gt done identity mismatch: BD_ACTOR=%s/polecats/%s but GT_ROLE/GT_RIG/GT_POLECAT resolve to %s/polecats/%s", actorRig, actorName, roleRig, roleName)
+		return "", "", fmt.Errorf("gt done identity mismatch: BD_ACTOR=%s/polecats/%s but GT_ROLE/GT_RIG/GT_POLECAT resolve to %s/polecats/%s", actorRig, actorName, roleRig, roleName)
 	}
 	if err := doneRejectGitEnvOverrides(); err != nil {
-		return donePolecatWorktree{}, err
+		return "", "", err
 	}
+	return actorRig, actorName, nil
+}
 
+func doneGitRootInWorktree(absCwd string) (string, error) {
 	gitRoot, err := doneGitTopLevel(absCwd)
 	if err != nil {
-		return donePolecatWorktree{}, fmt.Errorf("gt done must be run from the assigned polecat git worktree: %w", err)
+		return "", fmt.Errorf("gt done must be run from the assigned polecat git worktree: %w", err)
 	}
 	gitRoot = doneCanonicalPath(gitRoot)
 	canonicalCwd := doneCanonicalPath(absCwd)
 	if !donePathWithin(gitRoot, canonicalCwd) {
-		return donePolecatWorktree{}, fmt.Errorf("gt done must be run from the assigned polecat worktree: current directory %s is outside git root %s", canonicalCwd, gitRoot)
+		return "", fmt.Errorf("gt done must be run from the assigned polecat worktree: current directory %s is outside git root %s", canonicalCwd, gitRoot)
 	}
+	return gitRoot, nil
+}
 
+func matchDoneAssignedWorktree(townRoot, actorRig, actorName, gitRoot string) (donePolecatWorktree, error) {
 	candidates, err := donePolecatWorktreeCandidates(townRoot, actorRig, actorName)
 	if err != nil {
 		return donePolecatWorktree{}, err
@@ -217,7 +251,6 @@ func resolveDonePolecatWorktreeAt(cwd string) (donePolecatWorktree, error) {
 			}, nil
 		}
 	}
-
 	return donePolecatWorktree{}, fmt.Errorf("gt done must be run from assigned polecat worktree %s; current git root is %s", strings.Join(candidates, " or "), gitRoot)
 }
 
@@ -659,22 +692,25 @@ func hasFreshReviewEvidenceComment(comments []beads.Comment, assignmentAt time.T
 		return false
 	}
 	for _, comment := range comments {
-		createdAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(comment.CreatedAt))
-		if err != nil || !createdAt.After(assignmentAt) {
-			continue
+		if reviewCommentMatchesEvidence(comment, assignmentAt, assignee, currentHead) {
+			return true
 		}
-		if strings.TrimSpace(comment.Author) != assignee {
-			continue
-		}
-		if isGeneratedReviewComment(comment.Text) || !isReviewEvidenceText(comment.Text) {
-			continue
-		}
-		if reviewEvidenceHeadSHA(comment.Text) != currentHead {
-			continue
-		}
-		return true
 	}
 	return false
+}
+
+func reviewCommentMatchesEvidence(comment beads.Comment, assignmentAt time.Time, assignee, currentHead string) bool {
+	createdAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(comment.CreatedAt))
+	if err != nil || !createdAt.After(assignmentAt) {
+		return false
+	}
+	if strings.TrimSpace(comment.Author) != assignee {
+		return false
+	}
+	if isGeneratedReviewComment(comment.Text) || !isReviewEvidenceText(comment.Text) {
+		return false
+	}
+	return reviewEvidenceHeadSHA(comment.Text) == currentHead
 }
 
 func isGeneratedReviewComment(text string) bool {
@@ -1888,42 +1924,59 @@ func closeHookedWorkOnDone(hookBd *beads.Beads, hookedBeadID, townRoot, rig stri
 	if err != nil || !isClosableHookedBead(hookedBead.Status) {
 		return nil
 	}
+	skip, err := skipCloseHookedWork(hookBd, hookedBead, hookedBeadID, townRoot, rig)
+	if skip {
+		return err
+	}
+	if !closeHookedMoleculeIfAttached(hookBd, hookedBead) {
+		return nil
+	}
+	return closeHookedBeadIfReady(hookBd, hookedBead, hookedBeadID)
+}
 
+func skipCloseHookedWork(hookBd *beads.Beads, hookedBead *beads.Issue, hookedBeadID, townRoot, rig string) (bool, error) {
 	if beads.HasLabel(hookedBead, "gt:rig") {
 		fmt.Fprintf(os.Stderr, "Note: hooked bead %s is a rig identity bead (gt:rig) — skipping close\n", hookedBeadID)
-		return nil
+		return true, nil
 	}
 	if sourceUsesMergeQueue(hookedBead) {
 		reason := fmt.Sprintf("source issue %s is waiting for Refinery merge proof", hookedBeadID)
-		style.PrintWarning("%s", reason)
-		fmt.Fprintf(os.Stderr, "  The bead will remain open for witness/mayor review.\n")
-		notifyDoneCloseSkipped(townRoot, rig, detectSender(), hookedBeadID, reason)
-		return nil
+		noteHookedCloseSkipped(townRoot, rig, hookedBeadID, reason)
+		return true, nil
 	}
-
-	if skipReason, fatal := doneSourceCloseSkipReason(hookBd, hookedBeadID, hookedBead); skipReason != "" {
-		style.PrintWarning("%s", skipReason)
-		fmt.Fprintf(os.Stderr, "  The bead will remain open for witness/mayor review.\n")
-		notifyDoneCloseSkipped(townRoot, rig, detectSender(), hookedBeadID, skipReason)
-		if fatal {
-			return fmt.Errorf("cannot complete hooked work: %s", skipReason)
-		}
-		return nil
+	skipReason, fatal := doneSourceCloseSkipReason(hookBd, hookedBeadID, hookedBead)
+	if skipReason == "" {
+		return false, nil
 	}
+	noteHookedCloseSkipped(townRoot, rig, hookedBeadID, skipReason)
+	if fatal {
+		return true, fmt.Errorf("cannot complete hooked work: %s", skipReason)
+	}
+	return true, nil
+}
 
+func noteHookedCloseSkipped(townRoot, rig, hookedBeadID, reason string) {
+	style.PrintWarning("%s", reason)
+	fmt.Fprintf(os.Stderr, "  The bead will remain open for witness/mayor review.\n")
+	notifyDoneCloseSkipped(townRoot, rig, detectSender(), hookedBeadID, reason)
+}
+
+func closeHookedMoleculeIfAttached(hookBd *beads.Beads, hookedBead *beads.Issue) bool {
 	attachment := beads.ParseAttachmentFields(hookedBead)
-	if attachment != nil && attachment.AttachedMolecule != "" {
-		if n := closeDescendants(hookBd, attachment.AttachedMolecule); n > 0 {
-			fmt.Fprintf(os.Stderr, "Closed %d molecule step(s) for %s\n", n, attachment.AttachedMolecule)
-		}
-		if closeErr := hookBd.ForceCloseWithReason("done", attachment.AttachedMolecule); closeErr != nil {
-			if !errors.Is(closeErr, beads.ErrNotFound) {
-				fmt.Fprintf(os.Stderr, "Warning: couldn't close attached molecule %s: %v\n", attachment.AttachedMolecule, closeErr)
-				return nil
-			}
-		}
+	if attachment == nil || attachment.AttachedMolecule == "" {
+		return true
 	}
+	if n := closeDescendants(hookBd, attachment.AttachedMolecule); n > 0 {
+		fmt.Fprintf(os.Stderr, "Closed %d molecule step(s) for %s\n", n, attachment.AttachedMolecule)
+	}
+	if closeErr := hookBd.ForceCloseWithReason("done", attachment.AttachedMolecule); closeErr != nil && !errors.Is(closeErr, beads.ErrNotFound) {
+		fmt.Fprintf(os.Stderr, "Warning: couldn't close attached molecule %s: %v\n", attachment.AttachedMolecule, closeErr)
+		return false
+	}
+	return true
+}
 
+func closeHookedBeadIfReady(hookBd *beads.Beads, hookedBead *beads.Issue, hookedBeadID string) error {
 	if unchecked := beads.HasUncheckedCriteria(hookedBead); unchecked > 0 {
 		style.PrintWarning("hooked bead %s has %d unchecked acceptance criteria — skipping close", hookedBeadID, unchecked)
 		fmt.Fprintf(os.Stderr, "  The bead will remain open for witness/mayor review.\n")
@@ -1936,34 +1989,10 @@ func closeHookedWorkOnDone(hookBd *beads.Beads, hookedBeadID, townRoot, rig stri
 }
 
 func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
-	// Get role context - try multiple sources for resilience
-	roleInfo, err := GetRoleWithContext(cwd, townRoot)
-	if err != nil {
-		// Fallback: try to construct role info from environment variables
-		// This handles the case where cwd is deleted but env vars are set
-		envRole := os.Getenv("GT_ROLE")
-		envRig := os.Getenv("GT_RIG")
-		envPolecat := os.Getenv("GT_POLECAT")
-
-		if envRole == "" || envRig == "" {
-			// Can't determine role, skip agent state update
-			style.PrintWarning("could not determine role for agent state update (env: GT_ROLE=%q, GT_RIG=%q)", envRole, envRig)
-			return nil
-		}
-
-		// Parse role string to get Role type
-		parsedRole, _, _ := parseRoleString(envRole)
-
-		roleInfo = RoleInfo{
-			Role:     parsedRole,
-			Rig:      envRig,
-			Polecat:  envPolecat,
-			TownRoot: townRoot,
-			WorkDir:  cwd,
-			Source:   "env-fallback",
-		}
+	roleInfo, ok := resolveDoneRoleInfo(cwd, townRoot)
+	if !ok {
+		return nil
 	}
-
 	ctx := RoleContext{
 		Role:     roleInfo.Role,
 		Rig:      roleInfo.Rig,
@@ -1971,23 +2000,40 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
 		TownRoot: townRoot,
 		WorkDir:  cwd,
 	}
-
 	agentBeadID := getAgentBeadID(ctx)
 	if agentBeadID == "" {
 		style.PrintWarning("no agent bead ID found for %s/%s, skipping agent state update", ctx.Rig, ctx.Polecat)
 		return nil
 	}
+	return applyDoneAgentState(townRoot, exitType, issueID, roleInfo, ctx, agentBeadID)
+}
 
-	// Use rig path for bd commands.
-	// IMPORTANT: Use the rig's directory (not polecat worktree) so bd commands
-	// work even if the polecat worktree is deleted.
-	var beadsPath string
-	switch ctx.Role {
-	case RoleMayor, RoleDeacon:
-		beadsPath = townRoot
-	default:
-		beadsPath = filepath.Join(townRoot, ctx.Rig)
+func resolveDoneRoleInfo(cwd, townRoot string) (RoleInfo, bool) {
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err == nil {
+		return roleInfo, true
 	}
+	envRole := os.Getenv("GT_ROLE")
+	envRig := os.Getenv("GT_RIG")
+	envPolecat := os.Getenv("GT_POLECAT")
+	if envRole == "" || envRig == "" {
+		style.PrintWarning("could not determine role for agent state update (env: GT_ROLE=%q, GT_RIG=%q)", envRole, envRig)
+		return RoleInfo{}, false
+	}
+	parsedRole, _, _ := parseRoleString(envRole)
+	return RoleInfo{
+		Role:     parsedRole,
+		Rig:      envRig,
+		Polecat:  envPolecat,
+		TownRoot: townRoot,
+		WorkDir:  cwd,
+		Source:   "env-fallback",
+	}, true
+}
+
+func applyDoneAgentState(townRoot, exitType, issueID string, roleInfo RoleInfo, ctx RoleContext, agentBeadID string) error {
+	// Use the rig directory so bd commands work if the polecat worktree is gone.
+	beadsPath := doneBeadsPathForRole(ctx, townRoot)
 	bd := beads.New(beadsPath)
 	// agentBd bypasses prefix routing — agent beads (gt:agent label) live in
 	// the town DB regardless of their ID prefix, but the rig-prefix routing
@@ -2006,64 +2052,62 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
 		}
 	}
 
-	// Workflow step beads (*-wfs-*) and standalone formula dispatch beads are
-	// formula-engine work. For these, DEFERRED means "formula complete, no code
-	// commits" rather than "work paused for resumption". Close them on DEFERRED.
-	if shouldCloseHookedWorkOnDone(exitType, hookedBeadID, beadsPath, bd) {
-		hookBd, _, _ := routedIssueBeads(beadsPath, hookedBeadID)
-		if hookBd == nil {
-			hookBd = bd
-		}
-		if err := closeHookedWorkOnDone(hookBd, hookedBeadID, townRoot, ctx.Rig); err != nil {
-			return err
-		}
+	if err := closeHookedWorkIfNeeded(exitType, hookedBeadID, beadsPath, bd, townRoot, ctx.Rig); err != nil {
+		return err
 	}
+	finalizeDoneAgentBead(agentBd, bd, agentBeadID, exitType)
+	return nil
+}
 
-	// Clear hook_bead on the agent bead (gt-qbh). The hq-l6mm5 refactor made
-	// SetHookBead/ClearHookBead no-ops, but the witness still reads the
-	// hook_bead field from the agent bead snapshot. If the hooked bead is a
-	// wisp that gets reaped, the witness can't verify it was closed and flags
-	// the polecat as a zombie. Clearing hook_bead prevents this false positive.
+func doneBeadsPathForRole(ctx RoleContext, townRoot string) string {
+	switch ctx.Role {
+	case RoleMayor, RoleDeacon:
+		return townRoot
+	default:
+		return filepath.Join(townRoot, ctx.Rig)
+	}
+}
+
+func closeHookedWorkIfNeeded(exitType, hookedBeadID, beadsPath string, bd *beads.Beads, townRoot, rig string) error {
+	if !shouldCloseHookedWorkOnDone(exitType, hookedBeadID, beadsPath, bd) {
+		return nil
+	}
+	hookBd, _, _ := routedIssueBeads(beadsPath, hookedBeadID)
+	if hookBd == nil {
+		hookBd = bd
+	}
+	return closeHookedWorkOnDone(hookBd, hookedBeadID, townRoot, rig)
+}
+
+func finalizeDoneAgentBead(agentBd, bd *beads.Beads, agentBeadID, exitType string) {
 	emptyHook := ""
 	if err := agentBd.UpdateAgentDescriptionFields(agentBeadID, beads.AgentFieldUpdates{HookBead: &emptyHook}); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: couldn't clear hook_bead on %s: %v\n", agentBeadID, err)
 	}
-
-	// Purge closed ephemeral beads (wisps) accumulated during this and prior sessions.
-	// Without this, closed wisps from mol-polecat-work steps, mol-witness-patrol cycles,
-	// etc. accumulate across sessions and pollute bd ready/list output (hq-6161m).
-	// Best-effort: failures are non-fatal since the work is already done.
 	purgeClosedEphemeralBeads(bd)
-
-	// Completion metadata (exit_type, MR ID, branch) remains on the agent bead
-	// for audit purposes and anomaly detection by witness patrol.
 	agentState := string(beads.AgentStateDone)
 	if exitType != ExitCompleted {
 		agentState = "stuck"
 	}
-	// Use UpdateAgentState to sync both column and description (gt-ulom).
 	if err := agentBd.UpdateAgentState(agentBeadID, agentState); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: couldn't set agent %s to %s: %v\n", agentBeadID, agentState, err)
 	}
-
-	// ZFC #10: Self-report cleanup status
-	// Agent observes git state and passes cleanup status via --cleanup-status flag
-	if doneState().cleanupStatus != "" {
-		cleanupStatus := parseCleanupStatus(doneState().cleanupStatus)
-		if cleanupStatus != polecat.CleanupUnknown {
-			if err := agentBd.UpdateAgentCleanupStatus(agentBeadID, string(cleanupStatus)); err != nil {
-				// Non-fatal: don't return — done-intent labels still need clearing (za-o9e)
-				fmt.Fprintf(os.Stderr, "Warning: couldn't update agent %s cleanup status: %v\n", agentBeadID, err)
-			}
-		}
-	}
-
-	// Clear done-intent label and checkpoints on clean exit — gt done completed
-	// successfully. If we don't reach here (crash/stuck), the Witness uses the
-	// lingering labels to detect the zombie and resume from checkpoints.
+	updateDoneAgentCleanupStatus(agentBd, agentBeadID)
 	clearDoneIntentLabel(agentBd, agentBeadID)
 	clearDoneCheckpoints(agentBd, agentBeadID)
-	return nil
+}
+
+func updateDoneAgentCleanupStatus(agentBd *beads.Beads, agentBeadID string) {
+	if doneState().cleanupStatus == "" {
+		return
+	}
+	cleanupStatus := parseCleanupStatus(doneState().cleanupStatus)
+	if cleanupStatus == polecat.CleanupUnknown {
+		return
+	}
+	if err := agentBd.UpdateAgentCleanupStatus(agentBeadID, string(cleanupStatus)); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: couldn't update agent %s cleanup status: %v\n", agentBeadID, err)
+	}
 }
 
 func isClosableHookedBead(status string) bool {
@@ -2119,6 +2163,20 @@ func isStaleBranchIssue(branchIssue, hookedIssue string) bool {
 // selectAssignedIssue returns the one authoritative assignment to use for
 // done attribution. Ambiguous assignment state is deliberately not guessed.
 func selectAssignedIssue(branchIssue string, assigned []string) (string, bool) {
+	ids := uniqueAssignedIssueIDs(assigned)
+	if len(ids) == 0 {
+		return "", false
+	}
+	if branchIssueMatchesAssigned(branchIssue, ids) {
+		return "", false
+	}
+	if len(ids) > 1 {
+		return "", true
+	}
+	return ids[0], false
+}
+
+func uniqueAssignedIssueIDs(assigned []string) []string {
 	unique := make(map[string]bool, len(assigned))
 	for _, id := range assigned {
 		if id != "" {
@@ -2130,21 +2188,19 @@ func selectAssignedIssue(branchIssue string, assigned []string) (string, bool) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	return ids
+}
 
-	if len(ids) == 0 {
-		return "", false
+func branchIssueMatchesAssigned(branchIssue string, ids []string) bool {
+	if branchIssue == "" {
+		return false
 	}
-	if branchIssue != "" {
-		for _, id := range ids {
-			if branchIssue == id || strings.HasPrefix(branchIssue, id+".") {
-				return "", false
-			}
+	for _, id := range ids {
+		if branchIssue == id || strings.HasPrefix(branchIssue, id+".") {
+			return true
 		}
 	}
-	if len(ids) > 1 {
-		return "", true
-	}
-	return ids[0], false
+	return false
 }
 
 // findAssignedBeadsForAgent queries the same assignment locations as gt hook:
@@ -2154,43 +2210,52 @@ func findAssignedBeadsForAgent(workDir, agentID string) []string {
 	if agentID == "" {
 		return nil
 	}
-
 	assigned := assignedIssueIDs(queryAssignedBeads(beads.New(workDir), agentID))
 	if len(assigned) > 0 {
 		return assigned
 	}
+	return findAssignedBeadsOutsideWorkDir(workDir, agentID)
+}
 
+func findAssignedBeadsOutsideWorkDir(workDir, agentID string) []string {
 	townRoot, err := findTownRoot()
 	if err != nil || townRoot == "" {
 		return nil
 	}
-
-	parts := strings.Split(agentID, "/")
-	rigName := ""
-	if len(parts) > 0 {
-		rigName = parts[0]
+	if assigned := findAssignedBeadsInAgentRig(townRoot, workDir, agentID); len(assigned) > 0 {
+		return assigned
 	}
-	if rigName != "" && rigName != "mayor" && rigName != "deacon" {
-		rigWorkDir := filepath.Join(townRoot, rigName, "mayor", "rig")
-		if rigWorkDir != workDir {
-			assigned = assignedIssueIDs(queryAssignedBeads(beads.New(rigWorkDir), agentID))
-			if len(assigned) > 0 {
-				return assigned
-			}
-		}
-	}
-
-	townBeadsDir := filepath.Join(townRoot, ".beads")
-	if _, err := os.Stat(townBeadsDir); err == nil {
-		assigned = assignedIssueIDs(queryAssignedBeads(beads.New(townBeadsDir), agentID))
-		if len(assigned) > 0 {
-			return assigned
-		}
+	if assigned := findAssignedBeadsInTown(townRoot, agentID); len(assigned) > 0 {
+		return assigned
 	}
 	if isTownLevelRole(agentID) {
 		return assignedIssueIDs(scanAllRigsForHookedBeads(townRoot, agentID))
 	}
 	return nil
+}
+
+func findAssignedBeadsInAgentRig(townRoot, workDir, agentID string) []string {
+	parts := strings.Split(agentID, "/")
+	if len(parts) == 0 {
+		return nil
+	}
+	rigName := parts[0]
+	if rigName == "" || rigName == "mayor" || rigName == "deacon" {
+		return nil
+	}
+	rigWorkDir := filepath.Join(townRoot, rigName, "mayor", "rig")
+	if rigWorkDir == workDir {
+		return nil
+	}
+	return assignedIssueIDs(queryAssignedBeads(beads.New(rigWorkDir), agentID))
+}
+
+func findAssignedBeadsInTown(townRoot, agentID string) []string {
+	townBeadsDir := filepath.Join(townRoot, ".beads")
+	if _, err := os.Stat(townBeadsDir); err != nil {
+		return nil
+	}
+	return assignedIssueIDs(queryAssignedBeads(beads.New(townBeadsDir), agentID))
 }
 
 func queryAssignedBeads(bd *beads.Beads, agentID string) []*beads.Issue {
