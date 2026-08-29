@@ -651,41 +651,51 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 	},
 }
 
-// Registry state with proper synchronization.
-var (
-	// registryMu protects all registry state.
-	registryMu sync.RWMutex
-	// globalRegistry is the merged registry of built-in and user-defined agents.
-	globalRegistry *AgentRegistry
-	// loadedPaths tracks which config files have been loaded to avoid redundant reads.
-	loadedPaths = make(map[string]bool)
-	// registryInitialized tracks if builtins have been copied.
-	registryInitialized bool
-)
+type agentRegistryState struct {
+	merged      *AgentRegistry
+	loadedPaths map[string]bool
+	initialized bool
+}
+
+type agentRegistryAction func(*agentRegistryState) error
+
+// agentRegistry serializes access to state held by its closure, keeping the
+// mutable registry out of package-level storage.
+var agentRegistry = newAgentRegistryAccessor()
+
+func newAgentRegistryAccessor() func(agentRegistryAction) error {
+	var registryMu sync.RWMutex
+	state := agentRegistryState{loadedPaths: make(map[string]bool)}
+	return func(action agentRegistryAction) error {
+		registryMu.Lock()
+		defer registryMu.Unlock()
+		return action(&state)
+	}
+}
 
 // initRegistry initializes the global registry with built-in presets.
-// Caller must hold registryMu write lock.
-func initRegistryLocked() {
-	if registryInitialized {
+// Caller must hold the registry state lock.
+func initRegistryLocked(state *agentRegistryState) {
+	if state.initialized {
 		return
 	}
-	globalRegistry = &AgentRegistry{
+	state.merged = &AgentRegistry{
 		Version: CurrentAgentRegistryVersion,
 		Agents:  make(map[string]*AgentPresetInfo),
 	}
 	// Clone built-in presets so registry overlays cannot mutate the table.
 	for name, preset := range builtinPresets {
-		globalRegistry.Agents[string(name)] = cloneAgentPresetInfo(preset)
+		state.merged.Agents[string(name)] = cloneAgentPresetInfo(preset)
 	}
-	registryInitialized = true
+	state.initialized = true
 }
 
 // loadAgentRegistryFromPath loads agent definitions from a JSON file and merges with built-ins.
-// Caller must hold registryMu write lock.
-func loadAgentRegistryFromPathLocked(path string) error {
-	initRegistryLocked()
+// Caller must hold the registry state lock.
+func loadAgentRegistryFromPathLocked(state *agentRegistryState, path string) error {
+	initRegistryLocked(state)
 
-	if loadedPaths[path] {
+	if state.loadedPaths[path] {
 		return nil
 	}
 
@@ -705,7 +715,7 @@ func loadAgentRegistryFromPathLocked(path string) error {
 	}
 
 	for name, rawPreset := range userRegistry.Agents {
-		merged := cloneAgentPresetInfo(globalRegistry.Agents[name])
+		merged := cloneAgentPresetInfo(state.merged.Agents[name])
 		if merged == nil {
 			merged = &AgentPresetInfo{}
 		}
@@ -713,10 +723,10 @@ func loadAgentRegistryFromPathLocked(path string) error {
 			return err
 		}
 		merged.Name = AgentPreset(name)
-		globalRegistry.Agents[name] = merged
+		state.merged.Agents[name] = merged
 	}
 
-	loadedPaths[path] = true
+	state.loadedPaths[path] = true
 	return nil
 }
 
@@ -767,9 +777,9 @@ func cloneStringGroups(src [][]string) [][]string {
 // User-defined agents override built-in presets with the same name.
 // This function caches loaded paths to avoid redundant file reads.
 func LoadAgentRegistry(path string) error {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	return loadAgentRegistryFromPathLocked(path)
+	return agentRegistry(func(state *agentRegistryState) error {
+		return loadAgentRegistryFromPathLocked(state, path)
+	})
 }
 
 // DefaultAgentRegistryPath returns the default path for agent registry.
@@ -793,27 +803,33 @@ func RigAgentRegistryPath(rigPath string) string {
 // LoadRigAgentRegistry loads agent definitions from a rig-level JSON file and merges with built-ins.
 // This function works similarly to LoadAgentRegistry but for rig-level configurations.
 func LoadRigAgentRegistry(path string) error {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	return loadAgentRegistryFromPathLocked(path)
+	return agentRegistry(func(state *agentRegistryState) error {
+		return loadAgentRegistryFromPathLocked(state, path)
+	})
 }
 
 // GetAgentPreset returns the preset info for a given agent name.
 // Returns nil if the preset is not found.
 func GetAgentPreset(name AgentPreset) *AgentPresetInfo {
-	registryMu.Lock()
-	initRegistryLocked()
-	defer registryMu.Unlock()
-	return globalRegistry.Agents[string(name)]
+	var preset *AgentPresetInfo
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		initRegistryLocked(state)
+		preset = state.merged.Agents[string(name)]
+		return nil
+	})
+	return preset
 }
 
 // GetAgentPresetByName returns the preset info by string name.
 // Returns nil if not found, allowing caller to fall back to defaults.
 func GetAgentPresetByName(name string) *AgentPresetInfo {
-	registryMu.Lock()
-	initRegistryLocked()
-	defer registryMu.Unlock()
-	return globalRegistry.Agents[name]
+	var preset *AgentPresetInfo
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		initRegistryLocked(state)
+		preset = state.merged.Agents[name]
+		return nil
+	})
+	return preset
 }
 
 // ResolveAgentPreset looks up a built-in preset for name, then for a custom
@@ -849,13 +865,15 @@ func commandBaseName(command string) string {
 
 // ListAgentPresets returns all known agent preset names.
 func ListAgentPresets() []string {
-	registryMu.Lock()
-	initRegistryLocked()
-	defer registryMu.Unlock()
-	names := make([]string, 0, len(globalRegistry.Agents))
-	for name := range globalRegistry.Agents {
-		names = append(names, name)
-	}
+	var names []string
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		initRegistryLocked(state)
+		names = make([]string, 0, len(state.merged.Agents))
+		for name := range state.merged.Agents {
+			names = append(names, name)
+		}
+		return nil
+	})
 	return names
 }
 
@@ -1037,9 +1055,9 @@ func wrapperFlagsTakeValue(wrapper string) map[string]bool {
 // lookupProcessNamesByBinary returns the ProcessNames of the preset whose
 // Command (or its basename) matches realBin. Searches the runtime registry
 // first, then the canonical builtinPresets so shadowed builtins still resolve.
-// Caller must hold registryMu.
-func lookupProcessNamesByBinary(realBin string) []string {
-	for _, preset := range globalRegistry.Agents {
+// Caller must hold the registry state lock.
+func lookupProcessNamesByBinary(state *agentRegistryState, realBin string) []string {
+	for _, preset := range state.merged.Agents {
 		if len(preset.ProcessNames) == 0 {
 			continue
 		}
@@ -1129,30 +1147,36 @@ func isEnvAssignment(wrapper, arg string) bool {
 //     and use its ProcessNames (custom agent using a known launcher).
 //  4. Fallback: [command] (fully custom binary).
 func ResolveProcessNames(agentName, command string, args ...string) []string {
-	registryMu.Lock()
-	initRegistryLocked()
-	defer registryMu.Unlock()
+	var names []string
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		initRegistryLocked(state)
+		cmdBase := processCommandBase(command)
+		unwrappedCmdBase := strings.TrimPrefix(cmdBase, "gt-")
 
-	cmdBase := processCommandBase(command)
-	unwrappedCmdBase := strings.TrimPrefix(cmdBase, "gt-")
-
-	info, infoOK := globalRegistry.Agents[agentName]
-	if names := matchingRegisteredProcessNames(info, infoOK, command, cmdBase, unwrappedCmdBase); len(names) > 0 {
-		return names
-	}
-
-	if names := resolveWrappedProcessNames(cmdBase, args, info, infoOK); len(names) > 0 {
-		return names
-	}
-
-	if cmdBase != "" {
-		if names := lookupProcessNamesByCommand(command, cmdBase, unwrappedCmdBase); len(names) > 0 {
-			return names
+		info, infoOK := state.merged.Agents[agentName]
+		if registered := matchingRegisteredProcessNames(info, infoOK, command, cmdBase, unwrappedCmdBase); len(registered) > 0 {
+			names = registered
+			return nil
 		}
-		return []string{cmdBase}
-	}
 
-	return []string{"node", "claude"}
+		if wrapped := resolveWrappedProcessNames(state, cmdBase, args, info, infoOK); len(wrapped) > 0 {
+			names = wrapped
+			return nil
+		}
+
+		if cmdBase != "" {
+			if matched := lookupProcessNamesByCommand(state, command, cmdBase, unwrappedCmdBase); len(matched) > 0 {
+				names = matched
+				return nil
+			}
+			names = []string{cmdBase}
+			return nil
+		}
+
+		names = []string{"node", "claude"}
+		return nil
+	})
+	return names
 }
 
 func processCommandBase(command string) string {
@@ -1178,7 +1202,7 @@ func matchingRegisteredProcessNames(info *AgentPresetInfo, infoOK bool, command,
 	return nil
 }
 
-func resolveWrappedProcessNames(cmdBase string, args []string, info *AgentPresetInfo, infoOK bool) []string {
+func resolveWrappedProcessNames(state *agentRegistryState, cmdBase string, args []string, info *AgentPresetInfo, infoOK bool) []string {
 	if !wrapperCommands[cmdBase] {
 		return nil
 	}
@@ -1191,7 +1215,7 @@ func resolveWrappedProcessNames(cmdBase string, args []string, info *AgentPreset
 		if realBin == "" {
 			continue
 		}
-		if names := lookupProcessNamesByBinary(realBin); len(names) > 0 {
+		if names := lookupProcessNamesByBinary(state, realBin); len(names) > 0 {
 			return names
 		}
 		return []string{realBin}
@@ -1199,8 +1223,8 @@ func resolveWrappedProcessNames(cmdBase string, args []string, info *AgentPreset
 	return nil
 }
 
-func lookupProcessNamesByCommand(command, cmdBase, unwrappedCmdBase string) []string {
-	for _, info := range globalRegistry.Agents {
+func lookupProcessNamesByCommand(state *agentRegistryState, command, cmdBase, unwrappedCmdBase string) []string {
+	for _, info := range state.merged.Agents {
 		if len(info.ProcessNames) == 0 {
 			continue
 		}
@@ -1251,10 +1275,12 @@ func (rc *RuntimeConfig) MergeWithPreset(preset AgentPreset) *RuntimeConfig {
 
 // IsKnownPreset checks if a string is a known agent preset name.
 func IsKnownPreset(name string) bool {
-	registryMu.Lock()
-	initRegistryLocked()
-	defer registryMu.Unlock()
-	_, ok := globalRegistry.Agents[name]
+	var ok bool
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		initRegistryLocked(state)
+		_, ok = state.merged.Agents[name]
+		return nil
+	})
 	return ok
 }
 
@@ -1299,34 +1325,37 @@ func NewExampleAgentRegistry() *AgentRegistry {
 // ResetRegistryForTesting clears all registry state.
 // This is intended for use in tests only to ensure test isolation.
 func ResetRegistryForTesting() {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	globalRegistry = nil
-	loadedPaths = make(map[string]bool)
-	registryInitialized = false
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		*state = agentRegistryState{loadedPaths: make(map[string]bool)}
+		return nil
+	})
 }
 
 // RegisterAgentForTesting adds a custom agent preset to the registry.
 // The registry is initialized first if needed. Intended for test use only.
 func RegisterAgentForTesting(name string, info AgentPresetInfo) {
-	registryMu.Lock()
-	initRegistryLocked()
-	defer registryMu.Unlock()
-	globalRegistry.Agents[name] = &info
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		initRegistryLocked(state)
+		state.merged.Agents[name] = &info
+		return nil
+	})
 }
 
 // ResolveACPConfig determines the correct ACP configuration for an agent
 // given its name and the actual command binary. This handles custom agents
 // that use an ACP-compatible launcher like "opencode".
 func ResolveACPConfig(agentName, command string) *ACPConfig {
-	registryMu.Lock()
-	initRegistryLocked()
-	defer registryMu.Unlock()
-
-	if info, ok := globalRegistry.Agents[agentName]; ok && hasACPConfig(info) {
-		return info.ACP
-	}
-	return findACPConfigByCommand(globalRegistry.Agents, command)
+	var config *ACPConfig
+	_ = agentRegistry(func(state *agentRegistryState) error {
+		initRegistryLocked(state)
+		if info, ok := state.merged.Agents[agentName]; ok && hasACPConfig(info) {
+			config = info.ACP
+			return nil
+		}
+		config = findACPConfigByCommand(state.merged.Agents, command)
+		return nil
+	})
+	return config
 }
 
 func hasACPConfig(info *AgentPresetInfo) bool {
