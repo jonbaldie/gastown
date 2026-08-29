@@ -582,26 +582,11 @@ func confirmShutdown() bool {
 // categorizeSessions splits sessions into those to stop and those to preserve.
 func categorizeSessions(sessions []string) (toStop, preserved []string) {
 	for _, sess := range sessions {
-		// Gas Town sessions use rig-specific prefixes or hq- (town-level)
 		if !session.IsKnownSession(sess) {
-			continue // Not a Gas Town session
+			continue
 		}
-
-		// Parse session to determine role
-		isPolecat := false
-		isCrew := false
-		if identity, err := session.ParseSessionName(sess); err == nil {
-			switch identity.Role {
-			case session.RolePolecat:
-				isPolecat = true
-			case session.RoleCrew:
-				isCrew = true
-			}
-		}
-
-		// Decide based on flags
+		isPolecat, isCrew := sessionShutdownRoles(sess)
 		if shutdownPolecatsOnly {
-			// Only stop polecats
 			if isPolecat {
 				toStop = append(toStop, sess)
 			} else {
@@ -620,6 +605,21 @@ func categorizeSessions(sessions []string) (toStop, preserved []string) {
 		}
 	}
 	return
+}
+
+func sessionShutdownRoles(sess string) (isPolecat, isCrew bool) {
+	identity, err := session.ParseSessionName(sess)
+	if err != nil {
+		return false, false
+	}
+	switch identity.Role {
+	case session.RolePolecat:
+		return true, false
+	case session.RoleCrew:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func runGracefulShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) error {
