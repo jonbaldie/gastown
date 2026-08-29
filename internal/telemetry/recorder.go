@@ -78,12 +78,19 @@ const (
 
 // recorderInstruments holds all lazy-initialized OTel metric instruments.
 type recorderInstruments struct {
+	agent     recorderAgentCounters
+	operation recorderOperationCounters
+
+	// Histograms
+	bdDurationHist metric.Float64Histogram
+}
+
+// recorderAgentCounters holds counters for agent and session activity.
+type recorderAgentCounters struct {
 	// Counters
-	bdTotal               metric.Int64Counter
 	sessionTotal          metric.Int64Counter
 	sessionStopTotal      metric.Int64Counter
 	promptTotal           metric.Int64Counter
-	paneOutputTotal       metric.Int64Counter
 	agentEventTotal       metric.Int64Counter
 	agentInstantiateTotal metric.Int64Counter
 	primeTotal            metric.Int64Counter
@@ -95,16 +102,20 @@ type recorderInstruments struct {
 	nudgeTotal            metric.Int64Counter
 	doneTotal             metric.Int64Counter
 	daemonRestartTotal    metric.Int64Counter
-	formulaTotal          metric.Int64Counter
-	convoyTotal           metric.Int64Counter
-	molCookTotal          metric.Int64Counter
-	molWispTotal          metric.Int64Counter
-	molSquashTotal        metric.Int64Counter
-	molBurnTotal          metric.Int64Counter
-	beadCreateTotal       metric.Int64Counter
+}
 
-	// Histograms
-	bdDurationHist metric.Float64Histogram
+// recorderOperationCounters holds counters for beads and molecule operations.
+type recorderOperationCounters struct {
+	// Counters
+	bdTotal         metric.Int64Counter
+	paneOutputTotal metric.Int64Counter
+	formulaTotal    metric.Int64Counter
+	convoyTotal     metric.Int64Counter
+	molCookTotal    metric.Int64Counter
+	molWispTotal    metric.Int64Counter
+	molSquashTotal  metric.Int64Counter
+	molBurnTotal    metric.Int64Counter
+	beadCreateTotal metric.Int64Counter
 }
 
 var (
@@ -147,73 +158,73 @@ func initInstruments() {
 		m := otel.GetMeterProvider().Meter(meterRecorderName)
 
 		// Counters
-		inst.bdTotal, _ = m.Int64Counter("gastown.bd.calls.total",
+		inst.operation.bdTotal, _ = m.Int64Counter("gastown.bd.calls.total",
 			metric.WithDescription("Total bd CLI command invocations"),
 		)
-		inst.sessionTotal, _ = m.Int64Counter("gastown.session.starts.total",
+		inst.agent.sessionTotal, _ = m.Int64Counter("gastown.session.starts.total",
 			metric.WithDescription("Total agent session starts"),
 		)
-		inst.sessionStopTotal, _ = m.Int64Counter("gastown.session.stops.total",
+		inst.agent.sessionStopTotal, _ = m.Int64Counter("gastown.session.stops.total",
 			metric.WithDescription("Total agent session terminations"),
 		)
-		inst.promptTotal, _ = m.Int64Counter("gastown.prompt.sends.total",
+		inst.agent.promptTotal, _ = m.Int64Counter("gastown.prompt.sends.total",
 			metric.WithDescription("Total tmux SendKeys prompt dispatches"),
 		)
-		inst.paneOutputTotal, _ = m.Int64Counter("gastown.pane.output.total",
+		inst.operation.paneOutputTotal, _ = m.Int64Counter("gastown.pane.output.total",
 			metric.WithDescription("Total pane output chunks emitted to VictoriaLogs"),
 		)
-		inst.agentEventTotal, _ = m.Int64Counter("gastown.agent.events.total",
+		inst.agent.agentEventTotal, _ = m.Int64Counter("gastown.agent.events.total",
 			metric.WithDescription("Total agent conversation events emitted to VictoriaLogs"),
 		)
-		inst.agentInstantiateTotal, _ = m.Int64Counter("gastown.agent.instantiations.total",
+		inst.agent.agentInstantiateTotal, _ = m.Int64Counter("gastown.agent.instantiations.total",
 			metric.WithDescription("Total agent session instantiations (one per agent spawn)"),
 		)
-		inst.primeTotal, _ = m.Int64Counter("gastown.prime.total",
+		inst.agent.primeTotal, _ = m.Int64Counter("gastown.prime.total",
 			metric.WithDescription("Total gt prime invocations"),
 		)
-		inst.agentStateTotal, _ = m.Int64Counter("gastown.agent.state_changes.total",
+		inst.agent.agentStateTotal, _ = m.Int64Counter("gastown.agent.state_changes.total",
 			metric.WithDescription("Total agent state transitions"),
 		)
-		inst.polecatTotal, _ = m.Int64Counter("gastown.polecat.spawns.total",
+		inst.agent.polecatTotal, _ = m.Int64Counter("gastown.polecat.spawns.total",
 			metric.WithDescription("Total polecat spawns"),
 		)
-		inst.polecatRemoveTotal, _ = m.Int64Counter("gastown.polecat.removes.total",
+		inst.agent.polecatRemoveTotal, _ = m.Int64Counter("gastown.polecat.removes.total",
 			metric.WithDescription("Total polecat removals"),
 		)
-		inst.slingTotal, _ = m.Int64Counter("gastown.sling.dispatches.total",
+		inst.agent.slingTotal, _ = m.Int64Counter("gastown.sling.dispatches.total",
 			metric.WithDescription("Total sling work dispatches"),
 		)
-		inst.mailTotal, _ = m.Int64Counter("gastown.mail.operations.total",
+		inst.agent.mailTotal, _ = m.Int64Counter("gastown.mail.operations.total",
 			metric.WithDescription("Total mail/bd SDK operations"),
 		)
-		inst.nudgeTotal, _ = m.Int64Counter("gastown.nudge.total",
+		inst.agent.nudgeTotal, _ = m.Int64Counter("gastown.nudge.total",
 			metric.WithDescription("Total gt nudge invocations"),
 		)
-		inst.doneTotal, _ = m.Int64Counter("gastown.done.total",
+		inst.agent.doneTotal, _ = m.Int64Counter("gastown.done.total",
 			metric.WithDescription("Total gt done invocations (polecat work completions)"),
 		)
-		inst.daemonRestartTotal, _ = m.Int64Counter("gastown.daemon.agent_restarts.total",
+		inst.agent.daemonRestartTotal, _ = m.Int64Counter("gastown.daemon.agent_restarts.total",
 			metric.WithDescription("Total daemon-initiated agent session restarts"),
 		)
-		inst.formulaTotal, _ = m.Int64Counter("gastown.formula.instantiations.total",
+		inst.operation.formulaTotal, _ = m.Int64Counter("gastown.formula.instantiations.total",
 			metric.WithDescription("Total formula→wisp instantiations"),
 		)
-		inst.convoyTotal, _ = m.Int64Counter("gastown.convoy.creates.total",
+		inst.operation.convoyTotal, _ = m.Int64Counter("gastown.convoy.creates.total",
 			metric.WithDescription("Total auto-convoy creations"),
 		)
-		inst.molCookTotal, _ = m.Int64Counter("gastown.mol.cooks.total",
+		inst.operation.molCookTotal, _ = m.Int64Counter("gastown.mol.cooks.total",
 			metric.WithDescription("Total formula cook operations (formula → proto)"),
 		)
-		inst.molWispTotal, _ = m.Int64Counter("gastown.mol.wisps.total",
+		inst.operation.molWispTotal, _ = m.Int64Counter("gastown.mol.wisps.total",
 			metric.WithDescription("Total molecule wisp creations (proto → wisp)"),
 		)
-		inst.molSquashTotal, _ = m.Int64Counter("gastown.mol.squashes.total",
+		inst.operation.molSquashTotal, _ = m.Int64Counter("gastown.mol.squashes.total",
 			metric.WithDescription("Total molecule squash operations (mol → digest)"),
 		)
-		inst.molBurnTotal, _ = m.Int64Counter("gastown.mol.burns.total",
+		inst.operation.molBurnTotal, _ = m.Int64Counter("gastown.mol.burns.total",
 			metric.WithDescription("Total molecule burn operations (destroy)"),
 		)
-		inst.beadCreateTotal, _ = m.Int64Counter("gastown.bead.creates.total",
+		inst.operation.beadCreateTotal, _ = m.Int64Counter("gastown.bead.creates.total",
 			metric.WithDescription("Total bead creations from molecule instantiation"),
 		)
 
@@ -304,7 +315,7 @@ func RecordBDCall(ctx context.Context, args []string, durationMs float64, err er
 		attribute.String("status", status),
 		attribute.String("subcommand", subcommand),
 	)
-	inst.bdTotal.Add(ctx, 1, attrs)
+	inst.operation.bdTotal.Add(ctx, 1, attrs)
 	inst.bdDurationHist.Record(ctx, durationMs, attrs)
 	kvs := []otellog.KeyValue{
 		otellog.String("subcommand", subcommand),
@@ -329,7 +340,7 @@ func RecordBDCall(ctx context.Context, args []string, durationMs float64, err er
 func RecordSessionStart(ctx context.Context, sessionID, role string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.sessionTotal.Add(ctx, 1,
+	inst.agent.sessionTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("role", role),
@@ -347,7 +358,7 @@ func RecordSessionStart(ctx context.Context, sessionID, role string, err error) 
 func RecordSessionStop(ctx context.Context, sessionID string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.sessionStopTotal.Add(ctx, 1,
+	inst.agent.sessionStopTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "session.stop", severity(err),
@@ -363,7 +374,7 @@ func RecordSessionStop(ctx context.Context, sessionID string, err error) {
 func RecordPromptSend(ctx context.Context, session, keys string, debounceMs int, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.promptTotal.Add(ctx, 1,
+	inst.agent.promptTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	kvs := []otellog.KeyValue{
@@ -413,7 +424,7 @@ type AgentInstantiateInfo struct {
 // root GASTOWN event that anchors all downstream waterfall telemetry.
 func RecordAgentInstantiate(ctx context.Context, info AgentInstantiateInfo) {
 	initInstruments()
-	inst.agentInstantiateTotal.Add(ctx, 1,
+	inst.agent.agentInstantiateTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("agent_type", info.AgentType),
 			attribute.String("role", info.Role),
@@ -442,7 +453,7 @@ func RecordAgentInstantiate(ctx context.Context, info AgentInstantiateInfo) {
 func RecordMailMessage(ctx context.Context, operation string, msg MailMessageInfo, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.mailTotal.Add(ctx, 1,
+	inst.agent.mailTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("operation", operation),
@@ -470,7 +481,7 @@ func RecordMailMessage(ctx context.Context, operation string, msg MailMessageInf
 func RecordPrime(ctx context.Context, role string, hookMode bool, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.primeTotal.Add(ctx, 1,
+	inst.agent.primeTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("role", role),
@@ -509,7 +520,7 @@ func RecordAgentStateChange(ctx context.Context, agentID, newState string, hookB
 	if hookBead != nil {
 		hookBeadID = *hookBead
 	}
-	inst.agentStateTotal.Add(ctx, 1,
+	inst.agent.agentStateTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("new_state", newState),
@@ -528,7 +539,7 @@ func RecordAgentStateChange(ctx context.Context, agentID, newState string, hookB
 func RecordPolecatSpawn(ctx context.Context, name string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.polecatTotal.Add(ctx, 1,
+	inst.agent.polecatTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "polecat.spawn", severity(err),
@@ -542,7 +553,7 @@ func RecordPolecatSpawn(ctx context.Context, name string, err error) {
 func RecordPolecatRemove(ctx context.Context, name string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.polecatRemoveTotal.Add(ctx, 1,
+	inst.agent.polecatRemoveTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "polecat.remove", severity(err),
@@ -556,7 +567,7 @@ func RecordPolecatRemove(ctx context.Context, name string, err error) {
 func RecordSling(ctx context.Context, bead, target string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.slingTotal.Add(ctx, 1,
+	inst.agent.slingTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "sling", severity(err),
@@ -571,7 +582,7 @@ func RecordSling(ctx context.Context, bead, target string, err error) {
 func RecordMail(ctx context.Context, operation string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.mailTotal.Add(ctx, 1,
+	inst.agent.mailTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("operation", operation),
@@ -588,7 +599,7 @@ func RecordMail(ctx context.Context, operation string, err error) {
 func RecordNudge(ctx context.Context, target string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.nudgeTotal.Add(ctx, 1,
+	inst.agent.nudgeTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "nudge", severity(err),
@@ -603,7 +614,7 @@ func RecordNudge(ctx context.Context, target string, err error) {
 func RecordDone(ctx context.Context, exitType string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.doneTotal.Add(ctx, 1,
+	inst.agent.doneTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("exit_type", exitType),
@@ -620,7 +631,7 @@ func RecordDone(ctx context.Context, exitType string, err error) {
 // agentType is e.g. "deacon", "witness-myrig", "refinery-myrig".
 func RecordDaemonRestart(ctx context.Context, agentType string) {
 	initInstruments()
-	inst.daemonRestartTotal.Add(ctx, 1,
+	inst.agent.daemonRestartTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("agent_type", agentType)),
 	)
 	emit(ctx, "daemon.restart", otellog.SeverityInfo,
@@ -632,7 +643,7 @@ func RecordDaemonRestart(ctx context.Context, agentType string) {
 func RecordFormulaInstantiate(ctx context.Context, formulaName, beadID string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.formulaTotal.Add(ctx, 1,
+	inst.operation.formulaTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("formula", formulaName),
@@ -650,7 +661,7 @@ func RecordFormulaInstantiate(ctx context.Context, formulaName, beadID string, e
 func RecordConvoyCreate(ctx context.Context, beadID string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.convoyTotal.Add(ctx, 1,
+	inst.operation.convoyTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "convoy.create", severity(err),
@@ -667,7 +678,7 @@ func RecordConvoyCreate(ctx context.Context, beadID string, err error) {
 // cache_read_input_tokens, cache_creation_input_tokens.
 func RecordAgentTokenUsage(ctx context.Context, sessionID, nativeSessionID string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) {
 	initInstruments()
-	inst.agentEventTotal.Add(ctx, 1, metric.WithAttributes(
+	inst.agent.agentEventTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("session", sessionID),
 		attribute.String("event_type", "usage"),
 		attribute.String("role", "assistant"),
@@ -692,7 +703,7 @@ func RecordAgentTokenUsage(ctx context.Context, sessionID, nativeSessionID strin
 func RecordMolCook(ctx context.Context, formulaName string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.molCookTotal.Add(ctx, 1,
+	inst.operation.molCookTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("formula", formulaName),
@@ -710,7 +721,7 @@ func RecordMolCook(ctx context.Context, formulaName string, err error) {
 func RecordMolWisp(ctx context.Context, formulaName, wispRootID, beadID string, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.molWispTotal.Add(ctx, 1,
+	inst.operation.molWispTotal.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("status", status),
 			attribute.String("formula", formulaName),
@@ -731,7 +742,7 @@ func RecordMolWisp(ctx context.Context, formulaName, wispRootID, beadID string, 
 func RecordMolSquash(ctx context.Context, molID string, doneSteps, totalSteps int, digestCreated bool, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.molSquashTotal.Add(ctx, 1,
+	inst.operation.molSquashTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "mol.squash", severity(err),
@@ -749,7 +760,7 @@ func RecordMolSquash(ctx context.Context, molID string, doneSteps, totalSteps in
 func RecordMolBurn(ctx context.Context, molID string, childrenClosed int, err error) {
 	initInstruments()
 	status := statusStr(err)
-	inst.molBurnTotal.Add(ctx, 1,
+	inst.operation.molBurnTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("status", status)),
 	)
 	emit(ctx, "mol.burn", severity(err),
@@ -765,7 +776,7 @@ func RecordMolBurn(ctx context.Context, molID string, childrenClosed int, err er
 // molSource is the molecule template (proto) ID that drove the instantiation.
 func RecordBeadCreate(ctx context.Context, beadID, parentID, molSource string) {
 	initInstruments()
-	inst.beadCreateTotal.Add(ctx, 1,
+	inst.operation.beadCreateTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("mol_source", molSource)),
 	)
 	emit(ctx, "bead.create", otellog.SeverityInfo,
@@ -781,7 +792,7 @@ func RecordBeadCreate(ctx context.Context, beadID, parentID, molSource string) {
 func RecordPaneOutput(ctx context.Context, sessionID, content string) {
 	initInstruments()
 	initContentLimits()
-	inst.paneOutputTotal.Add(ctx, 1, metric.WithAttributes(
+	inst.operation.paneOutputTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("session", sessionID),
 	))
 	emit(ctx, "pane.output", otellog.SeverityInfo,
@@ -805,7 +816,7 @@ func RecordAgentEvent(ctx context.Context, sessionID, agentType, eventType, role
 		return
 	}
 	initInstruments()
-	inst.agentEventTotal.Add(ctx, 1, metric.WithAttributes(
+	inst.agent.agentEventTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("session", sessionID),
 		attribute.String("event_type", eventType),
 		attribute.String("role", role),
