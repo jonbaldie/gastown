@@ -37,7 +37,7 @@ type DirectoryEntry struct {
 
 func init() {
 	mailDirectoryCmd.Flags().Bool("json", false, "Output as JSON")
-	mailCmd.AddCommand(mailDirectoryCmd)
+	getMailCommand().AddCommand(mailDirectoryCmd)
 }
 
 func runMailDirectory(cmd *cobra.Command, _ []string) error {

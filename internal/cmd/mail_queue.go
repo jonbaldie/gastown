@@ -579,7 +579,7 @@ func init() {
 	mailQueueCmd.AddCommand(mailQueueDeleteCmd)
 
 	// Add queue command to mail
-	mailCmd.AddCommand(mailQueueCmd)
+	getMailCommand().AddCommand(mailQueueCmd)
 }
 
 // runMailQueueCreate creates a new beads-native queue.

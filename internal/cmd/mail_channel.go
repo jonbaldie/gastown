@@ -138,7 +138,7 @@ func init() {
 	mailChannelCmd.AddCommand(channelUnsubscribeCmd)
 	mailChannelCmd.AddCommand(channelSubscribersCmd)
 
-	mailCmd.AddCommand(mailChannelCmd)
+	getMailCommand().AddCommand(mailChannelCmd)
 }
 
 // runMailChannel handles the main channel command (list or show).

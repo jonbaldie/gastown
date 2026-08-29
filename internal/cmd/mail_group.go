@@ -106,7 +106,7 @@ func init() {
 	mailGroupCmd.AddCommand(groupRemoveCmd)
 	mailGroupCmd.AddCommand(groupDeleteCmd)
 
-	mailCmd.AddCommand(mailGroupCmd)
+	getMailCommand().AddCommand(mailGroupCmd)
 }
 
 func runGroupList(cmd *cobra.Command, _ []string) error {

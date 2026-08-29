@@ -34,7 +34,7 @@ func init() {
 	mailHookCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
 	mailHookCmd.Flags().BoolP("force", "f", false, "Replace existing incomplete hooked bead")
 
-	mailCmd.AddCommand(mailHookCmd)
+	getMailCommand().AddCommand(mailHookCmd)
 }
 
 // runMailHook attaches mail to the hook - delegates to the hook command's logic

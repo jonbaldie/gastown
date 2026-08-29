@@ -4,13 +4,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var mailCmd = &cobra.Command{
-	Use:         "mail",
-	GroupID:     GroupComm,
-	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
-	Short:       "Agent messaging system",
-	RunE:        requireSubcommand,
-	Long: `Send and receive messages between agents.
+func newMailCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:         "mail",
+		GroupID:     GroupComm,
+		Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+		Short:       "Agent messaging system",
+		RunE:        requireSubcommand,
+		Long: `Send and receive messages between agents.
 
 The mail system allows Mayor, polecats, and the Refinery to communicate.
 Messages are stored in beads as issues with type=message.
@@ -44,7 +45,17 @@ COMMANDS:
   inbox     View your inbox
   send      Send a message
   read      Read a specific message
-  mark      Mark messages read/unread`,
+	mark      Mark messages read/unread`,
+	}
+}
+
+func getMailCommand() *cobra.Command {
+	for _, command := range rootCmd.Commands() {
+		if command.Name() == "mail" {
+			return command
+		}
+	}
+	return nil
 }
 
 var mailSendCmd = &cobra.Command{
@@ -406,6 +417,7 @@ Examples:
 }
 
 func init() {
+	mail := newMailCommand()
 	// Send flags
 	mailSendCmd.Flags().StringP("subject", "s", "", "Message subject (required)")
 	mailSendCmd.Flags().StringP("message", "m", "", "Message body")
@@ -469,24 +481,24 @@ func init() {
 	mailArchiveCmd.Flags().BoolP("dry-run", "n", false, "Show what would be archived without archiving")
 
 	// Add subcommands
-	mailCmd.AddCommand(mailSendCmd)
-	mailCmd.AddCommand(mailInboxCmd)
-	mailCmd.AddCommand(mailReadCmd)
-	mailCmd.AddCommand(mailPeekCmd)
-	mailCmd.AddCommand(mailDeleteCmd)
-	mailCmd.AddCommand(mailArchiveCmd)
+	mail.AddCommand(mailSendCmd)
+	mail.AddCommand(mailInboxCmd)
+	mail.AddCommand(mailReadCmd)
+	mail.AddCommand(mailPeekCmd)
+	mail.AddCommand(mailDeleteCmd)
+	mail.AddCommand(mailArchiveCmd)
 	mailMarkReadCmd.Flags().Bool("all", false, "Mark all unread messages as read")
-	mailCmd.AddCommand(mailMarkReadCmd)
-	mailCmd.AddCommand(mailMarkUnreadCmd)
-	mailCmd.AddCommand(mailCheckCmd)
-	mailCmd.AddCommand(mailThreadCmd)
-	mailCmd.AddCommand(mailReplyCmd)
-	mailCmd.AddCommand(mailClaimCmd)
-	mailCmd.AddCommand(mailReleaseCmd)
-	mailCmd.AddCommand(mailClearCmd)
-	mailCmd.AddCommand(mailSearchCmd)
-	mailCmd.AddCommand(mailAnnouncesCmd)
-	mailCmd.AddCommand(mailDrainCmd)
+	mail.AddCommand(mailMarkReadCmd)
+	mail.AddCommand(mailMarkUnreadCmd)
+	mail.AddCommand(mailCheckCmd)
+	mail.AddCommand(mailThreadCmd)
+	mail.AddCommand(mailReplyCmd)
+	mail.AddCommand(mailClaimCmd)
+	mail.AddCommand(mailReleaseCmd)
+	mail.AddCommand(mailClearCmd)
+	mail.AddCommand(mailSearchCmd)
+	mail.AddCommand(mailAnnouncesCmd)
+	mail.AddCommand(mailDrainCmd)
 
-	rootCmd.AddCommand(mailCmd)
+	rootCmd.AddCommand(mail)
 }
