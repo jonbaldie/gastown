@@ -2668,31 +2668,50 @@ func (m *Manager) writeBeadsGitConfig(clonePath string) error {
 }
 
 func (m *Manager) resolveSetupCommand(worktreePath string) string {
-	if result := m.rig.GetConfigWithSource("setup_command"); result.Source != rig.SourceNone && result.Source != rig.SourceSystem {
-		if result.Source == rig.SourceBlocked {
-			return ""
-		}
-		if setup, ok := result.Value.(string); ok && strings.TrimSpace(setup) != "" {
-			return strings.TrimSpace(setup)
-		}
+	if setup, resolved := m.configuredSetupCommand(); resolved {
+		return setup
 	}
 
-	var repoMQ *config.MergeQueueConfig
-	if repoSettings, err := config.LoadRepoSettings(worktreePath); err == nil && repoSettings != nil {
-		repoMQ = repoSettings.MergeQueue
-	}
-
-	var localMQ *config.MergeQueueConfig
-	settingsPath := filepath.Join(m.rig.Path, "settings", "config.json")
-	if localSettings, err := config.LoadRigSettings(settingsPath); err == nil && localSettings != nil {
-		localMQ = localSettings.MergeQueue
-	}
+	repoMQ := repoMergeQueue(worktreePath)
+	localMQ := m.localMergeQueue()
 
 	mq := config.MergeSettingsCommand(repoMQ, localMQ)
 	if mq == nil {
 		return ""
 	}
 	return strings.TrimSpace(mq.SetupCommand)
+}
+
+func (m *Manager) configuredSetupCommand() (string, bool) {
+	result := m.rig.GetConfigWithSource("setup_command")
+	if result.Source == rig.SourceNone || result.Source == rig.SourceSystem {
+		return "", false
+	}
+	if result.Source == rig.SourceBlocked {
+		return "", true
+	}
+	setup, ok := result.Value.(string)
+	if !ok || strings.TrimSpace(setup) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(setup), true
+}
+
+func repoMergeQueue(worktreePath string) *config.MergeQueueConfig {
+	settings, err := config.LoadRepoSettings(worktreePath)
+	if err != nil || settings == nil {
+		return nil
+	}
+	return settings.MergeQueue
+}
+
+func (m *Manager) localMergeQueue() *config.MergeQueueConfig {
+	settingsPath := filepath.Join(m.rig.Path, "settings", "config.json")
+	settings, err := config.LoadRigSettings(settingsPath)
+	if err != nil || settings == nil {
+		return nil
+	}
+	return settings.MergeQueue
 }
 
 func (m *Manager) runSetupCommand(worktreePath string) error {
@@ -2817,46 +2836,46 @@ func (m *Manager) DetectStalePolecats(threshold int) ([]*StalenessInfo, error) {
 		return nil, nil
 	}
 
-	// Get default branch from rig config
-	defaultBranch := "main"
-	if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
-		defaultBranch = rigCfg.DefaultBranch
-	}
+	defaultBranch := m.defaultBranch()
 
 	var results []*StalenessInfo
 	for _, p := range polecats {
-		info := &StalenessInfo{
-			Name: p.Name,
-		}
-
-		// Check for active tmux session
-		// Session name follows pattern: gt-<rig>-<polecat>
-		sessionName := session.PolecatSessionName(session.PrefixFor(m.rig.Name), p.Name)
-		info.HasActiveSession = checkTmuxSession(sessionName)
-
-		// Check how far behind main
-		polecatGit := git.NewGit(p.ClonePath)
-		info.CommitsBehind = countCommitsBehind(polecatGit, defaultBranch)
-
-		// Check for uncommitted work (excluding .beads/ files which are synced across worktrees)
-		status, err := polecatGit.CheckUncommittedWork()
-		if err == nil && !status.CleanExcludingBeads() {
-			info.HasUncommittedWork = true
-		}
-
-		// Check agent bead state
-		agentID := m.agentBeadID(p.Name)
-		_, fields, err := m.beads.GetAgentBead(agentID)
-		if err == nil && fields != nil {
-			info.AgentState = fields.AgentState
-		}
-
-		// Determine staleness
-		info.IsStale, info.Reason = assessStaleness(info, threshold)
-		results = append(results, info)
+		results = append(results, m.stalenessInfo(p, defaultBranch, threshold))
 	}
 
 	return results, nil
+}
+
+func (m *Manager) defaultBranch() string {
+	if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
+		return rigCfg.DefaultBranch
+	}
+	return "main"
+}
+
+func (m *Manager) stalenessInfo(p *Polecat, defaultBranch string, threshold int) *StalenessInfo {
+	info := &StalenessInfo{Name: p.Name}
+	info.HasActiveSession = checkTmuxSession(session.PolecatSessionName(session.PrefixFor(m.rig.Name), p.Name))
+
+	polecatGit := git.NewGit(p.ClonePath)
+	info.CommitsBehind = countCommitsBehind(polecatGit, defaultBranch)
+	status, err := polecatGit.CheckUncommittedWork()
+	if err == nil && !status.CleanExcludingBeads() {
+		info.HasUncommittedWork = true
+	}
+
+	info.AgentState = m.agentStateForPolecat(p.Name)
+	info.IsStale, info.Reason = assessStaleness(info, threshold)
+	return info
+}
+
+func (m *Manager) agentStateForPolecat(name string) string {
+	agentID := m.agentBeadID(name)
+	_, fields, err := m.beads.GetAgentBead(agentID)
+	if err == nil && fields != nil {
+		return fields.AgentState
+	}
+	return ""
 }
 
 // checkTmuxSession checks if a tmux session exists.
