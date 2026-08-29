@@ -315,144 +315,197 @@ func (e *Engineer) SetOutput(w io.Writer) {
 }
 
 // LoadConfig loads merge queue configuration from the rig's config.json.
+type mergeQueueCoreRaw struct {
+	Enabled              *bool   `json:"enabled"`
+	OnConflict           *string `json:"on_conflict"`
+	RunTests             *bool   `json:"run_tests"`
+	TestCommand          *string `json:"test_command"`
+	DeleteMergedBranches *bool   `json:"delete_merged_branches"`
+	RetryFlakyTests      *int    `json:"retry_flaky_tests"`
+	PollInterval         *string `json:"poll_interval"`
+	MaxConcurrent        *int    `json:"max_concurrent"`
+	StaleClaimTimeout    *string `json:"stale_claim_timeout"`
+}
+
+type mergeQueueAdvancedRaw struct {
+	Gates         map[string]*gateConfigRaw `json:"gates"`
+	GatesParallel *bool                     `json:"gates_parallel"`
+	AutoPush      *bool                     `json:"auto_push"`
+	MergeStrategy *string                   `json:"merge_strategy"`
+	VCSProvider   *string                   `json:"vcs_provider"`
+	RequireReview *bool                     `json:"require_review"`
+}
+
+// LoadConfig loads merge queue configuration from the rig's config.json.
 func (e *Engineer) LoadConfig() error {
-	configPath := filepath.Join(e.rig.Path, "config.json")
-	data, err := os.ReadFile(configPath)
+	rawQueue, err := readMergeQueueConfig(filepath.Join(e.rig.Path, "config.json"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Use defaults if no config file
-			return nil
-		}
-		return fmt.Errorf("reading config: %w", err)
+		return err
 	}
-
-	// Parse config file to extract merge_queue section
-	var rawConfig struct {
-		MergeQueue json.RawMessage `json:"merge_queue"`
-	}
-	if err := json.Unmarshal(data, &rawConfig); err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-
-	if rawConfig.MergeQueue == nil {
-		// No merge_queue section, use defaults
+	if rawQueue == nil {
 		return nil
 	}
-
-	// Parse merge_queue section into our config struct
-	// We need special handling for poll_interval (string -> Duration)
-	var mqRaw struct {
-		Enabled              *bool                     `json:"enabled"`
-		OnConflict           *string                   `json:"on_conflict"`
-		RunTests             *bool                     `json:"run_tests"`
-		TestCommand          *string                   `json:"test_command"`
-		DeleteMergedBranches *bool                     `json:"delete_merged_branches"`
-		RetryFlakyTests      *int                      `json:"retry_flaky_tests"`
-		PollInterval         *string                   `json:"poll_interval"`
-		MaxConcurrent        *int                      `json:"max_concurrent"`
-		StaleClaimTimeout    *string                   `json:"stale_claim_timeout"`
-		Gates                map[string]*gateConfigRaw `json:"gates"`
-		GatesParallel        *bool                     `json:"gates_parallel"`
-		AutoPush             *bool                     `json:"auto_push"`
-		MergeStrategy        *string                   `json:"merge_strategy"`
-		VCSProvider          *string                   `json:"vcs_provider"`
-		RequireReview        *bool                     `json:"require_review"`
+	if err := e.applyMergeQueueConfig(rawQueue); err != nil {
+		return err
 	}
-
-	if err := json.Unmarshal(rawConfig.MergeQueue, &mqRaw); err != nil {
-		return fmt.Errorf("parsing merge_queue config: %w", err)
-	}
-
-	// Apply non-nil values to config (preserving defaults for missing fields)
-	if mqRaw.Enabled != nil {
-		e.config.Enabled = *mqRaw.Enabled
-	}
-	if mqRaw.OnConflict != nil {
-		e.config.OnConflict = *mqRaw.OnConflict
-	}
-	if mqRaw.RunTests != nil {
-		e.config.RunTests = *mqRaw.RunTests
-	}
-	if mqRaw.TestCommand != nil {
-		e.config.TestCommand = *mqRaw.TestCommand
-	}
-	if mqRaw.DeleteMergedBranches != nil {
-		e.config.DeleteMergedBranches = *mqRaw.DeleteMergedBranches
-	}
-	if mqRaw.RetryFlakyTests != nil {
-		e.config.RetryFlakyTests = *mqRaw.RetryFlakyTests
-	}
-	if mqRaw.MaxConcurrent != nil {
-		e.config.MaxConcurrent = *mqRaw.MaxConcurrent
-	}
-	if mqRaw.PollInterval != nil {
-		dur, err := time.ParseDuration(*mqRaw.PollInterval)
-		if err != nil {
-			return fmt.Errorf("invalid poll_interval %q: %w", *mqRaw.PollInterval, err)
-		}
-		e.config.PollInterval = dur
-	}
-	if mqRaw.StaleClaimTimeout != nil {
-		dur, err := time.ParseDuration(*mqRaw.StaleClaimTimeout)
-		if err != nil {
-			return fmt.Errorf("invalid stale_claim_timeout %q: %w", *mqRaw.StaleClaimTimeout, err)
-		}
-		if dur <= 0 {
-			return fmt.Errorf("stale_claim_timeout must be positive, got %v", dur)
-		}
-		e.config.StaleClaimTimeout = dur
-	}
-
-	// Parse gates configuration
-	if mqRaw.Gates != nil {
-		e.config.Gates = make(map[string]*GateConfig, len(mqRaw.Gates))
-		for name, raw := range mqRaw.Gates {
-			gc := &GateConfig{Cmd: raw.Cmd}
-			if raw.Timeout != "" {
-				dur, err := time.ParseDuration(raw.Timeout)
-				if err != nil {
-					return fmt.Errorf("invalid timeout for gate %q: %w", name, err)
-				}
-				if dur <= 0 {
-					return fmt.Errorf("gate %q timeout must be positive, got %v", name, dur)
-				}
-				gc.Timeout = dur
-			}
-			switch raw.Phase {
-			case "", "pre-merge":
-				gc.Phase = GatePhasePreMerge
-			case "post-squash":
-				gc.Phase = GatePhasePostSquash
-			default:
-				return fmt.Errorf("gate %q has invalid phase %q: must be \"pre-merge\" or \"post-squash\"", name, raw.Phase)
-			}
-			e.config.Gates[name] = gc
-		}
-	}
-	if mqRaw.GatesParallel != nil {
-		e.config.GatesParallel = *mqRaw.GatesParallel
-	}
-	if mqRaw.AutoPush != nil {
-		e.config.AutoPush = *mqRaw.AutoPush
-	}
-	if mqRaw.MergeStrategy != nil {
-		e.config.MergeStrategy = *mqRaw.MergeStrategy
-	}
-	if mqRaw.VCSProvider != nil {
-		e.config.VCSProvider = *mqRaw.VCSProvider
-	}
-	if mqRaw.RequireReview != nil {
-		e.config.RequireReview = mqRaw.RequireReview
-	}
-
-	// Initialize the PR provider when merge_strategy=pr.
 	if e.config.MergeStrategy == "pr" {
 		if err := e.initPRProvider(); err != nil {
 			return fmt.Errorf("initializing PR provider: %w", err)
 		}
 	}
-
 	return nil
+}
+
+func readMergeQueueConfig(configPath string) (json.RawMessage, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+
+	var rawConfig struct {
+		MergeQueue json.RawMessage `json:"merge_queue"`
+	}
+	if err := json.Unmarshal(data, &rawConfig); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	return rawConfig.MergeQueue, nil
+}
+
+func (e *Engineer) applyMergeQueueConfig(rawQueue json.RawMessage) error {
+	core, advanced, err := parseMergeQueueRaw(rawQueue)
+	if err != nil {
+		return err
+	}
+	if err := applyMergeQueueCore(e.config, core); err != nil {
+		return err
+	}
+	return applyMergeQueueAdvanced(e.config, advanced)
+}
+
+func parseMergeQueueRaw(rawQueue json.RawMessage) (mergeQueueCoreRaw, mergeQueueAdvancedRaw, error) {
+	var core mergeQueueCoreRaw
+	if err := json.Unmarshal(rawQueue, &core); err != nil {
+		return mergeQueueCoreRaw{}, mergeQueueAdvancedRaw{}, fmt.Errorf("parsing merge_queue config: %w", err)
+	}
+	var advanced mergeQueueAdvancedRaw
+	if err := json.Unmarshal(rawQueue, &advanced); err != nil {
+		return mergeQueueCoreRaw{}, mergeQueueAdvancedRaw{}, fmt.Errorf("parsing merge_queue config: %w", err)
+	}
+	return core, advanced, nil
+}
+
+func applyMergeQueueCore(cfg *MergeQueueConfig, raw mergeQueueCoreRaw) error {
+	applyMergeQueueCoreValues(cfg, raw)
+	return applyMergeQueueDurations(cfg, raw)
+}
+
+func applyMergeQueueCoreValues(cfg *MergeQueueConfig, raw mergeQueueCoreRaw) {
+	if raw.Enabled != nil {
+		cfg.Enabled = *raw.Enabled
+	}
+	if raw.OnConflict != nil {
+		cfg.OnConflict = *raw.OnConflict
+	}
+	if raw.RunTests != nil {
+		cfg.RunTests = *raw.RunTests
+	}
+	if raw.TestCommand != nil {
+		cfg.TestCommand = *raw.TestCommand
+	}
+	if raw.DeleteMergedBranches != nil {
+		cfg.DeleteMergedBranches = *raw.DeleteMergedBranches
+	}
+	if raw.RetryFlakyTests != nil {
+		cfg.RetryFlakyTests = *raw.RetryFlakyTests
+	}
+	if raw.MaxConcurrent != nil {
+		cfg.MaxConcurrent = *raw.MaxConcurrent
+	}
+}
+
+func applyMergeQueueDurations(cfg *MergeQueueConfig, raw mergeQueueCoreRaw) error {
+	if raw.PollInterval != nil {
+		dur, err := time.ParseDuration(*raw.PollInterval)
+		if err != nil {
+			return fmt.Errorf("invalid poll_interval %q: %w", *raw.PollInterval, err)
+		}
+		cfg.PollInterval = dur
+	}
+	if raw.StaleClaimTimeout != nil {
+		dur, err := time.ParseDuration(*raw.StaleClaimTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid stale_claim_timeout %q: %w", *raw.StaleClaimTimeout, err)
+		}
+		if dur <= 0 {
+			return fmt.Errorf("stale_claim_timeout must be positive, got %v", dur)
+		}
+		cfg.StaleClaimTimeout = dur
+	}
+	return nil
+}
+
+func applyMergeQueueAdvanced(cfg *MergeQueueConfig, raw mergeQueueAdvancedRaw) error {
+	if raw.Gates != nil {
+		gates, err := parseGateConfigs(raw.Gates)
+		if err != nil {
+			return err
+		}
+		cfg.Gates = gates
+	}
+	if raw.GatesParallel != nil {
+		cfg.GatesParallel = *raw.GatesParallel
+	}
+	if raw.AutoPush != nil {
+		cfg.AutoPush = *raw.AutoPush
+	}
+	if raw.MergeStrategy != nil {
+		cfg.MergeStrategy = *raw.MergeStrategy
+	}
+	if raw.VCSProvider != nil {
+		cfg.VCSProvider = *raw.VCSProvider
+	}
+	if raw.RequireReview != nil {
+		cfg.RequireReview = raw.RequireReview
+	}
+	return nil
+}
+
+func parseGateConfigs(rawGates map[string]*gateConfigRaw) (map[string]*GateConfig, error) {
+	gates := make(map[string]*GateConfig, len(rawGates))
+	for name, raw := range rawGates {
+		gate, err := parseGateConfig(name, raw)
+		if err != nil {
+			return nil, err
+		}
+		gates[name] = gate
+	}
+	return gates, nil
+}
+
+func parseGateConfig(name string, raw *gateConfigRaw) (*GateConfig, error) {
+	gate := &GateConfig{Cmd: raw.Cmd}
+	if raw.Timeout != "" {
+		dur, err := time.ParseDuration(raw.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timeout for gate %q: %w", name, err)
+		}
+		if dur <= 0 {
+			return nil, fmt.Errorf("gate %q timeout must be positive, got %v", name, dur)
+		}
+		gate.Timeout = dur
+	}
+	switch raw.Phase {
+	case "", "pre-merge":
+		gate.Phase = GatePhasePreMerge
+	case "post-squash":
+		gate.Phase = GatePhasePostSquash
+	default:
+		return nil, fmt.Errorf("gate %q has invalid phase %q: must be \"pre-merge\" or \"post-squash\"", name, raw.Phase)
+	}
+	return gate, nil
 }
 
 // initPRProvider creates the appropriate PRProvider based on vcs_provider config.
