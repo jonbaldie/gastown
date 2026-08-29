@@ -53,19 +53,32 @@ func runMemories(cmd *cobra.Command, args []string) error {
 	}
 
 	typeFilter := strings.ToLower(strings.TrimSpace(commandStringFlag(cmd, "type")))
+	if err := validateMemoryType(typeFilter); err != nil {
+		return err
+	}
+
+	memories := collectMemories(kvs, search, typeFilter)
+	printMemories(memories, search, typeFilter)
+	return nil
+}
+
+func validateMemoryType(typeFilter string) error {
 	if typeFilter != "" {
 		if _, ok := validMemoryTypes[typeFilter]; !ok {
 			return fmt.Errorf("invalid memory type %q — valid types: feedback, project, user, reference, general", typeFilter)
 		}
 	}
+	return nil
+}
 
-	// Filter for memory.* keys and optional search/type
-	type memory struct {
-		memType  string
-		shortKey string
-		value    string
-	}
-	var memories []memory
+type memoryEntry struct {
+	memType  string
+	shortKey string
+	value    string
+}
+
+func collectMemories(kvs map[string]string, search, typeFilter string) []memoryEntry {
+	var memories []memoryEntry
 
 	for k, v := range kvs {
 		if !strings.HasPrefix(k, memoryKeyPrefix) {
@@ -86,7 +99,7 @@ func runMemories(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		memories = append(memories, memory{memType: memType, shortKey: shortKey, value: v})
+		memories = append(memories, memoryEntry{memType: memType, shortKey: shortKey, value: v})
 	}
 
 	sort.Slice(memories, func(i, j int) bool {
@@ -95,7 +108,10 @@ func runMemories(cmd *cobra.Command, args []string) error {
 		}
 		return memories[i].shortKey < memories[j].shortKey
 	})
+	return memories
+}
 
+func printMemories(memories []memoryEntry, search, typeFilter string) {
 	if len(memories) == 0 {
 		if search != "" {
 			fmt.Printf("No memories matching %q\n", search)
@@ -104,7 +120,7 @@ func runMemories(cmd *cobra.Command, args []string) error {
 		} else {
 			fmt.Println("No memories stored. Use 'gt remember \"insight\"' to add one.")
 		}
-		return nil
+		return
 	}
 
 	header := "Memories"
@@ -128,8 +144,6 @@ func runMemories(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  %s\n", style.Bold.Render(m.shortKey))
 		fmt.Printf("    %s\n\n", m.value)
 	}
-
-	return nil
 }
 
 // memTypeRank returns the sort order for a memory type (lower = first).
