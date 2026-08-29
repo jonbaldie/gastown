@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -116,110 +117,62 @@ func (l *Logger) Log(eventType EventType, agent, context string) error {
 // Format: 2025-12-26 15:30:45 [spawn] gastown/crew/max spawned for gt-xyz
 func formatLogLine(e Event) string {
 	ts := e.Timestamp.Format("2006-01-02 15:04:05")
+	return fmt.Sprintf("%s [%s] %s %s", ts, e.Type, e.Agent, formatLogDetail(e))
+}
 
-	var detail string
-	switch e.Type {
-	case EventSpawn:
-		if e.Context != "" {
-			detail = fmt.Sprintf("spawned for %s", e.Context)
-		} else {
-			detail = "spawned"
-		}
-	case EventWake:
-		detail = "resumed"
-		if e.Context != "" {
-			detail += fmt.Sprintf(" (%s)", e.Context)
-		}
-	case EventNudge:
-		if e.Context != "" {
-			detail = fmt.Sprintf("nudged with %q", truncate(e.Context, 50))
-		} else {
-			detail = "nudged"
-		}
-	case EventHandoff:
-		detail = "handed off"
-		if e.Context != "" {
-			detail += fmt.Sprintf(" (%s)", e.Context)
-		}
-	case EventHandoffNoPersist:
-		detail = "handoff FAILED (Dolt persistence)"
-		if e.Context != "" {
-			detail += fmt.Sprintf(" (%s)", e.Context)
-		}
-	case EventDone:
-		if e.Context != "" {
-			detail = fmt.Sprintf("completed %s", e.Context)
-		} else {
-			detail = "completed work"
-		}
-	case EventCrash:
-		if e.Context != "" {
-			detail = fmt.Sprintf("exited unexpectedly (%s)", e.Context)
-		} else {
-			detail = "exited unexpectedly"
-		}
-	case EventKill:
-		if e.Context != "" {
-			detail = fmt.Sprintf("killed (%s)", e.Context)
-		} else {
-			detail = "killed"
-		}
-	case EventCallback:
-		if e.Context != "" {
-			detail = fmt.Sprintf("callback: %s", e.Context)
-		} else {
-			detail = "callback processed"
-		}
-	case EventPatrolStarted:
-		if e.Context != "" {
-			detail = fmt.Sprintf("started patrol (%s)", e.Context)
-		} else {
-			detail = "started patrol"
-		}
-	case EventPolecatChecked:
-		if e.Context != "" {
-			detail = fmt.Sprintf("checked polecat %s", e.Context)
-		} else {
-			detail = "checked polecat"
-		}
-	case EventPolecatNudged:
-		if e.Context != "" {
-			detail = fmt.Sprintf("nudged polecat (%s)", e.Context)
-		} else {
-			detail = "nudged polecat"
-		}
-	case EventEscalationSent:
-		if e.Context != "" {
-			detail = fmt.Sprintf("escalated (%s)", e.Context)
-		} else {
-			detail = "escalated"
-		}
-	case EventPatrolComplete:
-		if e.Context != "" {
-			detail = fmt.Sprintf("patrol complete (%s)", e.Context)
-		} else {
-			detail = "patrol complete"
-		}
-	case EventSessionDeath:
-		if e.Context != "" {
-			detail = fmt.Sprintf("session terminated (%s)", e.Context)
-		} else {
-			detail = "session terminated"
-		}
-	case EventMassDeath:
-		if e.Context != "" {
-			detail = fmt.Sprintf("MASS SESSION DEATH (%s)", e.Context)
-		} else {
-			detail = "MASS SESSION DEATH"
-		}
-	default:
-		detail = string(e.Type)
-		if e.Context != "" {
-			detail += fmt.Sprintf(" (%s)", e.Context)
-		}
+func formatLogDetail(e Event) string {
+	if formatter, ok := logDetailFormatters[e.Type]; ok {
+		return formatter(e.Context)
 	}
+	return logDetailParen(string(e.Type), e.Context)
+}
 
-	return fmt.Sprintf("%s [%s] %s %s", ts, e.Type, e.Agent, detail)
+func logDetailExact(empty, withFmt string) func(string) string {
+	return func(context string) string {
+		if context == "" {
+			return empty
+		}
+		return fmt.Sprintf(withFmt, context)
+	}
+}
+
+func logDetailParen(base, context string) string {
+	if context == "" {
+		return base
+	}
+	return base + fmt.Sprintf(" (%s)", context)
+}
+
+func logDetailParenFn(base string) func(string) string {
+	return func(context string) string {
+		return logDetailParen(base, context)
+	}
+}
+
+func formatNudgeDetail(context string) string {
+	if context != "" {
+		return fmt.Sprintf("nudged with %q", truncate(context, 50))
+	}
+	return "nudged"
+}
+
+var logDetailFormatters = map[EventType]func(string) string{
+	EventSpawn:            logDetailExact("spawned", "spawned for %s"),
+	EventWake:             logDetailParenFn("resumed"),
+	EventNudge:            formatNudgeDetail,
+	EventHandoff:          logDetailParenFn("handed off"),
+	EventHandoffNoPersist: logDetailParenFn("handoff FAILED (Dolt persistence)"),
+	EventDone:             logDetailExact("completed work", "completed %s"),
+	EventCrash:            logDetailExact("exited unexpectedly", "exited unexpectedly (%s)"),
+	EventKill:             logDetailExact("killed", "killed (%s)"),
+	EventCallback:         logDetailExact("callback processed", "callback: %s"),
+	EventPatrolStarted:    logDetailExact("started patrol", "started patrol (%s)"),
+	EventPolecatChecked:   logDetailExact("checked polecat", "checked polecat %s"),
+	EventPolecatNudged:    logDetailExact("nudged polecat", "nudged polecat (%s)"),
+	EventEscalationSent:   logDetailExact("escalated", "escalated (%s)"),
+	EventPatrolComplete:   logDetailExact("patrol complete", "patrol complete (%s)"),
+	EventSessionDeath:     logDetailExact("session terminated", "session terminated (%s)"),
+	EventMassDeath:        logDetailExact("MASS SESSION DEATH", "MASS SESSION DEATH (%s)"),
 }
 
 // truncate shortens a string to max length with ellipsis.
@@ -270,59 +223,56 @@ func ParseLogLines(content string) ([]Event, error) {
 // Format: 2025-12-26 15:30:45 [spawn] gastown/crew/max spawned for gt-xyz
 func parseLogLine(line string) (Event, error) {
 	var event Event
+	if err := parseLogTimestamp(&event, line); err != nil {
+		return event, err
+	}
+	rest := line[20:] // Skip timestamp and space
+	if err := parseLogEventType(&event, &rest); err != nil {
+		return event, err
+	}
+	if err := parseLogAgent(&event, rest); err != nil {
+		return event, err
+	}
+	return event, nil
+}
 
-	// Parse timestamp (first 19 chars: "2006-01-02 15:04:05")
+func parseLogTimestamp(event *Event, line string) error {
 	if len(line) < 19 {
-		return event, fmt.Errorf("line too short")
+		return fmt.Errorf("line too short")
 	}
 	ts, err := time.Parse("2006-01-02 15:04:05", line[:19])
 	if err != nil {
-		return event, fmt.Errorf("parsing timestamp: %w", err)
+		return fmt.Errorf("parsing timestamp: %w", err)
 	}
 	event.Timestamp = ts
+	return nil
+}
 
-	// Find event type in brackets
-	rest := line[20:] // Skip timestamp and space
-	if len(rest) < 3 || rest[0] != '[' {
-		return event, fmt.Errorf("missing event type")
+func parseLogEventType(event *Event, rest *string) error {
+	if len(*rest) < 3 || (*rest)[0] != '[' {
+		return fmt.Errorf("missing event type")
 	}
-
-	closeBracket := -1
-	for i, c := range rest {
-		if c == ']' {
-			closeBracket = i
-			break
-		}
-	}
+	closeBracket := strings.IndexByte(*rest, ']')
 	if closeBracket < 0 {
-		return event, fmt.Errorf("unclosed bracket")
+		return fmt.Errorf("unclosed bracket")
 	}
+	event.Type = EventType((*rest)[1:closeBracket])
+	*rest = (*rest)[closeBracket+1:]
+	return nil
+}
 
-	event.Type = EventType(rest[1:closeBracket])
-
-	// Rest is " agent details"
-	rest = rest[closeBracket+1:]
+func parseLogAgent(event *Event, rest string) error {
 	if len(rest) < 2 || rest[0] != ' ' {
-		return event, fmt.Errorf("missing agent")
+		return fmt.Errorf("missing agent")
 	}
 	rest = rest[1:]
-
-	// Find first space after agent
-	spaceIdx := -1
-	for i, c := range rest {
-		if c == ' ' {
-			spaceIdx = i
-			break
-		}
-	}
+	spaceIdx := strings.IndexByte(rest, ' ')
 	if spaceIdx < 0 {
 		event.Agent = rest
-	} else {
-		event.Agent = rest[:spaceIdx]
-		// The rest is context info (not worth parsing further)
+		return nil
 	}
-
-	return event, nil
+	event.Agent = rest[:spaceIdx]
+	return nil
 }
 
 func splitLines(s string) []string {
