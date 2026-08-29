@@ -101,14 +101,16 @@ func ToContextFields(intent Intent, enqueuedAt string) *capacity.SlingContextFie
 		Convoy:       intent.Convoy,
 		BaseBranch:   intent.BaseBranch,
 		ResumeBranch: intent.ResumeBranch,
-		NoMerge:      intent.NoMerge,
-		ReviewOnly:   intent.ReviewOnly,
-		Account:      intent.Account,
-		Agent:        intent.Agent,
-		HookRawBead:  intent.HookRawBead,
-		Owned:        intent.Owned,
-		Mode:         intent.Mode,
-		EnqueuedAt:   enqueuedAt,
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			NoMerge:     intent.NoMerge,
+			ReviewOnly:  intent.ReviewOnly,
+			Account:     intent.Account,
+			Agent:       intent.Agent,
+			HookRawBead: intent.HookRawBead,
+			Owned:       intent.Owned,
+			Mode:        intent.Mode,
+		},
+		EnqueuedAt: enqueuedAt,
 	}
 	if len(intent.Vars) > 0 {
 		fields.Vars = strings.Join(intent.Vars, "\n")

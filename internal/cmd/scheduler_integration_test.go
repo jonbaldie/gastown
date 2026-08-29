@@ -1509,11 +1509,13 @@ func TestSchedulerActualDispatchRoutesPollutedEnvToTargetRig(t *testing.T) {
 	beadID := createTestBead(t, rigPath, "Polluted env actual dispatch")
 	rigBeads := beads.NewWithBeadsDir(rigPath, filepath.Join(rigPath, ".beads"))
 	ctxBead, err := rigBeads.CreateSlingContext("dispatch: "+beadID, beadID, &capacity.SlingContextFields{
-		Version:     1,
-		WorkBeadID:  beadID,
-		TargetRig:   "testrig",
-		HookRawBead: true,
-		EnqueuedAt:  "2026-01-01T00:00:00Z",
+		Version:    1,
+		WorkBeadID: beadID,
+		TargetRig:  "testrig",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			HookRawBead: true,
+		},
+		EnqueuedAt: "2026-01-01T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("CreateSlingContext: %v", err)
@@ -1636,11 +1638,13 @@ func TestSchedulerDispatchFailureRecordedInContextSourceDB(t *testing.T) {
 
 	beadID := createTestBead(t, rigPath, "Record dispatch failure in source DB")
 	ctxID := createSlingContext(t, hqPath, &capacity.SlingContextFields{
-		Version:     1,
-		WorkBeadID:  beadID,
-		TargetRig:   "testrig",
-		HookRawBead: true,
-		EnqueuedAt:  "2026-01-01T00:00:00Z",
+		Version:    1,
+		WorkBeadID: beadID,
+		TargetRig:  "testrig",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			HookRawBead: true,
+		},
+		EnqueuedAt: "2026-01-01T00:00:00Z",
 	})
 
 	prevSpawn := spawnPolecatForSling

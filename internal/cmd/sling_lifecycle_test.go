@@ -54,14 +54,16 @@ func completeRawIntentFields() *capacity.SlingContextFields {
 		Merge:        "local",
 		Convoy:       "hq-cv-scheduled",
 		ResumeBranch: "feature/resume-me",
-		Account:      "work",
-		Agent:        "codex",
-		HookRawBead:  true,
-		Owned:        true,
-		Mode:         "ralph",
-		ReviewOnly:   true,
-		NoMerge:      true,
-		EnqueuedAt:   "2026-08-14T00:00:00Z",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			Account:     "work",
+			Agent:       "codex",
+			HookRawBead: true,
+			Owned:       true,
+			Mode:        "ralph",
+			ReviewOnly:  true,
+			NoMerge:     true,
+		},
+		EnqueuedAt: "2026-08-14T00:00:00Z",
 	}
 }
 
@@ -282,13 +284,13 @@ func TestDeferredFormulaSlingMatchesDirectMoleculeAttachment(t *testing.T) {
 		WorkBeadID: "gt-rawrollback",
 		TargetRig:  "gastown",
 		Context: &capacity.SlingContextFields{
-			WorkBeadID: "gt-rawrollback",
-			TargetRig:  "gastown",
-			Formula:    "mol-polecat-work",
-			Vars:       "disks=3",
-			Merge:      "local",
-			Convoy:     "hq-cv-formula",
-			Owned:      true,
+			WorkBeadID:         "gt-rawrollback",
+			TargetRig:          "gastown",
+			Formula:            "mol-polecat-work",
+			Vars:               "disks=3",
+			Merge:              "local",
+			Convoy:             "hq-cv-formula",
+			SlingContextPolicy: capacity.SlingContextPolicy{Owned: true},
 		},
 	}, townRoot, "test")
 	if err != nil {
@@ -476,9 +478,9 @@ func TestDeferredDispatchFailureIdentifiesBeadAndRig(t *testing.T) {
 		WorkBeadID: "gt-rawrollback",
 		TargetRig:  "gastown",
 		Context: &capacity.SlingContextFields{
-			WorkBeadID:  "gt-rawrollback",
-			TargetRig:   "gastown",
-			HookRawBead: true,
+			WorkBeadID:         "gt-rawrollback",
+			TargetRig:          "gastown",
+			SlingContextPolicy: capacity.SlingContextPolicy{HookRawBead: true},
 		},
 	}, townRoot, "test")
 	if err == nil {

@@ -19,13 +19,15 @@ func TestFromContextPreservesCompleteIntent(t *testing.T) {
 		Convoy:       "hq-cv-recorded",
 		BaseBranch:   "develop",
 		ResumeBranch: "feature/resume-me",
-		NoMerge:      true,
-		ReviewOnly:   true,
-		Account:      "work",
-		Agent:        "codex",
-		HookRawBead:  true,
-		Owned:        true,
-		Mode:         "ralph",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			NoMerge:     true,
+			ReviewOnly:  true,
+			Account:     "work",
+			Agent:       "codex",
+			HookRawBead: true,
+			Owned:       true,
+			Mode:        "ralph",
+		},
 	}
 
 	intent := FromContext(fields)

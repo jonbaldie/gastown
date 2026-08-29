@@ -77,11 +77,13 @@ func TestDispatchSingleBeadRawReviewOnlyHookFailureClearsMetadata(t *testing.T) 
 		WorkBeadID: "gt-rawrollback",
 		TargetRig:  "gastown",
 		Context: &capacity.SlingContextFields{
-			WorkBeadID:  "gt-rawrollback",
-			TargetRig:   "gastown",
-			HookRawBead: true,
-			NoMerge:     true,
-			ReviewOnly:  true,
+			WorkBeadID: "gt-rawrollback",
+			TargetRig:  "gastown",
+			SlingContextPolicy: capacity.SlingContextPolicy{
+				HookRawBead: true,
+				NoMerge:     true,
+				ReviewOnly:  true,
+			},
 		},
 	}, townRoot, "test")
 	if err == nil {

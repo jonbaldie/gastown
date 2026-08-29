@@ -1,6 +1,7 @@
 package beads
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/jonbaldie/gastown/internal/scheduler/capacity"
@@ -8,24 +9,26 @@ import (
 
 func TestFormatParseSlingContextRoundTrip(t *testing.T) {
 	original := &capacity.SlingContextFields{
-		Version:          1,
-		WorkBeadID:       "gt-abc123",
-		TargetRig:        "gastown",
-		Formula:          "mol-polecat-work",
-		Args:             "implement feature X",
-		Vars:             "a=1\nb=2",
-		EnqueuedAt:       "2026-01-15T10:00:00Z",
-		Merge:            "direct",
-		Convoy:           "hq-cv-test",
-		BaseBranch:       "develop",
-		ResumeBranch:     "feature/resume-me",
-		NoMerge:          true,
-		ReviewOnly:       true,
-		Account:          "acme",
-		Agent:            "gemini",
-		HookRawBead:      true,
-		Owned:            true,
-		Mode:             "ralph",
+		Version:      1,
+		WorkBeadID:   "gt-abc123",
+		TargetRig:    "gastown",
+		Formula:      "mol-polecat-work",
+		Args:         "implement feature X",
+		Vars:         "a=1\nb=2",
+		EnqueuedAt:   "2026-01-15T10:00:00Z",
+		Merge:        "direct",
+		Convoy:       "hq-cv-test",
+		BaseBranch:   "develop",
+		ResumeBranch: "feature/resume-me",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			NoMerge:     true,
+			ReviewOnly:  true,
+			Account:     "acme",
+			Agent:       "gemini",
+			HookRawBead: true,
+			Owned:       true,
+			Mode:        "ralph",
+		},
 		DispatchFailures: 2,
 		LastFailure:      "sling failed: timeout",
 	}
@@ -96,6 +99,30 @@ func TestFormatParseSlingContextRoundTrip(t *testing.T) {
 	}
 	if parsed.LastFailure != original.LastFailure {
 		t.Errorf("LastFailure: got %q, want %q", parsed.LastFailure, original.LastFailure)
+	}
+}
+
+func TestFormatSlingContextDescriptionFlattensPolicy(t *testing.T) {
+	formatted := FormatSlingContextDescription(&capacity.SlingContextFields{
+		WorkBeadID: "gt-abc",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			NoMerge: true,
+			Mode:    "ralph",
+		},
+	})
+
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(formatted), &encoded); err != nil {
+		t.Fatalf("formatted description is not JSON: %v", err)
+	}
+	if _, ok := encoded["no_merge"]; !ok {
+		t.Fatalf("formatted description omitted flattened no_merge field: %s", formatted)
+	}
+	if _, ok := encoded["mode"]; !ok {
+		t.Fatalf("formatted description omitted flattened mode field: %s", formatted)
+	}
+	if _, ok := encoded["SlingContextPolicy"]; ok {
+		t.Fatalf("formatted description nested policy fields: %s", formatted)
 	}
 }
 
