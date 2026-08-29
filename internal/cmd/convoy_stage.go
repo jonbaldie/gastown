@@ -2287,28 +2287,7 @@ func emitStageJSONError(category string, beadIDs []string, err error, dag *Convo
 }
 
 func emitStageJSONResult(result StageResult, returnErr error) error {
-	if result.Errors == nil {
-		result.Errors = []FindingJSON{}
-	}
-	if result.Warnings == nil {
-		result.Warnings = []FindingJSON{}
-	}
-	if result.Waves == nil {
-		result.Waves = []WaveJSON{}
-	}
-	if result.Tree == nil {
-		result.Tree = []TreeNodeJSON{}
-	}
-	for i := range result.Errors {
-		if result.Errors[i].BeadIDs == nil {
-			result.Errors[i].BeadIDs = []string{}
-		}
-	}
-	for i := range result.Warnings {
-		if result.Warnings[i].BeadIDs == nil {
-			result.Warnings[i].BeadIDs = []string{}
-		}
-	}
+	normalizeStageResult(&result)
 
 	out, err := renderJSON(result)
 	if err != nil {
@@ -2316,6 +2295,44 @@ func emitStageJSONResult(result StageResult, returnErr error) error {
 	}
 	fmt.Print(out)
 	return returnErr
+}
+
+func normalizeStageResult(result *StageResult) {
+	result.Errors = nonNilFindings(result.Errors)
+	result.Warnings = nonNilFindings(result.Warnings)
+	result.Waves = nonNilWaves(result.Waves)
+	result.Tree = nonNilTreeNodes(result.Tree)
+	normalizeFindingIDs(result.Errors)
+	normalizeFindingIDs(result.Warnings)
+}
+
+func nonNilFindings(findings []FindingJSON) []FindingJSON {
+	if findings == nil {
+		return []FindingJSON{}
+	}
+	return findings
+}
+
+func nonNilWaves(waves []WaveJSON) []WaveJSON {
+	if waves == nil {
+		return []WaveJSON{}
+	}
+	return waves
+}
+
+func nonNilTreeNodes(nodes []TreeNodeJSON) []TreeNodeJSON {
+	if nodes == nil {
+		return []TreeNodeJSON{}
+	}
+	return nodes
+}
+
+func normalizeFindingIDs(findings []FindingJSON) {
+	for i := range findings {
+		if findings[i].BeadIDs == nil {
+			findings[i].BeadIDs = []string{}
+		}
+	}
 }
 
 func printStageWarning(format string, args ...any) {
