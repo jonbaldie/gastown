@@ -392,7 +392,7 @@ func TestProxy_AgentDone(t *testing.T) {
 		t.Fatalf("failed to start command: %v", err)
 	}
 
-	p := &Proxy{cmd: cmd}
+	p := &Proxy{proxyProcessState: proxyProcessState{cmd: cmd}}
 
 	done := waitForAgent(p)
 

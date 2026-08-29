@@ -40,34 +40,12 @@ const (
 const startupPromptTimeout = 60 * time.Second
 
 type Proxy struct {
-	cmd                *exec.Cmd
-	agentStdin         io.WriteCloser
-	agentStdout        io.ReadCloser
-	agentStderr        io.ReadCloser
-	stdin              io.Reader
-	stdout             io.Writer
-	sessionID          string
-	sessionMux         sync.RWMutex
-	done               chan struct{}
-	doneOnce           sync.Once
-	ctx                context.Context
-	cancel             context.CancelFunc
-	wg                 sync.WaitGroup
-	handshakeState     handshakeState
-	handshakeMux       sync.Mutex
-	promptMux          sync.Mutex
-	activePromptID     string
-	stdinMux           sync.Mutex
-	stdoutMux          sync.Mutex
-	uiEncoder          *json.Encoder
-	startupPrompt      string
-	startupPromptState string
-	startupPromptMux   sync.RWMutex
-	shutdownOnce       sync.Once
-	isShuttingDown     atomic.Bool
-	lastActivity       atomic.Int64
-	pidFilePath        string
-	townRoot           string
+	proxyProcessState
+	proxyProtocolState
+	isShuttingDown atomic.Bool
+	lastActivity   atomic.Int64
+	pidFilePath    string
+	townRoot       string
 	// Heartbeat support
 	currentModeID      string
 	modeMux            sync.RWMutex
@@ -79,6 +57,38 @@ type Proxy struct {
 	// Stderr monitoring for pipe saturation
 	stderrBytesDropped   atomic.Int64
 	stderrLinesTruncated atomic.Int64
+}
+
+// proxyProcessState owns the child process and its lifecycle resources.
+type proxyProcessState struct {
+	cmd          *exec.Cmd
+	agentStdin   io.WriteCloser
+	agentStdout  io.ReadCloser
+	agentStderr  io.ReadCloser
+	stdin        io.Reader
+	stdout       io.Writer
+	done         chan struct{}
+	doneOnce     sync.Once
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	shutdownOnce sync.Once
+}
+
+// proxyProtocolState owns ACP session, handshake, prompt, and stream state.
+type proxyProtocolState struct {
+	handshakeState     handshakeState
+	handshakeMux       sync.Mutex
+	sessionID          string
+	sessionMux         sync.RWMutex
+	promptMux          sync.Mutex
+	activePromptID     string
+	stdinMux           sync.Mutex
+	stdoutMux          sync.Mutex
+	uiEncoder          *json.Encoder
+	startupPrompt      string
+	startupPromptState string
+	startupPromptMux   sync.RWMutex
 }
 
 // SetTownRoot sets the town root for logging important events to town.log.
@@ -126,10 +136,14 @@ type SessionNewResult struct {
 func NewProxy() *Proxy {
 	debugLog("", "[Proxy] Created new proxy, initial handshakeState=%d", handshakeInit)
 	p := &Proxy{
-		done:           make(chan struct{}),
-		handshakeState: handshakeInit,
-		stdin:          os.Stdin,
-		stdout:         os.Stdout,
+		proxyProcessState: proxyProcessState{
+			done:   make(chan struct{}),
+			stdin:  os.Stdin,
+			stdout: os.Stdout,
+		},
+		proxyProtocolState: proxyProtocolState{
+			handshakeState: handshakeInit,
+		},
 	}
 	p.uiEncoder = json.NewEncoder(p.stdout)
 	p.lastActivity.Store(time.Now().UnixNano())
