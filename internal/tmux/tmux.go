@@ -1762,25 +1762,11 @@ func isTmuxIndex(value string) bool {
 // NudgeSessionWithOpts is like NudgeSession but accepts delivery options.
 // See NudgeOpts for available options.
 func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) error {
-	// Cross-process lock: serialize nudges across OS processes via flock(2).
-	// Each `gt nudge` CLI invocation is a separate process, so the in-process
-	// channel semaphore below provides no cross-process protection. Without
-	// this, concurrent nudges interleave send-keys/Enter and produce garbled
-	// or empty input. (GH#gt-ukl8)
-	if opts.TownRoot != "" {
-		lockPath := nudgeFlockPath(opts.TownRoot, session)
-		unlock, err := acquireFlockLock(lockPath, nudgeLockTimeout)
-		if err != nil {
-			return fmt.Errorf("cross-process nudge lock for session %q: %w", session, err)
-		}
-		defer unlock()
+	release, err := acquireNudgeSessionLocks(session, opts.TownRoot)
+	if err != nil {
+		return err
 	}
-
-	// In-process lock: serialize nudges within a single process (goroutine fast path).
-	if !acquireNudgeLock(session, nudgeLockTimeout) {
-		return fmt.Errorf("nudge lock timeout for session %q: previous nudge may be hung", session)
-	}
-	defer releaseNudgeLock(session)
+	defer release()
 
 	// Resolve the correct target: in multi-pane sessions, find the pane
 	// running the agent rather than sending to the focused pane.
@@ -1789,73 +1775,14 @@ func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) err
 		target = t.canonicalPaneTarget(session, agentPane)
 	}
 
-	// 0. Pre-delivery: dismiss Rewind menu if the session is stuck in it.
-	// A previous nudge or user action may have triggered Claude Code's
-	// double-Escape Rewind UI, which captures all input. Dismiss it first
-	// so the nudge can be delivered normally. (GH#gt-8el)
-	if t.isInRewindMode(target) {
-		t.dismissRewindMode(target)
-	}
+	t.prepareNudgeTarget(target)
 
-	// 1. Exit copy/scroll mode if active — copy mode intercepts input,
-	//    preventing delivery to the underlying process.
-	if inMode, _ := t.run("display-message", "-p", "-t", target, "#{pane_in_mode}"); strings.TrimSpace(inMode) == "1" {
-		_, _ = t.run("send-keys", "-t", target, "-X", "cancel")
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// 2. Sanitize control characters that corrupt delivery
 	sanitized := sanitizeNudgeMessage(message)
-
-	if !opts.SkipEscape {
-		// Auto-skip Escape for Copilot CLI sessions. Escape cancels in-flight
-		// generation in Copilot CLI (like Gemini), leaving the nudge text
-		// stranded in the input field without Enter being processed. (hq-isz)
-		agentType, _ := t.GetEnvironment(session, "GT_AGENT")
-		if agentType == "copilot" {
-			opts.SkipEscape = true
-		}
-	}
-	// Snapshot before typing the nudge so the message text itself cannot look
-	// like the agent's busy indicator.
-	sendEscape := !opts.SkipEscape && t.shouldSendEscape(target)
-
-	// 3. Send text via send-keys -l. Messages > 512 bytes are chunked
-	//    with 10ms inter-chunk delays to avoid argument length limits.
-	if err := t.sendMessageToTarget(target, sanitized); err != nil {
+	if err := t.sendNudgePayload(target, sanitized, t.shouldSendNudgeEscape(session, target, opts.SkipEscape)); err != nil {
 		return err
 	}
 
-	// 4. Adaptive post-text delay: scales with message length to give tmux
-	// enough time to process all chunks under load. (GH#gt-0b5)
-	time.Sleep(adaptiveTextDelay(len(sanitized)))
-
-	if sendEscape {
-		// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-		// See: https://github.com/anthropics/gastown/issues/307
-		_, _ = t.run("send-keys", "-t", target, "Escape")
-
-		// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
-		// so ESC is processed alone, not as a meta prefix for the subsequent Enter.
-		// Without this, ESC+Enter within 500ms becomes M-Enter (meta-return) which
-		// does NOT submit the line.
-		time.Sleep(600 * time.Millisecond)
-
-		// 6.5. Post-Escape: check if our Escape triggered Rewind mode.
-		// This happens when a previous Escape was still in the input buffer,
-		// combining with ours to form the double-Escape that activates Rewind.
-		// If triggered, dismiss Rewind and re-send the message (Rewind
-		// consumed the original input). Skip the second Escape to avoid
-		// re-triggering. (GH#gt-8el)
-		if t.isInRewindMode(target) {
-			t.dismissRewindMode(target)
-			// Re-send message text — Rewind consumed the original input.
-			_ = t.sendMessageToTarget(target, sanitized)
-			time.Sleep(adaptiveTextDelay(len(sanitized)))
-		}
-	}
-
-	// 7. Submit with verification — confirms Enter was processed and the
+	// Submit with verification — confirms Enter was processed and the
 	// message actually left the composer instead of being stranded by a
 	// swallowed carriage return. (GH#gt-0b5, PR #4461 replacement)
 	if err := t.submitComposer(target, sanitized, readyPromptPrefixForSession(t, session)); err != nil {
@@ -1885,47 +1812,11 @@ func (t *Tmux) NudgePane(pane, message string) error {
 	}
 	defer releaseNudgeLock(pane)
 
-	// 0. Pre-delivery: dismiss Rewind menu if active. (GH#gt-8el)
-	if t.isInRewindMode(pane) {
-		t.dismissRewindMode(pane)
-	}
+	t.prepareNudgeTarget(pane)
 
-	// 1. Exit copy/scroll mode if active — copy mode intercepts input,
-	//    preventing delivery to the underlying process.
-	if inMode, _ := t.run("display-message", "-p", "-t", pane, "#{pane_in_mode}"); strings.TrimSpace(inMode) == "1" {
-		_, _ = t.run("send-keys", "-t", pane, "-X", "cancel")
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// 2. Sanitize control characters that corrupt delivery
 	sanitized := sanitizeNudgeMessage(message)
-	// Snapshot before typing the nudge so the message text itself cannot look
-	// like the agent's busy indicator.
-	sendEscape := t.shouldSendEscape(pane)
-
-	// 3. Send text via send-keys -l. Messages > 512 bytes are chunked
-	//    with 10ms inter-chunk delays to avoid argument length limits.
-	if err := t.sendMessageToTarget(pane, sanitized); err != nil {
+	if err := t.sendNudgePayload(pane, sanitized, t.shouldSendEscape(pane)); err != nil {
 		return err
-	}
-
-	// 4. Adaptive post-text delay: scales with message length. (GH#gt-0b5)
-	time.Sleep(adaptiveTextDelay(len(sanitized)))
-
-	if sendEscape {
-		// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-		// See: https://github.com/anthropics/gastown/issues/307
-		_, _ = t.run("send-keys", "-t", pane, "Escape")
-
-		// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
-		time.Sleep(600 * time.Millisecond)
-
-		// 6.5. Post-Escape: check if our Escape triggered Rewind mode. (GH#gt-8el)
-		if t.isInRewindMode(pane) {
-			t.dismissRewindMode(pane)
-			_ = t.sendMessageToTarget(pane, sanitized)
-			time.Sleep(adaptiveTextDelay(len(sanitized)))
-		}
 	}
 
 	// 7. Submit with verification — confirms Enter was processed and the
@@ -1937,6 +1828,73 @@ func (t *Tmux) NudgePane(pane, message string) error {
 
 	// 8. Wake the pane to trigger SIGWINCH for detached sessions
 	t.WakePaneIfDetached(pane)
+	return nil
+}
+
+func acquireNudgeSessionLocks(session, townRoot string) (func(), error) {
+	var unlockFlock func()
+	if townRoot != "" {
+		lockPath := nudgeFlockPath(townRoot, session)
+		unlock, err := acquireFlockLock(lockPath, nudgeLockTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("cross-process nudge lock for session %q: %w", session, err)
+		}
+		unlockFlock = unlock
+	}
+	if !acquireNudgeLock(session, nudgeLockTimeout) {
+		if unlockFlock != nil {
+			unlockFlock()
+		}
+		return nil, fmt.Errorf("nudge lock timeout for session %q: previous nudge may be hung", session)
+	}
+	return func() {
+		releaseNudgeLock(session)
+		if unlockFlock != nil {
+			unlockFlock()
+		}
+	}, nil
+}
+
+func (t *Tmux) prepareNudgeTarget(target string) {
+	// A previous nudge or user action may have triggered Claude Code's
+	// double-Escape Rewind UI, which captures all input. Dismiss it first.
+	if t.isInRewindMode(target) {
+		t.dismissRewindMode(target)
+	}
+	// Copy mode intercepts input, preventing delivery to the underlying process.
+	if inMode, _ := t.run("display-message", "-p", "-t", target, "#{pane_in_mode}"); strings.TrimSpace(inMode) == "1" {
+		_, _ = t.run("send-keys", "-t", target, "-X", "cancel")
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func (t *Tmux) shouldSendNudgeEscape(session, target string, skipEscape bool) bool {
+	if skipEscape {
+		return false
+	}
+	// Escape cancels in-flight generation in Copilot CLI, leaving the nudge
+	// stranded in the input field without Enter being processed.
+	agentType, _ := t.GetEnvironment(session, "GT_AGENT")
+	return agentType != "copilot" && t.shouldSendEscape(target)
+}
+
+func (t *Tmux) sendNudgePayload(target, sanitized string, sendEscape bool) error {
+	if err := t.sendMessageToTarget(target, sanitized); err != nil {
+		return err
+	}
+	time.Sleep(adaptiveTextDelay(len(sanitized)))
+	if !sendEscape {
+		return nil
+	}
+
+	// Escape must be separated from Enter by bash readline's keyseq timeout.
+	_, _ = t.run("send-keys", "-t", target, "Escape")
+	time.Sleep(600 * time.Millisecond)
+	if t.isInRewindMode(target) {
+		t.dismissRewindMode(target)
+		_ = t.sendMessageToTarget(target, sanitized)
+		time.Sleep(adaptiveTextDelay(len(sanitized)))
+	}
 	return nil
 }
 
