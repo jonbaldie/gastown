@@ -1491,39 +1491,9 @@ func (f *LiveConvoyFetcher) FetchSessions() ([]SessionRow, error) {
 
 	var rows []SessionRow
 	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
-		if line == "" {
-			continue
+		if row, ok := sessionRowFromLine(line, f.registry); ok {
+			rows = append(rows, row)
 		}
-
-		// SplitN always returns >= 1 element; parts[0] is safe unconditionally
-		parts := strings.SplitN(line, ":", 2)
-		name := parts[0]
-
-		// Only include Gas Town sessions
-		if !session.IsKnownSession(name) {
-			continue
-		}
-
-		row := SessionRow{
-			Name:    name,
-			IsAlive: true, // Session exists
-		}
-
-		// Parse activity timestamp
-		if len(parts) > 1 {
-			if ts, ok := parseActivityTimestamp(parts[1]); ok && ts > 0 {
-				row.Activity = formatTimestamp(time.Unix(ts, 0))
-			}
-		}
-
-		// Detect role from session name using fetcher's own registry (gt-y24)
-		if identity, err := session.ParseSessionNameWithRegistry(name, f.registry); err == nil {
-			row.Rig = identity.Rig
-			row.Role = string(identity.Role)
-			row.Worker = identity.Name
-		}
-
-		rows = append(rows, row)
 	}
 
 	// Sort by rig, then role, then worker
@@ -1538,6 +1508,35 @@ func (f *LiveConvoyFetcher) FetchSessions() ([]SessionRow, error) {
 	})
 
 	return rows, nil
+}
+
+func sessionRowFromLine(line string, registry *session.PrefixRegistry) (SessionRow, bool) {
+	if line == "" {
+		return SessionRow{}, false
+	}
+
+	// SplitN always returns >= 1 element; parts[0] is safe unconditionally.
+	parts := strings.SplitN(line, ":", 2)
+	name := parts[0]
+	if !session.IsKnownSession(name) {
+		return SessionRow{}, false
+	}
+
+	row := SessionRow{
+		Name:    name,
+		IsAlive: true, // Session exists.
+	}
+	if len(parts) > 1 {
+		if ts, ok := parseActivityTimestamp(parts[1]); ok && ts > 0 {
+			row.Activity = formatTimestamp(time.Unix(ts, 0))
+		}
+	}
+	if identity, err := session.ParseSessionNameWithRegistry(name, registry); err == nil {
+		row.Rig = identity.Rig
+		row.Role = string(identity.Role)
+		row.Worker = identity.Name
+	}
+	return row, true
 }
 
 // FetchHooks returns all hooked beads (work pinned to agents).
