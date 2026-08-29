@@ -1365,9 +1365,28 @@ func runDogDispatch(cmd *cobra.Command, _ []string) error {
 
 func resolveDogAuthoritativeSource(townRoot string, d *dog.Dog) (*beads.Issue, string, error) {
 	agentID := fmt.Sprintf("deacon/dogs/%s", d.Name)
-	rigsConfig, err := config.LoadRigsConfig(filepath.Join(townRoot, "mayor", "rigs.json"))
+	roots, err := dogAuthoritativeSourceRoots(townRoot)
 	if err != nil {
 		return nil, "", fmt.Errorf("loading rigs for dog completion: %w", err)
+	}
+	for _, root := range roots {
+		work, err := listAssignedActiveWorkAcrossStatuses(beads.New(root), agentID)
+		if err != nil {
+			return nil, "", fmt.Errorf("querying dog source in %s: %w", root, err)
+		}
+		for _, issue := range work {
+			if dogAuthoritativeIssueMatches(d, issue) {
+				return issue, root, nil
+			}
+		}
+	}
+	return nil, "", fmt.Errorf("authoritative source for dog %s is missing or no longer assigned", d.Name)
+}
+
+func dogAuthoritativeSourceRoots(townRoot string) ([]string, error) {
+	rigsConfig, err := config.LoadRigsConfig(filepath.Join(townRoot, "mayor", "rigs.json"))
+	if err != nil {
+		return nil, err
 	}
 	roots := []string{filepath.Join(townRoot, ".beads")}
 	for rigName := range rigsConfig.Rigs {
@@ -1377,20 +1396,15 @@ func resolveDogAuthoritativeSource(townRoot string, d *dog.Dog) (*beads.Issue, s
 		}
 		roots = append(roots, rigDir)
 	}
-	for _, root := range roots {
-		work, err := listAssignedActiveWorkAcrossStatuses(beads.New(root), agentID)
-		if err != nil {
-			return nil, "", fmt.Errorf("querying dog source in %s: %w", root, err)
-		}
-		for _, issue := range work {
-			fields := beads.ParseAttachmentFields(issue)
-			formulaMatches := fields != nil && fields.AttachedFormula == d.Work && dogWorksOnHook(d, d.Work, issue)
-			if issue.ID == d.Work || formulaMatches {
-				return issue, root, nil
-			}
-		}
+	return roots, nil
+}
+
+func dogAuthoritativeIssueMatches(d *dog.Dog, issue *beads.Issue) bool {
+	if issue.ID == d.Work {
+		return true
 	}
-	return nil, "", fmt.Errorf("authoritative source for dog %s is missing or no longer assigned", d.Name)
+	fields := beads.ParseAttachmentFields(issue)
+	return fields != nil && fields.AttachedFormula == d.Work && dogWorksOnHook(d, d.Work, issue)
 }
 
 func closeDogAuthoritativeSource(sourceDir string, d *dog.Dog, issueID string) error {
