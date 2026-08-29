@@ -998,23 +998,23 @@ func (r *Router) validateRecipient(identity string) error {
 		return fmt.Errorf("no agent found")
 	}
 
-	if handled, err := r.validateKnownRecipient(identity); handled {
+	if handled, err := validateKnownRecipient(r.townRoot, identity); handled {
 		return err
 	}
 
 	// Query agents from town-level beads
-	if r.queryContainsRecipient(identity) {
+	if queryContainsRecipient(r, identity) {
 		return nil
 	}
 
-	return r.validateRecipientFromSources(identity)
+	return validateRecipientFromSources(r, identity)
 }
 
-func (r *Router) validateKnownRecipient(identity string) (bool, error) {
+func validateKnownRecipient(townRoot, identity string) (bool, error) {
 	if handled, err := validateTownRecipient(identity); handled {
 		return true, err
 	}
-	return r.validateRigSingleton(identity)
+	return validateRigSingleton(townRoot, identity)
 }
 
 func validateTownRecipient(identity string) (bool, error) {
@@ -1033,12 +1033,12 @@ func validateTownRecipient(identity string) (bool, error) {
 	return false, nil
 }
 
-func (r *Router) validateRigSingleton(identity string) (bool, error) {
+func validateRigSingleton(townRoot, identity string) (bool, error) {
 	// Well-known rig-level singletons are valid without an active session, but
 	// the containing rig must exist so typos do not queue mail to a dead inbox.
 	parts := strings.SplitN(identity, "/", 3)
 	if len(parts) == 2 && (parts[1] == "witness" || parts[1] == "refinery") {
-		if r.townRoot == "" || dirExists(filepath.Join(r.townRoot, parts[0])) {
+		if townRoot == "" || dirExists(filepath.Join(townRoot, parts[0])) {
 			return true, nil
 		}
 		return true, fmt.Errorf("no agent found")
@@ -1046,9 +1046,9 @@ func (r *Router) validateRigSingleton(identity string) (bool, error) {
 	return false, nil
 }
 
-func (r *Router) validateRecipientFromSources(identity string) error {
+func validateRecipientFromSources(r *Router, identity string) error {
 	// Query agents from rig-level beads via routes.jsonl.
-	found, routeQueryErr := r.queryRoutesForRecipient(identity)
+	found, routeQueryErr := queryRoutesForRecipient(r, identity)
 	if found {
 		return nil
 	}
@@ -1064,7 +1064,7 @@ func (r *Router) validateRecipientFromSources(identity string) error {
 	return fmt.Errorf("no agent found")
 }
 
-func (r *Router) queryContainsRecipient(identity string) bool {
+func queryContainsRecipient(r *Router, identity string) bool {
 	for _, agent := range r.queryAgents("") {
 		if agentBeadToAddress(agent) == identity {
 			return true
@@ -1073,7 +1073,7 @@ func (r *Router) queryContainsRecipient(identity string) bool {
 	return false
 }
 
-func (r *Router) queryRoutesForRecipient(identity string) (bool, error) {
+func queryRoutesForRecipient(r *Router, identity string) (bool, error) {
 	if r.townRoot == "" {
 		return false, nil
 	}
@@ -1087,7 +1087,7 @@ func (r *Router) queryRoutesForRecipient(identity string) (bool, error) {
 		if strings.HasPrefix(route.Prefix, "hq-") {
 			continue
 		}
-		found, err := r.queryRouteForRecipient(identity, route)
+		found, err := queryRouteForRecipient(r, identity, route)
 		if found {
 			return true, nil
 		}
@@ -1101,7 +1101,7 @@ func (r *Router) queryRoutesForRecipient(identity string) (bool, error) {
 	return false, nil
 }
 
-func (r *Router) queryRouteForRecipient(identity string, route beads.Route) (bool, error) {
+func queryRouteForRecipient(r *Router, identity string, route beads.Route) (bool, error) {
 	rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
 	agents, err := r.queryAgentsFromDir(rigBeadsDir)
 	if err != nil {
@@ -1123,36 +1123,45 @@ func (r *Router) validateAgentWorkspace(identity string) bool {
 	}
 
 	parts := strings.Split(identity, "/")
-
 	switch len(parts) {
 	case 1:
-		// Town-level singleton: "mayor", "deacon"
-		name := strings.TrimSuffix(parts[0], "/")
-		return dirExists(filepath.Join(r.townRoot, name))
+		return townWorkspaceExists(r.townRoot, parts[0])
 	case 2:
-		rig, name := parts[0], parts[1]
-		// Singleton role: gastown/witness, gastown/refinery
-		if dirExists(filepath.Join(r.townRoot, rig, name)) {
-			return true
-		}
-		// Named role (identity normalized away crew/polecats): check both
-		for _, role := range []string{"crew", "polecats"} {
-			if dirExists(filepath.Join(r.townRoot, rig, role, name)) {
-				return true
-			}
-		}
+		return rigWorkspaceExists(r.townRoot, parts[0], parts[1])
 	case 3:
-		// Explicit role paths: rig/crew/<name> or rig/polecats/<name>
-		if parts[1] == "crew" || parts[1] == "polecats" {
-			return dirExists(filepath.Join(r.townRoot, parts[0], parts[1], parts[2]))
-		}
-		// Dog addresses: deacon/dogs/<name>
-		if _, ok := DogAddressName(identity); ok && dirExists(filepath.Join(r.townRoot, parts[0], parts[1], parts[2])) {
-			return true
-		}
+		return explicitWorkspaceExists(r.townRoot, identity, parts)
 	}
 
 	return false
+}
+
+func townWorkspaceExists(townRoot, name string) bool {
+	// Town-level singleton: "mayor", "deacon".
+	return dirExists(filepath.Join(townRoot, strings.TrimSuffix(name, "/")))
+}
+
+func rigWorkspaceExists(townRoot, rig, name string) bool {
+	// Singleton role: gastown/witness, gastown/refinery.
+	if dirExists(filepath.Join(townRoot, rig, name)) {
+		return true
+	}
+	// Named role (identity normalized away crew/polecats): check both.
+	for _, role := range []string{"crew", "polecats"} {
+		if dirExists(filepath.Join(townRoot, rig, role, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func explicitWorkspaceExists(townRoot, identity string, parts []string) bool {
+	// Explicit role paths: rig/crew/<name> or rig/polecats/<name>.
+	if parts[1] == "crew" || parts[1] == "polecats" {
+		return dirExists(filepath.Join(townRoot, parts[0], parts[1], parts[2]))
+	}
+	// Dog addresses: deacon/dogs/<name>.
+	_, isDog := DogAddressName(identity)
+	return isDog && dirExists(filepath.Join(townRoot, parts[0], parts[1], parts[2]))
 }
 
 // dirExists returns true if the path exists and is a directory.
