@@ -431,23 +431,7 @@ func groupIntoThreads(messages []MailMessage) []MailThread {
 	threadSeen := make(map[string]bool)
 
 	for _, msg := range messages {
-		var threadKey string
-
-		// Priority 1: Use ThreadID if present
-		if msg.ThreadID != "" {
-			threadKey = "thread:" + msg.ThreadID
-		} else if msg.ReplyTo != "" {
-			// Priority 2: Follow reply-to chain
-			if parentKey, ok := msgToThread[msg.ReplyTo]; ok {
-				threadKey = parentKey
-			} else {
-				// Start a new thread anchored to the reply-to ID
-				threadKey = "reply:" + msg.ReplyTo
-			}
-		} else {
-			// Priority 3: Standalone message (its own thread)
-			threadKey = "msg:" + msg.ID
-		}
+		threadKey := threadKeyForMessage(msg, msgToThread)
 
 		threadMap[threadKey] = append(threadMap[threadKey], msg)
 		msgToThread[msg.ID] = threadKey
@@ -461,42 +445,55 @@ func groupIntoThreads(messages []MailMessage) []MailThread {
 	// Build thread structs, ordered by most recent message
 	var threads []MailThread
 	for _, key := range threadOrder {
-		msgs := threadMap[key]
-		if len(msgs) == 0 {
-			continue
+		if thread, ok := mailThreadFromMessages(key, threadMap[key]); ok {
+			threads = append(threads, thread)
 		}
-
-		// Last message is the most recent (messages come in chronological order)
-		last := msgs[len(msgs)-1]
-
-		// Use the first message's subject as the thread subject (strip Re: prefixes)
-		subject := msgs[0].Subject
-		subject = strings.TrimPrefix(subject, "Re: ")
-		subject = strings.TrimPrefix(subject, "RE: ")
-
-		unread := 0
-		for _, m := range msgs {
-			if !m.Read {
-				unread++
-			}
-		}
-
-		threadID := key
-		if last.ThreadID != "" {
-			threadID = last.ThreadID
-		}
-
-		threads = append(threads, MailThread{
-			ThreadID:    threadID,
-			Subject:     subject,
-			LastMessage: last,
-			Messages:    msgs,
-			Count:       len(msgs),
-			UnreadCount: unread,
-		})
 	}
 
 	return threads
+}
+
+func threadKeyForMessage(msg MailMessage, msgToThread map[string]string) string {
+	if msg.ThreadID != "" {
+		return "thread:" + msg.ThreadID
+	}
+	if msg.ReplyTo != "" {
+		if parentKey, ok := msgToThread[msg.ReplyTo]; ok {
+			return parentKey
+		}
+		return "reply:" + msg.ReplyTo
+	}
+	return "msg:" + msg.ID
+}
+
+func mailThreadFromMessages(key string, msgs []MailMessage) (MailThread, bool) {
+	if len(msgs) == 0 {
+		return MailThread{}, false
+	}
+
+	last := msgs[len(msgs)-1]
+	subject := strings.TrimPrefix(msgs[0].Subject, "Re: ")
+	subject = strings.TrimPrefix(subject, "RE: ")
+
+	unread := 0
+	for _, msg := range msgs {
+		if !msg.Read {
+			unread++
+		}
+	}
+
+	threadID := key
+	if last.ThreadID != "" {
+		threadID = last.ThreadID
+	}
+	return MailThread{
+		ThreadID:    threadID,
+		Subject:     subject,
+		LastMessage: last,
+		Messages:    msgs,
+		Count:       len(msgs),
+		UnreadCount: unread,
+	}, true
 }
 
 // handleMailRead reads a specific message by ID.
