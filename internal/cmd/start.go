@@ -500,8 +500,6 @@ func discoverAllRigs(townRoot string) ([]*rig.Rig, error) {
 }
 
 func runShutdown(_ *cobra.Command, _ []string) error {
-	// Prefer the town under CWD, then GT_TOWN_ROOT, so we bind the town socket
-	// before listing sessions. Listing first can miss a running town.
 	townRoot, _ := workspace.FindFromCwdOrError()
 	if townRoot != "" {
 		_ = session.InitRegistry(townRoot)
@@ -517,31 +515,45 @@ func runShutdown(_ *cobra.Command, _ []string) error {
 	toStop, preserved := categorizeSessions(sessions)
 
 	if len(toStop) == 0 {
-		if townRoot != "" && townInfraRunning(townRoot) {
-			fmt.Println("No agent sessions to stop")
-		} else {
-			fmt.Printf("%s Gas Town was not running\n", style.Dim.Render("○"))
-		}
+		return shutdownWithoutSessions(townRoot)
+	}
 
-		// Still stop town-scoped infrastructure even if no sessions are running.
-		// --polecats-only leaves Dolt and worker serve running.
-		if townRoot != "" {
-			fmt.Println()
-			fmt.Println("Checking for orphaned daemon...")
-			stopDaemonIfRunning(townRoot)
-			if !shutdownPolecatsOnly {
-				fmt.Println()
-				fmt.Println("Stopping town Dolt and worker serve...")
-				if err := stopTownDoltAndWorker(townRoot); err != nil {
-					return fmt.Errorf("town infrastructure did not stop; refusing cleanup: %w", err)
-				}
-			}
-		}
-
+	showShutdownPlan(toStop, preserved)
+	if !confirmShutdown() {
+		fmt.Println("Shutdown canceled.")
 		return nil
 	}
 
-	// Show what will happen
+	if shutdownGraceful {
+		return runGracefulShutdown(t, toStop, townRoot)
+	}
+	return runImmediateShutdown(t, toStop, townRoot)
+}
+
+func shutdownWithoutSessions(townRoot string) error {
+	if townRoot != "" && townInfraRunning(townRoot) {
+		fmt.Println("No agent sessions to stop")
+	} else {
+		fmt.Printf("%s Gas Town was not running\n", style.Dim.Render("○"))
+	}
+	if townRoot == "" {
+		return nil
+	}
+	fmt.Println()
+	fmt.Println("Checking for orphaned daemon...")
+	stopDaemonIfRunning(townRoot)
+	if shutdownPolecatsOnly {
+		return nil
+	}
+	fmt.Println()
+	fmt.Println("Stopping town Dolt and worker serve...")
+	if err := stopTownDoltAndWorker(townRoot); err != nil {
+		return fmt.Errorf("town infrastructure did not stop; refusing cleanup: %w", err)
+	}
+	return nil
+}
+
+func showShutdownPlan(toStop, preserved []string) {
 	fmt.Println("Sessions to stop:")
 	for _, sess := range toStop {
 		fmt.Printf("  %s %s\n", style.Bold.Render("→"), sess)
@@ -554,23 +566,17 @@ func runShutdown(_ *cobra.Command, _ []string) error {
 		}
 	}
 	fmt.Println()
+}
 
-	// Confirmation prompt
-	if !shutdownYes && !shutdownForce {
-		fmt.Printf("Proceed with shutdown? [y/N] ")
-		reader := bufio.NewReader(os.Stdin)
-		response, _ := reader.ReadString('\n')
-		response = strings.TrimSpace(strings.ToLower(response))
-		if response != "y" && response != "yes" {
-			fmt.Println("Shutdown canceled.")
-			return nil
-		}
+func confirmShutdown() bool {
+	if shutdownYes || shutdownForce {
+		return true
 	}
-
-	if shutdownGraceful {
-		return runGracefulShutdown(t, toStop, townRoot)
-	}
-	return runImmediateShutdown(t, toStop, townRoot)
+	fmt.Printf("Proceed with shutdown? [y/N] ")
+	reader := bufio.NewReader(os.Stdin)
+	response, _ := reader.ReadString('\n')
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "y" || response == "yes"
 }
 
 // categorizeSessions splits sessions into those to stop and those to preserve.
