@@ -2012,34 +2012,11 @@ func detectOrphans(dag *ConvoyDAG, input *StageInput) []StagingFinding {
 		return nil
 	}
 
-	// Build slingable set.
-	slingable := make(map[string]*ConvoyDAGNode)
-	for id, node := range dag.Nodes {
-		if isSlingableType(node.Type) {
-			slingable[id] = node
-		}
-	}
+	slingable := slingableNodes(dag)
 
 	var findings []StagingFinding
 	for id, node := range slingable {
-		// Calculate in-degree among all DAG nodes (not just slingable)
-		// to avoid false orphan warnings for decision-gated tasks.
-		inDeg := 0
-		for _, blocker := range node.BlockedBy {
-			if _, ok := dag.Nodes[blocker]; ok {
-				inDeg++
-			}
-		}
-
-		// Calculate out-degree among all DAG nodes.
-		outDeg := 0
-		for _, blocked := range node.Blocks {
-			if _, ok := dag.Nodes[blocked]; ok {
-				outDeg++
-			}
-		}
-
-		if inDeg == 0 && outDeg == 0 {
+		if isOrphanNode(node, dag) {
 			findings = append(findings, StagingFinding{
 				Severity:     "warning",
 				Category:     "orphan",
@@ -2051,6 +2028,30 @@ func detectOrphans(dag *ConvoyDAG, input *StageInput) []StagingFinding {
 	}
 
 	return findings
+}
+
+func slingableNodes(dag *ConvoyDAG) map[string]*ConvoyDAGNode {
+	slingable := make(map[string]*ConvoyDAGNode)
+	for id, node := range dag.Nodes {
+		if isSlingableType(node.Type) {
+			slingable[id] = node
+		}
+	}
+	return slingable
+}
+
+func isOrphanNode(node *ConvoyDAGNode, dag *ConvoyDAG) bool {
+	return countDAGLinks(node.BlockedBy, dag) == 0 && countDAGLinks(node.Blocks, dag) == 0
+}
+
+func countDAGLinks(ids []string, dag *ConvoyDAG) int {
+	count := 0
+	for _, id := range ids {
+		if _, ok := dag.Nodes[id]; ok {
+			count++
+		}
+	}
+	return count
 }
 
 // isRigBlockedFn is a seam for tests. Production uses IsRigParkedOrDocked.
