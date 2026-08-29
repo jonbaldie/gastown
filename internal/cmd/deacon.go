@@ -1039,6 +1039,25 @@ func runDeaconForceKill(cmd *cobra.Command, args []string) error {
 			agentState.ConsecutiveFailures)
 	}
 
+	return executeDeaconForceKill(
+		t,
+		townRoot,
+		agent,
+		sessionName,
+		reason,
+		state,
+		agentState,
+		commandBoolFlag(cmd, "skip-notify"),
+	)
+}
+
+func executeDeaconForceKill(
+	t *tmux.Tmux,
+	townRoot, agent, sessionName, reason string,
+	state *deacon.HealthCheckState,
+	agentState *deacon.AgentHealthState,
+	skipNotify bool,
+) error {
 	// Step 1: Log the intervention (send mail to agent)
 	fmt.Printf("%s Sending force-kill notification to %s...\n", style.Dim.Render("1."), agent)
 	mailBody := fmt.Sprintf("Deacon detected %s as unresponsive.\nReason: %s\nAction: force-killing session", agent, reason)
@@ -1056,7 +1075,7 @@ func runDeaconForceKill(cmd *cobra.Command, args []string) error {
 	updateAgentBeadState(townRoot, agent, "killed", reason)
 
 	// Step 4: Notify mayor (optional)
-	if !commandBoolFlag(cmd, "skip-notify") {
+	if !skipNotify {
 		fmt.Printf("%s Notifying mayor...\n", style.Dim.Render("4."))
 		notifyBody := fmt.Sprintf("Agent %s was force-killed by Deacon.\nReason: %s", agent, reason)
 		sendMail(townRoot, "mayor/", "Agent killed: "+agent, notifyBody)
