@@ -13,11 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	patrolReportSummary string
-	patrolReportSteps   string
-)
-
 var patrolReportCmd = &cobra.Command{
 	Use:   "report",
 	Short: "Close patrol cycle with summary and start next cycle",
@@ -39,12 +34,14 @@ Examples:
 }
 
 func init() {
-	patrolReportCmd.Flags().StringVar(&patrolReportSummary, "summary", "", "Brief summary of patrol observations (required)")
-	patrolReportCmd.Flags().StringVar(&patrolReportSteps, "steps", "", "Step audit: comma-separated step:STATUS pairs (e.g., heartbeat:OK,inbox-check:OK)")
+	patrolReportCmd.Flags().String("summary", "", "Brief summary of patrol observations (required)")
+	patrolReportCmd.Flags().String("steps", "", "Step audit: comma-separated step:STATUS pairs (e.g., heartbeat:OK,inbox-check:OK)")
 	_ = patrolReportCmd.MarkFlagRequired("summary")
 }
 
-func runPatrolReport(_ *cobra.Command, _ []string) error {
+func runPatrolReport(cmd *cobra.Command, _ []string) error {
+	summary := commandStringFlag(cmd, "summary")
+	steps := commandStringFlag(cmd, "steps")
 	// Resolve role
 	roleInfo, err := GetRole()
 	if err != nil {
@@ -98,10 +95,10 @@ func runPatrolReport(_ *cobra.Command, _ []string) error {
 	}
 
 	// Build step audit checklist
-	stepAudit := buildStepAudit(cfg.PatrolMolName, patrolReportSteps)
+	stepAudit := buildStepAudit(cfg.PatrolMolName, steps)
 
 	// Update the description with the patrol summary and step audit
-	desc := fmt.Sprintf("Patrol report: %s\n\n%s", patrolReportSummary, stepAudit)
+	desc := fmt.Sprintf("Patrol report: %s\n\n%s", summary, stepAudit)
 	if err := b.Update(patrolID, beads.UpdateOptions{
 		Description: &desc,
 	}); err != nil {
@@ -120,7 +117,7 @@ func runPatrolReport(_ *cobra.Command, _ []string) error {
 	}
 
 	// Close the patrol root
-	if err := b.ForceCloseWithReason("patrol cycle complete: "+patrolReportSummary, patrolID); err != nil {
+	if err := b.ForceCloseWithReason("patrol cycle complete: "+summary, patrolID); err != nil {
 		return fmt.Errorf("closing patrol %s: %w", patrolID, err)
 	}
 
@@ -139,7 +136,7 @@ func runPatrolReport(_ *cobra.Command, _ []string) error {
 
 	fmt.Printf("%s Started new patrol: %s\n", style.Success.Render("✓"), newPatrolID)
 	if cfg.RoleName == "deacon" {
-		stampDeaconHeartbeatOnReport(cfg.BeadsDir, patrolReportSummary)
+		stampDeaconHeartbeatOnReport(cfg.BeadsDir, summary)
 	}
 	return nil
 }
