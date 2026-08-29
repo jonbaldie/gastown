@@ -89,22 +89,10 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		return nil, fmt.Errorf("loading scheduler state: %w", err)
 	}
 
-	settingsPath := config.TownSettingsPath(townRoot)
-	settings, err := config.LoadOrCreateTownSettings(settingsPath)
+	maxPolecats, batchSize, spawnDelay, err := schedulerDispatchSettings(townRoot, batchOverride)
 	if err != nil {
-		return nil, fmt.Errorf("loading town settings: %w", err)
+		return nil, err
 	}
-	schedulerCfg := settings.Scheduler
-	if schedulerCfg == nil {
-		schedulerCfg = capacity.DefaultSchedulerConfig()
-	}
-
-	maxPolecats := schedulerCfg.GetMaxPolecats()
-	batchSize := capacity.GetBatchSize(schedulerCfg)
-	if batchOverride > 0 {
-		batchSize = batchOverride
-	}
-	spawnDelay := capacity.GetSpawnDelay(schedulerCfg)
 
 	if cleanup && !state.Paused && maxPolecats > 0 {
 		if err := cleanupStaleContexts(townRoot); err != nil {
@@ -117,24 +105,13 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		return nil, blockedErr
 	}
 
-	snapshot, err := polecatCapacitySnapshotForTownNoCleanup(townRoot)
-	if cleanup {
-		snapshot, err = polecatCapacitySnapshotForTown(townRoot)
-	}
+	snapshot, err := schedulerCapacitySnapshot(townRoot, cleanup)
 	if err != nil {
 		return nil, fmt.Errorf("loading polecat capacity: %w", err)
 	}
 
 	ready := readySlingContextsFromAssessments(assessments)
-	dispatchPlan := capacity.PlanDispatch(snapshot.Free, batchSize, ready)
-	if len(ready) > 0 {
-		switch {
-		case state.Paused:
-			dispatchPlan = capacity.DispatchPlan{Skipped: len(ready), Reason: "paused"}
-		case maxPolecats <= 0:
-			dispatchPlan = capacity.DispatchPlan{Skipped: len(ready), Reason: "direct-mode"}
-		}
-	}
+	dispatchPlan := buildSchedulerDispatchPlanForReady(state, maxPolecats, snapshot, batchSize, ready)
 
 	return &schedulerDispatchPlan{
 		State:       state,
@@ -146,6 +123,50 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		Ready:       ready,
 		Plan:        dispatchPlan,
 	}, nil
+}
+
+func schedulerDispatchSettings(townRoot string, batchOverride int) (int, int, time.Duration, error) {
+	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("loading town settings: %w", err)
+	}
+	schedulerCfg := settings.Scheduler
+	if schedulerCfg == nil {
+		schedulerCfg = capacity.DefaultSchedulerConfig()
+	}
+	batchSize := capacity.GetBatchSize(schedulerCfg)
+	if batchOverride > 0 {
+		batchSize = batchOverride
+	}
+	return schedulerCfg.GetMaxPolecats(), batchSize, capacity.GetSpawnDelay(schedulerCfg), nil
+}
+
+func schedulerCapacitySnapshot(townRoot string, cleanup bool) (polecatCapacitySnapshot, error) {
+	if cleanup {
+		return polecatCapacitySnapshotForTown(townRoot)
+	}
+	return polecatCapacitySnapshotForTownNoCleanup(townRoot)
+}
+
+func buildSchedulerDispatchPlanForReady(
+	state *capacity.SchedulerState,
+	maxPolecats int,
+	snapshot polecatCapacitySnapshot,
+	batchSize int,
+	ready []capacity.PendingBead,
+) capacity.DispatchPlan {
+	dispatchPlan := capacity.PlanDispatch(snapshot.Free, batchSize, ready)
+	if len(ready) == 0 {
+		return dispatchPlan
+	}
+	switch {
+	case state.Paused:
+		return capacity.DispatchPlan{Skipped: len(ready), Reason: "paused"}
+	case maxPolecats <= 0:
+		return capacity.DispatchPlan{Skipped: len(ready), Reason: "direct-mode"}
+	default:
+		return dispatchPlan
+	}
 }
 
 // dispatchScheduledWork is the main dispatch loop for the capacity scheduler.
