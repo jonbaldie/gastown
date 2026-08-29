@@ -149,57 +149,68 @@ func resolveInputKind(beadTypes map[string]string) (*StageInput, error) {
 		return nil, fmt.Errorf("no bead types to resolve")
 	}
 
-	// Classify each bead and collect IDs per kind.
-	kindCounts := make(map[StageInputKind][]string)
-	for id, typ := range beadTypes {
-		kind := classifyBeadType(typ)
-		kindCounts[kind] = append(kindCounts[kind], id)
-	}
-
-	// Check for mixed types.
+	kindCounts := groupStageInputIDs(beadTypes)
 	if len(kindCounts) > 1 {
-		var parts []string
-		for kind, ids := range kindCounts {
-			var label string
-			switch kind {
-			case StageInputEpic:
-				label = "epic"
-			case StageInputConvoy:
-				label = "convoy"
-			default:
-				label = "task"
-			}
-			parts = append(parts, fmt.Sprintf("%s (%s)", label, strings.Join(ids, ", ")))
-		}
-		// Sort for deterministic error messages.
-		sort.Strings(parts)
-		return nil, fmt.Errorf("mixed input types: %s\n  Use separate invocations for different input types", strings.Join(parts, " + "))
+		return nil, mixedStageInputError(kindCounts)
 	}
 
-	// Single kind — extract it.
-	var kind StageInputKind
-	var ids []string
-	for k, v := range kindCounts {
-		kind = k
-		ids = v
+	kind, ids := singleStageInputKind(kindCounts)
+	if err := validateSingularStageInput(kind, ids); err != nil {
+		return nil, err
 	}
-
-	// Sort IDs for deterministic output.
 	sort.Strings(ids)
-
-	// Epics and convoys must be singular.
-	if kind == StageInputEpic && len(ids) > 1 {
-		return nil, fmt.Errorf("only one epic ID allowed, got %d: %s\n  To stage multiple epics, run gt convoy stage once per epic", len(ids), strings.Join(ids, ", "))
-	}
-	if kind == StageInputConvoy && len(ids) > 1 {
-		return nil, fmt.Errorf("only one convoy ID allowed, got %d: %s", len(ids), strings.Join(ids, ", "))
-	}
 
 	return &StageInput{
 		Kind:    kind,
 		IDs:     ids,
 		RawArgs: ids,
 	}, nil
+}
+
+func groupStageInputIDs(beadTypes map[string]string) map[StageInputKind][]string {
+	kindCounts := make(map[StageInputKind][]string)
+	for id, typ := range beadTypes {
+		kind := classifyBeadType(typ)
+		kindCounts[kind] = append(kindCounts[kind], id)
+	}
+	return kindCounts
+}
+
+func mixedStageInputError(kindCounts map[StageInputKind][]string) error {
+	var parts []string
+	for kind, ids := range kindCounts {
+		parts = append(parts, fmt.Sprintf("%s (%s)", stageInputKindLabel(kind), strings.Join(ids, ", ")))
+	}
+	sort.Strings(parts)
+	return fmt.Errorf("mixed input types: %s\n  Use separate invocations for different input types", strings.Join(parts, " + "))
+}
+
+func stageInputKindLabel(kind StageInputKind) string {
+	switch kind {
+	case StageInputEpic:
+		return "epic"
+	case StageInputConvoy:
+		return "convoy"
+	default:
+		return "task"
+	}
+}
+
+func singleStageInputKind(kindCounts map[StageInputKind][]string) (StageInputKind, []string) {
+	for kind, ids := range kindCounts {
+		return kind, ids
+	}
+	return StageInputTasks, nil
+}
+
+func validateSingularStageInput(kind StageInputKind, ids []string) error {
+	if kind == StageInputEpic && len(ids) > 1 {
+		return fmt.Errorf("only one epic ID allowed, got %d: %s\n  To stage multiple epics, run gt convoy stage once per epic", len(ids), strings.Join(ids, ", "))
+	}
+	if kind == StageInputConvoy && len(ids) > 1 {
+		return fmt.Errorf("only one convoy ID allowed, got %d: %s", len(ids), strings.Join(ids, ", "))
+	}
+	return nil
 }
 
 var convoyStageCmd = &cobra.Command{
