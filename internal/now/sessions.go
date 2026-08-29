@@ -29,16 +29,32 @@ func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := ensureNowDaemon(townRoot, hooks); err != nil {
+		return err
+	}
+	if err := startMayorDeaconSessions(ctx, townRoot, mayorChanged && opts.MayorSpec != ""); err != nil {
+		return err
+	}
+	if opts.RestartWorkers {
+		return restartWorkers(townRoot)
+	}
+	return nil
+}
+
+func ensureNowDaemon(townRoot string, hooks Hooks) error {
 	if err := config.EnsureDaemonPatrolConfig(townRoot); err != nil {
 		return fmt.Errorf("ensuring daemon config: %w", err)
 	}
-
-	if hooks.EnsureDaemon != nil {
-		if err := hooks.EnsureDaemon(townRoot); err != nil {
-			return fmt.Errorf("starting daemon: %w", err)
-		}
+	if hooks.EnsureDaemon == nil {
+		return nil
 	}
+	if err := hooks.EnsureDaemon(townRoot); err != nil {
+		return fmt.Errorf("starting daemon: %w", err)
+	}
+	return nil
+}
 
+func startMayorDeaconSessions(ctx context.Context, townRoot string, restartMayorRoles bool) error {
 	var wg sync.WaitGroup
 	var firstErr error
 	var mu sync.Mutex
@@ -52,9 +68,6 @@ func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts
 		}
 		mu.Unlock()
 	}
-
-	restartMayorRoles := mayorChanged && opts.MayorSpec != ""
-
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -63,7 +76,6 @@ func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts
 			return mgr.StartImmediate("")
 		}, mayor.ErrNotRunning, mayor.ErrAlreadyRunning, mayor.ErrACPActive))
 	}()
-
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -72,16 +84,8 @@ func startSessions(ctx context.Context, townRoot string, mayorChanged bool, opts
 			return mgr.StartImmediate("")
 		}, deacon.ErrNotRunning, deacon.ErrAlreadyRunning))
 	}()
-
 	wg.Wait()
-	if firstErr != nil {
-		return firstErr
-	}
-
-	if opts.RestartWorkers {
-		return restartWorkers(townRoot)
-	}
-	return nil
+	return firstErr
 }
 
 func reuseOrStartSession(ctx context.Context, name string, restart bool, stop, start func() error, skipStop error, skipStart ...error) error {
@@ -92,11 +96,9 @@ func reuseOrStartSession(ctx context.Context, name string, restart bool, stop, s
 	if err != nil {
 		return fmt.Errorf("checking %s session: %w", name, err)
 	}
-	if live && restart {
-		if err := stop(); err != nil && !errors.Is(err, skipStop) {
-			return fmt.Errorf("stopping %s: %w", name, err)
-		}
-		live = false
+	live, err = maybeRestartSession(live, restart, name, stop, skipStop)
+	if err != nil {
+		return err
 	}
 	if live {
 		return nil
@@ -105,6 +107,16 @@ func reuseOrStartSession(ctx context.Context, name string, restart bool, stop, s
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
 	return nil
+}
+
+func maybeRestartSession(live, restart bool, name string, stop func() error, skipStop error) (bool, error) {
+	if !live || !restart {
+		return live, nil
+	}
+	if err := stop(); err != nil && !errors.Is(err, skipStop) {
+		return live, fmt.Errorf("stopping %s: %w", name, err)
+	}
+	return false, nil
 }
 
 func requireLiveSession(name string) error {
@@ -144,33 +156,49 @@ func ignoreStartConflict(err error, skipStart ...error) bool {
 }
 
 func restartWorkers(townRoot string) error {
-	rigsPath := constants.MayorRigsPath(townRoot)
-	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	rigsConfig, err := config.LoadRigsConfig(constants.MayorRigsPath(townRoot))
 	if err != nil {
 		return fmt.Errorf("loading rigs for --restart-workers: %w", err)
 	}
 	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
 	var errs []error
 	for name := range rigsConfig.Rigs {
-		r, err := mgr.GetRig(name)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("loading rig %s: %w", name, err))
-			continue
-		}
-		wit := witness.NewManager(r)
-		if err := wit.Stop(); err != nil && !errors.Is(err, witness.ErrNotRunning) {
-			errs = append(errs, fmt.Errorf("stopping witness for %s: %w", name, err))
-		} else if err := wit.Start(false, "", nil); err != nil && !errors.Is(err, witness.ErrAlreadyRunning) {
-			errs = append(errs, fmt.Errorf("restarting witness for %s: %w", name, err))
-		}
-		ref := refinery.NewManager(r)
-		if err := ref.Stop(); err != nil && !errors.Is(err, refinery.ErrNotRunning) {
-			errs = append(errs, fmt.Errorf("stopping refinery for %s: %w", name, err))
-		} else if err := ref.Start(false, ""); err != nil && !errors.Is(err, refinery.ErrAlreadyRunning) {
-			errs = append(errs, fmt.Errorf("restarting refinery for %s: %w", name, err))
-		}
+		errs = append(errs, restartRigWorkers(mgr, name)...)
 	}
 	return errors.Join(errs...)
+}
+
+func restartRigWorkers(mgr *rig.Manager, name string) []error {
+	r, err := mgr.GetRig(name)
+	if err != nil {
+		return []error{fmt.Errorf("loading rig %s: %w", name, err)}
+	}
+	var errs []error
+	errs = append(errs, restartWitness(r, name)...)
+	errs = append(errs, restartRefinery(r, name)...)
+	return errs
+}
+
+func restartWitness(r *rig.Rig, name string) []error {
+	wit := witness.NewManager(r)
+	if err := wit.Stop(); err != nil && !errors.Is(err, witness.ErrNotRunning) {
+		return []error{fmt.Errorf("stopping witness for %s: %w", name, err)}
+	}
+	if err := wit.Start(false, "", nil); err != nil && !errors.Is(err, witness.ErrAlreadyRunning) {
+		return []error{fmt.Errorf("restarting witness for %s: %w", name, err)}
+	}
+	return nil
+}
+
+func restartRefinery(r *rig.Rig, name string) []error {
+	ref := refinery.NewManager(r)
+	if err := ref.Stop(); err != nil && !errors.Is(err, refinery.ErrNotRunning) {
+		return []error{fmt.Errorf("stopping refinery for %s: %w", name, err)}
+	}
+	if err := ref.Start(false, ""); err != nil && !errors.Is(err, refinery.ErrAlreadyRunning) {
+		return []error{fmt.Errorf("restarting refinery for %s: %w", name, err)}
+	}
+	return nil
 }
 
 func startDeferredProvision(executable, townRoot string) error {
@@ -194,6 +222,20 @@ func startDeferredProvision(executable, townRoot string) error {
 }
 
 func provisionTown(townRoot string, hooks Hooks) error {
+	if err := requireTownHQ(townRoot); err != nil {
+		return err
+	}
+	var errs []error
+	appendProvisionErr(&errs, wrapProvisionErr(ensureAllLocalRigBeads(townRoot), "initializing rig beads"))
+	appendProvisionErr(&errs, provisionFormulasForTown(townRoot))
+	appendProvisionErr(&errs, wrapProvisionErr(templates.ProvisionCommands(townRoot), "provisioning slash commands"))
+	appendProvisionErr(&errs, wrapProvisionErr(skills.ProvisionFor(townRoot, "claude"), "provisioning skills"))
+	appendProvisionErr(&errs, initAgentBeadsForTown(townRoot, hooks))
+	appendProvisionErr(&errs, wrapProvisionErr(ensureAllRigAgentBeads(townRoot), "initializing rig agent beads"))
+	return errors.Join(errs...)
+}
+
+func requireTownHQ(townRoot string) error {
 	ok, err := workspace.IsWorkspace(townRoot)
 	if err != nil {
 		return fmt.Errorf("checking Town HQ: %w", err)
@@ -201,29 +243,39 @@ func provisionTown(townRoot string, hooks Hooks) error {
 	if !ok {
 		return fmt.Errorf("not a Gas Town HQ: %s", townRoot)
 	}
-	var errs []error
-	if err := ensureAllLocalRigBeads(townRoot); err != nil {
-		errs = append(errs, fmt.Errorf("initializing rig beads: %w", err))
-	}
+	return nil
+}
+
+func provisionFormulasForTown(townRoot string) error {
 	count, err := formula.ProvisionFormulas(townRoot)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("provisioning formulas: %w", err))
-	} else if count > 0 {
+		return fmt.Errorf("provisioning formulas: %w", err)
+	}
+	if count > 0 {
 		fmt.Printf("provisioned %d formulas\n", count)
 	}
-	if err := templates.ProvisionCommands(townRoot); err != nil {
-		errs = append(errs, fmt.Errorf("provisioning slash commands: %w", err))
+	return nil
+}
+
+func initAgentBeadsForTown(townRoot string, hooks Hooks) error {
+	if hooks.InitAgentBeads == nil {
+		return nil
 	}
-	if err := skills.ProvisionFor(townRoot, "claude"); err != nil {
-		errs = append(errs, fmt.Errorf("provisioning skills: %w", err))
+	if err := hooks.InitAgentBeads(townRoot); err != nil {
+		return fmt.Errorf("initializing agent beads: %w", err)
 	}
-	if hooks.InitAgentBeads != nil {
-		if err := hooks.InitAgentBeads(townRoot); err != nil {
-			errs = append(errs, fmt.Errorf("initializing agent beads: %w", err))
-		}
+	return nil
+}
+
+func wrapProvisionErr(err error, verb string) error {
+	if err == nil {
+		return nil
 	}
-	if err := ensureAllRigAgentBeads(townRoot); err != nil {
-		errs = append(errs, fmt.Errorf("initializing rig agent beads: %w", err))
+	return fmt.Errorf("%s: %w", verb, err)
+}
+
+func appendProvisionErr(errs *[]error, err error) {
+	if err != nil {
+		*errs = append(*errs, err)
 	}
-	return errors.Join(errs...)
 }
