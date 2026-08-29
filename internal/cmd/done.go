@@ -29,12 +29,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var doneCmd = &cobra.Command{
-	Use:         "done",
-	GroupID:     GroupWork,
-	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
-	Short:       "Signal work ready for merge queue",
-	Long: `Signal that your work is complete and ready for the merge queue.
+var doneCmd = newDoneCommand()
+
+func newDoneCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "done",
+		GroupID:     GroupWork,
+		Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+		Short:       "Signal work ready for merge queue",
+		Long: `Signal that your work is complete and ready for the merge queue.
 
 This is a convenience command for polecats that:
 1. Submits the current branch to the merge queue
@@ -57,8 +60,19 @@ Examples:
   gt done --skip-verify                # Audit-only escape hatch for non-code closes
   gt done --status ESCALATED           # Signal blocker, skip MR
   gt done --status DEFERRED            # Pause work, skip MR`,
-	RunE:         runDone,
-	SilenceUsage: true, // Don't print usage on operational errors (confuses agents)
+		RunE:         runDone,
+		SilenceUsage: true, // Don't print usage on operational errors (confuses agents)
+	}
+	state := doneState()
+	cmd.Flags().StringVar(&state.issue, "issue", "", "Source issue ID (default: parse from branch name)")
+	cmd.Flags().IntVarP(&state.priority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
+	cmd.Flags().StringVar(&state.status, "status", ExitCompleted, "Exit status: COMPLETED, ESCALATED, or DEFERRED")
+	cmd.Flags().StringVar(&state.cleanupStatus, "cleanup-status", "", "Git cleanup status: clean, uncommitted, unpushed, stash, unknown (ZFC: agent-observed)")
+	cmd.Flags().BoolVar(&state.resume, "resume", false, "Resume from last checkpoint (auto-detected, for Witness recovery)")
+	cmd.Flags().BoolVar(&state.preVerified, "pre-verified", false, "Mark MR as pre-verified (polecat ran gates after rebasing onto target)")
+	cmd.Flags().StringVar(&state.target, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
+	cmd.Flags().BoolVar(&state.skipVerify, "skip-verify", false, "Skip verified-push checks for audit/test-only completion (recorded on bead)")
+	return cmd
 }
 
 type doneCommandState struct {
@@ -725,16 +739,6 @@ func isReviewEvidenceText(text string) bool {
 }
 
 func init() {
-	state := doneState()
-	doneCmd.Flags().StringVar(&state.issue, "issue", "", "Source issue ID (default: parse from branch name)")
-	doneCmd.Flags().IntVarP(&state.priority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
-	doneCmd.Flags().StringVar(&state.status, "status", ExitCompleted, "Exit status: COMPLETED, ESCALATED, or DEFERRED")
-	doneCmd.Flags().StringVar(&state.cleanupStatus, "cleanup-status", "", "Git cleanup status: clean, uncommitted, unpushed, stash, unknown (ZFC: agent-observed)")
-	doneCmd.Flags().BoolVar(&state.resume, "resume", false, "Resume from last checkpoint (auto-detected, for Witness recovery)")
-	doneCmd.Flags().BoolVar(&state.preVerified, "pre-verified", false, "Mark MR as pre-verified (polecat ran gates after rebasing onto target)")
-	doneCmd.Flags().StringVar(&state.target, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
-	doneCmd.Flags().BoolVar(&state.skipVerify, "skip-verify", false, "Skip verified-push checks for audit/test-only completion (recorded on bead)")
-
 	rootCmd.AddCommand(doneCmd)
 }
 

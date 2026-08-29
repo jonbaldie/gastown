@@ -88,22 +88,19 @@ const (
 )
 
 func init() {
-	state := nudgeState()
 	rootCmd.AddCommand(nudgeCmd)
-	nudgeCmd.Flags().StringVarP(&state.message, "message", "m", "", "Message to send")
-	nudgeCmd.Flags().BoolVarP(&state.force, "force", "f", false, "Send even if target has DND enabled")
-	nudgeCmd.Flags().BoolVar(&state.stdin, "stdin", false, "Read message from stdin (avoids shell quoting issues)")
-	nudgeCmd.Flags().BoolVar(&state.ifFresh, "if-fresh", false, "Only send if caller's tmux session is <60s old (suppresses compaction nudges)")
-	nudgeCmd.Flags().StringVar(&state.mode, "mode", NudgeModeWaitIdle, "Delivery mode: wait-idle (default), queue, or immediate")
-	nudgeCmd.Flags().StringVar(&state.priority, "priority", nudge.PriorityNormal, "Queue priority: normal (default), urgent, or system")
 }
 
-var nudgeCmd = &cobra.Command{
-	Use:         "nudge <target> [message]",
-	GroupID:     GroupComm,
-	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
-	Short:       "Send a synchronous message to any Gas Town worker",
-	Long: `Universal messaging API for Gas Town worker-to-worker communication.
+var nudgeCmd = newNudgeCommand()
+
+func newNudgeCommand() *cobra.Command {
+	state := nudgeState()
+	cmd := &cobra.Command{
+		Use:         "nudge <target> [message]",
+		GroupID:     GroupComm,
+		Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+		Short:       "Send a synchronous message to any Gas Town worker",
+		Long: `Universal messaging API for Gas Town worker-to-worker communication.
 
 Delivers a message to any worker's Claude Code session: polecats, crew,
 witness, refinery, mayor, or deacon.
@@ -156,8 +153,16 @@ Examples:
   - Task 1: complete
   - Task 2: in progress
   EOF`,
-	Args: cobra.RangeArgs(1, 2),
-	RunE: runNudge,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: runNudge,
+	}
+	cmd.Flags().StringVarP(&state.message, "message", "m", "", "Message to send")
+	cmd.Flags().BoolVarP(&state.force, "force", "f", false, "Send even if target has DND enabled")
+	cmd.Flags().BoolVar(&state.stdin, "stdin", false, "Read message from stdin (avoids shell quoting issues)")
+	cmd.Flags().BoolVar(&state.ifFresh, "if-fresh", false, "Only send if caller's tmux session is <60s old (suppresses compaction nudges)")
+	cmd.Flags().StringVar(&state.mode, "mode", NudgeModeWaitIdle, "Delivery mode: wait-idle (default), queue, or immediate")
+	cmd.Flags().StringVar(&state.priority, "priority", nudge.PriorityNormal, "Queue priority: normal (default), urgent, or system")
+	return cmd
 }
 
 // ifFreshMaxAge is the maximum session age for --if-fresh to allow a nudge.
