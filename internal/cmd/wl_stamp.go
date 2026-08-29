@@ -16,22 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	wlStampSubject      string
-	wlStampCompletionID string
-	wlStampQuality      float64
-	wlStampReliability  float64
-	wlStampCreativity   float64
-	wlStampConfidence   float64
-	wlStampSeverity     string
-	wlStampSkills       []string
-	wlStampType         string
-	wlStampContextType  string
-	wlStampEvidenceURL  string
-	wlStampMessage      string
-	wlStampPilotCohort  string
-)
-
 var wlStampCmd = &cobra.Command{
 	Use:   "stamp",
 	Short: "Create a reputation stamp for a rig",
@@ -59,19 +43,19 @@ EXAMPLES:
 }
 
 func init() {
-	wlStampCmd.Flags().StringVar(&wlStampSubject, "subject", "", "Rig handle of worker being stamped (required)")
-	wlStampCmd.Flags().StringVar(&wlStampCompletionID, "completion", "", "Completion ID this stamp references")
-	wlStampCmd.Flags().Float64Var(&wlStampQuality, "quality", -1, "Quality score 0-5 (required)")
-	wlStampCmd.Flags().Float64Var(&wlStampReliability, "reliability", -1, "Reliability score 0-5")
-	wlStampCmd.Flags().Float64Var(&wlStampCreativity, "creativity", -1, "Creativity score 0-5")
-	wlStampCmd.Flags().Float64Var(&wlStampConfidence, "confidence", -1, "Confidence 0.0-1.0 (auto-computed from tier if omitted)")
-	wlStampCmd.Flags().StringVar(&wlStampSeverity, "severity", "leaf", "Severity: leaf, branch, root")
-	wlStampCmd.Flags().StringSliceVar(&wlStampSkills, "skills", nil, "Skill tags (comma-separated, e.g., go,federation)")
-	wlStampCmd.Flags().StringVar(&wlStampType, "stamp-type", "work", "Stamp type: work, mentoring, peer_review, boot_block")
-	wlStampCmd.Flags().StringVar(&wlStampContextType, "context-type", "completion", "Context type: completion, endorsement, boot_block, validation_received, sandboxed_completion")
-	wlStampCmd.Flags().StringVar(&wlStampEvidenceURL, "evidence", "", "Evidence URL (PR link, SkillBench summary)")
-	wlStampCmd.Flags().StringVar(&wlStampMessage, "message", "", "Optional human-readable note")
-	wlStampCmd.Flags().StringVar(&wlStampPilotCohort, "pilot-cohort", "", "Pilot cohort tag (andela-pilot, commbank-pilot, indie)")
+	wlStampCmd.Flags().String("subject", "", "Rig handle of worker being stamped (required)")
+	wlStampCmd.Flags().String("completion", "", "Completion ID this stamp references")
+	wlStampCmd.Flags().Float64("quality", -1, "Quality score 0-5 (required)")
+	wlStampCmd.Flags().Float64("reliability", -1, "Reliability score 0-5")
+	wlStampCmd.Flags().Float64("creativity", -1, "Creativity score 0-5")
+	wlStampCmd.Flags().Float64("confidence", -1, "Confidence 0.0-1.0 (auto-computed from tier if omitted)")
+	wlStampCmd.Flags().String("severity", "leaf", "Severity: leaf, branch, root")
+	wlStampCmd.Flags().StringSlice("skills", nil, "Skill tags (comma-separated, e.g., go,federation)")
+	wlStampCmd.Flags().String("stamp-type", "work", "Stamp type: work, mentoring, peer_review, boot_block")
+	wlStampCmd.Flags().String("context-type", "completion", "Context type: completion, endorsement, boot_block, validation_received, sandboxed_completion")
+	wlStampCmd.Flags().String("evidence", "", "Evidence URL (PR link, SkillBench summary)")
+	wlStampCmd.Flags().String("message", "", "Optional human-readable note")
+	wlStampCmd.Flags().String("pilot-cohort", "", "Pilot cohort tag (andela-pilot, commbank-pilot, indie)")
 
 	_ = wlStampCmd.MarkFlagRequired("subject")
 	_ = wlStampCmd.MarkFlagRequired("quality")
@@ -79,9 +63,44 @@ func init() {
 	wlCmd.AddCommand(wlStampCmd)
 }
 
-func runWlStamp(_ *cobra.Command, _ []string) error {
+type stampOptions struct {
+	subject      string
+	completionID string
+	quality      float64
+	reliability  float64
+	creativity   float64
+	confidence   float64
+	severity     string
+	skills       []string
+	stampType    string
+	contextType  string
+	evidenceURL  string
+	message      string
+	pilotCohort  string
+}
+
+func stampOptionsFromCommand(cmd *cobra.Command) stampOptions {
+	return stampOptions{
+		subject:      commandStringFlag(cmd, "subject"),
+		completionID: commandStringFlag(cmd, "completion"),
+		quality:      commandFloat64Flag(cmd, "quality"),
+		reliability:  commandFloat64Flag(cmd, "reliability"),
+		creativity:   commandFloat64Flag(cmd, "creativity"),
+		confidence:   commandFloat64Flag(cmd, "confidence"),
+		severity:     commandStringFlag(cmd, "severity"),
+		skills:       commandStringArrayFlag(cmd, "skills"),
+		stampType:    commandStringFlag(cmd, "stamp-type"),
+		contextType:  commandStringFlag(cmd, "context-type"),
+		evidenceURL:  commandStringFlag(cmd, "evidence"),
+		message:      commandStringFlag(cmd, "message"),
+		pilotCohort:  commandStringFlag(cmd, "pilot-cohort"),
+	}
+}
+
+func runWlStamp(cmd *cobra.Command, _ []string) error {
+	opts := stampOptionsFromCommand(cmd)
 	// Validate inputs
-	if err := validateStampInputs(); err != nil {
+	if err := validateStampInputs(opts); err != nil {
 		return err
 	}
 
@@ -96,41 +115,41 @@ func runWlStamp(_ *cobra.Command, _ []string) error {
 	}
 	author := wlCfg.RigHandle
 
-	if author == wlStampSubject {
-		return fmt.Errorf("cannot stamp yourself (author=%q, subject=%q)", author, wlStampSubject)
+	if author == opts.subject {
+		return fmt.Errorf("cannot stamp yourself (author=%q, subject=%q)", author, opts.subject)
 	}
 
 	// Build valence JSON
-	valence := buildValenceJSON(wlStampQuality, wlStampReliability, wlStampCreativity)
+	valence := buildValenceJSON(opts.quality, opts.reliability, opts.creativity)
 
 	// Build skill tags JSON
 	skillTagsJSON := ""
-	if len(wlStampSkills) > 0 {
-		skillTagsJSON = buildSkillTagsJSON(wlStampSkills)
+	if len(opts.skills) > 0 {
+		skillTagsJSON = buildSkillTagsJSON(opts.skills)
 	}
 
 	// Compute confidence (default to 0.7 if not specified — "trusted" tier)
-	confidence := wlStampConfidence
+	confidence := opts.confidence
 	if confidence < 0 {
 		confidence = 0.7
 	}
 
 	// Generate stamp ID from content hash
-	stampID := generateStampID(author, wlStampSubject, valence, wlStampCompletionID)
+	stampID := generateStampID(author, opts.subject, valence, opts.completionID)
 
 	stamp := &doltserver.StampRecord{
 		ID:          stampID,
 		Author:      author,
-		Subject:     wlStampSubject,
+		Subject:     opts.subject,
 		Valence:     valence,
 		Confidence:  confidence,
-		Severity:    wlStampSeverity,
-		ContextID:   wlStampCompletionID,
-		ContextType: wlStampContextType,
-		StampType:   wlStampType,
-		PilotCohort: wlStampPilotCohort,
+		Severity:    opts.severity,
+		ContextID:   opts.completionID,
+		ContextType: opts.contextType,
+		StampType:   opts.stampType,
+		PilotCohort: opts.pilotCohort,
 		SkillTags:   skillTagsJSON,
-		Message:     wlStampMessage,
+		Message:     opts.message,
 		StampIndex:  -1, // will be computed below
 	}
 
@@ -150,16 +169,16 @@ func runWlStamp(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s Stamp created\n", style.Bold.Render("✓"))
 	fmt.Printf("  Stamp ID: %s\n", stampID)
 	fmt.Printf("  Author: %s\n", author)
-	fmt.Printf("  Subject: %s\n", wlStampSubject)
+	fmt.Printf("  Subject: %s\n", opts.subject)
 	fmt.Printf("  Valence: %s\n", valence)
 	fmt.Printf("  Confidence: %.2f\n", confidence)
-	fmt.Printf("  Severity: %s\n", wlStampSeverity)
-	fmt.Printf("  Type: %s\n", wlStampType)
-	if wlStampPilotCohort != "" {
-		fmt.Printf("  Cohort: %s\n", wlStampPilotCohort)
+	fmt.Printf("  Severity: %s\n", opts.severity)
+	fmt.Printf("  Type: %s\n", opts.stampType)
+	if opts.pilotCohort != "" {
+		fmt.Printf("  Cohort: %s\n", opts.pilotCohort)
 	}
-	if wlStampCompletionID != "" {
-		fmt.Printf("  Completion: %s\n", wlStampCompletionID)
+	if opts.completionID != "" {
+		fmt.Printf("  Completion: %s\n", opts.completionID)
 	}
 	if stamp.StampIndex >= 0 {
 		fmt.Printf("  Stamp index: %d\n", stamp.StampIndex)
@@ -168,34 +187,34 @@ func runWlStamp(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func validateStampInputs() error {
-	if wlStampQuality < 0 || wlStampQuality > 5 {
-		return fmt.Errorf("quality must be 0-5 (got %.1f)", wlStampQuality)
+func validateStampInputs(opts stampOptions) error {
+	if opts.quality < 0 || opts.quality > 5 {
+		return fmt.Errorf("quality must be 0-5 (got %.1f)", opts.quality)
 	}
-	if wlStampReliability >= 0 && wlStampReliability > 5 {
-		return fmt.Errorf("reliability must be 0-5 (got %.1f)", wlStampReliability)
+	if opts.reliability >= 0 && opts.reliability > 5 {
+		return fmt.Errorf("reliability must be 0-5 (got %.1f)", opts.reliability)
 	}
-	if wlStampCreativity >= 0 && wlStampCreativity > 5 {
-		return fmt.Errorf("creativity must be 0-5 (got %.1f)", wlStampCreativity)
+	if opts.creativity >= 0 && opts.creativity > 5 {
+		return fmt.Errorf("creativity must be 0-5 (got %.1f)", opts.creativity)
 	}
-	if wlStampConfidence >= 0 && (wlStampConfidence < 0 || wlStampConfidence > 1) {
-		return fmt.Errorf("confidence must be 0.0-1.0 (got %.2f)", wlStampConfidence)
+	if opts.confidence >= 0 && (opts.confidence < 0 || opts.confidence > 1) {
+		return fmt.Errorf("confidence must be 0.0-1.0 (got %.2f)", opts.confidence)
 	}
 
 	validSeverities := map[string]bool{"leaf": true, "branch": true, "root": true}
-	if !validSeverities[wlStampSeverity] {
-		return fmt.Errorf("severity must be leaf, branch, or root (got %q)", wlStampSeverity)
+	if !validSeverities[opts.severity] {
+		return fmt.Errorf("severity must be leaf, branch, or root (got %q)", opts.severity)
 	}
 
 	validStampTypes := map[string]bool{"work": true, "mentoring": true, "peer_review": true, "endorsement": true, "boot_block": true}
-	if !validStampTypes[wlStampType] {
-		return fmt.Errorf("stamp-type must be work, mentoring, peer_review, endorsement, or boot_block (got %q)", wlStampType)
+	if !validStampTypes[opts.stampType] {
+		return fmt.Errorf("stamp-type must be work, mentoring, peer_review, endorsement, or boot_block (got %q)", opts.stampType)
 	}
 
-	if wlStampPilotCohort != "" {
+	if opts.pilotCohort != "" {
 		validCohorts := map[string]bool{"andela-pilot": true, "commbank-pilot": true, "indie": true}
-		if !validCohorts[wlStampPilotCohort] {
-			return fmt.Errorf("pilot-cohort must be andela-pilot, commbank-pilot, or indie (got %q)", wlStampPilotCohort)
+		if !validCohorts[opts.pilotCohort] {
+			return fmt.Errorf("pilot-cohort must be andela-pilot, commbank-pilot, or indie (got %q)", opts.pilotCohort)
 		}
 	}
 
@@ -203,8 +222,8 @@ func validateStampInputs() error {
 		"completion": true, "endorsement": true, "boot_block": true,
 		"validation_received": true, "sandboxed_completion": true,
 	}
-	if !validContextTypes[wlStampContextType] {
-		return fmt.Errorf("context-type must be completion, endorsement, boot_block, validation_received, or sandboxed_completion (got %q)", wlStampContextType)
+	if !validContextTypes[opts.contextType] {
+		return fmt.Errorf("context-type must be completion, endorsement, boot_block, validation_received, or sandboxed_completion (got %q)", opts.contextType)
 	}
 
 	return nil

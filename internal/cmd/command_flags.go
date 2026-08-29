@@ -36,6 +36,14 @@ func commandIntFlag(cmd *cobra.Command, name string) int {
 	return value
 }
 
+func commandFloat64Flag(cmd *cobra.Command, name string) float64 {
+	if cmd == nil {
+		return 0
+	}
+	value, _ := cmd.Flags().GetFloat64(name)
+	return value
+}
+
 func commandStringArrayFlag(cmd *cobra.Command, name string) []string {
 	if cmd == nil {
 		return nil

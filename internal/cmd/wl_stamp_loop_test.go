@@ -126,27 +126,7 @@ func TestStampLoop_EndToEnd(t *testing.T) {
 }
 
 // TestStampLoop_SelfStampFails verifies the yearbook rule (author != subject).
-// Not parallel: mutates package-level wlStamp* globals.
 func TestStampLoop_SelfStampFails(t *testing.T) {
-	// Save/restore globals
-	origQ, origR, origC := wlStampQuality, wlStampReliability, wlStampCreativity
-	origSev, origType, origCtx := wlStampSeverity, wlStampType, wlStampContextType
-	origConf, origSubj := wlStampConfidence, wlStampSubject
-	defer func() {
-		wlStampQuality, wlStampReliability, wlStampCreativity = origQ, origR, origC
-		wlStampSeverity, wlStampType, wlStampContextType = origSev, origType, origCtx
-		wlStampConfidence, wlStampSubject = origConf, origSubj
-	}()
-
-	wlStampQuality = 4
-	wlStampReliability = -1
-	wlStampCreativity = -1
-	wlStampConfidence = -1
-	wlStampSeverity = "leaf"
-	wlStampType = "work"
-	wlStampContextType = "completion"
-	wlStampSubject = "self-rig"
-
 	// The DB layer InsertStamp validates author != subject
 	stamp := &doltserver.StampRecord{
 		ID:         "s-self-001",
@@ -171,7 +151,6 @@ func TestStampLoop_SelfStampFails(t *testing.T) {
 }
 
 // TestStampLoop_InvalidValence verifies validation rejects out-of-range scores.
-// Not parallel: mutates package-level wlStamp* globals.
 func TestStampLoop_InvalidValence(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -184,21 +163,16 @@ func TestStampLoop_InvalidValence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			origQ, origR, origC := wlStampQuality, wlStampReliability, wlStampCreativity
-			origSev, origType, origCtx := wlStampSeverity, wlStampType, wlStampContextType
-			defer func() {
-				wlStampQuality, wlStampReliability, wlStampCreativity = origQ, origR, origC
-				wlStampSeverity, wlStampType, wlStampContextType = origSev, origType, origCtx
-			}()
+			opts := stampOptions{
+				quality:     tt.quality,
+				reliability: -1,
+				creativity:  -1,
+				severity:    "leaf",
+				stampType:   "work",
+				contextType: "completion",
+			}
 
-			wlStampQuality = tt.quality
-			wlStampReliability = -1
-			wlStampCreativity = -1
-			wlStampSeverity = "leaf"
-			wlStampType = "work"
-			wlStampContextType = "completion"
-
-			err := validateStampInputs()
+			err := validateStampInputs(opts)
 			if err == nil {
 				t.Fatal("validateStampInputs() should fail")
 			}
