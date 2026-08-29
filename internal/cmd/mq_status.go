@@ -57,7 +57,11 @@ type DependencyInfo struct {
 	Type     string `json:"type"`
 }
 
-func runMqStatus(_ *cobra.Command, args []string) error {
+func runMqStatus(cmd *cobra.Command, args []string) error {
+	jsonOutput, err := readMQBoolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
 	mrID := args[0]
 
 	// Use current working directory for beads operations
@@ -131,7 +135,7 @@ func runMqStatus(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if mqStatusJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(output)

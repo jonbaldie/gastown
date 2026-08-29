@@ -15,50 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// MQ command flags
-var (
-	// Submit flags
-	mqSubmitBranch    string
-	mqSubmitIssue     string
-	mqSubmitEpic      string
-	mqSubmitPriority  int
-	mqSubmitNoCleanup bool
-	mqSubmitSkipDeps  bool
-	mqSubmitResubmit  bool
-
-	// Retry flags
-	mqRetryNow bool
-
-	// Reject flags
-	mqRejectReason string
-	mqRejectNotify bool
-	mqRejectStdin  bool // Read reason from stdin
-
-	// List command flags
-	mqListReady  bool
-	mqListStatus string
-	mqListWorker string
-	mqListEpic   string
-	mqListJSON   bool
-	mqListVerify bool
-
-	// Status command flags
-	mqStatusJSON bool
-
-	// Integration land flags
-	mqIntegrationLandForce     bool
-	mqIntegrationLandSkipTests bool
-	mqIntegrationLandDryRun    bool
-
-	// Integration status flags
-	mqIntegrationStatusJSON bool
-
-	// Integration create flags
-	mqIntegrationCreateBranch     string
-	mqIntegrationCreateBaseBranch string
-	mqIntegrationCreateForce      bool
-)
-
 var mqCmd = &cobra.Command{
 	Use:     "mq",
 	Aliases: []string{"mr"},
@@ -329,32 +285,32 @@ Example:
 
 func init() {
 	// Submit flags
-	mqSubmitCmd.Flags().StringVar(&mqSubmitBranch, "branch", "", "Source branch (default: current branch)")
-	mqSubmitCmd.Flags().StringVar(&mqSubmitIssue, "issue", "", "Source issue ID (default: parse from branch name)")
-	mqSubmitCmd.Flags().StringVar(&mqSubmitEpic, "epic", "", "Target epic's integration branch instead of main")
-	mqSubmitCmd.Flags().IntVarP(&mqSubmitPriority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
-	mqSubmitCmd.Flags().BoolVar(&mqSubmitNoCleanup, "no-cleanup", false, "Don't auto-cleanup after submit (for polecats)")
-	mqSubmitCmd.Flags().BoolVar(&mqSubmitSkipDeps, "skip-deps", false, "Skip molecule step dependency check")
-	mqSubmitCmd.Flags().BoolVar(&mqSubmitResubmit, "resubmit", false, "Resubmit after a fix (skips dependency check)")
+	mqSubmitCmd.Flags().String("branch", "", "Source branch (default: current branch)")
+	mqSubmitCmd.Flags().String("issue", "", "Source issue ID (default: parse from branch name)")
+	mqSubmitCmd.Flags().String("epic", "", "Target epic's integration branch instead of main")
+	mqSubmitCmd.Flags().IntP("priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
+	mqSubmitCmd.Flags().Bool("no-cleanup", false, "Don't auto-cleanup after submit (for polecats)")
+	mqSubmitCmd.Flags().Bool("skip-deps", false, "Skip molecule step dependency check")
+	mqSubmitCmd.Flags().Bool("resubmit", false, "Resubmit after a fix (skips dependency check)")
 
 	// Retry flags
-	mqRetryCmd.Flags().BoolVar(&mqRetryNow, "now", false, "Immediately process instead of waiting for refinery loop")
+	mqRetryCmd.Flags().Bool("now", false, "Immediately process instead of waiting for refinery loop")
 
 	// List flags
-	mqListCmd.Flags().BoolVar(&mqListReady, "ready", false, "Show only ready-to-merge (no blockers)")
-	mqListCmd.Flags().StringVar(&mqListStatus, "status", "", "Filter by status (open, in_progress, closed)")
-	mqListCmd.Flags().StringVar(&mqListWorker, "worker", "", "Filter by worker name")
-	mqListCmd.Flags().StringVar(&mqListEpic, "epic", "", "Show MRs targeting integration/<epic>")
-	mqListCmd.Flags().BoolVar(&mqListJSON, "json", false, "Output as JSON")
-	mqListCmd.Flags().BoolVar(&mqListVerify, "verify", false, "Verify branches exist in git (shows MISSING for deleted branches)")
+	mqListCmd.Flags().Bool("ready", false, "Show only ready-to-merge (no blockers)")
+	mqListCmd.Flags().String("status", "", "Filter by status (open, in_progress, closed)")
+	mqListCmd.Flags().String("worker", "", "Filter by worker name")
+	mqListCmd.Flags().String("epic", "", "Show MRs targeting integration/<epic>")
+	mqListCmd.Flags().Bool("json", false, "Output as JSON")
+	mqListCmd.Flags().Bool("verify", false, "Verify branches exist in git (shows MISSING for deleted branches)")
 
 	// Reject flags
-	mqRejectCmd.Flags().StringVarP(&mqRejectReason, "reason", "r", "", "Reason for rejection (required unless --stdin)")
-	mqRejectCmd.Flags().BoolVar(&mqRejectNotify, "notify", false, "Send mail notification to worker")
-	mqRejectCmd.Flags().BoolVar(&mqRejectStdin, "stdin", false, "Read reason from stdin (avoids shell quoting issues)")
+	mqRejectCmd.Flags().StringP("reason", "r", "", "Reason for rejection (required unless --stdin)")
+	mqRejectCmd.Flags().Bool("notify", false, "Send mail notification to worker")
+	mqRejectCmd.Flags().Bool("stdin", false, "Read reason from stdin (avoids shell quoting issues)")
 
 	// Status flags
-	mqStatusCmd.Flags().BoolVar(&mqStatusJSON, "json", false, "Output as JSON")
+	mqStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Post-merge flags
 	mqPostMergeCmd.Flags().Bool("skip-branch-delete", false, "Skip remote branch deletion")
@@ -368,19 +324,19 @@ func init() {
 	mqCmd.AddCommand(mqPostMergeCmd)
 
 	// Integration branch subcommands
-	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBranch, "branch", "", "Override branch name template (supports {title}, {epic}, {prefix}, {user})")
-	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBaseBranch, "base-branch", "", "Create integration branch from this branch instead of main")
-	mqIntegrationCreateCmd.Flags().BoolVar(&mqIntegrationCreateForce, "force", false, "Recreate integration branch even if one already exists")
+	mqIntegrationCreateCmd.Flags().String("branch", "", "Override branch name template (supports {title}, {epic}, {prefix}, {user})")
+	mqIntegrationCreateCmd.Flags().String("base-branch", "", "Create integration branch from this branch instead of main")
+	mqIntegrationCreateCmd.Flags().Bool("force", false, "Recreate integration branch even if one already exists")
 	mqIntegrationCmd.AddCommand(mqIntegrationCreateCmd)
 
 	// Integration land flags
-	mqIntegrationLandCmd.Flags().BoolVar(&mqIntegrationLandForce, "force", false, "Land even if some MRs still open")
-	mqIntegrationLandCmd.Flags().BoolVar(&mqIntegrationLandSkipTests, "skip-tests", false, "Skip test run")
-	mqIntegrationLandCmd.Flags().BoolVar(&mqIntegrationLandDryRun, "dry-run", false, "Preview only, make no changes")
+	mqIntegrationLandCmd.Flags().Bool("force", false, "Land even if some MRs still open")
+	mqIntegrationLandCmd.Flags().Bool("skip-tests", false, "Skip test run")
+	mqIntegrationLandCmd.Flags().Bool("dry-run", false, "Preview only, make no changes")
 	mqIntegrationCmd.AddCommand(mqIntegrationLandCmd)
 
 	// Integration status flags
-	mqIntegrationStatusCmd.Flags().BoolVar(&mqIntegrationStatusJSON, "json", false, "Output as JSON")
+	mqIntegrationStatusCmd.Flags().Bool("json", false, "Output as JSON")
 	mqIntegrationCmd.AddCommand(mqIntegrationStatusCmd)
 
 	mqCmd.AddCommand(mqIntegrationCmd)
@@ -438,7 +394,33 @@ func loadRigsConfig(path string) *config.RigsConfig {
 	return rigsConfig
 }
 
-func runMQRetry(_ *cobra.Command, args []string) error {
+func readMQBoolFlag(cmd *cobra.Command, name string) (bool, error) {
+	if cmd == nil {
+		return false, nil
+	}
+	value, err := cmd.Flags().GetBool(name)
+	if err != nil {
+		return false, fmt.Errorf("reading --%s: %w", name, err)
+	}
+	return value, nil
+}
+
+func readMQStringFlag(cmd *cobra.Command, name string) (string, error) {
+	if cmd == nil {
+		return "", nil
+	}
+	value, err := cmd.Flags().GetString(name)
+	if err != nil {
+		return "", fmt.Errorf("reading --%s: %w", name, err)
+	}
+	return value, nil
+}
+
+func runMQRetry(cmd *cobra.Command, args []string) error {
+	now, err := readMQBoolFlag(cmd, "now")
+	if err != nil {
+		return err
+	}
 	rigName := args[0]
 	mrID := args[1]
 
@@ -465,14 +447,14 @@ func runMQRetry(_ *cobra.Command, args []string) error {
 	}
 
 	// Perform the retry
-	if err := mgr.Retry(mrID, mqRetryNow); err != nil {
+	if err := mgr.Retry(mrID, now); err != nil {
 		if err == refinery.ErrMRNotFailed {
 			return fmt.Errorf("merge request '%s' has not failed (status: %s)", mrID, mr.Status)
 		}
 		return fmt.Errorf("retrying merge request: %w", err)
 	}
 
-	if mqRetryNow {
+	if now {
 		fmt.Printf("%s Merge request processed\n", style.Bold.Render("✓"))
 	} else {
 		fmt.Printf("%s Merge request queued for retry\n", style.Bold.Render("✓"))
@@ -482,22 +464,10 @@ func runMQRetry(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMQReject(_ *cobra.Command, args []string) error {
-	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
-	if mqRejectStdin {
-		if mqRejectReason != "" {
-			return fmt.Errorf("cannot use --stdin with --reason/-r")
-		}
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading stdin: %w", err)
-		}
-		mqRejectReason = strings.TrimRight(string(data), "\n")
-	}
-
-	// Require reason via --reason or --stdin
-	if mqRejectReason == "" {
-		return fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
+func runMQReject(cmd *cobra.Command, args []string) error {
+	reason, notify, err := readMQRejectOptions(cmd)
+	if err != nil {
+		return err
 	}
 
 	rigName := args[0]
@@ -508,24 +478,54 @@ func runMQReject(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	result, err := mgr.RejectMR(mrIDOrBranch, mqRejectReason, mqRejectNotify)
+	result, err := mgr.RejectMR(mrIDOrBranch, reason, notify)
 	if err != nil {
 		return fmt.Errorf("rejecting MR: %w", err)
 	}
 
 	fmt.Printf("%s Rejected: %s\n", style.Bold.Render("✗"), result.Branch)
 	fmt.Printf("  Worker: %s\n", result.Worker)
-	fmt.Printf("  Reason: %s\n", mqRejectReason)
+	fmt.Printf("  Reason: %s\n", reason)
 
 	if result.IssueID != "" {
 		fmt.Printf("  Issue:  %s %s\n", result.IssueID, style.Dim.Render("(not closed - work not done)"))
 	}
 
-	if mqRejectNotify {
+	if notify {
 		fmt.Printf("  %s\n", style.Dim.Render("Worker notified via mail"))
 	}
 
 	return nil
+}
+
+func readMQRejectOptions(cmd *cobra.Command) (string, bool, error) {
+	reason, err := readMQStringFlag(cmd, "reason")
+	if err != nil {
+		return "", false, err
+	}
+	notify, err := readMQBoolFlag(cmd, "notify")
+	if err != nil {
+		return "", false, err
+	}
+	stdin, err := readMQBoolFlag(cmd, "stdin")
+	if err != nil {
+		return "", false, err
+	}
+
+	if stdin {
+		if reason != "" {
+			return "", false, fmt.Errorf("cannot use --stdin with --reason/-r")
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", false, fmt.Errorf("reading stdin: %w", err)
+		}
+		reason = strings.TrimRight(string(data), "\n")
+	}
+	if reason == "" {
+		return "", false, fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
+	}
+	return reason, notify, nil
 }
 
 func runMQPostMerge(cmd *cobra.Command, args []string) error {

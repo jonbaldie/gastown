@@ -26,6 +26,16 @@ type branchInfo struct {
 	Worker string // Worker name (polecat name)
 }
 
+type mqSubmitOptions struct {
+	branch    string
+	issue     string
+	epic      string
+	priority  int
+	noCleanup bool
+	skipDeps  bool
+	resubmit  bool
+}
+
 // issuePattern matches issue IDs in branch names (e.g., "gt-xyz" or "gt-abc.1")
 var issuePattern = regexp.MustCompile(`([a-z]+-[a-z0-9]+(?:\.[0-9]+)?)`)
 
@@ -56,7 +66,12 @@ func parseBranchName(branch string) branchInfo {
 	return info
 }
 
-func runMqSubmit(_ *cobra.Command, _ []string) error {
+func runMqSubmit(cmd *cobra.Command, _ []string) error {
+	opts, err := readMQSubmitOptions(cmd)
+	if err != nil {
+		return err
+	}
+
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -107,7 +122,7 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 	g := git.NewGit(cwd)
 
 	// Get current branch
-	branch := mqSubmitBranch
+	branch := opts.branch
 	if branch == "" {
 		branch, err = g.CurrentBranch()
 		if err != nil {
@@ -129,7 +144,7 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 	info := parseBranchName(branch)
 
 	// Override with explicit flags
-	issueID := mqSubmitIssue
+	issueID := opts.issue
 	if issueID == "" {
 		issueID = info.Issue
 	}
@@ -152,10 +167,10 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 	// Determine target branch
 	// Priority: explicit --epic > formula_vars base_branch > integration branch auto-detect > rig default.
 	target := defaultBranch
-	if mqSubmitEpic != "" {
+	if opts.epic != "" {
 		// Explicit --epic flag: read stored branch name, fall back to template
 		rigPath := filepath.Join(townRoot, rigName)
-		target = resolveIntegrationBranchName(sourceBD, rigPath, mqSubmitEpic)
+		target = resolveIntegrationBranchName(sourceBD, rigPath, opts.epic)
 	} else {
 		// Check for explicit --base-branch override in formula vars on the source issue.
 		// When gt sling dispatches with --base-branch, the value is persisted in
@@ -192,8 +207,8 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 
 	// Get source issue for priority inheritance and dependency check
 	var priority int
-	if mqSubmitPriority >= 0 {
-		priority = mqSubmitPriority
+	if opts.priority >= 0 {
+		priority = opts.priority
 	} else {
 		priority = sourceIssue.Priority
 	}
@@ -202,7 +217,7 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 	// If the source issue has an attached molecule, verify that prerequisite
 	// steps are complete. This prevents polecats from skipping steps like
 	// self-review, build-check, or state-update.
-	if !mqSubmitSkipDeps && !mqSubmitResubmit && sourceIssue != nil {
+	if !opts.skipDeps && !opts.resubmit && sourceIssue != nil {
 		if err := checkMoleculeStepDeps(sourceBD, sourceIssue); err != nil {
 			return err
 		}
@@ -318,7 +333,7 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 
 	// Auto-cleanup for polecats: if this is a polecat branch and cleanup not disabled,
 	// send lifecycle request and wait for termination
-	if worker != "" && !mqSubmitNoCleanup {
+	if worker != "" && !opts.noCleanup {
 		fmt.Println()
 		fmt.Printf("%s Auto-cleanup: polecat work submitted\n", style.Bold.Render("✓"))
 		if err := polecatCleanup(rigName, worker, townRoot); err != nil {
@@ -331,6 +346,36 @@ func runMqSubmit(_ *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+func readMQSubmitOptions(cmd *cobra.Command) (mqSubmitOptions, error) {
+	opts := mqSubmitOptions{priority: -1}
+	if cmd == nil {
+		return opts, nil
+	}
+	var err error
+	if opts.branch, err = cmd.Flags().GetString("branch"); err != nil {
+		return opts, fmt.Errorf("reading --branch: %w", err)
+	}
+	if opts.issue, err = cmd.Flags().GetString("issue"); err != nil {
+		return opts, fmt.Errorf("reading --issue: %w", err)
+	}
+	if opts.epic, err = cmd.Flags().GetString("epic"); err != nil {
+		return opts, fmt.Errorf("reading --epic: %w", err)
+	}
+	if opts.priority, err = cmd.Flags().GetInt("priority"); err != nil {
+		return opts, fmt.Errorf("reading --priority: %w", err)
+	}
+	if opts.noCleanup, err = cmd.Flags().GetBool("no-cleanup"); err != nil {
+		return opts, fmt.Errorf("reading --no-cleanup: %w", err)
+	}
+	if opts.skipDeps, err = cmd.Flags().GetBool("skip-deps"); err != nil {
+		return opts, fmt.Errorf("reading --skip-deps: %w", err)
+	}
+	if opts.resubmit, err = cmd.Flags().GetBool("resubmit"); err != nil {
+		return opts, fmt.Errorf("reading --resubmit: %w", err)
+	}
+	return opts, nil
 }
 
 func resolveMQSubmitCommitSHA(g *git.Git, branch string) (string, error) {

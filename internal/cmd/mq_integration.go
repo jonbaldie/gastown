@@ -330,7 +330,19 @@ type IntegrationStatusMRSummary struct {
 }
 
 // runMqIntegrationCreate creates an integration branch for an epic.
-func runMqIntegrationCreate(_ *cobra.Command, args []string) error {
+func runMqIntegrationCreate(cmd *cobra.Command, args []string) error {
+	branchTemplate, err := readMQStringFlag(cmd, "branch")
+	if err != nil {
+		return err
+	}
+	baseBranchOverride, err := readMQStringFlag(cmd, "base-branch")
+	if err != nil {
+		return err
+	}
+	force, err := readMQBoolFlag(cmd, "force")
+	if err != nil {
+		return err
+	}
 	epicID := args[0]
 
 	// Find workspace
@@ -363,12 +375,12 @@ func runMqIntegrationCreate(_ *cobra.Command, args []string) error {
 	}
 
 	// Check for existing integration branch metadata
-	if existing := getIntegrationBranchField(epic.Description); existing != "" && !mqIntegrationCreateForce {
+	if existing := getIntegrationBranchField(epic.Description); existing != "" && !force {
 		return fmt.Errorf("epic '%s' already has integration branch '%s'\n\nUse --force to recreate", epicID, existing)
 	}
 
 	// Build integration branch name from template
-	template := getIntegrationBranchTemplate(r.Path, mqIntegrationCreateBranch)
+	template := getIntegrationBranchTemplate(r.Path, branchTemplate)
 	branchName := buildIntegrationBranchName(template, epicID, epic.Title)
 
 	// Validate the branch name
@@ -407,8 +419,8 @@ func runMqIntegrationCreate(_ *cobra.Command, args []string) error {
 
 	// 2. Create branch from base (default: rig's default_branch)
 	baseBranchName := r.DefaultBranch()
-	if mqIntegrationCreateBaseBranch != "" {
-		baseBranchName = strings.TrimPrefix(mqIntegrationCreateBaseBranch, "origin/")
+	if baseBranchOverride != "" {
+		baseBranchName = strings.TrimPrefix(baseBranchOverride, "origin/")
 	}
 	baseBranch := "origin/" + baseBranchName
 	baseBranchDisplay := baseBranchName
@@ -454,7 +466,19 @@ func addIntegrationBranchField(description, branchName string) string {
 }
 
 // runMqIntegrationLand merges an integration branch to main.
-func runMqIntegrationLand(_ *cobra.Command, args []string) error {
+func runMqIntegrationLand(cmd *cobra.Command, args []string) error {
+	force, err := readMQBoolFlag(cmd, "force")
+	if err != nil {
+		return err
+	}
+	skipTests, err := readMQBoolFlag(cmd, "skip-tests")
+	if err != nil {
+		return err
+	}
+	dryRun, err := readMQBoolFlag(cmd, "dry-run")
+	if err != nil {
+		return err
+	}
 	epicID := args[0]
 
 	// Find workspace
@@ -479,7 +503,7 @@ func runMqIntegrationLand(_ *cobra.Command, args []string) error {
 	}
 
 	// Show what we're about to do
-	if mqIntegrationLandDryRun {
+	if dryRun {
 		fmt.Printf("%s Dry run - no changes will be made\n\n", style.Bold.Render("🔍"))
 	}
 
@@ -565,7 +589,7 @@ func runMqIntegrationLand(_ *cobra.Command, args []string) error {
 		}
 		fmt.Println()
 
-		if !mqIntegrationLandForce {
+		if !force {
 			return fmt.Errorf("cannot land: %d open MRs (use --force to override)", len(openMRs))
 		}
 		fmt.Printf("  %s Proceeding anyway (--force)\n", style.Dim.Render("⚠"))
@@ -598,7 +622,7 @@ func runMqIntegrationLand(_ *cobra.Command, args []string) error {
 		}
 		fmt.Println()
 
-		if !mqIntegrationLandForce {
+		if !force {
 			return fmt.Errorf("cannot land: %d children still open/in_progress (use --force to override)", len(openChildren))
 		}
 		fmt.Printf("  %s Proceeding anyway (--force)\n", style.Dim.Render("⚠"))
@@ -609,10 +633,10 @@ func runMqIntegrationLand(_ *cobra.Command, args []string) error {
 	}
 
 	// Dry run stops here
-	if mqIntegrationLandDryRun {
+	if dryRun {
 		fmt.Printf("\n%s Dry run complete. Would perform:\n", style.Bold.Render("🔍"))
 		fmt.Printf("  1. Merge %s to %s (--no-ff)\n", branchName, targetBranch)
-		if !mqIntegrationLandSkipTests {
+		if !skipTests {
 			fmt.Printf("  2. Run tests on %s\n", targetBranch)
 		}
 		fmt.Printf("  3. Push %s to origin\n", targetBranch)
@@ -687,7 +711,7 @@ func runMqIntegrationLand(_ *cobra.Command, args []string) error {
 	fmt.Printf("  %s Merged successfully\n", style.Bold.Render("✓"))
 
 	// 5. Run tests (if configured and not skipped)
-	if !mqIntegrationLandSkipTests {
+	if !skipTests {
 		testCmd := getTestCommand(r.Path)
 		if testCmd != "" {
 			fmt.Printf("Running tests: %s\n", testCmd)
@@ -863,7 +887,11 @@ func runTestCommand(workDir, testCmd string) error {
 }
 
 // runMqIntegrationStatus shows the status of an integration branch for an epic.
-func runMqIntegrationStatus(_ *cobra.Command, args []string) error {
+func runMqIntegrationStatus(cmd *cobra.Command, args []string) error {
+	jsonOutput, err := readMQBoolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
 	epicID := args[0]
 
 	// Find workspace
@@ -1029,7 +1057,7 @@ func runMqIntegrationStatus(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if mqIntegrationStatusJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(output)

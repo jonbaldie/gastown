@@ -30,22 +30,31 @@ type verifiedMQIssue struct {
 	VerifyError  bool  `json:"verify_error,omitempty"`
 }
 
-func buildMQListOptions(rigName string) beads.ListOptions {
+type mqListOptions struct {
+	ready  bool
+	status string
+	worker string
+	epic   string
+	json   bool
+	verify bool
+}
+
+func buildMQListOptions(rigName string, options mqListOptions) beads.ListOptions {
 	opts := beads.ListOptions{
 		Label:    "gt:merge-request",
 		Priority: -1,
 		Rig:      rigName,
 	}
-	if mqListStatus != "" {
-		opts.Status = mqListStatus
-	} else if !mqListReady {
+	if options.status != "" {
+		opts.Status = options.status
+	} else if !options.ready {
 		opts.Status = "open"
 	}
 	return opts
 }
 
-func loadMQListIssues(b *beads.Beads, opts beads.ListOptions) ([]*beads.Issue, error) {
-	if mqListReady {
+func loadMQListIssues(b *beads.Beads, opts beads.ListOptions, options mqListOptions) ([]*beads.Issue, error) {
+	if options.ready {
 		opts.Status = "open"
 		allOpen, err := b.ListMergeRequests(opts)
 		if err != nil {
@@ -67,67 +76,67 @@ func loadMQListIssues(b *beads.Beads, opts beads.ListOptions) ([]*beads.Issue, e
 	return issues, nil
 }
 
-func mqListStatusMatches(issue *beads.Issue) bool {
+func mqListStatusMatches(issue *beads.Issue, options mqListOptions) bool {
 	switch {
-	case mqListReady:
+	case options.ready:
 		return issue.Status == "open"
-	case mqListStatus != "" && !strings.EqualFold(mqListStatus, "all"):
-		return strings.EqualFold(issue.Status, mqListStatus)
-	case mqListStatus == "":
+	case options.status != "" && !strings.EqualFold(options.status, "all"):
+		return strings.EqualFold(issue.Status, options.status)
+	case options.status == "":
 		return issue.Status == "open"
 	default:
 		return true
 	}
 }
 
-func mqListWorkerMatches(fields *beads.MRFields) bool {
-	if mqListWorker == "" {
+func mqListWorkerMatches(fields *beads.MRFields, options mqListOptions) bool {
+	if options.worker == "" {
 		return true
 	}
 	worker := ""
 	if fields != nil {
 		worker = fields.Worker
 	}
-	return strings.EqualFold(worker, mqListWorker)
+	return strings.EqualFold(worker, options.worker)
 }
 
-func mqListEpicMatches(fields *beads.MRFields, b *beads.Beads, refineryPath string) bool {
-	if mqListEpic == "" {
+func mqListEpicMatches(fields *beads.MRFields, b *beads.Beads, refineryPath string, options mqListOptions) bool {
+	if options.epic == "" {
 		return true
 	}
 	target := ""
 	if fields != nil {
 		target = fields.Target
 	}
-	expectedTarget := resolveIntegrationBranchName(b, refineryPath, mqListEpic)
+	expectedTarget := resolveIntegrationBranchName(b, refineryPath, options.epic)
 	return target == expectedTarget
 }
 
-func mqListIssueMatches(fields *beads.MRFields, rigName string, b *beads.Beads, refineryPath string) bool {
+func mqListIssueMatches(fields *beads.MRFields, rigName string, b *beads.Beads, refineryPath string, options mqListOptions) bool {
 	if fields != nil && fields.Rig != "" && !strings.EqualFold(fields.Rig, rigName) {
 		return false
 	}
-	if !mqListWorkerMatches(fields) {
+	if !mqListWorkerMatches(fields, options) {
 		return false
 	}
-	if !mqListEpicMatches(fields, b, refineryPath) {
+	if !mqListEpicMatches(fields, b, refineryPath, options) {
 		return false
 	}
 	return true
 }
 
-func scoreMQListIssues(issues []*beads.Issue, rigName, refineryPath string, b *beads.Beads, gitClient branchVerifier) []mqScoredIssue {
+func scoreMQListIssues(issues []*beads.Issue, rigName, refineryPath string, b *beads.Beads, gitClient branchVerifier, options mqListOptions) []mqScoredIssue {
 	now := time.Now()
 	var scored []mqScoredIssue
 	for _, issue := range issues {
-		if !mqListStatusMatches(issue) {
+		if !mqListStatusMatches(issue, options) {
 			continue
 		}
 		fields := beads.ParseMRFields(issue)
-		if !mqListIssueMatches(fields, rigName, b, refineryPath) {
+		if !mqListIssueMatches(fields, rigName, b, refineryPath, options) {
 			continue
 		}
-		branchMissing, branchVerifyErr := verifyBranch(mqListVerify, gitClient, fields)
+		branchMissing, branchVerifyErr := verifyBranch(options.verify, gitClient, fields)
 		score := calculateMRScore(issue, fields, now)
 		scored = append(scored, mqScoredIssue{
 			issue:           issue,
@@ -312,8 +321,12 @@ func renderMQListText(rigName string, scored []mqScoredIssue, verify bool) error
 	return nil
 }
 
-func runMQList(_ *cobra.Command, args []string) error {
+func runMQList(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
+	options, err := readMQListOptions(cmd)
+	if err != nil {
+		return err
+	}
 
 	_, r, _, err := getRefineryManager(rigName)
 	if err != nil {
@@ -322,25 +335,49 @@ func runMQList(_ *cobra.Command, args []string) error {
 
 	// Create beads wrapper for the rig - use BeadsPath() to get the git-synced location
 	b := beads.New(r.BeadsPath())
-	opts := buildMQListOptions(rigName)
-	issues, err := loadMQListIssues(b, opts)
+	opts := buildMQListOptions(rigName, options)
+	issues, err := loadMQListIssues(b, opts, options)
 	if err != nil {
 		return err
 	}
 
 	var gitClient branchVerifier
-	if mqListVerify {
+	if options.verify {
 		refineryRigPath := filepath.Join(r.Path, "refinery", "rig")
 		gitClient = git.NewGit(refineryRigPath)
 	}
-	scored := scoreMQListIssues(issues, rigName, r.Path, b, gitClient)
+	scored := scoreMQListIssues(issues, rigName, r.Path, b, gitClient, options)
 	sort.Slice(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
 	})
-	if mqListJSON {
-		return renderMQListJSON(scored, mqListVerify)
+	if options.json {
+		return renderMQListJSON(scored, options.verify)
 	}
-	return renderMQListText(rigName, scored, mqListVerify)
+	return renderMQListText(rigName, scored, options.verify)
+}
+
+func readMQListOptions(cmd *cobra.Command) (mqListOptions, error) {
+	options := mqListOptions{}
+	var err error
+	if options.ready, err = readMQBoolFlag(cmd, "ready"); err != nil {
+		return options, err
+	}
+	if options.status, err = readMQStringFlag(cmd, "status"); err != nil {
+		return options, err
+	}
+	if options.worker, err = readMQStringFlag(cmd, "worker"); err != nil {
+		return options, err
+	}
+	if options.epic, err = readMQStringFlag(cmd, "epic"); err != nil {
+		return options, err
+	}
+	if options.json, err = readMQBoolFlag(cmd, "json"); err != nil {
+		return options, err
+	}
+	if options.verify, err = readMQBoolFlag(cmd, "verify"); err != nil {
+		return options, err
+	}
+	return options, nil
 }
 
 // formatMRAge formats the age of an MR from its created_at timestamp.

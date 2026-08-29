@@ -136,10 +136,16 @@ func TestRunMqSubmitWithRoutedIssueIgnoresCurrentRigMirror(t *testing.T) {
 	t.Setenv("GT_RIG", "")
 	t.Chdir(workDir)
 
-	mqSubmitBranch = branch
-	mqSubmitIssue = "bd-source"
-	mqSubmitNoCleanup = true
-	if err := runMqSubmit(nil, nil); err != nil {
+	if err := mqSubmitCmd.Flags().Set("branch", branch); err != nil {
+		t.Fatalf("set branch flag: %v", err)
+	}
+	if err := mqSubmitCmd.Flags().Set("issue", "bd-source"); err != nil {
+		t.Fatalf("set issue flag: %v", err)
+	}
+	if err := mqSubmitCmd.Flags().Set("no-cleanup", "true"); err != nil {
+		t.Fatalf("set no-cleanup flag: %v", err)
+	}
+	if err := runMqSubmit(mqSubmitCmd, nil); err != nil {
 		t.Fatalf("runMqSubmit: %v", err)
 	}
 
@@ -385,16 +391,39 @@ func assertBDLogNotContains(t *testing.T, log, beadsDir, args string) {
 
 func resetMqSubmitFlagsForTest(t *testing.T) {
 	t.Helper()
-	oldBranch, oldIssue, oldEpic := mqSubmitBranch, mqSubmitIssue, mqSubmitEpic
-	oldPriority := mqSubmitPriority
-	oldNoCleanup, oldSkipDeps, oldResubmit := mqSubmitNoCleanup, mqSubmitSkipDeps, mqSubmitResubmit
-	mqSubmitBranch, mqSubmitIssue, mqSubmitEpic = "", "", ""
-	mqSubmitPriority = -1
-	mqSubmitNoCleanup, mqSubmitSkipDeps, mqSubmitResubmit = false, false, false
+	flagValues := map[string]string{}
+	for _, name := range []string{"branch", "issue", "epic"} {
+		value, err := mqSubmitCmd.Flags().GetString(name)
+		if err != nil {
+			t.Fatalf("read %s flag: %v", name, err)
+		}
+		flagValues[name] = value
+	}
+	priority, err := mqSubmitCmd.Flags().GetInt("priority")
+	if err != nil {
+		t.Fatalf("read priority flag: %v", err)
+	}
+	flagValues["priority"] = fmt.Sprint(priority)
+	for _, name := range []string{"no-cleanup", "skip-deps", "resubmit"} {
+		value, err := mqSubmitCmd.Flags().GetBool(name)
+		if err != nil {
+			t.Fatalf("read %s flag: %v", name, err)
+		}
+		flagValues[name] = fmt.Sprint(value)
+	}
+	defaults := map[string]string{
+		"branch": "", "issue": "", "epic": "", "priority": "-1",
+		"no-cleanup": "false", "skip-deps": "false", "resubmit": "false",
+	}
+	for name, value := range defaults {
+		if err := mqSubmitCmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("reset %s flag: %v", name, err)
+		}
+	}
 	t.Cleanup(func() {
-		mqSubmitBranch, mqSubmitIssue, mqSubmitEpic = oldBranch, oldIssue, oldEpic
-		mqSubmitPriority = oldPriority
-		mqSubmitNoCleanup, mqSubmitSkipDeps, mqSubmitResubmit = oldNoCleanup, oldSkipDeps, oldResubmit
+		for name, value := range flagValues {
+			_ = mqSubmitCmd.Flags().Set(name, value)
+		}
 	})
 }
 
