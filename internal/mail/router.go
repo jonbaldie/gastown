@@ -1184,46 +1184,51 @@ func (r *Router) resolveCrewShorthand(identity string) string {
 		return identity
 	}
 
+	roleDir, name, ok := crewShorthandParts(identity)
+	if !ok || realRigDirectory(r.townRoot, roleDir) {
+		return identity
+	}
+	if match, ok := findCrewShorthand(r.townRoot, roleDir, name); ok {
+		return match // Unambiguous: expand to rig/name
+	}
+	return identity // Ambiguous or not found: let validation handle it
+}
+
+func crewShorthandParts(identity string) (roleDir, name string, ok bool) {
 	parts := strings.Split(identity, "/")
 	if len(parts) != 2 {
-		return identity
+		return "", "", false
 	}
-
-	roleDir, name := parts[0], parts[1]
-	// Only handle crew and polecats shorthand (not real rig names)
+	roleDir, name = parts[0], parts[1]
 	if roleDir != constants.RoleCrew && roleDir != "polecats" {
-		return identity
+		return "", "", false
 	}
+	return roleDir, name, true
+}
 
-	// Check if "crew" or "polecats" is actually a real rig directory
-	if fi, err := os.Stat(filepath.Join(r.townRoot, roleDir)); err == nil && fi.IsDir() {
-		// It's a real rig, not a shorthand - let normal validation handle it
-		return identity
-	}
+func realRigDirectory(townRoot, roleDir string) bool {
+	fi, err := os.Stat(filepath.Join(townRoot, roleDir))
+	return err == nil && fi.IsDir()
+}
 
-	// Scan rig directories for a crew/polecats member with this name
-	entries, err := os.ReadDir(r.townRoot)
+func findCrewShorthand(townRoot, roleDir, name string) (string, bool) {
+	entries, err := os.ReadDir(townRoot)
 	if err != nil {
-		return identity
+		return "", false
 	}
-
-	var matches []string
+	var match string
+	matches := 0
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		rig := entry.Name()
-		agentDir := filepath.Join(r.townRoot, rig, roleDir, name)
-		if fi, err2 := os.Stat(agentDir); err2 == nil && fi.IsDir() {
-			matches = append(matches, rig+"/"+name)
+		agentDir := filepath.Join(townRoot, entry.Name(), roleDir, name)
+		if fi, err := os.Stat(agentDir); err == nil && fi.IsDir() {
+			match = entry.Name() + "/" + name
+			matches++
 		}
 	}
-
-	if len(matches) == 1 {
-		return matches[0] // Unambiguous: expand to rig/name
-	}
-
-	return identity // Ambiguous or not found: let validation handle it
+	return match, matches == 1
 }
 
 // sendToSingle sends a message to a single recipient.
