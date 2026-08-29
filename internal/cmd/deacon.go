@@ -367,16 +367,6 @@ const (
 )
 
 var (
-	// Stale hooks flags
-	staleHooksMaxAge time.Duration
-	staleHooksDryRun bool
-
-	// Pause flags
-	pauseReason string
-
-	// Zombie scan flags
-	zombieScanDryRun bool
-
 	// Redispatch flags
 	redispatchRig         string
 	redispatchMaxAttempts int
@@ -426,17 +416,17 @@ func init() {
 		"Skip sending notification mail to mayor")
 
 	// Flags for stale-hooks
-	deaconStaleHooksCmd.Flags().DurationVar(&staleHooksMaxAge, "max-age", 1*time.Hour,
+	deaconStaleHooksCmd.Flags().Duration("max-age", 1*time.Hour,
 		"Maximum age before a hooked bead is considered stale")
-	deaconStaleHooksCmd.Flags().BoolVar(&staleHooksDryRun, "dry-run", false,
+	deaconStaleHooksCmd.Flags().Bool("dry-run", false,
 		"Preview what would be unhooked without making changes")
 
 	// Flags for pause
-	deaconPauseCmd.Flags().StringVar(&pauseReason, "reason", "",
+	deaconPauseCmd.Flags().String("reason", "",
 		"Reason for pausing the Deacon")
 
 	// Flags for zombie-scan
-	deaconZombieScanCmd.Flags().BoolVar(&zombieScanDryRun, "dry-run", false,
+	deaconZombieScanCmd.Flags().Bool("dry-run", false,
 		"List zombies without killing them")
 
 	// Flags for redispatch
@@ -1215,15 +1205,18 @@ func updateAgentBeadState(townRoot, agent, state, _ string) { // reason unused b
 }
 
 // runDeaconStaleHooks finds and unhooks stale hooked beads.
-func runDeaconStaleHooks(_ *cobra.Command, _ []string) error {
+func runDeaconStaleHooks(cmd *cobra.Command, _ []string) error {
+	maxAge := commandDurationFlag(cmd, "max-age")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	cfg := &deacon.StaleHookConfig{
-		MaxAge: staleHooksMaxAge,
-		DryRun: staleHooksDryRun,
+		MaxAge: maxAge,
+		DryRun: dryRun,
 	}
 
 	result, err := deacon.ScanStaleHooks(townRoot, cfg)
@@ -1238,7 +1231,7 @@ func runDeaconStaleHooks(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("%s Found %d hooked bead(s), %d stale (older than %s)\n",
-		style.Bold.Render("●"), result.TotalHooked, result.StaleCount, staleHooksMaxAge)
+		style.Bold.Render("●"), result.TotalHooked, result.StaleCount, maxAge)
 
 	if result.StaleCount == 0 {
 		fmt.Printf("%s No stale hooked beads\n", style.Dim.Render("○"))
@@ -1251,7 +1244,7 @@ func runDeaconStaleHooks(_ *cobra.Command, _ []string) error {
 		action := "skipped (agent alive)"
 
 		if !r.AgentAlive {
-			if staleHooksDryRun {
+			if dryRun {
 				status = style.Bold.Render("?")
 				action = "would unhook (agent dead)"
 			} else if r.Unhooked {
@@ -1293,7 +1286,7 @@ func runDeaconStaleHooks(_ *cobra.Command, _ []string) error {
 	}
 
 	// Summary
-	if staleHooksDryRun {
+	if dryRun {
 		fmt.Printf("\n%s Dry run - no changes made. Run without --dry-run to unhook.\n",
 			style.Dim.Render("ℹ"))
 	} else if result.Unhooked > 0 {
@@ -1309,7 +1302,9 @@ func runDeaconStaleHooks(_ *cobra.Command, _ []string) error {
 }
 
 // runDeaconPause pauses the Deacon to prevent patrol actions.
-func runDeaconPause(_ *cobra.Command, _ []string) error {
+func runDeaconPause(cmd *cobra.Command, _ []string) error {
+	reason := commandStringFlag(cmd, "reason")
+
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -1329,7 +1324,7 @@ func runDeaconPause(_ *cobra.Command, _ []string) error {
 	}
 
 	// Pause the Deacon
-	if err := deacon.Pause(townRoot, pauseReason, "human"); err != nil {
+	if err := deacon.Pause(townRoot, reason, "human"); err != nil {
 		return fmt.Errorf("pausing Deacon: %w", err)
 	}
 
@@ -1341,8 +1336,8 @@ func runDeaconPause(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("%s Deacon paused\n", style.Bold.Render("⏸️"))
-	if pauseReason != "" {
-		fmt.Printf("  Reason: %s\n", pauseReason)
+	if reason != "" {
+		fmt.Printf("  Reason: %s\n", reason)
 	}
 	fmt.Printf("  Pause file: %s\n", deacon.GetPauseFile(townRoot))
 	fmt.Println()
@@ -1442,7 +1437,9 @@ func runDeaconCleanupOrphans(_ *cobra.Command, _ []string) error {
 }
 
 // runDeaconZombieScan finds and cleans zombie Claude processes not in active tmux sessions.
-func runDeaconZombieScan(_ *cobra.Command, _ []string) error {
+func runDeaconZombieScan(cmd *cobra.Command, _ []string) error {
+	dryRun := commandBoolFlag(cmd, "dry-run")
+
 	// Find zombies using tmux verification
 	zombies, err := util.FindZombieClaudeProcesses()
 	if err != nil {
@@ -1457,7 +1454,7 @@ func runDeaconZombieScan(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s Found %d zombie claude process(es)\n", style.Bold.Render("●"), len(zombies))
 
 	// In dry-run mode, just list them
-	if zombieScanDryRun {
+	if dryRun {
 		for _, z := range zombies {
 			ageStr := fmt.Sprintf("%dm", z.Age/60)
 			town := z.TownRoot
