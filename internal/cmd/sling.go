@@ -752,23 +752,8 @@ func restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info
 	if info == nil {
 		return false, nil
 	}
-	originalNoMerge, originalReviewOnly, originalAttachedAt := rawWorkflowFieldValues(originalInfo)
-	issue := &beads.Issue{Description: info.Description}
-	fields := beads.ParseAttachmentFields(issue)
-	if fields == nil {
-		if !originalNoMerge && !originalReviewOnly {
-			return false, nil
-		}
-		fields = &beads.AttachmentFields{}
-	}
-	if fields.NoMerge == originalNoMerge && fields.ReviewOnly == originalReviewOnly && fields.AttachedAt == originalAttachedAt {
-		return false, nil
-	}
-	fields.NoMerge = originalNoMerge
-	fields.ReviewOnly = originalReviewOnly
-	fields.AttachedAt = originalAttachedAt
-	newDesc := beads.SetAttachmentFields(issue, fields)
-	if newDesc == info.Description {
+	newDesc, changed := rollbackRawWorkflowDescription(info, originalInfo)
+	if !changed || newDesc == info.Description {
 		return false, nil
 	}
 	updateDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
@@ -780,6 +765,25 @@ func restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info
 		return false, err
 	}
 	return true, nil
+}
+
+func rollbackRawWorkflowDescription(info, originalInfo *beadInfo) (string, bool) {
+	originalNoMerge, originalReviewOnly, originalAttachedAt := rawWorkflowFieldValues(originalInfo)
+	issue := &beads.Issue{Description: info.Description}
+	fields := beads.ParseAttachmentFields(issue)
+	if fields == nil {
+		if !originalNoMerge && !originalReviewOnly {
+			return "", false
+		}
+		fields = &beads.AttachmentFields{}
+	}
+	if fields.NoMerge == originalNoMerge && fields.ReviewOnly == originalReviewOnly && fields.AttachedAt == originalAttachedAt {
+		return "", false
+	}
+	fields.NoMerge = originalNoMerge
+	fields.ReviewOnly = originalReviewOnly
+	fields.AttachedAt = originalAttachedAt
+	return beads.SetAttachmentFields(issue, fields), true
 }
 
 func clearRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info *beadInfo) (bool, error) {
@@ -868,19 +872,39 @@ func restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, expectedAssignee
 		fmt.Printf("  %s Could not verify source bead %s before dog rollback: %v\n", style.Dim.Render("Warning:"), beadID, err)
 		return false
 	}
-	if current != nil && current.Status == originalInfo.Status && current.Assignee == originalInfo.Assignee &&
-		current.Description == originalInfo.Description {
+	if dogSlingSourceMatchesOriginal(current, originalInfo) {
 		// Dispatch failed before changing the source; it is already restored.
 		return true
 	}
-	newHookOwned := current != nil && current.Status == "hooked" && current.Assignee == expectedAssignee && current.Description == expectedDescription
-	forceTransitionOwned := current != nil && current.Status == "open" && current.Assignee == "" && current.Description == originalInfo.Description
-	if !newHookOwned && !forceTransitionOwned {
+	if !dogSlingSourceOwnedByDispatch(current, expectedAssignee, expectedDescription, originalInfo.Description) {
 		fmt.Printf("  %s Source bead %s changed after dispatch; preserving its ownership and metadata\n",
 			style.Dim.Render("○"), beadID)
 		return false
 	}
 
+	if !restoreDogSlingSourceTables(townRoot, beadID, hookWorkDir, status, assignee, originalInfo.Description, current) {
+		return false
+	}
+
+	if dogSlingSourceRestored(townRoot, beadID, status, assignee, originalInfo.Description) {
+		fmt.Printf("  %s Restored source bead %s to status=%s assignee=%s\n", style.Dim.Render("○"), beadID, status, assignee)
+		return true
+	}
+	return false
+}
+
+func dogSlingSourceMatchesOriginal(current, original *beadInfo) bool {
+	return current != nil && current.Status == original.Status && current.Assignee == original.Assignee &&
+		current.Description == original.Description
+}
+
+func dogSlingSourceOwnedByDispatch(current *beadInfo, expectedAssignee, expectedDescription, originalDescription string) bool {
+	newHookOwned := current != nil && current.Status == "hooked" && current.Assignee == expectedAssignee && current.Description == expectedDescription
+	forceTransitionOwned := current != nil && current.Status == "open" && current.Assignee == "" && current.Description == originalDescription
+	return newHookOwned || forceTransitionOwned
+}
+
+func restoreDogSlingSourceTables(townRoot, beadID, hookWorkDir, status, assignee, description string, current *beadInfo) bool {
 	// Restore source ownership and workflow metadata with a storage-level CAS.
 	// The description predicate prevents rollback from overwriting any concurrent
 	// source edit between readback and update.
@@ -889,7 +913,7 @@ func restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, expectedAssignee
 		query := fmt.Sprintf(
 			"UPDATE %s SET status=%s, assignee=%s, description=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s AND status=%s AND assignee=%s AND description=%s",
 			table,
-			sqlStringLiteral(status), sqlStringLiteral(assignee), sqlStringLiteral(originalInfo.Description),
+			sqlStringLiteral(status), sqlStringLiteral(assignee), sqlStringLiteral(description),
 			sqlStringLiteral(beadID), sqlStringLiteral(current.Status), sqlStringLiteral(current.Assignee), sqlStringLiteral(current.Description),
 		)
 		if err := BdCmd("sql", query).Dir(dir).StripBeadsDir().WithAutoCommit().Run(); err != nil {
@@ -898,14 +922,16 @@ func restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, expectedAssignee
 			return false
 		}
 	}
+	return true
+}
 
+func dogSlingSourceRestored(townRoot, beadID, status, assignee, description string) bool {
 	updated, err := getBeadInfoFromTownRoot(townRoot, beadID)
 	if err != nil {
 		fmt.Printf("  %s Could not verify source bead %s after dog rollback: %v\n", style.Dim.Render("Warning:"), beadID, err)
 		return false
 	}
-	if updated.Status == status && updated.Assignee == assignee && updated.Description == originalInfo.Description {
-		fmt.Printf("  %s Restored source bead %s to status=%s assignee=%s\n", style.Dim.Render("○"), beadID, status, assignee)
+	if updated.Status == status && updated.Assignee == assignee && updated.Description == description {
 		return true
 	}
 	fmt.Printf("  %s Source bead %s changed during rollback; preserved status=%s assignee=%s\n",
@@ -925,20 +951,11 @@ func clearPreviousDogAssignment(townRoot, assignee, beadID, originalDescription 
 		return err
 	}
 	fields := beads.ParseAttachmentFields(&beads.Issue{Description: originalDescription})
-	matches := previous.Work == beadID || (fields != nil && fields.AttachedFormula != "" && previous.Work == fields.AttachedFormula)
-	if !matches {
+	if !previousDogAssignmentMatches(previous.Work, beadID, fields) {
 		return fmt.Errorf("previous dog %s state names %q, not source %s", name, previous.Work, beadID)
 	}
 	cleared, err := mgr.ClearWorkIfMatchesAfter(name, previous.Work, previous.WorkStartedAt, func() bool {
-		t := tmux.NewTmux()
-		running, err := t.HasSession("hq-dog-" + name)
-		if err != nil {
-			return false
-		}
-		if !running {
-			return true
-		}
-		return t.KillSessionWithProcesses("hq-dog-"+name) == nil
+		return stopPreviousDogSession(name)
 	})
 	if err != nil {
 		return err
@@ -947,6 +964,22 @@ func clearPreviousDogAssignment(townRoot, assignee, beadID, originalDescription 
 		return fmt.Errorf("previous dog %s assignment changed or its session could not stop during handoff", name)
 	}
 	return nil
+}
+
+func previousDogAssignmentMatches(previousWork, beadID string, fields *beads.AttachmentFields) bool {
+	return previousWork == beadID || (fields != nil && fields.AttachedFormula != "" && previousWork == fields.AttachedFormula)
+}
+
+func stopPreviousDogSession(name string) bool {
+	t := tmux.NewTmux()
+	running, err := t.HasSession("hq-dog-" + name)
+	if err != nil {
+		return false
+	}
+	if !running {
+		return true
+	}
+	return t.KillSessionWithProcesses("hq-dog-"+name) == nil
 }
 
 func dogFormulaSourceStillOriginal(townRoot, beadID string, originalInfo *beadInfo) bool {
@@ -1047,62 +1080,75 @@ func resolvePRBranch(prNumber int) (string, error) {
 // Cleanup is best-effort: each step logs warnings but continues to clean as much as possible.
 func rollbackSlingArtifacts(spawnInfo *SpawnedPolecatInfo, beadID, hookWorkDir, convoyID string) {
 	townRoot, err := workspace.FindFromCwdOrError()
-
-	// 1. Burn any attached molecules from partial formula instantiation.
-	// This clears attached_molecule metadata and closes stale wisps that
-	// otherwise block subsequent sling attempts.
-	// Some failure modes happen before any bead is hooked (e.g., wisp creation fails).
 	if beadID != "" {
-		if err != nil {
-			fmt.Printf("  %s Could not find workspace to rollback bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
-		} else {
-			info, infoErr := getBeadInfoForRollback(beadID)
-			if infoErr != nil {
-				fmt.Printf("  %s Could not inspect bead %s for stale molecules: %v\n", style.Dim.Render("Warning:"), beadID, infoErr)
-			} else {
-				existingMolecules := collectExistingMoleculesForRollback(info)
-				if depMolecules, depErr := collectExistingMoleculeDeps(beadID, townRoot); depErr != nil {
-					fmt.Printf("  %s Could not inspect canonical molecule bonds for %s: %v\n", style.Dim.Render("Warning:"), beadID, depErr)
-				} else {
-					existingMolecules = appendUniqueMolecules(existingMolecules, depMolecules...)
-				}
-				canClearWorkflowFields := len(existingMolecules) == 0
-				if len(existingMolecules) > 0 {
-					if burnErr := burnExistingMoleculesForRollback(existingMolecules, beadID, townRoot); burnErr != nil {
-						fmt.Printf("  %s Could not burn stale molecule(s) from %s: %v\n", style.Dim.Render("Warning:"), beadID, burnErr)
-					} else {
-						fmt.Printf("  %s Burned %d stale molecule(s): %s\n",
-							style.Dim.Render("○"), len(existingMolecules), strings.Join(existingMolecules, ", "))
-						if refreshed, refreshErr := getBeadInfoForRollback(beadID); refreshErr != nil {
-							fmt.Printf("  %s Could not refresh bead %s after molecule cleanup: %v\n", style.Dim.Render("Warning:"), beadID, refreshErr)
-						} else {
-							info = refreshed
-							canClearWorkflowFields = true
-						}
-					}
-				}
-				if canClearWorkflowFields {
-					if cleared, clearErr := clearRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir, info); clearErr != nil {
-						fmt.Printf("  %s Could not clear raw workflow metadata from %s: %v\n", style.Dim.Render("Warning:"), beadID, clearErr)
-					} else if cleared {
-						fmt.Printf("  %s Cleared raw workflow metadata from %s\n", style.Dim.Render("○"), beadID)
-					}
-				}
-			}
-
-			// 2. Unhook the bead (set status back to open so it can be re-slung).
-			unhookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
-			if err := BdCmd("update", beadID, "--status=open", "--assignee=").
-				Dir(unhookDir).
-				WithAutoCommit().
-				Run(); err != nil {
-				fmt.Printf("  %s Could not unhook bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
-			} else {
-				fmt.Printf("  %s Unhooked bead %s\n", style.Dim.Render("○"), beadID)
-			}
-		}
+		rollbackSlingBead(townRoot, beadID, hookWorkDir, err)
 	}
 
 	// 3. Clean up the spawned polecat (worktree, agent bead, convoy, etc.)
 	cleanupSpawnedPolecat(spawnInfo, spawnInfo.RigName, convoyID)
+}
+
+func rollbackSlingBead(townRoot, beadID, hookWorkDir string, workspaceErr error) {
+	// 1. Burn any attached molecules from partial formula instantiation.
+	// This clears attached_molecule metadata and closes stale wisps that
+	// otherwise block subsequent sling attempts.
+	// Some failure modes happen before any bead is hooked (e.g., wisp creation fails).
+	if workspaceErr != nil {
+		fmt.Printf("  %s Could not find workspace to rollback bead %s: %v\n", style.Dim.Render("Warning:"), beadID, workspaceErr)
+		return
+	}
+	info, infoErr := getBeadInfoForRollback(beadID)
+	if infoErr != nil {
+		fmt.Printf("  %s Could not inspect bead %s for stale molecules: %v\n", style.Dim.Render("Warning:"), beadID, infoErr)
+	} else {
+		rollbackSlingMolecules(townRoot, beadID, hookWorkDir, info)
+	}
+	// 2. Unhook the bead (set status back to open so it can be re-slung).
+	unhookRolledBackBead(townRoot, beadID, hookWorkDir)
+}
+
+func rollbackSlingMolecules(townRoot, beadID, hookWorkDir string, info *beadInfo) {
+	existingMolecules := collectExistingMoleculesForRollback(info)
+	if depMolecules, depErr := collectExistingMoleculeDeps(beadID, townRoot); depErr != nil {
+		fmt.Printf("  %s Could not inspect canonical molecule bonds for %s: %v\n", style.Dim.Render("Warning:"), beadID, depErr)
+	} else {
+		existingMolecules = appendUniqueMolecules(existingMolecules, depMolecules...)
+	}
+	if len(existingMolecules) == 0 {
+		clearRollbackWorkflowMetadata(beadID, townRoot, hookWorkDir, info)
+		return
+	}
+	if burnErr := burnExistingMoleculesForRollback(existingMolecules, beadID, townRoot); burnErr != nil {
+		fmt.Printf("  %s Could not burn stale molecule(s) from %s: %v\n", style.Dim.Render("Warning:"), beadID, burnErr)
+		return
+	}
+	fmt.Printf("  %s Burned %d stale molecule(s): %s\n",
+		style.Dim.Render("○"), len(existingMolecules), strings.Join(existingMolecules, ", "))
+	refreshed, refreshErr := getBeadInfoForRollback(beadID)
+	if refreshErr != nil {
+		fmt.Printf("  %s Could not refresh bead %s after molecule cleanup: %v\n", style.Dim.Render("Warning:"), beadID, refreshErr)
+		return
+	}
+	clearRollbackWorkflowMetadata(beadID, townRoot, hookWorkDir, refreshed)
+}
+
+func clearRollbackWorkflowMetadata(beadID, townRoot, hookWorkDir string, info *beadInfo) {
+	cleared, clearErr := clearRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir, info)
+	if clearErr != nil {
+		fmt.Printf("  %s Could not clear raw workflow metadata from %s: %v\n", style.Dim.Render("Warning:"), beadID, clearErr)
+	} else if cleared {
+		fmt.Printf("  %s Cleared raw workflow metadata from %s\n", style.Dim.Render("○"), beadID)
+	}
+}
+
+func unhookRolledBackBead(townRoot, beadID, hookWorkDir string) {
+	unhookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
+	if err := BdCmd("update", beadID, "--status=open", "--assignee=").
+		Dir(unhookDir).
+		WithAutoCommit().
+		Run(); err != nil {
+		fmt.Printf("  %s Could not unhook bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
+	} else {
+		fmt.Printf("  %s Unhooked bead %s\n", style.Dim.Render("○"), beadID)
+	}
 }
