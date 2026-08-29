@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/jonbaldie/gastown/internal/beads"
-	"github.com/jonbaldie/gastown/internal/constants"
 	"github.com/jonbaldie/gastown/internal/deacon"
 	"github.com/jonbaldie/gastown/internal/formula"
 	"github.com/jonbaldie/gastown/internal/style"
@@ -42,44 +41,16 @@ func init() {
 func runPatrolReport(cmd *cobra.Command, _ []string) error {
 	summary := commandStringFlag(cmd, "summary")
 	steps := commandStringFlag(cmd, "steps")
-	// Resolve role
 	roleInfo, err := GetRole()
 	if err != nil {
 		return fmt.Errorf("detecting role: %w", err)
 	}
 
-	roleName := string(roleInfo.Role)
-
-	// Build config based on role
-	var cfg PatrolConfig
-	switch roleInfo.Role {
-	case RoleDeacon:
-		cfg = PatrolConfig{
-			RoleName:      "deacon",
-			PatrolMolName: constants.MolDeaconPatrol,
-			BeadsDir:      roleInfo.TownRoot,
-			Assignee:      "deacon",
-		}
-	case RoleWitness:
-		cfg = PatrolConfig{
-			RoleName:      "witness",
-			PatrolMolName: constants.MolWitnessPatrol,
-			BeadsDir:      roleInfo.TownRoot,
-			Assignee:      roleInfo.Rig + "/witness",
-		}
-	case RoleRefinery:
-		cfg = PatrolConfig{
-			RoleName:      "refinery",
-			PatrolMolName: constants.MolRefineryPatrol,
-			BeadsDir:      roleInfo.TownRoot,
-			Assignee:      roleInfo.Rig + "/refinery",
-			ExtraVars:     buildRefineryPatrolVars(roleInfo),
-		}
-	default:
-		return fmt.Errorf("unsupported role for patrol report: %q", roleName)
+	cfg, err := patrolConfigForRole(roleInfo.Role, roleInfo)
+	if err != nil {
+		return err
 	}
 
-	// Find the active patrol
 	patrolID, _, hasPatrol, findErr := findActivePatrol(cfg)
 	if findErr != nil {
 		return fmt.Errorf("finding active patrol: %w", findErr)
@@ -88,42 +59,44 @@ func runPatrolReport(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no active patrol found for %s", cfg.RoleName)
 	}
 
-	// Close the current patrol root with the summary
-	b := cfg.Beads
-	if b == nil {
-		b = beads.New(cfg.BeadsDir)
-	}
-
-	// Build step audit checklist
+	b := patrolReportBeads(cfg)
 	stepAudit := buildStepAudit(cfg.PatrolMolName, steps)
-
-	// Update the description with the patrol summary and step audit
-	desc := fmt.Sprintf("Patrol report: %s\n\n%s", summary, stepAudit)
-	if err := b.Update(patrolID, beads.UpdateOptions{
-		Description: &desc,
-	}); err != nil {
-		style.PrintWarning("could not update patrol summary: %v", err)
-	}
-
-	// Print the step audit for visibility
+	updatePatrolReportSummary(b, patrolID, summary, stepAudit)
 	fmt.Println(stepAudit)
 
-	// Close all descendant wisps first (recursive), then the patrol root.
-	// Without this, every patrol cycle leaks ~10 orphan wisps into the DB.
-	// If descendants can't be closed, abort so patrol retries next cycle (gt-7lx3).
-	closed, closeDescErr := forceCloseDescendants(b, patrolID)
-	if closeDescErr != nil {
-		return fmt.Errorf("closing descendants of patrol %s (closed %d): %w", patrolID, closed, closeDescErr)
+	if err := closePatrolReportCycle(b, patrolID, summary); err != nil {
+		return err
 	}
+	return startNextPatrolReport(cfg, summary)
+}
 
-	// Close the patrol root
+func patrolReportBeads(cfg PatrolConfig) *beads.Beads {
+	if cfg.Beads != nil {
+		return cfg.Beads
+	}
+	return beads.New(cfg.BeadsDir)
+}
+
+func updatePatrolReportSummary(b *beads.Beads, patrolID, summary, stepAudit string) {
+	desc := fmt.Sprintf("Patrol report: %s\n\n%s", summary, stepAudit)
+	if err := b.Update(patrolID, beads.UpdateOptions{Description: &desc}); err != nil {
+		style.PrintWarning("could not update patrol summary: %v", err)
+	}
+}
+
+func closePatrolReportCycle(b *beads.Beads, patrolID, summary string) error {
+	closed, err := forceCloseDescendants(b, patrolID)
+	if err != nil {
+		return fmt.Errorf("closing descendants of patrol %s (closed %d): %w", patrolID, closed, err)
+	}
 	if err := b.ForceCloseWithReason("patrol cycle complete: "+summary, patrolID); err != nil {
 		return fmt.Errorf("closing patrol %s: %w", patrolID, err)
 	}
-
 	fmt.Printf("%s Closed patrol %s\n", style.Success.Render("✓"), patrolID)
+	return nil
+}
 
-	// Start next cycle
+func startNextPatrolReport(cfg PatrolConfig, summary string) error {
 	newPatrolID, err := autoSpawnPatrol(cfg)
 	if err != nil {
 		if newPatrolID != "" {
@@ -167,42 +140,41 @@ func stampDeaconHeartbeatOnReport(townRoot, summary string) {
 //
 // If stepsFlag is empty, returns a line indicating the audit was not reported.
 func buildStepAudit(formulaName string, stepsFlag string) string {
-	// Load the formula to get the canonical step list
 	content, err := formula.GetEmbeddedFormulaContent(formulaName)
 	if err != nil {
-		if stepsFlag == "" {
-			return "Steps: NOT REPORTED (formula not found)"
-		}
-		// Can't validate without the formula, but still show what was reported
-		return fmt.Sprintf("Steps: %s (unvalidated — formula not found)", stepsFlag)
+		return unvalidatedStepAudit(stepsFlag, "formula not found")
 	}
 
 	f, err := formula.Parse(content)
 	if err != nil {
-		if stepsFlag == "" {
-			return "Steps: NOT REPORTED (formula parse error)"
-		}
-		return fmt.Sprintf("Steps: %s (unvalidated — formula parse error)", stepsFlag)
+		return unvalidatedStepAudit(stepsFlag, "formula parse error")
 	}
 
 	allStepIDs := f.GetAllIDs()
+	return formatStepAudit(allStepIDs, stepsFlag)
+}
+
+func unvalidatedStepAudit(stepsFlag, reason string) string {
+	if stepsFlag == "" {
+		return "Steps: NOT REPORTED (" + reason + ")"
+	}
+	return fmt.Sprintf("Steps: %s (unvalidated — %s)", stepsFlag, reason)
+}
+
+func formatStepAudit(allStepIDs []string, stepsFlag string) string {
 	if len(allStepIDs) == 0 {
 		return ""
 	}
-
 	if stepsFlag == "" {
 		return fmt.Sprintf("Steps: NOT REPORTED (?/%d)", len(allStepIDs))
 	}
 
-	// Parse the reported step results
 	reported := parseStepResults(stepsFlag)
-
-	// Build the audit line: map each formula step to its reported status
-	var parts []string
+	parts := make([]string, 0, len(allStepIDs))
 	okCount := 0
 	for _, stepID := range allStepIDs {
-		status, ok := reported[stepID]
-		if !ok {
+		status := reported[stepID]
+		if status == "" {
 			status = "SKIP"
 		}
 		if status == "OK" {
