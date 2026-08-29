@@ -544,68 +544,71 @@ func runDogCall(cmd *cobra.Command, args []string) error {
 	}
 
 	if callAll {
-		// Wake all idle dogs
-		dogs, err := mgr.List()
-		if err != nil {
-			return fmt.Errorf("listing dogs: %w", err)
-		}
-
-		woken := 0
-		for _, d := range dogs {
-			if d.State == dog.StateIdle {
-				if err := mgr.SetState(d.Name, dog.StateIdle); err != nil {
-					style.PrintWarning("failed to wake %s: %v", d.Name, err)
-					continue
-				}
-				woken++
-				fmt.Printf("✓ Called %s\n", d.Name)
-			}
-		}
-
-		if woken == 0 {
-			fmt.Println("No idle dogs to call")
-		} else {
-			fmt.Printf("\n%d dog(s) ready\n", woken)
-		}
-		return nil
+		return callAllDogs(mgr)
 	}
 
 	if len(args) > 0 {
-		// Wake specific dog
-		name := args[0]
-		d, err := mgr.Get(name)
-		if err != nil {
-			return fmt.Errorf("getting dog %s: %w", name, err)
-		}
-
-		if d.State == dog.StateWorking {
-			fmt.Printf("Dog %s is already working (use 'gt dog done %s' when complete)\n", name, name)
-			return nil
-		}
-
-		if err := mgr.SetState(name, dog.StateIdle); err != nil {
-			return fmt.Errorf("waking dog %s: %w", name, err)
-		}
-
-		fmt.Printf("✓ Called %s - ready for work\n", name)
-		return nil
+		return callNamedDog(mgr, args[0])
 	}
 
-	// Wake one idle dog
+	return callAnyDog(mgr)
+}
+
+func callAllDogs(mgr *dog.Manager) error {
+	dogs, err := mgr.List()
+	if err != nil {
+		return fmt.Errorf("listing dogs: %w", err)
+	}
+
+	woken := 0
+	for _, d := range dogs {
+		if d.State != dog.StateIdle {
+			continue
+		}
+		if err := mgr.SetState(d.Name, dog.StateIdle); err != nil {
+			style.PrintWarning("failed to wake %s: %v", d.Name, err)
+			continue
+		}
+		woken++
+		fmt.Printf("✓ Called %s\n", d.Name)
+	}
+
+	if woken == 0 {
+		fmt.Println("No idle dogs to call")
+		return nil
+	}
+	fmt.Printf("\n%d dog(s) ready\n", woken)
+	return nil
+}
+
+func callNamedDog(mgr *dog.Manager, name string) error {
+	d, err := mgr.Get(name)
+	if err != nil {
+		return fmt.Errorf("getting dog %s: %w", name, err)
+	}
+	if d.State == dog.StateWorking {
+		fmt.Printf("Dog %s is already working (use 'gt dog done %s' when complete)\n", name, name)
+		return nil
+	}
+	if err := mgr.SetState(name, dog.StateIdle); err != nil {
+		return fmt.Errorf("waking dog %s: %w", name, err)
+	}
+	fmt.Printf("✓ Called %s - ready for work\n", name)
+	return nil
+}
+
+func callAnyDog(mgr *dog.Manager) error {
 	d, err := mgr.GetIdleDog()
 	if err != nil {
 		return fmt.Errorf("getting idle dog: %w", err)
 	}
-
 	if d == nil {
 		fmt.Println("No idle dogs available")
 		return nil
 	}
-
 	if err := mgr.SetState(d.Name, dog.StateIdle); err != nil {
 		return fmt.Errorf("waking dog %s: %w", d.Name, err)
 	}
-
 	fmt.Printf("✓ Called %s - ready for work\n", d.Name)
 	return nil
 }
