@@ -26,6 +26,24 @@ const defaultAllowedSubcmds = "" +
 	"bd:create,update,close,show,list,ready,dep,export,prime,stats,blocked,doctor"
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("proxy server error", "err", err)
+		os.Exit(1)
+	}
+}
+
+type proxyServerOptions struct {
+	configFile     string
+	listen         string
+	adminListen    string
+	caDir          string
+	allowedCmds    string
+	allowedSubcmds string
+	townRoot       string
+	explicitFlags  map[string]bool
+}
+
+func parseProxyServerOptions() proxyServerOptions {
 	var (
 		configFile     = flag.String("config", "", "path to config file (default: ~/gt/.runtime/proxy/config.json)")
 		listen         = flag.String("listen", "0.0.0.0:9876", "address to listen on")
@@ -37,119 +55,152 @@ func main() {
 		townRoot = flag.String("town-root", "", "Gas Town root directory (default: $GT_TOWN or ~/gt)")
 	)
 	flag.Parse()
+	explicitFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
+	return proxyServerOptions{
+		configFile:     *configFile,
+		listen:         *listen,
+		adminListen:    *adminListen,
+		caDir:          *caDir,
+		allowedCmds:    *allowedCmds,
+		allowedSubcmds: *allowedSubcmds,
+		townRoot:       *townRoot,
+		explicitFlags:  explicitFlags,
+	}
+}
+
+func run() error {
+	opts := parseProxyServerOptions()
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		slog.Error("cannot determine home dir", "err", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Determine config file path and load it.
-	cfgPath := *configFile
-	if cfgPath == "" {
-		cfgPath = filepath.Join(home, "gt", ".runtime", "proxy", "config.json")
-	}
+	cfgPath := proxyServerConfigPath(opts.configFile, home)
 	fileCfg, err := loadConfig(cfgPath)
 	if err != nil {
-		slog.Error("failed to load config file", "path", cfgPath, "err", err)
-		os.Exit(1)
+		return err
 	}
 
-	// Merge: flag values override config file values. We use flag.Visit to detect
-	// which flags were explicitly set by the user, so we only override those fields.
-	explicitFlags := make(map[string]bool)
-	flag.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
-
-	if !explicitFlags["listen"] && fileCfg.ListenAddr != "" {
-		*listen = fileCfg.ListenAddr
-	}
-	if !explicitFlags["admin-listen"] && fileCfg.AdminListenAddr != "" {
-		*adminListen = fileCfg.AdminListenAddr
-	}
-	if !explicitFlags["ca-dir"] && fileCfg.CADir != "" {
-		*caDir = fileCfg.CADir
-	}
-	if !explicitFlags["town-root"] && fileCfg.TownRoot != "" {
-		*townRoot = fileCfg.TownRoot
-	}
-	if !explicitFlags["allowed-cmds"] && len(fileCfg.AllowedCommands) > 0 {
-		*allowedCmds = strings.Join(fileCfg.AllowedCommands, ",")
-	}
-	if !explicitFlags["allowed-subcmds"] && len(fileCfg.AllowedSubcommands) > 0 {
-		*allowedSubcmds = buildAllowedSubcmds(fileCfg.AllowedSubcommands)
-	}
-
-	if *caDir == "" {
-		*caDir = filepath.Join(home, "gt", ".runtime", "ca")
-	}
-
-	if *townRoot == "" {
-		if v := os.Getenv("GT_TOWN"); v != "" {
-			*townRoot = v
-		} else {
-			*townRoot = filepath.Join(home, "gt")
-		}
-	}
-
-	ca, err := proxy.LoadOrGenerateCA(*caDir)
+	mergeProxyServerConfig(&opts, fileCfg)
+	applyProxyServerDefaults(&opts, home)
+	ca, err := proxy.LoadOrGenerateCA(opts.caDir)
 	if err != nil {
-		slog.Error("CA setup failed", "err", err)
-		os.Exit(1)
+		return err
 	}
-	slog.Info("CA loaded", "dir", *caDir)
-
-	cmds := strings.Split(*allowedCmds, ",")
-	for i := range cmds {
-		cmds[i] = strings.TrimSpace(cmds[i])
-	}
-
-	// Parse extra_san_ips: convert strings to net.IP, skip invalid entries with a warning.
-	var extraSANIPs []net.IP
-	for _, s := range fileCfg.ExtraSANIPs {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		ip := net.ParseIP(s)
-		if ip == nil {
-			slog.Warn("extra_san_ips: invalid IP address — skipping", "entry", s)
-			continue
-		}
-		extraSANIPs = append(extraSANIPs, ip)
-	}
-
-	// Parse extra_san_hosts: filter empty strings.
-	var extraSANHosts []string
-	for _, h := range fileCfg.ExtraSANHosts {
-		h = strings.TrimSpace(h)
-		if h != "" {
-			extraSANHosts = append(extraSANHosts, h)
-		}
-	}
-
-	cfg := proxy.Config{
-		ListenAddr:         *listen,
-		AdminListenAddr:    *adminListen,
-		AllowedCommands:    cmds,
-		AllowedSubcommands: parseAllowedSubcmds(*allowedSubcmds),
-		TownRoot:           *townRoot,
-		ExtraSANIPs:        extraSANIPs,
-		ExtraSANHosts:      extraSANHosts,
-	}
-
-	srv, err := proxy.New(cfg, ca)
+	slog.Info("CA loaded", "dir", opts.caDir)
+	srv, err := proxy.New(proxyServerConfig(opts, fileCfg), ca)
 	if err != nil {
-		slog.Error("invalid server config", "err", err)
-		os.Exit(1)
+		return err
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := srv.Start(ctx); err != nil {
-		slog.Error("server error", "err", err)
-		os.Exit(1)
+	return srv.Start(ctx)
+}
+
+func proxyServerConfigPath(configFile, home string) string {
+	if configFile != "" {
+		return configFile
 	}
+	return filepath.Join(home, "gt", ".runtime", "proxy", "config.json")
+}
+
+func mergeProxyServerConfig(o *proxyServerOptions, fileCfg ProxyConfig) {
+	mergeProxyServerNetwork(o, fileCfg)
+	mergeProxyServerPaths(o, fileCfg)
+	mergeProxyServerAllowlists(o, fileCfg)
+}
+
+func mergeProxyServerNetwork(o *proxyServerOptions, fileCfg ProxyConfig) {
+	if !o.explicitFlags["listen"] && fileCfg.ListenAddr != "" {
+		o.listen = fileCfg.ListenAddr
+	}
+	if !o.explicitFlags["admin-listen"] && fileCfg.AdminListenAddr != "" {
+		o.adminListen = fileCfg.AdminListenAddr
+	}
+}
+
+func mergeProxyServerPaths(o *proxyServerOptions, fileCfg ProxyConfig) {
+	if !o.explicitFlags["ca-dir"] && fileCfg.CADir != "" {
+		o.caDir = fileCfg.CADir
+	}
+	if !o.explicitFlags["town-root"] && fileCfg.TownRoot != "" {
+		o.townRoot = fileCfg.TownRoot
+	}
+}
+
+func mergeProxyServerAllowlists(o *proxyServerOptions, fileCfg ProxyConfig) {
+	if !o.explicitFlags["allowed-cmds"] && len(fileCfg.AllowedCommands) > 0 {
+		o.allowedCmds = strings.Join(fileCfg.AllowedCommands, ",")
+	}
+	if !o.explicitFlags["allowed-subcmds"] && len(fileCfg.AllowedSubcommands) > 0 {
+		o.allowedSubcmds = buildAllowedSubcmds(fileCfg.AllowedSubcommands)
+	}
+}
+
+func applyProxyServerDefaults(o *proxyServerOptions, home string) {
+	if o.caDir == "" {
+		o.caDir = filepath.Join(home, "gt", ".runtime", "ca")
+	}
+	if o.townRoot != "" {
+		return
+	}
+	o.townRoot = os.Getenv("GT_TOWN")
+	if o.townRoot == "" {
+		o.townRoot = filepath.Join(home, "gt")
+	}
+}
+
+func proxyServerConfig(o proxyServerOptions, fileCfg ProxyConfig) proxy.Config {
+	return proxy.Config{
+		ListenAddr:         o.listen,
+		AdminListenAddr:    o.adminListen,
+		AllowedCommands:    splitAllowedCommands(o.allowedCmds),
+		AllowedSubcommands: parseAllowedSubcmds(o.allowedSubcmds),
+		TownRoot:           o.townRoot,
+		ExtraSANIPs:        parseExtraSANIPs(fileCfg.ExtraSANIPs),
+		ExtraSANHosts:      parseExtraSANHosts(fileCfg.ExtraSANHosts),
+	}
+}
+
+func splitAllowedCommands(value string) []string {
+	cmds := strings.Split(value, ",")
+	for i := range cmds {
+		cmds[i] = strings.TrimSpace(cmds[i])
+	}
+	return cmds
+}
+
+func parseExtraSANIPs(values []string) []net.IP {
+	var ips []net.IP
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		ip := net.ParseIP(value)
+		if ip == nil {
+			slog.Warn("extra_san_ips: invalid IP address — skipping", "entry", value)
+			continue
+		}
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+func parseExtraSANHosts(values []string) []string {
+	var hosts []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			hosts = append(hosts, value)
+		}
+	}
+	return hosts
 }
 
 // discoverAllowedSubcmds calls "gt proxy-subcmds" to auto-discover the allowed
