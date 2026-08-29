@@ -678,31 +678,9 @@ func runDogDone(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	var name string
-	if len(args) > 0 {
-		name = args[0]
-	} else {
-		// Auto-detect dog from cwd
-		// Dog worktrees are at ~/gt/deacon/dogs/<name>/<rig>/
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting cwd: %w", err)
-		}
-
-		// Look for /deacon/dogs/<name>/ in path
-		parts := splitPathComponents(cwd)
-		if len(parts) > 1 {
-			for i := range parts[:len(parts)-1] {
-				if parts[i] == "dogs" && i > 0 && parts[i-1] == "deacon" {
-					name = parts[i+1]
-					break
-				}
-			}
-		}
-
-		if name == "" {
-			return fmt.Errorf("could not detect dog name from cwd: %s\nRun from a dog worktree or specify name: gt dog done <name>", cwd)
-		}
+	name, err := resolveDogDoneName(args)
+	if err != nil {
+		return err
 	}
 
 	d, err := mgr.Get(name)
@@ -720,15 +698,7 @@ func runDogDone(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if dog.CanClearStateOnly(d.Work, d.WorkKind) {
-		cleared, err := mgr.ClearWorkIfMatches(name, d.Work, d.WorkStartedAt)
-		if err != nil {
-			return fmt.Errorf("clearing work for dog %s: %w", name, err)
-		}
-		if !cleared {
-			return fmt.Errorf("dog %s assignment changed during completion; state preserved", name)
-		}
-	} else if err := completeSourceBackedDogWork(mgr, name, d); err != nil {
+	if err := completeDogWork(mgr, name, d); err != nil {
 		return err
 	}
 
@@ -743,6 +713,52 @@ func runDogDone(_ *cobra.Command, args []string) error {
 	// We disable remain-on-exit first — otherwise kill-session leaves a
 	// dead pane that the deacon's health-check reports as an orphan.
 	scheduleCompletedDogSessionKill(mgr, name)
+	return nil
+}
+
+func resolveDogDoneName(args []string) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting cwd: %w", err)
+	}
+	name := dogNameFromWorktreePath(cwd)
+	if name == "" {
+		return "", fmt.Errorf("could not detect dog name from cwd: %s\nRun from a dog worktree or specify name: gt dog done <name>", cwd)
+	}
+	return name, nil
+}
+
+func dogNameFromWorktreePath(path string) string {
+	parts := splitPathComponents(path)
+	if len(parts) < 2 {
+		return ""
+	}
+	for i := range parts[:len(parts)-1] {
+		if parts[i] == "dogs" && i > 0 && parts[i-1] == "deacon" {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+func completeDogWork(mgr *dog.Manager, name string, d *dog.Dog) error {
+	if dog.CanClearStateOnly(d.Work, d.WorkKind) {
+		return clearCompletedDogWork(mgr, name, d)
+	}
+	return completeSourceBackedDogWork(mgr, name, d)
+}
+
+func clearCompletedDogWork(mgr *dog.Manager, name string, d *dog.Dog) error {
+	cleared, err := mgr.ClearWorkIfMatches(name, d.Work, d.WorkStartedAt)
+	if err != nil {
+		return fmt.Errorf("clearing work for dog %s: %w", name, err)
+	}
+	if !cleared {
+		return fmt.Errorf("dog %s assignment changed during completion; state preserved", name)
+	}
 	return nil
 }
 
