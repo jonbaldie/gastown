@@ -421,8 +421,10 @@ func runRefineryQueue(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("getting queue: %w", err)
 	}
+	return outputRefineryQueue(queue, rigName, queueJSON)
+}
 
-	// JSON output
+func outputRefineryQueue(queue []refinery.QueueItem, rigName string, queueJSON bool) error {
 	if queueJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -438,53 +440,57 @@ func runRefineryQueue(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, item := range queue {
-		status := ""
-		prefix := fmt.Sprintf("  %d.", item.Position)
-
-		if item.Position == 0 {
-			prefix = "  ▶"
-			status = style.Bold.Render("[processing]")
-		} else {
-			switch item.MR.Status {
-			case refinery.MROpen:
-				if item.MR.Error != "" {
-					status = style.Dim.Render("[needs-rework]")
-				} else {
-					status = style.Dim.Render("[pending]")
-				}
-			case refinery.MRInProgress:
-				status = style.Bold.Render("[processing]")
-			case refinery.MRClosed:
-				switch item.MR.CloseReason {
-				case refinery.CloseReasonMerged:
-					status = style.Bold.Render("[merged]")
-				case refinery.CloseReasonRejected:
-					status = style.Dim.Render("[rejected]")
-				case refinery.CloseReasonConflict:
-					status = style.Dim.Render("[conflict]")
-				case refinery.CloseReasonSuperseded:
-					status = style.Dim.Render("[superseded]")
-				default:
-					status = style.Dim.Render("[closed]")
-				}
-			}
-		}
-
-		issueInfo := ""
-		if item.MR.IssueID != "" {
-			issueInfo = fmt.Sprintf(" (%s)", item.MR.IssueID)
-		}
-
-		fmt.Printf("%s %s %s/%s%s %s\n",
-			prefix,
-			status,
-			item.MR.Worker,
-			item.MR.Branch,
-			issueInfo,
-			style.Dim.Render(item.Age))
+		printRefineryQueueItem(item)
 	}
 
 	return nil
+}
+
+func printRefineryQueueItem(item refinery.QueueItem) {
+	prefix := fmt.Sprintf("  %d.", item.Position)
+	if item.Position == 0 {
+		prefix = "  ▶"
+	}
+	issueInfo := ""
+	if item.MR.IssueID != "" {
+		issueInfo = fmt.Sprintf(" (%s)", item.MR.IssueID)
+	}
+	fmt.Printf("%s %s %s/%s%s %s\n", prefix, refineryQueueStatus(item), item.MR.Worker, item.MR.Branch, issueInfo, style.Dim.Render(item.Age))
+}
+
+func refineryQueueStatus(item refinery.QueueItem) string {
+	if item.Position == 0 {
+		return style.Bold.Render("[processing]")
+	}
+	switch item.MR.Status {
+	case refinery.MROpen:
+		if item.MR.Error != "" {
+			return style.Dim.Render("[needs-rework]")
+		}
+		return style.Dim.Render("[pending]")
+	case refinery.MRInProgress:
+		return style.Bold.Render("[processing]")
+	case refinery.MRClosed:
+		return refineryClosedStatus(item.MR.CloseReason)
+	default:
+		return ""
+	}
+}
+
+func refineryClosedStatus(reason refinery.CloseReason) string {
+	status := map[refinery.CloseReason]string{
+		refinery.CloseReasonMerged:     "[merged]",
+		refinery.CloseReasonRejected:   "[rejected]",
+		refinery.CloseReasonConflict:   "[conflict]",
+		refinery.CloseReasonSuperseded: "[superseded]",
+	}
+	if value, ok := status[reason]; ok {
+		if reason == refinery.CloseReasonMerged {
+			return style.Bold.Render(value)
+		}
+		return style.Dim.Render(value)
+	}
+	return style.Dim.Render("[closed]")
 }
 
 func runRefineryAttach(cmd *cobra.Command, args []string) error {
@@ -509,31 +515,46 @@ func runRefineryAttach(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
 	}
-	if stop, err := refinery.ActiveSafetyStop(filepath.Dir(r.Path), rigName); err != nil {
-		return fmt.Errorf("checking refinery safety stop: %w", err)
-	} else if stop != nil {
-		if running {
-			fmt.Printf("Refinery %s is safety-stopped; stopping leftover session %s.\n", rigName, sessionID)
-			if err := mgr.Stop(); err != nil && err != refinery.ErrNotRunning {
-				return fmt.Errorf("%w: stopping leftover refinery session: %v", refinery.NewSafetyStoppedError(stop), err)
-			}
-		}
-		return refinery.NewSafetyStoppedError(stop)
+	if err := handleRefinerySafetyStop(mgr, r, rigName, sessionID, running); err != nil {
+		return err
 	}
 	if !running {
-		// Auto-start if not running
-		fmt.Printf("Refinery not running for %s, starting...\n", rigName)
-		if err := mgr.Start(false, agentOverride); err != nil {
-			if errors.Is(err, refinery.ErrForkRig) {
-				return fmt.Errorf("refinery auto-start skipped: %w", err)
-			}
-			return fmt.Errorf("starting refinery: %w", err)
+		if err := autoStartRefinery(mgr, rigName, agentOverride); err != nil {
+			return err
 		}
-		fmt.Printf("%s Refinery started\n", style.Bold.Render("✓"))
 	}
 
 	// Attach to session using exec to properly forward TTY
 	return attachToTmuxSession(sessionID)
+}
+
+func handleRefinerySafetyStop(mgr *refinery.Manager, r *rig.Rig, rigName, sessionID string, running bool) error {
+	stop, err := refinery.ActiveSafetyStop(filepath.Dir(r.Path), rigName)
+	if err != nil {
+		return fmt.Errorf("checking refinery safety stop: %w", err)
+	}
+	if stop == nil {
+		return nil
+	}
+	if running {
+		fmt.Printf("Refinery %s is safety-stopped; stopping leftover session %s.\n", rigName, sessionID)
+		if err := mgr.Stop(); err != nil && err != refinery.ErrNotRunning {
+			return fmt.Errorf("%w: stopping leftover refinery session: %v", refinery.NewSafetyStoppedError(stop), err)
+		}
+	}
+	return refinery.NewSafetyStoppedError(stop)
+}
+
+func autoStartRefinery(mgr *refinery.Manager, rigName, agentOverride string) error {
+	fmt.Printf("Refinery not running for %s, starting...\n", rigName)
+	if err := mgr.Start(false, agentOverride); err != nil {
+		if errors.Is(err, refinery.ErrForkRig) {
+			return fmt.Errorf("refinery auto-start skipped: %w", err)
+		}
+		return fmt.Errorf("starting refinery: %w", err)
+	}
+	fmt.Printf("%s Refinery started\n", style.Bold.Render("✓"))
+	return nil
 }
 
 func runRefineryRestart(cmd *cobra.Command, args []string) error {
@@ -560,32 +581,49 @@ func runRefineryRestart(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Restarting refinery for %s...\n", rigName)
-	if stop, err := refinery.ActiveSafetyStop(filepath.Dir(r.Path), rigName); err != nil {
-		return fmt.Errorf("checking refinery safety stop: %w", err)
-	} else if stop != nil {
-		if err := mgr.Stop(); err != nil && err != refinery.ErrNotRunning {
-			return fmt.Errorf("%w: stopping leftover refinery session: %v", refinery.NewSafetyStoppedError(stop), err)
-		}
-		return refinery.NewSafetyStoppedError(stop)
+	if err := checkRefineryRestartSafety(mgr, r, rigName); err != nil {
+		return err
 	}
 
-	// Stop if running (ignore ErrNotRunning)
-	if err := mgr.Stop(); err != nil && err != refinery.ErrNotRunning {
+	if err := stopRefineryForRestart(mgr); err != nil {
 		return fmt.Errorf("stopping refinery: %w", err)
 	}
 
-	// Start fresh
-	start := mgr.Start
-	if force {
-		start = mgr.StartAllowingForkRig
-	}
-	if err := start(false, agentOverride); err != nil {
+	if err := startRefineryForRestart(mgr, force, agentOverride); err != nil {
 		return fmt.Errorf("starting refinery: %w", err)
 	}
 
 	fmt.Printf("%s Refinery restarted for %s\n", style.Bold.Render("✓"), rigName)
 	fmt.Printf("  %s\n", style.Dim.Render("Use 'gt refinery attach' to connect"))
 	return nil
+}
+
+func checkRefineryRestartSafety(mgr *refinery.Manager, r *rig.Rig, rigName string) error {
+	stop, err := refinery.ActiveSafetyStop(filepath.Dir(r.Path), rigName)
+	if err != nil {
+		return fmt.Errorf("checking refinery safety stop: %w", err)
+	}
+	if stop == nil {
+		return nil
+	}
+	if err := mgr.Stop(); err != nil && err != refinery.ErrNotRunning {
+		return fmt.Errorf("%w: stopping leftover refinery session: %v", refinery.NewSafetyStoppedError(stop), err)
+	}
+	return refinery.NewSafetyStoppedError(stop)
+}
+
+func stopRefineryForRestart(mgr *refinery.Manager) error {
+	if err := mgr.Stop(); err != nil && err != refinery.ErrNotRunning {
+		return err
+	}
+	return nil
+}
+
+func startRefineryForRestart(mgr *refinery.Manager, force bool, agentOverride string) error {
+	if force {
+		return mgr.StartAllowingForkRig(false, agentOverride)
+	}
+	return mgr.Start(false, agentOverride)
 }
 
 // getWorkerID returns the refinery worker ID from environment or default.
@@ -674,8 +712,10 @@ func runRefineryUnclaimed(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("listing merge requests: %w", err)
 	}
+	return outputUnclaimedRefineryMRs(collectUnclaimedRefineryMRs(issues), rigName, unclaimedJSON)
+}
 
-	// Filter for unclaimed (no assignee)
+func collectUnclaimedRefineryMRs(issues []*beads.Issue) []*refinery.MRInfo {
 	var unclaimed []*refinery.MRInfo
 	for _, issue := range issues {
 		if issue.Assignee != "" {
@@ -694,8 +734,10 @@ func runRefineryUnclaimed(cmd *cobra.Command, args []string) error {
 		}
 		unclaimed = append(unclaimed, mr)
 	}
+	return unclaimed
+}
 
-	// JSON output
+func outputUnclaimedRefineryMRs(unclaimed []*refinery.MRInfo, rigName string, unclaimedJSON bool) error {
 	if unclaimedJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -711,9 +753,7 @@ func runRefineryUnclaimed(cmd *cobra.Command, args []string) error {
 	}
 
 	for i, mr := range unclaimed {
-		priority := fmt.Sprintf("P%d", mr.Priority)
-		fmt.Printf("  %d. [%s] %s → %s\n", i+1, priority, mr.Branch, mr.Target)
-		fmt.Printf("     ID: %s  Worker: %s\n", mr.ID, mr.Worker)
+		printRefineryMRSummary(i, mr)
 	}
 
 	return nil
@@ -748,8 +788,10 @@ func runRefineryReady(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("listing queue anomalies: %w", err)
 	}
+	return outputRefineryReady(ready, anomalies, rigName, readyJSON)
+}
 
-	// JSON output
+func outputRefineryReady(ready []*refinery.MRInfo, anomalies []*refinery.MRAnomaly, rigName string, readyJSON bool) error {
 	if readyJSON {
 		type readyOutput struct {
 			Ready     []*refinery.MRInfo    `json:"ready"`
@@ -772,28 +814,36 @@ func runRefineryReady(cmd *cobra.Command, args []string) error {
 	}
 
 	for i, mr := range ready {
-		priority := fmt.Sprintf("P%d", mr.Priority)
-		fmt.Printf("  %d. [%s] %s → %s\n", i+1, priority, mr.Branch, mr.Target)
-		fmt.Printf("     ID: %s  Worker: %s\n", mr.ID, mr.Worker)
+		printRefineryMRSummary(i, mr)
 	}
 
-	if len(anomalies) > 0 {
-		fmt.Printf("\n%s Queue anomalies:\n\n", style.Bold.Render("⚠"))
-		for i, anomaly := range anomalies {
-			line := fmt.Sprintf("  %d. [%s] %s", i+1, anomaly.Type, anomaly.ID)
-			fmt.Println(line)
-			fmt.Printf("     Branch: %s\n", anomaly.Branch)
-			if anomaly.Assignee != "" {
-				fmt.Printf("     Assignee: %s\n", anomaly.Assignee)
-			}
-			if anomaly.Age > 0 {
-				fmt.Printf("     Age: %s\n", anomaly.Age.Truncate(time.Second))
-			}
-			fmt.Printf("     Detail: %s\n", anomaly.Detail)
-		}
-	}
+	printRefineryAnomalies(anomalies)
 
 	return nil
+}
+
+func printRefineryMRSummary(index int, mr *refinery.MRInfo) {
+	priority := fmt.Sprintf("P%d", mr.Priority)
+	fmt.Printf("  %d. [%s] %s → %s\n", index+1, priority, mr.Branch, mr.Target)
+	fmt.Printf("     ID: %s  Worker: %s\n", mr.ID, mr.Worker)
+}
+
+func printRefineryAnomalies(anomalies []*refinery.MRAnomaly) {
+	if len(anomalies) == 0 {
+		return
+	}
+	fmt.Printf("\n%s Queue anomalies:\n\n", style.Bold.Render("⚠"))
+	for i, anomaly := range anomalies {
+		fmt.Printf("  %d. [%s] %s\n", i+1, anomaly.Type, anomaly.ID)
+		fmt.Printf("     Branch: %s\n", anomaly.Branch)
+		if anomaly.Assignee != "" {
+			fmt.Printf("     Assignee: %s\n", anomaly.Assignee)
+		}
+		if anomaly.Age > 0 {
+			fmt.Printf("     Age: %s\n", anomaly.Age.Truncate(time.Second))
+		}
+		fmt.Printf("     Detail: %s\n", anomaly.Detail)
+	}
 }
 
 func runRefineryReadyAll(eng *refinery.Engineer, rigName string, readyJSON bool) error {
@@ -807,8 +857,10 @@ func runRefineryReadyAll(eng *refinery.Engineer, rigName string, readyJSON bool)
 		enc.SetIndent("", "  ")
 		return enc.Encode(mrs)
 	}
+	return outputRefineryReadyAllText(mrs, rigName)
+}
 
-	// Human-readable output with assignee and updated_at
+func outputRefineryReadyAllText(mrs []*refinery.MRInfo, rigName string) error {
 	fmt.Printf("%s All Open MRs for '%s':\n\n", style.Bold.Render("📋"), rigName)
 
 	if len(mrs) == 0 {
@@ -817,33 +869,38 @@ func runRefineryReadyAll(eng *refinery.Engineer, rigName string, readyJSON bool)
 	}
 
 	for i, mr := range mrs {
-		priority := fmt.Sprintf("P%d", mr.Priority)
-		fmt.Printf("  %d. [%s] %s → %s\n", i+1, priority, mr.Branch, mr.Target)
-
-		assignee := mr.Assignee
-		if assignee == "" {
-			assignee = "(unclaimed)"
-		}
-		age := ""
-		if !mr.UpdatedAt.IsZero() {
-			age = fmt.Sprintf(" (updated %s ago)", time.Since(mr.UpdatedAt).Truncate(time.Second))
-		}
-		fmt.Printf("     ID: %s  Worker: %s  Assignee: %s%s\n", mr.ID, mr.Worker, assignee, age)
-
-		// Show branch status and blocked-by for --all mode
-		var flags []string
-		if mr.BlockedBy != "" {
-			flags = append(flags, fmt.Sprintf("blocked-by:%s", mr.BlockedBy))
-		}
-		if !mr.BranchExistsLocal && !mr.BranchExistsRemote {
-			flags = append(flags, "no-branch")
-		}
-		if len(flags) > 0 {
-			fmt.Printf("     Flags: %s\n", style.Dim.Render(fmt.Sprintf("[%s]", strings.Join(flags, ", "))))
-		}
+		printRefineryReadyAllMR(i, mr)
 	}
 
 	return nil
+}
+
+func printRefineryReadyAllMR(index int, mr *refinery.MRInfo) {
+	priority := fmt.Sprintf("P%d", mr.Priority)
+	fmt.Printf("  %d. [%s] %s → %s\n", index+1, priority, mr.Branch, mr.Target)
+	assignee := mr.Assignee
+	if assignee == "" {
+		assignee = "(unclaimed)"
+	}
+	age := ""
+	if !mr.UpdatedAt.IsZero() {
+		age = fmt.Sprintf(" (updated %s ago)", time.Since(mr.UpdatedAt).Truncate(time.Second))
+	}
+	fmt.Printf("     ID: %s  Worker: %s  Assignee: %s%s\n", mr.ID, mr.Worker, assignee, age)
+	printRefineryMRFlags(mr)
+}
+
+func printRefineryMRFlags(mr *refinery.MRInfo) {
+	var flags []string
+	if mr.BlockedBy != "" {
+		flags = append(flags, fmt.Sprintf("blocked-by:%s", mr.BlockedBy))
+	}
+	if !mr.BranchExistsLocal && !mr.BranchExistsRemote {
+		flags = append(flags, "no-branch")
+	}
+	if len(flags) > 0 {
+		fmt.Printf("     Flags: %s\n", style.Dim.Render(fmt.Sprintf("[%s]", strings.Join(flags, ", "))))
+	}
 }
 
 func runRefineryBlocked(cmd *cobra.Command, args []string) error {
