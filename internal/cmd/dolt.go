@@ -1292,42 +1292,59 @@ func runDoltMigrate(_ *cobra.Command, _ []string) error {
 	if config.IsRemote() {
 		return fmt.Errorf("Dolt server is remote (%s) — migration requires local server access", config.HostPort())
 	}
-
-	// Check if daemon is running - must stop first to avoid race conditions.
-	// The daemon spawns many bd processes via gt status heartbeats. If these
-	// run concurrently with migration, race conditions occur between old
-	// old and new backends.
-	daemonRunning, _, _ := daemon.IsRunning(townRoot)
-	if daemonRunning {
-		return fmt.Errorf("Gas Town daemon is running. Stop it first with: gt daemon stop\n\nThe daemon spawns bd processes that can race with migration.\nStop the daemon, run migration, then restart it.")
+	if err := checkDoltMigrationPrerequisites(townRoot); err != nil {
+		return err
 	}
 
-	// Check if Dolt server is running - must stop first
-	running, _, _ := doltserver.IsRunning(townRoot)
-	if running {
-		return fmt.Errorf("Dolt server is running. Stop it first with: gt dolt stop")
-	}
-
-	// Find databases to migrate
 	migrations := doltserver.FindMigratableDatabases(townRoot)
 	if len(migrations) == 0 {
 		fmt.Println("No databases found to migrate.")
 		return nil
 	}
 
-	fmt.Printf("Found %d database(s) to migrate:\n\n", len(migrations))
-	for _, m := range migrations {
-		sizeStr := dirSizeHuman(m.SourcePath)
-		fmt.Printf("  %s (%s)\n", m.SourcePath, sizeStr)
-		fmt.Printf("    → %s\n\n", m.TargetPath)
-	}
+	printDoltMigrations(migrations)
 
 	if doltMigrateDry {
 		fmt.Println("Dry run: no changes made.")
 		return nil
 	}
 
-	// Perform migrations
+	if err := migrateDoltDatabases(townRoot, migrations); err != nil {
+		return err
+	}
+
+	reportDoltMigrationMetadata(townRoot)
+
+	fmt.Printf("\n%s Migration complete.\n", style.Bold.Render("✓"))
+	return startDoltAfterMigration(townRoot)
+}
+
+func checkDoltMigrationPrerequisites(townRoot string) error {
+	// The daemon spawns many bd processes via gt status heartbeats. If these
+	// run concurrently with migration, race conditions occur between old
+	// and new backends.
+	daemonRunning, _, _ := daemon.IsRunning(townRoot)
+	if daemonRunning {
+		return fmt.Errorf("Gas Town daemon is running. Stop it first with: gt daemon stop\n\nThe daemon spawns bd processes that can race with migration.\nStop the daemon, run migration, then restart it.")
+	}
+
+	running, _, _ := doltserver.IsRunning(townRoot)
+	if running {
+		return fmt.Errorf("Dolt server is running. Stop it first with: gt dolt stop")
+	}
+	return nil
+}
+
+func printDoltMigrations(migrations []doltserver.Migration) {
+	fmt.Printf("Found %d database(s) to migrate:\n\n", len(migrations))
+	for _, m := range migrations {
+		sizeStr := dirSizeHuman(m.SourcePath)
+		fmt.Printf("  %s (%s)\n", m.SourcePath, sizeStr)
+		fmt.Printf("    → %s\n\n", m.TargetPath)
+	}
+}
+
+func migrateDoltDatabases(townRoot string, migrations []doltserver.Migration) error {
 	for _, m := range migrations {
 		fmt.Printf("Migrating %s...\n", m.RigName)
 		if err := doltserver.MigrateRigFromBeads(townRoot, m.RigName, m.SourcePath); err != nil {
@@ -1335,8 +1352,10 @@ func runDoltMigrate(_ *cobra.Command, _ []string) error {
 		}
 		fmt.Printf("  %s Migrated to %s\n", style.Bold.Render("✓"), m.TargetPath)
 	}
+	return nil
+}
 
-	// Update metadata.json for all migrated rigs
+func reportDoltMigrationMetadata(townRoot string) {
 	updated, metaErrs := doltserver.EnsureAllMetadata(townRoot)
 	if len(updated) > 0 {
 		fmt.Printf("\nUpdated metadata.json for: %s\n", strings.Join(updated, ", "))
@@ -1344,12 +1363,9 @@ func runDoltMigrate(_ *cobra.Command, _ []string) error {
 	for _, err := range metaErrs {
 		fmt.Printf("  %s metadata.json update failed: %v\n", style.Dim.Render("⚠"), err)
 	}
+}
 
-	fmt.Printf("\n%s Migration complete.\n", style.Bold.Render("✓"))
-
-	// Auto-start the Dolt server to prevent split-brain risk.
-	// If bd commands are run before the server starts, they may silently create
-	// isolated local databases instead of connecting to the centralized server.
+func startDoltAfterMigration(townRoot string) error {
 	fmt.Printf("\nStarting Dolt server to prevent split-brain risk...\n")
 	if err := doltserver.Start(townRoot); err != nil {
 		fmt.Printf("\n%s Could not auto-start Dolt server: %v\n", style.Bold.Render("⚠"), err)
@@ -1375,19 +1391,23 @@ func runDoltMigrate(_ *cobra.Command, _ []string) error {
 			for _, db := range missing {
 				fmt.Printf("  - %s\n", db)
 			}
-			fmt.Printf("\n  Served databases: %v\n", served)
-			fmt.Printf("\n  This usually means the database has a stale manifest from migration.\n")
-			fmt.Printf("  To fix, try:\n")
-			fmt.Printf("    1. Stop the server:  %s\n", style.Dim.Render("gt dolt stop"))
-			fmt.Printf("    2. Repair the DB:    %s\n", style.Dim.Render("cd ~/gt/.dolt-data/<db> && dolt fsck --repair"))
-			fmt.Printf("    3. Restart:           %s\n", style.Dim.Render("gt dolt start"))
-			return fmt.Errorf("migration incomplete: %d database(s) exist on disk but are not served: %v", len(missing), missing)
+			return reportDoltMigrationMissingDatabases(served, missing)
 		} else {
 			fmt.Printf("  %s All %d databases verified as served\n", style.Bold.Render("✓"), len(served))
 		}
 	}
 
 	return nil
+}
+
+func reportDoltMigrationMissingDatabases(served, missing []string) error {
+	fmt.Printf("\n  Served databases: %v\n", served)
+	fmt.Printf("\n  This usually means the database has a stale manifest from migration.\n")
+	fmt.Printf("  To fix, try:\n")
+	fmt.Printf("    1. Stop the server:  %s\n", style.Dim.Render("gt dolt stop"))
+	fmt.Printf("    2. Repair the DB:    %s\n", style.Dim.Render("cd ~/gt/.dolt-data/<db> && dolt fsck --repair"))
+	fmt.Printf("    3. Restart:           %s\n", style.Dim.Render("gt dolt start"))
+	return fmt.Errorf("migration incomplete: %d database(s) exist on disk but are not served: %v", len(missing), missing)
 }
 
 // dirSizeHuman returns a human-readable size string for a directory tree.
