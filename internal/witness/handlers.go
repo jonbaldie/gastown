@@ -2261,38 +2261,9 @@ func DiscoverCompletions(bd *BdCli, workDir, rigName string, _ *mail.Router) *Di
 		agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
 		result.Checked++
 
-		// Get full agent fields including completion metadata
-		fields := getAgentBeadFields(bd, workDir, agentBeadID)
-		if fields == nil || fields.ExitType == "" || fields.CompletionTime == "" {
-			continue // No completion metadata — skip
-		}
-
-		sourceIssue := fields.LastSourceIssue
-		if sourceIssue == "" {
-			sourceIssue = fields.HookBead
-		}
-
-		discovery := CompletionDiscovery{
-			PolecatName:    polecatName,
-			AgentBeadID:    agentBeadID,
-			ExitType:       fields.ExitType,
-			IssueID:        sourceIssue,
-			MRID:           fields.MRID,
-			Branch:         fields.Branch,
-			MRFailed:       fields.MRFailed,
-			PushFailed:     fields.PushFailed,
-			CompletionTime: fields.CompletionTime,
-		}
-
-		// Build a payload compatible with the existing routing logic
-		payload := &PolecatDonePayload{
-			PolecatName: polecatName,
-			Exit:        fields.ExitType,
-			IssueID:     sourceIssue,
-			MRID:        fields.MRID,
-			Branch:      fields.Branch,
-			MRFailed:    fields.MRFailed,
-			PushFailed:  fields.PushFailed,
+		discovery, payload, found := discoverCompletionEntry(bd, workDir, polecatName, agentBeadID)
+		if !found {
+			continue
 		}
 
 		// Route based on exit type and MR presence
@@ -2300,17 +2271,58 @@ func DiscoverCompletions(bd *BdCli, workDir, rigName string, _ *mail.Router) *Di
 
 		// Clear completion metadata only after successful processing. If cleanup
 		// wisp creation/update failed, leave metadata for the next patrol retry.
-		if discovery.Error == nil {
-			if err := clearCompletionMetadata(bd, workDir, agentBeadID); err != nil {
-				result.Errors = append(result.Errors,
-					fmt.Errorf("clearing completion metadata for %s: %w", polecatName, err))
-			}
+		if err := clearDiscoveredCompletionMetadata(bd, workDir, agentBeadID, polecatName, discovery.Error); err != nil {
+			result.Errors = append(result.Errors, err)
 		}
 
 		result.Discovered = append(result.Discovered, discovery)
 	}
 
 	return result
+}
+
+func clearDiscoveredCompletionMetadata(bd *BdCli, workDir, agentBeadID, polecatName string, processingErr error) error {
+	if processingErr != nil {
+		return nil
+	}
+	if err := clearCompletionMetadata(bd, workDir, agentBeadID); err != nil {
+		return fmt.Errorf("clearing completion metadata for %s: %w", polecatName, err)
+	}
+	return nil
+}
+
+func discoverCompletionEntry(bd *BdCli, workDir, polecatName, agentBeadID string) (CompletionDiscovery, *PolecatDonePayload, bool) {
+	// Get full agent fields including completion metadata.
+	fields := getAgentBeadFields(bd, workDir, agentBeadID)
+	if fields == nil || fields.ExitType == "" || fields.CompletionTime == "" {
+		return CompletionDiscovery{}, nil, false
+	}
+
+	sourceIssue := fields.LastSourceIssue
+	if sourceIssue == "" {
+		sourceIssue = fields.HookBead
+	}
+	discovery := CompletionDiscovery{
+		PolecatName:    polecatName,
+		AgentBeadID:    agentBeadID,
+		ExitType:       fields.ExitType,
+		IssueID:        sourceIssue,
+		MRID:           fields.MRID,
+		Branch:         fields.Branch,
+		MRFailed:       fields.MRFailed,
+		PushFailed:     fields.PushFailed,
+		CompletionTime: fields.CompletionTime,
+	}
+	payload := &PolecatDonePayload{
+		PolecatName: polecatName,
+		Exit:        fields.ExitType,
+		IssueID:     sourceIssue,
+		MRID:        fields.MRID,
+		Branch:      fields.Branch,
+		MRFailed:    fields.MRFailed,
+		PushFailed:  fields.PushFailed,
+	}
+	return discovery, payload, true
 }
 
 // processDiscoveredCompletion routes a discovered completion through the same
