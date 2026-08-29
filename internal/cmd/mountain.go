@@ -12,12 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// mountainForce controls whether to launch a mountain with warnings.
-var mountainForce bool
-
-// mountainJSON controls whether output is machine-readable JSON.
-var mountainJSON bool
-
 var mountainCmd = &cobra.Command{
 	Use:         "mountain <epic-id>",
 	GroupID:     GroupWork,
@@ -92,10 +86,10 @@ monitoring.`,
 }
 
 func init() {
-	mountainCmd.Flags().BoolVarP(&mountainForce, "force", "f", false, "Launch even with staging warnings")
-	mountainCmd.Flags().BoolVar(&mountainJSON, "json", false, "Output machine-readable JSON")
+	mountainCmd.Flags().BoolP("force", "f", false, "Launch even with staging warnings")
+	mountainCmd.Flags().Bool("json", false, "Output machine-readable JSON")
 
-	mountainStatusCmd.Flags().BoolVar(&mountainJSON, "json", false, "Output as JSON")
+	mountainStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	mountainCmd.AddCommand(mountainStatusCmd)
 	mountainCmd.AddCommand(mountainPauseCmd)
@@ -107,7 +101,8 @@ func init() {
 
 // runMountain implements `gt mountain <epic-id>`.
 // Stages a convoy from the epic, adds the mountain label, and launches Wave 1.
-func runMountain(_ *cobra.Command, args []string) error {
+func runMountain(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	epicID := args[0]
 
 	// Step 1: Validate the input is an epic.
@@ -195,7 +190,7 @@ func runMountain(_ *cobra.Command, args []string) error {
 	}
 
 	// Check status with warnings — refuse unless --force.
-	if status == convoyStatusStagedWarnings && !mountainForce {
+	if status == convoyStatusStagedWarnings && !force {
 		return fmt.Errorf("staging has warnings, use --force to proceed")
 	}
 
@@ -225,7 +220,7 @@ func runMountain(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve town root: %w", err)
 	}
 
-	if err := checkBlockedRigsForLaunch(dag, townRoot, mountainForce); err != nil {
+	if err := checkBlockedRigsForLaunch(dag, townRoot, force); err != nil {
 		return err
 	}
 
@@ -306,21 +301,22 @@ type mountainConvoyInfo struct {
 }
 
 // runMountainStatus shows status for active mountains.
-func runMountainStatus(_ *cobra.Command, args []string) error {
+func runMountainStatus(cmd *cobra.Command, args []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return err
 	}
 
 	if len(args) == 0 {
-		return showAllMountainStatus(townBeads)
+		return showAllMountainStatus(townBeads, jsonOutput)
 	}
 
-	return showMountainDetail(townBeads, args[0])
+	return showMountainDetail(townBeads, args[0], jsonOutput)
 }
 
 // showAllMountainStatus lists all active mountains with progress summary.
-func showAllMountainStatus(townBeads string) error {
+func showAllMountainStatus(townBeads string, jsonOutput bool) error {
 	convoys, err := findMountainConvoys(townBeads)
 	if err != nil {
 		return err
@@ -332,7 +328,7 @@ func showAllMountainStatus(townBeads string) error {
 		return nil
 	}
 
-	if mountainJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(convoys)
@@ -372,7 +368,7 @@ func showAllMountainStatus(townBeads string) error {
 }
 
 // showMountainDetail shows detailed status for a single mountain.
-func showMountainDetail(townBeads, inputID string) error {
+func showMountainDetail(townBeads, inputID string, jsonOutput bool) error {
 	// Resolve: inputID could be an epic or convoy.
 	convoyID, err := resolveMountainID(townBeads, inputID)
 	if err != nil {
@@ -458,7 +454,7 @@ func showMountainDetail(townBeads, inputID string) error {
 
 	total := len(completed) + len(active) + len(ready) + len(skipped) + len(blocked)
 
-	if mountainJSON {
+	if jsonOutput {
 		jsonOut := map[string]interface{}{
 			"convoy_id": convoyID,
 			"title":     cv.Title,
