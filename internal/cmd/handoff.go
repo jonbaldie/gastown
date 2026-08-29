@@ -632,7 +632,11 @@ func resolveRoleToSession(role string) (string, error) {
 		return resolvePathToSession(role)
 	}
 
-	switch strings.ToLower(role) {
+	return resolveRoleShortcut(strings.ToLower(role))
+}
+
+func resolveRoleShortcut(role string) (string, error) {
+	switch role {
 	case constants.RoleMayor, "may":
 		return getMayorSessionName(), nil
 
@@ -640,39 +644,50 @@ func resolveRoleToSession(role string) (string, error) {
 		return getDeaconSessionName(), nil
 
 	case constants.RoleCrew:
-		// Try to get rig and crew name from environment or cwd
-		rig := os.Getenv("GT_RIG")
-		crewName := os.Getenv("GT_CREW")
-		if rig == "" || crewName == "" {
-			// Try to detect from cwd
-			detected, err := detectCrewFromCwd()
-			if err == nil {
-				rig = detected.rigName
-				crewName = detected.crewName
-			}
-		}
-		if rig == "" || crewName == "" {
-			return "", fmt.Errorf("cannot determine crew identity - run from crew directory or specify GT_RIG/GT_CREW")
-		}
-		return session.CrewSessionName(session.PrefixFor(rig), crewName), nil
+		return resolveCrewRoleShortcut()
 
 	case constants.RoleWitness, "wit":
-		rig := os.Getenv("GT_RIG")
-		if rig == "" {
-			return "", fmt.Errorf("cannot determine rig - set GT_RIG or run from rig context")
-		}
-		return session.WitnessSessionName(session.PrefixFor(rig)), nil
+		return resolveRigRoleShortcut(session.RoleWitness)
 
 	case constants.RoleRefinery, "ref":
-		rig := os.Getenv("GT_RIG")
-		if rig == "" {
-			return "", fmt.Errorf("cannot determine rig - set GT_RIG or run from rig context")
-		}
-		return session.RefinerySessionName(session.PrefixFor(rig)), nil
+		return resolveRigRoleShortcut(session.RoleRefinery)
 
 	default:
 		// Assume it's a direct session name (e.g., gt-gastown-crew-max)
 		return role, nil
+	}
+}
+
+func resolveCrewRoleShortcut() (string, error) {
+	// Try to get rig and crew name from environment or cwd.
+	rig := os.Getenv("GT_RIG")
+	crewName := os.Getenv("GT_CREW")
+	if rig == "" || crewName == "" {
+		// Try to detect from cwd.
+		detected, err := detectCrewFromCwd()
+		if err == nil {
+			rig = detected.rigName
+			crewName = detected.crewName
+		}
+	}
+	if rig == "" || crewName == "" {
+		return "", fmt.Errorf("cannot determine crew identity - run from crew directory or specify GT_RIG/GT_CREW")
+	}
+	return session.CrewSessionName(session.PrefixFor(rig), crewName), nil
+}
+
+func resolveRigRoleShortcut(role session.Role) (string, error) {
+	rig := os.Getenv("GT_RIG")
+	if rig == "" {
+		return "", fmt.Errorf("cannot determine rig - set GT_RIG or run from rig context")
+	}
+	switch role {
+	case session.RoleWitness:
+		return session.WitnessSessionName(session.PrefixFor(rig)), nil
+	case session.RoleRefinery:
+		return session.RefinerySessionName(session.PrefixFor(rig)), nil
+	default:
+		return "", fmt.Errorf("unknown rig role: %s", role)
 	}
 }
 
@@ -685,61 +700,75 @@ func resolveRoleToSession(role string) (string, error) {
 //   - <rig>/<name> -> gt-<rig>-<name> (polecat shorthand, if name isn't a known role)
 func resolvePathToSession(path string) (string, error) {
 	parts := strings.Split(path, "/")
-	for _, part := range parts {
-		if !safeAgentPathSegment(part) {
-			return "", fmt.Errorf("invalid target path segment in %q", path)
+	if err := validateAgentPath(path, parts); err != nil {
+		return "", err
+	}
+
+	if len(parts) == 3 {
+		if sessionName, ok := resolveThreePartPath(parts); ok {
+			return sessionName, nil
 		}
 	}
 
-	// Handle <rig>/crew/<name> format
-	if len(parts) == 3 && parts[1] == constants.RoleCrew {
-		rig := parts[0]
-		name := parts[2]
-		return session.CrewSessionName(session.PrefixFor(rig), name), nil
-	}
-
-	// Handle <rig>/polecats/<name> format (explicit polecat path)
-	if len(parts) == 3 && parts[1] == "polecats" {
-		rig := parts[0]
-		name := strings.ToLower(parts[2]) // normalize polecat name
-		return session.PolecatSessionName(session.PrefixFor(rig), name), nil
-	}
-
-	// Handle <rig>/<role-or-polecat> format
 	if len(parts) == 2 {
-		rig := parts[0]
-		second := parts[1]
-		secondLower := strings.ToLower(second)
-
-		// Check for known roles first
-		switch secondLower {
-		case constants.RoleWitness:
-			return session.WitnessSessionName(session.PrefixFor(rig)), nil
-		case constants.RoleRefinery:
-			return session.RefinerySessionName(session.PrefixFor(rig)), nil
-		case constants.RoleCrew:
-			// Just "<rig>/crew" without a name - need more info
-			return "", fmt.Errorf("crew path requires name: %s/crew/<name>", rig)
-		case "polecats":
-			// Just "<rig>/polecats" without a name - need more info
-			return "", fmt.Errorf("polecats path requires name: %s/polecats/<name>", rig)
-		default:
-			// Not a known role - check if it's a crew member before assuming polecat.
-			// Crew members exist at <townRoot>/<rig>/crew/<name>.
-			// This fixes: gt sling gt-375 gastown/max failing because max is crew, not polecat.
-			townRoot := detectTownRootFromCwd()
-			if townRoot != "" {
-				crewPath := filepath.Join(townRoot, rig, "crew", second)
-				if info, err := os.Stat(crewPath); err == nil && info.IsDir() {
-					return session.CrewSessionName(session.PrefixFor(rig), second), nil
-				}
-			}
-			// Not a crew member - treat as polecat name (e.g., gastown/nux)
-			return session.PolecatSessionName(session.PrefixFor(rig), secondLower), nil
+		if sessionName, err, handled := resolveTwoPartPath(parts); handled {
+			return sessionName, err
 		}
 	}
 
 	return "", fmt.Errorf("cannot parse path '%s' - expected <rig>/<polecat>, <rig>/crew/<name>, <rig>/witness, or <rig>/refinery", path)
+}
+
+func validateAgentPath(path string, parts []string) error {
+	for _, part := range parts {
+		if !safeAgentPathSegment(part) {
+			return fmt.Errorf("invalid target path segment in %q", path)
+		}
+	}
+	return nil
+}
+
+func resolveThreePartPath(parts []string) (string, bool) {
+	rig := parts[0]
+	switch parts[1] {
+	case constants.RoleCrew:
+		return session.CrewSessionName(session.PrefixFor(rig), parts[2]), true
+	case "polecats":
+		return session.PolecatSessionName(session.PrefixFor(rig), strings.ToLower(parts[2])), true
+	default:
+		return "", false
+	}
+}
+
+func resolveTwoPartPath(parts []string) (string, error, bool) {
+	rig := parts[0]
+	second := parts[1]
+	switch secondLower := strings.ToLower(second); secondLower {
+	case constants.RoleWitness:
+		return session.WitnessSessionName(session.PrefixFor(rig)), nil, true
+	case constants.RoleRefinery:
+		return session.RefinerySessionName(session.PrefixFor(rig)), nil, true
+	case constants.RoleCrew:
+		return "", fmt.Errorf("crew path requires name: %s/crew/<name>", rig), true
+	case "polecats":
+		return "", fmt.Errorf("polecats path requires name: %s/polecats/<name>", rig), true
+	default:
+		return resolveCrewOrPolecatPath(rig, second, secondLower)
+	}
+}
+
+func resolveCrewOrPolecatPath(rig, second, secondLower string) (string, error, bool) {
+	// Not a known role - check if it's a crew member before assuming polecat.
+	// Crew members exist at <townRoot>/<rig>/crew/<name>.
+	townRoot := detectTownRootFromCwd()
+	if townRoot != "" {
+		crewPath := filepath.Join(townRoot, rig, "crew", second)
+		if info, err := os.Stat(crewPath); err == nil && info.IsDir() {
+			return session.CrewSessionName(session.PrefixFor(rig), second), nil, true
+		}
+	}
+	// Not a crew member - treat as polecat name (e.g., gastown/nux).
+	return session.PolecatSessionName(session.PrefixFor(rig), secondLower), nil, true
 }
 
 // claudeEnvVars lists the Claude-related environment variables to propagate
