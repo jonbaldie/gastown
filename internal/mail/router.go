@@ -295,8 +295,13 @@ func parseGroupAddress(address string) *ParsedGroup {
 
 	// Remove @ prefix
 	group := strings.TrimPrefix(address, "@")
+	if parsed := parseSpecialGroup(group, address); parsed != nil {
+		return parsed
+	}
+	return parseScopedGroup(group, address)
+}
 
-	// Special cases that don't require parsing
+func parseSpecialGroup(group, address string) *ParsedGroup {
 	switch group {
 	case "overseer":
 		return &ParsedGroup{Type: GroupTypeOverseer, Original: address}
@@ -311,7 +316,10 @@ func parseGroupAddress(address string) *ParsedGroup {
 	case "deacons":
 		return &ParsedGroup{Type: GroupTypeRole, RoleType: constants.RoleDeacon, Original: address}
 	}
+	return nil
+}
 
+func parseScopedGroup(group, address string) *ParsedGroup {
 	// Parse patterns with slashes: @rig/<name>, @crew/<rig>, @polecats/<rig>
 	parts := strings.SplitN(group, "/", 2)
 	if len(parts) != 2 || parts[1] == "" {
@@ -319,7 +327,6 @@ func parseGroupAddress(address string) *ParsedGroup {
 	}
 
 	prefix, qualifier := parts[0], parts[1]
-
 	switch prefix {
 	case "rig":
 		return &ParsedGroup{Type: GroupTypeRig, Rig: qualifier, Original: address}
