@@ -434,28 +434,34 @@ func querySessionEvents(verbose bool) []CostEntry {
 		return nil
 	}
 
-	// Collect all beads locations to query
-	beadsLocations := []string{townRoot}
+	return mergeSessionEventEntries(discoverSessionEventLocations(townRoot), verbose)
+}
 
-	// Load rigs to find all rig beads locations
+func discoverSessionEventLocations(townRoot string) []string {
+	locations := []string{townRoot}
 	rigsConfigPath := filepath.Join(townRoot, constants.DirMayor, constants.FileRigsJSON)
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err == nil && rigsConfig != nil {
-		for rigName := range rigsConfig.Rigs {
-			rigPath := filepath.Join(townRoot, rigName)
-			// Verify rig has a beads database
-			rigBeadsPath := filepath.Join(rigPath, constants.DirBeads)
-			if _, statErr := os.Stat(rigBeadsPath); statErr == nil {
-				beadsLocations = append(beadsLocations, rigPath)
-			}
+	if err != nil || rigsConfig == nil {
+		return locations
+	}
+
+	for rigName := range rigsConfig.Rigs {
+		rigPath := filepath.Join(townRoot, rigName)
+		// Verify rig has a beads database
+		rigBeadsPath := filepath.Join(rigPath, constants.DirBeads)
+		if _, statErr := os.Stat(rigBeadsPath); statErr == nil {
+			locations = append(locations, rigPath)
 		}
 	}
 
-	// Query each beads location and merge results
+	return locations
+}
+
+func mergeSessionEventEntries(locations []string, verbose bool) []CostEntry {
 	var allEntries []CostEntry
 	seenIDs := make(map[string]bool)
 
-	for _, location := range beadsLocations {
+	for _, location := range locations {
 		entries, err := querySessionEventsFromLocation(location)
 		if err != nil {
 			// Log but continue with other locations
