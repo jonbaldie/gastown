@@ -376,21 +376,8 @@ func runHandoff(_ *cobra.Command, args []string) error {
 // Used by the PreCompact hook to preserve context before compaction.
 // No tmux required — just collects state, sends handoff mail, and writes marker.
 func runHandoffAuto() error {
-	// Build subject
-	subject := handoffSubject
-	if subject == "" {
-		reason := handoffReason
-		if reason == "" {
-			reason = "auto"
-		}
-		subject = fmt.Sprintf("🤝 HANDOFF: %s", reason)
-	}
-
-	// Auto-collect state if no explicit message
-	message := handoffMessage
-	if message == "" {
-		message = collectHandoffState()
-	}
+	subject := autoHandoffSubject()
+	message := autoHandoffMessage()
 
 	if handoffDryRun {
 		fmt.Printf("[auto-handoff] Would send mail: subject=%q\n", subject)
@@ -401,39 +388,72 @@ func runHandoffAuto() error {
 	// Close any in-progress molecule steps before state save (gt-e26g).
 	cleanupMoleculeOnHandoff()
 
-	// Send handoff mail to self
 	beadID, err := sendHandoffMail(subject, message)
-	if err != nil {
-		// Non-fatal — log and continue
-		fmt.Fprintf(os.Stderr, "auto-handoff: could not send mail: %v\n", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "auto-handoff: saved state to %s\n", beadID)
-	}
+	reportAutoHandoffMail(beadID, err)
 
-	// Write handoff marker so post-compact prime knows it's post-handoff
-	if cwd, err := os.Getwd(); err == nil {
-		runtimeDir := filepath.Join(cwd, constants.DirRuntime)
-		_ = os.MkdirAll(runtimeDir, 0755)
-		markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
-		sessionName := "auto-handoff"
-		if tmux.IsInsideTmux() {
-			if name, err := getCurrentTmuxSession(); err == nil {
-				sessionName = name
-			}
-		}
-		_ = os.WriteFile(markerPath, []byte(sessionName), 0644)
-	}
+	writeAutoHandoffMarker()
 
-	// Log handoff event
-	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
-		agent := detectSender()
-		if agent == "" || agent == "overseer" {
-			agent = "unknown"
-		}
-		_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(subject, false))
-	}
+	logAutoHandoff(subject)
 
 	return nil
+}
+
+func autoHandoffSubject() string {
+	if handoffSubject != "" {
+		return handoffSubject
+	}
+	reason := handoffReason
+	if reason == "" {
+		reason = "auto"
+	}
+	return fmt.Sprintf("🤝 HANDOFF: %s", reason)
+}
+
+func autoHandoffMessage() string {
+	if handoffMessage != "" {
+		return handoffMessage
+	}
+	return collectHandoffState()
+}
+
+func reportAutoHandoffMail(beadID string, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "auto-handoff: could not send mail: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "auto-handoff: saved state to %s\n", beadID)
+}
+
+func writeAutoHandoffMarker() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	runtimeDir := filepath.Join(cwd, constants.DirRuntime)
+	_ = os.MkdirAll(runtimeDir, 0755)
+	markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
+	_ = os.WriteFile(markerPath, []byte(autoHandoffSessionName()), 0644)
+}
+
+func autoHandoffSessionName() string {
+	if tmux.IsInsideTmux() {
+		if name, err := getCurrentTmuxSession(); err == nil {
+			return name
+		}
+	}
+	return "auto-handoff"
+}
+
+func logAutoHandoff(subject string) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return
+	}
+	agent := detectSender()
+	if agent == "" || agent == "overseer" {
+		agent = "unknown"
+	}
+	_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(subject, false))
 }
 
 // runHandoffCycle performs a full session cycle — save state AND respawn.
