@@ -23,7 +23,8 @@ func (c *Client) ping(ctx context.Context) error {
 // witness, cost ingest, and session start call this type.
 type Worker struct {
 	workerRuntime
-	workerClient
+	*workerClient
+	workerReports
 }
 
 type workerRuntime struct {
@@ -34,6 +35,10 @@ type workerRuntime struct {
 type workerClient struct {
 	store  *Store
 	client *Client
+}
+
+type workerReports struct {
+	*workerClient
 }
 
 // Open dials a running Worker server. If none is up, it starts one.
@@ -61,9 +66,11 @@ func Open(townRoot string) (*Worker, error) {
 		}
 		client = httpClient
 	}
+	workerClient := &workerClient{store: store, client: client}
 	return &Worker{
 		workerRuntime: workerRuntime{townRoot: townRoot},
-		workerClient:  workerClient{store: store, client: client},
+		workerClient:  workerClient,
+		workerReports: workerReports{workerClient: workerClient},
 	}, nil
 }
 
@@ -83,9 +90,11 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 		}
 		client = httpClient
 	}
+	workerClient := &workerClient{store: store, client: client}
 	return &Worker{
 		workerRuntime: workerRuntime{townRoot: townRoot, local: srv},
-		workerClient:  workerClient{store: store, client: client},
+		workerClient:  workerClient,
+		workerReports: workerReports{workerClient: workerClient},
 	}, nil
 }
 
@@ -201,7 +210,7 @@ func (w *Worker) PushContext(ctx context.Context, push ContextPush) error {
 }
 
 // LiveRun returns the live run for a bead, if any.
-func (w *Worker) LiveRun(ctx context.Context, beadID string) (*Run, error) {
+func (w *workerReports) LiveRun(ctx context.Context, beadID string) (*Run, error) {
 	resp, err := w.client.call(ctx, TownRequest{Op: opLiveBead, BeadID: beadID})
 	if err != nil {
 		return nil, err
@@ -213,7 +222,7 @@ func (w *Worker) LiveRun(ctx context.Context, beadID string) (*Run, error) {
 }
 
 // Events returns persisted lifecycle and activity events.
-func (w *Worker) Events(ctx context.Context) ([]Event, error) {
+func (w *workerReports) Events(ctx context.Context) ([]Event, error) {
 	resp, err := w.client.call(ctx, TownRequest{Op: opEvents})
 	if err != nil {
 		return nil, err
@@ -222,7 +231,7 @@ func (w *Worker) Events(ctx context.Context) ([]Event, error) {
 }
 
 // Costs returns persisted cost records from runtime telemetry.
-func (w *Worker) Costs(ctx context.Context) ([]CostRecord, error) {
+func (w *workerReports) Costs(ctx context.Context) ([]CostRecord, error) {
 	resp, err := w.client.call(ctx, TownRequest{Op: opCosts})
 	if err != nil {
 		return nil, err
