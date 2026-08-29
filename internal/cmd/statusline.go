@@ -23,10 +23,6 @@ import (
 // with many rigs.
 const maxConcurrentWorkingChecks = 8
 
-var (
-	statusLineSession string
-)
-
 var statusLineCmd = &cobra.Command{
 	Use:   "status-line",
 	Short: "Output status line content for tmux (internal use)",
@@ -41,10 +37,11 @@ to specify which tmux session to query.`,
 
 func init() {
 	rootCmd.AddCommand(statusLineCmd)
-	statusLineCmd.Flags().StringVar(&statusLineSession, "session", "", "Tmux session name")
+	statusLineCmd.Flags().String("session", "", "Tmux session name")
 }
 
-func runStatusLine(_ *cobra.Command, _ []string) error {
+func runStatusLine(cmd *cobra.Command, _ []string) error {
+	sessionName := commandStringFlag(cmd, "session")
 	// Check E-stop first — prepend red indicator if active
 	if townRoot, twErr := workspace.FindFromCwd(); twErr == nil {
 		showEstop := false
@@ -74,10 +71,10 @@ func runStatusLine(_ *cobra.Command, _ []string) error {
 	// Get session environment
 	var rigName, polecat, crew, issue, role string
 
-	if statusLineSession != "" {
+	if sessionName != "" {
 		// Fetch the session environment in one tmux call. Missing variables are
 		// intentionally left empty and handled gracefully below.
-		env, _ := t.GetAllEnvironment(statusLineSession)
+		env, _ := t.GetAllEnvironment(sessionName)
 		rigName = env["GT_RIG"]
 		polecat = env["GT_POLECAT"]
 		crew = env["GT_CREW"]
@@ -97,23 +94,23 @@ func runStatusLine(_ *cobra.Command, _ []string) error {
 	deaconSession := getDeaconSessionName()
 
 	// Determine identity and output based on role
-	if role == "mayor" || statusLineSession == mayorSession {
+	if role == "mayor" || sessionName == mayorSession {
 		return runMayorStatusLine(t)
 	}
 
 	// Deacon status line
-	if role == "deacon" || statusLineSession == deaconSession {
+	if role == "deacon" || sessionName == deaconSession {
 		return runDeaconStatusLine(t)
 	}
 
 	// Witness status line (session naming: gt-<rig>-witness)
-	if role == "witness" || strings.HasSuffix(statusLineSession, "-witness") {
-		return runWitnessStatusLine(t, rigName)
+	if role == "witness" || strings.HasSuffix(sessionName, "-witness") {
+		return runWitnessStatusLine(t, rigName, sessionName)
 	}
 
 	// Refinery status line
-	if role == "refinery" || strings.HasSuffix(statusLineSession, "-refinery") {
-		return runRefineryStatusLine(rigName)
+	if role == "refinery" || strings.HasSuffix(sessionName, "-refinery") {
+		return runRefineryStatusLine(rigName, sessionName)
 	}
 
 	// Crew/Polecat status line
@@ -436,10 +433,10 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 // runWitnessStatusLine outputs status for a witness session.
 // Shows: crew count, hook or mail preview
 // Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
-func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
+func runWitnessStatusLine(t *tmux.Tmux, rigName, sessionName string) error {
 	if rigName == "" {
 		// Try to extract from session name: <prefix>-witness
-		if identity, err := session.ParseSessionName(statusLineSession); err == nil && identity.Role == session.RoleWitness {
+		if identity, err := session.ParseSessionName(sessionName); err == nil && identity.Role == session.RoleWitness {
 			rigName = identity.Rig
 		}
 	}
@@ -476,10 +473,10 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 
 // runRefineryStatusLine outputs status for a refinery session.
 // Shows: MQ length, current item, hook or mail preview
-func runRefineryStatusLine(rigName string) error {
+func runRefineryStatusLine(rigName, sessionName string) error {
 	if rigName == "" {
 		// Try to extract from session name: <prefix>-refinery
-		if identity, err := session.ParseSessionName(statusLineSession); err == nil && identity.Role == session.RoleRefinery {
+		if identity, err := session.ParseSessionName(sessionName); err == nil && identity.Role == session.RoleRefinery {
 			rigName = identity.Rig
 		}
 	}
