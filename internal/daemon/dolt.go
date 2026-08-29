@@ -111,12 +111,10 @@ type DoltServerStatus struct {
 	Error     string    `json:"error,omitempty"`
 }
 
-// DoltServerManager manages the Dolt SQL server lifecycle.
-type DoltServerManager struct {
-	config   *DoltServerConfig
-	townRoot string
-	logger   func(format string, v ...interface{})
-
+// DoltServerState holds mutable lifecycle and health state for a Dolt server.
+// It is embedded so DoltServerManager retains its existing selector surface
+// while the stateful server concerns have one owner.
+type DoltServerState struct {
 	mu        sync.Mutex
 	process   *os.Process
 	startedAt time.Time
@@ -141,8 +139,11 @@ type DoltServerManager struct {
 	// is cleared after having been present. Set by SetRecoveryCallback.
 	// Protected by mu.
 	onRecoveryFn func()
+}
 
-	// Test hooks (nil = use real implementations; set only in tests)
+// DoltServerHooks contains injectable implementations used by Dolt lifecycle
+// tests. Nil hooks select the production implementations.
+type DoltServerHooks struct {
 	healthCheckFn     func() error
 	writeProbeCheckFn func() error
 	identityCheckFn   func() error // nil = use real VerifyServerDataDir
@@ -156,6 +157,16 @@ type DoltServerManager struct {
 	readOnlyAlertFn   func(error)
 	crashAlertFn      func(int)
 	listDatabasesFn   func() ([]string, error)
+}
+
+// DoltServerManager manages the Dolt SQL server lifecycle.
+type DoltServerManager struct {
+	config   *DoltServerConfig
+	townRoot string
+	logger   func(format string, v ...interface{})
+
+	DoltServerState
+	DoltServerHooks
 }
 
 // NewDoltServerManager creates a new Dolt server manager.

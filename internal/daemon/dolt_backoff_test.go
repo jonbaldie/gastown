@@ -220,11 +220,13 @@ func TestPruneRestartTimes(t *testing.T) {
 			RestartWindow: 10 * time.Minute,
 		},
 		logger: func(format string, v ...interface{}) {},
-		restartTimes: []time.Time{
-			now.Add(-15 * time.Minute), // Outside window
-			now.Add(-11 * time.Minute), // Outside window
-			now.Add(-5 * time.Minute),  // Inside window
-			now.Add(-1 * time.Minute),  // Inside window
+		DoltServerState: DoltServerState{
+			restartTimes: []time.Time{
+				now.Add(-15 * time.Minute), // Outside window
+				now.Add(-11 * time.Minute), // Outside window
+				now.Add(-5 * time.Minute),  // Inside window
+				now.Add(-1 * time.Minute),  // Inside window
+			},
 		},
 	}
 
@@ -240,10 +242,12 @@ func TestMaybeResetBackoff(t *testing.T) {
 		config: &DoltServerConfig{
 			HealthyResetInterval: 5 * time.Minute,
 		},
-		logger:       func(format string, v ...interface{}) {},
-		currentDelay: 40 * time.Second,
-		restartTimes: []time.Time{time.Now()},
-		escalated:    true,
+		logger: func(format string, v ...interface{}) {},
+		DoltServerState: DoltServerState{
+			currentDelay: 40 * time.Second,
+			restartTimes: []time.Time{time.Now()},
+			escalated:    true,
+		},
 	}
 
 	// First call sets lastHealthyTime
@@ -272,10 +276,12 @@ func TestMaybeResetBackoff_NoResetIfNotLongEnough(t *testing.T) {
 		config: &DoltServerConfig{
 			HealthyResetInterval: 5 * time.Minute,
 		},
-		logger:          func(format string, v ...interface{}) {},
-		currentDelay:    40 * time.Second,
-		lastHealthyTime: time.Now().Add(-2 * time.Minute), // Only 2 min healthy
-		restartTimes:    []time.Time{time.Now()},
+		logger: func(format string, v ...interface{}) {},
+		DoltServerState: DoltServerState{
+			currentDelay:    40 * time.Second,
+			lastHealthyTime: time.Now().Add(-2 * time.Minute), // Only 2 min healthy
+			restartTimes:    []time.Time{time.Now()},
+		},
 	}
 
 	m.maybeResetBackoff()
@@ -294,10 +300,12 @@ func TestMaybeResetBackoff_AccumulatesAcrossHeartbeats(t *testing.T) {
 		config: &DoltServerConfig{
 			HealthyResetInterval: 10 * time.Minute,
 		},
-		logger:       func(format string, v ...interface{}) {},
-		currentDelay: 40 * time.Second,
-		restartTimes: []time.Time{time.Now()},
-		escalated:    true,
+		logger: func(format string, v ...interface{}) {},
+		DoltServerState: DoltServerState{
+			currentDelay: 40 * time.Second,
+			restartTimes: []time.Time{time.Now()},
+			escalated:    true,
+		},
 	}
 
 	// First call: sets lastHealthyTime to now
@@ -689,15 +697,17 @@ func newTestManager(t *testing.T) *DoltServerManager {
 			RestartWindow:        10 * time.Minute,
 			HealthyResetInterval: 50 * time.Millisecond,
 		},
-		townRoot:         tmpDir,
-		logger:           func(format string, v ...interface{}) { t.Logf(format, v...) },
-		runningFn:        func() (int, bool) { return 0, false },
-		healthCheckFn:    func() error { return nil },
-		identityCheckFn:  func() error { return nil },
-		startFn:          func() error { return nil },
-		stopFn:           func() {},
-		unhealthyAlertFn: func(error) {},
-		crashAlertFn:     func(int) {},
+		townRoot: tmpDir,
+		logger:   func(format string, v ...interface{}) { t.Logf(format, v...) },
+		DoltServerHooks: DoltServerHooks{
+			runningFn:        func() (int, bool) { return 0, false },
+			healthCheckFn:    func() error { return nil },
+			identityCheckFn:  func() error { return nil },
+			startFn:          func() error { return nil },
+			stopFn:           func() {},
+			unhealthyAlertFn: func(error) {},
+			crashAlertFn:     func(int) {},
+		},
 	}
 }
 
