@@ -499,18 +499,42 @@ func runConvoyStageJSON(dag *ConvoyDAG, input *StageInput, errs, warns []Staging
 		return emitStageJSONError("waves", nil, err, dag, input)
 	}
 
-	// Append validation bead as final wave (epic input only).
 	var validationBeadID string
-	if input.Kind == StageInputEpic && !convoyStageNoValidate {
-		epicID := input.IDs[0]
-		waves, validationBeadID, err = appendValidationWave(dag, waves, epicID)
-		if err != nil {
-			err = fmt.Errorf("creating validation bead: %w", err)
-			return emitStageJSONError("validation", []string{epicID}, err, dag, input)
+	waves, validationBeadID, err = appendJSONValidationWave(dag, input, waves)
+	if err != nil {
+		return emitStageJSONError("validation", []string{input.IDs[0]}, err, dag, input)
+	}
+	warns, status = updateJSONGatedWarnings(&result, warns, gated, errs, status)
+
+	result.Status = status
+	result.ValidationBeadID = validationBeadID
+	result.Waves = buildWavesJSON(waves, dag)
+	result.Gated = buildGatedJSON(gated, dag)
+
+	if err := persistJSONStagedConvoy(&result, dag, input, waves, status, isRestage, restageConvoyID); err != nil {
+		ids := []string(nil)
+		if isRestage {
+			ids = []string{restageConvoyID}
 		}
+		return emitStageJSONError("convoy", ids, err, dag, input)
 	}
 
-	// Add gated task warnings and recalculate status.
+	return emitStageJSONResult(result, nil)
+}
+
+func appendJSONValidationWave(dag *ConvoyDAG, input *StageInput, waves []Wave) ([]Wave, string, error) {
+	if input.Kind != StageInputEpic || convoyStageNoValidate {
+		return waves, "", nil
+	}
+	epicID := input.IDs[0]
+	waves, validationBeadID, err := appendValidationWave(dag, waves, epicID)
+	if err != nil {
+		return nil, "", fmt.Errorf("creating validation bead: %w", err)
+	}
+	return waves, validationBeadID, nil
+}
+
+func updateJSONGatedWarnings(result *StageResult, warns []StagingFinding, gated []GatedTask, errs []StagingFinding, status string) ([]StagingFinding, string) {
 	for _, g := range gated {
 		warns = append(warns, StagingFinding{
 			Severity:     "warning",
@@ -524,30 +548,25 @@ func runConvoyStageJSON(dag *ConvoyDAG, input *StageInput, errs, warns []Staging
 		status = chooseStatus(errs, warns)
 		result.Warnings = buildFindingsJSON(warns)
 	}
+	return warns, status
+}
 
-	result.Status = status
-	result.ValidationBeadID = validationBeadID
-	result.Waves = buildWavesJSON(waves, dag)
-	result.Gated = buildGatedJSON(gated, dag)
-
-	// Resolve convoy title for JSON path.
+func persistJSONStagedConvoy(result *StageResult, dag *ConvoyDAG, input *StageInput, waves []Wave, status string, isRestage bool, restageConvoyID string) error {
 	title := resolveConvoyTitle(convoyStageTitle, input, nil)
-
 	if isRestage {
 		if err := updateStagedConvoy(restageConvoyID, dag, waves, status, title); err != nil {
-			return emitStageJSONError("convoy", []string{restageConvoyID}, err, dag, input)
+			return err
 		}
 		result.ConvoyID = restageConvoyID
 		result.Restaged = true
-	} else {
-		convoyID, err := createStagedConvoy(dag, waves, status, title)
-		if err != nil {
-			return emitStageJSONError("convoy", nil, err, dag, input)
-		}
-		result.ConvoyID = convoyID
+		return nil
 	}
-
-	return emitStageJSONResult(result, nil)
+	convoyID, err := createStagedConvoy(dag, waves, status, title)
+	if err != nil {
+		return err
+	}
+	result.ConvoyID = convoyID
+	return nil
 }
 
 // ---------------------------------------------------------------------------
