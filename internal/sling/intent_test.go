@@ -77,9 +77,11 @@ func TestFromContextRoundTripThroughDurableJSON(t *testing.T) {
 		Merge:        "local",
 		Convoy:       "hq-cv-1",
 		ResumeBranch: "feature/x",
-		Owned:        true,
-		HookRawBead:  true,
-		Mode:         "ralph",
+		IntentExecutionOptions: IntentExecutionOptions{
+			Owned:       true,
+			HookRawBead: true,
+			Mode:        "ralph",
+		},
 	}
 
 	persisted := beads.FormatSlingContextDescription(ToContextFields(original, "2026-01-15T10:00:00Z"))

@@ -242,16 +242,18 @@ func runEpicSlingByID(epicID string, opts epicScheduleOpts) error {
 
 		fmt.Printf("\n[%d/%d] Dispatching %s → %s...\n", i+1, len(candidates), c.ID, c.RigName)
 		_, err := executeDeepSling(context.Background(), sling.Intent{
-			BeadID:        c.ID,
-			RigName:       c.RigName,
-			Formula:       formula,
-			Force:         opts.Force,
-			HookRawBead:   opts.HookRawBead,
-			NoConvoy:      true, // Epic is the organizing structure
-			NoBoot:        true, // coalesced after the loop
-			CallerContext: "epic-sling",
-			TownRoot:      townRoot,
-			BeadsDir:      filepath.Join(townRoot, ".beads"),
+			BeadID:  c.ID,
+			RigName: c.RigName,
+			Formula: formula,
+			IntentExecutionOptions: sling.IntentExecutionOptions{
+				Force:         opts.Force,
+				HookRawBead:   opts.HookRawBead,
+				NoConvoy:      true, // Epic is the organizing structure
+				NoBoot:        true, // coalesced after the loop
+				CallerContext: "epic-sling",
+				TownRoot:      townRoot,
+				BeadsDir:      filepath.Join(townRoot, ".beads"),
+			},
 		})
 		if err != nil {
 			fmt.Printf("  %s %s: %v\n", style.Dim.Render("✗"), c.ID, err)

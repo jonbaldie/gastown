@@ -46,9 +46,9 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	params := sling.Intent{
-		BeadID:   beadID,
-		RigName:  "testrig",
-		TownRoot: townRoot,
+		BeadID:                 beadID,
+		RigName:                "testrig",
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot},
 	}
 
 	_, err = runTownSling(context.Background(), params)
@@ -87,9 +87,9 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	params := sling.Intent{
-		BeadID:   beadID,
-		RigName:  "testrig",
-		TownRoot: townRoot,
+		BeadID:                 beadID,
+		RigName:                "testrig",
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot},
 	}
 
 	// First call — acquires lock, fails on closed guard, releases lock

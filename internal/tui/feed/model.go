@@ -73,43 +73,12 @@ type Rig struct {
 
 // Model is the main bubbletea model for the feed TUI
 type Model struct {
-	// Dimensions
-	width  int
-	height int
-
-	// Panels
-	focusedPanel   Panel
-	treeViewport   viewport.Model
-	convoyViewport viewport.Model
-	feedViewport   viewport.Model
-
-	// Data
-	rigs        map[string]*Rig
-	events      []Event
-	convoyState *ConvoyState
-	townRoot    string
-
-	// UI state
-	keys     KeyMap
-	help     help.Model
-	showHelp bool
-
-	// View mode
-	viewMode ViewMode
-
-	// Problems view state
-	problemAgents     []*ProblemAgent
-	selectedProblem   int
-	selectedBeadID    string // stable selection tracking by bead ID
-	problemsViewport  viewport.Model
-	stuckDetector     *StuckDetector
-	lastProblemsCheck time.Time
-	problemsError     error // last error from problems fetch
-
-	// Event source
-	eventChan <-chan Event
-	done      chan struct{}
-	closeOnce sync.Once
+	modelDimensions
+	modelPanels
+	modelData
+	modelUIState
+	modelProblemsState
+	modelEventSource
 
 	// mu protects all fields read by View() from concurrent access:
 	// events, rigs, convoyState, eventChan, townRoot, width, height,
@@ -120,6 +89,48 @@ type Model struct {
 	mu sync.RWMutex
 }
 
+type modelDimensions struct {
+	width  int
+	height int
+}
+
+type modelPanels struct {
+	focusedPanel   Panel
+	treeViewport   viewport.Model
+	convoyViewport viewport.Model
+	feedViewport   viewport.Model
+}
+
+type modelData struct {
+	rigs        map[string]*Rig
+	events      []Event
+	convoyState *ConvoyState
+	townRoot    string
+}
+
+type modelUIState struct {
+	keys     KeyMap
+	help     help.Model
+	showHelp bool
+	viewMode ViewMode
+}
+
+type modelProblemsState struct {
+	problemAgents     []*ProblemAgent
+	selectedProblem   int
+	selectedBeadID    string // stable selection tracking by bead ID
+	problemsViewport  viewport.Model
+	stuckDetector     *StuckDetector
+	lastProblemsCheck time.Time
+	problemsError     error // last error from problems fetch
+}
+
+type modelEventSource struct {
+	eventChan <-chan Event
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
 // NewModel creates a new feed TUI model.
 // The bd parameter provides access to agent beads for health detection.
 func NewModel(bd *beads.Beads) *Model {
@@ -127,19 +138,27 @@ func NewModel(bd *beads.Beads) *Model {
 	h.ShowAll = false
 
 	return &Model{
-		focusedPanel:     PanelTree,
-		treeViewport:     viewport.New(0, 0),
-		convoyViewport:   viewport.New(0, 0),
-		feedViewport:     viewport.New(0, 0),
-		problemsViewport: viewport.New(0, 0),
-		rigs:             make(map[string]*Rig),
-		events:           make([]Event, 0, maxEventHistory),
-		problemAgents:    make([]*ProblemAgent, 0),
-		keys:             DefaultKeyMap(),
-		help:             h,
-		done:             make(chan struct{}),
-		viewMode:         ViewActivity,
-		stuckDetector:    NewStuckDetector(bd),
+		modelPanels: modelPanels{
+			focusedPanel:   PanelTree,
+			treeViewport:   viewport.New(0, 0),
+			convoyViewport: viewport.New(0, 0),
+			feedViewport:   viewport.New(0, 0),
+		},
+		modelData: modelData{
+			rigs:   make(map[string]*Rig),
+			events: make([]Event, 0, maxEventHistory),
+		},
+		modelUIState: modelUIState{
+			keys:     DefaultKeyMap(),
+			help:     h,
+			viewMode: ViewActivity,
+		},
+		modelProblemsState: modelProblemsState{
+			problemAgents:    make([]*ProblemAgent, 0),
+			problemsViewport: viewport.New(0, 0),
+			stuckDetector:    NewStuckDetector(bd),
+		},
+		modelEventSource: modelEventSource{done: make(chan struct{})},
 	}
 }
 

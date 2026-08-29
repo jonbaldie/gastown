@@ -17,18 +17,26 @@ import (
 // Intent is complete Sling intent. Every field that scheduling persists and
 // dispatch must honor lives here so adapters cannot drop a subset.
 type Intent struct {
-	BeadID           string
-	RigName          string // Polecat/rig dispatch. Empty means named Target (or self).
-	Target           string // Named Slinging target: mayor, crew path, dog, self ("" / "."). Unused when RigName is set.
-	Formula          string
-	Args             string
-	Vars             []string
-	Merge            string
-	Convoy           string // recorded Convoy identity to reuse; empty means none yet
-	BaseBranch       string
-	ResumeBranch     string
-	Account          string
-	Agent            string
+	BeadID       string
+	RigName      string // Polecat/rig dispatch. Empty means named Target (or self).
+	Target       string // Named Slinging target: mayor, crew path, dog, self ("" / "."). Unused when RigName is set.
+	Formula      string
+	Args         string
+	Vars         []string
+	Merge        string
+	Convoy       string // recorded Convoy identity to reuse; empty means none yet
+	BaseBranch   string
+	ResumeBranch string
+	Account      string
+	Agent        string
+
+	IntentExecutionOptions
+	IntentTargetOptions
+}
+
+// IntentExecutionOptions contains lifecycle and environment controls that are
+// carried alongside the core work selection when dispatching a sling.
+type IntentExecutionOptions struct {
 	Mode             string
 	NoMerge          bool
 	ReviewOnly       bool
@@ -42,8 +50,11 @@ type Intent struct {
 	CallerContext    string
 	TownRoot         string
 	BeadsDir         string
+}
 
-	// Named-target adapter fields. Unused for rig/queue dispatch (RigName set).
+// IntentTargetOptions contains named-target adapter fields. They are unused
+// for rig/queue dispatch (RigName set).
+type IntentTargetOptions struct {
 	DryRun  bool
 	Create  bool
 	Subject string
@@ -77,11 +88,13 @@ func FromContext(fields *capacity.SlingContextFields) Intent {
 		ResumeBranch: fields.ResumeBranch,
 		Account:      fields.Account,
 		Agent:        fields.Agent,
-		Mode:         fields.Mode,
-		NoMerge:      fields.NoMerge,
-		ReviewOnly:   fields.ReviewOnly,
-		HookRawBead:  fields.HookRawBead,
-		Owned:        fields.Owned,
+		IntentExecutionOptions: IntentExecutionOptions{
+			Mode:        fields.Mode,
+			NoMerge:     fields.NoMerge,
+			ReviewOnly:  fields.ReviewOnly,
+			HookRawBead: fields.HookRawBead,
+			Owned:       fields.Owned,
+		},
 	}
 	if fields.Vars != "" {
 		intent.Vars = splitVars(fields.Vars)

@@ -1310,13 +1310,15 @@ exit 0
 	}
 
 	result, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "hq-0yt",
-		RigName:     "clock",
-		TownRoot:    townRoot,
-		BeadsDir:    townBeadsDir,
-		HookRawBead: true,
-		NoConvoy:    true,
-		NoBoot:      true,
+		BeadID:  "hq-0yt",
+		RigName: "clock",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    townBeadsDir,
+			HookRawBead: true,
+			NoConvoy:    true,
+			NoBoot:      true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("gt sling hq-0yt clock should move the town bead into the target rig and continue, got: %v", err)
@@ -1623,10 +1625,12 @@ func TestExecuteSlingRejectsMissingTargetRigDatabaseBeforeSpawn(t *testing.T) {
 	}
 
 	_, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:   "gt-r2405",
-		RigName:  "gastown",
-		TownRoot: townRoot,
-		BeadsDir: filepath.Join(townRoot, ".beads"),
+		BeadID:  "gt-r2405",
+		RigName: "gastown",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot: townRoot,
+			BeadsDir: filepath.Join(townRoot, ".beads"),
+		},
 	})
 	if err == nil {
 		t.Fatal("expected target-rig database validation error")
@@ -2076,15 +2080,17 @@ func TestExecuteSlingRawReviewOnlyHookFailureClearsPreHookMetadata(t *testing.T)
 	}
 
 	_, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		RigName:     "gastown",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
-		HookRawBead: true,
-		NoMerge:     true,
-		ReviewOnly:  true,
-		NoConvoy:    true,
-		NoBoot:      true,
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+			HookRawBead: true,
+			NoMerge:     true,
+			ReviewOnly:  true,
+			NoConvoy:    true,
+			NoBoot:      true,
+		},
 	})
 	if err == nil {
 		t.Fatal("expected hook failure from executeSling")
@@ -2119,15 +2125,17 @@ func TestExecuteSlingRawReviewOnlyHookFailureRestoresOriginalMetadata(t *testing
 	}
 
 	_, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		RigName:     "gastown",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
-		HookRawBead: true,
-		NoMerge:     true,
-		ReviewOnly:  true,
-		NoConvoy:    true,
-		NoBoot:      true,
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+			HookRawBead: true,
+			NoMerge:     true,
+			ReviewOnly:  true,
+			NoConvoy:    true,
+			NoBoot:      true,
+		},
 	})
 	if err == nil {
 		t.Fatal("expected hook failure from executeSling")
@@ -2165,15 +2173,17 @@ func TestExecuteSlingRawReviewOnlySuccessKeepsMetadata(t *testing.T) {
 	}
 
 	result, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		RigName:     "gastown",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
-		HookRawBead: true,
-		NoMerge:     true,
-		ReviewOnly:  true,
-		NoConvoy:    true,
-		NoBoot:      true,
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+			HookRawBead: true,
+			NoMerge:     true,
+			ReviewOnly:  true,
+			NoConvoy:    true,
+			NoBoot:      true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("executeSling succeeded with error: %v", err)
@@ -2222,14 +2232,16 @@ func TestExecuteSlingStoresLocalMergeStrategyOnIssue(t *testing.T) {
 	}
 
 	result, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		RigName:     "gastown",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
-		HookRawBead: true,
-		Merge:       "local",
-		Owned:       true,
-		NoBoot:      true,
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		Merge:   "local",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+			HookRawBead: true,
+			Owned:       true,
+			NoBoot:      true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("executeSling: %v", err)

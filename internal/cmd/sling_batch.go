@@ -186,28 +186,30 @@ func throttleBatchSling(activeCount int) int {
 
 func batchSlingIntent(beadID, rigName, townRoot, townBeadsDir, formulaName string, formulaCooked bool, slingMode string) sling.Intent {
 	return sling.Intent{
-		BeadID:           beadID,
-		Formula:          formulaName,
-		RigName:          rigName,
-		Args:             slingArgs,
-		Vars:             slingVars,
-		Merge:            slingMerge,
-		BaseBranch:       slingBaseBranch,
-		Account:          slingAccount,
-		Agent:            slingAgent,
-		NoConvoy:         slingNoConvoy,
-		Owned:            slingOwned,
-		NoMerge:          slingNoMerge,
-		ReviewOnly:       slingReviewOnly,
-		Force:            slingForce,
-		HookRawBead:      slingHookRawBead,
-		NoBoot:           true, // coalesced after the loop
-		Mode:             slingMode,
-		SkipCook:         formulaCooked,
-		FormulaFailFatal: false, // Batch: warn + hook raw on formula failure
-		CallerContext:    "batch-sling",
-		TownRoot:         townRoot,
-		BeadsDir:         townBeadsDir,
+		BeadID:     beadID,
+		Formula:    formulaName,
+		RigName:    rigName,
+		Args:       slingArgs,
+		Vars:       slingVars,
+		Merge:      slingMerge,
+		BaseBranch: slingBaseBranch,
+		Account:    slingAccount,
+		Agent:      slingAgent,
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			NoConvoy:         slingNoConvoy,
+			Owned:            slingOwned,
+			NoMerge:          slingNoMerge,
+			ReviewOnly:       slingReviewOnly,
+			Force:            slingForce,
+			HookRawBead:      slingHookRawBead,
+			NoBoot:           true, // coalesced after the loop
+			Mode:             slingMode,
+			SkipCook:         formulaCooked,
+			FormulaFailFatal: false, // Batch: warn + hook raw on formula failure
+			CallerContext:    "batch-sling",
+			TownRoot:         townRoot,
+			BeadsDir:         townBeadsDir,
+		},
 	}
 }
 

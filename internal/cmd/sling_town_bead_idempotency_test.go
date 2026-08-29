@@ -68,13 +68,15 @@ func TestRunTownSlingTownBeadRetryDoesNotTreatMovedSourceAsClosed(t *testing.T) 
 	townRoot, createdPath := setupTownBeadRetryFixture(t, true)
 
 	intent := sling.Intent{
-		BeadID:      "hq-ni1",
-		RigName:     "demo",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(townRoot, ".beads"),
-		HookRawBead: true,
-		NoConvoy:    true,
-		NoBoot:      true,
+		BeadID:  "hq-ni1",
+		RigName: "demo",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(townRoot, ".beads"),
+			HookRawBead: true,
+			NoConvoy:    true,
+			NoBoot:      true,
+		},
 	}
 	_, firstErr := runTownSling(context.Background(), intent)
 	_, retryErr := runTownSling(context.Background(), intent)
