@@ -96,16 +96,8 @@ func init() {
 }
 
 func runHandoff(_ *cobra.Command, args []string) error {
-	// Handle --stdin: read message body from stdin (avoids shell quoting issues)
-	if handoffStdin {
-		if handoffMessage != "" {
-			return fmt.Errorf("cannot use --stdin with --message/-m")
-		}
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading stdin: %w", err)
-		}
-		handoffMessage = strings.TrimRight(string(data), "\n")
+	if err := readHandoffStdin(); err != nil {
+		return err
 	}
 
 	// --auto mode: save state only, no session cycling.
@@ -128,46 +120,15 @@ func runHandoff(_ *cobra.Command, args []string) error {
 		return runHandoffCycle()
 	}
 
-	// Check if we're a polecat - polecats use gt done instead.
-	// Check GT_ROLE first: coordinators (mayor, witness, etc.) may have a stale
-	// GT_POLECAT in their environment from spawning polecats. Only block if the
-	// parsed role is actually polecat (handles compound forms like
-	// "gastown/polecats/Toast"). If GT_ROLE is unset, fall back to GT_POLECAT.
-	isPolecat := false
-	polecatName := ""
-	if role := os.Getenv("GT_ROLE"); role != "" {
-		parsedRole, _, name := parseRoleString(role)
-		if parsedRole == RolePolecat {
-			isPolecat = true
-			polecatName = name
-			// Bare "polecat" role yields empty name; fall back to GT_POLECAT.
-			if polecatName == "" {
-				polecatName = os.Getenv("GT_POLECAT")
-			}
-		}
-	} else if name := os.Getenv("GT_POLECAT"); name != "" {
-		isPolecat = true
-		polecatName = name
-	}
-	if isPolecat {
-		fmt.Printf("%s Polecat detected (%s) - using gt done for handoff\n",
-			style.Bold.Render("🐾"), polecatName)
-		// Polecats don't respawn themselves - Witness handles lifecycle
-		// Call gt done with DEFERRED status to preserve work state
-		doneCmd := exec.Command("gt", "done", "--status", "DEFERRED")
-		doneCmd.Stdout = os.Stdout
-		doneCmd.Stderr = os.Stderr
-		return doneCmd.Run()
+	if handled, err := redirectPolecatHandoff(); handled {
+		return err
 	}
 
 	// Prompt for confirmation unless --yes/-y was passed or stdin is not a TTY.
 	// Only interactive (human) sessions get prompted; agent automation proceeds
 	// without blocking on stdin (gas-6z0).
-	if !handoffYes && !handoffDryRun && term.IsTerminal(int(os.Stdin.Fd())) {
-		if !promptYesNo("Ready to hand off? This will restart the session.") {
-			fmt.Println("Handoff canceled.")
-			return nil
-		}
+	if !confirmHandoff() {
+		return nil
 	}
 
 	// Enforce minimum handoff cooldown to prevent tight restart loops (gt-058d).
@@ -175,43 +136,81 @@ func runHandoff(_ *cobra.Command, args []string) error {
 	// it can hand off immediately and the daemon respawns, creating a crash loop.
 	enforceHandoffCooldown()
 
-	// If --collect flag is set, auto-collect state into the message
-	if handoffCollect {
-		collected := collectHandoffState()
-		if handoffMessage == "" {
-			handoffMessage = collected
-		} else {
-			handoffMessage = handoffMessage + "\n\n---\n" + collected
-		}
-		if handoffSubject == "" {
-			handoffSubject = "Session handoff with context"
-		}
+	collectHandoffContext()
+	return runHandoffSession(args)
+}
+
+func readHandoffStdin() error {
+	if !handoffStdin {
+		return nil
 	}
-
-	// Use a socket-aware Tmux for pane operations. The calling process may be
-	// on a different tmux server than the town socket (e.g., default socket).
-	// For self-handoff, pane operations (clear-history, respawn-pane) must target
-	// the caller's own server. SocketFromEnv() reads $TMUX to find the right one.
-	callerSocket := tmux.SocketFromEnv()
-	t := tmux.NewTmuxWithSocket(callerSocket)
-	// Town-socket Tmux for session-level queries (getSessionPane, etc.)
-	townTmux := tmux.NewTmux()
-	_ = townTmux // used later for remote handoff
-
-	// Verify we're in tmux
-	if !tmux.IsInsideTmux() {
-		return fmt.Errorf("not running in tmux - cannot hand off")
+	if handoffMessage != "" {
+		return fmt.Errorf("cannot use --stdin with --message/-m")
 	}
-
-	pane := os.Getenv("TMUX_PANE")
-	if pane == "" {
-		return fmt.Errorf("TMUX_PANE not set - cannot hand off")
-	}
-
-	// Get current session name from GT_ROLE (preferred) or tmux display-message.
-	currentSession, err := getCurrentTmuxSession()
+	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return fmt.Errorf("getting session name: %w", err)
+		return fmt.Errorf("reading stdin: %w", err)
+	}
+	handoffMessage = strings.TrimRight(string(data), "\n")
+	return nil
+}
+
+func redirectPolecatHandoff() (bool, error) {
+	role := os.Getenv("GT_ROLE")
+	polecatName := ""
+	if role != "" {
+		parsedRole, _, name := parseRoleString(role)
+		if parsedRole != RolePolecat {
+			return false, nil
+		}
+		polecatName = name
+		if polecatName == "" {
+			polecatName = os.Getenv("GT_POLECAT")
+		}
+	} else {
+		polecatName = os.Getenv("GT_POLECAT")
+		if polecatName == "" {
+			return false, nil
+		}
+	}
+	fmt.Printf("%s Polecat detected (%s) - using gt done for handoff\n",
+		style.Bold.Render("🐾"), polecatName)
+	doneCmd := exec.Command("gt", "done", "--status", "DEFERRED")
+	doneCmd.Stdout = os.Stdout
+	doneCmd.Stderr = os.Stderr
+	return true, doneCmd.Run()
+}
+
+func confirmHandoff() bool {
+	if handoffYes || handoffDryRun || !term.IsTerminal(int(os.Stdin.Fd())) {
+		return true
+	}
+	if promptYesNo("Ready to hand off? This will restart the session.") {
+		return true
+	}
+	fmt.Println("Handoff canceled.")
+	return false
+}
+
+func collectHandoffContext() {
+	if !handoffCollect {
+		return
+	}
+	collected := collectHandoffState()
+	if handoffMessage == "" {
+		handoffMessage = collected
+	} else {
+		handoffMessage += "\n\n---\n" + collected
+	}
+	if handoffSubject == "" {
+		handoffSubject = "Session handoff with context"
+	}
+}
+
+func runHandoffSession(args []string) error {
+	t, townTmux, pane, currentSession, err := prepareHandoffTmux()
+	if err != nil {
+		return err
 	}
 
 	// Warn if workspace has uncommitted or unpushed work (wa-7967c).
@@ -223,52 +222,77 @@ func runHandoff(_ *cobra.Command, args []string) error {
 		warnHandoffGitStatus()
 	}
 
-	// Determine target session and check for bead hook
-	targetSession := currentSession
-	if len(args) > 0 {
-		arg := args[0]
-
-		// Check if arg is a bead ID (gt-xxx, hq-xxx, bd-xxx, etc.)
-		if looksLikeBeadID(arg) {
-			// Hook the bead first
-			if err := hookBeadForHandoff(arg); err != nil {
-				return fmt.Errorf("hooking bead: %w", err)
-			}
-			// Update subject if not set
-			if handoffSubject == "" {
-				handoffSubject = fmt.Sprintf("🪝 HOOKED: %s", arg)
-			}
-		} else {
-			// User specified a role to hand off
-			targetSession, err = resolveRoleToSession(arg)
-			if err != nil {
-				return fmt.Errorf("resolving role: %w", err)
-			}
-		}
-	}
-
-	// Build the restart command
-	restartCmd, err := buildRestartCommand(targetSession)
+	targetSession, restartCmd, err := resolveHandoffTarget(args, currentSession)
 	if err != nil {
 		return err
 	}
-
-	// If handing off a different session, we need to find its pane and respawn there.
-	// Remote sessions live on the town socket, so use townTmux for their operations.
 	if targetSession != currentSession {
 		// Update tmux session env before respawn (not during dry-run — see below)
 		updateSessionEnvForHandoff(townTmux, targetSession, "")
 		return handoffRemoteSession(townTmux, targetSession, restartCmd)
 	}
 
+	return runSelfHandoff(t, pane, currentSession, restartCmd)
+}
+
+func prepareHandoffTmux() (*tmux.Tmux, *tmux.Tmux, string, string, error) {
+	// Use a socket-aware Tmux for pane operations. The calling process may be
+	// on a different tmux server than the town socket (e.g., default socket).
+	// For self-handoff, pane operations (clear-history, respawn-pane) must target
+	// the caller's own server. SocketFromEnv() reads $TMUX to find the right one.
+	t := tmux.NewTmuxWithSocket(tmux.SocketFromEnv())
+	// Town-socket Tmux for session-level queries (getSessionPane, etc.)
+	townTmux := tmux.NewTmux()
+
+	if !tmux.IsInsideTmux() {
+		return nil, nil, "", "", fmt.Errorf("not running in tmux - cannot hand off")
+	}
+
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return nil, nil, "", "", fmt.Errorf("TMUX_PANE not set - cannot hand off")
+	}
+
+	currentSession, err := getCurrentTmuxSession()
+	if err != nil {
+		return nil, nil, "", "", fmt.Errorf("getting session name: %w", err)
+	}
+	return t, townTmux, pane, currentSession, nil
+}
+
+func resolveHandoffTarget(args []string, currentSession string) (string, string, error) {
+	targetSession := currentSession
+	if len(args) > 0 {
+		arg := args[0]
+		if looksLikeBeadID(arg) {
+			if err := hookBeadForHandoff(arg); err != nil {
+				return "", "", fmt.Errorf("hooking bead: %w", err)
+			}
+			if handoffSubject == "" {
+				handoffSubject = fmt.Sprintf("🪝 HOOKED: %s", arg)
+			}
+		} else {
+			var err error
+			targetSession, err = resolveRoleToSession(arg)
+			if err != nil {
+				return "", "", fmt.Errorf("resolving role: %w", err)
+			}
+		}
+	}
+
+	restartCmd, err := buildRestartCommand(targetSession)
+	if err != nil {
+		return "", "", err
+	}
+	return targetSession, restartCmd, nil
+}
+
+func runSelfHandoff(t *tmux.Tmux, pane, currentSession, restartCmd string) error {
 	// Close any in-progress molecule steps before cycling (gt-e26g).
 	// Without this, patrol agents that handoff mid-cycle leak orphaned wisps.
 	cleanupMoleculeOnHandoff()
 
-	// Handing off ourselves - print feedback then respawn
 	fmt.Printf("%s Handing off %s...\n", style.Bold.Render("🤝"), currentSession)
-
-	// Resolve agent identity once for both success and failure paths.
 	agent := sessionToGTRole(currentSession)
 	if agent == "" {
 		agent = currentSession
@@ -291,6 +315,17 @@ func runHandoff(_ *cobra.Command, args []string) error {
 	// Placed after the dry-run guard to avoid mutating session state during dry-run.
 	updateSessionEnvForHandoff(t, currentSession, "")
 
+	if err := persistSelfHandoff(agent); err != nil {
+		return err
+	}
+	logSelfHandoff(agent)
+	clearSelfHandoffHistory(t, pane)
+	writeSelfHandoffMarker(currentSession)
+	recordHandoffTime()
+	return respawnSelfHandoff(t, pane, currentSession, restartCmd)
+}
+
+func persistSelfHandoff(agent string) error {
 	// Send handoff mail to self (defaults applied inside sendHandoffMail).
 	// The mail is auto-hooked so the next session picks it up.
 	// CRITICAL: Mail must persist to Dolt BEFORE logging to town.log.
@@ -307,7 +342,10 @@ func runHandoff(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("handoff mail failed to persist (Dolt may be down): %w", err)
 	}
 	fmt.Printf("%s Sent handoff mail %s (auto-hooked)\n", style.Bold.Render("📬"), beadID)
+	return nil
+}
 
+func logSelfHandoff(agent string) {
 	// Log handoff event AFTER Dolt persistence succeeds.
 	// Previously this logged BEFORE sendHandoffMail, causing false entries
 	// in town.log when Dolt was down.
@@ -315,17 +353,17 @@ func runHandoff(_ *cobra.Command, args []string) error {
 		_ = LogHandoff(townRoot, agent, handoffSubject)
 		_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(handoffSubject, true))
 	}
+}
 
-	// NOTE: reportAgentState("stopped") removed (gt-zecmc)
-	// Agent liveness is observable from tmux - no need to record it in bead.
-	// "Discover, don't track" principle: reality is truth, state is derived.
-
+func clearSelfHandoffHistory(t *tmux.Tmux, pane string) {
 	// Clear scrollback history before respawn (resets copy-mode from [0/N] to [0/0])
 	if err := t.ClearHistory(pane); err != nil {
 		// Non-fatal - continue with respawn even if clear fails
 		style.PrintWarning("could not clear history: %v", err)
 	}
+}
 
+func writeSelfHandoffMarker(currentSession string) {
 	// Write handoff marker for successor detection (prevents handoff loop bug).
 	// The marker is cleared by gt prime after it outputs the warning.
 	// This tells the new session "you're post-handoff, don't re-run /handoff"
@@ -335,10 +373,9 @@ func runHandoff(_ *cobra.Command, args []string) error {
 		markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
 		_ = os.WriteFile(markerPath, []byte(currentSession), 0644)
 	}
+}
 
-	// Record handoff time for cooldown enforcement (gt-058d).
-	recordHandoffTime()
-
+func respawnSelfHandoff(t *tmux.Tmux, pane, currentSession, restartCmd string) error {
 	// Set remain-on-exit so the pane survives process death during handoff.
 	// Without this, killing processes causes tmux to destroy the pane before
 	// we can respawn it. This is essential for tmux session reuse.
@@ -349,7 +386,7 @@ func runHandoff(_ *cobra.Command, args []string) error {
 	// NOTE: For self-handoff, we do NOT call KillPaneProcesses here.
 	// That would kill the gt handoff process itself before it can call RespawnPane,
 	// leaving the pane dead with no respawn. RespawnPane's -k flag handles killing
-	// atomically - tmux kills the old process and spawns the new one together.
+	// the old process and spawns the new one together.
 	// See: https://github.com/steveyegge/gastown/issues/859 (pane is dead bug)
 	//
 	// For orphan prevention, we rely on respawn-pane -k which sends SIGHUP/SIGTERM.
