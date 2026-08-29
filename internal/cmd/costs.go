@@ -1254,24 +1254,14 @@ type CostDigestPayload struct {
 
 // runCostsDigest aggregates session cost entries into a daily digest bead.
 func runCostsDigest(cmd *cobra.Command, _ []string) error {
-	digestYesterday := commandBoolFlag(cmd, "yesterday")
-	digestDate := commandStringFlag(cmd, "date")
-	digestDryRun := commandBoolFlag(cmd, "dry-run")
-	// Determine target date
-	var targetDate time.Time
-
-	if digestDate != "" {
-		parsed, err := time.Parse("2006-01-02", digestDate)
-		if err != nil {
-			return fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
-		}
-		targetDate = parsed
-	} else if digestYesterday {
-		targetDate = time.Now().AddDate(0, 0, -1)
-	} else {
-		return fmt.Errorf("specify --yesterday or --date YYYY-MM-DD")
+	targetDate, err := costDigestTargetDate(
+		commandStringFlag(cmd, "date"),
+		commandBoolFlag(cmd, "yesterday"),
+	)
+	if err != nil {
+		return err
 	}
-
+	digestDryRun := commandBoolFlag(cmd, "dry-run")
 	dateStr := targetDate.Format("2006-01-02")
 
 	// Query session cost entries for target date
@@ -1285,37 +1275,10 @@ func runCostsDigest(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Build digest
-	digest := CostDigest{
-		Date:     dateStr,
-		Sessions: costEntries,
-		ByRole:   make(map[string]float64),
-		ByRig:    make(map[string]float64),
-	}
-
-	for _, e := range costEntries {
-		digest.TotalUSD += e.CostUSD
-		digest.SessionCount++
-		digest.ByRole[e.Role] += e.CostUSD
-		if e.Rig != "" {
-			digest.ByRig[e.Rig] += e.CostUSD
-		}
-	}
+	digest := buildCostDigest(dateStr, costEntries)
 
 	if digestDryRun {
-		fmt.Printf("%s [DRY RUN] Would create Cost Report %s:\n", style.Bold.Render("📊"), dateStr)
-		fmt.Printf("  Total: $%.2f\n", digest.TotalUSD)
-		fmt.Printf("  Sessions: %d\n", digest.SessionCount)
-		fmt.Printf("  By Role:\n")
-		for role, cost := range digest.ByRole {
-			fmt.Printf("    %s: $%.2f\n", role, cost)
-		}
-		if len(digest.ByRig) > 0 {
-			fmt.Printf("  By Rig:\n")
-			for rig, cost := range digest.ByRig {
-				fmt.Printf("    %s: $%.2f\n", rig, cost)
-			}
-		}
+		printCostDigestDryRun(dateStr, digest)
 		return nil
 	}
 
@@ -1338,6 +1301,55 @@ func runCostsDigest(cmd *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+func costDigestTargetDate(dateStr string, yesterday bool) (time.Time, error) {
+	if dateStr != "" {
+		parsed, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
+		}
+		return parsed, nil
+	}
+	if yesterday {
+		return time.Now().AddDate(0, 0, -1), nil
+	}
+	return time.Time{}, fmt.Errorf("specify --yesterday or --date YYYY-MM-DD")
+}
+
+func buildCostDigest(dateStr string, costEntries []CostEntry) CostDigest {
+	digest := CostDigest{
+		Date:     dateStr,
+		Sessions: costEntries,
+		ByRole:   make(map[string]float64),
+		ByRig:    make(map[string]float64),
+	}
+	for _, entry := range costEntries {
+		digest.TotalUSD += entry.CostUSD
+		digest.SessionCount++
+		digest.ByRole[entry.Role] += entry.CostUSD
+		if entry.Rig != "" {
+			digest.ByRig[entry.Rig] += entry.CostUSD
+		}
+	}
+	return digest
+}
+
+func printCostDigestDryRun(dateStr string, digest CostDigest) {
+	fmt.Printf("%s [DRY RUN] Would create Cost Report %s:\n", style.Bold.Render("📊"), dateStr)
+	fmt.Printf("  Total: $%.2f\n", digest.TotalUSD)
+	fmt.Printf("  Sessions: %d\n", digest.SessionCount)
+	fmt.Printf("  By Role:\n")
+	for role, cost := range digest.ByRole {
+		fmt.Printf("    %s: $%.2f\n", role, cost)
+	}
+	if len(digest.ByRig) == 0 {
+		return
+	}
+	fmt.Printf("  By Rig:\n")
+	for rig, cost := range digest.ByRig {
+		fmt.Printf("    %s: $%.2f\n", rig, cost)
+	}
 }
 
 // querySessionCostEntries reads session cost entries from the local log file for a target date.
