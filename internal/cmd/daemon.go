@@ -125,8 +125,6 @@ Examples:
 	RunE: runDaemonRotateLogs,
 }
 
-var daemonRotateLogsForce bool
-
 var daemonClearBackoffCmd = &cobra.Command{
 	Use:   "clear-backoff <agent>",
 	Short: "Clear crash loop backoff for an agent",
@@ -144,11 +142,6 @@ Examples:
 	RunE: runDaemonClearBackoff,
 }
 
-var (
-	daemonLogLines  int
-	daemonLogFollow bool
-)
-
 func init() {
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
@@ -159,9 +152,9 @@ func init() {
 	daemonCmd.AddCommand(daemonClearBackoffCmd)
 	daemonCmd.AddCommand(daemonRotateLogsCmd)
 
-	daemonLogsCmd.Flags().IntVarP(&daemonLogLines, "lines", "n", 50, "Number of lines to show")
-	daemonLogsCmd.Flags().BoolVarP(&daemonLogFollow, "follow", "f", false, "Follow log output")
-	daemonRotateLogsCmd.Flags().BoolVar(&daemonRotateLogsForce, "force", false, "Rotate all logs regardless of size")
+	daemonLogsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show")
+	daemonLogsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
+	daemonRotateLogsCmd.Flags().Bool("force", false, "Rotate all logs regardless of size")
 
 	rootCmd.AddCommand(daemonCmd)
 }
@@ -346,7 +339,9 @@ func readDaemonStartupFailure(townRoot string, pid int) string {
 	return ""
 }
 
-func runDaemonLogs(_ *cobra.Command, _ []string) error {
+func runDaemonLogs(cmd *cobra.Command, _ []string) error {
+	logLines := commandIntFlag(cmd, "lines")
+	logFollow := commandBoolFlag(cmd, "follow")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -358,7 +353,7 @@ func runDaemonLogs(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("no log file found at %s", logFile)
 	}
 
-	if daemonLogFollow {
+	if logFollow {
 		// Use tail -f for following
 		tailCmd := exec.Command("tail", "-f", logFile)
 		tailCmd.Stdout = os.Stdout
@@ -367,7 +362,7 @@ func runDaemonLogs(_ *cobra.Command, _ []string) error {
 	}
 
 	// Use tail -n for last N lines
-	tailCmd := exec.Command("tail", "-n", fmt.Sprintf("%d", daemonLogLines), logFile)
+	tailCmd := exec.Command("tail", "-n", fmt.Sprintf("%d", logLines), logFile)
 	tailCmd.Stdout = os.Stdout
 	tailCmd.Stderr = os.Stderr
 	return tailCmd.Run()
@@ -458,14 +453,15 @@ func runDaemonClearBackoff(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonRotateLogs(_ *cobra.Command, _ []string) error {
+func runDaemonRotateLogs(cmd *cobra.Command, _ []string) error {
+	force := commandBoolFlag(cmd, "force")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	var result *daemon.RotateLogsResult
-	if daemonRotateLogsForce {
+	if force {
 		result = daemon.ForceRotateLogs(townRoot)
 	} else {
 		result = daemon.RotateLogs(townRoot)
