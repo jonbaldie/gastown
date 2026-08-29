@@ -347,14 +347,8 @@ func (t *Tmux) NewSessionWithCommand(name, workDir, command string) error {
 	if err := validateSessionName(name); err != nil {
 		return err
 	}
-	if workDir != "" {
-		info, err := os.Stat(workDir)
-		if err != nil {
-			return fmt.Errorf("invalid work directory %q: %w", workDir, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("work directory %q is not a directory", workDir)
-		}
+	if err := validateWorkDir(workDir); err != nil {
+		return err
 	}
 	if err := validateCommandBinary(command); err != nil {
 		return err
@@ -388,24 +382,8 @@ func (t *Tmux) NewSessionWithCommand(name, workDir, command string) error {
 	// Enable remain-on-exit BEFORE command runs so we can inspect exit status
 	_, _ = t.run("set-option", "-t", name, "remain-on-exit", "on")
 
-	// Replace the initial shell with the actual command.
-	// On Windows (psmux), respawn-pane doesn't support passing a command
-	// argument, so we use send-keys to type the command into the shell.
-	if runtime.GOOS == "windows" {
-		if err := t.sendCommandAndSubmit(name, command); err != nil {
-			_ = t.KillSession(name)
-			return fmt.Errorf("failed to send command in session %q: %w", name, err)
-		}
-	} else {
-		respawnArgs := []string{"respawn-pane", "-k", "-t", name}
-		if workDir != "" {
-			respawnArgs = append(respawnArgs, "-c", workDir)
-		}
-		respawnArgs = append(respawnArgs, command)
-		if _, err := t.run(respawnArgs...); err != nil {
-			_ = t.KillSession(name)
-			return fmt.Errorf("failed to start command in session %q: %w", name, err)
-		}
+	if err := t.startSessionCommand(name, workDir, command); err != nil {
+		return err
 	}
 
 	return t.checkSessionAfterCreate(name, command)
@@ -441,14 +419,8 @@ func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env ma
 	// This is best-effort: failures are silently ignored.
 	t.killSplitBrainSession(name)
 
-	if workDir != "" {
-		info, err := os.Stat(workDir)
-		if err != nil {
-			return fmt.Errorf("invalid work directory %q: %w", workDir, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("work directory %q is not a directory", workDir)
-		}
+	if err := validateWorkDir(workDir); err != nil {
+		return err
 	}
 	if err := validateCommandBinary(command); err != nil {
 		return err
@@ -463,22 +435,8 @@ func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env ma
 	// Enable remain-on-exit BEFORE command runs so we can inspect exit status
 	_, _ = t.run("set-option", "-t", name, "remain-on-exit", "on")
 
-	// Replace the initial shell with the actual command.
-	if runtime.GOOS == "windows" {
-		if err := t.sendCommandAndSubmit(name, command); err != nil {
-			_ = t.KillSession(name)
-			return fmt.Errorf("failed to send command in session %q: %w", name, err)
-		}
-	} else {
-		respawnArgs := []string{"respawn-pane", "-k", "-t", name}
-		if workDir != "" {
-			respawnArgs = append(respawnArgs, "-c", workDir)
-		}
-		respawnArgs = append(respawnArgs, command)
-		if _, err := t.run(respawnArgs...); err != nil {
-			_ = t.KillSession(name)
-			return fmt.Errorf("failed to start command in session %q: %w", name, err)
-		}
+	if err := t.startSessionCommand(name, workDir, command); err != nil {
+		return err
 	}
 
 	if !waitReady {
@@ -489,6 +447,42 @@ func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env ma
 		return nil
 	}
 	return t.checkSessionAfterCreate(name, command)
+}
+
+func validateWorkDir(workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return fmt.Errorf("invalid work directory %q: %w", workDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("work directory %q is not a directory", workDir)
+	}
+	return nil
+}
+
+func (t *Tmux) startSessionCommand(name, workDir, command string) error {
+	// On Windows (psmux), respawn-pane doesn't support passing a command
+	// argument, so use send-keys to type the command into the shell.
+	if runtime.GOOS == "windows" {
+		if err := t.sendCommandAndSubmit(name, command); err != nil {
+			_ = t.KillSession(name)
+			return fmt.Errorf("failed to send command in session %q: %w", name, err)
+		}
+		return nil
+	}
+	respawnArgs := []string{"respawn-pane", "-k", "-t", name}
+	if workDir != "" {
+		respawnArgs = append(respawnArgs, "-c", workDir)
+	}
+	respawnArgs = append(respawnArgs, command)
+	if _, err := t.run(respawnArgs...); err != nil {
+		_ = t.KillSession(name)
+		return fmt.Errorf("failed to start command in session %q: %w", name, err)
+	}
+	return nil
 }
 
 func (t *Tmux) enableRemainOnExit(name string) error {
