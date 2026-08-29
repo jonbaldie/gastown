@@ -311,62 +311,64 @@ func runConfigAgentList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
+	townSettings, err := loadConfigAgentListSettings(townRoot)
+	if err != nil {
+		return err
+	}
+	items := buildConfigAgentListItems(townSettings)
+	return printConfigAgentList(cmd, townSettings, items)
+}
 
-	// Load town settings
+func loadConfigAgentListSettings(townRoot string) (*config.TownSettings, error) {
 	settingsPath := config.TownSettingsPath(townRoot)
 	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
 	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
+		return nil, fmt.Errorf("loading town settings: %w", err)
 	}
-
-	// Load agent registry
 	registryPath := config.DefaultAgentRegistryPath(townRoot)
 	if err := config.LoadAgentRegistry(registryPath); err != nil {
-		return fmt.Errorf("loading agent registry: %w", err)
+		return nil, fmt.Errorf("loading agent registry: %w", err)
 	}
+	return townSettings, nil
+}
 
-	// Collect all agents
-	builtInAgents := config.ListAgentPresets()
-	customAgents := make(map[string]*config.RuntimeConfig)
-	if townSettings.Agents != nil {
-		for name, runtime := range townSettings.Agents {
-			customAgents[name] = runtime
-		}
-	}
-
-	// Build list items
+func buildConfigAgentListItems(townSettings *config.TownSettings) []AgentListItem {
 	var items []AgentListItem
-	for _, name := range builtInAgents {
+	for _, name := range config.ListAgentPresets() {
 		preset := config.GetAgentPresetByName(name)
-		if preset != nil {
-			items = append(items, AgentListItem{
-				Name:     name,
-				Command:  preset.Command,
-				Args:     strings.Join(preset.Args, " "),
-				Type:     "built-in",
-				IsCustom: false,
-			})
-		}
-	}
-	for name, runtime := range customAgents {
-		argsStr := ""
-		if runtime.Args != nil {
-			argsStr = strings.Join(runtime.Args, " ")
+		if preset == nil {
+			continue
 		}
 		items = append(items, AgentListItem{
 			Name:     name,
-			Command:  runtime.Command,
-			Args:     argsStr,
-			Type:     "custom",
-			IsCustom: true,
+			Command:  preset.Command,
+			Args:     strings.Join(preset.Args, " "),
+			Type:     "built-in",
+			IsCustom: false,
 		})
 	}
-
-	// Sort by name
+	if townSettings.Agents != nil {
+		for name, runtime := range townSettings.Agents {
+			argsStr := ""
+			if runtime.Args != nil {
+				argsStr = strings.Join(runtime.Args, " ")
+			}
+			items = append(items, AgentListItem{
+				Name:     name,
+				Command:  runtime.Command,
+				Args:     argsStr,
+				Type:     "custom",
+				IsCustom: true,
+			})
+		}
+	}
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].Name < items[j].Name
 	})
+	return items
+}
 
+func printConfigAgentList(cmd *cobra.Command, townSettings *config.TownSettings, items []AgentListItem) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -374,7 +376,6 @@ func runConfigAgentList(cmd *cobra.Command, _ []string) error {
 		return enc.Encode(items)
 	}
 
-	// Text output
 	fmt.Printf("%s\n\n", style.Bold.Render("Available Agents"))
 	for _, item := range items {
 		typeLabel := style.Dim.Render("[" + item.Type + "]")
@@ -385,7 +386,6 @@ func runConfigAgentList(cmd *cobra.Command, _ []string) error {
 		fmt.Println()
 	}
 
-	// Show default
 	defaultAgent := townSettings.DefaultAgent
 	if defaultAgent == "" {
 		defaultAgent = "claude"
