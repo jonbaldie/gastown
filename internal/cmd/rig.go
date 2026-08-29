@@ -2166,144 +2166,105 @@ func runRigStop(_ *cobra.Command, args []string) error {
 	return reportRigStopSummary(args, succeeded, failed)
 }
 
-func runRigRestart(_ *cobra.Command, args []string) error {
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	// Load rigs config
-	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsPath)
-	if err != nil {
-		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
-	}
-
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
+func stopRigForRestart(r *rig.Rig, force bool) []string {
+	fmt.Printf("  Stopping...\n")
 	t := tmux.NewTmux()
-
-	// Track results
-	var succeeded []string
-	var failed []string
-
-	// Process each rig
-	for _, rigName := range args {
-		r, err := rigMgr.GetRig(rigName)
-		if err != nil {
-			fmt.Printf("%s Rig '%s' not found\n", style.Warning.Render("⚠"), rigName)
-			failed = append(failed, rigName)
-			continue
+	polecatMgr := polecat.NewSessionManager(t, r)
+	var stopErrors []string
+	infos, err := polecatMgr.ListPolecats()
+	if err == nil && len(infos) > 0 {
+		fmt.Printf("    Stopping %d polecat session(s)...\n", len(infos))
+		if err := polecatMgr.StopAll(force); err != nil {
+			stopErrors = append(stopErrors, fmt.Sprintf("polecat sessions: %v", err))
 		}
-
-		// Check all polecats for uncommitted work (unless nuclear)
-		if !rigRestartNuclear && !checkUncommittedWork(r, rigName, "restart", rigRestartForce) {
-			failed = append(failed, rigName)
-			continue
-		}
-
-		fmt.Printf("Restarting rig %s...\n", style.Bold.Render(rigName))
-
-		var stopErrors []string
-		var startErrors []string
-
-		// === STOP PHASE ===
-		fmt.Printf("  Stopping...\n")
-
-		// 1. Stop all polecat sessions
-		polecatMgr := polecat.NewSessionManager(t, r)
-		infos, err := polecatMgr.ListPolecats()
-		if err == nil && len(infos) > 0 {
-			fmt.Printf("    Stopping %d polecat session(s)...\n", len(infos))
-			if err := polecatMgr.StopAll(rigRestartForce); err != nil {
-				stopErrors = append(stopErrors, fmt.Sprintf("polecat sessions: %v", err))
-			}
-		}
-
-		// 2. Stop the refinery
-		refMgr := refinery.NewManager(r)
-		if running, _ := refMgr.IsRunning(); running {
-			fmt.Printf("    Stopping refinery...\n")
-			if err := refMgr.Stop(); err != nil {
-				stopErrors = append(stopErrors, fmt.Sprintf("refinery: %v", err))
-			}
-		}
-
-		// 3. Stop the witness
-		witMgr := witness.NewManager(r)
-		if running, _ := witMgr.IsRunning(); running {
-			fmt.Printf("    Stopping witness...\n")
-			if err := witMgr.Stop(); err != nil {
-				stopErrors = append(stopErrors, fmt.Sprintf("witness: %v", err))
-			}
-		}
-
-		if len(stopErrors) > 0 {
-			fmt.Printf("  %s Stop errors:\n", style.Warning.Render("⚠"))
-			for _, e := range stopErrors {
-				fmt.Printf("    - %s\n", e)
-			}
-			failed = append(failed, rigName)
-			continue
-		}
-
-		// === START PHASE ===
-		fmt.Printf("  Starting...\n")
-
-		var started []string
-		var skipped []string
-
-		// 1. Start the witness
-		// Start() treats healthy sessions as already running and recreates zombie
-		// sessions whose tmux pane remains after the agent exits.
-		if err := witMgr.Start(false, "", nil); err != nil {
-			if err == witness.ErrAlreadyRunning {
-				skipped = append(skipped, "witness")
-			} else {
-				fmt.Printf("    %s Failed to start witness: %v\n", style.Warning.Render("⚠"), err)
-				startErrors = append(startErrors, fmt.Sprintf("witness: %v", err))
-			}
-		} else {
-			started = append(started, "witness")
-		}
-
-		// 2. Start the refinery
-		if err := refMgr.Start(false, ""); err != nil {
-			if errors.Is(err, refinery.ErrAlreadyRunning) {
-				skipped = append(skipped, "refinery")
-			} else if errors.Is(err, refinery.ErrForkRig) {
-				skipped = append(skipped, "refinery (fork-backed rig; use PR workflow)")
-			} else {
-				fmt.Printf("    %s Failed to start refinery: %v\n", style.Warning.Render("⚠"), err)
-				startErrors = append(startErrors, fmt.Sprintf("refinery: %v", err))
-			}
-		} else {
-			started = append(started, "refinery")
-		}
-
-		// Report results for this rig
-		if len(started) > 0 {
-			fmt.Printf("  %s Started: %s\n", style.Success.Render("✓"), strings.Join(started, ", "))
-		}
-		if len(skipped) > 0 {
-			fmt.Printf("  %s Skipped: %s\n", style.Dim.Render("•"), strings.Join(skipped, ", "))
-		}
-
-		if len(startErrors) > 0 {
-			fmt.Printf("  %s Start errors:\n", style.Warning.Render("⚠"))
-			for _, e := range startErrors {
-				fmt.Printf("    - %s\n", e)
-			}
-			failed = append(failed, rigName)
-		} else {
-			fmt.Printf("%s Rig %s restarted\n", style.Success.Render("✓"), rigName)
-			succeeded = append(succeeded, rigName)
-		}
-		fmt.Println()
 	}
+	refMgr := refinery.NewManager(r)
+	if running, _ := refMgr.IsRunning(); running {
+		fmt.Printf("    Stopping refinery...\n")
+		if err := refMgr.Stop(); err != nil {
+			stopErrors = append(stopErrors, fmt.Sprintf("refinery: %v", err))
+		}
+	}
+	witMgr := witness.NewManager(r)
+	if running, _ := witMgr.IsRunning(); running {
+		fmt.Printf("    Stopping witness...\n")
+		if err := witMgr.Stop(); err != nil {
+			stopErrors = append(stopErrors, fmt.Sprintf("witness: %v", err))
+		}
+	}
+	return stopErrors
+}
 
-	// Summary
+func startRigForRestart(r *rig.Rig) ([]string, []string, []string) {
+	fmt.Printf("  Starting...\n")
+	var started []string
+	var skipped []string
+	var startErrors []string
+	witMgr := witness.NewManager(r)
+	if err := witMgr.Start(false, "", nil); err != nil {
+		if err == witness.ErrAlreadyRunning {
+			skipped = append(skipped, "witness")
+		} else {
+			fmt.Printf("    %s Failed to start witness: %v\n", style.Warning.Render("⚠"), err)
+			startErrors = append(startErrors, fmt.Sprintf("witness: %v", err))
+		}
+	} else {
+		started = append(started, "witness")
+	}
+	refMgr := refinery.NewManager(r)
+	if err := refMgr.Start(false, ""); err != nil {
+		if errors.Is(err, refinery.ErrAlreadyRunning) {
+			skipped = append(skipped, "refinery")
+		} else if errors.Is(err, refinery.ErrForkRig) {
+			skipped = append(skipped, "refinery (fork-backed rig; use PR workflow)")
+		} else {
+			fmt.Printf("    %s Failed to start refinery: %v\n", style.Warning.Render("⚠"), err)
+			startErrors = append(startErrors, fmt.Sprintf("refinery: %v", err))
+		}
+	} else {
+		started = append(started, "refinery")
+	}
+	if len(started) > 0 {
+		fmt.Printf("  %s Started: %s\n", style.Success.Render("✓"), strings.Join(started, ", "))
+	}
+	if len(skipped) > 0 {
+		fmt.Printf("  %s Skipped: %s\n", style.Dim.Render("•"), strings.Join(skipped, ", "))
+	}
+	return started, skipped, startErrors
+}
+
+func reportRigRestartErrors(phase string, errors []string) {
+	fmt.Printf("  %s %s errors:\n", style.Warning.Render("⚠"), phase)
+	for _, e := range errors {
+		fmt.Printf("    - %s\n", e)
+	}
+}
+
+func restartRigByName(rigMgr *rig.Manager, rigName string, force, nuclear bool) (succeeded, failed bool) {
+	r, err := rigMgr.GetRig(rigName)
+	if err != nil {
+		fmt.Printf("%s Rig '%s' not found\n", style.Warning.Render("⚠"), rigName)
+		return false, true
+	}
+	if !nuclear && !checkUncommittedWork(r, rigName, "restart", force) {
+		return false, true
+	}
+	fmt.Printf("Restarting rig %s...\n", style.Bold.Render(rigName))
+	if stopErrors := stopRigForRestart(r, force); len(stopErrors) > 0 {
+		reportRigRestartErrors("Stop", stopErrors)
+		return false, true
+	}
+	_, _, startErrors := startRigForRestart(r)
+	if len(startErrors) > 0 {
+		reportRigRestartErrors("Start", startErrors)
+		return false, true
+	}
+	fmt.Printf("%s Rig %s restarted\n", style.Success.Render("✓"), rigName)
+	fmt.Println()
+	return true, false
+}
+
+func reportRigRestartSummary(args, succeeded, failed []string) error {
 	if len(args) > 1 {
 		if len(succeeded) > 0 {
 			fmt.Printf("%s Restarted: %s\n", style.Success.Render("✓"), strings.Join(succeeded, ", "))
@@ -2315,8 +2276,25 @@ func runRigRestart(_ *cobra.Command, args []string) error {
 	} else if len(failed) > 0 {
 		return fmt.Errorf("rig failed to restart")
 	}
-
 	return nil
+}
+
+func runRigRestart(_ *cobra.Command, args []string) error {
+	_, rigMgr, err := loadRigManagerForStart()
+	if err != nil {
+		return err
+	}
+	var succeeded []string
+	var failed []string
+	for _, rigName := range args {
+		restarted, restartFailed := restartRigByName(rigMgr, rigName, rigRestartForce, rigRestartNuclear)
+		if restartFailed {
+			failed = append(failed, rigName)
+		} else if restarted {
+			succeeded = append(succeeded, rigName)
+		}
+	}
+	return reportRigRestartSummary(args, succeeded, failed)
 }
 
 // getRigOperationalState returns the operational state and source for a rig.
