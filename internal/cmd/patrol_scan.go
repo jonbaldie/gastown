@@ -15,13 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	patrolScanJSON    bool
-	patrolScanNotify  bool
-	patrolScanRig     string
-	patrolScanVerbose bool
-)
-
 var patrolScanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Scan polecats for zombies, stalls, and completions",
@@ -54,10 +47,10 @@ Examples:
 }
 
 func init() {
-	patrolScanCmd.Flags().BoolVar(&patrolScanJSON, "json", false, "Output as JSON")
-	patrolScanCmd.Flags().BoolVar(&patrolScanNotify, "notify", false, "Send mail to witness/mayor when active-work zombies are detected")
-	patrolScanCmd.Flags().StringVar(&patrolScanRig, "rig", "", "Rig to scan (default: infer from cwd or GT_RIG)")
-	patrolScanCmd.Flags().BoolVarP(&patrolScanVerbose, "verbose", "v", false, "Verbose output")
+	patrolScanCmd.Flags().Bool("json", false, "Output as JSON")
+	patrolScanCmd.Flags().Bool("notify", false, "Send mail to witness/mayor when active-work zombies are detected")
+	patrolScanCmd.Flags().String("rig", "", "Rig to scan (default: infer from cwd or GT_RIG)")
+	patrolScanCmd.Flags().BoolP("verbose", "v", false, "Verbose output")
 
 	patrolCmd.AddCommand(patrolScanCmd)
 }
@@ -129,13 +122,15 @@ type PatrolScanCompleteItem struct {
 }
 
 func runPatrolScan(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	verbose := commandBoolFlag(cmd, "verbose")
+	rigName := commandStringFlag(cmd, "rig")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Determine rig name
-	rigName := patrolScanRig
 	if rigName == "" {
 		// Try GT_RIG env, then infer from cwd
 		rigName = os.Getenv("GT_RIG")
@@ -182,11 +177,11 @@ func runPatrolScan(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	if patrolScanJSON {
+	if jsonOutput {
 		return outputPatrolScanJSON(rigName, timestamp, zombieResult, stallResult, completionResult, receipts)
 	}
 
-	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, receipts)
+	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, receipts, verbose)
 }
 
 func runPatrolScanPhase[T any](diagnostics io.Writer, name string, fn func() T) T {
@@ -366,7 +361,7 @@ func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.Detec
 	return enc.Encode(output)
 }
 
-func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, _ []witness.PatrolReceipt) error {
+func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, _ []witness.PatrolReceipt, verbose bool) error {
 	fmt.Printf("%s Patrol scan: %s\n\n", style.Bold.Render("🔍"), rigName)
 
 	// Zombies
@@ -398,7 +393,7 @@ func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePol
 			}
 		}
 
-		if len(zombieResult.Errors) > 0 && patrolScanVerbose {
+		if len(zombieResult.Errors) > 0 && verbose {
 			fmt.Printf("  Errors: %d\n", len(zombieResult.Errors))
 			for _, e := range zombieResult.Errors {
 				fmt.Printf("    - %v\n", e)
@@ -412,7 +407,7 @@ func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePol
 	}
 
 	// Stalls
-	if stallResult != nil && (len(stallResult.Stalled) > 0 || patrolScanVerbose) {
+	if stallResult != nil && (len(stallResult.Stalled) > 0 || verbose) {
 		fmt.Printf("%s Stall Detection: checked %d polecat(s)\n",
 			style.Bold.Render("⏳"), stallResult.Checked)
 
@@ -430,7 +425,7 @@ func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePol
 	}
 
 	// Completions
-	if completionResult != nil && (len(completionResult.Discovered) > 0 || patrolScanVerbose) {
+	if completionResult != nil && (len(completionResult.Discovered) > 0 || verbose) {
 		fmt.Printf("%s Completion Discovery: checked %d polecat(s)\n",
 			style.Bold.Render("✅"), completionResult.Checked)
 
