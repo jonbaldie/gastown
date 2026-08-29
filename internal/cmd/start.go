@@ -1038,80 +1038,99 @@ func stopDaemonIfRunning(townRoot string) {
 // runStartCrew starts a crew workspace, creating it if it doesn't exist.
 // This combines the functionality of 'gt crew add' and 'gt crew at --detached'.
 func runStartCrew(_ *cobra.Command, args []string) error {
-	name := args[0]
+	options := startCrewOptions{
+		rig:           startCrewRig,
+		account:       startCrewAccount,
+		agentOverride: startCrewAgentOverride,
+	}
+	name, rigName := parseStartCrewTarget(args[0], options.rig)
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	rigName, err = resolveStartCrewRig(townRoot, rigName, name)
+	if err != nil {
+		return err
+	}
+	r, err := loadStartCrewRig(townRoot, rigName)
+	if err != nil {
+		return err
+	}
+	return startCrewWorkspace(townRoot, r, rigName, name, options)
+}
 
-	// Parse rig/name format (e.g., "greenplace/joe" -> rig=gastown, name=joe)
-	rigName := startCrewRig
+type startCrewOptions struct {
+	rig           string
+	account       string
+	agentOverride string
+}
+
+func parseStartCrewTarget(name, rigName string) (string, string) {
 	if parsedRig, crewName, ok := parseRigSlashName(name); ok {
 		if rigName == "" {
 			rigName = parsedRig
 		}
 		name = crewName
 	}
+	return name, rigName
+}
 
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
+func resolveStartCrewRig(townRoot, rigName, crewName string) (string, error) {
+	if rigName != "" {
+		return rigName, nil
+	}
+	rigName, err := inferRigFromCwd(townRoot)
+	if err == nil {
+		return rigName, nil
+	}
+	rigName, err = inferRigFromCrewName(townRoot, crewName)
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return "", fmt.Errorf("could not determine rig (use --rig flag or rig/name format): %w", err)
 	}
+	return rigName, nil
+}
 
-	// If rig still not specified, try to infer from cwd, then by crew name
-	if rigName == "" {
-		rigName, err = inferRigFromCwd(townRoot)
-		if err != nil {
-			rigName, err = inferRigFromCrewName(townRoot, name)
-			if err != nil {
-				return fmt.Errorf("could not determine rig (use --rig flag or rig/name format): %w", err)
-			}
-		}
-	}
-
-	// Load rigs config
+func loadStartCrewRig(townRoot, rigName string) (*rig.Rig, error) {
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
 	if err != nil {
 		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
 	}
-
-	// Get rig
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
+	rigMgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
 	r, err := rigMgr.GetRig(rigName)
 	if err != nil {
-		return fmt.Errorf("rig '%s' not found", rigName)
+		return nil, fmt.Errorf("rig '%s' not found", rigName)
 	}
+	return r, nil
+}
 
-	// Create crew manager
-	crewGit := git.NewGit(r.Path)
-	crewMgr := crew.NewManager(r, crewGit)
-
-	// Resolve account for Claude config
+func startCrewWorkspace(townRoot string, r *rig.Rig, rigName, name string, options startCrewOptions) error {
+	crewMgr := crew.NewManager(r, git.NewGit(r.Path))
 	accountsPath := constants.MayorAccountsPath(townRoot)
-	claudeConfigDir, accountHandle, err := config.ResolveAccountConfigDir(accountsPath, startCrewAccount)
+	claudeConfigDir, accountHandle, err := config.ResolveAccountConfigDir(accountsPath, options.account)
 	if err != nil {
 		return fmt.Errorf("resolving account: %w", err)
 	}
 	if accountHandle != "" {
 		fmt.Printf("Using account: %s\n", accountHandle)
 	}
-
-	// Use manager's Start() method - handles workspace creation, settings, and session
 	err = crewMgr.Start(name, crew.StartOptions{
-		Account:         startCrewAccount,
+		Account:         options.account,
 		ClaudeConfigDir: claudeConfigDir,
-		AgentOverride:   startCrewAgentOverride,
+		AgentOverride:   options.agentOverride,
 	})
-	if err != nil {
-		if errors.Is(err, crew.ErrSessionRunning) {
-			fmt.Printf("%s Session already running: %s\n", style.Dim.Render("○"), crewMgr.SessionName(name))
-		} else {
-			return err
-		}
-	} else {
-		fmt.Printf("%s Started crew workspace: %s/%s\n",
-			style.Bold.Render("✓"), rigName, name)
-	}
+	return reportCrewStart(crewMgr, rigName, name, err)
+}
 
+func reportCrewStart(crewMgr *crew.Manager, rigName, name string, err error) error {
+	if err != nil && !errors.Is(err, crew.ErrSessionRunning) {
+		return err
+	}
+	if errors.Is(err, crew.ErrSessionRunning) {
+		fmt.Printf("%s Session already running: %s\n", style.Dim.Render("○"), crewMgr.SessionName(name))
+	} else {
+		fmt.Printf("%s Started crew workspace: %s/%s\n", style.Bold.Render("✓"), rigName, name)
+	}
 	fmt.Printf("Attach with: %s\n", style.Dim.Render(fmt.Sprintf("gt crew at %s", name)))
 	return nil
 }
@@ -1119,39 +1138,40 @@ func runStartCrew(_ *cobra.Command, args []string) error {
 // getCrewToStart reads rig settings and parses the crew.startup field.
 // Returns a list of crew names to start.
 func getCrewToStart(r *rig.Rig) []string {
-	// Load rig settings
+	startup, ok := loadCrewStartup(r)
+	if !ok {
+		return nil
+	}
+	if startup == "all" {
+		return listCrewNames(r)
+	}
+	return parseCrewStartup(startup)
+}
+
+func loadCrewStartup(r *rig.Rig) (string, bool) {
 	settingsPath := filepath.Join(r.Path, "settings", "config.json")
 	settings, err := config.LoadRigSettings(settingsPath)
+	if err != nil || settings.Crew == nil || settings.Crew.Startup == "" || settings.Crew.Startup == "none" {
+		return "", false
+	}
+	return settings.Crew.Startup, true
+}
+
+func listCrewNames(r *rig.Rig) []string {
+	workers, err := crew.NewManager(r, git.NewGit(r.Path)).List()
 	if err != nil {
 		return nil
 	}
-
-	if settings.Crew == nil || settings.Crew.Startup == "" || settings.Crew.Startup == "none" {
-		return nil
+	var names []string
+	for _, worker := range workers {
+		names = append(names, worker.Name)
 	}
+	return names
+}
 
-	startup := settings.Crew.Startup
-
-	// Handle "all" - list all existing crew
-	if startup == "all" {
-		crewGit := git.NewGit(r.Path)
-		crewMgr := crew.NewManager(r, crewGit)
-		workers, err := crewMgr.List()
-		if err != nil {
-			return nil
-		}
-		var names []string
-		for _, w := range workers {
-			names = append(names, w.Name)
-		}
-		return names
-	}
-
-	// Parse names: "max", "max and joe", "max, joe", "max, joe, emma"
-	// Replace "and" with comma for uniform parsing
+func parseCrewStartup(startup string) []string {
 	startup = strings.ReplaceAll(startup, " and ", ", ")
 	parts := strings.Split(startup, ",")
-
 	var names []string
 	for _, part := range parts {
 		name := strings.TrimSpace(part)
@@ -1159,7 +1179,6 @@ func getCrewToStart(r *rig.Rig) []string {
 			names = append(names, name)
 		}
 	}
-
 	return names
 }
 
