@@ -77,26 +77,27 @@ Use cases:
 	RunE: runDown,
 }
 
-var (
-	downQuiet    bool
-	downForce    bool
-	downAll      bool
-	downNuke     bool
-	downDryRun   bool
-	downPolecats bool
-)
-
 func init() {
-	downCmd.Flags().BoolVarP(&downQuiet, "quiet", "q", false, "Only show errors")
-	downCmd.Flags().BoolVarP(&downForce, "force", "f", false, "Force kill without graceful shutdown")
-	downCmd.Flags().BoolVarP(&downPolecats, "polecats", "p", false, "Also stop all polecat sessions")
-	downCmd.Flags().BoolVarP(&downAll, "all", "a", false, "Full shutdown with orphan cleanup and verification")
-	downCmd.Flags().BoolVar(&downNuke, "nuke", false, "Kill the shared tmux server (default socket) and all its sessions")
-	downCmd.Flags().BoolVar(&downDryRun, "dry-run", false, "Preview what would be stopped without taking action")
+	downCmd.Flags().BoolP("quiet", "q", false, "Only show errors")
+	downCmd.Flags().BoolP("force", "f", false, "Force kill without graceful shutdown")
+	downCmd.Flags().BoolP("polecats", "p", false, "Also stop all polecat sessions")
+	downCmd.Flags().BoolP("all", "a", false, "Full shutdown with orphan cleanup and verification")
+	downCmd.Flags().Bool("nuke", false, "Kill the shared tmux server (default socket) and all its sessions")
+	downCmd.Flags().Bool("dry-run", false, "Preview what would be stopped without taking action")
 	rootCmd.AddCommand(downCmd)
 }
 
-func runDown(_ *cobra.Command, _ []string) error {
+func runDown(cmd *cobra.Command, _ []string) error {
+	quiet := commandBoolFlag(cmd, "quiet")
+	force := commandBoolFlag(cmd, "force")
+	polecats := commandBoolFlag(cmd, "polecats")
+	all := commandBoolFlag(cmd, "all")
+	nuke := commandBoolFlag(cmd, "nuke")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	printStatus := func(name string, ok bool, detail string) {
+		printDownStatus(name, ok, detail, quiet)
+	}
+
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -108,7 +109,7 @@ func runDown(_ *cobra.Command, _ []string) error {
 	}
 
 	// Phase 0: Acquire shutdown lock (skip for dry-run)
-	if !downDryRun {
+	if !dryRun {
 		lock, err := acquireShutdownLock(townRoot)
 		if err != nil {
 			return fmt.Errorf("cannot proceed: %w", err)
@@ -136,7 +137,7 @@ func runDown(_ *cobra.Command, _ []string) error {
 	}
 	allOK := true
 
-	if downDryRun {
+	if dryRun {
 		fmt.Println("═══ DRY RUN: Preview of shutdown actions ═══")
 		fmt.Println()
 	}
@@ -144,24 +145,24 @@ func runDown(_ *cobra.Command, _ []string) error {
 	rigs := discoverRigs(townRoot)
 
 	// Phase 0.5: Stop polecats if --polecats
-	if downPolecats {
-		if downDryRun {
+	if polecats {
+		if dryRun {
 			fmt.Println("Would stop polecats...")
 		} else {
 			fmt.Println("Stopping polecats...")
 		}
-		polecatsStopped := stopAllPolecats(t, townRoot, rigs, downForce, downDryRun)
-		if downDryRun {
+		polecatsStopped := stopAllPolecats(t, townRoot, rigs, force, dryRun)
+		if dryRun {
 			if polecatsStopped > 0 {
-				printDownStatus("Polecats", true, fmt.Sprintf("%d would stop", polecatsStopped))
+				printStatus("Polecats", true, fmt.Sprintf("%d would stop", polecatsStopped))
 			} else {
-				printDownStatus("Polecats", true, "none running")
+				printStatus("Polecats", true, "none running")
 			}
 		} else {
 			if polecatsStopped > 0 {
-				printDownStatus("Polecats", true, fmt.Sprintf("%d stopped", polecatsStopped))
+				printStatus("Polecats", true, fmt.Sprintf("%d stopped", polecatsStopped))
 			} else {
-				printDownStatus("Polecats", true, "none running")
+				printStatus("Polecats", true, "none running")
 			}
 		}
 		fmt.Println()
@@ -169,97 +170,97 @@ func runDown(_ *cobra.Command, _ []string) error {
 
 	// Phase 0.6: Stop crew member sessions.
 	// Crew sessions consume tokens and must be stopped during any shutdown.
-	crewStopped := stopAllCrew(t, townRoot, rigs, downDryRun)
-	if downDryRun {
+	crewStopped := stopAllCrew(t, townRoot, rigs, force, dryRun)
+	if dryRun {
 		if crewStopped > 0 {
-			printDownStatus("Crew", true, fmt.Sprintf("%d would stop", crewStopped))
+			printStatus("Crew", true, fmt.Sprintf("%d would stop", crewStopped))
 		}
 	} else {
 		if crewStopped > 0 {
-			printDownStatus("Crew", true, fmt.Sprintf("%d stopped", crewStopped))
+			printStatus("Crew", true, fmt.Sprintf("%d stopped", crewStopped))
 		}
 	}
 
 	// Phase 1: Stop refineries
 	for _, rigName := range rigs {
 		sessionName := session.RefinerySessionName(session.PrefixFor(rigName))
-		if downDryRun {
+		if dryRun {
 			if running, _ := t.HasSession(sessionName); running {
-				printDownStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "would stop")
+				printStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "would stop")
 			}
 			continue
 		}
-		wasRunning, err := stopSession(t, sessionName)
+		wasRunning, err := stopSession(t, sessionName, force)
 		if err != nil {
-			printDownStatus(fmt.Sprintf("Refinery (%s)", rigName), false, err.Error())
+			printStatus(fmt.Sprintf("Refinery (%s)", rigName), false, err.Error())
 			allOK = false
 		} else if wasRunning {
-			printDownStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "stopped")
+			printStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "stopped")
 		} else {
-			printDownStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "not running")
+			printStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "not running")
 		}
 	}
 
 	// Phase 2: Stop witnesses
 	for _, rigName := range rigs {
 		sessionName := session.WitnessSessionName(session.PrefixFor(rigName))
-		if downDryRun {
+		if dryRun {
 			if running, _ := t.HasSession(sessionName); running {
-				printDownStatus(fmt.Sprintf("Witness (%s)", rigName), true, "would stop")
+				printStatus(fmt.Sprintf("Witness (%s)", rigName), true, "would stop")
 			}
 			continue
 		}
-		wasRunning, err := stopSession(t, sessionName)
+		wasRunning, err := stopSession(t, sessionName, force)
 		if err != nil {
-			printDownStatus(fmt.Sprintf("Witness (%s)", rigName), false, err.Error())
+			printStatus(fmt.Sprintf("Witness (%s)", rigName), false, err.Error())
 			allOK = false
 		} else if wasRunning {
-			printDownStatus(fmt.Sprintf("Witness (%s)", rigName), true, "stopped")
+			printStatus(fmt.Sprintf("Witness (%s)", rigName), true, "stopped")
 		} else {
-			printDownStatus(fmt.Sprintf("Witness (%s)", rigName), true, "not running")
+			printStatus(fmt.Sprintf("Witness (%s)", rigName), true, "not running")
 		}
 	}
 
 	// Phase 3: Stop town-level sessions (Mayor, Boot, Deacon)
 	for _, ts := range session.TownSessions() {
-		if downDryRun {
+		if dryRun {
 			if running, _ := t.HasSession(ts.SessionID); running {
-				printDownStatus(ts.Name, true, "would stop")
+				printStatus(ts.Name, true, "would stop")
 			}
 			continue
 		}
-		stopped, err := session.StopTownSession(t, ts, downForce)
+		stopped, err := session.StopTownSession(t, ts, force)
 		if err != nil {
-			printDownStatus(ts.Name, false, err.Error())
+			printStatus(ts.Name, false, err.Error())
 			allOK = false
 		} else if stopped {
-			printDownStatus(ts.Name, true, "stopped")
+			printStatus(ts.Name, true, "stopped")
 		} else {
-			printDownStatus(ts.Name, true, "not running")
+			printStatus(ts.Name, true, "not running")
 		}
 	}
 
 	// Phase 4: Stop Daemon
 	running, pid, daemonErr := daemon.IsRunning(townRoot)
 	if daemonErr != nil {
-		printDownStatus("Daemon", false, fmt.Sprintf("status check failed: %v", daemonErr))
+		printStatus("Daemon", false, fmt.Sprintf("status check failed: %v", daemonErr))
 		allOK = false
-	} else if downDryRun {
+	} else if dryRun {
 		if running {
-			printDownStatus("Daemon", true, fmt.Sprintf("would stop (PID %d)", pid))
+			printStatus("Daemon", true, fmt.Sprintf("would stop (PID %d)", pid))
 		}
 	} else {
 		if running {
 			if err := daemon.StopDaemon(townRoot); err != nil {
-				printDownStatus("Daemon", false, err.Error())
+				printStatus("Daemon", false, err.Error())
 				allOK = false
 			} else if pid > 0 {
-				printDownStatus("Daemon", true, fmt.Sprintf("stopped (was PID %d)", pid))
+				printStatus("Daemon", true, fmt.Sprintf("stopped (was PID %d)", pid))
 			} else {
-				printDownStatus("Daemon", true, "stopped (stale lock cleaned)")
+				printStatus("Daemon", true, "stopped (stale lock cleaned)")
 			}
 		} else {
-			printDownStatus("Daemon", true, "not running")
+			printStatus("Daemon", true, "not running")
 		}
 	}
 
@@ -269,12 +270,12 @@ func runDown(_ *cobra.Command, _ []string) error {
 	// the canonical server can restart. Must be stopped BEFORE Dolt shutdown.
 	idleMonitors := doltserver.FindIdleMonitorProcesses(townRoot)
 	if len(idleMonitors) > 0 {
-		if downDryRun {
-			printDownStatus("Dolt idle-monitors", true, fmt.Sprintf("%d would stop", len(idleMonitors)))
+		if dryRun {
+			printStatus("Dolt idle-monitors", true, fmt.Sprintf("%d would stop", len(idleMonitors)))
 		} else {
 			stopped := stopIdleMonitors(idleMonitors)
 			if stopped > 0 {
-				printDownStatus("Dolt idle-monitors", true, fmt.Sprintf("stopped %d", stopped))
+				printStatus("Dolt idle-monitors", true, fmt.Sprintf("stopped %d", stopped))
 			}
 		}
 	}
@@ -284,22 +285,22 @@ func runDown(_ *cobra.Command, _ []string) error {
 	if _, statErr := os.Stat(doltCfg.DataDir); statErr == nil {
 		doltRunning, doltPid, doltErr := doltserver.IsRunning(townRoot)
 		if doltErr != nil {
-			printDownStatus("Dolt", false, fmt.Sprintf("status check failed: %v", doltErr))
+			printStatus("Dolt", false, fmt.Sprintf("status check failed: %v", doltErr))
 			allOK = false
-		} else if downDryRun {
+		} else if dryRun {
 			if doltRunning {
-				printDownStatus("Dolt", true, fmt.Sprintf("would stop (PID %d)", doltPid))
+				printStatus("Dolt", true, fmt.Sprintf("would stop (PID %d)", doltPid))
 			}
 		} else {
 			if doltRunning {
 				if err := doltserver.Stop(townRoot); err != nil {
-					printDownStatus("Dolt", false, err.Error())
+					printStatus("Dolt", false, err.Error())
 					allOK = false
 				} else {
-					printDownStatus("Dolt", true, fmt.Sprintf("stopped (was PID %d)", doltPid))
+					printStatus("Dolt", true, fmt.Sprintf("stopped (was PID %d)", doltPid))
 				}
 			} else {
-				printDownStatus("Dolt", true, "not running")
+				printStatus("Dolt", true, "not running")
 			}
 		}
 	}
@@ -309,45 +310,45 @@ func runDown(_ *cobra.Command, _ []string) error {
 	// from .beads/dolt/ directories may still be running. KillImposters only
 	// catches servers on our port, so also scan for any dolt sql-server
 	// processes rooted in this town's directory tree.
-	if !downDryRun {
+	if !dryRun {
 		if err := doltserver.KillImposters(townRoot); err != nil {
-			printDownStatus("Dolt imposters", false, err.Error())
+			printStatus("Dolt imposters", false, err.Error())
 			allOK = false
 		}
 		orphanDolts := findOrphanDoltServers(townRoot)
 		if len(orphanDolts) > 0 {
 			stopped := stopOrphanDoltServers(orphanDolts)
 			if stopped > 0 {
-				printDownStatus("Dolt orphans", true, fmt.Sprintf("stopped %d rogue server(s)", stopped))
+				printStatus("Dolt orphans", true, fmt.Sprintf("stopped %d rogue server(s)", stopped))
 			}
 		}
 	} else {
 		conflictPID, _ := doltserver.CheckPortConflict(townRoot)
 		if conflictPID > 0 {
-			printDownStatus("Dolt imposters", true, fmt.Sprintf("would stop imposter (PID %d)", conflictPID))
+			printStatus("Dolt imposters", true, fmt.Sprintf("would stop imposter (PID %d)", conflictPID))
 		}
 		orphanDolts := findOrphanDoltServers(townRoot)
 		if len(orphanDolts) > 0 {
-			printDownStatus("Dolt orphans", true, fmt.Sprintf("%d rogue server(s) would stop", len(orphanDolts)))
+			printStatus("Dolt orphans", true, fmt.Sprintf("%d rogue server(s) would stop", len(orphanDolts)))
 		}
 	}
 
 	// Phase 4b-iiia: Stop this town's `gt worker serve` process.
 	workerPIDs := worker.FindServePIDs(townRoot)
 	if len(workerPIDs) > 0 {
-		if downDryRun {
-			printDownStatus("Worker serve", true, fmt.Sprintf("%d would stop", len(workerPIDs)))
+		if dryRun {
+			printStatus("Worker serve", true, fmt.Sprintf("%d would stop", len(workerPIDs)))
 		} else {
 			stopped := worker.StopServe(townRoot)
 			if leftover := worker.FindServePIDs(townRoot); len(leftover) > 0 {
-				printDownStatus("Worker serve", false, fmt.Sprintf("still running (PIDs %v)", leftover))
+				printStatus("Worker serve", false, fmt.Sprintf("still running (PIDs %v)", leftover))
 				allOK = false
 			} else if stopped > 0 {
-				printDownStatus("Worker serve", true, fmt.Sprintf("stopped %d", stopped))
+				printStatus("Worker serve", true, fmt.Sprintf("stopped %d", stopped))
 			}
 		}
-	} else if !downDryRun {
-		printDownStatus("Worker serve", true, "not running")
+	} else if !dryRun {
+		printStatus("Worker serve", true, "not running")
 	}
 
 	// Phase 4b-iv: Remove .beads/dolt directories.
@@ -356,12 +357,12 @@ func runDown(_ *cobra.Command, _ []string) error {
 	// Data has already been migrated to .dolt-data/ by gt dolt migrate.
 	beadsDoltDirs := findBeadsDoltDirs(townRoot)
 	if len(beadsDoltDirs) > 0 {
-		if downDryRun {
-			printDownStatus("Beads dolt dirs", true, fmt.Sprintf("%d would remove", len(beadsDoltDirs)))
+		if dryRun {
+			printStatus("Beads dolt dirs", true, fmt.Sprintf("%d would remove", len(beadsDoltDirs)))
 		} else {
 			removed := removeBeadsDoltDirs(beadsDoltDirs)
 			if removed > 0 {
-				printDownStatus("Beads dolt dirs", true, fmt.Sprintf("removed %d", removed))
+				printStatus("Beads dolt dirs", true, fmt.Sprintf("removed %d", removed))
 			}
 		}
 	}
@@ -371,28 +372,28 @@ func runDown(_ *cobra.Command, _ []string) error {
 	// basename-only socket (e.g., "gt" instead of "gt-a1b2c3"). After
 	// transitioning to path-hashed sockets, ghost sessions on old sockets
 	// persist and cause split-brain.
-	if !downDryRun {
+	if !dryRun {
 		cleaned := cleanupLegacyDefaultSocket()
 		if cleaned > 0 {
-			printDownStatus("Legacy sessions", true, fmt.Sprintf("cleaned %d from 'default' socket", cleaned))
+			printStatus("Legacy sessions", true, fmt.Sprintf("cleaned %d from 'default' socket", cleaned))
 		}
 		cleaned = cleanupLegacyBaseSocket(townRoot)
 		if cleaned > 0 {
-			printDownStatus("Legacy sessions", true, fmt.Sprintf("cleaned %d from old basename socket", cleaned))
+			printStatus("Legacy sessions", true, fmt.Sprintf("cleaned %d from old basename socket", cleaned))
 		}
 	} else {
 		count := countLegacyDefaultSocketSessions()
 		if count > 0 {
-			printDownStatus("Legacy sessions", true, fmt.Sprintf("%d would be cleaned from 'default' socket", count))
+			printStatus("Legacy sessions", true, fmt.Sprintf("%d would be cleaned from 'default' socket", count))
 		}
 		count = countLegacyBaseSocketSessions(townRoot)
 		if count > 0 {
-			printDownStatus("Legacy sessions", true, fmt.Sprintf("%d would be cleaned from old basename socket", count))
+			printStatus("Legacy sessions", true, fmt.Sprintf("%d would be cleaned from old basename socket", count))
 		}
 	}
 
 	// Phase 5: Orphan cleanup and verification (--all or --force)
-	if (downAll || downForce) && !downDryRun {
+	if (all || force) && !dryRun {
 		fmt.Println()
 
 		// Kill any processes tracked via PID files (defense-in-depth for
@@ -430,14 +431,14 @@ func runDown(_ *cobra.Command, _ []string) error {
 	// canonical path (see registry.go townSocketName), so --nuke only affects
 	// this town's server. Users may also have opened custom windows/panes, so
 	// we require confirmation.
-	if downNuke {
+	if nuke {
 		socket := tmux.GetDefaultSocket()
 		socketLabel := "default"
 		if socket != "" {
 			socketLabel = socket
 		}
-		if downDryRun {
-			printDownStatus("Tmux server", true, fmt.Sprintf("would kill (socket: %s)", socketLabel))
+		if dryRun {
+			printStatus("Tmux server", true, fmt.Sprintf("would kill (socket: %s)", socketLabel))
 		} else if os.Getenv("GT_NUKE_ACKNOWLEDGED") == "" {
 			fmt.Println()
 			fmt.Printf("%s The --nuke flag kills this town's tmux server (socket: %s).\n",
@@ -448,17 +449,17 @@ func runDown(_ *cobra.Command, _ []string) error {
 			allOK = false
 		} else {
 			if err := t.KillServer(); err != nil {
-				printDownStatus("Tmux server", false, err.Error())
+				printStatus("Tmux server", false, err.Error())
 				allOK = false
 			} else {
-				printDownStatus("Tmux server", true, fmt.Sprintf("killed (socket: %s)", socketLabel))
+				printStatus("Tmux server", true, fmt.Sprintf("killed (socket: %s)", socketLabel))
 			}
 		}
 	}
 
 	// Summary
 	fmt.Println()
-	if downDryRun {
+	if dryRun {
 		fmt.Println("═══ DRY RUN COMPLETE (no changes made) ═══")
 		return nil
 	}
@@ -473,13 +474,13 @@ func runDown(_ *cobra.Command, _ []string) error {
 		if crewStopped > 0 {
 			stoppedServices = append(stoppedServices, "crew")
 		}
-		if downPolecats {
+		if polecats {
 			stoppedServices = append(stoppedServices, "polecats")
 		}
-		if downAll {
+		if all {
 			stoppedServices = append(stoppedServices, "bd-processes")
 		}
-		if downNuke {
+		if nuke {
 			stoppedServices = append(stoppedServices, "tmux-server")
 		}
 		_ = events.LogFeed(events.TypeHalt, "gt", events.HaltPayload(stoppedServices))
@@ -577,7 +578,7 @@ func stopAllPolecats(t *tmux.Tmux, townRoot string, rigNames []string, force boo
 // stopAllCrew stops all crew member sessions across all rigs.
 // Stops are performed in parallel for faster teardown.
 // Returns the number of crew sessions stopped (or would be stopped in dry-run).
-func stopAllCrew(t *tmux.Tmux, townRoot string, rigNames []string, dryRun bool) int {
+func stopAllCrew(t *tmux.Tmux, townRoot string, rigNames []string, force bool, dryRun bool) int {
 	stopped := 0
 
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
@@ -642,7 +643,7 @@ func stopAllCrew(t *tmux.Tmux, townRoot string, rigNames []string, dryRun bool) 
 		wg.Add(1)
 		go func(i int, tgt crewTarget) {
 			defer wg.Done()
-			_, err := stopSession(t, tgt.sessionID)
+			_, err := stopSession(t, tgt.sessionID, force)
 			results[i] = crewResult{rigName: tgt.rigName, name: tgt.name, err: err}
 		}(i, tgt)
 	}
@@ -660,8 +661,8 @@ func stopAllCrew(t *tmux.Tmux, townRoot string, rigNames []string, dryRun bool) 
 	return stopped
 }
 
-func printDownStatus(name string, ok bool, detail string) {
-	if downQuiet && ok {
+func printDownStatus(name string, ok bool, detail string, quiet bool) {
+	if quiet && ok {
 		return
 	}
 	if ok {
@@ -673,7 +674,7 @@ func printDownStatus(name string, ok bool, detail string) {
 
 // stopSession gracefully stops a tmux session.
 // Returns (wasRunning, error) - wasRunning is true if session existed and was stopped.
-func stopSession(t *tmux.Tmux, sessionName string) (bool, error) {
+func stopSession(t *tmux.Tmux, sessionName string, force bool) (bool, error) {
 	running, err := t.HasSession(sessionName)
 	if err != nil {
 		return false, err
@@ -683,7 +684,7 @@ func stopSession(t *tmux.Tmux, sessionName string) (bool, error) {
 	}
 
 	// Try graceful shutdown first (Ctrl-C, best-effort interrupt)
-	if !downForce {
+	if !force {
 		_ = t.SendKeysRaw(sessionName, "C-c")
 		if session.WaitForSessionExit(t, sessionName, constants.GracefulShutdownTimeout) {
 			return true, nil // Process exited gracefully
