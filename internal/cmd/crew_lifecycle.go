@@ -686,39 +686,19 @@ func printCapturedCrewOutput(output string) {
 // runCrewStopAll stops all running crew sessions.
 // If crewRig is set, only stops crew in that rig.
 func runCrewStopAll() error {
-	// Get all agent sessions (including polecats to find crew)
 	agents, err := getAgentSessions(true)
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
-
-	// Filter to crew agents only
-	var targets []*AgentSession
-	for _, agent := range agents {
-		if agent.Type != AgentCrew {
-			continue
-		}
-		// Filter by rig if specified
-		if crewRig != "" && agent.Rig != crewRig {
-			continue
-		}
-		targets = append(targets, agent)
-	}
+	targets := crewSessionsForStop(agents)
 
 	if len(targets) == 0 {
-		fmt.Println("No running crew sessions to stop.")
-		if crewRig != "" {
-			fmt.Printf("  (filtered by rig: %s)\n", crewRig)
-		}
+		printNoCrewSessionsToStop()
 		return nil
 	}
 
-	// Dry run - just show what would be stopped
 	if crewDryRun {
-		fmt.Printf("Would stop %d crew session(s):\n\n", len(targets))
-		for _, agent := range targets {
-			fmt.Printf("  %s %s/crew/%s\n", AgentTypeIcons[AgentCrew], agent.Rig, agent.AgentName)
-		}
+		printCrewStopAllDryRun(targets)
 		return nil
 	}
 
@@ -731,51 +711,80 @@ func runCrewStopAll() error {
 
 	for _, agent := range targets {
 		agentName := fmt.Sprintf("%s/crew/%s", agent.Rig, agent.AgentName)
-		sessionID := agent.Name // agent.Name IS the tmux session name
-
-		// Capture output before stopping (best effort)
-		var output string
-		if !crewForce {
-			output, _ = t.CapturePane(sessionID, 50)
-		}
-
-		// Kill the session (with proper process cleanup to avoid orphans)
-		if err := t.KillSessionWithProcesses(sessionID); err != nil {
+		if err := stopCrewSessionAll(t, agent, agentName); err != nil {
 			failed++
 			failures = append(failures, fmt.Sprintf("%s: %v", agentName, err))
-			fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
 			continue
 		}
-
 		succeeded++
-		fmt.Printf("  %s %s\n", style.SuccessPrefix, agentName)
-
-		// Log kill event to town log
-		townRoot, _ := workspace.FindFromCwd()
-		if townRoot != "" {
-			logger := townlog.NewLogger(townRoot)
-			_ = logger.Log(townlog.EventKill, agentName, "gt crew stop --all")
-		}
-
-		// Log captured output (truncated)
-		if len(output) > 200 {
-			output = output[len(output)-200:]
-		}
-		if output != "" {
-			fmt.Printf("      %s\n", style.Dim.Render("(output captured)"))
-		}
 	}
 
+	return summarizeCrewStopAll(succeeded, failed, failures)
+}
+
+func crewSessionsForStop(agents []*AgentSession) []*AgentSession {
+	var targets []*AgentSession
+	for _, agent := range agents {
+		if agent.Type != AgentCrew {
+			continue
+		}
+		if crewRig != "" && agent.Rig != crewRig {
+			continue
+		}
+		targets = append(targets, agent)
+	}
+	return targets
+}
+
+func printNoCrewSessionsToStop() {
+	fmt.Println("No running crew sessions to stop.")
+	if crewRig != "" {
+		fmt.Printf("  (filtered by rig: %s)\n", crewRig)
+	}
+}
+
+func printCrewStopAllDryRun(targets []*AgentSession) {
+	fmt.Printf("Would stop %d crew session(s):\n\n", len(targets))
+	for _, agent := range targets {
+		fmt.Printf("  %s %s/crew/%s\n", AgentTypeIcons[AgentCrew], agent.Rig, agent.AgentName)
+	}
+}
+
+func stopCrewSessionAll(t *tmux.Tmux, agent *AgentSession, agentName string) error {
+	sessionID := agent.Name
+	var output string
+	if !crewForce {
+		output, _ = t.CapturePane(sessionID, 50)
+	}
+	if err := t.KillSessionWithProcesses(sessionID); err != nil {
+		fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
+		return err
+	}
+	fmt.Printf("  %s %s\n", style.SuccessPrefix, agentName)
+	logCrewStopAll(agentName)
+	printCapturedCrewOutput(output)
+	return nil
+}
+
+func logCrewStopAll(agentName string) {
+	townRoot, _ := workspace.FindFromCwd()
+	if townRoot == "" {
+		return
+	}
+	logger := townlog.NewLogger(townRoot)
+	_ = logger.Log(townlog.EventKill, agentName, "gt crew stop --all")
+}
+
+func summarizeCrewStopAll(succeeded, failed int, failures []string) error {
 	fmt.Println()
 	if failed > 0 {
 		fmt.Printf("%s Stop complete: %d succeeded, %d failed\n",
 			style.WarningPrefix, succeeded, failed)
-		for _, f := range failures {
-			fmt.Printf("  %s\n", style.Dim.Render(f))
+		for _, failure := range failures {
+			fmt.Printf("  %s\n", style.Dim.Render(failure))
 		}
 		return fmt.Errorf("%d stop(s) failed", failed)
 	}
-
 	fmt.Printf("%s Stop complete: %d crew session(s) stopped\n", style.SuccessPrefix, succeeded)
 	return nil
 }
