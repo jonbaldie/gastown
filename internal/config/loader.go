@@ -2221,169 +2221,145 @@ func ExtractSimpleRole(gtRole string) string {
 // (ResolveRoleAgentConfig) to select the appropriate agent for the role.
 // This enables per-role model selection via role_agents in settings.
 func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) string {
-	var rc *RuntimeConfig
-	var townRoot string
-
-	// Extract role from envVars for role-based agent resolution.
-	// GT_ROLE may be compound format (e.g., "rig/refinery") so we extract
-	// the simple role name for role_agents lookup.
 	role := ExtractSimpleRole(envVars["GT_ROLE"])
+	rc, townRoot := resolveStartupConfig(envVars, role, rigPath)
+	prepareStartupConfig(rc, role, townRoot, rigPath, envVars[AutoCompactWindowEnv])
+	resolvedEnv := prepareStartupEnvironment(envVars, townRoot, rc, "")
+	return renderStartupCommand(resolvedEnv, rc, prompt)
+}
 
+func resolveStartupConfig(envVars map[string]string, role, rigPath string) (*RuntimeConfig, string) {
 	if rigPath != "" {
-		// Derive town root from rig path
-		townRoot = filepath.Dir(rigPath)
+		townRoot := filepath.Dir(rigPath)
 		if role == "crew" && envVars["GT_CREW"] != "" {
-			// Per-worker agent resolution: check worker_agents before role_agents
-			rc = ResolveWorkerAgentConfig(envVars["GT_CREW"], townRoot, rigPath)
-		} else if role != "" {
-			// Use role-based agent resolution for per-role model selection
-			rc = ResolveRoleAgentConfig(role, townRoot, rigPath)
-		} else {
-			rc = ResolveAgentConfig(townRoot, rigPath)
+			return ResolveWorkerAgentConfig(envVars["GT_CREW"], townRoot, rigPath), townRoot
 		}
-	} else {
-		// For town-level agents (mayor, deacon), prefer GT_ROOT from envVars
-		// (set by AgentEnv) over cwd detection. This ensures role_agents config
-		// is respected even when the daemon runs outside the town hierarchy.
-		townRoot = envVars["GT_ROOT"]
-		if townRoot == "" {
-			var err error
-			townRoot, err = findTownRootFromCwd()
-			if err != nil {
-				rc = DefaultRuntimeConfig()
-			}
+		if role != "" {
+			return ResolveRoleAgentConfig(role, townRoot, rigPath), townRoot
 		}
-		if rc == nil {
-			if role != "" {
-				rc = ResolveRoleAgentConfig(role, townRoot, "")
-			} else {
-				rc = ResolveAgentConfig(townRoot, "")
-			}
+		return ResolveAgentConfig(townRoot, rigPath), townRoot
+	}
+
+	townRoot := envVars["GT_ROOT"]
+	if townRoot == "" {
+		var err error
+		townRoot, err = findTownRootFromCwd()
+		if err != nil {
+			return DefaultRuntimeConfig(), townRoot
 		}
 	}
 	if role != "" {
+		return ResolveRoleAgentConfig(role, townRoot, ""), townRoot
+	}
+	return ResolveAgentConfig(townRoot, ""), townRoot
+}
+
+func prepareStartupConfig(rc *RuntimeConfig, role, townRoot, rigPath, autoCompactOverride string) {
+	if role != "" {
 		applyRoleEffortToRuntime(rc, ResolveRoleEffort(role, townRoot, rigPath))
 	}
-	applyResolvedAutoCompact(rc, townRoot, envVars[AutoCompactWindowEnv])
-
-	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
-	// ExecWrapper is a deployment-level setting (sandbox/container) independent of agent choice.
+	applyResolvedAutoCompact(rc, townRoot, autoCompactOverride)
 	if len(rc.ExecWrapper) == 0 {
 		rc.ExecWrapper = resolveExecWrapper(rigPath)
 	}
+}
 
-	// Copy env vars to avoid mutating caller map
+func prepareStartupEnvironment(envVars map[string]string, townRoot string, rc *RuntimeConfig, agentOverride string) map[string]string {
 	resolvedEnv := make(map[string]string, len(envVars)+2)
-	for k, v := range envVars {
-		resolvedEnv[k] = v
+	for key, value := range envVars {
+		resolvedEnv[key] = value
 	}
-	// Add GT_ROOT so agents can find town-level resources (formulas, etc.)
 	if townRoot != "" {
 		resolvedEnv["GT_ROOT"] = townRoot
 	}
 	if rc.Session != nil && rc.Session.SessionIDEnv != "" {
 		resolvedEnv["GT_SESSION_ID_ENV"] = rc.Session.SessionIDEnv
 	}
-	// Set GT_AGENT from resolved agent name so IsAgentAlive can detect
-	// non-Claude processes (e.g., opencode). Without this, witness patrol
-	// falls back to ["node", "claude"] process detection and auto-nukes
-	// polecats running non-Claude agents. See: gt-agent-role-agents.
-	if rc.ResolvedAgent != "" {
+	agentForProcess := rc.ResolvedAgent
+	if agentOverride != "" {
+		resolvedEnv["GT_AGENT"] = agentOverride
+		agentForProcess = agentOverride
+	} else if rc.ResolvedAgent != "" {
 		resolvedEnv["GT_AGENT"] = rc.ResolvedAgent
 	}
-	// Set GT_PROCESS_NAMES for accurate liveness detection. Custom agents may
-	// shadow built-in preset names (e.g., custom "codex" running "opencode"),
-	// or wrap the real binary with a launcher (e.g., `env -u VAR claude ...`).
-	// Pass rc.Args so wrapper-unwrap can find the real binary.
-	processNames := ResolveProcessNames(rc.ResolvedAgent, rc.Command, rc.Args...)
+	processNames := ResolveProcessNames(agentForProcess, rc.Command, rc.Args...)
 	resolvedEnv["GT_PROCESS_NAMES"] = strings.Join(processNames, ",")
-	// Merge agent-specific env vars (e.g., OPENCODE_PERMISSION for yolo mode)
-	for k, v := range rc.Env {
-		resolvedEnv[k] = v
+	for key, value := range rc.Env {
+		resolvedEnv[key] = value
 	}
-
 	SanitizeAgentEnv(resolvedEnv, envVars)
+	return resolvedEnv
+}
 
-	var cmd string
+func renderStartupCommand(resolvedEnv map[string]string, rc *RuntimeConfig, prompt string) string {
 	if runtime.GOOS == "windows" {
-		// On Windows, tmux (psmux) uses PowerShell and send-keys has line length
-		// limits. Write env vars + agent command to a temp .ps1 script and invoke
-		// that instead. This avoids send-keys corrupting long commands.
-		var scriptLines []string
-		keys := make([]string, 0, len(resolvedEnv))
-		for k := range resolvedEnv {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			scriptLines = append(scriptLines, fmt.Sprintf("$env:%s=%s", k, psQuote(resolvedEnv[k])))
-		}
-
-		var agentCmd string
-		if len(rc.ExecWrapper) > 0 {
-			agentCmd = strings.Join(rc.ExecWrapper, " ") + " "
-		}
-		if prompt != "" {
-			agentCmd += "& " + rc.BuildCommandWithPrompt(prompt)
-		} else {
-			agentCmd += "& " + rc.BuildCommand()
-		}
-		scriptLines = append(scriptLines, agentCmd)
-
-		// Write script to temp file in town's daemon dir
-		townRoot := resolvedEnv["GT_ROOT"]
-		if townRoot == "" {
-			townRoot = os.TempDir()
-		}
-		scriptDir := filepath.Join(townRoot, "daemon", "scripts")
-		_ = os.MkdirAll(scriptDir, 0755)
-		role := resolvedEnv["GT_ROLE"]
-		if role == "" {
-			role = "agent"
-		}
-		// Sanitize role for filename (replace / with -)
-		safeRole := strings.ReplaceAll(role, "/", "-")
-		scriptPath := filepath.Join(scriptDir, safeRole+"-startup.ps1")
-		scriptContent := strings.Join(scriptLines, "\n") + "\n"
-		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0644); err != nil {
-			// Fallback: inline command (may fail if too long)
-			cmd = strings.Join(scriptLines, "; ")
-		} else {
-			cmd = "& " + psQuote(scriptPath)
-		}
-	} else {
-		// Build environment export prefix (POSIX shell)
-		var exports []string
-		for k, v := range resolvedEnv {
-			exports = append(exports, fmt.Sprintf("%s=%s", k, ShellQuote(v)))
-		}
-
-		// Sort for deterministic output
-		sort.Strings(exports)
-
-		if len(exports) > 0 {
-			// Use 'exec env' instead of 'export ... &&' so the agent process
-			// replaces the shell. This allows WaitForCommand to detect the
-			// running agent via pane_current_command (which shows the direct
-			// process, not child processes).
-			cmd = "exec env " + strings.Join(exports, " ") + " "
-		}
-
-		// Insert exec wrapper between env vars and agent command if configured.
-		// Example: exec env VAR=val ... exitbox run --profile=foo -- claude ...
-		if len(rc.ExecWrapper) > 0 {
-			cmd += strings.Join(rc.ExecWrapper, " ") + " "
-		}
-
-		// Add runtime command
-		if prompt != "" {
-			cmd += rc.BuildCommandWithPrompt(prompt)
-		} else {
-			cmd += rc.BuildCommand()
-		}
+		return renderWindowsStartupCommand(resolvedEnv, rc, prompt)
 	}
+	return renderPosixStartupCommand(resolvedEnv, rc, prompt)
+}
 
-	return cmd
+func startupAgentCommand(rc *RuntimeConfig, prompt string) string {
+	command := ""
+	if len(rc.ExecWrapper) > 0 {
+		command = strings.Join(rc.ExecWrapper, " ") + " "
+	}
+	if prompt != "" {
+		return command + rc.BuildCommandWithPrompt(prompt)
+	}
+	return command + rc.BuildCommand()
+}
+
+func renderWindowsStartupCommand(resolvedEnv map[string]string, rc *RuntimeConfig, prompt string) string {
+	var scriptLines []string
+	keys := make([]string, 0, len(resolvedEnv))
+	for key := range resolvedEnv {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		scriptLines = append(scriptLines, fmt.Sprintf("$env:%s=%s", key, psQuote(resolvedEnv[key])))
+	}
+	scriptLines = append(scriptLines, windowsStartupAgentCommand(rc, prompt))
+	townRoot := resolvedEnv["GT_ROOT"]
+	if townRoot == "" {
+		townRoot = os.TempDir()
+	}
+	scriptDir := filepath.Join(townRoot, "daemon", "scripts")
+	_ = os.MkdirAll(scriptDir, 0755)
+	role := resolvedEnv["GT_ROLE"]
+	if role == "" {
+		role = "agent"
+	}
+	scriptPath := filepath.Join(scriptDir, strings.ReplaceAll(role, "/", "-")+"-startup.ps1")
+	scriptContent := strings.Join(scriptLines, "\n") + "\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0644); err != nil {
+		return strings.Join(scriptLines, "; ")
+	}
+	return "& " + psQuote(scriptPath)
+}
+
+func windowsStartupAgentCommand(rc *RuntimeConfig, prompt string) string {
+	command := ""
+	if len(rc.ExecWrapper) > 0 {
+		command = strings.Join(rc.ExecWrapper, " ") + " "
+	}
+	if prompt != "" {
+		return command + "& " + rc.BuildCommandWithPrompt(prompt)
+	}
+	return command + "& " + rc.BuildCommand()
+}
+
+func renderPosixStartupCommand(resolvedEnv map[string]string, rc *RuntimeConfig, prompt string) string {
+	var exports []string
+	for key, value := range resolvedEnv {
+		exports = append(exports, fmt.Sprintf("%s=%s", key, ShellQuote(value)))
+	}
+	sort.Strings(exports)
+	command := ""
+	if len(exports) > 0 {
+		command = "exec env " + strings.Join(exports, " ") + " "
+	}
+	return command + startupAgentCommand(rc, prompt)
 }
 
 // SanitizeAgentEnv clears environment variables that are known to break agent
@@ -2455,183 +2431,76 @@ func PrependEnv(command string, envVars map[string]string) string {
 //  2. role_agents[GT_ROLE] (if GT_ROLE is in envVars)
 //  3. Default agent resolution (rig's Agent → town's DefaultAgent → "claude")
 func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, prompt, agentOverride string) (string, error) {
-	var rc *RuntimeConfig
-	var townRoot string
-
-	// Extract role from envVars for role-based agent resolution (when no override)
 	role := ExtractSimpleRole(envVars["GT_ROLE"])
-
-	if rigPath != "" {
-		townRoot = filepath.Dir(rigPath)
-		if agentOverride != "" {
-			var err error
-			rc, _, err = ResolveAgentConfigWithOverride(townRoot, rigPath, agentOverride)
-			if err != nil {
-				return "", err
-			}
-		} else if role == "crew" && envVars["GT_CREW"] != "" {
-			// Per-worker agent resolution: check worker_agents before role_agents
-			rc = ResolveWorkerAgentConfig(envVars["GT_CREW"], townRoot, rigPath)
-		} else if role != "" {
-			// No override, use role-based agent resolution
-			rc = ResolveRoleAgentConfig(role, townRoot, rigPath)
-		} else {
-			rc = ResolveAgentConfig(townRoot, rigPath)
-		}
-	} else {
-		// For town-level agents (mayor, deacon), prefer GT_ROOT from envVars
-		// (set by AgentEnv) over cwd detection. This ensures role_agents config
-		// is respected even when the daemon runs outside the town hierarchy.
-		townRoot = envVars["GT_ROOT"]
-		if townRoot == "" {
-			var err error
-			townRoot, err = findTownRootFromCwd()
-			if err != nil {
-				// Can't find town root from cwd - but if agentOverride is specified,
-				// try to use the preset directly. This allows `gt deacon start --agent codex`
-				// to work even when run from outside the town directory.
-				if agentOverride != "" {
-					if preset := GetAgentPresetByName(agentOverride); preset != nil {
-						rc = RuntimeConfigFromPreset(AgentPreset(agentOverride))
-					} else {
-						return "", fmt.Errorf("agent '%s' not found", agentOverride)
-					}
-				} else {
-					rc = DefaultRuntimeConfig()
-				}
-			}
-		}
-		if rc == nil {
-			if agentOverride != "" {
-				var resolveErr error
-				rc, _, resolveErr = ResolveAgentConfigWithOverride(townRoot, "", agentOverride)
-				if resolveErr != nil {
-					return "", resolveErr
-				}
-			} else if role != "" {
-				rc = ResolveRoleAgentConfig(role, townRoot, "")
-			} else {
-				rc = ResolveAgentConfig(townRoot, "")
-			}
-		}
+	rc, townRoot, err := resolveStartupConfigWithOverride(envVars, role, rigPath, agentOverride)
+	if err != nil {
+		return "", err
 	}
 
-	// Ensure Claude agents get --settings when their settings directory
-	// differs from the session working directory. This must run for ALL
-	// resolution paths (including agent overrides) — previously only the
-	// non-override ResolveRoleAgentConfig path included it, causing hooks
-	// to silently not fire for polecats launched with --agent.
 	rc = withRoleSettingsFlag(rc, role, rigPath)
-	if role != "" {
-		applyRoleEffortToRuntime(rc, ResolveRoleEffort(role, townRoot, rigPath))
-	}
-	applyResolvedAutoCompact(rc, townRoot, envVars[AutoCompactWindowEnv])
+	prepareStartupConfig(rc, role, townRoot, rigPath, envVars[AutoCompactWindowEnv])
+	resolvedEnv := prepareStartupEnvironment(envVars, townRoot, rc, agentOverride)
+	return renderStartupCommand(resolvedEnv, rc, prompt), nil
+}
 
-	// Apply exec wrapper from rig/town settings if not already set on the resolved config.
-	if len(rc.ExecWrapper) == 0 {
-		rc.ExecWrapper = resolveExecWrapper(rigPath)
+func resolveStartupConfigWithOverride(envVars map[string]string, role, rigPath, agentOverride string) (*RuntimeConfig, string, error) {
+	if rigPath != "" {
+		return resolveRigStartupConfig(envVars, role, rigPath, agentOverride)
 	}
 
-	// Copy env vars to avoid mutating caller map
-	resolvedEnv := make(map[string]string, len(envVars)+2)
-	for k, v := range envVars {
-		resolvedEnv[k] = v
-	}
-	// Add GT_ROOT so agents can find town-level resources (formulas, etc.)
-	if townRoot != "" {
-		resolvedEnv["GT_ROOT"] = townRoot
-	}
-	if rc.Session != nil && rc.Session.SessionIDEnv != "" {
-		resolvedEnv["GT_SESSION_ID_ENV"] = rc.Session.SessionIDEnv
-	}
-	// Record agent name so IsAgentAlive can detect the running process.
-	// Explicit override takes priority; fall back to resolved agent name.
-	agentForProcess := rc.ResolvedAgent
+	return resolveTownStartupConfig(envVars, role, agentOverride)
+}
+
+func resolveRigStartupConfig(envVars map[string]string, role, rigPath, agentOverride string) (*RuntimeConfig, string, error) {
+	townRoot := filepath.Dir(rigPath)
 	if agentOverride != "" {
-		resolvedEnv["GT_AGENT"] = agentOverride
-		agentForProcess = agentOverride
-	} else if rc.ResolvedAgent != "" {
-		resolvedEnv["GT_AGENT"] = rc.ResolvedAgent
+		rc, _, err := ResolveAgentConfigWithOverride(townRoot, rigPath, agentOverride)
+		return rc, townRoot, err
 	}
-	// Set GT_PROCESS_NAMES for accurate liveness detection of custom agents.
-	// Pass rc.Args so wrapper-unwrap (env/sudo/nohup wrapping a real binary)
-	// can find the real agent binary.
-	processNamesOverride := ResolveProcessNames(agentForProcess, rc.Command, rc.Args...)
-	resolvedEnv["GT_PROCESS_NAMES"] = strings.Join(processNamesOverride, ",")
-	// Merge agent-specific env vars (e.g., OPENCODE_PERMISSION for yolo mode)
-	for k, v := range rc.Env {
-		resolvedEnv[k] = v
+	if role == "crew" && envVars["GT_CREW"] != "" {
+		return ResolveWorkerAgentConfig(envVars["GT_CREW"], townRoot, rigPath), townRoot, nil
 	}
+	if role != "" {
+		return ResolveRoleAgentConfig(role, townRoot, rigPath), townRoot, nil
+	}
+	return ResolveAgentConfig(townRoot, rigPath), townRoot, nil
+}
 
-	SanitizeAgentEnv(resolvedEnv, envVars)
-
-	var cmd string
-	if runtime.GOOS == "windows" {
-		// Write env vars + agent command to a temp .ps1 script to avoid
-		// send-keys line length limits in psmux.
-		var scriptLines []string
-		keys := make([]string, 0, len(resolvedEnv))
-		for k := range resolvedEnv {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			scriptLines = append(scriptLines, fmt.Sprintf("$env:%s=%s", k, psQuote(resolvedEnv[k])))
-		}
-
-		var agentCmd string
-		if len(rc.ExecWrapper) > 0 {
-			agentCmd = strings.Join(rc.ExecWrapper, " ") + " "
-		}
-		if prompt != "" {
-			agentCmd += "& " + rc.BuildCommandWithPrompt(prompt)
-		} else {
-			agentCmd += "& " + rc.BuildCommand()
-		}
-		scriptLines = append(scriptLines, agentCmd)
-
-		townRoot := resolvedEnv["GT_ROOT"]
-		if townRoot == "" {
-			townRoot = os.TempDir()
-		}
-		scriptDir := filepath.Join(townRoot, "daemon", "scripts")
-		_ = os.MkdirAll(scriptDir, 0755)
-		role := resolvedEnv["GT_ROLE"]
-		if role == "" {
-			role = "agent"
-		}
-		safeRole := strings.ReplaceAll(role, "/", "-")
-		scriptPath := filepath.Join(scriptDir, safeRole+"-startup.ps1")
-		scriptContent := strings.Join(scriptLines, "\n") + "\n"
-		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0644); err != nil {
-			cmd = strings.Join(scriptLines, "; ")
-		} else {
-			cmd = "& " + psQuote(scriptPath)
-		}
-	} else {
-		// Build environment export prefix (POSIX shell)
-		var exports []string
-		for k, v := range resolvedEnv {
-			exports = append(exports, fmt.Sprintf("%s=%s", k, ShellQuote(v)))
-		}
-		sort.Strings(exports)
-
-		if len(exports) > 0 {
-			cmd = "exec env " + strings.Join(exports, " ") + " "
-		}
-
-		if len(rc.ExecWrapper) > 0 {
-			cmd += strings.Join(rc.ExecWrapper, " ") + " "
-		}
-
-		if prompt != "" {
-			cmd += rc.BuildCommandWithPrompt(prompt)
-		} else {
-			cmd += rc.BuildCommand()
+func resolveTownStartupConfig(envVars map[string]string, role, agentOverride string) (*RuntimeConfig, string, error) {
+	townRoot := envVars["GT_ROOT"]
+	if townRoot == "" {
+		var err error
+		townRoot, err = findTownRootFromCwd()
+		if err != nil {
+			return resolveTownStartupWithoutRoot(agentOverride)
 		}
 	}
+	return resolveTownStartupAtRoot(townRoot, role, agentOverride)
+}
 
-	return cmd, nil
+func resolveTownStartupAtRoot(townRoot, role, agentOverride string) (*RuntimeConfig, string, error) {
+	if agentOverride != "" {
+		rc, _, err := ResolveAgentConfigWithOverride(townRoot, "", agentOverride)
+		return rc, townRoot, err
+	}
+	if role != "" {
+		return ResolveRoleAgentConfig(role, townRoot, ""), townRoot, nil
+	}
+	return ResolveAgentConfig(townRoot, ""), townRoot, nil
+}
+
+func resolveTownStartupWithoutRoot(agentOverride string) (*RuntimeConfig, string, error) {
+	if agentOverride != "" {
+		return resolveOverrideWithoutTownRoot(agentOverride)
+	}
+	return DefaultRuntimeConfig(), "", nil
+}
+
+func resolveOverrideWithoutTownRoot(agentOverride string) (*RuntimeConfig, string, error) {
+	if GetAgentPresetByName(agentOverride) == nil {
+		return nil, "", fmt.Errorf("agent '%s' not found", agentOverride)
+	}
+	return RuntimeConfigFromPreset(AgentPreset(agentOverride)), "", nil
 }
 
 // BuildStartupCommandFromConfig builds a startup command from a complete AgentEnvConfig.
