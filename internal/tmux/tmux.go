@@ -72,32 +72,7 @@ func validateCommandBinary(command string) error {
 		return nil
 	}
 
-	// Skip past "exec" and "env" prefixes, KEY=VAL assignments,
-	// and PowerShell $env: assignments and call operator (&).
-	i := 0
-	fieldCount := len(fields)
-	for i < fieldCount {
-		f := fields[i]
-		if f == "exec" || f == "env" || f == "&" {
-			i++
-			continue
-		}
-		// POSIX: KEY=VAL
-		if strings.Contains(f, "=") && !strings.HasPrefix(f, "/") && !strings.HasPrefix(f, "-") {
-			i++
-			continue
-		}
-		// PowerShell: $env:KEY='val'; (may span multiple fields if value has spaces)
-		if strings.HasPrefix(f, "$env:") {
-			i++
-			// Skip continuation fields until we see a semicolon-terminated one
-			for i < fieldCount && !strings.HasSuffix(fields[i-1], ";") {
-				i++
-			}
-			continue
-		}
-		break
-	}
+	i := commandBinaryStart(fields)
 
 	if i >= len(fields) {
 		return nil
@@ -112,6 +87,37 @@ func validateCommandBinary(command string) error {
 		return fmt.Errorf("command binary not found: %s", binary)
 	}
 	return nil
+}
+
+func commandBinaryStart(fields []string) int {
+	for i := 0; i < len(fields); {
+		field := fields[i]
+		if isCommandPrefix(field) || isCommandAssignment(field) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(field, "$env:") {
+			i = skipPowerShellAssignment(fields, i+1)
+			continue
+		}
+		return i
+	}
+	return len(fields)
+}
+
+func isCommandPrefix(field string) bool {
+	return field == "exec" || field == "env" || field == "&"
+}
+
+func isCommandAssignment(field string) bool {
+	return strings.Contains(field, "=") && !strings.HasPrefix(field, "/") && !strings.HasPrefix(field, "-")
+}
+
+func skipPowerShellAssignment(fields []string, i int) int {
+	for i < len(fields) && !strings.HasSuffix(fields[i-1], ";") {
+		i++
+	}
+	return i
 }
 
 // defaultSocket is the tmux socket name (-L flag) for multi-instance isolation.
