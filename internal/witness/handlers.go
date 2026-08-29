@@ -3288,22 +3288,37 @@ func issueStatusFromShowJSON(output string) string {
 
 func activeMRGitSafe(workDir, rigName, polecatName string) bool {
 	townRoot := workDirToTownRoot(workDir)
-	if townRoot == "" || rigName == "" || polecatName == "" {
+	clonePath, ok := activeMRClonePath(townRoot, rigName, polecatName)
+	if !ok {
 		return false
 	}
-	clonePath := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
 	g := git.NewGit(clonePath)
 	branch, err := g.CurrentBranch()
 	if err != nil || branch == "" {
 		return false
 	}
+	if !activeMRWorkingTreeClean(g) {
+		return false
+	}
+	return activeMRBranchPushed(g, branch)
+}
+
+func activeMRClonePath(townRoot, rigName, polecatName string) (string, bool) {
+	if townRoot == "" || rigName == "" || polecatName == "" {
+		return "", false
+	}
+	return filepath.Join(townRoot, rigName, "polecats", polecatName, rigName), true
+}
+
+func activeMRWorkingTreeClean(g *git.Git) bool {
 	status, err := g.CheckUncommittedWork()
 	if err != nil {
 		return false
 	}
-	if !status.CleanExcludingRuntime() || status.StashCount > 0 || status.UnpushedCommits > 0 {
-		return false
-	}
+	return status.CleanExcludingRuntime() && status.StashCount == 0 && status.UnpushedCommits == 0
+}
+
+func activeMRBranchPushed(g *git.Git, branch string) bool {
 	pushed, unpushed, err := g.BranchPushedToRemote(branch, "origin")
 	if err != nil {
 		return false
@@ -3329,6 +3344,12 @@ func terminalSafeDoneSnapshot(bd *BdCli, workDir, rigName, polecatName string, s
 	return beads.IssueStatus(issue.Status).IsTerminal()
 }
 
+type agentMRContextRecord struct {
+	ActiveMR    string `json:"active_mr"`
+	HookBead    string `json:"hook_bead"`
+	Description string `json:"description"`
+}
+
 // getAgentMRContext retrieves active_mr and durable source context from an agent bead.
 func getAgentMRContext(bd *BdCli, workDir, agentBeadID string) (string, string) {
 	if bd == nil || bd.Exec == nil {
@@ -3338,27 +3359,35 @@ func getAgentMRContext(bd *BdCli, workDir, agentBeadID string) (string, string) 
 	if err != nil || output == "" {
 		return "", ""
 	}
-	var issues []struct {
-		ActiveMR    string `json:"active_mr"`
-		HookBead    string `json:"hook_bead"`
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal([]byte(output), &issues); err != nil || len(issues) == 0 {
+	issue, ok := parseAgentMRContextRecord(output)
+	if !ok {
 		return "", ""
 	}
-	fields := beads.ParseAgentFields(issues[0].Description)
-	activeMR := issues[0].ActiveMR
+	return agentMRContextFromRecord(issue)
+}
+
+func parseAgentMRContextRecord(output string) (agentMRContextRecord, bool) {
+	var issues []agentMRContextRecord
+	if err := json.Unmarshal([]byte(output), &issues); err != nil || len(issues) == 0 {
+		return agentMRContextRecord{}, false
+	}
+	return issues[0], true
+}
+
+func agentMRContextFromRecord(issue agentMRContextRecord) (string, string) {
+	fields := beads.ParseAgentFields(issue.Description)
+	activeMR := issue.ActiveMR
 	if activeMR == "" && fields != nil {
 		activeMR = fields.ActiveMR
 	}
-	sourceHint := issues[0].HookBead
+	sourceHint := issue.HookBead
 	if fields != nil {
 		sourceHint = fields.LastSourceIssue
 		if sourceHint == "" {
 			sourceHint = fields.HookBead
 		}
 		if sourceHint == "" {
-			sourceHint = issues[0].HookBead
+			sourceHint = issue.HookBead
 		}
 	}
 	return activeMR, sourceHint
