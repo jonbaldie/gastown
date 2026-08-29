@@ -1717,33 +1717,12 @@ func collectEpicBeads(epicID string) ([]BeadInfo, []DepInfo, error) {
 		}
 		visited[current.ID] = true
 
-		// Add bead info.
-		allBeads = append(allBeads, BeadInfo{
-			ID:     current.ID,
-			Title:  current.Title,
-			Type:   current.IssueType,
-			Status: current.Status,
-			Rig:    rigFromBeadID(current.ID),
-		})
-
-		// Fetch deps for this bead.
-		deps, err := bdDepList(current.ID)
+		bead, deps, children, err := collectEpicBead(current)
 		if err != nil {
-			return nil, nil, fmt.Errorf("deps for %s: %w", current.ID, err)
+			return nil, nil, err
 		}
-		for _, d := range deps {
-			allDeps = append(allDeps, DepInfo{
-				IssueID:     d.IssueID,
-				DependsOnID: d.DependsOnID,
-				Type:        d.Type,
-			})
-		}
-
-		// List children and enqueue them.
-		children, err := bdListChildren(current.ID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("children of %s: %w", current.ID, err)
-		}
+		allBeads = append(allBeads, bead)
+		allDeps = append(allDeps, deps...)
 		for _, child := range children {
 			if !visited[child.ID] {
 				queue = append(queue, child)
@@ -1752,6 +1731,35 @@ func collectEpicBeads(epicID string) ([]BeadInfo, []DepInfo, error) {
 	}
 
 	return allBeads, allDeps, nil
+}
+
+func collectEpicBead(current bdShowResult) (BeadInfo, []DepInfo, []bdShowResult, error) {
+	bead := BeadInfo{
+		ID:     current.ID,
+		Title:  current.Title,
+		Type:   current.IssueType,
+		Status: current.Status,
+		Rig:    rigFromBeadID(current.ID),
+	}
+
+	deps, err := bdDepList(current.ID)
+	if err != nil {
+		return BeadInfo{}, nil, nil, fmt.Errorf("deps for %s: %w", current.ID, err)
+	}
+	depInfos := make([]DepInfo, 0, len(deps))
+	for _, dep := range deps {
+		depInfos = append(depInfos, DepInfo{
+			IssueID:     dep.IssueID,
+			DependsOnID: dep.DependsOnID,
+			Type:        dep.Type,
+		})
+	}
+
+	children, err := bdListChildren(current.ID)
+	if err != nil {
+		return BeadInfo{}, nil, nil, fmt.Errorf("children of %s: %w", current.ID, err)
+	}
+	return bead, depInfos, children, nil
 }
 
 // collectTaskListBeads validates and fetches info for explicit task IDs.
