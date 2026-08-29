@@ -80,27 +80,21 @@ Example:
 	RunE: runRigConfigUnset,
 }
 
-// Flags
-var (
-	rigConfigShowLayers bool
-	rigConfigSetGlobal  bool
-	rigConfigSetBlock   bool
-)
-
 func init() {
 	rigCmd.AddCommand(rigConfigCmd)
 	rigConfigCmd.AddCommand(rigConfigShowCmd)
 	rigConfigCmd.AddCommand(rigConfigSetCmd)
 	rigConfigCmd.AddCommand(rigConfigUnsetCmd)
 
-	rigConfigShowCmd.Flags().BoolVar(&rigConfigShowLayers, "layers", false, "Show which layer each value comes from")
+	rigConfigShowCmd.Flags().Bool("layers", false, "Show which layer each value comes from")
 
-	rigConfigSetCmd.Flags().BoolVar(&rigConfigSetGlobal, "global", false, "Set in bead layer (persistent, synced)")
-	rigConfigSetCmd.Flags().BoolVar(&rigConfigSetBlock, "block", false, "Block inheritance for this key")
+	rigConfigSetCmd.Flags().Bool("global", false, "Set in bead layer (persistent, synced)")
+	rigConfigSetCmd.Flags().Bool("block", false, "Block inheritance for this key")
 }
 
-func runRigConfigShow(_ *cobra.Command, args []string) error {
+func runRigConfigShow(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
+	showLayers := commandBoolFlag(cmd, "layers")
 
 	townRoot, r, err := getRig(rigName)
 	if err != nil {
@@ -110,7 +104,7 @@ func runRigConfigShow(_ *cobra.Command, args []string) error {
 	// Collect all known keys
 	allKeys := getConfigKeys(townRoot, r)
 
-	if rigConfigShowLayers {
+	if showLayers {
 		// Show with sources
 		fmt.Printf("%-25s %-15s %s\n", "Key", "Value", "Source")
 		fmt.Printf("%-25s %-15s %s\n", "---", "-----", "------")
@@ -143,11 +137,13 @@ func runRigConfigShow(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigConfigSet(_ *cobra.Command, args []string) error {
+func runRigConfigSet(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	key := args[1]
+	setGlobal := commandBoolFlag(cmd, "global")
+	setBlock := commandBoolFlag(cmd, "block")
 
-	if err := validateRigConfigSetArgs(args); err != nil {
+	if err := validateRigConfigSetArgs(args, setBlock); err != nil {
 		return err
 	}
 
@@ -156,19 +152,19 @@ func runRigConfigSet(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	if rigConfigSetBlock {
+	if setBlock {
 		return blockRigConfig(townRoot, r, rigName, key)
 	}
 
-	return setRigConfigValue(townRoot, r, rigName, key, args[2])
+	return setRigConfigValue(townRoot, r, rigName, key, args[2], setGlobal)
 }
 
-func validateRigConfigSetArgs(args []string) error {
+func validateRigConfigSetArgs(args []string, setBlock bool) error {
 	// --block requires no value, otherwise value is required.
-	if rigConfigSetBlock && len(args) > 2 {
+	if setBlock && len(args) > 2 {
 		return fmt.Errorf("--block does not take a value")
 	}
-	if !rigConfigSetBlock && len(args) < 3 {
+	if !setBlock && len(args) < 3 {
 		return fmt.Errorf("value is required (use --block to block inheritance instead)")
 	}
 	return nil
@@ -184,8 +180,8 @@ func blockRigConfig(townRoot string, r *rig.Rig, rigName, key string) error {
 	return nil
 }
 
-func setRigConfigValue(townRoot string, r *rig.Rig, rigName, key, value string) error {
-	if rigConfigSetGlobal {
+func setRigConfigValue(townRoot string, r *rig.Rig, rigName, key, value string, setGlobal bool) error {
+	if setGlobal {
 		// Set in bead layer (rig identity bead labels).
 		if err := setBeadLabel(townRoot, r, key, value); err != nil {
 			return fmt.Errorf("setting bead label: %w", err)

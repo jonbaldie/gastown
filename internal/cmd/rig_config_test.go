@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -69,12 +70,25 @@ func setupTestRigForConfig(t *testing.T) (string, string) {
 	return townRoot, rigName
 }
 
+func setRigConfigSetFlags(t *testing.T, global, block bool) {
+	t.Helper()
+	if err := rigConfigSetCmd.Flags().Set("global", strconv.FormatBool(global)); err != nil {
+		t.Fatalf("Set(global): %v", err)
+	}
+	if err := rigConfigSetCmd.Flags().Set("block", strconv.FormatBool(block)); err != nil {
+		t.Fatalf("Set(block): %v", err)
+	}
+	t.Cleanup(func() {
+		_ = rigConfigSetCmd.Flags().Set("global", "false")
+		_ = rigConfigSetCmd.Flags().Set("block", "false")
+	})
+}
+
 func TestRigConfigSet_WispLayerWarning(t *testing.T) {
 	t.Run("warns about ephemeral when writing to wisp layer", func(t *testing.T) {
 		townRoot, rigName := setupTestRigForConfig(t)
 
-		rigConfigSetGlobal = false
-		rigConfigSetBlock = false
+		setRigConfigSetFlags(t, false, false)
 
 		stderrOut := captureStderr(t, func() {
 			err := runRigConfigSet(rigConfigSetCmd, []string{rigName, "max_polecats", "5"})
@@ -101,8 +115,7 @@ func TestRigConfigSet_WispLayerWarning(t *testing.T) {
 	t.Run("warns for string values in wisp layer", func(t *testing.T) {
 		_, rigName := setupTestRigForConfig(t)
 
-		rigConfigSetGlobal = false
-		rigConfigSetBlock = false
+		setRigConfigSetFlags(t, false, false)
 
 		stderrOut := captureStderr(t, func() {
 			err := runRigConfigSet(rigConfigSetCmd, []string{rigName, "default_formula", "mol-custom"})
@@ -119,8 +132,7 @@ func TestRigConfigSet_WispLayerWarning(t *testing.T) {
 	t.Run("warns for boolean values in wisp layer", func(t *testing.T) {
 		_, rigName := setupTestRigForConfig(t)
 
-		rigConfigSetGlobal = false
-		rigConfigSetBlock = false
+		setRigConfigSetFlags(t, false, false)
 
 		stderrOut := captureStderr(t, func() {
 			err := runRigConfigSet(rigConfigSetCmd, []string{rigName, "auto_restart", "false"})
@@ -137,9 +149,7 @@ func TestRigConfigSet_WispLayerWarning(t *testing.T) {
 	t.Run("no ephemeral warning when using --block flag", func(t *testing.T) {
 		_, rigName := setupTestRigForConfig(t)
 
-		rigConfigSetGlobal = false
-		rigConfigSetBlock = true
-		t.Cleanup(func() { rigConfigSetBlock = false })
+		setRigConfigSetFlags(t, false, true)
 
 		stderrOut := captureStderr(t, func() {
 			err := runRigConfigSet(rigConfigSetCmd, []string{rigName, "auto_restart"})
