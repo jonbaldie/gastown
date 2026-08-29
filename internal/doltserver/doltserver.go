@@ -1955,232 +1955,205 @@ func StartContext(ctx context.Context, townRoot string) error {
 	}
 	config := DefaultConfig(townRoot)
 
-	// Ensure daemon directory exists
-	daemonDir := filepath.Dir(config.LogFile)
-	if err := os.MkdirAll(daemonDir, 0755); err != nil {
+	if err := ensureDoltDaemonDir(config); err != nil {
 		return fmt.Errorf("creating daemon directory: %w", err)
 	}
 
-	// Acquire exclusive lock to prevent concurrent starts (same pattern as gt daemon).
-	// If the lock is held, retry briefly — the holder may be finishing up. If still
-	// held after retries, check if the holding process is alive. (gt-tosjp)
-	lockFile := filepath.Join(daemonDir, "dolt.lock")
-	fileLock := flock.New(lockFile)
-	locked, err := fileLock.TryLock()
+	daemonDir := filepath.Dir(config.LogFile)
+	fileLock, alreadyRunning, err := acquireDoltStartLock(ctx, townRoot, config, daemonDir)
 	if err != nil {
-		// Lock file may be corrupted — remove and retry once
-		_ = os.Remove(lockFile)
-		locked, err = fileLock.TryLock()
-		if err != nil {
-			return fmt.Errorf("acquiring lock: %w", err)
-		}
+		return err
 	}
-	if !locked {
-		// Scale the retry window by the number of databases: each database takes
-		// ~5s to initialize. Clamp between 15s and 120s to handle both small and
-		// large installs. (gt-nkn: fix thundering herd)
-		numDBs := countDoltDatabases(config.DataDir)
-		lockTimeout := time.Duration(numDBs) * 5 * time.Second
-		if lockTimeout < 15*time.Second {
-			lockTimeout = 15 * time.Second
-		}
-		if lockTimeout > 120*time.Second {
-			lockTimeout = 120 * time.Second
-		}
-		interval := 500 * time.Millisecond
-		deadline := time.Now().Add(lockTimeout)
-		for time.Now().Before(deadline) {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			time.Sleep(interval)
-			locked, err = fileLock.TryLock()
-			if err == nil && locked {
-				break
-			}
-		}
-		if !locked {
-			// Still locked after the full timeout. Before force-removing the lock,
-			// check if Dolt is already running — the lock holder may have finished
-			// starting Dolt successfully. If so, return nil instead of spawning a
-			// duplicate server. (gt-nkn: fix thundering herd)
-			if already, _, _ := IsRunning(townRoot); already {
-				return nil
-			}
-			// POSIX flocks auto-release on process death. We timed out waiting,
-			// so forcibly remove the stale lock and retry once. (gt-tosjp)
-			fmt.Fprintf(os.Stderr, "Warning: dolt.lock held for >%s — removing stale lock\n", lockTimeout.Round(time.Second))
-			_ = os.Remove(lockFile)
-			fileLock = flock.New(lockFile)
-			locked, err = fileLock.TryLock()
-			if err != nil || !locked {
-				return fmt.Errorf("another gt dolt start is in progress (lock held after recovery attempt)")
-			}
-		}
+	if alreadyRunning {
+		return nil
 	}
 	defer func() { _ = fileLock.Unlock() }()
 
-	// Stop idle-monitor processes first. These background processes auto-spawn
-	// rogue Dolt servers and will immediately respawn an imposter if we kill
-	// one without stopping the monitors. (gt-restart-race fix)
-	if stopped := StopIdleMonitors(townRoot); stopped > 0 {
-		fmt.Fprintf(os.Stderr, "Stopped %d idle-monitor process(es)\n", stopped)
-		// Brief pause to let spawned rogue processes settle
-		time.Sleep(200 * time.Millisecond)
-	}
+	stopIdleMonitorsBeforeDoltStart(townRoot)
 
 	// Check if already running (checks both PID file AND port)
 	running, pid, err := IsRunning(townRoot)
 	if err != nil {
 		return fmt.Errorf("checking server status: %w", err)
 	}
-
-	// If IsRunning returns false, the port may still be held by a dolt process
-	// that doesn't match this town's ownership (e.g., a leftover from an old
-	// town setup started with different flags). IsRunning's ownership check
-	// correctly returns false, but we need to evict the squatter before we can
-	// bind the port. (fix: start-kills-unowned-port-holder)
-	if !running {
-		if squatterPID := findDoltServerOnPort(config.Port); squatterPID > 0 {
-			fmt.Fprintf(os.Stderr, "Warning: port %d held by unowned dolt process (PID %d) — killing before start\n", config.Port, squatterPID)
-			if proc, findErr := os.FindProcess(squatterPID); findErr == nil {
-				_ = proc.Kill()
-				if err := waitForPortRelease(config.Port, 5*time.Second); err != nil {
-					// Kill didn't work, try again
-					_ = proc.Kill()
-					if err := waitForPortRelease(config.Port, 3*time.Second); err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: port %d still occupied after killing PID %d: %v\n", config.Port, squatterPID, err)
-					}
-				}
-			}
-		}
+	clearUnownedDoltPort(config, running)
+	if running && handleExistingDoltServer(townRoot, config, pid) {
+		return nil
 	}
 
-	if running {
-		// If data directory doesn't exist, this is an orphaned server (e.g., user
-		// deleted ~/gt and re-ran gt install). Kill it so we can start fresh.
-		if _, statErr := os.Stat(config.DataDir); os.IsNotExist(statErr) {
-			fmt.Fprintf(os.Stderr, "Warning: Dolt server (PID %d) is running but data directory %s does not exist — stopping orphaned server\n", pid, config.DataDir)
-			if stopErr := Stop(townRoot); stopErr != nil {
-				if pid > 0 {
-					if proc, findErr := os.FindProcess(pid); findErr == nil {
-						_ = proc.Kill()
-						time.Sleep(100 * time.Millisecond)
-					}
-				}
-			}
-			// Fall through to start a new server
-		} else {
-			// Server is running with valid data dir — check if it's an imposter
-			// (e.g., bd launched its own dolt server from a different data directory).
-			legitimate, verifyErr := VerifyServerDataDir(townRoot)
-			if verifyErr == nil && !legitimate {
-				fmt.Fprintf(os.Stderr, "Warning: running Dolt server (PID %d) is an imposter — killing and restarting\n", pid)
-				if killErr := KillImposters(townRoot); killErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to kill imposter: %v\n", killErr)
-				}
-				// Wait for port to be released, with retry
-				if err := waitForPortRelease(config.Port, 5*time.Second); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: port %d still occupied after imposter kill: %v\n", config.Port, err)
-				}
-				// Fall through to start a new server
-			} else if verifyErr != nil && !legitimate {
-				// Verification failed but server is suspicious — log and try to kill
-				fmt.Fprintf(os.Stderr, "Warning: could not verify Dolt server identity: %v — killing and restarting\n", verifyErr)
-				if killErr := KillImposters(townRoot); killErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to kill imposter: %v\n", killErr)
-				}
-				if err := waitForPortRelease(config.Port, 5*time.Second); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: port %d still occupied after imposter kill: %v\n", config.Port, err)
-				}
-			} else {
-				if changed, refreshErr := refreshPIDStateFromLiveInfo(townRoot, config, pid); refreshErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: could not refresh Dolt PID state: %v\n", refreshErr)
-				} else if changed {
-					fmt.Printf("Refreshed stale Dolt PID state (actual %d)\n", pid)
-				}
-				return nil // already running and legitimate — idempotent success
-			}
-		}
-	}
-
-	// Ensure data directory exists
-	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-
-	// Quarantine corrupted/phantom database dirs before server launch.
-	// WARNING: DO NOT remove, delete, or modify files inside Dolt's .dolt/
-	// directory — including noms/LOCK files. These are Dolt-internal files.
-	// Removing them WILL cause unrecoverable data corruption and data loss.
-	// Dolt manages these files itself; external interference is never safe.
-	//
-	// Previously this section quarantined/removed database dirs with missing
-	// noms/manifest and cleaned up stale .dolt/noms/LOCK files. Both operations
-	// manipulated Dolt-internal state and risked data corruption. Dolt handles
-	// its own lock files and database integrity on startup.
-
-	databases, _ := ListDatabases(townRoot)
-
-	// Open log file
-	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	databases, cmd, err := launchDoltServer(townRoot, config)
 	if err != nil {
-		return fmt.Errorf("opening log file: %w", err)
-	}
-
-	// Remove a stale town-scoped Unix socket left by a previous Dolt crash.
-	// Managed config writes listener.socket to /tmp/gt-dolt-<id>.sock; if that
-	// file lingers, the next start emits "unix socket set up failed" and falls
-	// back to TCP-only. Do not touch /tmp/mysql.sock: that path is shared with
-	// other Dolt/MySQL servers on the machine.
-	cleanStaleDoltSocket(config)
-
-	// Validate port is available before starting (catches multi-town port conflicts)
-	if err := checkPortAvailable(config.Port); err != nil {
-		logFile.Close()
 		return err
 	}
+	return waitForDoltStartup(ctx, townRoot, config, cmd, databases)
+}
 
-	// Always write a managed config.yaml from the Config struct before starting.
-	// This ensures critical settings (especially read/write timeouts) are always
-	// present, preventing CLOSE_WAIT accumulation from abandoned connections.
-	// The config file uses --config so all settings come from this file; CLI flags
-	// are ignored by dolt when --config is used.
-	configPath := filepath.Join(config.DataDir, "config.yaml")
-	if err := writeServerConfig(config, configPath); err != nil {
-		logFile.Close()
-		return fmt.Errorf("writing Dolt config: %w", err)
+func ensureDoltDaemonDir(config *Config) error {
+	return os.MkdirAll(filepath.Dir(config.LogFile), 0755)
+}
+
+func stopIdleMonitorsBeforeDoltStart(townRoot string) {
+	// These background processes auto-spawn rogue Dolt servers and will
+	// immediately respawn an imposter if we kill one without stopping monitors.
+	if stopped := StopIdleMonitors(townRoot); stopped > 0 {
+		fmt.Fprintf(os.Stderr, "Stopped %d idle-monitor process(es)\n", stopped)
+		time.Sleep(200 * time.Millisecond)
 	}
-	cmd := NewSQLServerCommand("dolt", config.DataDir, configPath)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+}
 
-	// Detach from terminal and put dolt in its own process group so that
-	// signals sent to the parent process group (e.g. SIGHUP when the caller
-	// calls syscall.Exec to become tmux) don't reach the dolt server.
-	cmd.Stdin = nil
-	setProcessGroup(cmd)
+func acquireDoltStartLock(ctx context.Context, townRoot string, config *Config, daemonDir string) (*flock.Flock, bool, error) {
+	lockFile := filepath.Join(daemonDir, "dolt.lock")
+	fileLock := flock.New(lockFile)
+	locked, err := fileLock.TryLock()
+	if err != nil {
+		// Lock file may be corrupted — remove and retry once.
+		_ = os.Remove(lockFile)
+		locked, err = fileLock.TryLock()
+		if err != nil {
+			return nil, false, fmt.Errorf("acquiring lock: %w", err)
+		}
+	}
+	if locked {
+		return fileLock, false, nil
+	}
 
+	lockTimeout := doltStartLockTimeout(config.DataDir)
+	locked, err = waitForDoltStartLock(ctx, fileLock, lockTimeout)
+	if err != nil {
+		return nil, false, err
+	}
+	if locked {
+		return fileLock, false, nil
+	}
+	// Before force-removing the lock, check whether the holder finished
+	// starting Dolt successfully. Avoid spawning a duplicate server.
+	if already, _, _ := IsRunning(townRoot); already {
+		return nil, true, nil
+	}
+
+	// POSIX flocks auto-release on process death. We timed out waiting, so
+	// forcibly remove the stale lock and retry once.
+	fmt.Fprintf(os.Stderr, "Warning: dolt.lock held for >%s — removing stale lock\n", lockTimeout.Round(time.Second))
+	_ = os.Remove(lockFile)
+	fileLock = flock.New(lockFile)
+	locked, err = fileLock.TryLock()
+	if err != nil || !locked {
+		return nil, false, fmt.Errorf("another gt dolt start is in progress (lock held after recovery attempt)")
+	}
+	return fileLock, false, nil
+}
+
+func doltStartLockTimeout(dataDir string) time.Duration {
+	numDBs := countDoltDatabases(dataDir)
+	lockTimeout := time.Duration(numDBs) * 5 * time.Second
+	if lockTimeout < 15*time.Second {
+		return 15 * time.Second
+	}
+	if lockTimeout > 120*time.Second {
+		return 120 * time.Second
+	}
+	return lockTimeout
+}
+
+func waitForDoltStartLock(ctx context.Context, fileLock *flock.Flock, timeout time.Duration) (bool, error) {
+	interval := 500 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		time.Sleep(interval)
+		locked, err := fileLock.TryLock()
+		if err == nil && locked {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func clearUnownedDoltPort(config *Config, running bool) {
+	if running {
+		return
+	}
+	// IsRunning can reject a Dolt process owned by another town even though it
+	// still occupies our configured port. Evict it before binding the port.
+	squatterPID := findDoltServerOnPort(config.Port)
+	if squatterPID <= 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Warning: port %d held by unowned dolt process (PID %d) — killing before start\n", config.Port, squatterPID)
+	proc, err := os.FindProcess(squatterPID)
+	if err != nil {
+		return
+	}
+	_ = proc.Kill()
+	if err := waitForPortRelease(config.Port, 5*time.Second); err != nil {
+		// Kill didn't work, try again.
+		_ = proc.Kill()
+		if err := waitForPortRelease(config.Port, 3*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: port %d still occupied after killing PID %d: %v\n", config.Port, squatterPID, err)
+		}
+	}
+}
+
+func handleExistingDoltServer(townRoot string, config *Config, pid int) bool {
+	if _, statErr := os.Stat(config.DataDir); os.IsNotExist(statErr) {
+		fmt.Fprintf(os.Stderr, "Warning: Dolt server (PID %d) is running but data directory %s does not exist — stopping orphaned server\n", pid, config.DataDir)
+		if stopErr := Stop(townRoot); stopErr != nil && pid > 0 {
+			if proc, findErr := os.FindProcess(pid); findErr == nil {
+				_ = proc.Kill()
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		return false
+	}
+
+	legitimate, verifyErr := VerifyServerDataDir(townRoot)
+	if !legitimate {
+		restartImposterDoltServer(townRoot, config, pid, verifyErr)
+		return false
+	}
+	if changed, refreshErr := refreshPIDStateFromLiveInfo(townRoot, config, pid); refreshErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not refresh Dolt PID state: %v\n", refreshErr)
+	} else if changed {
+		fmt.Printf("Refreshed stale Dolt PID state (actual %d)\n", pid)
+	}
+	return true
+}
+
+func restartImposterDoltServer(townRoot string, config *Config, pid int, verifyErr error) {
+	if verifyErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not verify Dolt server identity: %v — killing and restarting\n", verifyErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: running Dolt server (PID %d) is an imposter — killing and restarting\n", pid)
+	}
+	if killErr := KillImposters(townRoot); killErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to kill imposter: %v\n", killErr)
+	}
+	if err := waitForPortRelease(config.Port, 5*time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: port %d still occupied after imposter kill: %v\n", config.Port, err)
+	}
+}
+
+func launchDoltServer(townRoot string, config *Config) ([]string, *exec.Cmd, error) {
+	databases, logFile, cmd, err := prepareDoltServerLaunch(townRoot, config)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		if closeErr := logFile.Close(); closeErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to close dolt log file: %v\n", closeErr)
 		}
-		return fmt.Errorf("starting Dolt server: %w", err)
+		return nil, nil, fmt.Errorf("starting Dolt server: %w", err)
 	}
-
-	// Close log file in parent (child has its own handle)
+	// Close log file in parent (child has its own handle).
 	if closeErr := logFile.Close(); closeErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to close dolt log file: %v\n", closeErr)
 	}
-
-	// Write PID file
 	if err := os.WriteFile(config.PidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
-		// Try to kill the process we just started
 		_ = cmd.Process.Kill()
-		return fmt.Errorf("writing PID file: %w", err)
+		return nil, nil, fmt.Errorf("writing PID file: %w", err)
 	}
-
-	// Save state
 	state := &State{
 		Running:   true,
 		PID:       cmd.Process.Pid,
@@ -2190,22 +2163,50 @@ func StartContext(ctx context.Context, townRoot string) error {
 		Databases: databases,
 	}
 	if err := SaveState(townRoot, state); err != nil {
-		// Non-fatal - server is still running
+		// Non-fatal - server is still running.
 		fmt.Fprintf(os.Stderr, "Warning: failed to save state: %v\n", err)
 	}
+	return databases, cmd, nil
+}
 
-	// Wait for the server to be accepting connections, not just alive.
-	// We check process liveness directly via signal(0) rather than calling
-	// IsRunning, because IsRunning removes the PID file when the process is
-	// alive but not yet listening — treating a starting-up process as stale.
-	// On systems with slow storage (CSI/NFS), dolt can take 1-2s to bind its
-	// port, well past the first 500ms check. By using cmd.Process.Signal(0)
-	// we detect true process death without the PID-file side effect.
-	//
-	// The number of attempts scales with the database count: each database
-	// adds ~1s of startup overhead (LevelDB compaction, stats loading, etc.).
-	// We allow 5s per database so that workspaces with many rigs don't time
-	// out before Dolt finishes initializing.
+func prepareDoltServerLaunch(townRoot string, config *Config) ([]string, *os.File, *exec.Cmd, error) {
+	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
+		return nil, nil, nil, fmt.Errorf("creating data directory: %w", err)
+	}
+
+	// Dolt owns the contents of each database's .dolt/ directory. Do not
+	// quarantine or remove files there during startup.
+	databases, _ := ListDatabases(townRoot)
+	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("opening log file: %w", err)
+	}
+	cleanStaleDoltSocket(config)
+	if err := checkPortAvailable(config.Port); err != nil {
+		_ = logFile.Close()
+		return nil, nil, nil, err
+	}
+	configPath := filepath.Join(config.DataDir, "config.yaml")
+	if err := writeServerConfig(config, configPath); err != nil {
+		_ = logFile.Close()
+		return nil, nil, nil, fmt.Errorf("writing Dolt config: %w", err)
+	}
+	cmd := NewSQLServerCommand("dolt", config.DataDir, configPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	// Detach from the terminal and put Dolt in its own process group.
+	cmd.Stdin = nil
+	setProcessGroup(cmd)
+	return databases, logFile, cmd, nil
+}
+
+type doltStartupCheck struct {
+	ready        bool
+	tcpReachable bool
+	lastErr      error
+}
+
+func waitForDoltStartup(ctx context.Context, townRoot string, config *Config, cmd *exec.Cmd, databases []string) error {
 	dbCount := len(databases)
 	if dbCount < 1 {
 		dbCount = 1
@@ -2215,49 +2216,73 @@ func StartContext(ctx context.Context, townRoot string) error {
 	var lastErr error
 	tcpReachable := false
 	for {
-		if err := ctx.Err(); err != nil {
+		check, err := checkDoltStartup(ctx, townRoot, config, cmd.Process.Pid, databases, tcpReachable)
+		if err != nil {
 			return err
 		}
-		if !processIsAlive(cmd.Process.Pid) {
-			return fmt.Errorf("Dolt server process died during startup (check logs with 'gt dolt logs')")
+		tcpReachable = check.tcpReachable
+		if check.lastErr != nil {
+			lastErr = check.lastErr
 		}
-
-		if !tcpReachable {
-			if err := CheckServerReachable(townRoot); err != nil {
-				lastErr = err
-			} else {
-				tcpReachable = true
-			}
+		if check.ready {
+			return nil
 		}
-
-		if tcpReachable {
-			if len(databases) == 0 {
-				applyWaitTimeout(townRoot, config) // Best-effort; see gh-3623.
-				applyTimeZone(townRoot, config)    // Best-effort; see hq-57jr8.
-				return nil                         // Nothing to verify — fresh install or empty data dir
-			}
-			_, missing, verifyErr := VerifyDatabases(townRoot)
-			if verifyErr != nil {
-				lastErr = fmt.Errorf("verifying databases: %w", verifyErr)
-			} else if len(missing) == 0 {
-				applyWaitTimeout(townRoot, config) // Best-effort; see gh-3623.
-				applyTimeZone(townRoot, config)    // Best-effort; see hq-57jr8.
-				return nil                         // Server is up and serving every expected database
-			} else {
-				lastErr = fmt.Errorf("server is reachable but %d/%d databases not yet served (missing: %v)",
-					len(missing), len(databases), missing)
-			}
-		}
-
 		if !time.Now().Before(deadline) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !tcpReachable {
-		return fmt.Errorf("Dolt server process started (PID %d) but not accepting connections after %v (%d databases × 5s): %w\nCheck logs with: gt dolt logs", cmd.Process.Pid, totalTimeout, dbCount, lastErr)
+	return doltStartupTimeoutError(cmd.Process.Pid, dbCount, totalTimeout, tcpReachable, lastErr)
+}
+
+func checkDoltStartup(ctx context.Context, townRoot string, config *Config, pid int, databases []string, tcpReachable bool) (doltStartupCheck, error) {
+	if err := ctx.Err(); err != nil {
+		return doltStartupCheck{}, err
 	}
-	return fmt.Errorf("Dolt server process started (PID %d) and is reachable, but databases failed to load after %v (%d databases × 5s): %w\nRecovery: gt dolt stop && gt dolt start\nCheck logs with: gt dolt logs", cmd.Process.Pid, totalTimeout, dbCount, lastErr)
+	if !processIsAlive(pid) {
+		return doltStartupCheck{}, fmt.Errorf("Dolt server process died during startup (check logs with 'gt dolt logs')")
+	}
+	check := doltStartupCheck{tcpReachable: tcpReachable}
+	if !check.tcpReachable {
+		if err := CheckServerReachable(townRoot); err != nil {
+			check.lastErr = err
+		} else {
+			check.tcpReachable = true
+		}
+	}
+	if !check.tcpReachable {
+		return check, nil
+	}
+	ready, err := verifyDoltStartupDatabases(townRoot, config, databases)
+	check.ready = ready
+	check.lastErr = err
+	return check, nil
+}
+
+func verifyDoltStartupDatabases(townRoot string, config *Config, databases []string) (bool, error) {
+	if len(databases) == 0 {
+		applyWaitTimeout(townRoot, config) // Best-effort; see gh-3623.
+		applyTimeZone(townRoot, config)    // Best-effort; see hq-57jr8.
+		return true, nil
+	}
+	_, missing, verifyErr := VerifyDatabases(townRoot)
+	if verifyErr != nil {
+		return false, fmt.Errorf("verifying databases: %w", verifyErr)
+	}
+	if len(missing) == 0 {
+		applyWaitTimeout(townRoot, config) // Best-effort; see gh-3623.
+		applyTimeZone(townRoot, config)    // Best-effort; see hq-57jr8.
+		return true, nil
+	}
+	return false, fmt.Errorf("server is reachable but %d/%d databases not yet served (missing: %v)",
+		len(missing), len(databases), missing)
+}
+
+func doltStartupTimeoutError(pid, dbCount int, totalTimeout time.Duration, tcpReachable bool, lastErr error) error {
+	if !tcpReachable {
+		return fmt.Errorf("Dolt server process started (PID %d) but not accepting connections after %v (%d databases × 5s): %w\nCheck logs with: gt dolt logs", pid, totalTimeout, dbCount, lastErr)
+	}
+	return fmt.Errorf("Dolt server process started (PID %d) and is reachable, but databases failed to load after %v (%d databases × 5s): %w\nRecovery: gt dolt stop && gt dolt start\nCheck logs with: gt dolt logs", pid, totalTimeout, dbCount, lastErr)
 }
 
 // WARNING: DO NOT remove, delete, or modify files inside Dolt's .dolt/
