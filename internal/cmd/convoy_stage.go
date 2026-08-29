@@ -632,35 +632,39 @@ func findOverlappingConvoys(slingableIDs []string) ([]overlappingConvoy, error) 
 
 	var overlaps []overlappingConvoy
 	for _, c := range convoys {
-		status := normalizeConvoyStatus(c.Status)
-		// Only consider staged and open convoys.
-		if !isStagedStatus(status) && status != convoyStatusOpen {
-			continue
-		}
-
-		trackedIDs, err := convoyTrackedBeadIDs(townBeads, c.ID)
-		if err != nil {
-			// Skip convoys whose tracked beads can't be resolved.
-			continue
-		}
-
-		// Compute intersection.
-		overlapCount := 0
-		for id := range trackedIDs {
-			if slingSet[id] {
-				overlapCount++
-			}
-		}
-		if overlapCount > 0 {
-			overlaps = append(overlaps, overlappingConvoy{
-				ID:           c.ID,
-				Status:       status,
-				OverlapCount: overlapCount,
-			})
+		if overlap, ok := overlappingConvoyFor(townBeads, c, slingSet); ok {
+			overlaps = append(overlaps, overlap)
 		}
 	}
 
 	return overlaps, nil
+}
+
+func overlappingConvoyFor(townBeads string, convoy convoyListIssue, slingSet map[string]bool) (overlappingConvoy, bool) {
+	status := normalizeConvoyStatus(convoy.Status)
+	if !isStagedStatus(status) && status != convoyStatusOpen {
+		return overlappingConvoy{}, false
+	}
+
+	trackedIDs, err := convoyTrackedBeadIDs(townBeads, convoy.ID)
+	if err != nil {
+		return overlappingConvoy{}, false
+	}
+	overlapCount := countSlingableIDs(trackedIDs, slingSet)
+	if overlapCount == 0 {
+		return overlappingConvoy{}, false
+	}
+	return overlappingConvoy{ID: convoy.ID, Status: status, OverlapCount: overlapCount}, true
+}
+
+func countSlingableIDs(trackedIDs map[string]bool, slingSet map[string]bool) int {
+	count := 0
+	for id := range trackedIDs {
+		if slingSet[id] {
+			count++
+		}
+	}
+	return count
 }
 
 // handleOverlappingConvoys decides what to do when existing convoys overlap
