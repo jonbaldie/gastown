@@ -94,26 +94,38 @@ func isDoltOptimisticLockError(err error) bool {
 // problem rather than a transient failure. Config errors should NOT be retried because
 // they will fail identically on every attempt, wasting ~3 minutes in the retry loop.
 // See gt-2ra: polecat spawn hang when Dolt DB not initialized.
+var doltConfigErrorMarkers = []string{
+	"not initialized",
+	"no such table",
+	"table not found",
+	"issue_prefix",
+	"no database",
+	"database not found",
+	"connection refused",
+	"circuit breaker",
+	"server appears down",
+	"server down",
+	"server is not running",
+	"server may not be running",
+	"configure custom types",
+	"identity mismatch",
+	"unknown database",
+}
+
 func isDoltConfigError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not initialized") ||
-		strings.Contains(msg, "no such table") ||
-		strings.Contains(msg, "table not found") ||
-		strings.Contains(msg, "issue_prefix") ||
-		strings.Contains(msg, "no database") ||
-		strings.Contains(msg, "database not found") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "circuit breaker") ||
-		strings.Contains(msg, "server appears down") ||
-		strings.Contains(msg, "server down") ||
-		strings.Contains(msg, "server is not running") ||
-		strings.Contains(msg, "server may not be running") ||
-		strings.Contains(msg, "configure custom types") ||
-		strings.Contains(msg, "identity mismatch") ||
-		strings.Contains(msg, "unknown database")
+	return containsDoltConfigMarker(strings.ToLower(err.Error()))
+}
+
+func containsDoltConfigMarker(msg string) bool {
+	for _, marker := range doltConfigErrorMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Common errors
