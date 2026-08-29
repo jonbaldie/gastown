@@ -163,9 +163,6 @@ assignment (if any) in place.`,
 	RunE: runConfigRoleUnset,
 }
 
-// configRoleRig holds the --rig flag value shared by the role subcommands.
-var configRoleRig string
-
 // Cost-tier subcommand
 
 var configCostTierCmd = &cobra.Command{
@@ -273,9 +270,6 @@ Examples:
 	RunE: runConfigAgentList,
 }
 
-// Flags for default-agent list
-var configDefaultAgentListJSON bool
-
 var configAgentEmailDomainCmd = &cobra.Command{
 	Use:   "agent-email-domain [domain]",
 	Short: "Get or set agent email domain",
@@ -296,12 +290,6 @@ Examples:
   gt config agent-email-domain example.com     # Set custom domain`,
 	RunE: runConfigAgentEmailDomain,
 }
-
-// Flags
-var (
-	configAgentListJSON    bool
-	configAgentSetProvider string
-)
 
 // AgentListItem represents an agent in list output.
 type AgentListItem struct {
@@ -469,7 +457,7 @@ func displayAgentConfig(name string, runtime *config.RuntimeConfig, preset *conf
 	}
 }
 
-func runConfigAgentSet(_ *cobra.Command, args []string) error {
+func runConfigAgentSet(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	commandLine := args[1]
 
@@ -498,7 +486,7 @@ func runConfigAgentSet(_ *cobra.Command, args []string) error {
 
 	// Determine the provider: use --provider flag if given, otherwise infer
 	// from the command binary name if it matches a known preset.
-	provider := configAgentSetProvider
+	provider := commandStringFlag(cmd, "provider")
 	if provider == "" {
 		cmdBase := parts[0]
 		if idx := strings.LastIndexByte(cmdBase, '/'); idx >= 0 {
@@ -644,14 +632,15 @@ func runConfigDefaultAgent(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigRoleList(_ *cobra.Command, _ []string) error {
+func runConfigRoleList(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	if configRoleRig != "" {
-		return runConfigRoleListForRig(townRoot, configRoleRig)
+	rigName := commandStringFlag(cmd, "rig")
+	if rigName != "" {
+		return runConfigRoleListForRig(townRoot, rigName)
 	}
 
 	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
@@ -707,7 +696,7 @@ func runConfigRoleListForRig(townRoot, rigName string) error {
 	return nil
 }
 
-func runConfigRoleSet(_ *cobra.Command, args []string) error {
+func runConfigRoleSet(cmd *cobra.Command, args []string) error {
 	role, agent := args[0], args[1]
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
@@ -719,8 +708,9 @@ func runConfigRoleSet(_ *cobra.Command, args []string) error {
 		effort = args[2]
 	}
 
-	if configRoleRig != "" {
-		_, r, err := getRig(configRoleRig)
+	rigName := commandStringFlag(cmd, "rig")
+	if rigName != "" {
+		_, r, err := getRig(rigName)
 		if err != nil {
 			return err
 		}
@@ -739,15 +729,16 @@ func runConfigRoleSet(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigRoleUnset(_ *cobra.Command, args []string) error {
+func runConfigRoleUnset(cmd *cobra.Command, args []string) error {
 	role := args[0]
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	if configRoleRig != "" {
-		_, r, err := getRig(configRoleRig)
+	rigName := commandStringFlag(cmd, "rig")
+	if rigName != "" {
+		_, r, err := getRig(rigName)
 		if err != nil {
 			return err
 		}
@@ -1567,10 +1558,10 @@ Examples:
   gt config default-agent my-custom # Set to custom agent`, presets)
 
 	// Add flags
-	configAgentListCmd.Flags().BoolVar(&configAgentListJSON, "json", false, "Output as JSON")
-	configDefaultAgentListCmd.Flags().BoolVar(&configDefaultAgentListJSON, "json", false, "Output as JSON")
+	configAgentListCmd.Flags().Bool("json", false, "Output as JSON")
+	configDefaultAgentListCmd.Flags().Bool("json", false, "Output as JSON")
 	configMixCmd.Flags().Bool("json", false, "Output the effective mix as JSON")
-	configAgentSetCmd.Flags().StringVar(&configAgentSetProvider, "provider", "", fmt.Sprintf("Agent provider preset (e.g. %s); inferred from command name if not set", presets))
+	configAgentSetCmd.Flags().String("provider", "", fmt.Sprintf("Agent provider preset (e.g. %s); inferred from command name if not set", presets))
 
 	// Add agent subcommands
 	configAgentCmd := &cobra.Command{
@@ -1589,9 +1580,9 @@ config values such as the default AI model or provider.`,
 	configRoleCmd.AddCommand(configRoleListCmd)
 	configRoleCmd.AddCommand(configRoleSetCmd)
 	configRoleCmd.AddCommand(configRoleUnsetCmd)
-	configRoleListCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
-	configRoleSetCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
-	configRoleUnsetCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleListCmd.Flags().String("rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleSetCmd.Flags().String("rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleUnsetCmd.Flags().String("rig", "", "Scope to a specific rig instead of the whole town")
 
 	// Add default-agent subcommands
 	configDefaultAgentCmd.AddCommand(configDefaultAgentListCmd)

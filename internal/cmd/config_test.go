@@ -431,7 +431,6 @@ func TestConfigAgentSetProviderInference(t *testing.T) {
 		}
 
 		// "gemini" is a known preset — provider should be inferred
-		configAgentSetProvider = ""
 		cmd := &cobra.Command{}
 		args := []string{"gemini-custom", "gemini --fast-mode"}
 		if err := runConfigAgentSet(cmd, args); err != nil {
@@ -466,7 +465,6 @@ func TestConfigAgentSetProviderInference(t *testing.T) {
 		}
 
 		// "my-custom-tool" is not a known preset — provider should remain empty
-		configAgentSetProvider = ""
 		cmd := &cobra.Command{}
 		args := []string{"my-bot", "my-custom-tool --flag"}
 		if err := runConfigAgentSet(cmd, args); err != nil {
@@ -498,10 +496,8 @@ func TestConfigAgentSetProviderInference(t *testing.T) {
 		}
 
 		// Command name is unknown, but explicit provider is given
-		configAgentSetProvider = "claude"
-		defer func() { configAgentSetProvider = "" }()
-
 		cmd := &cobra.Command{}
+		cmd.Flags().String("provider", "claude", "")
 		args := []string{"my-claude-wrapper", "my-claude-wrapper --custom"}
 		if err := runConfigAgentSet(cmd, args); err != nil {
 			t.Fatalf("runConfigAgentSet failed: %v", err)
