@@ -736,6 +736,92 @@ func (m *Manager) killLingeringPolecatSession(name string) {
 	}
 }
 
+func (m *Manager) cleanupFailedPolecatAdd(name, polecatDir, clonePath string, worktreeCreated bool) {
+	aid := m.agentBeadID(name)
+	_ = m.resetAgentBeadForReuse(aid, "spawn rollback")
+	if worktreeCreated {
+		if rg, repoErr := m.repoBase(); repoErr == nil {
+			_ = rg.WorktreeRemove(clonePath, true)
+		}
+	}
+	_ = os.RemoveAll(polecatDir)
+	m.namePool.Release(name)
+	_ = m.namePool.Save()
+}
+
+func (m *Manager) polecatStartPoint(opts AddOptions) string {
+	if opts.BaseBranch != "" {
+		return opts.BaseBranch
+	}
+	defaultBranch := "main"
+	if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
+		defaultBranch = rigCfg.DefaultBranch
+	}
+	return fmt.Sprintf("origin/%s", defaultBranch)
+}
+
+func (m *Manager) createPolecatWorktree(repoGit *git.Git, clonePath, branchName string, opts AddOptions) (bool, error) {
+	if opts.ResumeBranch != "" {
+		if err := repoGit.FetchBranch("origin", opts.ResumeBranch); err != nil {
+			style.PrintWarning("could not fetch resume branch %s: %v", opts.ResumeBranch, err)
+		}
+		if err := repoGit.WorktreeAddExistingForce(clonePath, opts.ResumeBranch); err != nil {
+			return false, fmt.Errorf("creating worktree on existing branch %s: %w", opts.ResumeBranch, err)
+		}
+		return true, nil
+	}
+
+	startPoint := m.polecatStartPoint(opts)
+	exists, err := repoGit.RefExists(startPoint)
+	if err != nil {
+		return false, fmt.Errorf("checking ref %s: %w", startPoint, err)
+	}
+	if !exists {
+		return false, fmt.Errorf("configured default_branch not found as %s in bare repo\n\n"+
+			"Possible causes:\n"+
+			"  - Branch doesn't exist on the remote (create it there first)\n"+
+			"  - default_branch is misconfigured (check %s/config.json)\n"+
+			"  - Bare repo fetch failed (try: git -C %s fetch origin)\n\n"+
+			"Run 'gt doctor' to diagnose.",
+			startPoint, m.rig.Path, filepath.Join(m.rig.Path, ".repo.git"))
+	}
+	if err := repoGit.WorktreeAddFromRef(clonePath, branchName, startPoint); err != nil {
+		return false, fmt.Errorf("creating worktree from %s: %w", startPoint, err)
+	}
+	return true, nil
+}
+
+func (m *Manager) provisionPolecatAgents(clonePath, name string) {
+	lockedRigName := filepath.Base(m.rig.Path)
+	if _, err := templates.CreatePolecatAgentsMD(clonePath, lockedRigName, name); err != nil {
+		style.PrintWarning("could not provision polecat instruction pair: %v", err)
+	}
+}
+
+func (m *Manager) finishPolecatSetup(name, clonePath, polecatDir string, opts AddOptions, worktreeCreated bool) error {
+	m.provisionPolecatAgents(clonePath, name)
+	if err := m.provisionWorktree(clonePath); err != nil {
+		m.cleanupFailedPolecatAdd(name, polecatDir, clonePath, worktreeCreated)
+		return fmt.Errorf("setting up shared beads: %w (polecat cannot submit MRs without shared beads)", err)
+	}
+	if err := m.runSetupCommand(clonePath); err != nil {
+		m.cleanupFailedPolecatAdd(name, polecatDir, clonePath, worktreeCreated)
+		return err
+	}
+
+	agentID := m.agentBeadID(name)
+	if err := m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
+		RoleType:   "polecat",
+		Rig:        m.rig.Name,
+		AgentState: "spawning",
+		HookBead:   opts.HookBead,
+	}); err != nil {
+		m.cleanupFailedPolecatAdd(name, polecatDir, clonePath, worktreeCreated)
+		return fmt.Errorf("agent bead required for polecat tracking: %w", err)
+	}
+	return nil
+}
+
 // addWithOptionsLocked performs the expensive parts of polecat creation
 // (worktree, beads, settings) after the directory has been created.
 // Caller MUST hold the polecat lock and have already created polecatDir.
@@ -753,27 +839,9 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 		branchName = opts.ResumeBranch
 	}
 
-	// Track resources created for rollback on error.
-	var worktreeCreated bool
-	cleanupOnError := func() {
-		aid := m.agentBeadID(name)
-		_ = m.resetAgentBeadForReuse(aid, "spawn rollback")
-
-		if worktreeCreated {
-			if rg, repoErr := m.repoBase(); repoErr == nil {
-				_ = rg.WorktreeRemove(clonePath, true)
-			}
-		}
-
-		_ = os.RemoveAll(polecatDir)
-
-		m.namePool.Release(name)
-		_ = m.namePool.Save()
-	}
-
 	repoGit, err := m.repoBase()
 	if err != nil {
-		cleanupOnError()
+		m.cleanupFailedPolecatAdd(name, polecatDir, clonePath, false)
 		return nil, fmt.Errorf("finding repo base: %w", err)
 	}
 
@@ -781,75 +849,14 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 		style.PrintWarning("could not fetch origin: %v", err)
 	}
 
-	if opts.ResumeBranch != "" {
-		// Resume an existing branch (gh#3602). Make sure we have the latest tip
-		// for the named branch, then attach the worktree directly. WorktreeAddExistingForce
-		// handles the case where another worktree previously had this branch checked out.
-		if err := repoGit.FetchBranch("origin", opts.ResumeBranch); err != nil {
-			style.PrintWarning("could not fetch resume branch %s: %v", opts.ResumeBranch, err)
-		}
-		if err := repoGit.WorktreeAddExistingForce(clonePath, opts.ResumeBranch); err != nil {
-			cleanupOnError()
-			return nil, fmt.Errorf("creating worktree on existing branch %s: %w", opts.ResumeBranch, err)
-		}
-		worktreeCreated = true
-	} else {
-		var startPoint string
-		if opts.BaseBranch != "" {
-			startPoint = opts.BaseBranch
-		} else {
-			defaultBranch := "main"
-			if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
-				defaultBranch = rigCfg.DefaultBranch
-			}
-			startPoint = fmt.Sprintf("origin/%s", defaultBranch)
-		}
-
-		if exists, err := repoGit.RefExists(startPoint); err != nil {
-			cleanupOnError()
-			return nil, fmt.Errorf("checking ref %s: %w", startPoint, err)
-		} else if !exists {
-			cleanupOnError()
-			return nil, fmt.Errorf("configured default_branch not found as %s in bare repo\n\n"+
-				"Possible causes:\n"+
-				"  - Branch doesn't exist on the remote (create it there first)\n"+
-				"  - default_branch is misconfigured (check %s/config.json)\n"+
-				"  - Bare repo fetch failed (try: git -C %s fetch origin)\n\n"+
-				"Run 'gt doctor' to diagnose.",
-				startPoint, m.rig.Path, filepath.Join(m.rig.Path, ".repo.git"))
-		}
-
-		if err := repoGit.WorktreeAddFromRef(clonePath, branchName, startPoint); err != nil {
-			cleanupOnError()
-			return nil, fmt.Errorf("creating worktree from %s: %w", startPoint, err)
-		}
-		worktreeCreated = true
-	}
-
-	// Provision the instruction pair with gt done instructions (same as AddWithOptions path).
-	lockedRigName := filepath.Base(m.rig.Path)
-	if _, err := templates.CreatePolecatAgentsMD(clonePath, lockedRigName, name); err != nil {
-		style.PrintWarning("could not provision polecat instruction pair: %v", err)
-	}
-
-	if err := m.provisionWorktree(clonePath); err != nil {
-		cleanupOnError()
-		return nil, fmt.Errorf("setting up shared beads: %w (polecat cannot submit MRs without shared beads)", err)
-	}
-	if err := m.runSetupCommand(clonePath); err != nil {
-		cleanupOnError()
+	worktreeCreated, err := m.createPolecatWorktree(repoGit, clonePath, branchName, opts)
+	if err != nil {
+		m.cleanupFailedPolecatAdd(name, polecatDir, clonePath, worktreeCreated)
 		return nil, err
 	}
 
-	agentID := m.agentBeadID(name)
-	if err = m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
-		RoleType:   "polecat",
-		Rig:        m.rig.Name,
-		AgentState: "spawning",
-		HookBead:   opts.HookBead,
-	}); err != nil {
-		cleanupOnError()
-		return nil, fmt.Errorf("agent bead required for polecat tracking: %w", err)
+	if err := m.finishPolecatSetup(name, clonePath, polecatDir, opts, worktreeCreated); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
