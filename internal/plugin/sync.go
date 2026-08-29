@@ -21,71 +21,85 @@ type SyncResult struct {
 // SyncPlugins copies plugin directories from source to target.
 // If clean is true, removes plugins from target that don't exist in source.
 func SyncPlugins(sourceDir, targetDir string, clean bool) (*SyncResult, error) {
-	result := &SyncResult{}
-
-	srcInfo, err := os.Stat(sourceDir)
-	if err != nil {
-		return nil, fmt.Errorf("source directory %s: %w", sourceDir, err)
+	if err := preparePluginSyncDirs(sourceDir, targetDir); err != nil {
+		return nil, err
 	}
-	if !srcInfo.IsDir() {
-		return nil, fmt.Errorf("source is not a directory: %s", sourceDir)
-	}
-
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating target directory: %w", err)
-	}
-
 	srcEntries, err := os.ReadDir(sourceDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading source directory: %w", err)
 	}
+	result := &SyncResult{}
+	srcPlugins := syncPluginEntries(sourceDir, targetDir, srcEntries, result)
+	if clean {
+		removeStalePlugins(targetDir, srcPlugins, result)
+	}
+	return result, nil
+}
 
+func preparePluginSyncDirs(sourceDir, targetDir string) error {
+	srcInfo, err := os.Stat(sourceDir)
+	if err != nil {
+		return fmt.Errorf("source directory %s: %w", sourceDir, err)
+	}
+	if !srcInfo.IsDir() {
+		return fmt.Errorf("source is not a directory: %s", sourceDir)
+	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("creating target directory: %w", err)
+	}
+	return nil
+}
+
+func syncPluginEntries(sourceDir, targetDir string, srcEntries []os.DirEntry, result *SyncResult) map[string]bool {
 	srcPlugins := make(map[string]bool)
 	for _, entry := range srcEntries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if !isPluginDir(sourceDir, entry) {
 			continue
-		}
-		pluginMD := filepath.Join(sourceDir, entry.Name(), "plugin.md")
-		if _, err := os.Stat(pluginMD); err != nil {
-			continue // Not a plugin directory
 		}
 		srcPlugins[entry.Name()] = true
+		syncOnePlugin(sourceDir, targetDir, entry.Name(), result)
+	}
+	return srcPlugins
+}
 
-		srcPluginDir := filepath.Join(sourceDir, entry.Name())
-		dstPluginDir := filepath.Join(targetDir, entry.Name())
+func isPluginDir(parent string, entry os.DirEntry) bool {
+	if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(parent, entry.Name(), "plugin.md"))
+	return err == nil
+}
 
-		if dirsMatch(srcPluginDir, dstPluginDir) {
-			result.Skipped = append(result.Skipped, entry.Name())
+func syncOnePlugin(sourceDir, targetDir, name string, result *SyncResult) {
+	srcPluginDir := filepath.Join(sourceDir, name)
+	dstPluginDir := filepath.Join(targetDir, name)
+	if dirsMatch(srcPluginDir, dstPluginDir) {
+		result.Skipped = append(result.Skipped, name)
+		return
+	}
+	if err := copyDir(srcPluginDir, dstPluginDir); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
+		return
+	}
+	result.Copied = append(result.Copied, name)
+}
+
+func removeStalePlugins(targetDir string, srcPlugins map[string]bool, result *SyncResult) {
+	dstEntries, err := os.ReadDir(targetDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range dstEntries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || srcPlugins[entry.Name()] {
 			continue
 		}
-
-		if err := copyDir(srcPluginDir, dstPluginDir); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", entry.Name(), err))
+		dstPath := filepath.Join(targetDir, entry.Name())
+		if err := os.RemoveAll(dstPath); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("removing %s: %v", entry.Name(), err))
 			continue
 		}
-		result.Copied = append(result.Copied, entry.Name())
+		result.Removed = append(result.Removed, entry.Name())
 	}
-
-	if clean {
-		dstEntries, err := os.ReadDir(targetDir)
-		if err == nil {
-			for _, entry := range dstEntries {
-				if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-					continue
-				}
-				if !srcPlugins[entry.Name()] {
-					dstPath := filepath.Join(targetDir, entry.Name())
-					if err := os.RemoveAll(dstPath); err != nil {
-						result.Errors = append(result.Errors, fmt.Sprintf("removing %s: %v", entry.Name(), err))
-					} else {
-						result.Removed = append(result.Removed, entry.Name())
-					}
-				}
-			}
-		}
-	}
-
-	return result, nil
 }
 
 // dirsMatch checks if two plugin directories have identical contents.
@@ -257,7 +271,7 @@ func hasPlugins(dir string) bool {
 // DriftReport describes differences between source and runtime plugins.
 type DriftReport struct {
 	Source  string       `json:"source"`
-	Target string       `json:"target"`
+	Target  string       `json:"target"`
 	Drifted []DriftEntry `json:"drifted,omitempty"`
 	Missing []string     `json:"missing,omitempty"` // in source but not target
 	Extra   []string     `json:"extra,omitempty"`   // in target but not source
@@ -272,60 +286,67 @@ type DriftEntry struct {
 
 // DetectDrift compares plugin directories between source and target.
 func DetectDrift(sourceDir, targetDir string) (*DriftReport, error) {
-	report := &DriftReport{
-		Source: sourceDir,
-		Target: targetDir,
-	}
-
 	srcEntries, err := os.ReadDir(sourceDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading source: %w", err)
 	}
+	report := &DriftReport{
+		Source: sourceDir,
+		Target: targetDir,
+	}
+	tgtPlugins := listDirNames(targetDir)
+	compareSourcePlugins(sourceDir, targetDir, srcEntries, tgtPlugins, report)
+	appendExtraPlugins(targetDir, tgtPlugins, report)
+	return report, nil
+}
 
-	tgtPlugins := make(map[string]bool)
-	if tgtEntries, err := os.ReadDir(targetDir); err == nil {
-		for _, entry := range tgtEntries {
-			if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-				tgtPlugins[entry.Name()] = true
-			}
+func listDirNames(dir string) map[string]bool {
+	names := make(map[string]bool)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return names
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			names[entry.Name()] = true
 		}
 	}
+	return names
+}
 
+func compareSourcePlugins(sourceDir, targetDir string, srcEntries []os.DirEntry, tgtPlugins map[string]bool, report *DriftReport) {
 	for _, entry := range srcEntries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if !isPluginDir(sourceDir, entry) {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(sourceDir, entry.Name(), "plugin.md")); err != nil {
-			continue
-		}
-
-		srcDir := filepath.Join(sourceDir, entry.Name())
-		dstDir := filepath.Join(targetDir, entry.Name())
-
 		if !tgtPlugins[entry.Name()] {
 			report.Missing = append(report.Missing, entry.Name())
 			continue
 		}
 		delete(tgtPlugins, entry.Name())
-
-		srcHash := DirHash(srcDir)
-		dstHash := DirHash(dstDir)
-		if srcHash != dstHash {
-			report.Drifted = append(report.Drifted, DriftEntry{
-				Name:       entry.Name(),
-				SourceHash: srcHash,
-				TargetHash: dstHash,
-			})
-		}
+		recordPluginDrift(sourceDir, targetDir, entry.Name(), report)
 	}
+}
 
+func recordPluginDrift(sourceDir, targetDir, name string, report *DriftReport) {
+	srcHash := DirHash(filepath.Join(sourceDir, name))
+	dstHash := DirHash(filepath.Join(targetDir, name))
+	if srcHash == dstHash {
+		return
+	}
+	report.Drifted = append(report.Drifted, DriftEntry{
+		Name:       name,
+		SourceHash: srcHash,
+		TargetHash: dstHash,
+	})
+}
+
+func appendExtraPlugins(targetDir string, tgtPlugins map[string]bool, report *DriftReport) {
 	for name := range tgtPlugins {
 		if _, err := os.Stat(filepath.Join(targetDir, name, "plugin.md")); err == nil {
 			report.Extra = append(report.Extra, name)
 		}
 	}
-
-	return report, nil
 }
 
 // HasDrift returns true if the report indicates any differences.
