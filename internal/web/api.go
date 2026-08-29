@@ -1692,23 +1692,29 @@ func (p *issueShowTextParser) finish() IssueShowResponse {
 
 // PRShowResponse is the response for /api/pr/show.
 type PRShowResponse struct {
-	Number       int      `json:"number"`
-	Title        string   `json:"title"`
-	State        string   `json:"state"`
-	Author       string   `json:"author"`
-	URL          string   `json:"url"`
-	Body         string   `json:"body"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
-	Additions    int      `json:"additions"`
-	Deletions    int      `json:"deletions"`
-	ChangedFiles int      `json:"changed_files"`
-	Mergeable    string   `json:"mergeable"`
-	BaseRef      string   `json:"base_ref"`
-	HeadRef      string   `json:"head_ref"`
-	Labels       []string `json:"labels,omitempty"`
-	Checks       []string `json:"checks,omitempty"`
-	RawOutput    string   `json:"raw_output,omitempty"`
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	Author string `json:"author"`
+	URL    string `json:"url"`
+	Body   string `json:"body"`
+	PRStats
+	Mergeable string   `json:"mergeable"`
+	BaseRef   string   `json:"base_ref"`
+	HeadRef   string   `json:"head_ref"`
+	Labels    []string `json:"labels,omitempty"`
+	Checks    []string `json:"checks,omitempty"`
+	RawOutput string   `json:"raw_output,omitempty"`
+}
+
+// PRStats contains timestamps and diff size metadata for a pull request.
+// It is embedded so the API response retains its flat JSON shape.
+type PRStats struct {
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
+	ChangedFiles int    `json:"changed_files"`
 }
 
 // handlePRShow returns details for a specific PR.

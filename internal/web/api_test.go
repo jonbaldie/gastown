@@ -16,6 +16,39 @@ import (
 	"github.com/jonbaldie/gastown/internal/session"
 )
 
+func TestPRShowResponseJSONFlattensStats(t *testing.T) {
+	response := PRShowResponse{
+		PRStats: PRStats{
+			CreatedAt:    "2026-08-29T12:00:00Z",
+			UpdatedAt:    "2026-08-29T13:00:00Z",
+			Additions:    4,
+			Deletions:    2,
+			ChangedFiles: 1,
+		},
+	}
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	for key, want := range map[string]any{
+		"created_at":    "2026-08-29T12:00:00Z",
+		"updated_at":    "2026-08-29T13:00:00Z",
+		"additions":     float64(4),
+		"deletions":     float64(2),
+		"changed_files": float64(1),
+	} {
+		if got := fields[key]; got != want {
+			t.Errorf("JSON field %q = %v, want %v", key, got, want)
+		}
+	}
+}
+
 func TestValidateCommand(t *testing.T) {
 	tests := []struct {
 		name      string
