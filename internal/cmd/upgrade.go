@@ -126,7 +126,7 @@ func upgradeDoctor(townRoot string, opts upgradeOptions) upgradeResult {
 	// Register the same checks as gt doctor (subset most relevant to upgrade)
 	d.RegisterAll(doctor.WorkspaceChecks()...)
 	d.Register(doctor.NewGlobalStateCheck())
-	d.Register(doctor.NewStaleBinaryCheck())
+	d.Register(doctor.NewStaleBinaryCheck(resolveCommitHash()))
 	d.Register(doctor.NewBeadsBinaryCheck())
 	d.Register(doctor.NewDoltBinaryCheck())
 	d.Register(doctor.NewClaudeBinaryCheck())

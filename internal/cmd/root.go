@@ -281,7 +281,7 @@ func checkStaleBinaryWarning() {
 		return
 	}
 
-	info := version.CheckStaleBinary(repoRoot)
+	info := version.CheckStaleBinary(repoRoot, resolveCommitHash())
 	if info.Error != nil {
 		// Check failed - silently skip
 		return

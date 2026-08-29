@@ -105,7 +105,7 @@ func runStale(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Check staleness
-	info := version.CheckStaleBinary(repoRoot)
+	info := version.CheckStaleBinary(repoRoot, resolveCommitHash())
 
 	// Handle errors
 	if info.Error != nil {

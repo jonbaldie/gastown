@@ -11,13 +11,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/util"
 )
 
-// These variables are set at build time via ldflags in cmd package.
-// We provide fallback methods to read from build info.
-var (
-	// Commit can be set from cmd package or read from build info
-	Commit = ""
-)
-
 // StaleBinaryInfo contains information about binary staleness.
 type StaleBinaryInfo struct {
 	IsStale       bool   // True if binary commit is behind the build-branch ref
@@ -38,10 +31,11 @@ type buildBranchRef struct {
 	commit  string
 }
 
-// resolveCommitHash gets the commit hash from build info or the Commit variable.
-func resolveCommitHash() string {
-	if Commit != "" {
-		return Commit
+// resolveCommitHash gets the commit hash from an optional build override or
+// the VCS metadata embedded in the binary.
+func resolveCommitHash(commitOverride string) string {
+	if commitOverride != "" {
+		return commitOverride
 	}
 
 	if info, ok := debug.ReadBuildInfo(); ok {
@@ -97,12 +91,20 @@ func commitsMatch(a, b string) bool {
 }
 
 // CheckStaleBinary compares the binary's embedded commit with a build-branch
-// ref. It returns staleness info including whether the binary needs rebuilding.
+// ref. An optional commit override should be supplied when a caller receives
+// the build-time commit through its own linker-injected configuration. When
+// omitted, the check reads VCS metadata embedded in the binary.
+//
+// It returns staleness info including whether the binary needs rebuilding.
 // This check is designed to be fast and non-blocking - errors are captured but
 // don't interrupt normal operation.
-func CheckStaleBinary(repoDir string) *StaleBinaryInfo {
+func CheckStaleBinary(repoDir string, commitOverride ...string) *StaleBinaryInfo {
 	info := &StaleBinaryInfo{}
-	binaryCommit, done := prepareStaleBinary(repoDir, info)
+	configuredCommit := ""
+	if len(commitOverride) > 0 {
+		configuredCommit = commitOverride[0]
+	}
+	binaryCommit, done := prepareStaleBinary(repoDir, info, configuredCommit)
 	if done {
 		return info
 	}
@@ -116,8 +118,8 @@ func CheckStaleBinary(repoDir string) *StaleBinaryInfo {
 	return info
 }
 
-func prepareStaleBinary(repoDir string, info *StaleBinaryInfo) (string, bool) {
-	info.BinaryCommit = resolveCommitHash()
+func prepareStaleBinary(repoDir string, info *StaleBinaryInfo, commitOverride string) (string, bool) {
+	info.BinaryCommit = resolveCommitHash(commitOverride)
 	if info.BinaryCommit == "" {
 		info.Error = fmt.Errorf("cannot determine binary commit (dev build?)")
 		return "", true
@@ -408,9 +410,4 @@ func isBuildBranch(branch string) bool {
 		return true
 	}
 	return strings.HasPrefix(branch, "carry/")
-}
-
-// SetCommit allows the cmd package to pass in the build-time commit.
-func SetCommit(commit string) {
-	Commit = commit
 }

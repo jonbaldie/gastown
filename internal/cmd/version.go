@@ -61,11 +61,6 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	versionCmd.Flags().BoolP("verbose", "v", false, "Show extended version info including timestamp")
 	versionCmd.Flags().Bool("short", false, "Output only the version number (e.g., 0.5.0-362)")
-
-	// Pass the build-time commit to the version package for stale binary checks
-	if Commit != "" {
-		version.SetCommit(Commit)
-	}
 }
 
 func resolveCommitHash() string {

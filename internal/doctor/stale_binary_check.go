@@ -9,10 +9,15 @@ import (
 // StaleBinaryCheck verifies the installed gt binary is up to date with the repo.
 type StaleBinaryCheck struct {
 	FixableCheck
+	commit string
 }
 
 // NewStaleBinaryCheck creates a new stale binary check.
-func NewStaleBinaryCheck() *StaleBinaryCheck {
+func NewStaleBinaryCheck(commit ...string) *StaleBinaryCheck {
+	configuredCommit := ""
+	if len(commit) > 0 {
+		configuredCommit = commit[0]
+	}
 	return &StaleBinaryCheck{
 		FixableCheck: FixableCheck{
 			BaseCheck: BaseCheck{
@@ -21,6 +26,7 @@ func NewStaleBinaryCheck() *StaleBinaryCheck {
 				CheckCategory:    CategoryInfrastructure,
 			},
 		},
+		commit: configuredCommit,
 	}
 }
 
@@ -36,7 +42,7 @@ func (c *StaleBinaryCheck) Run(_ *CheckContext) *CheckResult {
 		}
 	}
 
-	return staleResult(c.Name(), version.CheckStaleBinary(repoRoot))
+	return staleResult(c.Name(), version.CheckStaleBinary(repoRoot, c.commit))
 }
 
 // staleResult maps a completed staleness check to a doctor CheckResult.
