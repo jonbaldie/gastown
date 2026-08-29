@@ -706,6 +706,14 @@ func refreshPIDStateFromLiveInfo(townRoot string, config *Config, pid int) (bool
 		return false, nil
 	}
 
+	changed, err := refreshDoltPIDFile(config, pid)
+	if err != nil {
+		return changed, err
+	}
+	return refreshDoltState(townRoot, config, pid, changed)
+}
+
+func refreshDoltPIDFile(config *Config, pid int) (bool, error) {
 	changed := false
 	if data, err := os.ReadFile(config.PidFile); err != nil || strings.TrimSpace(string(data)) != strconv.Itoa(pid) {
 		if err := os.MkdirAll(filepath.Dir(config.PidFile), 0755); err != nil {
@@ -716,7 +724,10 @@ func refreshPIDStateFromLiveInfo(townRoot string, config *Config, pid int) (bool
 		}
 		changed = true
 	}
+	return changed, nil
+}
 
+func refreshDoltState(townRoot string, config *Config, pid int, changed bool) (bool, error) {
 	state, err := LoadState(townRoot)
 	if err != nil {
 		return changed, err
@@ -775,51 +786,23 @@ func IsRunning(townRoot string) (bool, int, error) {
 
 	// Remote server: no local PID/process to check — just TCP reachability.
 	if config.IsRemote() {
-		conn, err := net.DialTimeout("tcp", config.HostPort(), 2*time.Second)
-		if err != nil {
-			return false, 0, nil
-		}
-		_ = conn.Close()
-		return true, 0, nil
+		return doltServerReachable(config), 0, nil
 	}
 
 	// Prefer Dolt's own runtime metadata when present. During daemon restarts,
 	// daemon/dolt-state.json and daemon/dolt.pid can lag behind the live
 	// sql-server process, but .dolt/sql-server.info is written by Dolt itself.
-	if info, err := readSQLServerInfo(config); err == nil && info.Port == config.Port && info.PID > 0 {
-		if processIsAlive(info.PID) && isDoltServerOnPort(config.Port) && doltProcessMatchesTown(townRoot, info.PID, config) {
-			_, _ = refreshPIDStateFromLiveInfo(townRoot, config, info.PID)
-			return true, info.PID, nil
-		}
+	if pid, ok := runningDoltFromSQLServerInfo(townRoot, config); ok {
+		return true, pid, nil
 	}
 
-	// First check PID file
-	data, err := os.ReadFile(config.PidFile)
-	if err == nil {
-		pidStr := strings.TrimSpace(string(data))
-		pid, err := strconv.Atoi(pidStr)
-		if err == nil {
-			// Check if process is alive
-			if processIsAlive(pid) {
-				// Verify it's actually serving on the expected port.
-				// More reliable than ps string matching (ZFC fix: gt-utuk).
-				if isDoltServerOnPort(config.Port) {
-					if doltProcessMatchesTown(townRoot, pid, config) {
-						_, _ = refreshPIDStateFromLiveInfo(townRoot, config, pid)
-						return true, pid, nil
-					}
-					// Port served by a different town's Dolt — fall through to stale cleanup
-				}
-			}
-		}
-		// PID file is stale, clean it up
-		_ = os.Remove(config.PidFile)
+	if pid, ok := runningDoltFromPIDFile(townRoot, config); ok {
+		return true, pid, nil
 	}
 
 	// No valid PID file - check if port is in use by dolt anyway.
 	// This catches externally-started dolt servers.
-	pid := findDoltServerOnPort(config.Port)
-	if pid > 0 && doltProcessMatchesTown(townRoot, pid, config) {
+	if pid := runningDoltOnPort(townRoot, config); pid > 0 {
 		_, _ = refreshPIDStateFromLiveInfo(townRoot, config, pid)
 		return true, pid, nil
 	}
@@ -830,13 +813,59 @@ func IsRunning(townRoot string) (bool, int, error) {
 	// (e.g., the port is forwarded by a Docker proxy).
 	// We always check, even on the default port 3307, so that gt rig add
 	// succeeds when dolt is live regardless of how it was started.
-	conn, err := net.DialTimeout("tcp", config.HostPort(), 2*time.Second)
-	if err == nil {
-		_ = conn.Close()
+	if doltServerReachable(config) {
 		return true, 0, nil
 	}
 
 	return false, 0, nil
+}
+
+func runningDoltFromSQLServerInfo(townRoot string, config *Config) (int, bool) {
+	info, err := readSQLServerInfo(config)
+	if err != nil || info.Port != config.Port || info.PID <= 0 {
+		return 0, false
+	}
+	if !liveDoltServerMatchesTown(townRoot, config, info.PID) {
+		return 0, false
+	}
+	_, _ = refreshPIDStateFromLiveInfo(townRoot, config, info.PID)
+	return info.PID, true
+}
+
+func runningDoltFromPIDFile(townRoot string, config *Config) (int, bool) {
+	data, err := os.ReadFile(config.PidFile)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err == nil && liveDoltServerMatchesTown(townRoot, config, pid) {
+		_, _ = refreshPIDStateFromLiveInfo(townRoot, config, pid)
+		return pid, true
+	}
+	// PID file is stale, malformed, or belongs to another process/town.
+	_ = os.Remove(config.PidFile)
+	return 0, false
+}
+
+func runningDoltOnPort(townRoot string, config *Config) int {
+	pid := findDoltServerOnPort(config.Port)
+	if pid <= 0 || !doltProcessMatchesTown(townRoot, pid, config) {
+		return 0
+	}
+	return pid
+}
+
+func liveDoltServerMatchesTown(townRoot string, config *Config, pid int) bool {
+	return processIsAlive(pid) && isDoltServerOnPort(config.Port) && doltProcessMatchesTown(townRoot, pid, config)
+}
+
+func doltServerReachable(config *Config) bool {
+	conn, err := net.DialTimeout("tcp", config.HostPort(), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // CheckServerReachable verifies the Dolt server is actually accepting TCP connections.
