@@ -1141,42 +1141,71 @@ func deriveSessionName() string {
 	// Parse GT_ROLE once to handle both bare and compound forms.
 	parsedRole, _, parsedName := parseRoleString(role)
 
+	if name := derivePolecatSession(role, parsedRole, rig, polecat); name != "" {
+		return name
+	}
+
+	if name := deriveCrewSession(parsedRole, parsedName, rig, crew); name != "" {
+		return name
+	}
+
+	if name := deriveTownSession(parsedRole); name != "" {
+		return name
+	}
+
+	return deriveRigSession(parsedRole, rig)
+}
+
+func derivePolecatSession(role string, parsedRole Role, rig, polecat string) string {
 	// Polecat: {prefix}-{polecat}
 	// Gate on GT_ROLE: coordinators may have stale GT_POLECAT from spawning polecats.
-	if polecat != "" && rig != "" {
-		if role == "" || parsedRole == RolePolecat {
-			return session.PolecatSessionName(session.PrefixFor(rig), polecat)
-		}
+	if polecat == "" || rig == "" || (role != "" && parsedRole != RolePolecat) {
+		return ""
 	}
+	return session.PolecatSessionName(session.PrefixFor(rig), polecat)
+}
 
+func deriveCrewSession(parsedRole Role, parsedName, rig, crew string) string {
 	// Crew: {prefix}-crew-{crew} (from GT_CREW or parsed compound role)
-	if parsedRole == RoleCrew && parsedName != "" && rig != "" {
+	if rig == "" {
+		return ""
+	}
+	if parsedRole == RoleCrew && parsedName != "" {
 		return session.CrewSessionName(session.PrefixFor(rig), parsedName)
 	}
-	if crew != "" && rig != "" {
+	if crew != "" {
 		return session.CrewSessionName(session.PrefixFor(rig), crew)
 	}
-
-	// Town-level roles (mayor, deacon)
-	if parsedRole == RoleMayor {
-		return session.MayorSessionName()
-	}
-	if parsedRole == RoleDeacon {
-		return session.DeaconSessionName()
-	}
-
-	// Rig-based roles (witness, refinery): {prefix}-{role}
-	if rig != "" {
-		prefix := session.PrefixFor(rig)
-		switch parsedRole {
-		case RoleWitness:
-			return session.WitnessSessionName(prefix)
-		case RoleRefinery:
-			return session.RefinerySessionName(prefix)
-		}
-	}
-
 	return ""
+}
+
+func deriveTownSession(parsedRole Role) string {
+	// Town-level roles (mayor, deacon)
+	switch parsedRole {
+	case RoleMayor:
+		return session.MayorSessionName()
+	case RoleDeacon:
+		return session.DeaconSessionName()
+	default:
+		return ""
+	}
+}
+
+func deriveRigSession(parsedRole Role, rig string) string {
+	// Rig-based roles (witness, refinery): {prefix}-{role}
+	if rig == "" {
+		return ""
+	}
+	prefix := session.PrefixFor(rig)
+	switch parsedRole {
+	case RoleWitness:
+		return session.WitnessSessionName(prefix)
+	case RoleRefinery:
+		return session.RefinerySessionName(prefix)
+	default:
+		return ""
+	}
+
 }
 
 // detectCurrentTmuxSession returns the current tmux session name if running inside tmux.
