@@ -1424,44 +1424,7 @@ func runPolecatGC(_ *cobra.Command, args []string) error {
 	fmt.Printf("Garbage collecting stale polecat branches in %s...\n\n", r.Name)
 
 	if polecatGCDryRun {
-		// Dry run - list branches that would be deleted
-		repoGit := git.NewGit(r.Path)
-
-		// List all polecat branches
-		branches, err := repoGit.ListBranches("polecat/*")
-		if err != nil {
-			return fmt.Errorf("listing branches: %w", err)
-		}
-
-		if len(branches) == 0 {
-			fmt.Println("No polecat branches found.")
-			return nil
-		}
-
-		// Get current branches
-		polecats, err := mgr.List()
-		if err != nil {
-			return fmt.Errorf("listing polecats: %w", err)
-		}
-
-		currentBranches := make(map[string]bool)
-		for _, p := range polecats {
-			currentBranches[p.Branch] = true
-		}
-
-		// Show what would be deleted
-		toDelete := 0
-		for _, branch := range branches {
-			if !currentBranches[branch] {
-				fmt.Printf("  Would delete: %s\n", style.Dim.Render(branch))
-				toDelete++
-			} else {
-				fmt.Printf("  Keep (in use): %s\n", style.Success.Render(branch))
-			}
-		}
-
-		fmt.Printf("\nWould delete %d branch(es), keep %d\n", toDelete, len(branches)-toDelete)
-		return nil
+		return runPolecatGCDryRun(mgr, r.Path)
 	}
 
 	// Actually clean up
@@ -1476,6 +1439,41 @@ func runPolecatGC(_ *cobra.Command, args []string) error {
 		fmt.Printf("%s Deleted %d stale branch(es).\n", style.SuccessPrefix, deleted)
 	}
 
+	return nil
+}
+
+func runPolecatGCDryRun(mgr *polecat.Manager, rigPath string) error {
+	// Dry run — list branches that would be deleted.
+	repoGit := git.NewGit(rigPath)
+	branches, err := repoGit.ListBranches("polecat/*")
+	if err != nil {
+		return fmt.Errorf("listing branches: %w", err)
+	}
+	if len(branches) == 0 {
+		fmt.Println("No polecat branches found.")
+		return nil
+	}
+
+	polecats, err := mgr.List()
+	if err != nil {
+		return fmt.Errorf("listing polecats: %w", err)
+	}
+	currentBranches := make(map[string]bool)
+	for _, p := range polecats {
+		currentBranches[p.Branch] = true
+	}
+
+	toDelete := 0
+	for _, branch := range branches {
+		if !currentBranches[branch] {
+			fmt.Printf("  Would delete: %s\n", style.Dim.Render(branch))
+			toDelete++
+			continue
+		}
+		fmt.Printf("  Keep (in use): %s\n", style.Success.Render(branch))
+	}
+
+	fmt.Printf("\nWould delete %d branch(es), keep %d\n", toDelete, len(branches)-toDelete)
 	return nil
 }
 
