@@ -1550,85 +1550,98 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) bool {
 		AgentBead:   mr.AgentBead,
 	})
 
-	// Release merge slot if this was a conflict resolution
-	// The slot is held while conflict resolution is in progress
-	holder := e.rig.Name + "/refinery"
-	if err := e.mergeSlotRelease(holder); err != nil {
-		// Best-effort: slot release failures are always non-fatal.
-		// Slot may not have been held (optional acquisition) or may have expired.
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: merge slot release: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Released merge slot\n")
-	}
-	if err := e.verifyMRInfoPostMergeProof(mr); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge proof failed for %s: %v\n", mr.ID, err)
+	e.releaseMergeSlotAfterSuccess()
+	if !e.completeMRInfoMerge(mr, result) {
 		return false
 	}
 
-	// Update and close the MR bead
-	if mr.ID != "" && !e.isSyntheticMergeMechanicsMR(mr) {
-		if err := e.closeMRWithReason(mr, string(CloseReasonMerged), result.MergeCommit); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge cleanup failed for %s: %v\n", mr.ID, err)
-			return false
-		}
-	}
-
-	// 1. Close source issue with reference to MR. Resolve before MR close clears
-	// active_mr, then close after the real merge success has been recorded.
-	closeMergedWorkBead(e.beads, nil, e.output, mergedWorkBeadCloseRequest{
-		MRID:        mr.ID,
-		Target:      mr.Target,
-		SourceIssue: workBeadID,
-		MergeCommit: result.MergeCommit,
-	})
-
-	// 1.2. Close conflict-resolution tasks that this land has made moot (hq-jnap).
-	// Conflict beads otherwise outlive the successful re-land of their content
-	// and rot as open issues (re-dlcs/re-4i3b/re-gcii pattern).
-	e.closeSupersededConflictArtifacts(mr)
-
-	// 2. Delete source branch (remote first, then local only if still exact).
-	// Polecat branches (polecat/*) are always cleaned up — they are ephemeral
-	// work branches that should never persist after merge. Other branches
-	// respect the DeleteMergedBranches config.
-	isPolecat := strings.HasPrefix(mr.Branch, "polecat/")
-	if mr.Branch != "" && (e.config.DeleteMergedBranches || isPolecat) {
-		// Remote delete — only polecat branches. Non-polecat branches may belong
-		// to contributor forks with open upstream PRs; deleting them from origin
-		// causes GitHub to auto-close those PRs via head_ref_delete. (GH#2669)
-		// gas-fk4: Also skip deletion for polecat branches that have open PRs.
-		// When merge_strategy=pr, polecat branches have GitHub PRs that should
-		// be closed via gh pr merge (showing "merged"), not via branch deletion
-		// (which shows "closed" and destroys the PR audit trail).
-		expectedHead := strings.TrimSpace(mr.CommitSHA)
-		remoteDeleteSafe := true
-		if isPolecat {
-			if e.git.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: mr.Branch, HeadSHA: expectedHead}) {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", mr.Branch)
-			} else if err := e.git.DeleteRemoteBranchIfAt("origin", mr.Branch, expectedHead); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s: %v\n", mr.Branch, err)
-				remoteDeleteSafe = false
-			} else {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted remote branch: %s\n", mr.Branch)
-			}
-		}
-		if remoteDeleteSafe {
-			if err := e.deleteLocalBranchIfAt(mr.Branch, expectedHead); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mr.Branch, err)
-			} else {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)
-			}
-		}
-	}
+	e.finishMergedWork(mr, result, workBeadID)
+	e.deleteMergedSourceBranch(mr)
 
 	// 3. Check and auto-close completed convoys
 	// After closing a source issue, its parent convoy may now be complete.
 	// Run convoy check to auto-close and notify subscribers.
 	e.postMergeConvoyCheck(mr)
 
-	// 4. Nudge mayor about successful merge so dispatcher can unblock
-	// dependent work. Without this, mayor only discovers completion by polling.
-	// Uses nudge (not mail) to avoid permanent Dolt commits for routine signals (GH#2434).
+	e.nudgeMayorAfterMerge(mr)
+
+	// 5. Log success
+	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
+	return true
+}
+
+func (e *Engineer) releaseMergeSlotAfterSuccess() {
+	// Best-effort: slot release failures are always non-fatal.
+	// Slot may not have been held (optional acquisition) or may have expired.
+	holder := e.rig.Name + "/refinery"
+	if err := e.mergeSlotRelease(holder); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: merge slot release: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Released merge slot\n")
+}
+
+func (e *Engineer) completeMRInfoMerge(mr *MRInfo, result ProcessResult) bool {
+	if err := e.verifyMRInfoPostMergeProof(mr); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge proof failed for %s: %v\n", mr.ID, err)
+		return false
+	}
+	if mr.ID == "" || e.isSyntheticMergeMechanicsMR(mr) {
+		return true
+	}
+	if err := e.closeMRWithReason(mr, string(CloseReasonMerged), result.MergeCommit); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge cleanup failed for %s: %v\n", mr.ID, err)
+		return false
+	}
+	return true
+}
+
+func (e *Engineer) finishMergedWork(mr *MRInfo, result ProcessResult, workBeadID string) {
+	closeMergedWorkBead(e.beads, nil, e.output, mergedWorkBeadCloseRequest{
+		MRID:        mr.ID,
+		Target:      mr.Target,
+		SourceIssue: workBeadID,
+		MergeCommit: result.MergeCommit,
+	})
+	e.closeSupersededConflictArtifacts(mr)
+}
+
+func (e *Engineer) deleteMergedSourceBranch(mr *MRInfo) {
+	isPolecat := strings.HasPrefix(mr.Branch, "polecat/")
+	if mr.Branch == "" || (!e.config.DeleteMergedBranches && !isPolecat) {
+		return
+	}
+	expectedHead := strings.TrimSpace(mr.CommitSHA)
+	if !e.deleteMergedRemoteBranch(mr, isPolecat, expectedHead) {
+		return
+	}
+	if err := e.deleteLocalBranchIfAt(mr.Branch, expectedHead); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mr.Branch, err)
+		return
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)
+}
+
+func (e *Engineer) deleteMergedRemoteBranch(mr *MRInfo, isPolecat bool, expectedHead string) bool {
+	if !isPolecat {
+		return true
+	}
+	// Non-polecat branches may belong to contributor forks with open upstream PRs;
+	// deleting them from origin causes GitHub to auto-close those PRs. (GH#2669)
+	if e.git.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: mr.Branch, HeadSHA: expectedHead}) {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", mr.Branch)
+		return true
+	}
+	if err := e.git.DeleteRemoteBranchIfAt("origin", mr.Branch, expectedHead); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s: %v\n", mr.Branch, err)
+		return false
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted remote branch: %s\n", mr.Branch)
+	return true
+}
+
+func (e *Engineer) nudgeMayorAfterMerge(mr *MRInfo) {
+	// Use nudge (not mail) to avoid permanent Dolt commits for routine signals (GH#2434).
 	nudgeMsg := fmt.Sprintf("MERGED: %s issue=%s branch=%s", mr.ID, mr.SourceIssue, mr.Branch)
 	nudgeCmd := exec.Command("gt", "nudge", "mayor/", nudgeMsg)
 	util.SetDetachedProcessGroup(nudgeCmd)
@@ -1636,10 +1649,6 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) bool {
 	if err := nudgeCmd.Run(); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about merge: %v\n", err)
 	}
-
-	// 5. Log success
-	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
-	return true
 }
 
 func (e *Engineer) ensureMRInfoCommitSHA(mr *MRInfo) error {
