@@ -2069,12 +2069,17 @@ func detectBlockedRigs(dag *ConvoyDAG) []StagingFinding {
 		return nil
 	}
 
-	// Group beads by blocked rig to consolidate warnings
-	type blockedInfo struct {
-		reason  string
-		beadIDs []string
-	}
-	blockedRigs := make(map[string]*blockedInfo)
+	blockedRigs := collectBlockedRigs(dag, townRoot)
+	return renderBlockedRigFindings(blockedRigs)
+}
+
+type blockedRigInfo struct {
+	reason  string
+	beadIDs []string
+}
+
+func collectBlockedRigs(dag *ConvoyDAG, townRoot string) map[string]*blockedRigInfo {
+	blockedRigs := make(map[string]*blockedRigInfo)
 	for _, node := range dag.Nodes {
 		if !isSlingableType(node.Type) {
 			continue
@@ -2086,12 +2091,14 @@ func detectBlockedRigs(dag *ConvoyDAG) []StagingFinding {
 			if info, ok := blockedRigs[node.Rig]; ok {
 				info.beadIDs = append(info.beadIDs, node.ID)
 			} else {
-				blockedRigs[node.Rig] = &blockedInfo{reason: reason, beadIDs: []string{node.ID}}
+				blockedRigs[node.Rig] = &blockedRigInfo{reason: reason, beadIDs: []string{node.ID}}
 			}
 		}
 	}
+	return blockedRigs
+}
 
-	// Sort rig names for deterministic output with multiple blocked rigs
+func renderBlockedRigFindings(blockedRigs map[string]*blockedRigInfo) []StagingFinding {
 	rigNames := make([]string, 0, len(blockedRigs))
 	for rigName := range blockedRigs {
 		rigNames = append(rigNames, rigName)
