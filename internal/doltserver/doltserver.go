@@ -62,48 +62,63 @@ import (
 // if not already set. Copies values from git config as a sensible default.
 // This must run before InitRig and Start, since dolt init requires identity.
 func EnsureDoltIdentity() error {
-	// Check each field independently to avoid creating duplicates with --add.
-	// Distinguish "key not found" (exit code 1, empty output) from dolt crashes.
-	needName, err := doltConfigMissing("user.name")
+	fields, err := doltIdentityFields()
 	if err != nil {
-		return fmt.Errorf("probing dolt user.name: %w", err)
+		return err
 	}
-	needEmail, err := doltConfigMissing("user.email")
-	if err != nil {
-		return fmt.Errorf("probing dolt user.email: %w", err)
-	}
-
-	if !needName && !needEmail {
-		return nil // already configured
-	}
-
-	// Copy missing fields from git global config.
-	// We read --global only (not repo-local) to avoid silently persisting
-	// a repo-scoped override into dolt's permanent global config.
-	if needName {
-		nameCmd := exec.Command("git", "config", "--global", "user.name")
-		setProcessGroup(nameCmd)
-		gitName, err := nameCmd.Output()
-		if err != nil || len(bytes.TrimSpace(gitName)) == 0 {
-			return fmt.Errorf("dolt identity not configured and git user.name not available; run: dolt config --global --add user.name \"Your Name\"")
+	for _, field := range fields {
+		if !field.missing {
+			continue
 		}
-		if err := setDoltGlobalConfig("user.name", strings.TrimSpace(string(gitName))); err != nil {
-			return fmt.Errorf("failed to set dolt user.name: %w", err)
+		if err := copyDoltIdentityField(field); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	if needEmail {
-		emailCmd := exec.Command("git", "config", "--global", "user.email")
-		setProcessGroup(emailCmd)
-		gitEmail, err := emailCmd.Output()
-		if err != nil || len(bytes.TrimSpace(gitEmail)) == 0 {
-			return fmt.Errorf("dolt identity not configured and git user.email not available; run: dolt config --global --add user.email \"you@example.com\"")
-		}
-		if err := setDoltGlobalConfig("user.email", strings.TrimSpace(string(gitEmail))); err != nil {
-			return fmt.Errorf("failed to set dolt user.email: %w", err)
-		}
+type doltIdentityField struct {
+	key           string
+	missing       bool
+	missingError  string
+	setErrorLabel string
+}
+
+func doltIdentityFields() ([]doltIdentityField, error) {
+	fields := []doltIdentityField{
+		{
+			key:           "user.name",
+			missingError:  "dolt identity not configured and git user.name not available; run: dolt config --global --add user.name \"Your Name\"",
+			setErrorLabel: "user.name",
+		},
+		{
+			key:           "user.email",
+			missingError:  "dolt identity not configured and git user.email not available; run: dolt config --global --add user.email \"you@example.com\"",
+			setErrorLabel: "user.email",
+		},
 	}
+	for i := range fields {
+		missing, err := doltConfigMissing(fields[i].key)
+		if err != nil {
+			return nil, fmt.Errorf("probing dolt %s: %w", fields[i].key, err)
+		}
+		fields[i].missing = missing
+	}
+	return fields, nil
+}
 
+func copyDoltIdentityField(field doltIdentityField) error {
+	// Read --global only (not repo-local) to avoid silently persisting a
+	// repo-scoped override into dolt's permanent global config.
+	cmd := exec.Command("git", "config", "--global", field.key)
+	setProcessGroup(cmd)
+	value, err := cmd.Output()
+	if err != nil || len(bytes.TrimSpace(value)) == 0 {
+		return errors.New(field.missingError)
+	}
+	if err := setDoltGlobalConfig(field.key, strings.TrimSpace(string(value))); err != nil {
+		return fmt.Errorf("failed to set dolt %s: %w", field.setErrorLabel, err)
+	}
 	return nil
 }
 
@@ -323,8 +338,19 @@ func SocketPathForConfig(config *Config) string {
 //   - GT_DOLT_PASSWORD → Password
 //   - GT_DOLT_LOGLEVEL → LogLevel (trace, debug, info, warning, error, fatal)
 func DefaultConfig(townRoot string) *Config {
+	config := newDefaultConfig(townRoot)
+	applyDoltWaitTimeout(config)
+	applyDoltTimeZone(config)
+	applyDoltConnectionOverrides(config, townRoot)
+	applyDoltManagedOverrides(config)
+	applyDoltCredentialOverrides(config)
+	applyDoltLogLevel(config, townRoot)
+	return config
+}
+
+func newDefaultConfig(townRoot string) *Config {
 	daemonDir := filepath.Join(townRoot, "daemon")
-	config := &Config{
+	return &Config{
 		TownRoot:         townRoot,
 		Port:             DefaultPort,
 		User:             DefaultUser,
@@ -341,7 +367,9 @@ func DefaultConfig(townRoot string) *Config {
 		DoltStatsEnabled: "0",
 		AutoGC:           "on",
 	}
+}
 
+func applyDoltWaitTimeout(config *Config) {
 	// Optional override for the idle-session timeout. Negative values disable
 	// the override entirely (use Dolt's 8-hour default).
 	if v := os.Getenv("GT_DOLT_WAIT_TIMEOUT"); v != "" {
@@ -353,13 +381,17 @@ func DefaultConfig(townRoot string) *Config {
 			}
 		}
 	}
+}
 
+func applyDoltTimeZone(config *Config) {
 	// Optional override for the server timezone. Empty value disables the
 	// post-start `SET GLOBAL time_zone` and lets Dolt inherit the host TZ.
 	if v, ok := os.LookupEnv("GT_DOLT_TIME_ZONE"); ok {
 		config.TimeZone = v
 	}
+}
 
+func applyDoltConnectionOverrides(config *Config, townRoot string) {
 	if h := configpkg.ResolveDoltHost(townRoot); h != "" {
 		config.Host = h
 	}
@@ -367,6 +399,9 @@ func DefaultConfig(townRoot string) *Config {
 	if port := configpkg.ResolveDoltPort(townRoot); port > 0 {
 		config.Port = port
 	}
+}
+
+func applyDoltManagedOverrides(config *Config) {
 	if scheduler, ok := os.LookupEnv("GT_DOLT_EVENT_SCHEDULER"); ok {
 		config.EventScheduler = scheduler
 	}
@@ -376,13 +411,18 @@ func DefaultConfig(townRoot string) *Config {
 	if autoGc, ok := os.LookupEnv("GT_DOLT_AUTO_GC"); ok {
 		config.AutoGC = autoGc
 	}
+}
 
+func applyDoltCredentialOverrides(config *Config) {
 	if u := os.Getenv("GT_DOLT_USER"); u != "" {
 		config.User = u
 	}
 	if pw := os.Getenv("GT_DOLT_PASSWORD"); pw != "" {
 		config.Password = pw
 	}
+}
+
+func applyDoltLogLevel(config *Config, townRoot string) {
 	if ll := os.Getenv("GT_DOLT_LOGLEVEL"); ll != "" {
 		config.LogLevel = ll
 	} else if townRoot != "" {
@@ -399,8 +439,6 @@ func DefaultConfig(townRoot string) *Config {
 	if config.LogLevel == "" {
 		config.LogLevel = "warning"
 	}
-
-	return config
 }
 
 // readDaemonEnvVar reads a single key=value variable from a simple env file.
