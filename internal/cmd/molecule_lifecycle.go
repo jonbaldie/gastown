@@ -388,7 +388,23 @@ func closeDescendantsImpl(b *beads.Beads, parentID string, force bool) (int, err
 		return 0, nil
 	}
 
-	// First, recursively close grandchildren
+	// First, recursively close grandchildren.
+	totalClosed, errs := closeDescendantTrees(b, children, force)
+
+	// Then close direct children.
+	directClosed, directErr := closeDirectChildren(b, parentID, children, force)
+	totalClosed += directClosed
+	if directErr != nil {
+		errs = append(errs, directErr)
+	}
+
+	if len(errs) > 0 {
+		return totalClosed, errors.Join(errs...)
+	}
+	return totalClosed, nil
+}
+
+func closeDescendantTrees(b *beads.Beads, children []*beads.Issue, force bool) (int, []error) {
 	totalClosed := 0
 	var errs []error
 	for _, child := range children {
@@ -398,31 +414,34 @@ func closeDescendantsImpl(b *beads.Beads, parentID string, force bool) (int, err
 			errs = append(errs, childErr)
 		}
 	}
+	return totalClosed, errs
+}
 
-	// Then close direct children
-	var idsToClose []string
+func closeDirectChildren(b *beads.Beads, parentID string, children []*beads.Issue, force bool) (int, error) {
+	idsToClose := openChildIDs(children)
+	if len(idsToClose) == 0 {
+		return 0, nil
+	}
+
+	if err := closeChildIssues(b, idsToClose, force); err != nil {
+		return 0, fmt.Errorf("closing children of %s: %w", parentID, err)
+	}
+	return len(idsToClose), nil
+}
+
+func openChildIDs(children []*beads.Issue) []string {
+	var ids []string
 	for _, child := range children {
 		if child.Status != "closed" {
-			idsToClose = append(idsToClose, child.ID)
+			ids = append(ids, child.ID)
 		}
 	}
+	return ids
+}
 
-	if len(idsToClose) > 0 {
-		var closeErr error
-		if force {
-			closeErr = b.ForceCloseWithReason("burned: force-close descendants", idsToClose...)
-		} else {
-			closeErr = b.Close(idsToClose...)
-		}
-		if closeErr != nil {
-			errs = append(errs, fmt.Errorf("closing children of %s: %w", parentID, closeErr))
-		} else {
-			totalClosed += len(idsToClose)
-		}
+func closeChildIssues(b *beads.Beads, ids []string, force bool) error {
+	if force {
+		return b.ForceCloseWithReason("burned: force-close descendants", ids...)
 	}
-
-	if len(errs) > 0 {
-		return totalClosed, errors.Join(errs...)
-	}
-	return totalClosed, nil
+	return b.Close(ids...)
 }
