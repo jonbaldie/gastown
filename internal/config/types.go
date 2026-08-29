@@ -37,6 +37,44 @@ type MayorConfig struct {
 // CurrentTownSettingsVersion is the current schema version for TownSettings.
 const CurrentTownSettingsVersion = 1
 
+// TownSubsystemSettings groups optional settings for town-level runtime subsystems.
+// The fields remain flattened in TownSettings JSON through anonymous embedding.
+type TownSubsystemSettings struct {
+	// WebTimeouts configures command execution timeouts for the web dashboard.
+	WebTimeouts *WebTimeoutsConfig `json:"web_timeouts,omitempty"`
+
+	// WorkerStatus configures activity-age thresholds for worker status classification.
+	WorkerStatus *WorkerStatusConfig `json:"worker_status,omitempty"`
+
+	// FeedCurator configures event deduplication and aggregation windows.
+	FeedCurator *FeedCuratorConfig `json:"feed_curator,omitempty"`
+
+	// Convoy configures convoy behavior settings.
+	Convoy *ConvoyConfig `json:"convoy,omitempty"`
+
+	// Scheduler configures the capacity scheduler for polecat dispatch.
+	Scheduler *capacity.SchedulerConfig `json:"scheduler,omitempty"`
+
+	// Polecat configures per-polecat behavior (target/ clean hook, etc.).
+	// Added for hq-x0v7v.
+	Polecat *PolecatConfig `json:"polecat,omitempty"`
+
+	// Operational configures operational thresholds (timeouts, retries, intervals).
+	// These were previously hardcoded as Go constants throughout the codebase.
+	// All values are optional — omitted values use compiled-in defaults.
+	Operational *OperationalConfig `json:"operational,omitempty"`
+
+	// DisabledPatrols lists patrol names to disable at the town level.
+	// This provides a simple way to turn off individual daemon patrol dogs
+	// without editing mayor/daemon.json. Patrol names match the keys used
+	// in daemon.json patrols section (e.g., "deacon", "witness", "refinery",
+	// "doctor_dog", "compactor_dog", "checkpoint_dog", "wisp_reaper",
+	// "dolt_remotes", "dolt_backup", "jsonl_git_backup", "scheduled_maintenance",
+	// "main_branch_test", "handler").
+	// Example: ["doctor_dog", "compactor_dog"]
+	DisabledPatrols []string `json:"disabled_patrols,omitempty"`
+}
+
 // TownSettings represents town-level behavioral configuration (settings/config.json).
 // This contains agent configuration that applies to all rigs unless overridden.
 type TownSettings struct {
@@ -86,17 +124,7 @@ type TownSettings struct {
 	// Default: "gastown.local"
 	AgentEmailDomain string `json:"agent_email_domain,omitempty"`
 
-	// WebTimeouts configures command execution timeouts for the web dashboard.
-	WebTimeouts *WebTimeoutsConfig `json:"web_timeouts,omitempty"`
-
-	// WorkerStatus configures activity-age thresholds for worker status classification.
-	WorkerStatus *WorkerStatusConfig `json:"worker_status,omitempty"`
-
-	// FeedCurator configures event deduplication and aggregation windows.
-	FeedCurator *FeedCuratorConfig `json:"feed_curator,omitempty"`
-
-	// Convoy configures convoy behavior settings.
-	Convoy *ConvoyConfig `json:"convoy,omitempty"`
+	TownSubsystemSettings
 
 	// RoleEffort maps role names to effort levels for per-role effort configuration.
 	// Keys are role names: "mayor", "deacon", "witness", "refinery", "polecat", "crew", "boot", "dog".
@@ -111,28 +139,6 @@ type TownSettings struct {
 	// Actual model assignments live in RoleAgents and Agents.
 	// Values: "standard", "economy", "budget", or empty for custom configs.
 	CostTier string `json:"cost_tier,omitempty"`
-
-	// Scheduler configures the capacity scheduler for polecat dispatch.
-	Scheduler *capacity.SchedulerConfig `json:"scheduler,omitempty"`
-
-	// Polecat configures per-polecat behavior (target/ clean hook, etc.).
-	// Added for hq-x0v7v.
-	Polecat *PolecatConfig `json:"polecat,omitempty"`
-
-	// Operational configures operational thresholds (timeouts, retries, intervals).
-	// These were previously hardcoded as Go constants throughout the codebase.
-	// All values are optional — omitted values use compiled-in defaults.
-	Operational *OperationalConfig `json:"operational,omitempty"`
-
-	// DisabledPatrols lists patrol names to disable at the town level.
-	// This provides a simple way to turn off individual daemon patrol dogs
-	// without editing mayor/daemon.json. Patrol names match the keys used
-	// in daemon.json patrols section (e.g., "deacon", "witness", "refinery",
-	// "doctor_dog", "compactor_dog", "checkpoint_dog", "wisp_reaper",
-	// "dolt_remotes", "dolt_backup", "jsonl_git_backup", "scheduled_maintenance",
-	// "main_branch_test", "handler").
-	// Example: ["doctor_dog", "compactor_dog"]
-	DisabledPatrols []string `json:"disabled_patrols,omitempty"`
 }
 
 // NewTownSettings creates a new TownSettings with defaults.

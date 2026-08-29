@@ -234,14 +234,16 @@ func TestLoadOperationalConfig_WithConfig(t *testing.T) {
 	settings := TownSettings{
 		Type:    "town-settings",
 		Version: 1,
-		Operational: &OperationalConfig{
-			Session: &SessionThresholds{
-				GUPPViolationTimeout:   "45m",
-				StartupNudgeMaxRetries: &retries,
-			},
-			Daemon: &DaemonThresholds{
-				DaemonWorkerLifecycle: DaemonWorkerLifecycle{
-					DogIdleSessionTimeout: "3h",
+		TownSubsystemSettings: TownSubsystemSettings{
+			Operational: &OperationalConfig{
+				Session: &SessionThresholds{
+					GUPPViolationTimeout:   "45m",
+					StartupNudgeMaxRetries: &retries,
+				},
+				Daemon: &DaemonThresholds{
+					DaemonWorkerLifecycle: DaemonWorkerLifecycle{
+						DogIdleSessionTimeout: "3h",
+					},
 				},
 			},
 		},
