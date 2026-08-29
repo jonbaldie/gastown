@@ -1017,6 +1017,11 @@ func mergeIneligibleResult(format string, args ...interface{}) ProcessResult {
 	}
 }
 
+type mergeRequestRecheckFields struct {
+	commitSHA   string
+	sourceIssue string
+}
+
 func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessResult {
 	if mr == nil {
 		return ProcessResult{Success: false, Error: "merge request is missing"}
@@ -1030,72 +1035,121 @@ func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessRes
 		return e.rejectMRBeforeMerge(mr, "MR has missing source_issue")
 	}
 
-	fieldCommit := ""
-	if mrID := strings.TrimSpace(mr.ID); mrID != "" && !e.isSyntheticMergeMechanicsMR(mr) {
-		mrIssue, err := e.beads.Show(mrID)
-		if err != nil {
-			if errors.Is(err, beads.ErrNotFound) {
-				return mergeIneligibleResult("MR %s no longer exists", mrID)
-			}
-			return ProcessResult{Success: false, Error: fmt.Sprintf("pre-push recheck MR %s: %v", mrID, err)}
-		}
-		if mrIssue == nil {
-			return mergeIneligibleResult("MR %s no longer exists", mrID)
-		}
-		if beads.IssueStatus(strings.TrimSpace(mrIssue.Status)) != beads.StatusOpen {
-			return mergeIneligibleResult("MR %s status is %s", mrID, mrIssue.Status)
-		}
-		if beads.HasLabel(mrIssue, "gt:owned-direct") {
-			return e.rejectMRBeforeMerge(mr, "MR is owned-direct")
-		}
-
-		fields := beads.ParseMRFields(mrIssue)
-		if fields == nil {
-			return e.rejectMRBeforeMerge(mr, "MR has missing merge-request fields")
-		}
-		if closeReason := strings.TrimSpace(fields.CloseReason); closeReason != "" {
-			if strings.EqualFold(closeReason, string(CloseReasonMerged)) {
-				if err := e.closeMRWithReason(mr, string(CloseReasonMerged)); err != nil {
-					return ProcessResult{Success: false, Error: fmt.Sprintf("failed to close already-merged MR %s: %v", mrID, err)}
-				}
-				return mergeIneligibleResult("MR close_reason is %s", closeReason)
-			}
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR close_reason is %s", closeReason))
-		}
-		if fields.Branch != "" && mr.Branch != "" && fields.Branch != mr.Branch {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR branch changed from %s to %s", mr.Branch, fields.Branch))
-		}
-		if strings.TrimSpace(fields.Target) == "" {
-			return e.rejectMRBeforeMerge(mr, "MR has missing target")
-		}
-		if fields.Target != target {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR target changed from %s to %s", target, fields.Target))
-		}
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR belongs to rig %s", fields.Rig))
-		}
-		if strings.TrimSpace(fields.SourceIssue) == "" {
-			return e.rejectMRBeforeMerge(mr, "MR has missing source_issue")
-		}
-		if fields.SourceIssue != sourceIssue {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR source_issue changed from %s to %s", sourceIssue, fields.SourceIssue))
-		}
-		fieldCommit = strings.TrimSpace(fields.CommitSHA)
-		sourceIssue = fields.SourceIssue
+	fields, result := e.loadMRRecheckFields(mr, target, sourceIssue)
+	if !result.Success {
+		return result
 	}
-
-	if eligibility := e.recheckMRSourceStillMergeable(mr, sourceIssue); !eligibility.Success {
+	if eligibility := e.recheckMRSourceStillMergeable(mr, fields.sourceIssue); !eligibility.Success {
 		return eligibility
 	}
-	if strings.TrimSpace(mr.ID) != "" && !e.isSyntheticMergeMechanicsMR(mr) {
-		if fieldCommit == "" {
-			return e.rejectMRBeforeMerge(mr, "MR has missing commit_sha")
+	return e.validateMRRecheckCommit(mr, fields.commitSHA)
+}
+
+func (e *Engineer) loadMRRecheckFields(mr *MRInfo, target, sourceIssue string) (mergeRequestRecheckFields, ProcessResult) {
+	mrID := strings.TrimSpace(mr.ID)
+	if mrID == "" || e.isSyntheticMergeMechanicsMR(mr) {
+		return mergeRequestRecheckFields{sourceIssue: sourceIssue}, ProcessResult{Success: true}
+	}
+
+	mrIssue, result := e.loadMergeRequestForRecheck(mr, mrID)
+	if !result.Success {
+		return mergeRequestRecheckFields{}, result
+	}
+	fields := beads.ParseMRFields(mrIssue)
+	if fields == nil {
+		return mergeRequestRecheckFields{}, e.rejectMRBeforeMerge(mr, "MR has missing merge-request fields")
+	}
+	if result := e.validateMRRecheckFields(mr, target, sourceIssue, mrID, fields); !result.Success {
+		return mergeRequestRecheckFields{}, result
+	}
+	return mergeRequestRecheckFields{
+		commitSHA:   strings.TrimSpace(fields.CommitSHA),
+		sourceIssue: fields.SourceIssue,
+	}, ProcessResult{Success: true}
+}
+
+func (e *Engineer) loadMergeRequestForRecheck(mr *MRInfo, mrID string) (*beads.Issue, ProcessResult) {
+	mrIssue, err := e.beads.Show(mrID)
+	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return nil, mergeIneligibleResult("MR %s no longer exists", mrID)
 		}
-		if mr.CommitSHA == "" {
-			mr.CommitSHA = fieldCommit
-		} else if fieldCommit != strings.TrimSpace(mr.CommitSHA) {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR commit_sha changed from %s to %s", shortSHA(mr.CommitSHA), shortSHA(fieldCommit)))
+		return nil, ProcessResult{Success: false, Error: fmt.Sprintf("pre-push recheck MR %s: %v", mrID, err)}
+	}
+	if mrIssue == nil {
+		return nil, mergeIneligibleResult("MR %s no longer exists", mrID)
+	}
+	if beads.IssueStatus(strings.TrimSpace(mrIssue.Status)) != beads.StatusOpen {
+		return nil, mergeIneligibleResult("MR %s status is %s", mrID, mrIssue.Status)
+	}
+	if beads.HasLabel(mrIssue, "gt:owned-direct") {
+		return nil, e.rejectMRBeforeMerge(mr, "MR is owned-direct")
+	}
+	return mrIssue, ProcessResult{Success: true}
+}
+
+func (e *Engineer) validateMRRecheckFields(mr *MRInfo, target, sourceIssue, mrID string, fields *beads.MRFields) ProcessResult {
+	if closeReason := strings.TrimSpace(fields.CloseReason); closeReason != "" {
+		return e.validateMRCloseReason(mr, mrID, closeReason)
+	}
+	if result := validateMRBranchAndTarget(mr, target, fields); !result.Success {
+		return e.rejectMRBeforeMerge(mr, result.Error)
+	}
+	if result := validateMRRigAndSource(e, mr, sourceIssue, fields); !result.Success {
+		return e.rejectMRBeforeMerge(mr, result.Error)
+	}
+	return ProcessResult{Success: true}
+}
+
+func validateMRBranchAndTarget(mr *MRInfo, target string, fields *beads.MRFields) ProcessResult {
+	if fields.Branch != "" && mr.Branch != "" && fields.Branch != mr.Branch {
+		return mergeIneligibleResult("MR branch changed from %s to %s", mr.Branch, fields.Branch)
+	}
+	if strings.TrimSpace(fields.Target) == "" {
+		return mergeIneligibleResult("MR has missing target")
+	}
+	if fields.Target != target {
+		return mergeIneligibleResult("MR target changed from %s to %s", target, fields.Target)
+	}
+	return ProcessResult{Success: true}
+}
+
+func validateMRRigAndSource(e *Engineer, mr *MRInfo, sourceIssue string, fields *beads.MRFields) ProcessResult {
+	if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
+		return mergeIneligibleResult("MR belongs to rig %s", fields.Rig)
+	}
+	if strings.TrimSpace(fields.SourceIssue) == "" {
+		return mergeIneligibleResult("MR has missing source_issue")
+	}
+	if fields.SourceIssue != sourceIssue {
+		return mergeIneligibleResult("MR source_issue changed from %s to %s", sourceIssue, fields.SourceIssue)
+	}
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) validateMRCloseReason(mr *MRInfo, mrID, closeReason string) ProcessResult {
+	if strings.EqualFold(closeReason, string(CloseReasonMerged)) {
+		if err := e.closeMRWithReason(mr, string(CloseReasonMerged)); err != nil {
+			return ProcessResult{Success: false, Error: fmt.Sprintf("failed to close already-merged MR %s: %v", mrID, err)}
 		}
+		return mergeIneligibleResult("MR close_reason is %s", closeReason)
+	}
+	return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR close_reason is %s", closeReason))
+}
+
+func (e *Engineer) validateMRRecheckCommit(mr *MRInfo, fieldCommit string) ProcessResult {
+	if strings.TrimSpace(mr.ID) == "" || e.isSyntheticMergeMechanicsMR(mr) {
+		return ProcessResult{Success: true}
+	}
+	if fieldCommit == "" {
+		return e.rejectMRBeforeMerge(mr, "MR has missing commit_sha")
+	}
+	if mr.CommitSHA == "" {
+		mr.CommitSHA = fieldCommit
+		return ProcessResult{Success: true}
+	}
+	if fieldCommit != strings.TrimSpace(mr.CommitSHA) {
+		return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR commit_sha changed from %s to %s", shortSHA(mr.CommitSHA), shortSHA(fieldCommit)))
 	}
 	return ProcessResult{Success: true}
 }
