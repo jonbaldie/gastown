@@ -162,28 +162,32 @@ func runKrcStats(cmd *cobra.Command, _ []string) error {
 	}
 
 	if jsonOutput {
-		data, err := json.MarshalIndent(stats, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(data))
-		return nil
+		return printKrcStatsJSON(stats)
 	}
+	printKrcStatsText(stats)
+	return nil
+}
 
-	// Human-readable output
+func printKrcStatsJSON(stats *krc.Stats) error {
+	data, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func printKrcStatsText(stats *krc.Stats) {
 	fmt.Println(style.Bold.Render("Key Record Chronicle Statistics"))
 	fmt.Println()
 
-	// File stats
 	fmt.Println(style.Bold.Render("Files:"))
 	fmt.Printf("  Events: %s (%d events)\n", formatBytes(stats.EventsFile.Size), stats.EventsFile.EventCount)
 	fmt.Printf("  Feed:   %s (%d events)\n", formatBytes(stats.FeedFile.Size), stats.FeedFile.EventCount)
 	fmt.Println()
 
-	// Age distribution
 	fmt.Println(style.Bold.Render("Age Distribution:"))
-	ages := []string{"0-1d", "1-7d", "7-30d", "30d+"}
-	for _, age := range ages {
+	for _, age := range []string{"0-1d", "1-7d", "7-30d", "30d+"} {
 		count := stats.ByAge[age]
 		if count > 0 {
 			fmt.Printf("  %-8s %d events\n", age+":", count)
@@ -191,20 +195,25 @@ func runKrcStats(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Println()
 
-	// Time range
-	if !stats.OldestEvent.IsZero() {
-		fmt.Printf("Oldest event: %s (%s ago)\n", stats.OldestEvent.Format(time.RFC3339), krcFormatDuration(time.Since(stats.OldestEvent)))
-		fmt.Printf("Newest event: %s (%s ago)\n", stats.NewestEvent.Format(time.RFC3339), krcFormatDuration(time.Since(stats.NewestEvent)))
-		fmt.Println()
-	}
+	printKrcStatsTimeRange(stats)
 
-	// TTL breakdown (show types with expired events first)
 	fmt.Println(style.Bold.Render("TTL Status by Type:"))
+	printKrcStatsTTL(stats)
+}
 
-	// Sort by expired count (descending), then by name
-	var types []string
-	for t := range stats.TTLBreakdown {
-		types = append(types, t)
+func printKrcStatsTimeRange(stats *krc.Stats) {
+	if stats.OldestEvent.IsZero() {
+		return
+	}
+	fmt.Printf("Oldest event: %s (%s ago)\n", stats.OldestEvent.Format(time.RFC3339), krcFormatDuration(time.Since(stats.OldestEvent)))
+	fmt.Printf("Newest event: %s (%s ago)\n", stats.NewestEvent.Format(time.RFC3339), krcFormatDuration(time.Since(stats.NewestEvent)))
+	fmt.Println()
+}
+
+func printKrcStatsTTL(stats *krc.Stats) {
+	types := make([]string, 0, len(stats.TTLBreakdown))
+	for eventType := range stats.TTLBreakdown {
+		types = append(types, eventType)
 	}
 	sort.Slice(types, func(i, j int) bool {
 		ei := stats.TTLBreakdown[types[i]].Expired
@@ -214,17 +223,14 @@ func runKrcStats(cmd *cobra.Command, _ []string) error {
 		}
 		return types[i] < types[j]
 	})
-
-	for _, t := range types {
-		info := stats.TTLBreakdown[t]
+	for _, eventType := range types {
+		info := stats.TTLBreakdown[eventType]
 		status := style.Success.Render("OK")
 		if info.Expired > 0 {
 			status = style.Warning.Render(fmt.Sprintf("%d expired", info.Expired))
 		}
-		fmt.Printf("  %-20s TTL: %-6s Count: %-5d %s\n", t, krcFormatDuration(info.TTL), info.Count, status)
+		fmt.Printf("  %-20s TTL: %-6s Count: %-5d %s\n", eventType, krcFormatDuration(info.TTL), info.Count, status)
 	}
-
-	return nil
 }
 
 func runKrcPrune(cmd *cobra.Command, _ []string) error {
@@ -244,50 +250,57 @@ func runKrcPrune(cmd *cobra.Command, _ []string) error {
 	if auto {
 		return runKrcAutoPrune(townRoot, config)
 	}
-
 	if dryRun {
-		// Show what would be pruned
-		stats, err := krc.GetStats(townRoot, config)
-		if err != nil {
-			return fmt.Errorf("getting stats: %w", err)
-		}
+		return runKrcPruneDryRun(townRoot, config)
+	}
+	return runKrcPruneNow(townRoot, config)
+}
 
-		totalExpired := 0
-		for _, info := range stats.TTLBreakdown {
-			totalExpired += info.Expired
-		}
-
-		if totalExpired == 0 {
-			fmt.Println("No expired events to prune.")
-			return nil
-		}
-
-		fmt.Println(style.Bold.Render("Dry run - would prune:"))
-		fmt.Println()
-
-		// Sort by expired count
-		var types []string
-		for t, info := range stats.TTLBreakdown {
-			if info.Expired > 0 {
-				types = append(types, t)
-			}
-		}
-		sort.Slice(types, func(i, j int) bool {
-			return stats.TTLBreakdown[types[i]].Expired > stats.TTLBreakdown[types[j]].Expired
-		})
-
-		for _, t := range types {
-			info := stats.TTLBreakdown[t]
-			fmt.Printf("  %-20s %d events (TTL: %s)\n", t, info.Expired, krcFormatDuration(info.TTL))
-		}
-		fmt.Println()
-		fmt.Printf("Total: %d events would be pruned\n", totalExpired)
-		fmt.Println()
-		fmt.Println("Run without --dry-run to prune.")
+func runKrcPruneDryRun(townRoot string, config *krc.Config) error {
+	stats, err := krc.GetStats(townRoot, config)
+	if err != nil {
+		return fmt.Errorf("getting stats: %w", err)
+	}
+	totalExpired := krcTotalExpired(stats)
+	if totalExpired == 0 {
+		fmt.Println("No expired events to prune.")
 		return nil
 	}
+	fmt.Println(style.Bold.Render("Dry run - would prune:"))
+	fmt.Println()
+	printKrcExpiredTypes(stats)
+	fmt.Println()
+	fmt.Printf("Total: %d events would be pruned\n", totalExpired)
+	fmt.Println()
+	fmt.Println("Run without --dry-run to prune.")
+	return nil
+}
 
-	// Actually prune
+func krcTotalExpired(stats *krc.Stats) int {
+	total := 0
+	for _, info := range stats.TTLBreakdown {
+		total += info.Expired
+	}
+	return total
+}
+
+func printKrcExpiredTypes(stats *krc.Stats) {
+	types := make([]string, 0, len(stats.TTLBreakdown))
+	for eventType, info := range stats.TTLBreakdown {
+		if info.Expired > 0 {
+			types = append(types, eventType)
+		}
+	}
+	sort.Slice(types, func(i, j int) bool {
+		return stats.TTLBreakdown[types[i]].Expired > stats.TTLBreakdown[types[j]].Expired
+	})
+	for _, eventType := range types {
+		info := stats.TTLBreakdown[eventType]
+		fmt.Printf("  %-20s %d events (TTL: %s)\n", eventType, info.Expired, krcFormatDuration(info.TTL))
+	}
+}
+
+func runKrcPruneNow(townRoot string, config *krc.Config) error {
 	pruner := krc.NewPruner(townRoot, config)
 	result, err := pruner.Prune()
 	if err != nil {
@@ -299,32 +312,32 @@ func runKrcPrune(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	printKrcPruneResult(result)
+	return nil
+}
+
+func printKrcPruneResult(result *krc.PruneResult) {
 	fmt.Println(style.Bold.Render("Prune complete:"))
 	fmt.Printf("  Events processed: %d\n", result.EventsProcessed)
 	fmt.Printf("  Events pruned:    %d\n", result.EventsPruned)
 	fmt.Printf("  Events retained:  %d\n", result.EventsRetained)
 	fmt.Printf("  Space saved:      %s\n", formatBytes(result.BytesBefore-result.BytesAfter))
 	fmt.Printf("  Duration:         %s\n", result.Duration.Round(time.Millisecond))
-
-	if len(result.PrunedByType) > 0 {
-		fmt.Println()
-		fmt.Println("Pruned by type:")
-
-		// Sort by count
-		var types []string
-		for t := range result.PrunedByType {
-			types = append(types, t)
-		}
-		sort.Slice(types, func(i, j int) bool {
-			return result.PrunedByType[types[i]] > result.PrunedByType[types[j]]
-		})
-
-		for _, t := range types {
-			fmt.Printf("  %-20s %d\n", t, result.PrunedByType[t])
-		}
+	if len(result.PrunedByType) == 0 {
+		return
 	}
-
-	return nil
+	fmt.Println()
+	fmt.Println("Pruned by type:")
+	types := make([]string, 0, len(result.PrunedByType))
+	for eventType := range result.PrunedByType {
+		types = append(types, eventType)
+	}
+	sort.Slice(types, func(i, j int) bool {
+		return result.PrunedByType[types[i]] > result.PrunedByType[types[j]]
+	})
+	for _, eventType := range types {
+		fmt.Printf("  %-20s %d\n", eventType, result.PrunedByType[eventType])
+	}
 }
 
 func runKrcConfig(_ *cobra.Command, _ []string) error {
@@ -519,21 +532,28 @@ func runKrcDecay(cmd *cobra.Command, _ []string) error {
 	report := krc.GenerateDecayReport(stats, config)
 
 	if jsonOutput {
-		data, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(data))
-		return nil
+		return printKrcDecayJSON(report)
 	}
+	printKrcDecayText(report)
+	return nil
+}
 
-	// Human-readable output
+func printKrcDecayJSON(report *krc.DecayReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func printKrcDecayText(report *krc.DecayReport) {
 	fmt.Println(style.Bold.Render("Forensic Value Decay Report"))
 	fmt.Println()
 
 	if len(report.Types) == 0 {
 		fmt.Printf("%s No events found\n", style.Dim.Render("○"))
-		return nil
+		return
 	}
 
 	fmt.Printf("Total events: %d   Avg score: %.0f%%   At risk: %d   Expired: %d\n",
@@ -547,34 +567,35 @@ func runKrcDecay(cmd *cobra.Command, _ []string) error {
 		strings.Repeat("-", 20), "------", "-----", "-------", "-------", "-------", "------")
 
 	for _, di := range report.Types {
-		// Color-code the score
-		scoreStr := fmt.Sprintf("%.0f%%", di.AvgScore*100)
-		var statusStr string
-		switch {
-		case di.ExpiredCount > 0:
-			statusStr = style.Warning.Render(fmt.Sprintf("%d expired", di.ExpiredCount))
-		case di.AvgScore < 0.25:
-			statusStr = style.Warning.Render("low value")
-		case di.AvgScore < 0.5:
-			statusStr = style.Dim.Render("decaying")
-		default:
-			statusStr = style.Success.Render("healthy")
-		}
-
-		ageStr := ""
-		if di.AvgAge > 0 {
-			ageStr = krcFormatDuration(di.AvgAge)
-		}
-
-		fmt.Printf("  %-20s %-7s %-6s %-8d %-8s %-8s %s\n",
-			di.EventType, di.Curve, krcFormatDuration(di.TTL),
-			di.Count, ageStr, scoreStr, statusStr)
+		printKrcDecayRow(di)
 	}
 
 	fmt.Println()
 	fmt.Println(style.Dim.Render("Decay curves: rapid (heartbeats), steady (sessions), slow (errors), flat (audit)"))
+}
 
-	return nil
+func printKrcDecayRow(info krc.DecayInfo) {
+	score := fmt.Sprintf("%.0f%%", info.AvgScore*100)
+	age := ""
+	if info.AvgAge > 0 {
+		age = krcFormatDuration(info.AvgAge)
+	}
+	fmt.Printf("  %-20s %-7s %-6s %-8d %-8s %-8s %s\n",
+		info.EventType, info.Curve, krcFormatDuration(info.TTL),
+		info.Count, age, score, krcDecayStatus(info))
+}
+
+func krcDecayStatus(info krc.DecayInfo) string {
+	switch {
+	case info.ExpiredCount > 0:
+		return style.Warning.Render(fmt.Sprintf("%d expired", info.ExpiredCount))
+	case info.AvgScore < 0.25:
+		return style.Warning.Render("low value")
+	case info.AvgScore < 0.5:
+		return style.Dim.Render("decaying")
+	default:
+		return style.Success.Render("healthy")
+	}
 }
 
 func runKrcAutoPruneStatus(_ *cobra.Command, _ []string) error {
