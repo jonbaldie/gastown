@@ -16,25 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Plugin command flags
-var (
-	pluginListJSON     bool
-	pluginShowJSON     bool
-	pluginRunForce     bool
-	pluginRunDryRun    bool
-	pluginHistoryJSON  bool
-	pluginHistoryLimit int
-	pluginSyncSource   string
-	pluginSyncClean    bool
-	pluginSyncDryRun   bool
-	pluginRecordPlugin string
-	pluginRecordResult string
-	pluginRecordTitle  string
-	pluginRecordBody   string
-	pluginRecordRig    string
-	pluginRecordLabels []string
-)
-
 var pluginCmd = &cobra.Command{
 	Use:     "plugin",
 	GroupID: GroupConfig,
@@ -154,31 +135,31 @@ closed beads. This keeps plugin scripts from leaking open run-log beads.`,
 
 func init() {
 	// List subcommand flags
-	pluginListCmd.Flags().BoolVar(&pluginListJSON, "json", false, "Output as JSON")
+	pluginListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Show subcommand flags
-	pluginShowCmd.Flags().BoolVar(&pluginShowJSON, "json", false, "Output as JSON")
+	pluginShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Run subcommand flags
-	pluginRunCmd.Flags().BoolVar(&pluginRunForce, "force", false, "Bypass gate check")
-	pluginRunCmd.Flags().BoolVar(&pluginRunDryRun, "dry-run", false, "Show what would happen without executing")
+	pluginRunCmd.Flags().Bool("force", false, "Bypass gate check")
+	pluginRunCmd.Flags().Bool("dry-run", false, "Show what would happen without executing")
 
 	// History subcommand flags
-	pluginHistoryCmd.Flags().BoolVar(&pluginHistoryJSON, "json", false, "Output as JSON")
-	pluginHistoryCmd.Flags().IntVar(&pluginHistoryLimit, "limit", 10, "Maximum number of runs to show")
+	pluginHistoryCmd.Flags().Bool("json", false, "Output as JSON")
+	pluginHistoryCmd.Flags().Int("limit", 10, "Maximum number of runs to show")
 
 	// Record-run subcommand flags
-	pluginRecordRunCmd.Flags().StringVar(&pluginRecordPlugin, "plugin", "", "Plugin name")
-	pluginRecordRunCmd.Flags().StringVar(&pluginRecordResult, "result", "", "Run result label value")
-	pluginRecordRunCmd.Flags().StringVar(&pluginRecordTitle, "title", "", "Receipt title")
-	pluginRecordRunCmd.Flags().StringVar(&pluginRecordBody, "description", "", "Receipt description")
-	pluginRecordRunCmd.Flags().StringVar(&pluginRecordRig, "rig", "", "Rig label value")
-	pluginRecordRunCmd.Flags().StringArrayVarP(&pluginRecordLabels, "label", "l", nil, "Additional label for the receipt")
+	pluginRecordRunCmd.Flags().String("plugin", "", "Plugin name")
+	pluginRecordRunCmd.Flags().String("result", "", "Run result label value")
+	pluginRecordRunCmd.Flags().String("title", "", "Receipt title")
+	pluginRecordRunCmd.Flags().String("description", "", "Receipt description")
+	pluginRecordRunCmd.Flags().String("rig", "", "Rig label value")
+	pluginRecordRunCmd.Flags().StringArrayP("label", "l", nil, "Additional label for the receipt")
 
 	// Sync subcommand flags
-	pluginSyncCmd.Flags().StringVar(&pluginSyncSource, "source", "", "Source plugins directory (auto-detected if omitted)")
-	pluginSyncCmd.Flags().BoolVar(&pluginSyncClean, "clean", false, "Remove plugins from target that don't exist in source")
-	pluginSyncCmd.Flags().BoolVar(&pluginSyncDryRun, "dry-run", false, "Show what would happen without syncing")
+	pluginSyncCmd.Flags().String("source", "", "Source plugins directory (auto-detected if omitted)")
+	pluginSyncCmd.Flags().Bool("clean", false, "Remove plugins from target that don't exist in source")
+	pluginSyncCmd.Flags().Bool("dry-run", false, "Show what would happen without syncing")
 
 	// Add subcommands
 	pluginCmd.AddCommand(pluginListCmd)
@@ -216,7 +197,7 @@ func getPluginScanner() (*plugin.Scanner, string, error) {
 	return scanner, townRoot, nil
 }
 
-func runPluginList(_ *cobra.Command, _ []string) error {
+func runPluginList(cmd *cobra.Command, _ []string) error {
 	scanner, townRoot, err := getPluginScanner()
 	if err != nil {
 		return err
@@ -232,7 +213,7 @@ func runPluginList(_ *cobra.Command, _ []string) error {
 		return plugins[i].Name < plugins[j].Name
 	})
 
-	if pluginListJSON {
+	if commandBoolFlag(cmd, "json") {
 		return outputPluginListJSON(plugins)
 	}
 
@@ -322,7 +303,7 @@ func printPluginSummary(p *plugin.Plugin) {
 	}
 }
 
-func runPluginShow(_ *cobra.Command, args []string) error {
+func runPluginShow(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	scanner, _, err := getPluginScanner()
@@ -335,7 +316,7 @@ func runPluginShow(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	if pluginShowJSON {
+	if commandBoolFlag(cmd, "json") {
 		return outputPluginShowJSON(p)
 	}
 
@@ -435,8 +416,10 @@ func outputPluginShowText(p *plugin.Plugin) error {
 	return nil
 }
 
-func runPluginRun(_ *cobra.Command, args []string) error {
+func runPluginRun(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	force := commandBoolFlag(cmd, "force")
+	dryRun := commandBoolFlag(cmd, "dry-run")
 
 	scanner, townRoot, err := getPluginScanner()
 	if err != nil {
@@ -451,7 +434,7 @@ func runPluginRun(_ *cobra.Command, args []string) error {
 	// Check gate status for cooldown gates
 	gateOpen := true
 	gateReason := ""
-	if p.Gate != nil && p.Gate.Type == plugin.GateCooldown && !pluginRunForce {
+	if p.Gate != nil && p.Gate.Type == plugin.GateCooldown && !force {
 		recorder := plugin.NewRecorder(townRoot)
 		duration := p.Gate.Duration
 		if duration == "" {
@@ -467,7 +450,7 @@ func runPluginRun(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	if pluginRunDryRun {
+	if dryRun {
 		fmt.Printf("%s Dry run for plugin: %s\n", style.Bold.Render("Plugin:"), p.Name)
 		fmt.Printf("%s %s\n", style.Bold.Render("Location:"), p.Path)
 		if p.Gate != nil {
@@ -481,7 +464,7 @@ func runPluginRun(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if !gateOpen && !pluginRunForce {
+	if !gateOpen && !force {
 		fmt.Printf("%s Gate closed: %s\n", style.Warning.Render("⚠"), gateReason)
 		fmt.Printf("  Use --force to bypass gate check\n")
 		return nil
@@ -491,7 +474,7 @@ func runPluginRun(_ *cobra.Command, args []string) error {
 	// For manual runs, we print the instructions for the agent/user to execute
 	// Automatic execution via dogs is handled by gt-n08ix.2
 	fmt.Printf("%s Running plugin: %s\n", style.Success.Render("●"), p.Name)
-	if pluginRunForce && !gateOpen {
+	if force && !gateOpen {
 		fmt.Printf("  %s\n", style.Dim.Render("(gate bypassed with --force)"))
 	}
 	fmt.Println()
@@ -515,14 +498,14 @@ func runPluginRun(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPluginSync(_ *cobra.Command, _ []string) error {
+func runPluginSync(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Determine source directory
-	sourceDir := pluginSyncSource
+	sourceDir := commandStringFlag(cmd, "source")
 	if sourceDir == "" {
 		sourceDir, err = plugin.FindGastownSource(townRoot)
 		if err != nil {
@@ -541,7 +524,9 @@ func runPluginSync(_ *cobra.Command, _ []string) error {
 
 	targetDir := filepath.Join(townRoot, "plugins")
 
-	if pluginSyncDryRun {
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	clean := commandBoolFlag(cmd, "clean")
+	if dryRun {
 		report, err := plugin.DetectDrift(sourceDir, targetDir)
 		if err != nil {
 			return fmt.Errorf("detecting drift: %w", err)
@@ -562,7 +547,7 @@ func runPluginSync(_ *cobra.Command, _ []string) error {
 		for _, name := range report.Missing {
 			fmt.Printf("  %s %s (new, would be copied)\n", style.Success.Render("+"), name)
 		}
-		if pluginSyncClean {
+		if clean {
 			for _, name := range report.Extra {
 				fmt.Printf("  %s %s (would be removed)\n", style.Error.Render("-"), name)
 			}
@@ -570,7 +555,7 @@ func runPluginSync(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	result, err := plugin.SyncPlugins(sourceDir, targetDir, pluginSyncClean)
+	result, err := plugin.SyncPlugins(sourceDir, targetDir, clean)
 	if err != nil {
 		return fmt.Errorf("syncing plugins: %w", err)
 	}
@@ -599,8 +584,10 @@ func runPluginSync(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runPluginHistory(_ *cobra.Command, args []string) error {
+func runPluginHistory(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	limit := commandIntFlag(cmd, "limit")
+	jsonOutput := commandBoolFlag(cmd, "json")
 
 	_, townRoot, err := getPluginScanner()
 	if err != nil {
@@ -618,11 +605,11 @@ func runPluginHistory(_ *cobra.Command, args []string) error {
 	}
 
 	// Apply limit
-	if pluginHistoryLimit > 0 && len(runs) > pluginHistoryLimit {
-		runs = runs[:pluginHistoryLimit]
+	if limit > 0 && len(runs) > limit {
+		runs = runs[:limit]
 	}
 
-	if pluginHistoryJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(runs)
@@ -656,10 +643,17 @@ func runPluginHistory(_ *cobra.Command, args []string) error {
 }
 
 func runPluginRecordRun(cmd *cobra.Command, _ []string) error {
-	if pluginRecordPlugin == "" {
+	pluginName := commandStringFlag(cmd, "plugin")
+	result := commandStringFlag(cmd, "result")
+	title := commandStringFlag(cmd, "title")
+	body := commandStringFlag(cmd, "description")
+	rigName := commandStringFlag(cmd, "rig")
+	labels := commandStringArrayFlag(cmd, "label")
+
+	if pluginName == "" {
 		return fmt.Errorf("--plugin is required")
 	}
-	if pluginRecordResult == "" {
+	if result == "" {
 		return fmt.Errorf("--result is required")
 	}
 
@@ -670,12 +664,12 @@ func runPluginRecordRun(cmd *cobra.Command, _ []string) error {
 
 	recorder := plugin.NewRecorder(townRoot)
 	beadID, err := recorder.RecordRun(plugin.PluginRunRecord{
-		PluginName:  pluginRecordPlugin,
-		RigName:     pluginRecordRig,
-		Result:      plugin.RunResult(pluginRecordResult),
-		Title:       pluginRecordTitle,
-		Body:        pluginRecordBody,
-		ExtraLabels: pluginRecordLabels,
+		PluginName:  pluginName,
+		RigName:     rigName,
+		Result:      plugin.RunResult(result),
+		Title:       title,
+		Body:        body,
+		ExtraLabels: labels,
 	})
 	if err != nil {
 		return err
