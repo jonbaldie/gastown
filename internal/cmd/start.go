@@ -885,97 +885,97 @@ func killLateKnownSessions(t *tmux.Tmux) int {
 // cleanupPolecats removes polecat worktrees and branches for all rigs.
 // It refuses to clean up polecats with uncommitted work unless --nuclear is set.
 func cleanupPolecats(townRoot string) {
-	// Load rigs config
+	rigs, ok := loadCleanupRigs(townRoot)
+	if !ok {
+		return
+	}
+	result := cleanupRigs(rigs)
+	printCleanupSummary(result)
+}
+
+type polecatCleanupResult struct {
+	cleaned     int
+	skipped     int
+	uncommitted []string
+}
+
+func loadCleanupRigs(townRoot string) ([]*rig.Rig, bool) {
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
 	if err != nil {
 		fmt.Printf("  %s Could not load rigs config: %v\n", style.Dim.Render("○"), err)
-		return
+		return nil, false
 	}
-
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
-
-	// Discover all rigs
+	rigMgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
 	rigs, err := rigMgr.DiscoverRigs()
 	if err != nil {
 		fmt.Printf("  %s Could not discover rigs: %v\n", style.Dim.Render("○"), err)
-		return
+		return nil, false
 	}
+	return rigs, true
+}
 
-	totalCleaned := 0
-	totalSkipped := 0
-	var uncommittedPolecats []string
-
+func cleanupRigs(rigs []*rig.Rig) polecatCleanupResult {
+	var result polecatCleanupResult
 	for _, r := range rigs {
 		polecatGit := git.NewGit(r.Path)
 		polecatMgr := polecat.NewManager(r, polecatGit, nil) // nil tmux: just listing, not allocating
-
 		polecats, err := polecatMgr.List()
 		if err != nil {
 			continue
 		}
-
 		for _, p := range polecats {
-			// Check for uncommitted work
-			pGit := git.NewGit(p.ClonePath)
-			status, err := pGit.CheckUncommittedWork()
-			if err != nil {
-				// Can't check, be safe and skip unless nuclear
-				if !shutdownNuclear {
-					fmt.Printf("  %s %s/%s: could not check status, skipping\n",
-						style.Dim.Render("○"), r.Name, p.Name)
-					totalSkipped++
-					continue
-				}
-			} else if !status.Clean() {
-				// Has uncommitted work
-				if !shutdownNuclear {
-					uncommittedPolecats = append(uncommittedPolecats,
-						fmt.Sprintf("%s/%s (%s)", r.Name, p.Name, status.String()))
-					totalSkipped++
-					continue
-				}
-				// Nuclear mode: warn but proceed
-				fmt.Printf("  %s %s/%s: NUCLEAR - removing despite %s\n",
-					style.Bold.Render("⚠"), r.Name, p.Name, status.String())
-			}
-
-			// Clean: remove worktree and branch
-			// selfNuke=false because this is gt start --shutdown cleanup, not polecat self-deleting
-			if err := polecatMgr.RemoveWithOptions(p.Name, true, shutdownNuclear, false); err != nil {
-				fmt.Printf("  %s %s/%s: cleanup failed: %v\n",
-					style.Dim.Render("○"), r.Name, p.Name, err)
-				totalSkipped++
-				continue
-			}
-
-			// Delete the polecat branch from mayor's clone
-			branchName := fmt.Sprintf("polecat/%s", p.Name)
-			mayorPath := filepath.Join(r.Path, "mayor", "rig")
-			mayorGit := git.NewGit(mayorPath)
-			_ = mayorGit.DeleteBranch(branchName, true) // Ignore errors
-
-			fmt.Printf("  %s %s/%s: cleaned up\n", style.Bold.Render("✓"), r.Name, p.Name)
-			totalCleaned++
+			result.merge(cleanupPolecat(r, polecatMgr, p))
 		}
 	}
+	return result
+}
 
-	// Summary
-	if len(uncommittedPolecats) > 0 {
+func (result *polecatCleanupResult) merge(other polecatCleanupResult) {
+	result.cleaned += other.cleaned
+	result.skipped += other.skipped
+	result.uncommitted = append(result.uncommitted, other.uncommitted...)
+}
+
+func cleanupPolecat(r *rig.Rig, polecatMgr *polecat.Manager, p *polecat.Polecat) polecatCleanupResult {
+	status, err := git.NewGit(p.ClonePath).CheckUncommittedWork()
+	if err != nil && !shutdownNuclear {
+		fmt.Printf("  %s %s/%s: could not check status, skipping\n", style.Dim.Render("○"), r.Name, p.Name)
+		return polecatCleanupResult{skipped: 1}
+	}
+	if err == nil && !status.Clean() {
+		if !shutdownNuclear {
+			return polecatCleanupResult{
+				skipped:     1,
+				uncommitted: []string{fmt.Sprintf("%s/%s (%s)", r.Name, p.Name, status.String())},
+			}
+		}
+		fmt.Printf("  %s %s/%s: NUCLEAR - removing despite %s\n", style.Bold.Render("⚠"), r.Name, p.Name, status.String())
+	}
+	if err := polecatMgr.RemoveWithOptions(p.Name, true, shutdownNuclear, false); err != nil {
+		fmt.Printf("  %s %s/%s: cleanup failed: %v\n", style.Dim.Render("○"), r.Name, p.Name, err)
+		return polecatCleanupResult{skipped: 1}
+	}
+	branchName := fmt.Sprintf("polecat/%s", p.Name)
+	mayorGit := git.NewGit(filepath.Join(r.Path, "mayor", "rig"))
+	_ = mayorGit.DeleteBranch(branchName, true)
+	fmt.Printf("  %s %s/%s: cleaned up\n", style.Bold.Render("✓"), r.Name, p.Name)
+	return polecatCleanupResult{cleaned: 1}
+}
+
+func printCleanupSummary(result polecatCleanupResult) {
+	if len(result.uncommitted) > 0 {
 		fmt.Println()
-		fmt.Printf("  %s Polecats with uncommitted work (use --nuclear to force):\n",
-			style.Bold.Render("⚠"))
-		for _, pc := range uncommittedPolecats {
+		fmt.Printf("  %s Polecats with uncommitted work (use --nuclear to force):\n", style.Bold.Render("⚠"))
+		for _, pc := range result.uncommitted {
 			fmt.Printf("    • %s\n", pc)
 		}
 	}
-
-	if totalCleaned > 0 || totalSkipped > 0 {
-		fmt.Printf("  Cleaned: %d, Skipped: %d\n", totalCleaned, totalSkipped)
-	} else {
-		fmt.Printf("  %s No polecats to clean up\n", style.Dim.Render("○"))
+	if result.cleaned > 0 || result.skipped > 0 {
+		fmt.Printf("  Cleaned: %d, Skipped: %d\n", result.cleaned, result.skipped)
+		return
 	}
+	fmt.Printf("  %s No polecats to clean up\n", style.Dim.Render("○"))
 }
 
 func townInfraRunning(townRoot string) bool {
