@@ -88,10 +88,8 @@ const (
 )
 
 func init() {
-	rootCmd.AddCommand(nudgeCmd)
+	rootCmd.AddCommand(newNudgeCommand())
 }
-
-var nudgeCmd = newNudgeCommand()
 
 func newNudgeCommand() *cobra.Command {
 	state := nudgeState()

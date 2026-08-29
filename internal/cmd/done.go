@@ -29,8 +29,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var doneCmd = newDoneCommand()
-
 func newDoneCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "done",
@@ -739,7 +737,7 @@ func isReviewEvidenceText(text string) bool {
 }
 
 func init() {
-	rootCmd.AddCommand(doneCmd)
+	rootCmd.AddCommand(newDoneCommand())
 }
 
 func runDone(_ *cobra.Command, _ []string) (retErr error) {

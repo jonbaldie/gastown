@@ -11,6 +11,8 @@ import (
 	"github.com/jonbaldie/gastown/internal/session"
 )
 
+var nudgeCmd = newNudgeCommand()
+
 func setupNudgeTestRegistry(t *testing.T) {
 	t.Helper()
 	reg := session.NewPrefixRegistry()
