@@ -24,7 +24,8 @@ import (
 )
 
 func runCrewRemove(_ *cobra.Command, args []string) error {
-	forceRemove := crewForce || crewPurge
+	state := crewState()
+	forceRemove := state.force || state.purge
 	var lastErr error
 	for _, arg := range args {
 		if err := removeCrewMember(arg, forceRemove); err != nil {
@@ -53,7 +54,7 @@ func removeCrewMember(arg string, forceRemove bool) error {
 }
 
 func crewRemoveTarget(arg string) (string, string) {
-	rigOverride := crewRig
+	rigOverride := crewState().rig
 	if rig, crewName, ok := parseRigSlashName(arg); ok {
 		if rigOverride == "" {
 			rigOverride = rig
@@ -133,7 +134,7 @@ func handleCrewRemoveAgentBead(rigPath, rigName, name string) {
 	}
 	prefix := beads.GetPrefixForRig(townRoot, rigName)
 	agentBeadID := beads.CrewBeadIDWithPrefix(prefix, rigName, name)
-	if crewPurge {
+	if crewState().purge {
 		purgeCrewAgentBead(rigPath, rigName, name, agentBeadID)
 		return
 	}
@@ -190,7 +191,7 @@ func closeCrewAgentBead(rigPath, agentBeadID string) {
 func runCrewRefresh(_ *cobra.Command, args []string) error {
 	name := resolveCrewRefreshName(args[0])
 
-	crewMgr, r, err := getCrewManagerForMember(crewRig, name)
+	crewMgr, r, err := getCrewManagerForMember(crewState().rig, name)
 	if err != nil {
 		return err
 	}
@@ -221,8 +222,8 @@ func runCrewRefresh(_ *cobra.Command, args []string) error {
 func resolveCrewRefreshName(name string) string {
 	// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
 	if rig, crewName, ok := parseRigSlashName(name); ok {
-		if crewRig == "" {
-			crewRig = rig
+		if crewState().rig == "" {
+			crewState().rig = rig
 		}
 		return crewName
 	}
@@ -241,8 +242,8 @@ func getCrewRefreshWorker(crewMgr *crew.Manager, name string) (*crew.CrewWorker,
 }
 
 func crewRefreshMessage(name string) string {
-	if crewMessage != "" {
-		return crewMessage
+	if crewState().message != "" {
+		return crewState().message
 	}
 	return fmt.Sprintf("Context refresh for %s. Check mail and beads for current work state.", name)
 }
@@ -273,7 +274,7 @@ func startCrewRefresh(crewMgr *crew.Manager, name string) error {
 		KillExisting:  true,      // Kill old session if running
 		Topic:         "refresh", // Startup nudge topic
 		Interactive:   true,      // No --dangerously-skip-permissions
-		AgentOverride: crewAgentOverride,
+		AgentOverride: crewState().agentOverride,
 	}); err != nil {
 		return fmt.Errorf("starting crew session: %w", err)
 	}
@@ -316,8 +317,8 @@ func runCrewStart(cmd *cobra.Command, args []string) error {
 }
 
 func resolveCrewStartTargets(args []string) (string, []string) {
-	if crewRig != "" {
-		return crewRig, args
+	if crewState().rig != "" {
+		return crewState().rig, args
 	}
 	if len(args) == 0 {
 		return "", nil
@@ -329,7 +330,7 @@ func resolveCrewStartTargets(args []string) (string, []string) {
 }
 
 func loadCrewStartNames(crewMgr *crew.Manager, rigName string, crewNames []string) ([]string, error) {
-	if !crewAll && len(crewNames) > 0 {
+	if !crewState().all && len(crewNames) > 0 {
 		return crewNames, nil
 	}
 	workers, err := crewMgr.List()
@@ -347,29 +348,31 @@ func loadCrewStartNames(crewMgr *crew.Manager, rigName string, crewNames []strin
 }
 
 func crewStartOptions(cmd *cobra.Command, crewMgr *crew.Manager, rigPath string, crewNames []string) (crew.StartOptions, error) {
+	state := crewState()
 	townRoot, _ := workspace.Find(rigPath)
 	if townRoot == "" {
 		townRoot = filepath.Dir(rigPath)
 	}
 	accountsPath := constants.MayorAccountsPath(townRoot)
-	claudeConfigDir, _, _ := config.ResolveAccountConfigDir(accountsPath, crewAccount)
+	claudeConfigDir, _, _ := config.ResolveAccountConfigDir(accountsPath, state.account)
 	if err := validateCrewStartResume(crewMgr, crewNames); err != nil {
 		return crew.StartOptions{}, err
 	}
-	if crewResume == "last" && len(crewNames) > 1 {
+	if state.resume == "last" && len(crewNames) > 1 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: --resume will auto-resume the most recent session for all %d crew members\n", len(crewNames))
 	}
 	return crew.StartOptions{
-		Account:         crewAccount,
+		Account:         state.account,
 		ClaudeConfigDir: claudeConfigDir,
-		AgentOverride:   crewAgentOverride,
-		ResumeSessionID: crewResume,
-		KillExisting:    crewResume != "", // Resume needs to kill existing session first
+		AgentOverride:   state.agentOverride,
+		ResumeSessionID: state.resume,
+		KillExisting:    state.resume != "", // Resume needs to kill existing session first
 	}, nil
 }
 
 func validateCrewStartResume(crewMgr *crew.Manager, crewNames []string) error {
-	if crewResume == "" || crewResume == "last" {
+	state := crewState()
+	if state.resume == "" || state.resume == "last" {
 		return nil
 	}
 	if len(crewNames) > 1 {
@@ -380,8 +383,8 @@ func validateCrewStartResume(crewMgr *crew.Manager, crewNames []string) error {
 		return nil
 	}
 	for _, worker := range workers {
-		if worker.Name == crewResume {
-			return fmt.Errorf("%q looks like a crew member name, not a session ID; use --resume=%s if you meant a session ID, or use --resume (no value) to auto-resume the most recent session", crewResume, crewResume)
+		if worker.Name == state.resume {
+			return fmt.Errorf("%q looks like a crew member name, not a session ID; use --resume=%s if you meant a session ID, or use --resume (no value) to auto-resume the most recent session", state.resume, state.resume)
 		}
 	}
 	return nil
@@ -443,8 +446,9 @@ func printCrewStartSummary(startedCount, skippedCount int, rigName string) {
 }
 
 func runCrewRestart(_ *cobra.Command, args []string) error {
+	state := crewState()
 	// Handle --all flag
-	if crewAll {
+	if state.all {
 		return runCrewRestartAll()
 	}
 
@@ -452,7 +456,7 @@ func runCrewRestart(_ *cobra.Command, args []string) error {
 
 	for _, arg := range args {
 		name := arg
-		rigOverride := crewRig
+		rigOverride := state.rig
 
 		// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
 		if rig, crewName, ok := parseRigSlashName(name); ok {
@@ -474,7 +478,7 @@ func runCrewRestart(_ *cobra.Command, args []string) error {
 		err = crewMgr.Start(name, crew.StartOptions{
 			KillExisting:  true,      // Kill old session if running
 			Topic:         "restart", // Startup nudge topic
-			AgentOverride: crewAgentOverride,
+			AgentOverride: crewState().agentOverride,
 		})
 		if err != nil {
 			fmt.Printf("Error restarting %s: %v\n", arg, err)
@@ -493,6 +497,7 @@ func runCrewRestart(_ *cobra.Command, args []string) error {
 // runCrewRestartAll restarts all running crew sessions.
 // If crewRig is set, only restarts crew in that rig.
 func runCrewRestartAll() error {
+	state := crewState()
 	agents, err := getAgentSessions(true)
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
@@ -504,7 +509,7 @@ func runCrewRestartAll() error {
 		return nil
 	}
 
-	if crewDryRun {
+	if state.dryRun {
 		printCrewRestartAllDryRun(targets)
 		return nil
 	}
@@ -529,8 +534,8 @@ func runCrewRestartAll() error {
 
 func printNoCrewSessionsToRestart() {
 	fmt.Println("No running crew sessions to restart.")
-	if crewRig != "" {
-		fmt.Printf("  (filtered by rig: %s)\n", crewRig)
+	if crewState().rig != "" {
+		fmt.Printf("  (filtered by rig: %s)\n", crewState().rig)
 	}
 }
 
@@ -542,20 +547,21 @@ func printCrewRestartAllDryRun(targets []*AgentSession) {
 }
 
 func restartCrewSession(agent *AgentSession, agentName string) error {
-	savedRig := crewRig
-	crewRig = agent.Rig
-	crewMgr, _, err := getCrewManager(crewRig)
+	state := crewState()
+	savedRig := state.rig
+	state.rig = agent.Rig
+	crewMgr, _, err := getCrewManager(state.rig)
 	if err != nil {
-		crewRig = savedRig
+		state.rig = savedRig
 		fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
 		return err
 	}
 	err = crewMgr.Start(agent.AgentName, crew.StartOptions{
 		KillExisting:  true,      // Kill old session if running
 		Topic:         "restart", // Startup nudge topic
-		AgentOverride: crewAgentOverride,
+		AgentOverride: state.agentOverride,
 	})
-	crewRig = savedRig
+	state.rig = savedRig
 	if err != nil {
 		fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
 		time.Sleep(constants.ShutdownNotifyDelay)
@@ -583,11 +589,12 @@ func summarizeCrewRestartAll(succeeded, failed int, failures []string) error {
 // runCrewStop stops one or more crew workers.
 // Supports: "name", "rig/name" formats, "rig" (to stop all in rig), or --all.
 func runCrewStop(_ *cobra.Command, args []string) error {
-	if crewAll || len(args) == 0 {
+	state := crewState()
+	if state.all || len(args) == 0 {
 		return runCrewStopAll()
 	}
 	if rig, ok := crewStopRig(args); ok {
-		crewRig = rig
+		state.rig = rig
 		return runCrewStopAll()
 	}
 	return stopCrewMembers(args)
@@ -632,7 +639,7 @@ func stopCrewMember(t *tmux.Tmux, arg string) error {
 		fmt.Printf("No session found for %s/%s\n", r.Name, name)
 		return nil
 	}
-	if crewDryRun {
+	if crewState().dryRun {
 		fmt.Printf("Would stop %s/%s (session: %s)\n", r.Name, name, sessionID)
 		return nil
 	}
@@ -640,7 +647,7 @@ func stopCrewMember(t *tmux.Tmux, arg string) error {
 }
 
 func crewStopTarget(arg string) (string, string) {
-	rigOverride := crewRig
+	rigOverride := crewState().rig
 	if rig, crewName, ok := parseRigSlashName(arg); ok {
 		if rigOverride == "" {
 			rigOverride = rig
@@ -652,7 +659,7 @@ func crewStopTarget(arg string) (string, string) {
 
 func killCrewSession(t *tmux.Tmux, rigPath, rigName, crewName, sessionID string) error {
 	var output string
-	if !crewForce {
+	if !crewState().force {
 		output, _ = t.CapturePane(sessionID, 50)
 	}
 	if err := t.KillSessionWithProcesses(sessionID); err != nil {
@@ -692,6 +699,7 @@ func printCapturedCrewOutput(output string) {
 // runCrewStopAll stops all running crew sessions.
 // If crewRig is set, only stops crew in that rig.
 func runCrewStopAll() error {
+	state := crewState()
 	agents, err := getAgentSessions(true)
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
@@ -703,7 +711,7 @@ func runCrewStopAll() error {
 		return nil
 	}
 
-	if crewDryRun {
+	if state.dryRun {
 		printCrewStopAllDryRun(targets)
 		return nil
 	}
@@ -729,12 +737,13 @@ func runCrewStopAll() error {
 }
 
 func crewSessionsForStop(agents []*AgentSession) []*AgentSession {
+	state := crewState()
 	var targets []*AgentSession
 	for _, agent := range agents {
 		if agent.Type != AgentCrew {
 			continue
 		}
-		if crewRig != "" && agent.Rig != crewRig {
+		if state.rig != "" && agent.Rig != state.rig {
 			continue
 		}
 		targets = append(targets, agent)
@@ -744,8 +753,8 @@ func crewSessionsForStop(agents []*AgentSession) []*AgentSession {
 
 func printNoCrewSessionsToStop() {
 	fmt.Println("No running crew sessions to stop.")
-	if crewRig != "" {
-		fmt.Printf("  (filtered by rig: %s)\n", crewRig)
+	if crewState().rig != "" {
+		fmt.Printf("  (filtered by rig: %s)\n", crewState().rig)
 	}
 }
 
@@ -759,7 +768,7 @@ func printCrewStopAllDryRun(targets []*AgentSession) {
 func stopCrewSessionAll(t *tmux.Tmux, agent *AgentSession, agentName string) error {
 	sessionID := agent.Name
 	var output string
-	if !crewForce {
+	if !crewState().force {
 		output, _ = t.CapturePane(sessionID, 50)
 	}
 	if err := t.KillSessionWithProcesses(sessionID); err != nil {

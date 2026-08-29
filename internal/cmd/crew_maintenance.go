@@ -15,7 +15,7 @@ import (
 func runCrewRename(_ *cobra.Command, args []string) error {
 	oldName, newName := crewRenameNames(args)
 
-	crewMgr, r, err := getCrewManagerForMember(crewRig, oldName)
+	crewMgr, r, err := getCrewManagerForMember(crewState().rig, oldName)
 	if err != nil {
 		return err
 	}
@@ -38,8 +38,8 @@ func crewRenameNames(args []string) (string, string) {
 	newName := args[1]
 	// Parse rig/name format for oldName (e.g., "beads/emma" -> rig=beads, name=emma).
 	if rig, crewName, ok := parseRigSlashName(oldName); ok {
-		if crewRig == "" {
-			crewRig = rig
+		if crewState().rig == "" {
+			crewState().rig = rig
 		}
 		oldName = crewName
 	}
@@ -83,7 +83,8 @@ func printCrewRename(rigName, oldName, newName string) {
 }
 
 func runCrewPristine(_ *cobra.Command, args []string) error {
-	crewMgr, r, err := getCrewManager(crewRig)
+	state := crewState()
+	crewMgr, r, err := getCrewManager(state.rig)
 	if err != nil {
 		return err
 	}
@@ -103,7 +104,7 @@ func runCrewPristine(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	if crewJSON {
+	if state.json {
 		return printPristineJSON(results)
 	}
 

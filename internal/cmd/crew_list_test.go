@@ -75,12 +75,12 @@ func TestRunCrewList_PositionalRigArg(t *testing.T) {
 	}
 
 	t.Run("positional arg sets rig filter", func(t *testing.T) {
-		crewRig = ""
-		crewListAll = false
-		crewJSON = true
+		crewState().rig = ""
+		crewState().listAll = false
+		crewState().json = true
 		defer func() {
-			crewRig = ""
-			crewJSON = false
+			crewState().rig = ""
+			crewState().json = false
 		}()
 
 		output := captureStdout(t, func() {
@@ -102,9 +102,9 @@ func TestRunCrewList_PositionalRigArg(t *testing.T) {
 	})
 
 	t.Run("positional arg conflicts with --rig flag", func(t *testing.T) {
-		crewRig = "rig-b"
-		crewListAll = false
-		defer func() { crewRig = "" }()
+		crewState().rig = "rig-b"
+		crewState().listAll = false
+		defer func() { crewState().rig = "" }()
 
 		err := runCrewList(&cobra.Command{}, []string{"rig-a"})
 		if err == nil {
@@ -116,9 +116,9 @@ func TestRunCrewList_PositionalRigArg(t *testing.T) {
 	})
 
 	t.Run("positional arg with --all errors", func(t *testing.T) {
-		crewRig = ""
-		crewListAll = true
-		defer func() { crewListAll = false }()
+		crewState().rig = ""
+		crewState().listAll = true
+		defer func() { crewState().listAll = false }()
 
 		err := runCrewList(&cobra.Command{}, []string{"rig-a"})
 		if err == nil {
@@ -136,11 +136,11 @@ func TestRunCrewList_AllWithRigErrors(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	crewListAll = true
-	crewRig = "rig-a"
+	crewState().listAll = true
+	crewState().rig = "rig-a"
 	defer func() {
-		crewListAll = false
-		crewRig = ""
+		crewState().listAll = false
+		crewState().rig = ""
 	}()
 
 	err := runCrewList(&cobra.Command{}, nil)
@@ -161,12 +161,12 @@ func TestRunCrewList_AllAggregatesJSON(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	crewListAll = true
-	crewJSON = true
-	crewRig = ""
+	crewState().listAll = true
+	crewState().json = true
+	crewState().rig = ""
 	defer func() {
-		crewListAll = false
-		crewJSON = false
+		crewState().listAll = false
+		crewState().json = false
 	}()
 
 	output := captureStdout(t, func() {

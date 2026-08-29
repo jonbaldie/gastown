@@ -115,12 +115,12 @@ func prepareCrewAdd(args []string) (*crewAddSetup, error) {
 		baseRig:      baseRig,
 		crewMgr:      crew.NewManager(r, git.NewGit(r.Path)),
 		bd:           beads.New(beads.ResolveBeadsDir(r.Path)),
-		createBranch: crewBranch,
+		createBranch: crewState().branch,
 	}, nil
 }
 
 func resolveCrewAddRig(townRoot string, args []string) (string, error) {
-	baseRig := crewRig
+	baseRig := crewState().rig
 	if baseRig == "" && len(args) > 0 {
 		if parsedRig, _, ok := parseRigSlashName(args[0]); ok {
 			baseRig = parsedRig

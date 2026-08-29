@@ -24,6 +24,7 @@ type CrewListItem struct {
 }
 
 func runCrewList(_ *cobra.Command, args []string) error {
+	state := crewState()
 	if err := applyCrewListArgs(args); err != nil {
 		return err
 	}
@@ -38,7 +39,7 @@ func runCrewList(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if crewJSON {
+	if state.json {
 		return printCrewListJSON(items)
 	}
 
@@ -47,25 +48,27 @@ func runCrewList(_ *cobra.Command, args []string) error {
 }
 
 func applyCrewListArgs(args []string) error {
+	state := crewState()
 	// Accept positional rig argument: gt crew list <rig>
 	if len(args) > 0 {
-		if crewRig != "" {
+		if state.rig != "" {
 			return fmt.Errorf("cannot specify both positional rig argument and --rig flag")
 		}
-		crewRig = args[0]
+		state.rig = args[0]
 	}
 
-	if crewListAll && crewRig != "" {
+	if state.listAll && state.rig != "" {
 		return fmt.Errorf("cannot use --all with a rig filter (--rig flag or positional argument)")
 	}
 	return nil
 }
 
 func crewListRigs() ([]*rig.Rig, error) {
-	if crewListAll {
+	state := crewState()
+	if state.listAll {
 		return getAllRigs()
 	}
-	_, r, err := getCrewManager(crewRig)
+	_, r, err := getCrewManager(state.rig)
 	if err != nil {
 		return nil, err
 	}

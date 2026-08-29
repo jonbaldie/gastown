@@ -2,36 +2,45 @@ package cmd
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
 
-// Crew command flags
-var (
-	crewRig           string
-	crewBranch        bool
-	crewJSON          bool
-	crewForce         bool
-	crewPurge         bool
-	crewNoTmux        bool
-	crewDetached      bool
-	crewMessage       string
-	crewAccount       string
-	crewAgentOverride string
-	crewAll           bool
-	crewListAll       bool
-	crewDryRun        bool
-	crewDebug         bool
-	crewReset         bool
-	crewResume        string
-)
+type crewCommandState struct {
+	rig           string
+	branch        bool
+	json          bool
+	force         bool
+	purge         bool
+	noTmux        bool
+	detached      bool
+	message       string
+	account       string
+	agentOverride string
+	all           bool
+	listAll       bool
+	dryRun        bool
+	debug         bool
+	reset         bool
+	resume        string
+}
 
-var crewCmd = &cobra.Command{
-	Use:     "crew",
-	GroupID: GroupWorkspace,
-	Short:   "Manage crew workers (persistent workspaces for humans)",
-	RunE:    requireSubcommand,
-	Long: `Manage crew workers - persistent workspaces for human developers.
+var crewCommandStateInstance = sync.OnceValue(func() *crewCommandState {
+	return &crewCommandState{}
+})
+
+func crewState() *crewCommandState {
+	return crewCommandStateInstance()
+}
+
+func newCrewCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     "crew",
+		GroupID: GroupWorkspace,
+		Short:   "Manage crew workers (persistent workspaces for humans)",
+		RunE:    requireSubcommand,
+		Long: `Manage crew workers - persistent workspaces for human developers.
 
 CREW VS POLECATS:
   Polecats: Ephemeral sessions. Witness-managed. Auto-nuked after work.
@@ -54,8 +63,9 @@ Commands:
   gt crew list             List workspaces with status
   gt crew at <name>        Attach to session
   gt crew remove <name>    Remove workspace
-  gt crew refresh <name>   Context cycle with handoff mail
-  gt crew restart <name>   Kill and restart session fresh`,
+	gt crew refresh <name>   Context cycle with handoff mail
+	gt crew restart <name>   Kill and restart session fresh`,
+	}
 }
 
 var crewAddCmd = &cobra.Command{
@@ -222,7 +232,7 @@ Examples:
   gt crew restart --all --rig beads     # Restart all crew in beads rig
   gt crew restart --all --dry-run       # Preview what would be restarted`,
 	Args: func(cmd *cobra.Command, args []string) error {
-		if crewAll {
+		if crewState().all {
 			if len(args) > 0 {
 				return fmt.Errorf("cannot specify both --all and a name")
 			}
@@ -313,7 +323,7 @@ Examples:
   gt crew start beads ace --resume abc123   # Resume specific session ID`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// With --all, we can have 0 args (infer rig) or 1+ args (rig specified)
-		if crewAll {
+		if crewState().all {
 			return nil
 		}
 		// Allow: 0 args (infer rig, default to --all)
@@ -346,7 +356,7 @@ Examples:
   gt crew stop --all                        # Stop all running crew sessions
   gt crew stop dave --force                 # Stop without capturing output`,
 	Args: func(cmd *cobra.Command, args []string) error {
-		if crewAll {
+		if crewState().all {
 			if len(args) > 0 {
 				return fmt.Errorf("cannot specify both --all and a name")
 			}
@@ -361,52 +371,54 @@ Examples:
 }
 
 func init() {
+	state := crewState()
+	crewCmd := newCrewCommand()
 	// Add flags
-	crewAddCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to create crew workspace in")
-	crewAddCmd.Flags().BoolVar(&crewBranch, "branch", false, "Create a feature branch (crew/<name>)")
+	crewAddCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to create crew workspace in")
+	crewAddCmd.Flags().BoolVar(&state.branch, "branch", false, "Create a feature branch (crew/<name>)")
 
-	crewListCmd.Flags().StringVar(&crewRig, "rig", "", "Filter by rig name")
-	crewListCmd.Flags().BoolVar(&crewListAll, "all", false, "List crew workspaces in all rigs")
-	crewListCmd.Flags().BoolVar(&crewJSON, "json", false, "Output as JSON")
+	crewListCmd.Flags().StringVar(&state.rig, "rig", "", "Filter by rig name")
+	crewListCmd.Flags().BoolVar(&state.listAll, "all", false, "List crew workspaces in all rigs")
+	crewListCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
-	crewAtCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use")
-	crewAtCmd.Flags().BoolVar(&crewNoTmux, "no-tmux", false, "Just print directory path")
-	crewAtCmd.Flags().BoolVarP(&crewDetached, "detached", "d", false, "Start session without attaching")
-	crewAtCmd.Flags().StringVar(&crewAccount, "account", "", "Claude Code account handle to use (overrides default)")
-	crewAtCmd.Flags().StringVar(&crewAgentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
-	crewAtCmd.Flags().BoolVar(&crewDebug, "debug", false, "Show debug output for troubleshooting")
-	crewAtCmd.Flags().BoolVar(&crewReset, "reset", false, "Reset workspace to default branch (checkout and pull)")
+	crewAtCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to use")
+	crewAtCmd.Flags().BoolVar(&state.noTmux, "no-tmux", false, "Just print directory path")
+	crewAtCmd.Flags().BoolVarP(&state.detached, "detached", "d", false, "Start session without attaching")
+	crewAtCmd.Flags().StringVar(&state.account, "account", "", "Claude Code account handle to use (overrides default)")
+	crewAtCmd.Flags().StringVar(&state.agentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
+	crewAtCmd.Flags().BoolVar(&state.debug, "debug", false, "Show debug output for troubleshooting")
+	crewAtCmd.Flags().BoolVar(&state.reset, "reset", false, "Reset workspace to default branch (checkout and pull)")
 
-	crewRemoveCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use")
-	crewRemoveCmd.Flags().BoolVar(&crewForce, "force", false, "Force remove (skip safety checks)")
-	crewRemoveCmd.Flags().BoolVar(&crewPurge, "purge", false, "Obliterate: delete agent bead, unassign work, clear mail")
+	crewRemoveCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to use")
+	crewRemoveCmd.Flags().BoolVar(&state.force, "force", false, "Force remove (skip safety checks)")
+	crewRemoveCmd.Flags().BoolVar(&state.purge, "purge", false, "Obliterate: delete agent bead, unassign work, clear mail")
 
-	crewRefreshCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use")
-	crewRefreshCmd.Flags().StringVarP(&crewMessage, "message", "m", "", "Custom handoff message")
+	crewRefreshCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to use")
+	crewRefreshCmd.Flags().StringVarP(&state.message, "message", "m", "", "Custom handoff message")
 
-	crewStatusCmd.Flags().StringVar(&crewRig, "rig", "", "Filter by rig name")
-	crewStatusCmd.Flags().BoolVar(&crewJSON, "json", false, "Output as JSON")
+	crewStatusCmd.Flags().StringVar(&state.rig, "rig", "", "Filter by rig name")
+	crewStatusCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
-	crewRenameCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use")
+	crewRenameCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to use")
 
-	crewPristineCmd.Flags().StringVar(&crewRig, "rig", "", "Filter by rig name")
-	crewPristineCmd.Flags().BoolVar(&crewJSON, "json", false, "Output as JSON")
+	crewPristineCmd.Flags().StringVar(&state.rig, "rig", "", "Filter by rig name")
+	crewPristineCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
-	crewRestartCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use (filter when using --all)")
-	crewRestartCmd.Flags().BoolVar(&crewAll, "all", false, "Restart all running crew sessions")
-	crewRestartCmd.Flags().BoolVar(&crewDryRun, "dry-run", false, "Show what would be restarted without restarting")
+	crewRestartCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to use (filter when using --all)")
+	crewRestartCmd.Flags().BoolVar(&state.all, "all", false, "Restart all running crew sessions")
+	crewRestartCmd.Flags().BoolVar(&state.dryRun, "dry-run", false, "Show what would be restarted without restarting")
 
-	crewStartCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to start crew in (alternative to positional rig arg)")
-	crewStartCmd.Flags().BoolVar(&crewAll, "all", false, "Start all crew members in the rig")
-	crewStartCmd.Flags().StringVar(&crewAccount, "account", "", "Claude Code account handle to use")
-	crewStartCmd.Flags().StringVar(&crewAgentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
-	crewStartCmd.Flags().StringVar(&crewResume, "resume", "", "Resume a previous session (optionally specify session ID)")
+	crewStartCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to start crew in (alternative to positional rig arg)")
+	crewStartCmd.Flags().BoolVar(&state.all, "all", false, "Start all crew members in the rig")
+	crewStartCmd.Flags().StringVar(&state.account, "account", "", "Claude Code account handle to use")
+	crewStartCmd.Flags().StringVar(&state.agentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
+	crewStartCmd.Flags().StringVar(&state.resume, "resume", "", "Resume a previous session (optionally specify session ID)")
 	crewStartCmd.Flags().Lookup("resume").NoOptDefVal = "last"
 
-	crewStopCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use (filter when using --all)")
-	crewStopCmd.Flags().BoolVar(&crewAll, "all", false, "Stop all running crew sessions")
-	crewStopCmd.Flags().BoolVar(&crewDryRun, "dry-run", false, "Show what would be stopped without stopping")
-	crewStopCmd.Flags().BoolVar(&crewForce, "force", false, "Skip output capture for faster shutdown")
+	crewStopCmd.Flags().StringVar(&state.rig, "rig", "", "Rig to use (filter when using --all)")
+	crewStopCmd.Flags().BoolVar(&state.all, "all", false, "Stop all running crew sessions")
+	crewStopCmd.Flags().BoolVar(&state.dryRun, "dry-run", false, "Show what would be stopped without stopping")
+	crewStopCmd.Flags().BoolVar(&state.force, "force", false, "Skip output capture for faster shutdown")
 
 	// Add subcommands
 	crewCmd.AddCommand(crewAddCmd)

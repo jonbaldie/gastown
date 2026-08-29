@@ -21,13 +21,14 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 }
 
 func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
+	state := crewState()
 	var name string
 
 	// Debug mode: --debug flag or GT_DEBUG env var
-	debug := crewDebug || os.Getenv("GT_DEBUG") != ""
+	debug := state.debug || os.Getenv("GT_DEBUG") != ""
 	if debug {
 		cwd, _ := os.Getwd()
-		fmt.Printf("[DEBUG] runCrewAt: args=%v, crewRig=%q, cwd=%q\n", args, crewRig, cwd)
+		fmt.Printf("[DEBUG] runCrewAt: args=%v, crewRig=%q, cwd=%q\n", args, state.rig, cwd)
 	}
 
 	// Determine crew name: from arg, or auto-detect from cwd
@@ -35,8 +36,8 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 		name = args[0]
 		// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
 		if rig, crewName, ok := parseRigSlashName(name); ok {
-			if crewRig == "" {
-				crewRig = rig
+			if state.rig == "" {
+				state.rig = rig
 			}
 			name = crewName
 		}
@@ -46,10 +47,10 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 		if err != nil {
 			// Try to show available crew members if we can detect the rig
 			hint := "\n\nUsage: gt crew at <name>"
-			if crewRig != "" {
-				if mgr, _, mgrErr := getCrewManager(crewRig); mgrErr == nil {
+			if state.rig != "" {
+				if mgr, _, mgrErr := getCrewManager(state.rig); mgrErr == nil {
 					if members, listErr := mgr.List(); listErr == nil && len(members) > 0 {
-						hint = fmt.Sprintf("\n\nAvailable crew in %s:", crewRig)
+						hint = fmt.Sprintf("\n\nAvailable crew in %s:", state.rig)
 						for _, m := range members {
 							hint += fmt.Sprintf("\n  %s", m.Name)
 						}
@@ -59,17 +60,17 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 			return fmt.Errorf("could not detect crew workspace from current directory: %w%s", err, hint)
 		}
 		name = detected.crewName
-		if crewRig == "" {
-			crewRig = detected.rigName
+		if state.rig == "" {
+			state.rig = detected.rigName
 		}
 		fmt.Printf("Detected crew workspace: %s/%s\n", detected.rigName, name)
 	}
 
 	if debug {
-		fmt.Printf("[DEBUG] after detection: name=%q, crewRig=%q\n", name, crewRig)
+		fmt.Printf("[DEBUG] after detection: name=%q, crewRig=%q\n", name, state.rig)
 	}
 
-	crewMgr, r, err := getCrewManagerForMember(crewRig, name)
+	crewMgr, r, err := getCrewManagerForMember(state.rig, name)
 	if err != nil {
 		return err
 	}
@@ -84,7 +85,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 	}
 
 	// Reset to default branch if --reset flag is passed; otherwise warn if off-branch
-	if crewReset {
+	if state.reset {
 		if err := ensureDefaultBranch(worker.ClonePath, fmt.Sprintf("Crew workspace %s/%s", r.Name, name), r.Path); err != nil {
 			return fmt.Errorf("resetting to default branch: %w", err)
 		}
@@ -93,7 +94,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 	}
 
 	// If --no-tmux, just print the path
-	if crewNoTmux {
+	if state.noTmux {
 		fmt.Println(worker.ClonePath)
 		return nil
 	}
@@ -104,7 +105,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 	accountsPath := constants.MayorAccountsPath(townRoot)
-	claudeConfigDir, accountHandle, err := config.ResolveAccountConfigDir(accountsPath, crewAccount)
+	claudeConfigDir, accountHandle, err := config.ResolveAccountConfigDir(accountsPath, state.account)
 	if err != nil {
 		return fmt.Errorf("resolving account: %w", err)
 	}
@@ -113,10 +114,10 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 	}
 
 	var runtimeConfig *config.RuntimeConfig
-	if crewAgentOverride != "" {
-		rc, _, resolveErr := config.ResolveAgentConfigWithOverride(townRoot, r.Path, crewAgentOverride)
+	if state.agentOverride != "" {
+		rc, _, resolveErr := config.ResolveAgentConfigWithOverride(townRoot, r.Path, state.agentOverride)
 		if resolveErr != nil {
-			style.PrintWarning("could not resolve agent override %q: %v, falling back to default", crewAgentOverride, resolveErr)
+			style.PrintWarning("could not resolve agent override %q: %v, falling back to default", state.agentOverride, resolveErr)
 			runtimeConfig = config.ResolveWorkerAgentConfig(name, townRoot, r.Path)
 		} else {
 			runtimeConfig = rc
@@ -167,7 +168,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 			}
 
 			// Outside tmux: attach unless --detached flag is set
-			if crewDetached {
+			if state.detached {
 				fmt.Printf("Existing session: '%s'. Run 'tmux attach -t %s' to attach.\n",
 					existingSession, existingSession)
 				return nil
@@ -192,7 +193,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 			AgentName:        name,
 			TownRoot:         townRoot,
 			RuntimeConfigDir: claudeConfigDir,
-			Agent:            crewAgentOverride,
+			Agent:            state.agentOverride,
 			Topic:            "start",
 			SessionName:      sessionID,
 		})
@@ -241,7 +242,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 			Prompt:      beacon,
 			Topic:       "start",
 			SessionName: sessionID,
-		}, r.Path, beacon, crewAgentOverride)
+		}, r.Path, beacon, state.agentOverride)
 		if err != nil {
 			return fmt.Errorf("building startup command: %w", err)
 		}
@@ -276,7 +277,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 				AgentName:        name,
 				TownRoot:         townRoot,
 				RuntimeConfigDir: claudeConfigDir,
-				Agent:            crewAgentOverride,
+				Agent:            state.agentOverride,
 				Topic:            "restart",
 				SessionName:      sessionID,
 			})
@@ -310,7 +311,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 				Prompt:      beacon,
 				Topic:       "restart",
 				SessionName: sessionID,
-			}, r.Path, beacon, crewAgentOverride)
+			}, r.Path, beacon, state.agentOverride)
 			if err != nil {
 				return fmt.Errorf("building startup command: %w", err)
 			}
@@ -352,7 +353,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 		}
 
 		// Agent not alive — resolve config to start it
-		agentCfg, _, err := config.ResolveAgentConfigWithOverride(townRoot, r.Path, crewAgentOverride)
+		agentCfg, _, err := config.ResolveAgentConfigWithOverride(townRoot, r.Path, state.agentOverride)
 		if err != nil {
 			return fmt.Errorf("resolving agent: %w", err)
 		}
@@ -380,7 +381,7 @@ func runCrewAtWithRetry(cmd *cobra.Command, args []string, retried bool) error {
 	}
 
 	// Outside tmux: attach unless --detached flag is set
-	if crewDetached {
+	if state.detached {
 		fmt.Printf("Started %s/%s. Run 'gt crew at %s' to attach.\n", r.Name, name, name)
 		return nil
 	}

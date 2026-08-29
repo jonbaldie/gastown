@@ -32,6 +32,7 @@ type CrewStatusItem struct {
 }
 
 func runCrewStatus(_ *cobra.Command, args []string) error {
+	state := crewState()
 	targetName := resolveCrewStatusTarget(args)
 	t := tmux.NewTmux()
 	items, err := collectCrewStatusItems(targetName, t)
@@ -44,7 +45,7 @@ func runCrewStatus(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if crewJSON {
+	if state.json {
 		return printCrewStatusJSON(items)
 	}
 
@@ -53,21 +54,22 @@ func runCrewStatus(_ *cobra.Command, args []string) error {
 }
 
 func resolveCrewStatusTarget(args []string) string {
+	state := crewState()
 	if len(args) == 0 {
 		return ""
 	}
 
 	targetName := args[0]
 	if rig, crewName, ok := parseRigSlashName(targetName); ok {
-		if crewRig == "" {
-			crewRig = rig
+		if state.rig == "" {
+			state.rig = rig
 		}
 		return crewName
 	}
-	if crewRig == "" {
+	if state.rig == "" {
 		// A single rig name means show status for all crew in that rig.
 		if _, _, err := getRig(targetName); err == nil {
-			crewRig = targetName
+			state.rig = targetName
 			return ""
 		}
 	}
@@ -75,7 +77,7 @@ func resolveCrewStatusTarget(args []string) string {
 }
 
 func collectCrewStatusItems(targetName string, t *tmux.Tmux) ([]CrewStatusItem, error) {
-	if targetName == "" && crewRig == "" {
+	if targetName == "" && crewState().rig == "" {
 		return collectAllRigsCrewStatus(t)
 	}
 	return collectOneRigCrewStatus(targetName, t)
@@ -100,7 +102,7 @@ func collectAllRigsCrewStatus(t *tmux.Tmux) ([]CrewStatusItem, error) {
 }
 
 func collectOneRigCrewStatus(targetName string, t *tmux.Tmux) ([]CrewStatusItem, error) {
-	crewMgr, r, err := getCrewManagerForMember(crewRig, targetName)
+	crewMgr, r, err := getCrewManagerForMember(crewState().rig, targetName)
 	if err != nil {
 		return nil, err
 	}

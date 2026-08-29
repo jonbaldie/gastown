@@ -20,11 +20,11 @@ func TestRunCrewStatus_NoArgsAggregatesJSONAcrossAllRigs(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	crewRig = ""
-	crewJSON = true
+	crewState().rig = ""
+	crewState().json = true
 	defer func() {
-		crewRig = ""
-		crewJSON = false
+		crewState().rig = ""
+		crewState().json = false
 	}()
 
 	output := captureStdout(t, func() {
@@ -62,11 +62,11 @@ func TestRunCrewStatus_RigFlagFiltersJSONFromTownRoot(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	crewRig = "rig-b"
-	crewJSON = true
+	crewState().rig = "rig-b"
+	crewState().json = true
 	defer func() {
-		crewRig = ""
-		crewJSON = false
+		crewState().rig = ""
+		crewState().json = false
 	}()
 
 	output := captureStdout(t, func() {
