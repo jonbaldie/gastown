@@ -17,11 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	uninstallWorkspace bool
-	uninstallForce     bool
-)
-
 var uninstallCmd = &cobra.Command{
 	Use:     "uninstall",
 	GroupID: GroupConfig,
@@ -47,15 +42,17 @@ Examples:
 }
 
 func init() {
-	uninstallCmd.Flags().BoolVar(&uninstallWorkspace, "workspace", false,
+	uninstallCmd.Flags().Bool("workspace", false,
 		"Also remove the workspace directory (DESTRUCTIVE)")
-	uninstallCmd.Flags().BoolVarP(&uninstallForce, "force", "f", false,
+	uninstallCmd.Flags().BoolP("force", "f", false,
 		"Skip confirmation prompts")
 	rootCmd.AddCommand(uninstallCmd)
 }
 
-func runUninstall(_ *cobra.Command, _ []string) error {
-	if !uninstallForce {
+func runUninstall(cmd *cobra.Command, _ []string) error {
+	workspaceFlag := commandBoolFlag(cmd, "workspace")
+	force := commandBoolFlag(cmd, "force")
+	if !force {
 		fmt.Println("This will remove Gas Town from your system.")
 		fmt.Println()
 		fmt.Println("The following will be removed:")
@@ -65,7 +62,7 @@ func runUninstall(_ *cobra.Command, _ []string) error {
 		fmt.Printf("  • Config directory (%s)\n", state.ConfigDir())
 		fmt.Printf("  • Cache directory (%s)\n", state.CacheDir())
 
-		if uninstallWorkspace {
+		if workspaceFlag {
 			fmt.Println()
 			fmt.Printf("  %s WORKSPACE WILL BE DELETED\n", style.Warning.Render("⚠"))
 			fmt.Println("     This cannot be undone!")
@@ -119,7 +116,7 @@ func runUninstall(_ *cobra.Command, _ []string) error {
 		fmt.Printf("  %s Removed cache directory\n", style.Success.Render("✓"))
 	}
 
-	if uninstallWorkspace {
+	if workspaceFlag {
 		workspaceDir := findWorkspaceForUninstall()
 		if workspaceDir != "" {
 			if err := os.RemoveAll(workspaceDir); err != nil {
