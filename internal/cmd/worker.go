@@ -15,41 +15,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	workerTownFlag     string
-	workerJSON         bool
-	workerStartSession string
-	workerStartBead    string
-	workerStartRole    string
-	workerStartRig     string
-	workerStartAgent   string
-	workerStartType    string
-	workerDeliverMsg   string
-	workerDeliverPri   string
-	workerDeliverSrc   string
-)
-
 func init() {
 	rootCmd.AddCommand(workerCmd)
 	workerCmd.AddCommand(workerServeCmd)
 	workerCmd.AddCommand(workerStatusCmd)
 	workerCmd.AddCommand(workerStartRunCmd)
 	workerCmd.AddCommand(workerDeliverCmd)
-	workerServeCmd.Flags().StringVar(&workerTownFlag, "town", "", "Town root (default: detect from cwd)")
-	workerStatusCmd.Flags().StringVar(&workerTownFlag, "town", "", "Town root (default: detect from cwd)")
-	workerStatusCmd.Flags().BoolVar(&workerJSON, "json", false, "Output as JSON")
-	workerStartRunCmd.Flags().StringVar(&workerTownFlag, "town", "", "Town root (default: detect from cwd)")
-	workerStartRunCmd.Flags().StringVar(&workerStartSession, "session", "", "Session ID")
-	workerStartRunCmd.Flags().StringVar(&workerStartBead, "bead", "", "Hook bead ID")
-	workerStartRunCmd.Flags().StringVar(&workerStartRole, "role", "", "Role")
-	workerStartRunCmd.Flags().StringVar(&workerStartRig, "rig", "", "Rig")
-	workerStartRunCmd.Flags().StringVar(&workerStartAgent, "agent", "", "Agent name")
-	workerStartRunCmd.Flags().StringVar(&workerStartType, "agent-type", "", "Agent type")
-	workerDeliverCmd.Flags().StringVar(&workerTownFlag, "town", "", "Town root (default: detect from cwd)")
-	workerDeliverCmd.Flags().StringVarP(&workerDeliverMsg, "message", "m", "", "Prompt text")
-	workerDeliverCmd.Flags().StringVar(&workerDeliverPri, "priority", worker.PriorityNormal, "Priority: system, normal, urgent")
-	workerDeliverCmd.Flags().StringVar(&workerDeliverSrc, "source", worker.SourceNudge, "Source: nudge, mail, sling, prime")
-	workerDeliverCmd.Flags().BoolVar(&workerJSON, "json", false, "Output as JSON")
+	workerServeCmd.Flags().String("town", "", "Town root (default: detect from cwd)")
+	workerStatusCmd.Flags().String("town", "", "Town root (default: detect from cwd)")
+	workerStatusCmd.Flags().Bool("json", false, "Output as JSON")
+	workerStartRunCmd.Flags().String("town", "", "Town root (default: detect from cwd)")
+	workerStartRunCmd.Flags().String("session", "", "Session ID")
+	workerStartRunCmd.Flags().String("bead", "", "Hook bead ID")
+	workerStartRunCmd.Flags().String("role", "", "Role")
+	workerStartRunCmd.Flags().String("rig", "", "Rig")
+	workerStartRunCmd.Flags().String("agent", "", "Agent name")
+	workerStartRunCmd.Flags().String("agent-type", "", "Agent type")
+	workerDeliverCmd.Flags().String("town", "", "Town root (default: detect from cwd)")
+	workerDeliverCmd.Flags().StringP("message", "m", "", "Prompt text")
+	workerDeliverCmd.Flags().String("priority", worker.PriorityNormal, "Priority: system, normal, urgent")
+	workerDeliverCmd.Flags().String("source", worker.SourceNudge, "Source: nudge, mail, sling, prime")
+	workerDeliverCmd.Flags().Bool("json", false, "Output as JSON")
 }
 
 var workerCmd = &cobra.Command{
@@ -77,9 +63,10 @@ var workerStatusCmd = &cobra.Command{
 	RunE:  runWorkerStatus,
 }
 
-func resolveWorkerTown() (string, error) {
-	if workerTownFlag != "" {
-		return workerTownFlag, nil
+func resolveWorkerTown(cmd *cobra.Command) (string, error) {
+	town := commandStringFlag(cmd, "town")
+	if town != "" {
+		return town, nil
 	}
 	root, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -88,8 +75,8 @@ func resolveWorkerTown() (string, error) {
 	return root, nil
 }
 
-func runWorkerServe(_ *cobra.Command, _ []string) error {
-	townRoot, err := resolveWorkerTown()
+func runWorkerServe(cmd *cobra.Command, _ []string) error {
+	townRoot, err := resolveWorkerTown(cmd)
 	if err != nil {
 		return err
 	}
@@ -108,8 +95,9 @@ func runWorkerServe(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runWorkerStatus(_ *cobra.Command, args []string) error {
-	townRoot, err := resolveWorkerTown()
+func runWorkerStatus(cmd *cobra.Command, args []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	townRoot, err := resolveWorkerTown(cmd)
 	if err != nil {
 		return err
 	}
@@ -129,7 +117,7 @@ func runWorkerStatus(_ *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		if workerJSON {
+		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(ev)
@@ -149,7 +137,7 @@ func runWorkerStatus(_ *cobra.Command, args []string) error {
 		return err
 	}
 	h, herr := w.Health(ctx, id)
-	if workerJSON {
+	if jsonOutput {
 		out := map[string]any{"state": st}
 		if herr == nil {
 			out["health"] = h
@@ -176,10 +164,16 @@ var workerStartRunCmd = &cobra.Command{
 }
 
 func runWorkerStartRun(cmd *cobra.Command, _ []string) error {
-	if workerStartSession == "" {
+	sessionID := commandStringFlag(cmd, "session")
+	beadID := commandStringFlag(cmd, "bead")
+	role := commandStringFlag(cmd, "role")
+	rig := commandStringFlag(cmd, "rig")
+	agentName := commandStringFlag(cmd, "agent")
+	agentType := commandStringFlag(cmd, "agent-type")
+	if sessionID == "" {
 		return fmt.Errorf("--session is required")
 	}
-	townRoot, err := resolveWorkerTown()
+	townRoot, err := resolveWorkerTown(cmd)
 	if err != nil {
 		return err
 	}
@@ -190,12 +184,12 @@ func runWorkerStartRun(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	run, err := w.StartRun(ctx, worker.StartSpec{
-		SessionID: workerStartSession,
-		BeadID:    workerStartBead,
-		Role:      workerStartRole,
-		Rig:       workerStartRig,
-		AgentName: workerStartAgent,
-		AgentType: workerStartType,
+		SessionID: sessionID,
+		BeadID:    beadID,
+		Role:      role,
+		Rig:       rig,
+		AgentName: agentName,
+		AgentType: agentType,
 	})
 	if err != nil {
 		return err
@@ -213,10 +207,14 @@ var workerDeliverCmd = &cobra.Command{
 }
 
 func runWorkerDeliver(cmd *cobra.Command, args []string) error {
-	if workerDeliverMsg == "" {
+	message := commandStringFlag(cmd, "message")
+	priority := commandStringFlag(cmd, "priority")
+	source := commandStringFlag(cmd, "source")
+	jsonOutput := commandBoolFlag(cmd, "json")
+	if message == "" {
 		return fmt.Errorf("--message is required")
 	}
-	townRoot, err := resolveWorkerTown()
+	townRoot, err := resolveWorkerTown(cmd)
 	if err != nil {
 		return err
 	}
@@ -228,14 +226,14 @@ func runWorkerDeliver(cmd *cobra.Command, args []string) error {
 	defer cancel()
 	d, err := w.Deliver(ctx, worker.Prompt{
 		RunID:    args[0],
-		Content:  workerDeliverMsg,
-		Priority: workerDeliverPri,
-		Source:   workerDeliverSrc,
+		Content:  message,
+		Priority: priority,
+		Source:   source,
 	})
 	if err != nil {
 		return err
 	}
-	if workerJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(d)
