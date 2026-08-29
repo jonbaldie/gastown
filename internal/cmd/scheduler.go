@@ -16,14 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	schedulerStatusJSON bool
-	schedulerListJSON   bool
-	schedulerClearBead  string
-	schedulerRunBatch   int
-	schedulerRunDryRun  bool
-)
-
 var schedulerCmd = &cobra.Command{
 	Use:     "scheduler",
 	GroupID: GroupWork,
@@ -94,17 +86,17 @@ but can be run ad-hoc. Useful for testing or when the daemon is not running.
 
 func init() {
 	// Status flags
-	schedulerStatusCmd.Flags().BoolVar(&schedulerStatusJSON, "json", false, "Output as JSON")
+	schedulerStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// List flags
-	schedulerListCmd.Flags().BoolVar(&schedulerListJSON, "json", false, "Output as JSON")
+	schedulerListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Clear flags
-	schedulerClearCmd.Flags().StringVar(&schedulerClearBead, "bead", "", "Remove specific bead from scheduler")
+	schedulerClearCmd.Flags().String("bead", "", "Remove specific bead from scheduler")
 
 	// Run flags
-	schedulerRunCmd.Flags().IntVar(&schedulerRunBatch, "batch", 0, "Override batch size (0 = use config)")
-	schedulerRunCmd.Flags().BoolVar(&schedulerRunDryRun, "dry-run", false, "Preview what would dispatch")
+	schedulerRunCmd.Flags().Int("batch", 0, "Override batch size (0 = use config)")
+	schedulerRunCmd.Flags().Bool("dry-run", false, "Preview what would dispatch")
 
 	// Build command tree (flat — no intermediary "capacity" level)
 	schedulerCmd.AddCommand(schedulerStatusCmd)
@@ -126,7 +118,7 @@ type scheduledBeadInfo struct {
 	Blocked   bool   `json:"blocked,omitempty"`
 }
 
-func runSchedulerStatus(_ *cobra.Command, _ []string) error {
+func runSchedulerStatus(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -147,7 +139,7 @@ func runSchedulerStatus(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("loading polecat capacity: %w", err)
 	}
 
-	if schedulerStatusJSON {
+	if commandBoolFlag(cmd, "json") {
 		out := struct {
 			Paused         bool                    `json:"paused"`
 			PausedBy       string                  `json:"paused_by,omitempty"`
@@ -211,7 +203,7 @@ func runSchedulerStatus(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runSchedulerList(_ *cobra.Command, _ []string) error {
+func runSchedulerList(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -222,7 +214,7 @@ func runSchedulerList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("listing scheduled beads: %w", err)
 	}
 
-	if schedulerListJSON {
+	if commandBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(scheduled)
@@ -306,13 +298,14 @@ func runSchedulerResume(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runSchedulerClear(_ *cobra.Command, _ []string) error {
+func runSchedulerClear(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
 	}
 
-	if schedulerClearBead != "" {
+	beadID := commandStringFlag(cmd, "bead")
+	if beadID != "" {
 		// Close ALL sling contexts for this specific work bead (there may be
 		// duplicates if concurrent scheduleBead calls raced past idempotency).
 		// Scan all rig dirs since contexts live in target rig beads. (GH#3468)
@@ -324,7 +317,7 @@ func runSchedulerClear(_ *cobra.Command, _ []string) error {
 		closed := 0
 		for _, ctx := range contexts {
 			fields := beads.ParseSlingContextFields(ctx.issue.Description)
-			if fields != nil && fields.WorkBeadID == schedulerClearBead {
+			if fields != nil && fields.WorkBeadID == beadID {
 				if err := beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "cleared"); err != nil {
 					fmt.Printf("  %s Could not close context %s: %v\n", style.Dim.Render("Warning:"), ctx.issue.ID, err)
 					continue
@@ -334,10 +327,10 @@ func runSchedulerClear(_ *cobra.Command, _ []string) error {
 		}
 
 		if closed == 0 {
-			fmt.Printf("%s No sling context found for %s\n", style.Dim.Render("○"), schedulerClearBead)
+			fmt.Printf("%s No sling context found for %s\n", style.Dim.Render("○"), beadID)
 		} else {
 			fmt.Printf("%s Removed %s from scheduler (closed %d context(s))\n",
-				style.Bold.Render("✓"), schedulerClearBead, closed)
+				style.Bold.Render("✓"), beadID, closed)
 		}
 		return nil
 	}
@@ -366,13 +359,13 @@ func runSchedulerClear(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runSchedulerRun(_ *cobra.Command, _ []string) error {
+func runSchedulerRun(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
 	}
 
-	_, err = dispatchScheduledWork(townRoot, detectActor(), schedulerRunBatch, schedulerRunDryRun)
+	_, err = dispatchScheduledWork(townRoot, detectActor(), commandIntFlag(cmd, "batch"), commandBoolFlag(cmd, "dry-run"))
 	return err
 }
 
