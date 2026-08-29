@@ -18,60 +18,13 @@ import (
 
 // runMoleculeBurn burns (destroys) the current molecule attachment.
 func runMoleculeBurn(cmd *cobra.Command, args []string) (retErr error) {
-	cwd, err := os.Getwd()
+	target, err := resolveMoleculeTarget(args)
 	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
+		return err
 	}
-
-	// Find town root
-	townRoot, err := workspace.FindFromCwd()
+	b, handoff, err := loadMoleculeHandoff(target)
 	if err != nil {
-		return fmt.Errorf("finding workspace: %w", err)
-	}
-	if townRoot == "" {
-		return fmt.Errorf("not in a Gas Town workspace")
-	}
-
-	// Determine target agent
-	var target string
-	if len(args) > 0 {
-		target = args[0]
-	} else {
-		// Auto-detect using env-aware role detection
-		roleInfo, err := GetRoleWithContext(cwd, townRoot)
-		if err != nil {
-			return fmt.Errorf("detecting role: %w", err)
-		}
-		roleCtx := RoleContext{
-			Role:     roleInfo.Role,
-			Rig:      roleInfo.Rig,
-			Polecat:  roleInfo.Polecat,
-			TownRoot: townRoot,
-			WorkDir:  cwd,
-		}
-		target = buildAgentIdentity(roleCtx)
-		if target == "" {
-			return fmt.Errorf("cannot determine agent identity (role: %s)", roleCtx.Role)
-		}
-	}
-
-	// Find beads directory
-	workDir, err := findLocalBeadsDir()
-	if err != nil {
-		return fmt.Errorf("not in a beads workspace: %w", err)
-	}
-
-	b := beads.New(workDir)
-
-	// Find agent's pinned bead (handoff bead)
-	role := extractRoleFromIdentity(target)
-
-	handoff, err := b.FindHandoffBead(role)
-	if err != nil {
-		return fmt.Errorf("finding handoff bead: %w", err)
-	}
-	if handoff == nil {
-		return fmt.Errorf("no handoff bead found for %s (looked for %q with pinned status)", target, beads.HandoffBeadTitle(role))
+		return err
 	}
 
 	// Check for attached molecule
@@ -82,8 +35,10 @@ func runMoleculeBurn(cmd *cobra.Command, args []string) (retErr error) {
 		return nil
 	}
 
-	moleculeID := attachment.AttachedMolecule
+	return burnAttachedMolecule(cmd, target, b, handoff, attachment.AttachedMolecule)
+}
 
+func burnAttachedMolecule(cmd *cobra.Command, target string, b *beads.Beads, handoff *beads.Issue, moleculeID string) (retErr error) {
 	// Recursively close all descendant step issues before detaching
 	// This prevents orphaned step issues from accumulating (gt-psj76.1)
 	childrenClosed := closeDescendants(b, moleculeID)
@@ -96,7 +51,7 @@ func runMoleculeBurn(cmd *cobra.Command, args []string) (retErr error) {
 	}()
 
 	// Detach the molecule with audit logging (this "burns" it by removing the attachment)
-	_, err = b.DetachMoleculeWithAudit(handoff.ID, beads.DetachOptions{
+	_, err := b.DetachMoleculeWithAudit(handoff.ID, beads.DetachOptions{
 		Operation: "burn",
 		Agent:     target,
 		Reason:    "molecule burned by agent",
@@ -133,6 +88,60 @@ func runMoleculeBurn(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 	return nil
+}
+
+func resolveMoleculeTarget(args []string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return "", fmt.Errorf("finding workspace: %w", err)
+	}
+	if townRoot == "" {
+		return "", fmt.Errorf("not in a Gas Town workspace")
+	}
+	if len(args) > 0 {
+		return args[0], nil
+	}
+
+	// Auto-detect using env-aware role detection.
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return "", fmt.Errorf("detecting role: %w", err)
+	}
+	roleCtx := RoleContext{
+		Role:     roleInfo.Role,
+		Rig:      roleInfo.Rig,
+		Polecat:  roleInfo.Polecat,
+		TownRoot: townRoot,
+		WorkDir:  cwd,
+	}
+	target := buildAgentIdentity(roleCtx)
+	if target == "" {
+		return "", fmt.Errorf("cannot determine agent identity (role: %s)", roleCtx.Role)
+	}
+	return target, nil
+}
+
+func loadMoleculeHandoff(target string) (*beads.Beads, *beads.Issue, error) {
+	workDir, err := findLocalBeadsDir()
+	if err != nil {
+		return nil, nil, fmt.Errorf("not in a beads workspace: %w", err)
+	}
+
+	b := beads.New(workDir)
+	role := extractRoleFromIdentity(target)
+	handoff, err := b.FindHandoffBead(role)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finding handoff bead: %w", err)
+	}
+	if handoff == nil {
+		return nil, nil, fmt.Errorf("no handoff bead found for %s (looked for %q with pinned status)", target, beads.HandoffBeadTitle(role))
+	}
+	return b, handoff, nil
 }
 
 // runMoleculeSquash squashes the current molecule into a digest.
