@@ -186,37 +186,9 @@ type StatusSum struct {
 // to determine what runtime and model are being used. Falls back to config
 // when the session isn't running.
 func resolveAgentDisplay(townRoot string, townSettings *config.TownSettings, role string, sessionName string, running bool) (alias, info string) {
-	// Map legacy role names to config role names
-	configRole := role
-	switch role {
-	case "coordinator":
-		configRole = constants.RoleMayor
-	case "health-check":
-		configRole = constants.RoleDeacon
-	}
-
-	// Get alias from config. A named crew assignment is more specific than
-	// the role-wide assignment and town default.
-	if townSettings != nil {
-		if configRole == constants.RoleCrew && sessionName != "" {
-			if identity, err := session.ParseSessionName(sessionName); err == nil && identity.Role == session.RoleCrew {
-				alias = townSettings.CrewAgents[identity.Name]
-			}
-		}
-		if alias == "" {
-			alias = townSettings.RoleAgents[configRole]
-		}
-		if alias == "" {
-			alias = townSettings.DefaultAgent
-		}
-	}
-
-	// If mayor is in ACP mode, use the ACP agent name instead
-	if configRole == constants.RoleMayor && mayor.IsACPActive(townRoot) {
-		if acpAgent, err := mayor.GetACPAgent(townRoot); err == nil && acpAgent != "" {
-			alias = acpAgent
-		}
-	}
+	configRole := statusConfigRole(role)
+	alias = configuredStatusAgent(townSettings, configRole, sessionName)
+	alias = statusACPAgent(townRoot, configRole, alias)
 
 	configured := configuredAgentInfo(townSettings, alias)
 	var detected string
@@ -224,6 +196,44 @@ func resolveAgentDisplay(townRoot string, townSettings *config.TownSettings, rol
 		detected = detectRuntimeFromSessionFn(sessionName)
 	}
 	return alias, chooseAgentInfo(detected, configured)
+}
+
+func statusConfigRole(role string) string {
+	switch role {
+	case "coordinator":
+		return constants.RoleMayor
+	case "health-check":
+		return constants.RoleDeacon
+	default:
+		return role
+	}
+}
+
+func configuredStatusAgent(townSettings *config.TownSettings, configRole, sessionName string) string {
+	if townSettings == nil {
+		return ""
+	}
+	if configRole == constants.RoleCrew && sessionName != "" {
+		if identity, err := session.ParseSessionName(sessionName); err == nil && identity.Role == session.RoleCrew {
+			if alias := townSettings.CrewAgents[identity.Name]; alias != "" {
+				return alias
+			}
+		}
+	}
+	if alias := townSettings.RoleAgents[configRole]; alias != "" {
+		return alias
+	}
+	return townSettings.DefaultAgent
+}
+
+func statusACPAgent(townRoot, configRole, alias string) string {
+	if configRole != constants.RoleMayor || !mayor.IsACPActive(townRoot) {
+		return alias
+	}
+	if acpAgent, err := mayor.GetACPAgent(townRoot); err == nil && acpAgent != "" {
+		return acpAgent
+	}
+	return alias
 }
 
 // configuredAgentInfo is the model string implied by the role's alias config.
@@ -263,17 +273,20 @@ func preferConfiguredAgentInfo(detected, configured string) bool {
 	}
 	detCmd, detModel, detHasModel := splitRuntimeInfo(detected)
 	cfgCmd, _, cfgHasModel := splitRuntimeInfo(configured)
+	return detectedStatusNeedsConfigured(detCmd, detModel, detHasModel, cfgCmd, cfgHasModel)
+}
+
+func detectedStatusNeedsConfigured(detCmd, detModel string, detHasModel bool, cfgCmd string, cfgHasModel bool) bool {
 	// Runtime-only detection ("pi") is not a live model read.
 	if !detHasModel && cfgHasModel {
 		return true
 	}
 	// A leftover ~/.pi default is not the live session model.
-	if detHasModel && cfgHasModel && detCmd == cfgCmd {
-		if piDefault := readPiDefaultsFn(); piDefault != "" && detModel == piDefault {
-			return true
-		}
+	if !detHasModel || !cfgHasModel || detCmd != cfgCmd {
+		return false
 	}
-	return false
+	piDefault := readPiDefaultsFn()
+	return piDefault != "" && detModel == piDefault
 }
 
 func splitRuntimeInfo(info string) (cmd, model string, hasModel bool) {
@@ -425,34 +438,8 @@ func parseRuntimeInfo(cmdline string) string {
 		return ""
 	}
 
-	// Find the actual agent command — skip wrappers (node, bun, cgroup-wrap)
-	cmd := ""
-	startIdx := 0
-	for i, part := range parts {
-		base := filepath.Base(part)
-		if isKnownAgent(base) {
-			cmd = base
-			startIdx = i
-			break
-		}
-	}
-	if cmd == "" {
-		cmd = filepath.Base(parts[0])
-	}
-
-	// Extract model and provider from flags
-	model := ""
-	provider := ""
-	partCount := len(parts)
-	for i := startIdx; i < partCount; i++ {
-		arg := parts[i]
-		if (arg == "--model" || arg == "-m") && i+1 < len(parts) && parts[i+1] != "" {
-			model = parts[i+1]
-		}
-		if arg == "--provider" && i+1 < len(parts) && parts[i+1] != "" {
-			provider = parts[i+1]
-		}
-	}
+	cmd, startIdx := findRuntimeCommand(parts)
+	model, provider := parseRuntimeFlags(parts, startIdx)
 
 	if model != "" {
 		return cmd + "/" + model
@@ -465,6 +452,33 @@ func parseRuntimeInfo(cmdline string) string {
 	// leftover is not the live session model and hid configured alias --model
 	// values from gt status (UAT: pi-cheap reported as pi/grok-4.6).
 	return cmd
+}
+
+func findRuntimeCommand(parts []string) (string, int) {
+	for i, part := range parts {
+		base := filepath.Base(part)
+		if isKnownAgent(base) {
+			return base, i
+		}
+	}
+	return filepath.Base(parts[0]), 0
+}
+
+func parseRuntimeFlags(parts []string, startIdx int) (model, provider string) {
+	partCount := len(parts)
+	for i := startIdx; i < partCount; i++ {
+		arg := parts[i]
+		if i+1 >= partCount || parts[i+1] == "" {
+			continue
+		}
+		switch arg {
+		case "--model", "-m":
+			model = parts[i+1]
+		case "--provider":
+			provider = parts[i+1]
+		}
+	}
+	return model, provider
 }
 
 // readPiDefaultsFn is the ~/.pi default-model lookup used when deciding
@@ -510,18 +524,20 @@ func buildInfoFromConfig(rc *config.RuntimeConfig) string {
 		cmd = rc.Args[0]
 	}
 
-	model := ""
-	for i, arg := range rc.Args {
-		if (arg == "--model" || arg == "-m") && i+1 < len(rc.Args) {
-			model = rc.Args[i+1]
-			break
-		}
-	}
-
+	model := configuredModel(rc.Args)
 	if model != "" {
 		return cmd + "/" + model
 	}
 	return cmd
+}
+
+func configuredModel(args []string) string {
+	for i, arg := range args {
+		if (arg == "--model" || arg == "-m") && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 type statusOptions struct {
