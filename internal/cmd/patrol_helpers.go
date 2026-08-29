@@ -49,72 +49,64 @@ const maxStalePurgePerRun = 5
 // cleaned up incrementally (up to maxStalePurgePerRun per call); any
 // remaining stale beads are cleaned by burnPreviousPatrolWisps at cycle end.
 func findActivePatrol(cfg PatrolConfig) (patrolID, patrolLine string, found bool, err error) {
-	b := cfg.Beads
-	if b == nil {
-		b = beads.New(cfg.BeadsDir)
-	}
-
-	// Find active patrol beads for this agent across durable issues and wisps.
+	b := patrolBeads(cfg)
 	hookedBeads, listErr := listAssignedActiveWorkAcrossStatuses(b, cfg.Assignee)
 	if listErr != nil {
 		return "", "", false, fmt.Errorf("listing active patrol work: %w", listErr)
 	}
+	activeBead, staleIDs, skipped := scanActivePatrolBeads(b, cfg, hookedBeads)
+	closeStalePatrolBeads(b, staleIDs)
+	if activeBead != nil {
+		return activeBead.ID, formatBeadLine(activeBead), true, nil
+	}
+	if skipped > 0 {
+		return "", "", false, fmt.Errorf("discovery incomplete: %d patrol(s) skipped due to child-listing errors", skipped)
+	}
+	return "", "", false, nil
+}
 
-	// Identify active patrol and collect stale ones for cleanup.
-	// Stop scanning as soon as the active patrol is found to avoid N+1
-	// checkHasOpenChildren queries when many accumulated orphans are present.
-	// Stale cleanup is capped at maxStalePurgePerRun to limit write pressure.
+func patrolBeads(cfg PatrolConfig) *beads.Beads {
+	if cfg.Beads != nil {
+		return cfg.Beads
+	}
+	return beads.New(cfg.BeadsDir)
+}
+
+func scanActivePatrolBeads(b *beads.Beads, cfg PatrolConfig, hookedBeads []*beads.Issue) (*beads.Issue, []string, int) {
 	var activeBead *beads.Issue
 	var staleIDs []string
-	var skipped int // tracks patrols skipped due to child-listing errors
-
+	var skipped int
 	for _, bead := range hookedBeads {
 		if !strings.HasPrefix(bead.Title, cfg.PatrolMolName) {
 			continue
 		}
-
 		hasOpen, err := checkHasOpenChildren(b, bead.ID)
 		if err != nil {
-			// Transient error — skip this bead entirely to avoid
-			// destructive cleanup of a potentially active patrol.
 			style.PrintWarning("could not check children for %s: %v", bead.ID, err)
 			skipped++
 			continue
 		}
-
 		if !hasOpen {
-			// Stale patrol (no open children) — schedule for cleanup up to cap.
-			// Excess stale beads are deferred to burnPreviousPatrolWisps.
 			if len(staleIDs) < maxStalePurgePerRun {
 				staleIDs = append(staleIDs, bead.ID)
 			}
-		} else if activeBead == nil {
-			// Active patrol found — stop scanning to prevent N+1 queries.
-			// Any unvisited stale beads will be cleaned by burnPreviousPatrolWisps
-			// when the patrol cycle ends and autoSpawnPatrol is called.
+			continue
+		}
+		if activeBead == nil {
 			activeBead = bead
 			break
 		}
 	}
+	return activeBead, staleIDs, skipped
+}
 
-	// Clean up stale patrols (capped at maxStalePurgePerRun)
+func closeStalePatrolBeads(b *beads.Beads, staleIDs []string) {
 	for _, id := range staleIDs {
 		closeDescendants(b, id)
 		if err := b.ForceCloseWithReason("stale patrol cleanup", id); err != nil {
 			style.PrintWarning("could not close stale patrol %s: %v", id, err)
 		}
 	}
-
-	if activeBead != nil {
-		return activeBead.ID, formatBeadLine(activeBead), true, nil
-	}
-
-	// If we found matching patrols but skipped them all due to errors,
-	// return an error so the caller doesn't auto-spawn a duplicate.
-	if skipped > 0 {
-		return "", "", false, fmt.Errorf("discovery incomplete: %d patrol(s) skipped due to child-listing errors", skipped)
-	}
-	return "", "", false, nil
 }
 
 // checkHasOpenChildren returns true if the given parent has any children
@@ -192,29 +184,39 @@ func burnPreviousPatrolWisps(cfg PatrolConfig) {
 // self-cleaning regardless of the caller.
 // Returns the patrol ID or an error.
 func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
-	if stop, err := refineryPatrolSafetyStop(cfg); err != nil {
+	if err := stopRefineryPatrolIfNeeded(cfg); err != nil {
 		return "", err
-	} else if stop != nil {
-		return "", refinery.NewSafetyStoppedError(stop)
 	}
-
-	// Resolve the beads directory following redirects.
-	// This ensures bd targets the correct database (e.g., rig database
-	// instead of HQ) regardless of inherited BEADS_DIR. See gt-ctir.
 	resolvedBeadsDir := beads.ResolveBeadsDir(cfg.BeadsDir)
-
-	// Burn any existing patrol wisps for this role before creating a new one.
-	// Without this, each patrol cycle leaks a root wisp into the DB, producing
-	// ~500-700 orphans/day across all patrol formulas (gt-92jh).
 	burnPreviousPatrolWisps(cfg)
+	protoID, err := findPatrolFormulaProto(cfg)
+	if err != nil {
+		return "", err
+	}
+	patrolID, err := createPatrolWisp(cfg, resolvedBeadsDir, protoID)
+	if err != nil {
+		return "", err
+	}
+	return hookAndDescribePatrolWisp(cfg, resolvedBeadsDir, patrolID)
+}
 
-	// Find the proto ID for the patrol molecule
+func stopRefineryPatrolIfNeeded(cfg PatrolConfig) error {
+	stop, err := refineryPatrolSafetyStop(cfg)
+	if err != nil {
+		return err
+	}
+	if stop != nil {
+		return refinery.NewSafetyStoppedError(stop)
+	}
+	return nil
+}
+
+func findPatrolFormulaProto(cfg PatrolConfig) (string, error) {
 	cmdCatalog := exec.Command("gt", "formula", "list")
 	cmdCatalog.Dir = cfg.BeadsDir
 	var stdoutCatalog, stderrCatalog bytes.Buffer
 	cmdCatalog.Stdout = &stdoutCatalog
 	cmdCatalog.Stderr = &stderrCatalog
-
 	if err := cmdCatalog.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderrCatalog.String())
 		if errMsg != "" {
@@ -222,28 +224,27 @@ func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 		}
 		return "", fmt.Errorf("failed to list formulas: %w", err)
 	}
-
-	// Find patrol molecule in formula list
-	// Format: "formula-name         description"
-	var protoID string
-	catalogLines := strings.Split(stdoutCatalog.String(), "\n")
-	for _, line := range catalogLines {
-		if strings.Contains(line, cfg.PatrolMolName) {
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				protoID = parts[0]
-				break
-			}
-		}
-	}
-
+	protoID := parsePatrolFormulaProto(stdoutCatalog.String(), cfg.PatrolMolName)
 	if protoID == "" {
 		return "", fmt.Errorf("proto %s not found in catalog", cfg.PatrolMolName)
 	}
+	return protoID, nil
+}
 
-	// Create the patrol wisp (root only — steps are read inline at prime time,
-	// not tracked as individual DB rows). Child wisps are reserved for pour=true
-	// formulas like releases where checkpoint recovery matters.
+func parsePatrolFormulaProto(catalog, patrolMolName string) string {
+	for _, line := range strings.Split(catalog, "\n") {
+		if !strings.Contains(line, patrolMolName) {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
+func createPatrolWisp(cfg PatrolConfig, resolvedBeadsDir, protoID string) (string, error) {
 	spawnArgs := []string{"mol", "wisp", "create", protoID, "--root-only", "--actor", cfg.RoleName}
 	for _, v := range cfg.ExtraVars {
 		spawnArgs = append(spawnArgs, "--var", v)
@@ -256,42 +257,34 @@ func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 	var stdoutSpawn, stderrSpawn bytes.Buffer
 	cmdSpawn.Stdout = &stdoutSpawn
 	cmdSpawn.Stderr = &stderrSpawn
-
 	if err := cmdSpawn.Run(); err != nil {
 		return "", fmt.Errorf("failed to create patrol wisp: %s", stderrSpawn.String())
 	}
-
-	// Parse the created molecule ID from output
-	// Format: "Root issue: <rig>-wisp-<hash>" where rig prefix varies
-	var patrolID string
-	spawnOutput := stdoutSpawn.String()
-	for _, line := range strings.Split(spawnOutput, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Root issue:") {
-			patrolID = strings.TrimSpace(strings.TrimPrefix(line, "Root issue:"))
-			break
-		}
-	}
-	// Fallback: look for any token containing "-wisp-"
-	if patrolID == "" {
-		for _, line := range strings.Split(spawnOutput, "\n") {
-			for _, p := range strings.Fields(line) {
-				if strings.Contains(p, "-wisp-") {
-					patrolID = p
-					break
-				}
-			}
-			if patrolID != "" {
-				break
-			}
-		}
-	}
-
+	patrolID := parseCreatedPatrolWispID(stdoutSpawn.String())
 	if patrolID == "" {
 		return "", fmt.Errorf("created wisp but could not parse ID from output")
 	}
+	return patrolID, nil
+}
 
-	// Hook the wisp to the agent so gt mol status sees it
+func parseCreatedPatrolWispID(spawnOutput string) string {
+	for _, line := range strings.Split(spawnOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Root issue:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Root issue:"))
+		}
+	}
+	for _, line := range strings.Split(spawnOutput, "\n") {
+		for _, p := range strings.Fields(line) {
+			if strings.Contains(p, "-wisp-") {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+func hookAndDescribePatrolWisp(cfg PatrolConfig, resolvedBeadsDir, patrolID string) (string, error) {
 	if err := BdCmd("update", patrolID, "--status=hooked", "--assignee="+cfg.Assignee).
 		WithAutoCommit().
 		WithBeadsDir(resolvedBeadsDir).
@@ -299,14 +292,14 @@ func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 		Run(); err != nil {
 		return patrolID, fmt.Errorf("created wisp %s but failed to hook", patrolID)
 	}
-
 	desc, err := renderPatrolWispDescription(cfg)
 	if err != nil {
 		style.PrintWarning("could not render patrol description for %s: %v", patrolID, err)
-	} else if err := updatePatrolWispDescription(cfg, resolvedBeadsDir, patrolID, desc); err != nil {
+		return patrolID, nil
+	}
+	if err := updatePatrolWispDescription(cfg, resolvedBeadsDir, patrolID, desc); err != nil {
 		style.PrintWarning("could not write patrol description for %s: %v", patrolID, err)
 	}
-
 	return patrolID, nil
 }
 
