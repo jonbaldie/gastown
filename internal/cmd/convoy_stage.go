@@ -849,57 +849,57 @@ func updateStagedConvoy(existingConvoyID string, dag *ConvoyDAG, waves []Wave, s
 
 	// Reconcile tracked beads: compare current tracking with desired slingable set.
 	desiredIDs := dagSlingableIDs(dag)
-	desiredSet := make(map[string]bool, len(desiredIDs))
-	for _, id := range desiredIDs {
-		desiredSet[id] = true
-	}
-
 	currentIDs, err := convoyTrackedBeadIDs(townBeads, existingConvoyID)
 	if err != nil {
 		return fmt.Errorf("reading tracked beads for %s: %w", existingConvoyID, err)
 	}
+	reconcileStagedConvoyBeads(townBeads, existingConvoyID, desiredIDs, currentIDs)
+	return updateStagedConvoyMetadata(townBeads, existingConvoyID, desiredIDs, waves, status, title)
+}
 
-	// Add new beads not currently tracked.
+func reconcileStagedConvoyBeads(townBeads, convoyID string, desiredIDs []string, currentIDs map[string]bool) {
 	for _, id := range desiredIDs {
 		if !currentIDs[id] {
-			if err := addTrackingRelationFn(townBeads, existingConvoyID, id); err != nil {
+			if err := addTrackingRelationFn(townBeads, convoyID, id); err != nil {
 				printStageWarning("  Warning: could not track %s in convoy: %v\n", id, err)
 			}
 		}
 	}
 
-	// Remove stale beads no longer in the DAG.
+	desiredSet := make(map[string]bool, len(desiredIDs))
+	for _, id := range desiredIDs {
+		desiredSet[id] = true
+	}
 	for id := range currentIDs {
 		if !desiredSet[id] {
-			if err := removeTrackingRelationFn(townBeads, existingConvoyID, id); err != nil {
+			if err := removeTrackingRelationFn(townBeads, convoyID, id); err != nil {
 				printStageWarning("  Warning: could not untrack %s from convoy: %v\n", id, err)
 			}
 		}
 	}
+}
 
-	// Update status.
-	if out, err := BdCmd("update", existingConvoyID, "--status="+status).
+func updateStagedConvoyMetadata(townBeads, convoyID string, desiredIDs []string, waves []Wave, status, title string) error {
+	if out, err := BdCmd("update", convoyID, "--status="+status).
 		Dir(townBeads).WithAutoCommit().
 		CombinedOutput(); err != nil {
-		return fmt.Errorf("bd update %s --status: %w\noutput: %s", existingConvoyID, err, out)
+		return fmt.Errorf("bd update %s --status: %w\noutput: %s", convoyID, err, out)
 	}
 
-	// Update title if provided.
 	if title != "" {
-		if out, err := BdCmd("update", existingConvoyID, "--title="+title).
+		if out, err := BdCmd("update", convoyID, "--title="+title).
 			Dir(townBeads).WithAutoCommit().
 			CombinedOutput(); err != nil {
-			return fmt.Errorf("bd update %s --title: %w\noutput: %s", existingConvoyID, err, out)
+			return fmt.Errorf("bd update %s --title: %w\noutput: %s", convoyID, err, out)
 		}
 	}
 
-	// Update description with new wave count + timestamp.
 	description := fmt.Sprintf("Staged convoy: %d tasks, %d waves. Re-staged at %s",
 		len(desiredIDs), len(waves), time.Now().UTC().Format(time.RFC3339))
-	if out, err := BdCmd("update", existingConvoyID, "--description="+description).
+	if out, err := BdCmd("update", convoyID, "--description="+description).
 		Dir(townBeads).WithAutoCommit().
 		CombinedOutput(); err != nil {
-		return fmt.Errorf("bd update %s --description: %w\noutput: %s", existingConvoyID, err, out)
+		return fmt.Errorf("bd update %s --description: %w\noutput: %s", convoyID, err, out)
 	}
 
 	return nil
