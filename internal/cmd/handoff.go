@@ -66,37 +66,54 @@ The SessionStart hook runs 'gt prime' to restore context.`,
 	RunE: runHandoff,
 }
 
-var (
-	handoffWatch      bool
-	handoffDryRun     bool
-	handoffSubject    string
-	handoffMessage    string
-	handoffCollect    bool
-	handoffStdin      bool
-	handoffAuto       bool
-	handoffCycle      bool
-	handoffReason     string
-	handoffNoGitCheck bool
-	handoffYes        bool
-)
-
 func init() {
-	handoffCmd.Flags().BoolVarP(&handoffWatch, "watch", "w", true, "Switch to new session (for remote handoff)")
-	handoffCmd.Flags().BoolVarP(&handoffDryRun, "dry-run", "n", false, "Show what would be done without executing")
-	handoffCmd.Flags().StringVarP(&handoffSubject, "subject", "s", "", "Subject for handoff mail (optional)")
-	handoffCmd.Flags().StringVarP(&handoffMessage, "message", "m", "", "Message body for handoff mail (optional)")
-	handoffCmd.Flags().BoolVarP(&handoffCollect, "collect", "c", false, "Auto-collect state (status, inbox, beads) into handoff message")
-	handoffCmd.Flags().BoolVar(&handoffStdin, "stdin", false, "Read message body from stdin (avoids shell quoting issues)")
-	handoffCmd.Flags().BoolVar(&handoffAuto, "auto", false, "Save state only, no session cycling (for PreCompact hooks)")
-	handoffCmd.Flags().BoolVar(&handoffCycle, "cycle", false, "Auto-cycle session (for PreCompact hooks that want full session replacement)")
-	handoffCmd.Flags().StringVar(&handoffReason, "reason", "", "Reason for handoff (e.g., 'compaction', 'idle')")
-	handoffCmd.Flags().BoolVar(&handoffNoGitCheck, "no-git-check", false, "Skip git workspace cleanliness check")
-	handoffCmd.Flags().BoolVarP(&handoffYes, "yes", "y", false, "Skip confirmation prompt (for automation and scripting)")
+	handoffCmd.Flags().BoolP("watch", "w", true, "Switch to new session (for remote handoff)")
+	handoffCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done without executing")
+	handoffCmd.Flags().StringP("subject", "s", "", "Subject for handoff mail (optional)")
+	handoffCmd.Flags().StringP("message", "m", "", "Message body for handoff mail (optional)")
+	handoffCmd.Flags().BoolP("collect", "c", false, "Auto-collect state (status, inbox, beads) into handoff message")
+	handoffCmd.Flags().Bool("stdin", false, "Read message body from stdin (avoids shell quoting issues)")
+	handoffCmd.Flags().Bool("auto", false, "Save state only, no session cycling (for PreCompact hooks)")
+	handoffCmd.Flags().Bool("cycle", false, "Auto-cycle session (for PreCompact hooks that want full session replacement)")
+	handoffCmd.Flags().String("reason", "", "Reason for handoff (e.g., 'compaction', 'idle')")
+	handoffCmd.Flags().Bool("no-git-check", false, "Skip git workspace cleanliness check")
+	handoffCmd.Flags().BoolP("yes", "y", false, "Skip confirmation prompt (for automation and scripting)")
 	rootCmd.AddCommand(handoffCmd)
 }
 
-func runHandoff(_ *cobra.Command, args []string) error {
-	if err := readHandoffStdin(); err != nil {
+type handoffOptions struct {
+	watch      bool
+	dryRun     bool
+	subject    string
+	message    string
+	collect    bool
+	stdin      bool
+	auto       bool
+	cycle      bool
+	reason     string
+	noGitCheck bool
+	yes        bool
+}
+
+func handoffOptionsFromCommand(cmd *cobra.Command) handoffOptions {
+	return handoffOptions{
+		watch:      commandBoolFlag(cmd, "watch"),
+		dryRun:     commandBoolFlag(cmd, "dry-run"),
+		subject:    commandStringFlag(cmd, "subject"),
+		message:    commandStringFlag(cmd, "message"),
+		collect:    commandBoolFlag(cmd, "collect"),
+		stdin:      commandBoolFlag(cmd, "stdin"),
+		auto:       commandBoolFlag(cmd, "auto"),
+		cycle:      commandBoolFlag(cmd, "cycle"),
+		reason:     commandStringFlag(cmd, "reason"),
+		noGitCheck: commandBoolFlag(cmd, "no-git-check"),
+		yes:        commandBoolFlag(cmd, "yes"),
+	}
+}
+
+func runHandoff(cmd *cobra.Command, args []string) error {
+	opts := handoffOptionsFromCommand(cmd)
+	if err := readHandoffStdin(&opts); err != nil {
 		return err
 	}
 
@@ -105,8 +122,8 @@ func runHandoff(_ *cobra.Command, args []string) error {
 	// Note: auto-mode exits here, before the git-status warning check below.
 	// This is intentional — auto-handoffs are triggered by hooks and should not
 	// spam warnings. The --no-git-check flag has no effect in auto mode.
-	if handoffAuto {
-		return runHandoffAuto()
+	if opts.auto {
+		return runHandoffAuto(&opts)
 	}
 
 	// --cycle mode: full session cycling, triggered by PreCompact hook.
@@ -116,8 +133,8 @@ func runHandoff(_ *cobra.Command, args []string) error {
 	//
 	// Flow: collect state → send handoff mail → respawn pane (fresh Claude instance)
 	// The successor session picks up hooked work via SessionStart hook (gt prime --hook).
-	if handoffCycle {
-		return runHandoffCycle()
+	if opts.cycle {
+		return runHandoffCycle(&opts)
 	}
 
 	if handled, err := redirectPolecatHandoff(); handled {
@@ -127,7 +144,7 @@ func runHandoff(_ *cobra.Command, args []string) error {
 	// Prompt for confirmation unless --yes/-y was passed or stdin is not a TTY.
 	// Only interactive (human) sessions get prompted; agent automation proceeds
 	// without blocking on stdin (gas-6z0).
-	if !confirmHandoff() {
+	if !confirmHandoff(&opts) {
 		return nil
 	}
 
@@ -136,22 +153,22 @@ func runHandoff(_ *cobra.Command, args []string) error {
 	// it can hand off immediately and the daemon respawns, creating a crash loop.
 	enforceHandoffCooldown()
 
-	collectHandoffContext()
-	return runHandoffSession(args)
+	collectHandoffContext(&opts)
+	return runHandoffSession(args, &opts)
 }
 
-func readHandoffStdin() error {
-	if !handoffStdin {
+func readHandoffStdin(opts *handoffOptions) error {
+	if !opts.stdin {
 		return nil
 	}
-	if handoffMessage != "" {
+	if opts.message != "" {
 		return fmt.Errorf("cannot use --stdin with --message/-m")
 	}
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
-	handoffMessage = strings.TrimRight(string(data), "\n")
+	opts.message = strings.TrimRight(string(data), "\n")
 	return nil
 }
 
@@ -181,8 +198,8 @@ func redirectPolecatHandoff() (bool, error) {
 	return true, doneCmd.Run()
 }
 
-func confirmHandoff() bool {
-	if handoffYes || handoffDryRun || !term.IsTerminal(int(os.Stdin.Fd())) {
+func confirmHandoff(opts *handoffOptions) bool {
+	if opts.yes || opts.dryRun || !term.IsTerminal(int(os.Stdin.Fd())) {
 		return true
 	}
 	if promptYesNo("Ready to hand off? This will restart the session.") {
@@ -192,22 +209,22 @@ func confirmHandoff() bool {
 	return false
 }
 
-func collectHandoffContext() {
-	if !handoffCollect {
+func collectHandoffContext(opts *handoffOptions) {
+	if !opts.collect {
 		return
 	}
 	collected := collectHandoffState()
-	if handoffMessage == "" {
-		handoffMessage = collected
+	if opts.message == "" {
+		opts.message = collected
 	} else {
-		handoffMessage += "\n\n---\n" + collected
+		opts.message += "\n\n---\n" + collected
 	}
-	if handoffSubject == "" {
-		handoffSubject = "Session handoff with context"
+	if opts.subject == "" {
+		opts.subject = "Session handoff with context"
 	}
 }
 
-func runHandoffSession(args []string) error {
+func runHandoffSession(args []string, opts *handoffOptions) error {
 	t, townTmux, pane, currentSession, err := prepareHandoffTmux()
 	if err != nil {
 		return err
@@ -218,21 +235,21 @@ func runHandoffSession(args []string) error {
 	// For remote handoff (gt handoff <role>), the warning reflects the caller's
 	// workspace state. Checking the target session's workdir would require tmux
 	// pane introspection and is deferred to a future enhancement.
-	if !handoffNoGitCheck {
+	if !opts.noGitCheck {
 		warnHandoffGitStatus()
 	}
 
-	targetSession, restartCmd, err := resolveHandoffTarget(args, currentSession)
+	targetSession, restartCmd, err := resolveHandoffTarget(args, currentSession, opts)
 	if err != nil {
 		return err
 	}
 	if targetSession != currentSession {
 		// Update tmux session env before respawn (not during dry-run — see below)
 		updateSessionEnvForHandoff(townTmux, targetSession, "")
-		return handoffRemoteSession(townTmux, targetSession, restartCmd)
+		return handoffRemoteSession(townTmux, targetSession, restartCmd, opts)
 	}
 
-	return runSelfHandoff(t, pane, currentSession, restartCmd)
+	return runSelfHandoff(t, pane, currentSession, restartCmd, opts)
 }
 
 func prepareHandoffTmux() (*tmux.Tmux, *tmux.Tmux, string, string, error) {
@@ -260,16 +277,16 @@ func prepareHandoffTmux() (*tmux.Tmux, *tmux.Tmux, string, string, error) {
 	return t, townTmux, pane, currentSession, nil
 }
 
-func resolveHandoffTarget(args []string, currentSession string) (string, string, error) {
+func resolveHandoffTarget(args []string, currentSession string, opts *handoffOptions) (string, string, error) {
 	targetSession := currentSession
 	if len(args) > 0 {
 		arg := args[0]
 		if looksLikeBeadID(arg) {
-			if err := hookBeadForHandoff(arg); err != nil {
+			if err := hookBeadForHandoff(arg, opts.dryRun); err != nil {
 				return "", "", fmt.Errorf("hooking bead: %w", err)
 			}
-			if handoffSubject == "" {
-				handoffSubject = fmt.Sprintf("🪝 HOOKED: %s", arg)
+			if opts.subject == "" {
+				opts.subject = fmt.Sprintf("🪝 HOOKED: %s", arg)
 			}
 		} else {
 			var err error
@@ -287,7 +304,7 @@ func resolveHandoffTarget(args []string, currentSession string) (string, string,
 	return targetSession, restartCmd, nil
 }
 
-func runSelfHandoff(t *tmux.Tmux, pane, currentSession, restartCmd string) error {
+func runSelfHandoff(t *tmux.Tmux, pane, currentSession, restartCmd string, opts *handoffOptions) error {
 	// Close any in-progress molecule steps before cycling (gt-e26g).
 	// Without this, patrol agents that handoff mid-cycle leak orphaned wisps.
 	cleanupMoleculeOnHandoff()
@@ -299,9 +316,9 @@ func runSelfHandoff(t *tmux.Tmux, pane, currentSession, restartCmd string) error
 	}
 
 	// Dry run mode - show what would happen (BEFORE any side effects)
-	if handoffDryRun {
-		if handoffSubject != "" || handoffMessage != "" {
-			fmt.Printf("Would send handoff mail: subject=%q (auto-hooked)\n", handoffSubject)
+	if opts.dryRun {
+		if opts.subject != "" || opts.message != "" {
+			fmt.Printf("Would send handoff mail: subject=%q (auto-hooked)\n", opts.subject)
 		}
 		fmt.Printf("Would execute: tmux clear-history -t %s\n", pane)
 		fmt.Printf("Would execute: tmux respawn-pane -k -t %s %s\n", pane, restartCmd)
@@ -315,28 +332,28 @@ func runSelfHandoff(t *tmux.Tmux, pane, currentSession, restartCmd string) error
 	// Placed after the dry-run guard to avoid mutating session state during dry-run.
 	updateSessionEnvForHandoff(t, currentSession, "")
 
-	if err := persistSelfHandoff(agent); err != nil {
+	if err := persistSelfHandoff(agent, opts); err != nil {
 		return err
 	}
-	logSelfHandoff(agent)
+	logSelfHandoff(agent, opts.subject)
 	clearSelfHandoffHistory(t, pane)
 	writeSelfHandoffMarker(currentSession)
 	recordHandoffTime()
 	return respawnSelfHandoff(t, pane, currentSession, restartCmd)
 }
 
-func persistSelfHandoff(agent string) error {
+func persistSelfHandoff(agent string, opts *handoffOptions) error {
 	// Send handoff mail to self (defaults applied inside sendHandoffMail).
 	// The mail is auto-hooked so the next session picks it up.
 	// CRITICAL: Mail must persist to Dolt BEFORE logging to town.log.
 	// If Dolt is down, we must NOT log a false handoff to town.log.
-	beadID, err := sendHandoffMail(handoffSubject, handoffMessage)
+	beadID, err := sendHandoffMail(opts.subject, opts.message)
 	if err != nil {
 		// Handoff persistence failure is fatal — do not silently continue.
 		// A silent failure causes the next session to find an empty hook,
 		// losing all handoff context.
 		if townRoot, trErr := workspace.FindFromCwd(); trErr == nil && townRoot != "" {
-			_ = LogHandoffNoPersist(townRoot, agent, handoffSubject, err)
+			_ = LogHandoffNoPersist(townRoot, agent, opts.subject, err)
 		}
 		fmt.Fprintf(os.Stderr, "The session was NOT respawned. Fix the issue and retry 'gt handoff'.\n")
 		return fmt.Errorf("handoff mail failed to persist (Dolt may be down): %w", err)
@@ -345,13 +362,13 @@ func persistSelfHandoff(agent string) error {
 	return nil
 }
 
-func logSelfHandoff(agent string) {
+func logSelfHandoff(agent, subject string) {
 	// Log handoff event AFTER Dolt persistence succeeds.
 	// Previously this logged BEFORE sendHandoffMail, causing false entries
 	// in town.log when Dolt was down.
 	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
-		_ = LogHandoff(townRoot, agent, handoffSubject)
-		_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(handoffSubject, true))
+		_ = LogHandoff(townRoot, agent, subject)
+		_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(subject, true))
 	}
 }
 
@@ -412,11 +429,11 @@ func respawnSelfHandoff(t *tmux.Tmux, pane, currentSession, restartCmd string) e
 // runHandoffAuto saves state without cycling the session.
 // Used by the PreCompact hook to preserve context before compaction.
 // No tmux required — just collects state, sends handoff mail, and writes marker.
-func runHandoffAuto() error {
-	subject := autoHandoffSubject()
-	message := autoHandoffMessage()
+func runHandoffAuto(opts *handoffOptions) error {
+	subject := autoHandoffSubject(opts)
+	message := autoHandoffMessage(opts)
 
-	if handoffDryRun {
+	if opts.dryRun {
 		fmt.Printf("[auto-handoff] Would send mail: subject=%q\n", subject)
 		fmt.Printf("[auto-handoff] Would write handoff marker\n")
 		return nil
@@ -435,20 +452,20 @@ func runHandoffAuto() error {
 	return nil
 }
 
-func autoHandoffSubject() string {
-	if handoffSubject != "" {
-		return handoffSubject
+func autoHandoffSubject(opts *handoffOptions) string {
+	if opts.subject != "" {
+		return opts.subject
 	}
-	reason := handoffReason
+	reason := opts.reason
 	if reason == "" {
 		reason = "auto"
 	}
 	return fmt.Sprintf("🤝 HANDOFF: %s", reason)
 }
 
-func autoHandoffMessage() string {
-	if handoffMessage != "" {
-		return handoffMessage
+func autoHandoffMessage(opts *handoffOptions) string {
+	if opts.message != "" {
+		return opts.message
 	}
 	return collectHandoffState()
 }
@@ -509,14 +526,16 @@ func logAutoHandoff(subject string) {
 //
 // The successor session starts via SessionStart hook (gt prime --hook),
 // finds the hooked work, and continues from where we left off.
-func runHandoffCycle() error {
-	subject, message := cycleHandoffInputs()
-	t, pane, currentSession, fallback := prepareCycleSession(subject, message)
+func runHandoffCycle(opts *handoffOptions) error {
+	subject, message := cycleHandoffInputs(opts)
+	t, pane, currentSession, fallback := prepareCycleSession()
 	if fallback {
-		return runHandoffAuto()
+		opts.subject = subject
+		opts.message = message
+		return runHandoffAuto(opts)
 	}
 
-	if handoffDryRun {
+	if opts.dryRun {
 		printCycleHandoffDryRun(subject, pane)
 		return nil
 	}
@@ -528,7 +547,7 @@ func runHandoffCycle() error {
 		return err
 	}
 
-	writeCycleHandoffMarker(currentSession)
+	writeCycleHandoffMarker(currentSession, opts.reason)
 
 	// Record handoff time for cooldown enforcement (gt-058d).
 	recordHandoffTime()
@@ -551,41 +570,39 @@ func runHandoffCycle() error {
 	return respawnCyclePane(t, pane, currentSession, restartCmd)
 }
 
-func cycleHandoffInputs() (string, string) {
-	subject := handoffSubject
+func cycleHandoffInputs(opts *handoffOptions) (string, string) {
+	subject := opts.subject
 	if subject == "" {
-		reason := handoffReason
+		reason := opts.reason
 		if reason == "" {
 			reason = "context-cycle"
 		}
 		subject = fmt.Sprintf("🤝 HANDOFF: %s", reason)
 	}
-	message := handoffMessage
+	message := opts.message
 	if message == "" {
 		message = collectHandoffState()
 	}
 	return subject, message
 }
 
-func prepareCycleSession(subject, message string) (*tmux.Tmux, string, string, bool) {
+func prepareCycleSession() (*tmux.Tmux, string, string, bool) {
 	if !tmux.IsInsideTmux() {
-		return cycleFallback(subject, message, "not in tmux, falling back to state-save only")
+		return cycleFallback("not in tmux, falling back to state-save only")
 	}
 	pane := os.Getenv("TMUX_PANE")
 	if pane == "" {
-		return cycleFallback(subject, message, "TMUX_PANE not set, falling back to state-save only")
+		return cycleFallback("TMUX_PANE not set, falling back to state-save only")
 	}
 	currentSession, err := getCurrentTmuxSession()
 	if err != nil {
-		return cycleFallback(subject, message, fmt.Sprintf("could not get session: %v, falling back to state-save only", err))
+		return cycleFallback(fmt.Sprintf("could not get session: %v, falling back to state-save only", err))
 	}
 	return tmux.NewTmuxWithSocket(tmux.SocketFromEnv()), pane, currentSession, false
 }
 
-func cycleFallback(subject, message, reason string) (*tmux.Tmux, string, string, bool) {
+func cycleFallback(reason string) (*tmux.Tmux, string, string, bool) {
 	fmt.Fprintf(os.Stderr, "handoff --cycle: %s\n", reason)
-	handoffMessage = message
-	handoffSubject = subject
 	return nil, "", "", true
 }
 
@@ -613,7 +630,7 @@ func persistCycleHandoff(subject, message, currentSession string) error {
 	return fmt.Errorf("handoff --cycle: mail failed to persist: %w", err)
 }
 
-func writeCycleHandoffMarker(currentSession string) {
+func writeCycleHandoffMarker(currentSession, reason string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return
@@ -621,8 +638,8 @@ func writeCycleHandoffMarker(currentSession string) {
 	runtimeDir := filepath.Join(cwd, constants.DirRuntime)
 	_ = os.MkdirAll(runtimeDir, 0755)
 	markerContent := currentSession
-	if handoffReason != "" {
-		markerContent += "\n" + handoffReason
+	if reason != "" {
+		markerContent += "\n" + reason
 	}
 	_ = os.WriteFile(filepath.Join(runtimeDir, constants.FileHandoffMarker), []byte(markerContent), 0644)
 }
@@ -1279,7 +1296,7 @@ func isTownRoot(root string) bool {
 }
 
 // handoffRemoteSession respawns a different session and optionally switches to it.
-func handoffRemoteSession(t *tmux.Tmux, targetSession, restartCmd string) error {
+func handoffRemoteSession(t *tmux.Tmux, targetSession, restartCmd string, opts *handoffOptions) error {
 	targetPane, err := remoteHandoffPane(t, targetSession)
 	if err != nil {
 		return err
@@ -1287,8 +1304,8 @@ func handoffRemoteSession(t *tmux.Tmux, targetSession, restartCmd string) error 
 
 	fmt.Printf("%s Handing off %s...\n", style.Bold.Render("🤝"), targetSession)
 
-	if handoffDryRun {
-		printRemoteHandoffDryRun(targetPane, targetSession, restartCmd)
+	if opts.dryRun {
+		printRemoteHandoffDryRun(targetPane, targetSession, restartCmd, opts.watch)
 		return nil
 	}
 
@@ -1297,7 +1314,7 @@ func handoffRemoteSession(t *tmux.Tmux, targetSession, restartCmd string) error 
 		return fmt.Errorf("respawning pane: %w", err)
 	}
 
-	return switchToHandoffSession(targetSession)
+	return switchToHandoffSession(targetSession, opts.watch)
 }
 
 func remoteHandoffPane(t *tmux.Tmux, targetSession string) (string, error) {
@@ -1315,10 +1332,10 @@ func remoteHandoffPane(t *tmux.Tmux, targetSession string) (string, error) {
 	return targetPane, nil
 }
 
-func printRemoteHandoffDryRun(targetPane, targetSession, restartCmd string) {
+func printRemoteHandoffDryRun(targetPane, targetSession, restartCmd string, watch bool) {
 	fmt.Printf("Would execute: tmux clear-history -t %s\n", targetPane)
 	fmt.Printf("Would execute: tmux respawn-pane -k -t %s %s\n", targetPane, restartCmd)
-	if handoffWatch {
+	if watch {
 		fmt.Printf("Would execute: tmux switch-client -t %s\n", targetSession)
 	}
 }
@@ -1354,8 +1371,8 @@ func handoffPathExists(path string) bool {
 	return err == nil
 }
 
-func switchToHandoffSession(targetSession string) error {
-	if !handoffWatch {
+func switchToHandoffSession(targetSession string, watch bool) error {
+	if !watch {
 		return nil
 	}
 	fmt.Printf("Switching to %s...\n", targetSession)
@@ -1569,7 +1586,7 @@ func isHandoffLowerAlphaOrDigit(c rune) bool {
 }
 
 // hookBeadForHandoff attaches a bead to the current agent's hook.
-func hookBeadForHandoff(beadID string) error {
+func hookBeadForHandoff(beadID string, dryRun bool) error {
 	// Verify the bead exists first
 	verifyCmd := beads.Spawn("show", beadID, "--json")
 	if err := verifyCmd.Run(); err != nil {
@@ -1584,7 +1601,7 @@ func hookBeadForHandoff(beadID string) error {
 
 	fmt.Printf("%s Hooking %s...\n", style.Bold.Render("🪝"), beadID)
 
-	if handoffDryRun {
+	if dryRun {
 		fmt.Printf("Would run: bd update %s --status=pinned --assignee=%s\n", beadID, agentID)
 		return nil
 	}
