@@ -2068,29 +2068,34 @@ func pruneRemotePolecatBranches(repoGit *git.Git, dryRun bool) (int, error) {
 
 	remotePruned := 0
 	for _, ref := range remoteRefs {
-		if !strings.HasPrefix(ref.Name, "refs/heads/") {
-			continue
-		}
-		branch := strings.TrimPrefix(ref.Name, "refs/heads/")
-		status, statusErr := repoGit.PushRemoteRefTargetStatus("origin", ref, target)
-		if statusErr != nil || !status.Preserved {
-			continue
-		}
-
-		if dryRun {
-			fmt.Printf("  Would delete remote: %s\n", style.Dim.Render(branch))
+		if pruneRemotePolecatBranch(repoGit, ref, target, dryRun) {
 			remotePruned++
-			continue
 		}
-		if delErr := repoGit.DeleteRemoteBranchIfAt("origin", branch, ref.Hash); delErr != nil {
-			fmt.Printf("  %s remote %s: %v\n", style.Warning.Render("⚠"), branch, delErr)
-			continue
-		}
-		fmt.Printf("  %s deleted remote %s\n", style.Success.Render("✓"), branch)
-		remotePruned++
 	}
 
 	return remotePruned, nil
+}
+
+func pruneRemotePolecatBranch(repoGit *git.Git, ref git.RemoteRef, target string, dryRun bool) bool {
+	if !strings.HasPrefix(ref.Name, "refs/heads/") {
+		return false
+	}
+	branch := strings.TrimPrefix(ref.Name, "refs/heads/")
+	status, statusErr := repoGit.PushRemoteRefTargetStatus("origin", ref, target)
+	if statusErr != nil || !status.Preserved {
+		return false
+	}
+
+	if dryRun {
+		fmt.Printf("  Would delete remote: %s\n", style.Dim.Render(branch))
+		return true
+	}
+	if delErr := repoGit.DeleteRemoteBranchIfAt("origin", branch, ref.Hash); delErr != nil {
+		fmt.Printf("  %s remote %s: %v\n", style.Warning.Render("⚠"), branch, delErr)
+		return false
+	}
+	fmt.Printf("  %s deleted remote %s\n", style.Success.Render("✓"), branch)
+	return true
 }
 
 // runPolecatPoolInit creates a persistent polecat pool for a rig.
