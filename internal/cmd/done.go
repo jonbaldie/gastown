@@ -17,7 +17,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/instructions"
 	"github.com/jonbaldie/gastown/internal/mail"
 	"github.com/jonbaldie/gastown/internal/polecat"
-	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/session"
 	"github.com/jonbaldie/gastown/internal/style"
 	"github.com/jonbaldie/gastown/internal/telemetry"
@@ -811,242 +810,22 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 		return fmt.Errorf("getting current branch: %w", err)
 	}
 
-	// Auto-detect cleanup status if not explicitly provided
-	// This prevents premature polecat cleanup by ensuring witness knows git state
-	if doneState().cleanupStatus == "" {
-		workStatus, err := g.CheckUncommittedWork()
-		if err != nil {
-			style.PrintWarning("could not auto-detect cleanup status: %v", err)
-		} else {
-			// CheckUncommittedWork.UnpushedCommits doesn't work for branches
-			// without upstream tracking (common for polecats). Use the more
-			// robust BranchPushedToRemote which compares against origin/main.
-			pushed, unpushedCount, pushErr := g.BranchPushedToRemote(branch, "origin")
-			if pushErr != nil {
-				style.PrintWarning("could not check if branch is pushed: %v", pushErr)
-			}
-			doneState().cleanupStatus = cleanupStatusFromWorkState(workStatus, cwd, pushed, unpushedCount, pushErr)
-		}
+	autoDetectDoneCleanupStatus(g, cwd, branch)
+	autoPopDoneStashes(g)
+	if err := autoCommitDoneUncommittedWork(g, cwd, branch); err != nil {
+		return err
 	}
-
-	// SAFETY NET (gt-pvx, stash recovery): If we detected stashes belonging to
-	// this branch, auto-pop them so the existing uncommitted-work auto-commit
-	// path (below) catches the contents and saves them as a normal commit.
-	//
-	// Background: agents have been observed running `git stash` to clear the
-	// working tree before rebase/checkout, then dying before `git stash pop`.
-	// The stash entries become orphaned in .git/refs/stash, surviving for
-	// indefinite periods and silently leaking work. By popping them on the way
-	// out of `gt done`, the recovery flow turns "lost" stashes into a
-	// committed safety-net snapshot.
-	//
-	// Pop happens oldest-first so the most recent state ends up on top of the
-	// working tree (matches what a user would do manually). If any pop has
-	// conflicts, we stop and let the agent/user resolve — surfacing the
-	// conflict is better than silently dropping the stash.
-	if doneState().cleanupStatus == "stash" {
-		entries, err := g.StashListForBranch()
-		if err != nil {
-			style.PrintWarning("auto-pop: could not list stashes: %v — orphaned stashes may remain", err)
-		} else if len(entries) > 0 {
-			fmt.Printf("\n%s %d stash(es) detected on this branch — auto-popping (gt-pvx safety net)\n",
-				style.Bold.Render("⚠"), len(entries))
-			// Pop oldest first: iterate in reverse so newest lands on top.
-			popFailed := false
-			for i := len(entries) - 1; i >= 0; i-- {
-				e := entries[i]
-				fmt.Printf("  popping %s — %s\n", e.Ref, e.Message)
-				if popErr := g.StashPop(e.Ref); popErr != nil {
-					style.PrintWarning("auto-pop %s failed (likely conflict): %v", e.Ref, popErr)
-					style.PrintWarning("stopping pop chain — resolve conflict manually then re-run gt done")
-					popFailed = true
-					break
-				}
-				// After each pop, stash refs shift; re-fetch the list before next pop.
-				entries, err = g.StashListForBranch()
-				if err != nil || len(entries) == 0 {
-					break
-				}
-			}
-			if !popFailed {
-				// Re-evaluate cleanup status: pops likely produced uncommitted changes
-				// that the next block will auto-commit. Worst case, status was already
-				// uncommitted and the next block runs anyway.
-				if workStatus, wsErr := g.CheckUncommittedWork(); wsErr == nil && workStatus.HasUncommittedChanges {
-					doneState().cleanupStatus = "uncommitted"
-					fmt.Printf("%s Stash content moved to working tree — will auto-commit below.\n",
-						style.Bold.Render("✓"))
-				} else {
-					// Pops succeeded but produced nothing dirty (e.g. stashes were
-					// already merged). Recompute status normally.
-					doneState().cleanupStatus = ""
-				}
-			}
-		}
+	issueCtx, err := resolveDoneIssueContext(cwd, townRoot, branch, sender)
+	if err != nil {
+		return err
 	}
-
-	// SAFETY NET: Auto-commit uncommitted work before ANY exit path (gt-pvx).
-	// Polecats have been observed running gt done without committing their
-	// implementation work (1000s of lines lost). This happened because:
-	// 1. The agent skips the "commit changes" formula step
-	// 2. The COMPLETED check blocks, but the agent retries with --status DEFERRED
-	//    which skips all checks
-	// 3. The agent's session dies after the error, before it can commit
-	//
-	// Auto-commit ensures work is NEVER lost regardless of exit type or agent behavior.
-	// The commit message is clearly marked as an auto-save so reviewers know.
-	if doneState().cleanupStatus == "uncommitted" {
-		// Re-check to get file details (cleanup detection already confirmed uncommitted changes)
-		workStatus, err := g.CheckUncommittedWork()
-		if err == nil && workStatus.HasUncommittedChanges && !workStatus.CleanExcludingSafetyNet(cwd) {
-			if len(workStatus.UnmergedFiles) > 0 {
-				return fmt.Errorf("cannot auto-save unmerged conflicts: %s\nResolve conflicts first, or use --status DEFERRED to exit without completing", strings.Join(workStatus.UnmergedFiles, ", "))
-			}
-
-			fmt.Printf("\n%s Uncommitted changes detected — auto-saving to prevent work loss\n", style.Bold.Render("⚠"))
-			fmt.Printf("  Files: %s\n\n", workStatus.String())
-
-			// Stage recoverable source changes only. Do not use git add -A:
-			// that command commits untracked binaries that gitignore does not name.
-			if addErr := g.StageSafetyNet(); addErr != nil {
-				style.PrintWarning("auto-commit: git add failed: %v — uncommitted work may be at risk", addErr)
-			} else {
-				// Unstage Gas Town overlay files if a tracked overlay was modified.
-				_ = g.ResetFiles("CLAUDE.local.md")
-				_ = g.ResetFiles("AGENTS.local.md")
-				for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
-					if data, readErr := os.ReadFile(filepath.Join(cwd, name)); readErr == nil {
-						if instructions.IsGasTownOverlay(string(data)) {
-							_ = g.ResetFiles(name)
-						}
-					}
-				}
-				// Build a descriptive commit message
-				autoMsg := "fix: auto-save uncommitted implementation work (gt-pvx safety net)"
-				if issueFromBranch := parseBranchName(branch).Issue; issueFromBranch != "" {
-					autoMsg = fmt.Sprintf("fix: auto-save uncommitted implementation work (%s, gt-pvx safety net)", issueFromBranch)
-				}
-				staged, stagedErr := g.HasStagedChanges()
-				if stagedErr != nil {
-					style.PrintWarning("auto-commit: checking staged changes failed: %v — uncommitted work may be at risk", stagedErr)
-				} else if !staged {
-					fmt.Printf("  No source changes to auto-save (binaries and runtime artifacts stay uncommitted).\n\n")
-				} else if commitErr := g.Commit(autoMsg); commitErr != nil {
-					style.PrintWarning("auto-commit: git commit failed: %v — uncommitted work may be at risk", commitErr)
-				} else {
-					fmt.Printf("%s Auto-committed uncommitted work (safety net)\n", style.Bold.Render("✓"))
-					fmt.Printf("  The agent should have committed before running gt done.\n")
-					fmt.Printf("  This auto-save prevents work loss.\n\n")
-					doneState().cleanupStatus = "unpushed" // Update status — changes are now committed but not pushed
-				}
-			}
-		}
-	}
-
-	// Parse branch info
-	info := parseBranchName(branch)
-
-	// Override with explicit flags
-	issueID := doneState().issue
-	if issueID == "" {
-		issueID = info.Issue
-	}
-	worker := info.Worker
-
-	// Get agent bead ID for cross-referencing
-	var agentBeadID string
-	if roleInfo, err := GetRoleWithContext(cwd, townRoot); err == nil {
-		if actor := roleInfo.ActorString(); actor != "" {
-			sender = actor
-		}
-		ctx := RoleContext{
-			Role:     roleInfo.Role,
-			Rig:      roleInfo.Rig,
-			Polecat:  roleInfo.Polecat,
-			TownRoot: townRoot,
-			WorkDir:  cwd,
-		}
-		agentBeadID = getAgentBeadID(ctx)
-
-		// Recreate the agent bead if it's missing (hq-xu4p). Done-intent
-		// labels, checkpoints, and active_mr all write to it; when it's gone
-		// every write fails 'issue not found' and witness zombie detection +
-		// done-resume silently degrade. Best-effort: a failed recreate just
-		// leaves the existing warnings.
-		ensureAgentBeadExists(beads.New(cwd).ForAgentBead(), agentBeadID, ctx)
-
-		// Completion now exits the live polecat session after durable handoff.
-		// The agent bead keeps lifecycle metadata for witness/refinery cleanup.
-	}
-	var assignedIssueIDs []string
-	loadAssignedIssueIDs := func() []string {
-		if assignedIssueIDs == nil && sender != "" {
-			assignedIssueIDs = findAssignedBeadsForAgent(cwd, sender)
-		}
-		return assignedIssueIDs
-	}
-
-	// If issue ID not set by flag or branch name, query for hooked beads
-	// assigned to this agent. This replaces reading agent_bead.hook_bead
-	// (hq-l6mm5: direct bead tracking instead of agent bead slot).
-	if issueID == "" && sender != "" {
-		if hookIssue, ambiguous := selectAssignedIssue("", loadAssignedIssueIDs()); hookIssue != "" {
-			issueID = hookIssue
-		} else if ambiguous {
-			return fmt.Errorf("multiple active assignments found for %s; cannot infer issue from hook. Use --issue to disambiguate", sender)
-		}
-	}
-
-	// Stale-branch guard (hq-l0fj): a redispatched polecat that reuses its
-	// previous work branch carries the OLD bead-id in the branch name, which
-	// would mis-attribute this MR (close credit goes to a closed bead; the
-	// real issue stays open and hooked). When the branch-derived id differs
-	// from the hooked bead, trust the hook. An explicit --issue flag still
-	// wins, and subtask branches of the hooked bead (e.g. gt-abc.1 under
-	// hooked gt-abc) are left alone.
-	if doneState().issue == "" && info.Issue != "" && sender != "" {
-		if hookIssue, ambiguous := selectAssignedIssue(info.Issue, loadAssignedIssueIDs()); isStaleBranchIssue(info.Issue, hookIssue) {
-			style.PrintWarning("branch %q embeds issue %s but your hooked bead is %s — submitting for %s (stale branch reuse?)", branch, info.Issue, hookIssue, hookIssue)
-			fmt.Printf("  Fresh branches must be named polecat/<name>/<bead-id>+<suffix> for the bead you are working.\n")
-			fmt.Printf("  Use --issue to override if the branch-derived id is actually correct.\n\n")
-			issueID = hookIssue
-		} else if ambiguous {
-			return fmt.Errorf("branch %q embeds issue %s but %s has multiple active assignments; use --issue to disambiguate", branch, info.Issue, sender)
-		}
-	}
-
-	// Write done-intent label EARLY, before push/MR operations.
-	// If gt done crashes after this point, the Witness can detect the intent
-	// and auto-nuke the zombie polecat.
-	//
-	// Also read existing checkpoints for resume capability (gt-aufru).
-	// If gt done was interrupted (SIGTERM, context exhaustion, SIGKILL),
-	// checkpoints indicate which stages completed. On re-invocation, we
-	// skip those stages to avoid repeating work or hitting errors.
-	checkpoints := map[DoneCheckpoint]string{}
-	if agentBeadID != "" {
-		// Agent bead lives in town DB despite rig prefix — bypass routing.
-		bd := beads.New(cwd).ForAgentBead()
-		setDoneIntentLabel(bd, agentBeadID, exitType)
-		checkpoints = readDoneCheckpoints(bd, agentBeadID)
-		if len(checkpoints) > 0 {
-			fmt.Printf("%s Resuming gt done from checkpoint (previous run was interrupted)\n", style.Bold.Render("→"))
-		}
-	}
-
-	// Write heartbeat state="exiting" (gt-3vr5: heartbeat v2).
-	// Tells the witness we're in the gt done flow — trust the agent until
-	// heartbeat goes stale. No timer-based inference needed.
-	// Parallel to done-intent label for backwards compat during migration.
-	if sessionName := os.Getenv("GT_SESSION"); sessionName != "" && townRoot != "" {
-		polecat.TouchSessionHeartbeatWithState(townRoot, sessionName, polecat.HeartbeatExiting, "gt done", issueID)
-	}
-
-	// Get configured default branch for this rig
-	defaultBranch := "main" // fallback
-	if rigCfg, err := rig.LoadRigConfig(filepath.Join(townRoot, rigName)); err == nil && rigCfg.DefaultBranch != "" {
-		defaultBranch = rigCfg.DefaultBranch
-	}
+	issueID := issueCtx.issueID
+	worker := issueCtx.worker
+	agentBeadID := issueCtx.agentBeadID
+	sender = issueCtx.sender
+	checkpoints := issueCtx.checkpoints
+	touchDoneExitingHeartbeat(townRoot, issueID)
+	defaultBranch := doneDefaultBranch(townRoot, rigName)
 	baseRef := g.CleanBaseRef("origin", defaultBranch, doneState().target)
 
 	// For COMPLETED, we need an issue ID and branch must not be the default branch
