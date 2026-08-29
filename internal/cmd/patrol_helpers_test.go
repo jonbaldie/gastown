@@ -362,10 +362,12 @@ func TestBuildRefineryPatrolVars_EmptyTestCommand(t *testing.T) {
 	falseVal := false
 	trueVal2 := true
 	mq := &config.MergeQueueConfig{
-		Enabled:              true,
-		RunTests:             &falseVal,
-		TestCommand:          "", // empty - should be omitted
-		DeleteMergedBranches: &trueVal2,
+		Enabled: true,
+		MergeQueueCommands: config.MergeQueueCommands{
+			RunTests:             &falseVal,
+			TestCommand:          "", // empty - should be omitted
+			DeleteMergedBranches: &trueVal2,
+		},
 	}
 	settings := config.RigSettings{
 		Type:       "rig-settings",
@@ -427,16 +429,20 @@ func TestBuildRefineryPatrolVars_BoolFormat(t *testing.T) {
 	trueVal := true
 	falseVal2 := false
 	mq := &config.MergeQueueConfig{
-		Enabled:                          true,
-		IntegrationBranchAutoLand:        &trueVal,
-		IntegrationBranchRefineryEnabled: &trueVal,
-		RunTests:                         &trueVal,
-		SetupCommand:                     "npm ci",
-		TypecheckCommand:                 "tsc --noEmit",
-		LintCommand:                      "eslint .",
-		TestCommand:                      "make test",
-		BuildCommand:                     "make build",
-		DeleteMergedBranches:             &falseVal2,
+		Enabled: true,
+		MergeQueueIntegration: config.MergeQueueIntegration{
+			IntegrationBranchAutoLand:        &trueVal,
+			IntegrationBranchRefineryEnabled: &trueVal,
+		},
+		MergeQueueCommands: config.MergeQueueCommands{
+			RunTests:             &trueVal,
+			SetupCommand:         "npm ci",
+			TypecheckCommand:     "tsc --noEmit",
+			LintCommand:          "eslint .",
+			TestCommand:          "make test",
+			BuildCommand:         "make build",
+			DeleteMergedBranches: &falseVal2,
+		},
 	}
 	settings := config.RigSettings{
 		Type:       "rig-settings",

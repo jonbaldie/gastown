@@ -1399,28 +1399,7 @@ type MergeQueueConfig struct {
 	// Enabled controls whether the merge queue is active.
 	Enabled bool `json:"enabled"`
 
-	// IntegrationBranchPolecatEnabled controls whether polecats auto-source
-	// their worktrees from integration branches when the parent epic has one.
-	// Nil defaults to true.
-	IntegrationBranchPolecatEnabled *bool `json:"integration_branch_polecat_enabled,omitempty"`
-
-	// IntegrationBranchRefineryEnabled controls whether mq submit and gt done
-	// auto-detect integration branches as MR targets.
-	// Nil defaults to true.
-	IntegrationBranchRefineryEnabled *bool `json:"integration_branch_refinery_enabled,omitempty"`
-
-	// IntegrationBranchTemplate is the pattern for integration branch names.
-	// Supports variables: {epic}, {prefix}, {user}
-	// - {epic}: Full epic ID (e.g., "RA-123")
-	// - {prefix}: Epic prefix before first hyphen (e.g., "RA")
-	// - {user}: Git user.name (e.g., "klauern")
-	// Default: "integration/{epic}"
-	IntegrationBranchTemplate string `json:"integration_branch_template,omitempty"`
-
-	// IntegrationBranchAutoLand controls whether the refinery should automatically
-	// land integration branches when all children of the epic are closed.
-	// Nil defaults to false (manual landing required).
-	IntegrationBranchAutoLand *bool `json:"integration_branch_auto_land,omitempty"`
+	MergeQueueIntegration
 
 	// MergeStrategy controls how the refinery lands approved work: "direct" (default)
 	// merges directly to the base branch, "pr" uses the VCS provider's merge API
@@ -1439,28 +1418,7 @@ type MergeQueueConfig struct {
 	// OnConflict specifies conflict resolution strategy: "assign_back" or "auto_rebase".
 	OnConflict string `json:"on_conflict"`
 
-	// RunTests controls whether to run tests before merging.
-	// Nil defaults to true (tests are run).
-	RunTests *bool `json:"run_tests,omitempty"`
-
-	// TestCommand is the command to run for tests.
-	TestCommand string `json:"test_command,omitempty"`
-
-	// LintCommand is the command to run for linting (used by formulas).
-	LintCommand string `json:"lint_command,omitempty"`
-
-	// BuildCommand is the command to run for building (used by formulas).
-	BuildCommand string `json:"build_command,omitempty"`
-
-	// SetupCommand is the command to run for project setup (e.g., pnpm install).
-	SetupCommand string `json:"setup_command,omitempty"`
-
-	// TypecheckCommand is the command to run for type checking (e.g., tsc --noEmit).
-	TypecheckCommand string `json:"typecheck_command,omitempty"`
-
-	// DeleteMergedBranches controls whether to delete branches after merging.
-	// Nil defaults to true (merged branches are deleted).
-	DeleteMergedBranches *bool `json:"delete_merged_branches,omitempty"`
+	MergeQueueCommands
 
 	// RetryFlakyTests is the number of times to retry flaky tests.
 	RetryFlakyTests int `json:"retry_flaky_tests"`
@@ -1485,6 +1443,58 @@ type MergeQueueConfig struct {
 	// is enabled. Valid values: "quick", "standard", "deep".
 	// Nil defaults to "standard".
 	ReviewDepth string `json:"review_depth,omitempty"`
+}
+
+// MergeQueueIntegration contains integration-branch behavior for a merge queue.
+type MergeQueueIntegration struct {
+	// IntegrationBranchPolecatEnabled controls whether polecats auto-source
+	// their worktrees from integration branches when the parent epic has one.
+	// Nil defaults to true.
+	IntegrationBranchPolecatEnabled *bool `json:"integration_branch_polecat_enabled,omitempty"`
+
+	// IntegrationBranchRefineryEnabled controls whether mq submit and gt done
+	// auto-detect integration branches as MR targets.
+	// Nil defaults to true.
+	IntegrationBranchRefineryEnabled *bool `json:"integration_branch_refinery_enabled,omitempty"`
+
+	// IntegrationBranchTemplate is the pattern for integration branch names.
+	// Supports variables: {epic}, {prefix}, {user}
+	// - {epic}: Full epic ID (e.g., "RA-123")
+	// - {prefix}: Epic prefix before first hyphen (e.g., "RA")
+	// - {user}: Git user.name (e.g., "klauern")
+	// Default: "integration/{epic}"
+	IntegrationBranchTemplate string `json:"integration_branch_template,omitempty"`
+
+	// IntegrationBranchAutoLand controls whether the refinery should automatically
+	// land integration branches when all children of the epic are closed.
+	// Nil defaults to false (manual landing required).
+	IntegrationBranchAutoLand *bool `json:"integration_branch_auto_land,omitempty"`
+}
+
+// MergeQueueCommands contains optional commands and gate controls used before merging.
+type MergeQueueCommands struct {
+	// RunTests controls whether to run tests before merging.
+	// Nil defaults to true (tests are run).
+	RunTests *bool `json:"run_tests,omitempty"`
+
+	// TestCommand is the command to run for tests.
+	TestCommand string `json:"test_command,omitempty"`
+
+	// LintCommand is the command to run for linting (used by formulas).
+	LintCommand string `json:"lint_command,omitempty"`
+
+	// BuildCommand is the command to run for building (used by formulas).
+	BuildCommand string `json:"build_command,omitempty"`
+
+	// SetupCommand is the command to run for project setup (e.g., pnpm install).
+	SetupCommand string `json:"setup_command,omitempty"`
+
+	// TypecheckCommand is the command to run for type checking (e.g., tsc --noEmit).
+	TypecheckCommand string `json:"typecheck_command,omitempty"`
+
+	// DeleteMergedBranches controls whether to delete branches after merging.
+	// Nil defaults to true (merged branches are deleted).
+	DeleteMergedBranches *bool `json:"delete_merged_branches,omitempty"`
 }
 
 // OnConflict strategy constants.
@@ -1574,17 +1584,21 @@ func boolPtr(b bool) *bool {
 // DefaultMergeQueueConfig returns a MergeQueueConfig with sensible defaults.
 func DefaultMergeQueueConfig() *MergeQueueConfig {
 	return &MergeQueueConfig{
-		Enabled:                          true,
-		IntegrationBranchPolecatEnabled:  boolPtr(true),
-		IntegrationBranchRefineryEnabled: boolPtr(true),
-		OnConflict:                       OnConflictAssignBack,
-		RunTests:                         boolPtr(true),
-		TestCommand:                      "",
-		DeleteMergedBranches:             boolPtr(true),
-		RetryFlakyTests:                  1,
-		PollInterval:                     "30s",
-		MaxConcurrent:                    1,
-		StaleClaimTimeout:                "30m",
+		Enabled: true,
+		MergeQueueIntegration: MergeQueueIntegration{
+			IntegrationBranchPolecatEnabled:  boolPtr(true),
+			IntegrationBranchRefineryEnabled: boolPtr(true),
+		},
+		OnConflict: OnConflictAssignBack,
+		MergeQueueCommands: MergeQueueCommands{
+			RunTests:             boolPtr(true),
+			TestCommand:          "",
+			DeleteMergedBranches: boolPtr(true),
+		},
+		RetryFlakyTests:   1,
+		PollInterval:      "30s",
+		MaxConcurrent:     1,
+		StaleClaimTimeout: "30m",
 	}
 }
 

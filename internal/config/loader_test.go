@@ -225,16 +225,20 @@ func TestRigSettingsWithCustomMergeQueue(t *testing.T) {
 		Type:    "rig-settings",
 		Version: 1,
 		MergeQueue: &MergeQueueConfig{
-			Enabled:                          true,
-			IntegrationBranchPolecatEnabled:  boolPtr(false),
-			IntegrationBranchRefineryEnabled: boolPtr(false),
-			OnConflict:                       OnConflictAutoRebase,
-			RunTests:                         boolPtr(true),
-			TestCommand:                      "make test",
-			DeleteMergedBranches:             boolPtr(false),
-			RetryFlakyTests:                  3,
-			PollInterval:                     "1m",
-			MaxConcurrent:                    2,
+			Enabled: true,
+			MergeQueueIntegration: MergeQueueIntegration{
+				IntegrationBranchPolecatEnabled:  boolPtr(false),
+				IntegrationBranchRefineryEnabled: boolPtr(false),
+			},
+			OnConflict: OnConflictAutoRebase,
+			MergeQueueCommands: MergeQueueCommands{
+				RunTests:             boolPtr(true),
+				TestCommand:          "make test",
+				DeleteMergedBranches: boolPtr(false),
+			},
+			RetryFlakyTests: 3,
+			PollInterval:    "1m",
+			MaxConcurrent:   2,
 		},
 	}
 
@@ -523,7 +527,7 @@ func TestMergeSettingsCommand(t *testing.T) {
 
 	t.Run("repo only", func(t *testing.T) {
 		t.Parallel()
-		repo := &MergeQueueConfig{TestCommand: "repo-test", BuildCommand: "repo-build"}
+		repo := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "repo-test", BuildCommand: "repo-build"}}
 		result := MergeSettingsCommand(repo, nil)
 		if result.TestCommand != "repo-test" {
 			t.Errorf("expected 'repo-test', got %q", result.TestCommand)
@@ -532,8 +536,8 @@ func TestMergeSettingsCommand(t *testing.T) {
 
 	t.Run("local overrides repo", func(t *testing.T) {
 		t.Parallel()
-		repo := &MergeQueueConfig{TestCommand: "repo-test", BuildCommand: "repo-build", LintCommand: "repo-lint"}
-		local := &MergeQueueConfig{TestCommand: "local-test"}
+		repo := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "repo-test", BuildCommand: "repo-build", LintCommand: "repo-lint"}}
+		local := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "local-test"}}
 		result := MergeSettingsCommand(repo, local)
 		if result.TestCommand != "local-test" {
 			t.Errorf("expected 'local-test', got %q", result.TestCommand)
@@ -548,7 +552,7 @@ func TestMergeSettingsCommand(t *testing.T) {
 
 	t.Run("local only", func(t *testing.T) {
 		t.Parallel()
-		local := &MergeQueueConfig{TestCommand: "local-test"}
+		local := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "local-test"}}
 		result := MergeSettingsCommand(nil, local)
 		if result.TestCommand != "local-test" {
 			t.Errorf("expected 'local-test', got %q", result.TestCommand)
