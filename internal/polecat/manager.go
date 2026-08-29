@@ -575,81 +575,71 @@ type AddOptions struct {
 // - polecat/{name}-{timestamp} otherwise
 func (m *Manager) buildBranchName(name, issue string) string {
 	template := m.rig.GetStringConfig("polecat_branch_template")
-
-	// No template configured - use default behavior for backward compatibility
 	if template == "" {
 		timestamp := strconv.FormatInt(time.Now().UnixMilli(), 36)
 		return FormatGeneratedBranchName(name, issue, timestamp)
 	}
+	return cleanBranchTemplate(template, m.branchTemplateVariables(name, issue))
+}
 
-	// Build template variables
-	vars := make(map[string]string)
-
-	// {user} - from git config user.name
-	if userName, err := m.git.ConfigGet("user.name"); err == nil && userName != "" {
-		vars["{user}"] = userName
-	} else {
-		vars["{user}"] = "unknown"
+func (m *Manager) branchTemplateVariables(name, issue string) map[string]string {
+	userName, err := m.git.ConfigGet("user.name")
+	if err != nil || userName == "" {
+		userName = "unknown"
 	}
-
-	// {year} and {month}
 	now := time.Now()
-	vars["{year}"] = now.Format("06")  // YY format
-	vars["{month}"] = now.Format("01") // MM format
-
-	// {name}
-	vars["{name}"] = name
-
-	// {timestamp}
-	vars["{timestamp}"] = strconv.FormatInt(now.UnixMilli(), 36)
-
-	// {issue} - issue ID without prefix
-	if issue != "" {
-		// Strip prefix (e.g., "gt-123" -> "123")
-		if idx := strings.Index(issue, "-"); idx >= 0 {
-			vars["{issue}"] = issue[idx+1:]
-		} else {
-			vars["{issue}"] = issue
-		}
-	} else {
-		vars["{issue}"] = ""
+	return map[string]string{
+		"{user}":        userName,
+		"{year}":        now.Format("06"),
+		"{month}":       now.Format("01"),
+		"{name}":        name,
+		"{timestamp}":   strconv.FormatInt(now.UnixMilli(), 36),
+		"{issue}":       branchIssueValue(issue),
+		"{description}": m.branchDescription(issue),
 	}
+}
 
-	// {description} - try to get from beads if issue is set
-	if issue != "" {
-		if issueData, err := m.beads.Show(issue); err == nil && issueData.Title != "" {
-			// Sanitize title for branch name: lowercase, replace spaces/special chars with hyphens
-			desc := strings.ToLower(issueData.Title)
-			desc = strings.Map(func(r rune) rune {
-				if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-					return r
-				}
-				return '-'
-			}, desc)
-			// Remove consecutive hyphens and trim
-			desc = strings.Trim(desc, "-")
-			for strings.Contains(desc, "--") {
-				desc = strings.ReplaceAll(desc, "--", "-")
-			}
-			// Limit length to keep branch names reasonable
-			if len(desc) > 40 {
-				desc = desc[:40]
-			}
-			vars["{description}"] = desc
-		} else {
-			vars["{description}"] = ""
-		}
-	} else {
-		vars["{description}"] = ""
+func branchIssueValue(issue string) string {
+	if idx := strings.Index(issue, "-"); idx >= 0 {
+		return issue[idx+1:]
 	}
+	return issue
+}
 
-	// Replace all variables in template
+func (m *Manager) branchDescription(issue string) string {
+	if issue == "" {
+		return ""
+	}
+	issueData, err := m.beads.Show(issue)
+	if err != nil || issueData.Title == "" {
+		return ""
+	}
+	return sanitizeBranchDescription(issueData.Title)
+}
+
+func sanitizeBranchDescription(title string) string {
+	desc := strings.ToLower(title)
+	desc = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, desc)
+	desc = strings.Trim(desc, "-")
+	for strings.Contains(desc, "--") {
+		desc = strings.ReplaceAll(desc, "--", "-")
+	}
+	if len(desc) > 40 {
+		desc = desc[:40]
+	}
+	return desc
+}
+
+func cleanBranchTemplate(template string, vars map[string]string) string {
 	result := template
 	for key, value := range vars {
 		result = strings.ReplaceAll(result, key, value)
 	}
-
-	// Clean up any remaining empty segments (e.g., "adam///" -> "adam")
 	parts := strings.Split(result, "/")
 	cleanParts := make([]string, 0, len(parts))
 	for _, part := range parts {
