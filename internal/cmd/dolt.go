@@ -1084,31 +1084,47 @@ func runDoltInit(_ *cobra.Command, _ []string) error {
 	orphans, orphanErr := doltserver.FindOrphanedDatabases(townRoot)
 
 	if len(broken) == 0 {
-		// Also check if there are any databases at all
-		databases, _ := doltserver.ListDatabases(townRoot)
-		if len(databases) == 0 {
-			fmt.Println("No Dolt databases found and no workspaces configured for Dolt.")
-			fmt.Printf("\nInitialize a rig database with: %s\n", style.Dim.Render("gt dolt init-rig <name>"))
-		} else {
-			fmt.Printf("%s All workspaces healthy (%d database(s) verified)\n",
-				style.Bold.Render("✓"), len(databases))
-		}
-
-		// Report orphans even when workspaces are healthy
-		if orphanErr == nil && len(orphans) > 0 {
-			fmt.Printf("\n%s %d orphaned database(s) in .dolt-data/ (not referenced by any rig):\n",
-				style.Bold.Render("!"), len(orphans))
-			for _, o := range orphans {
-				fmt.Printf("  - %s (%s)\n", o.Name, formatBytes(o.SizeBytes))
-			}
-			fmt.Printf("\nClean up with: %s\n", style.Dim.Render("gt dolt cleanup"))
-		}
-
+		reportHealthyDoltInit(townRoot, orphans, orphanErr)
 		return nil
 	}
 
 	fmt.Printf("Found %d workspace(s) with broken Dolt configuration:\n\n", len(broken))
+	repaired := repairBrokenDoltWorkspaces(townRoot, broken)
 
+	if repaired > 0 {
+		fmt.Printf("\n%s Repaired %d/%d workspace(s)\n", style.Bold.Render("✓"), repaired, len(broken))
+	}
+
+	reportDoltInitOrphans(orphans, orphanErr)
+
+	return nil
+}
+
+func reportHealthyDoltInit(townRoot string, orphans []doltserver.OrphanedDatabase, orphanErr error) {
+	databases, _ := doltserver.ListDatabases(townRoot)
+	if len(databases) == 0 {
+		fmt.Println("No Dolt databases found and no workspaces configured for Dolt.")
+		fmt.Printf("\nInitialize a rig database with: %s\n", style.Dim.Render("gt dolt init-rig <name>"))
+	} else {
+		fmt.Printf("%s All workspaces healthy (%d database(s) verified)\n",
+			style.Bold.Render("✓"), len(databases))
+	}
+	reportDoltInitOrphans(orphans, orphanErr)
+}
+
+func reportDoltInitOrphans(orphans []doltserver.OrphanedDatabase, orphanErr error) {
+	if orphanErr != nil || len(orphans) == 0 {
+		return
+	}
+	fmt.Printf("\n%s %d orphaned database(s) in .dolt-data/ (not referenced by any rig):\n",
+		style.Bold.Render("!"), len(orphans))
+	for _, o := range orphans {
+		fmt.Printf("  - %s (%s)\n", o.Name, formatBytes(o.SizeBytes))
+	}
+	fmt.Printf("\nClean up with: %s\n", style.Dim.Render("gt dolt cleanup"))
+}
+
+func repairBrokenDoltWorkspaces(townRoot string, broken []doltserver.BrokenWorkspace) int {
 	repaired := 0
 	for _, ws := range broken {
 		if ws.NotServed {
@@ -1132,22 +1148,7 @@ func runDoltInit(_ *cobra.Command, _ []string) error {
 		fmt.Printf("    %s Repaired: %s\n", style.Bold.Render("✓"), action)
 		repaired++
 	}
-
-	if repaired > 0 {
-		fmt.Printf("\n%s Repaired %d/%d workspace(s)\n", style.Bold.Render("✓"), repaired, len(broken))
-	}
-
-	// Report orphans after repairs
-	if orphanErr == nil && len(orphans) > 0 {
-		fmt.Printf("\n%s %d orphaned database(s) in .dolt-data/ (not referenced by any rig):\n",
-			style.Bold.Render("!"), len(orphans))
-		for _, o := range orphans {
-			fmt.Printf("  - %s (%s)\n", o.Name, formatBytes(o.SizeBytes))
-		}
-		fmt.Printf("\nClean up with: %s\n", style.Dim.Render("gt dolt cleanup"))
-	}
-
-	return nil
+	return repaired
 }
 
 func runDoltCleanup(_ *cobra.Command, _ []string) error {
@@ -1166,88 +1167,122 @@ func runDoltCleanup(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	fmt.Printf("Found %d orphaned database(s) in .dolt-data/:\n\n", len(orphans))
-	for _, o := range orphans {
-		fmt.Printf("  %s %s (%s)\n", style.Bold.Render("!"), o.Name, formatBytes(o.SizeBytes))
-		fmt.Printf("    %s\n", style.Dim.Render(o.Path))
-	}
+	printDoltCleanupOrphans(orphans)
 
 	if doltCleanupDry {
 		fmt.Println("\nDry run: no changes made.")
 		return nil
 	}
 
-	// BALK: If orphans are a large fraction of all databases, something is likely
-	// wrong with the orphan detection (e.g., metadata files not found). Refuse to
-	// proceed without --force to prevent accidentally dropping production databases. (gt-xvh)
-	allDBs, _ := doltserver.ListDatabases(townRoot)
-	if len(allDBs) > 0 && !doltCleanupForce {
-		orphanRatio := float64(len(orphans)) / float64(len(allDBs))
-		if orphanRatio > 0.5 && len(orphans) > 3 {
-			fmt.Printf("\n%s %d of %d databases (%.0f%%) flagged as orphans — this is suspicious.\n",
-				style.Bold.Render("!"), len(orphans), len(allDBs), orphanRatio*100)
-			fmt.Printf("  This usually means metadata.json files are missing or incorrect,\n")
-			fmt.Printf("  not that the databases are actually orphaned.\n\n")
-			fmt.Printf("  To proceed anyway: gt dolt cleanup --force\n")
-			fmt.Printf("  To diagnose: gt dolt list   (check owner column for mismatches)\n")
-			return fmt.Errorf("refusing to clean %d/%d databases without --force (safety check, gt-xvh)", len(orphans), len(allDBs))
-		}
+	if err := validateDoltCleanupSafety(townRoot, orphans); err != nil {
+		return err
 	}
 
 	// BALK: If there are too many orphans, SQL-based cleanup will take hours
 	// because each DROP DATABASE is a separate query against an overloaded server.
 	// Force the user to stop the server and clean the filesystem directly.
 	// (Clown Show #18: 245 orphans at 27s latency = ~2 hour cleanup)
-	const maxSQLCleanup = 50
-	if len(orphans) > maxSQLCleanup {
-		fmt.Printf("\n%s Too many orphans (%d) for SQL-based cleanup (max %d).\n",
-			style.Bold.Render("!"), len(orphans), maxSQLCleanup)
-		fmt.Printf("  The server is likely overloaded. SQL cleanup would take hours.\n\n")
-		fmt.Printf("  Instead, stop the server and clean the filesystem:\n\n")
-		fmt.Printf("    gt dolt stop\n")
-		fmt.Printf("    cd %s/.dolt-data && rm -rf testdb_* beads_t* beads_pt* beads_vr* doctest_* doctortest_*\n", townRoot)
-		fmt.Printf("    gt dolt start\n\n")
-		fmt.Printf("  This is safe — orphan databases have no production data.\n")
-		return fmt.Errorf("too many orphans (%d) for SQL cleanup — see instructions above", len(orphans))
+	if err := rejectLargeDoltCleanup(townRoot, orphans); err != nil {
+		return err
 	}
 
 	fmt.Println()
-	removed := 0
-	for _, o := range orphans {
-		if err := doltserver.RemoveDatabase(townRoot, o.Name, doltCleanupForce); err != nil {
-			// If DROP caused read-only, stop immediately and recover (gt-r1cyd)
-			if doltserver.IsReadOnlyError(err.Error()) {
-				fmt.Printf("  %s DROP put server into read-only mode — attempting recovery...\n", style.Bold.Render("!"))
-				if recoverErr := doltserver.RecoverReadOnly(townRoot); recoverErr != nil {
-					fmt.Printf("  %s Recovery failed: %v\n", style.Bold.Render("✗"), recoverErr)
-					fmt.Printf("  Run: gt dolt stop && gt dolt start\n")
-				} else {
-					fmt.Printf("  %s Server recovered from read-only state\n", style.Bold.Render("✓"))
-				}
-				break
-			}
-			fmt.Printf("  %s Failed to remove %s: %v\n", style.Bold.Render("✗"), o.Name, err)
-			continue
-		}
-		fmt.Printf("  %s Removed %s\n", style.Bold.Render("✓"), o.Name)
-		removed++
-
-		// Health check after each DROP to catch read-only early (gt-r1cyd)
-		if readOnly, _ := doltserver.CheckReadOnly(townRoot); readOnly {
-			fmt.Printf("  %s Server went read-only after DROP — attempting recovery...\n", style.Bold.Render("!"))
-			if recoverErr := doltserver.RecoverReadOnly(townRoot); recoverErr != nil {
-				fmt.Printf("  %s Recovery failed: %v\n", style.Bold.Render("✗"), recoverErr)
-				fmt.Printf("  Run: gt dolt stop && gt dolt start\n")
-				break
-			}
-			fmt.Printf("  %s Server recovered — continuing cleanup\n", style.Bold.Render("✓"))
-		}
-	}
+	removed := removeOrphanedDoltDatabases(townRoot, orphans)
 
 	fmt.Printf("\n%s Removed %d/%d orphaned database(s)\n",
 		style.Bold.Render("✓"), removed, len(orphans))
 
 	return nil
+}
+
+func printDoltCleanupOrphans(orphans []doltserver.OrphanedDatabase) {
+	fmt.Printf("Found %d orphaned database(s) in .dolt-data/:\n\n", len(orphans))
+	for _, o := range orphans {
+		fmt.Printf("  %s %s (%s)\n", style.Bold.Render("!"), o.Name, formatBytes(o.SizeBytes))
+		fmt.Printf("    %s\n", style.Dim.Render(o.Path))
+	}
+}
+
+func validateDoltCleanupSafety(townRoot string, orphans []doltserver.OrphanedDatabase) error {
+	// BALK: If orphans are a large fraction of all databases, something is likely
+	// wrong with the orphan detection (e.g., metadata files not found). Refuse to
+	// proceed without --force to prevent accidentally dropping production databases. (gt-xvh)
+	allDBs, _ := doltserver.ListDatabases(townRoot)
+	if len(allDBs) == 0 || doltCleanupForce {
+		return nil
+	}
+	orphanRatio := float64(len(orphans)) / float64(len(allDBs))
+	if orphanRatio <= 0.5 || len(orphans) <= 3 {
+		return nil
+	}
+	fmt.Printf("\n%s %d of %d databases (%.0f%%) flagged as orphans — this is suspicious.\n",
+		style.Bold.Render("!"), len(orphans), len(allDBs), orphanRatio*100)
+	fmt.Printf("  This usually means metadata.json files are missing or incorrect,\n")
+	fmt.Printf("  not that the databases are actually orphaned.\n\n")
+	fmt.Printf("  To proceed anyway: gt dolt cleanup --force\n")
+	fmt.Printf("  To diagnose: gt dolt list   (check owner column for mismatches)\n")
+	return fmt.Errorf("refusing to clean %d/%d databases without --force (safety check, gt-xvh)", len(orphans), len(allDBs))
+}
+
+func rejectLargeDoltCleanup(townRoot string, orphans []doltserver.OrphanedDatabase) error {
+	const maxSQLCleanup = 50
+	if len(orphans) <= maxSQLCleanup {
+		return nil
+	}
+	fmt.Printf("\n%s Too many orphans (%d) for SQL-based cleanup (max %d).\n",
+		style.Bold.Render("!"), len(orphans), maxSQLCleanup)
+	fmt.Printf("  The server is likely overloaded. SQL cleanup would take hours.\n\n")
+	fmt.Printf("  Instead, stop the server and clean the filesystem:\n\n")
+	fmt.Printf("    gt dolt stop\n")
+	fmt.Printf("    cd %s/.dolt-data && rm -rf testdb_* beads_t* beads_pt* beads_vr* doctest_* doctortest_*\n", townRoot)
+	fmt.Printf("    gt dolt start\n\n")
+	fmt.Printf("  This is safe — orphan databases have no production data.\n")
+	return fmt.Errorf("too many orphans (%d) for SQL cleanup — see instructions above", len(orphans))
+}
+
+func removeOrphanedDoltDatabases(townRoot string, orphans []doltserver.OrphanedDatabase) int {
+	removed := 0
+	for _, orphan := range orphans {
+		wasRemoved, stop := removeOrphanedDoltDatabase(townRoot, orphan)
+		if wasRemoved {
+			removed++
+		}
+		if stop {
+			break
+		}
+	}
+	return removed
+}
+
+func removeOrphanedDoltDatabase(townRoot string, orphan doltserver.OrphanedDatabase) (removed, stop bool) {
+	if err := doltserver.RemoveDatabase(townRoot, orphan.Name, doltCleanupForce); err != nil {
+		// If DROP caused read-only, stop immediately and recover (gt-r1cyd)
+		if doltserver.IsReadOnlyError(err.Error()) {
+			fmt.Printf("  %s DROP put server into read-only mode — attempting recovery...\n", style.Bold.Render("!"))
+			if recoverErr := doltserver.RecoverReadOnly(townRoot); recoverErr != nil {
+				fmt.Printf("  %s Recovery failed: %v\n", style.Bold.Render("✗"), recoverErr)
+				fmt.Printf("  Run: gt dolt stop && gt dolt start\n")
+			} else {
+				fmt.Printf("  %s Server recovered from read-only state\n", style.Bold.Render("✓"))
+			}
+			return false, true
+		}
+		fmt.Printf("  %s Failed to remove %s: %v\n", style.Bold.Render("✗"), orphan.Name, err)
+		return false, false
+	}
+	fmt.Printf("  %s Removed %s\n", style.Bold.Render("✓"), orphan.Name)
+
+	// Health check after each DROP to catch read-only early (gt-r1cyd)
+	if readOnly, _ := doltserver.CheckReadOnly(townRoot); readOnly {
+		fmt.Printf("  %s Server went read-only after DROP — attempting recovery...\n", style.Bold.Render("!"))
+		if recoverErr := doltserver.RecoverReadOnly(townRoot); recoverErr != nil {
+			fmt.Printf("  %s Recovery failed: %v\n", style.Bold.Render("✗"), recoverErr)
+			fmt.Printf("  Run: gt dolt stop && gt dolt start\n")
+			return true, true
+		}
+		fmt.Printf("  %s Server recovered — continuing cleanup\n", style.Bold.Render("✓"))
+	}
+	return true, false
 }
 
 func runDoltList(_ *cobra.Command, _ []string) error {
