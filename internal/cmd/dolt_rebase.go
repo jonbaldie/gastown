@@ -15,12 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	doltRebaseConfirm    bool
-	doltRebaseKeepRecent int
-	doltRebaseDryRun     bool
-)
-
 var doltRebaseCmd = &cobra.Command{
 	Use:   "rebase <database>",
 	Short: "Surgical compaction: squash old commits, keep recent ones",
@@ -54,24 +48,27 @@ Requires --yes-i-am-sure flag as safety interlock.`,
 }
 
 func init() {
-	doltRebaseCmd.Flags().BoolVar(&doltRebaseConfirm, "yes-i-am-sure", false,
+	doltRebaseCmd.Flags().Bool("yes-i-am-sure", false,
 		"Required safety flag to confirm compaction")
-	doltRebaseCmd.Flags().IntVar(&doltRebaseKeepRecent, "keep-recent", 50,
+	doltRebaseCmd.Flags().Int("keep-recent", 50,
 		"Number of recent commits to keep as individual picks")
-	doltRebaseCmd.Flags().BoolVar(&doltRebaseDryRun, "dry-run", false,
+	doltRebaseCmd.Flags().Bool("dry-run", false,
 		"Show the rebase plan without executing it")
 	doltCmd.AddCommand(doltRebaseCmd)
 }
 
-func runDoltRebase(_ *cobra.Command, args []string) error {
+func runDoltRebase(cmd *cobra.Command, args []string) error {
 	dbName := args[0]
+	confirm := commandBoolFlag(cmd, "yes-i-am-sure")
+	keepRecent := commandIntFlag(cmd, "keep-recent")
+	dryRun := commandBoolFlag(cmd, "dry-run")
 
-	if !doltRebaseConfirm && !doltRebaseDryRun {
+	if !confirm && !dryRun {
 		return fmt.Errorf("this command rewrites commit history. Pass --yes-i-am-sure to proceed (or --dry-run to preview)")
 	}
 
-	if doltRebaseKeepRecent < 0 {
-		return fmt.Errorf("--keep-recent must be non-negative (got %d)", doltRebaseKeepRecent)
+	if keepRecent < 0 {
+		return fmt.Errorf("--keep-recent must be non-negative (got %d)", keepRecent)
 	}
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -116,13 +113,13 @@ func runDoltRebase(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("counting commits: %w", err)
 	}
 	fmt.Printf("  Commits: %d\n", commitCount)
-	fmt.Printf("  Keep recent: %d\n", doltRebaseKeepRecent)
+	fmt.Printf("  Keep recent: %d\n", keepRecent)
 
 	// Need at least 3 commits: root (pick) + at least 1 to squash + 1 to keep.
-	minCommits := doltRebaseKeepRecent + 2
+	minCommits := keepRecent + 2
 	if commitCount < minCommits {
 		fmt.Printf("  %s Too few commits (%d) for surgical rebase with --keep-recent=%d (need at least %d)\n",
-			style.Bold.Render("✓"), commitCount, doltRebaseKeepRecent, minCommits)
+			style.Bold.Render("✓"), commitCount, keepRecent, minCommits)
 		return nil
 	}
 
@@ -210,14 +207,14 @@ func runDoltRebase(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("parsing rebase order range: %w", err)
 	}
 
-	squashThreshold := maxOrder - doltRebaseKeepRecent
+	squashThreshold := maxOrder - keepRecent
 	toSquash := 0
 	if squashThreshold > minOrder {
 		toSquash = squashThreshold - minOrder
 	}
 
 	fmt.Printf("  Squashing: %d old commits (keeping first as pick + last %d)\n",
-		toSquash, doltRebaseKeepRecent)
+		toSquash, keepRecent)
 
 	if toSquash == 0 {
 		fmt.Printf("  %s Nothing to squash — all commits are recent\n", style.Bold.Render("✓"))
@@ -225,7 +222,7 @@ func runDoltRebase(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if doltRebaseDryRun {
+	if dryRun {
 		// Show the plan.
 		fmt.Printf("\n%s Dry-run rebase plan:\n", style.Bold.Render("●"))
 		rows, err := db.QueryContext(ctx, "SELECT rebase_order, action, commit_hash, commit_message FROM dolt_rebase ORDER BY rebase_order")
@@ -259,7 +256,7 @@ func runDoltRebase(_ *cobra.Command, args []string) error {
 		}
 
 		fmt.Printf("\n  Would squash %d commits, keep %d recent + 1 root pick\n",
-			toSquash, doltRebaseKeepRecent)
+			toSquash, keepRecent)
 		rebaseAbortAndCleanup(db, baseBranch, workBranch)
 		return nil
 	}
@@ -350,7 +347,7 @@ func runDoltRebase(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\n%s Surgical rebase complete: %d → %d commits (kept %d recent)\n",
-		style.Bold.Render("✓"), commitCount, finalCount, doltRebaseKeepRecent)
+		style.Bold.Render("✓"), commitCount, finalCount, keepRecent)
 	return nil
 }
 
