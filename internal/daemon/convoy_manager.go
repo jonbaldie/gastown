@@ -43,41 +43,13 @@ type strandedConvoyInfo struct {
 	BaseBranch   string    `json:"base_branch,omitempty"`
 }
 
-// ConvoyManager monitors beads events for issue closes and periodically scans for stranded convoys.
-// It handles both event-driven completion checks (via convoy.CheckConvoysForIssue) and periodic
-// stranded convoy feeding/cleanup.
-//
-// Event polling watches ALL beads stores (town-level hq + per-rig) so that close events from
-// any rig are detected. Convoys live in the hq store, so convoy lookups always use hqStore.
-// Parked rigs are skipped during event polling.
-type ConvoyManager struct {
-	townRoot     string
-	scanInterval time.Duration
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	logger       func(format string, args ...interface{})
-
-	// stores maps store names to beads stores for event polling.
-	// Key "hq" is the town-level store (used for convoy lookups).
-	// Other keys are rig names (e.g., "gastown", "beads", "shippercrm").
-	// Populated lazily via openStores if nil at startup (e.g., Dolt not ready).
-	// Protected by storesMu.
-	stores   map[string]beadsdk.Storage
-	storesMu sync.Mutex
-
-	// openStores is called lazily to open beads stores when stores is nil.
-	// This handles the case where Dolt isn't ready at daemon startup.
-	// Once stores are successfully opened, this is not called again.
-	// May be nil to disable lazy opening (stores must be provided upfront).
-	openStores func() map[string]beadsdk.Storage
-
-	// isRigParked reports whether a rig is currently parked/docked.
-	// Parked rigs are skipped during event polling. May be nil (never parked).
-	isRigParked func(string) bool
-
-	gtPath string
-
+// ConvoyManagerState holds the context, lifecycle guards, and event-deduplication
+// state for a ConvoyManager. It is embedded so the manager keeps its existing
+// selector surface while the mutable runtime state has one clear owner.
+type ConvoyManagerState struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 	// started guards against double-call of Start() which would spawn duplicate goroutines.
 	started atomic.Bool
 
@@ -114,6 +86,41 @@ type ConvoyManager struct {
 	processedLifecycleEvents sync.Map // map[string]bool
 }
 
+// ConvoyManager monitors beads events for issue closes and periodically scans for stranded convoys.
+// It handles both event-driven completion checks (via convoy.CheckConvoysForIssue) and periodic
+// stranded convoy feeding/cleanup.
+//
+// Event polling watches ALL beads stores (town-level hq + per-rig) so that close events from
+// any rig are detected. Convoys live in the hq store, so convoy lookups always use hqStore.
+// Parked rigs are skipped during event polling.
+type ConvoyManager struct {
+	townRoot     string
+	scanInterval time.Duration
+	logger       func(format string, args ...interface{})
+
+	// stores maps store names to beads stores for event polling.
+	// Key "hq" is the town-level store (used for convoy lookups).
+	// Other keys are rig names (e.g., "gastown", "beads", "shippercrm").
+	// Populated lazily via openStores if nil at startup (e.g., Dolt not ready).
+	// Protected by storesMu.
+	stores   map[string]beadsdk.Storage
+	storesMu sync.Mutex
+
+	// openStores is called lazily to open beads stores when stores is nil.
+	// This handles the case where Dolt isn't ready at daemon startup.
+	// Once stores are successfully opened, this is not called again.
+	// May be nil to disable lazy opening (stores must be provided upfront).
+	openStores func() map[string]beadsdk.Storage
+
+	// isRigParked reports whether a rig is currently parked/docked.
+	// Parked rigs are skipped during event polling. May be nil (never parked).
+	isRigParked func(string) bool
+
+	gtPath string
+
+	ConvoyManagerState
+}
+
 // NewConvoyManager creates a new convoy manager.
 // scanInterval controls the periodic stranded scan; 0 uses default (30s).
 // stores maps store names ("hq", rig names) to beads stores for event polling.
@@ -133,13 +140,15 @@ func NewConvoyManager(townRoot string, logger func(format string, args ...interf
 	return &ConvoyManager{
 		townRoot:     townRoot,
 		scanInterval: scanInterval,
-		ctx:          ctx,
-		cancel:       cancel,
 		logger:       logger,
 		stores:       stores,
 		openStores:   openStores,
 		isRigParked:  isRigParked,
 		gtPath:       gtPath,
+		ConvoyManagerState: ConvoyManagerState{
+			ctx:    ctx,
+			cancel: cancel,
+		},
 	}
 }
 
