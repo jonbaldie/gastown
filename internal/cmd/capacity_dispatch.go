@@ -429,23 +429,7 @@ func cleanupStaleContexts(townRoot string) error {
 		return err
 	}
 
-	// First pass: close invalid and circuit-broken contexts, collect work bead IDs
-	// that need status checks for stale detection.
-	var staleCheckContexts []slingContextRecord
-	var staleCheckFields []*capacity.SlingContextFields
-	for _, ctx := range contexts {
-		fields := beads.ParseSlingContextFields(ctx.issue.Description)
-		if fields == nil {
-			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "invalid-context")
-			continue
-		}
-		if fields.DispatchFailures >= maxDispatchFailures {
-			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "circuit-broken")
-			continue
-		}
-		staleCheckContexts = append(staleCheckContexts, ctx)
-		staleCheckFields = append(staleCheckFields, fields)
-	}
+	staleCheckContexts, staleCheckFields := collectStaleCheckContexts(contexts)
 
 	if len(staleCheckContexts) == 0 {
 		return nil
@@ -465,14 +449,36 @@ func cleanupStaleContexts(townRoot string) error {
 	// actively worked, and bd ready won't return it, so the dispatch query
 	// already prevents re-dispatch. The context stays open until the polecat
 	// finishes and the bead transitions to closed/tombstone.
-	for i, ctx := range staleCheckContexts {
-		fields := staleCheckFields[i]
-		info, found := workBeadInfo[fields.WorkBeadID]
+	closeStaleContexts(staleCheckContexts, staleCheckFields, workBeadInfo)
+	return nil
+}
+
+func collectStaleCheckContexts(contexts []slingContextRecord) ([]slingContextRecord, []*capacity.SlingContextFields) {
+	var staleCheckContexts []slingContextRecord
+	var staleCheckFields []*capacity.SlingContextFields
+	for _, ctx := range contexts {
+		fields := beads.ParseSlingContextFields(ctx.issue.Description)
+		if fields == nil {
+			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "invalid-context")
+			continue
+		}
+		if fields.DispatchFailures >= maxDispatchFailures {
+			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "circuit-broken")
+			continue
+		}
+		staleCheckContexts = append(staleCheckContexts, ctx)
+		staleCheckFields = append(staleCheckFields, fields)
+	}
+	return staleCheckContexts, staleCheckFields
+}
+
+func closeStaleContexts(contexts []slingContextRecord, fields []*capacity.SlingContextFields, infoByID map[string]beadStatusInfo) {
+	for i, ctx := range contexts {
+		info, found := infoByID[fields[i].WorkBeadID]
 		if found && (info.Status == "hooked" || info.Status == "closed" || info.Status == "tombstone") {
 			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "stale-work-bead")
 		}
 	}
-	return nil
 }
 
 // beadStatusInfo holds batch-fetched bead status, title, and labels.
