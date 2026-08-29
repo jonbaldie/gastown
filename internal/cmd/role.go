@@ -129,12 +129,6 @@ Examples:
 	RunE: runRoleDef,
 }
 
-// Flags for role home command
-var (
-	roleRig     string
-	rolePolecat string
-)
-
 func init() {
 	rootCmd.AddCommand(roleCmd)
 	roleCmd.AddCommand(roleShowCmd)
@@ -145,8 +139,8 @@ func init() {
 	roleCmd.AddCommand(roleDefCmd)
 
 	// Add --rig and --polecat flags to home command for overrides
-	roleHomeCmd.Flags().StringVar(&roleRig, "rig", "", "Rig name (required for rig-specific roles)")
-	roleHomeCmd.Flags().StringVar(&rolePolecat, "polecat", "", "Polecat/crew member name")
+	roleHomeCmd.Flags().String("rig", "", "Rig name (required for rig-specific roles)")
+	roleHomeCmd.Flags().String("polecat", "", "Polecat/crew member name")
 }
 
 // GetRole returns the current role, checking GT_ROLE first then falling back to cwd.
@@ -507,7 +501,9 @@ func runRoleShow(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runRoleHome(_ *cobra.Command, args []string) error {
+func runRoleHome(cmd *cobra.Command, args []string) error {
+	rigOverride := commandStringFlag(cmd, "rig")
+	polecatOverride := commandStringFlag(cmd, "polecat")
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -522,7 +518,7 @@ func runRoleHome(_ *cobra.Command, args []string) error {
 	}
 
 	// Validate flag combinations: --polecat requires --rig to prevent strange merges
-	if rolePolecat != "" && roleRig == "" {
+	if polecatOverride != "" && rigOverride == "" {
 		return fmt.Errorf("--polecat requires --rig to be specified")
 	}
 
@@ -539,11 +535,11 @@ func runRoleHome(_ *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		role, _, _ = parseRoleString(args[0])
 	}
-	if roleRig != "" {
-		rig = roleRig
+	if rigOverride != "" {
+		rig = rigOverride
 	}
-	if rolePolecat != "" {
-		polecat = rolePolecat
+	if polecatOverride != "" {
+		polecat = polecatOverride
 	}
 
 	home := getRoleHome(role, rig, polecat, townRoot)
