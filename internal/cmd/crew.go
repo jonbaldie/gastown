@@ -7,23 +7,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type crewCommandState struct {
+type crewCommandStrings struct {
 	rig           string
-	branch        bool
-	json          bool
-	force         bool
-	purge         bool
-	noTmux        bool
-	detached      bool
 	message       string
 	account       string
 	agentOverride string
-	all           bool
-	listAll       bool
-	dryRun        bool
-	debug         bool
-	reset         bool
 	resume        string
+}
+
+type crewCommandFlags struct {
+	branch   bool
+	json     bool
+	force    bool
+	purge    bool
+	noTmux   bool
+	detached bool
+	all      bool
+	listAll  bool
+	dryRun   bool
+	debug    bool
+	reset    bool
+}
+
+type crewCommandState struct {
+	crewCommandStrings
+	crewCommandFlags
 }
 
 var crewCommandStateInstance = sync.OnceValue(func() *crewCommandState {
@@ -31,7 +39,10 @@ var crewCommandStateInstance = sync.OnceValue(func() *crewCommandState {
 })
 
 func crewState() *crewCommandState {
-	return crewCommandStateInstance()
+	state := crewCommandStateInstance()
+	_ = &state.crewCommandStrings
+	_ = &state.crewCommandFlags
+	return state
 }
 
 func newCrewCommand() *cobra.Command {
