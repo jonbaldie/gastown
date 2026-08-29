@@ -330,6 +330,15 @@ func outputPluginShowJSON(p *plugin.Plugin) error {
 }
 
 func outputPluginShowText(p *plugin.Plugin) error {
+	printPluginBasics(p)
+	printPluginGate(p)
+	printPluginTracking(p)
+	printPluginExecution(p)
+	printPluginInstructions(p)
+	return nil
+}
+
+func printPluginBasics(p *plugin.Plugin) {
 	fmt.Printf("%s %s\n", style.Bold.Render("Plugin:"), p.Name)
 	fmt.Printf("%s %s\n", style.Bold.Render("Path:"), p.Path)
 
@@ -345,8 +354,9 @@ func outputPluginShowText(p *plugin.Plugin) error {
 	fmt.Printf("%s %s\n", style.Bold.Render("Location:"), locStr)
 
 	fmt.Printf("%s %d\n", style.Bold.Render("Version:"), p.Version)
+}
 
-	// Gate
+func printPluginGate(p *plugin.Plugin) {
 	fmt.Println()
 	fmt.Printf("%s\n", style.Bold.Render("Gate:"))
 	if p.Gate != nil {
@@ -366,8 +376,9 @@ func outputPluginShowText(p *plugin.Plugin) error {
 	} else {
 		fmt.Printf("  Type: manual (no gate section)\n")
 	}
+}
 
-	// Tracking
+func printPluginTracking(p *plugin.Plugin) {
 	if p.Tracking != nil {
 		fmt.Println()
 		fmt.Printf("%s\n", style.Bold.Render("Tracking:"))
@@ -376,8 +387,9 @@ func outputPluginShowText(p *plugin.Plugin) error {
 		}
 		fmt.Printf("  Digest: %v\n", p.Tracking.Digest)
 	}
+}
 
-	// Execution
+func printPluginExecution(p *plugin.Plugin) {
 	if p.Execution != nil {
 		fmt.Println()
 		fmt.Printf("%s\n", style.Bold.Render("Execution:"))
@@ -395,8 +407,9 @@ func outputPluginShowText(p *plugin.Plugin) error {
 			fmt.Printf("  Severity: %s\n", p.Execution.Severity)
 		}
 	}
+}
 
-	// Instructions preview
+func printPluginInstructions(p *plugin.Plugin) {
 	if p.Instructions != "" {
 		fmt.Println()
 		fmt.Printf("%s\n", style.Bold.Render("Instructions:"))
@@ -412,8 +425,6 @@ func outputPluginShowText(p *plugin.Plugin) error {
 			fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("... (%d more lines)", len(lines)-10)))
 		}
 	}
-
-	return nil
 }
 
 func runPluginRun(cmd *cobra.Command, args []string) error {
@@ -431,36 +442,10 @@ func runPluginRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check gate status for cooldown gates
-	gateOpen := true
-	gateReason := ""
-	if p.Gate != nil && p.Gate.Type == plugin.GateCooldown && !force {
-		recorder := plugin.NewRecorder(townRoot)
-		duration := p.Gate.Duration
-		if duration == "" {
-			duration = "1h" // default
-		}
-		count, err := recorder.CountRunsSince(p.Name, duration)
-		if err != nil {
-			// Log warning but continue
-			fmt.Fprintf(os.Stderr, "Warning: checking gate status: %v\n", err)
-		} else if count > 0 {
-			gateOpen = false
-			gateReason = fmt.Sprintf("ran %d time(s) within %s cooldown", count, duration)
-		}
-	}
+	gateOpen, gateReason := pluginGateStatus(p, townRoot, force)
 
 	if dryRun {
-		fmt.Printf("%s Dry run for plugin: %s\n", style.Bold.Render("Plugin:"), p.Name)
-		fmt.Printf("%s %s\n", style.Bold.Render("Location:"), p.Path)
-		if p.Gate != nil {
-			fmt.Printf("%s %s\n", style.Bold.Render("Gate type:"), p.Gate.Type)
-		}
-		if !gateOpen {
-			fmt.Printf("%s %s (use --force to override)\n", style.Warning.Render("Gate closed:"), gateReason)
-		} else {
-			fmt.Printf("%s Would execute plugin instructions\n", style.Success.Render("Gate open:"))
-		}
+		printPluginDryRun(p, gateOpen, gateReason)
 		return nil
 	}
 
@@ -470,9 +455,44 @@ func runPluginRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Execute the plugin
-	// For manual runs, we print the instructions for the agent/user to execute
-	// Automatic execution via dogs is handled by gt-n08ix.2
+	printPluginRun(p, force, gateOpen)
+	recordPluginRun(p, townRoot)
+	return nil
+}
+
+func pluginGateStatus(p *plugin.Plugin, townRoot string, force bool) (bool, string) {
+	if force || p.Gate == nil || p.Gate.Type != plugin.GateCooldown {
+		return true, ""
+	}
+	duration := p.Gate.Duration
+	if duration == "" {
+		duration = "1h"
+	}
+	count, err := plugin.NewRecorder(townRoot).CountRunsSince(p.Name, duration)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: checking gate status: %v\n", err)
+		return true, ""
+	}
+	if count == 0 {
+		return true, ""
+	}
+	return false, fmt.Sprintf("ran %d time(s) within %s cooldown", count, duration)
+}
+
+func printPluginDryRun(p *plugin.Plugin, gateOpen bool, gateReason string) {
+	fmt.Printf("%s Dry run for plugin: %s\n", style.Bold.Render("Plugin:"), p.Name)
+	fmt.Printf("%s %s\n", style.Bold.Render("Location:"), p.Path)
+	if p.Gate != nil {
+		fmt.Printf("%s %s\n", style.Bold.Render("Gate type:"), p.Gate.Type)
+	}
+	if gateOpen {
+		fmt.Printf("%s Would execute plugin instructions\n", style.Success.Render("Gate open:"))
+		return
+	}
+	fmt.Printf("%s %s (use --force to override)\n", style.Warning.Render("Gate closed:"), gateReason)
+}
+
+func printPluginRun(p *plugin.Plugin, force, gateOpen bool) {
 	fmt.Printf("%s Running plugin: %s\n", style.Success.Render("●"), p.Name)
 	if force && !gateOpen {
 		fmt.Printf("  %s\n", style.Dim.Render("(gate bypassed with --force)"))
@@ -480,22 +500,20 @@ func runPluginRun(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Printf("%s\n", style.Bold.Render("Instructions:"))
 	fmt.Println(p.Instructions)
+}
 
-	// Record the run
-	recorder := plugin.NewRecorder(townRoot)
-	beadID, err := recorder.RecordRun(plugin.PluginRunRecord{
+func recordPluginRun(p *plugin.Plugin, townRoot string) {
+	beadID, err := plugin.NewRecorder(townRoot).RecordRun(plugin.PluginRunRecord{
 		PluginName: p.Name,
 		RigName:    p.RigName,
-		Result:     plugin.ResultSuccess, // Manual runs are marked success
+		Result:     plugin.ResultSuccess,
 		Body:       "Manual run via gt plugin run",
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to record run: %v\n", err)
-	} else {
-		fmt.Printf("\n%s Recorded run: %s\n", style.Dim.Render("●"), beadID)
+		return
 	}
-
-	return nil
+	fmt.Printf("\n%s Recorded run: %s\n", style.Dim.Render("●"), beadID)
 }
 
 func runPluginSync(cmd *cobra.Command, _ []string) error {
@@ -504,22 +522,9 @@ func runPluginSync(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Determine source directory
-	sourceDir := commandStringFlag(cmd, "source")
-	if sourceDir == "" {
-		sourceDir, err = plugin.FindGastownSource(townRoot)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Resolve to absolute path
-	if !filepath.IsAbs(sourceDir) {
-		abs, err := filepath.Abs(sourceDir)
-		if err != nil {
-			return fmt.Errorf("resolving source path: %w", err)
-		}
-		sourceDir = abs
+	sourceDir, err := resolvePluginSource(commandStringFlag(cmd, "source"), townRoot)
+	if err != nil {
+		return err
 	}
 
 	targetDir := filepath.Join(townRoot, "plugins")
@@ -527,32 +532,7 @@ func runPluginSync(cmd *cobra.Command, _ []string) error {
 	dryRun := commandBoolFlag(cmd, "dry-run")
 	clean := commandBoolFlag(cmd, "clean")
 	if dryRun {
-		report, err := plugin.DetectDrift(sourceDir, targetDir)
-		if err != nil {
-			return fmt.Errorf("detecting drift: %w", err)
-		}
-
-		fmt.Printf("%s Plugin sync dry run\n", style.Bold.Render("Plugin sync:"))
-		fmt.Printf("  Source: %s\n", sourceDir)
-		fmt.Printf("  Target: %s\n\n", targetDir)
-
-		if !report.HasDrift() && len(report.Extra) == 0 {
-			fmt.Printf("  %s All plugins up to date\n", style.Success.Render("✓"))
-			return nil
-		}
-
-		for _, d := range report.Drifted {
-			fmt.Printf("  %s %s (content differs)\n", style.Warning.Render("~"), d.Name)
-		}
-		for _, name := range report.Missing {
-			fmt.Printf("  %s %s (new, would be copied)\n", style.Success.Render("+"), name)
-		}
-		if clean {
-			for _, name := range report.Extra {
-				fmt.Printf("  %s %s (would be removed)\n", style.Error.Render("-"), name)
-			}
-		}
-		return nil
+		return runPluginSyncDryRun(sourceDir, targetDir, clean)
 	}
 
 	result, err := plugin.SyncPlugins(sourceDir, targetDir, clean)
@@ -560,12 +540,60 @@ func runPluginSync(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("syncing plugins: %w", err)
 	}
 
-	if len(result.Copied) == 0 && len(result.Removed) == 0 {
-		fmt.Printf("%s Plugins already up to date (%d checked)\n",
-			style.Success.Render("✓"), len(result.Skipped))
+	printPluginSyncResult(sourceDir, result)
+
+	return nil
+}
+
+func resolvePluginSource(sourceDir, townRoot string) (string, error) {
+	if sourceDir == "" {
+		var err error
+		sourceDir, err = plugin.FindGastownSource(townRoot)
+		if err != nil {
+			return "", err
+		}
+	}
+	if filepath.IsAbs(sourceDir) {
+		return sourceDir, nil
+	}
+	abs, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving source path: %w", err)
+	}
+	return abs, nil
+}
+
+func runPluginSyncDryRun(sourceDir, targetDir string, clean bool) error {
+	report, err := plugin.DetectDrift(sourceDir, targetDir)
+	if err != nil {
+		return fmt.Errorf("detecting drift: %w", err)
+	}
+	fmt.Printf("%s Plugin sync dry run\n", style.Bold.Render("Plugin sync:"))
+	fmt.Printf("  Source: %s\n", sourceDir)
+	fmt.Printf("  Target: %s\n\n", targetDir)
+	if !report.HasDrift() && len(report.Extra) == 0 {
+		fmt.Printf("  %s All plugins up to date\n", style.Success.Render("✓"))
 		return nil
 	}
+	for _, drift := range report.Drifted {
+		fmt.Printf("  %s %s (content differs)\n", style.Warning.Render("~"), drift.Name)
+	}
+	for _, name := range report.Missing {
+		fmt.Printf("  %s %s (new, would be copied)\n", style.Success.Render("+"), name)
+	}
+	if clean {
+		for _, name := range report.Extra {
+			fmt.Printf("  %s %s (would be removed)\n", style.Error.Render("-"), name)
+		}
+	}
+	return nil
+}
 
+func printPluginSyncResult(sourceDir string, result *plugin.SyncResult) {
+	if len(result.Copied) == 0 && len(result.Removed) == 0 {
+		fmt.Printf("%s Plugins already up to date (%d checked)\n", style.Success.Render("✓"), len(result.Skipped))
+		return
+	}
 	fmt.Printf("%s Synced plugins from %s\n", style.Success.Render("●"), style.Dim.Render(sourceDir))
 	for _, name := range result.Copied {
 		fmt.Printf("  %s %s\n", style.Success.Render("↑"), name)
@@ -574,14 +602,11 @@ func runPluginSync(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("  %s %s\n", style.Error.Render("×"), name)
 	}
 	if len(result.Skipped) > 0 {
-		fmt.Printf("  %s %d plugin(s) already current\n",
-			style.Dim.Render("·"), len(result.Skipped))
+		fmt.Printf("  %s %d plugin(s) already current\n", style.Dim.Render("·"), len(result.Skipped))
 	}
-	for _, e := range result.Errors {
-		fmt.Fprintf(os.Stderr, "  %s %s\n", style.Error.Render("!"), e)
+	for _, err := range result.Errors {
+		fmt.Fprintf(os.Stderr, "  %s %s\n", style.Error.Render("!"), err)
 	}
-
-	return nil
 }
 
 func runPluginHistory(cmd *cobra.Command, args []string) error {
@@ -604,15 +629,10 @@ func runPluginHistory(cmd *cobra.Command, args []string) error {
 		runs = []*plugin.PluginRunBead{}
 	}
 
-	// Apply limit
-	if limit > 0 && len(runs) > limit {
-		runs = runs[:limit]
-	}
+	runs = limitPluginHistory(runs, limit)
 
 	if jsonOutput {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(runs)
+		return outputPluginHistoryJSON(runs)
 	}
 
 	if len(runs) == 0 {
@@ -620,26 +640,46 @@ func runPluginHistory(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%s Execution history for %s (%d runs)\n\n", style.Success.Render("●"), name, len(runs))
-
-	for _, run := range runs {
-		resultStyle := style.Success
-		resultIcon := "✓"
-		if run.Result == plugin.ResultFailure {
-			resultStyle = style.Error
-			resultIcon = "✗"
-		} else if run.Result == plugin.ResultSkipped {
-			resultStyle = style.Dim
-			resultIcon = "○"
-		}
-
-		fmt.Printf("  %s %s  %s\n",
-			resultStyle.Render(resultIcon),
-			run.CreatedAt.Format("2006-01-02 15:04"),
-			style.Dim.Render(run.ID))
-	}
+	printPluginHistory(runs, name)
 
 	return nil
+}
+
+func limitPluginHistory(runs []*plugin.PluginRunBead, limit int) []*plugin.PluginRunBead {
+	if limit > 0 && len(runs) > limit {
+		return runs[:limit]
+	}
+	return runs
+}
+
+func outputPluginHistoryJSON(runs []*plugin.PluginRunBead) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(runs)
+}
+
+func printPluginHistory(runs []*plugin.PluginRunBead, name string) {
+	fmt.Printf("%s Execution history for %s (%d runs)\n\n", style.Success.Render("●"), name, len(runs))
+	for _, run := range runs {
+		printPluginHistoryRun(run)
+	}
+}
+
+func printPluginHistoryRun(run *plugin.PluginRunBead) {
+	resultStyle := style.Success
+	resultIcon := "✓"
+	if run.Result == plugin.ResultFailure {
+		resultStyle = style.Error
+		resultIcon = "✗"
+	} else if run.Result == plugin.ResultSkipped {
+		resultStyle = style.Dim
+		resultIcon = "○"
+	}
+
+	fmt.Printf("  %s %s  %s\n",
+		resultStyle.Render(resultIcon),
+		run.CreatedAt.Format("2006-01-02 15:04"),
+		style.Dim.Render(run.ID))
 }
 
 func runPluginRecordRun(cmd *cobra.Command, _ []string) error {
