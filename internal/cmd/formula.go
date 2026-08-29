@@ -226,95 +226,119 @@ func runFormulaShow(cmd *cobra.Command, args []string) error {
 // and slings each leg to a separate polecat with leg-specific prompts.
 func runFormulaRun(cmd *cobra.Command, args []string) error {
 	opts := formulaRunOptionsFromCommand(cmd)
-	// Determine target rig first (needed for default formula lookup)
-	targetRig := opts.rig
-	var rigPath string
-	if targetRig == "" {
-		// Try to detect from current directory
-		townRoot, err := workspace.FindFromCwd()
-		if err == nil && townRoot != "" {
-			rigName, r, rigErr := findCurrentRig(townRoot)
-			if rigErr == nil && rigName != "" {
-				targetRig = rigName
-				if r != nil {
-					rigPath = r.Path
-				}
-			}
-			// Still no rig — auto-select when there is exactly one registered rig,
-			// otherwise surface a helpful error (e.g. Deacon at HQ level on
-			// non-default installs where "gastown" rig does not exist).
-			if targetRig == "" {
-				name, path, inferErr := autoInferRig(townRoot)
-				if inferErr != nil {
-					return inferErr
-				}
-				targetRig = name
-				rigPath = path
-			}
-		} else {
-			// No town root found, cannot determine target rig
-			return fmt.Errorf("cannot determine target rig: not in a Gas Town workspace; use --rig=NAME")
-		}
-	} else {
-		// If rig specified, construct path
-		townRoot, err := workspace.FindFromCwd()
-		if err == nil && townRoot != "" {
-			rigPath = filepath.Join(townRoot, targetRig)
-		}
-	}
-
-	// Get formula name from args or default
-	var formulaName string
-	if len(args) > 0 {
-		formulaName = args[0]
-	} else {
-		// Try to get default formula from rig config
-		if rigPath != "" {
-			formulaName = config.GetDefaultFormula(rigPath)
-		}
-		if formulaName == "" {
-			return fmt.Errorf("no formula specified and no default formula configured\n\nTo set a default formula, add to your rig's settings/config.json:\n  \"workflow\": {\n    \"default_formula\": \"<formula-name>\"\n  }")
-		}
-		fmt.Printf("%s Using default formula: %s\n", style.Dim.Render("Note:"), formulaName)
-	}
-
-	// Find the formula file
-	formulaPath, err := findFormulaFile(formulaName)
+	targetRig, rigPath, err := resolveFormulaRunTarget(opts)
 	if err != nil {
-		return fmt.Errorf("finding formula: %w", err)
+		return err
 	}
-
-	// Parse the formula
-	f, err := parseFormulaFile(formulaPath)
+	formulaName, err := resolveFormulaRunName(args, rigPath)
 	if err != nil {
-		return fmt.Errorf("parsing formula: %w", err)
+		return err
 	}
-
-	// Handle dry-run mode
+	f, err := loadFormulaForRun(formulaName)
+	if err != nil {
+		return err
+	}
 	if opts.dryRun {
 		return dryRunFormula(f, formulaName, targetRig, opts)
 	}
+	return executeLoadedFormula(f, formulaName, targetRig, opts)
+}
 
+func resolveFormulaRunTarget(opts formulaRunOptions) (string, string, error) {
+	if opts.rig != "" {
+		return formulaRunSpecifiedRig(opts.rig)
+	}
+	return formulaRunInferredRig()
+}
+
+func formulaRunSpecifiedRig(targetRig string) (string, string, error) {
+	rigPath := ""
+	townRoot, err := workspace.FindFromCwd()
+	if err == nil && townRoot != "" {
+		rigPath = filepath.Join(townRoot, targetRig)
+	}
+	return targetRig, rigPath, nil
+}
+
+func formulaRunInferredRig() (string, string, error) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return "", "", fmt.Errorf("cannot determine target rig: not in a Gas Town workspace; use --rig=NAME")
+	}
+	rigName, r, rigErr := findCurrentRig(townRoot)
+	if rigErr == nil && rigName != "" {
+		rigPath := ""
+		if r != nil {
+			rigPath = r.Path
+		}
+		return rigName, rigPath, nil
+	}
+	return autoInferRig(townRoot)
+}
+
+func resolveFormulaRunName(args []string, rigPath string) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	formulaName := ""
+	if rigPath != "" {
+		formulaName = config.GetDefaultFormula(rigPath)
+	}
+	if formulaName == "" {
+		return "", fmt.Errorf("no formula specified and no default formula configured\n\nTo set a default formula, add to your rig's settings/config.json:\n  \"workflow\": {\n    \"default_formula\": \"<formula-name>\"\n  }")
+	}
+	fmt.Printf("%s Using default formula: %s\n", style.Dim.Render("Note:"), formulaName)
+	return formulaName, nil
+}
+
+func loadFormulaForRun(formulaName string) (*formula.Formula, error) {
+	formulaPath, err := findFormulaFile(formulaName)
+	if err != nil {
+		return nil, fmt.Errorf("finding formula: %w", err)
+	}
+	f, err := parseFormulaFile(formulaPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsing formula: %w", err)
+	}
+	return f, nil
+}
+
+func executeLoadedFormula(f *formula.Formula, formulaName, targetRig string, opts formulaRunOptions) error {
 	switch f.Type {
 	case formula.TypeConvoy:
 		return executeConvoyFormula(f, formulaName, targetRig, opts)
 	case formula.TypeWorkflow:
 		return executeWorkflowFormula(f, formulaName, targetRig, opts)
 	default:
-		fmt.Printf("%s Formula type '%s' not yet supported for execution.\n",
-			style.Dim.Render("Note:"), f.Type)
-		fmt.Printf("Currently only 'convoy' and 'workflow' formulas can be run.\n")
-		fmt.Printf("\nTo run '%s' manually:\n", formulaName)
-		fmt.Printf("  1. View formula:   gt formula show %s\n", formulaName)
-		fmt.Printf("  2. Cook to proto:  bd cook %s\n", formulaName)
-		fmt.Printf("  3. Pour molecule:  bd pour %s\n", formulaName)
-		fmt.Printf("  4. Sling to rig:   gt sling <mol-id> %s\n", targetRig)
+		printUnsupportedFormulaType(formulaName, targetRig, string(f.Type))
 		return nil
 	}
 }
 
+func printUnsupportedFormulaType(formulaName, targetRig, formulaType string) {
+	fmt.Printf("%s Formula type '%s' not yet supported for execution.\n",
+		style.Dim.Render("Note:"), formulaType)
+	fmt.Printf("Currently only 'convoy' and 'workflow' formulas can be run.\n")
+	fmt.Printf("\nTo run '%s' manually:\n", formulaName)
+	fmt.Printf("  1. View formula:   gt formula show %s\n", formulaName)
+	fmt.Printf("  2. Cook to proto:  bd cook %s\n", formulaName)
+	fmt.Printf("  3. Pour molecule:  bd pour %s\n", formulaName)
+	fmt.Printf("  4. Sling to rig:   gt sling <mol-id> %s\n", targetRig)
+}
+
 // dryRunFormula shows what would happen without executing
 func dryRunFormula(f *formula.Formula, formulaName, targetRig string, opts formulaRunOptions) error {
+	printDryRunFormulaHeader(f, formulaName, targetRig, opts)
+	if f.Type == formula.TypeConvoy && len(f.Legs) > 0 {
+		dryRunConvoyFormula(f, formulaName, opts)
+	}
+	if f.Type == formula.TypeWorkflow && len(f.Steps) > 0 {
+		dryRunWorkflowFormula(f)
+	}
+	return nil
+}
+
+func printDryRunFormulaHeader(f *formula.Formula, formulaName, targetRig string, opts formulaRunOptions) {
 	fmt.Printf("%s Would execute formula:\n", style.Dim.Render("[dry-run]"))
 	fmt.Printf("  Formula: %s\n", style.Bold.Render(formulaName))
 	fmt.Printf("  Type:    %s\n", f.Type)
@@ -322,7 +346,6 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string, opts formu
 	if opts.pr > 0 {
 		fmt.Printf("  PR:      #%d\n", opts.pr)
 	}
-	// Show effective agent override (GH#2118)
 	effectiveAgent := opts.agent
 	if effectiveAgent == "" {
 		effectiveAgent = f.Agent
@@ -330,8 +353,6 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string, opts formu
 	if effectiveAgent != "" {
 		fmt.Printf("  Agent:   %s\n", effectiveAgent)
 	}
-
-	// Show --set variables if provided
 	if len(opts.set) > 0 {
 		fmt.Printf("  Set:")
 		for _, s := range opts.set {
@@ -339,98 +360,112 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string, opts formu
 		}
 		fmt.Println()
 	}
+}
 
-	if f.Type == formula.TypeConvoy && len(f.Legs) > 0 {
-		// Generate review ID for dry-run display
-		reviewID := generateFormulaShortID()
+type dryRunConvoyCtx struct {
+	f                 *formula.Formula
+	formulaName       string
+	opts              formulaRunOptions
+	reviewID          string
+	targetDescription string
+	prTitle           string
+	changedFiles      []map[string]interface{}
+	setVars           map[string]interface{}
+	outputDir         string
+}
 
-		// Parse --set key=value pairs for template rendering
-		setVars := parseSetVars(opts.set)
-
-		// Build target description
-		var targetDescription string
-		if opts.pr > 0 {
-			targetDescription = fmt.Sprintf("PR #%d", opts.pr)
-		} else {
-			targetDescription = "local files"
-		}
-
-		// Fetch PR info if --pr flag is set
-		var prTitle string
-		var changedFiles []map[string]interface{}
-		if opts.pr > 0 {
-			prTitle, changedFiles = fetchPRInfo(opts.pr)
-			if prTitle != "" {
-				fmt.Printf("  PR Title: %s\n", prTitle)
-			}
-			if len(changedFiles) > 0 {
-				fmt.Printf("  Changed files: %d\n", len(changedFiles))
-			}
-		}
-
-		// Show output directory if configured
-		var outputDir string
-		if f.Output != nil && f.Output.Directory != "" {
-			dirCtx := formulaTemplateContext(formulaName, targetDescription, reviewID,
-				opts.pr, prTitle, changedFiles, opts.files, setVars)
-			outputDir = renderTemplateOrDefault(f.Output.Directory, dirCtx, ".reviews/"+reviewID)
-			fmt.Printf("\n  Output directory: %s\n", outputDir)
-		}
-
-		fmt.Printf("\n  Legs (%d parallel):\n", len(f.Legs))
-		for _, leg := range f.Legs {
-			// Show rendered output path for each leg
-			if f.Output != nil && outputDir != "" {
-				legCtx := formulaTemplateContext(formulaName, targetDescription, reviewID,
-					opts.pr, prTitle, changedFiles, opts.files, setVars)
-				legCtx["leg"] = map[string]interface{}{
-					"id":          leg.ID,
-					"title":       leg.Title,
-					"focus":       leg.Focus,
-					"description": leg.Description,
-				}
-				legPattern := renderTemplateOrDefault(f.Output.LegPattern, legCtx, leg.ID+"-findings.md")
-				outputPath := filepath.Join(outputDir, legPattern)
-				agentSuffix := resolveFormulaLegAgent(leg.Agent, opts.agent, f.Agent)
-				if agentSuffix != "" {
-					agentSuffix = fmt.Sprintf(" [agent: %s]", agentSuffix)
-				}
-				fmt.Printf("    • %s: %s%s\n      → %s\n", leg.ID, leg.Title, agentSuffix, outputPath)
-			} else {
-				agentSuffix := resolveFormulaLegAgent(leg.Agent, opts.agent, f.Agent)
-				if agentSuffix != "" {
-					agentSuffix = fmt.Sprintf(" [agent: %s]", agentSuffix)
-				}
-				fmt.Printf("    • %s: %s%s\n", leg.ID, leg.Title, agentSuffix)
-			}
-		}
-		if f.Synthesis != nil {
-			fmt.Printf("\n  Synthesis:\n")
-			if f.Output != nil && outputDir != "" {
-				synthPath := filepath.Join(outputDir, f.Output.Synthesis)
-				fmt.Printf("    • %s\n      → %s\n", f.Synthesis.Title, synthPath)
-			} else {
-				fmt.Printf("    • %s\n", f.Synthesis.Title)
-			}
-		}
+func dryRunConvoyFormula(f *formula.Formula, formulaName string, opts formulaRunOptions) {
+	ctx := &dryRunConvoyCtx{
+		f:           f,
+		formulaName: formulaName,
+		opts:        opts,
+		reviewID:    generateFormulaShortID(),
+		setVars:     parseSetVars(opts.set),
 	}
-
-	if f.Type == formula.TypeWorkflow && len(f.Steps) > 0 {
-		fmt.Printf("\n  Steps (%d sequential):\n", len(f.Steps))
-		for i, step := range f.Steps {
-			needsStr := ""
-			if len(step.Needs) > 0 {
-				needsStr = fmt.Sprintf(" [needs: %s]", strings.Join(step.Needs, ", "))
-			}
-			readyStr := ""
-			if len(step.Needs) == 0 {
-				readyStr = " ← ready"
-			}
-			fmt.Printf("    %d. %s: %s%s%s\n", i+1, step.ID, step.Title, needsStr, readyStr)
-		}
+	ctx.targetDescription = "local files"
+	if opts.pr > 0 {
+		ctx.targetDescription = fmt.Sprintf("PR #%d", opts.pr)
 	}
+	ctx.prTitle, ctx.changedFiles = dryRunConvoyPRInfo(opts)
+	ctx.outputDir = dryRunConvoyOutputDir(ctx)
+	fmt.Printf("\n  Legs (%d parallel):\n", len(f.Legs))
+	for _, leg := range f.Legs {
+		printDryRunConvoyLeg(ctx, leg)
+	}
+	printDryRunConvoySynthesis(f, ctx.outputDir)
+}
 
-	return nil
+func dryRunConvoyPRInfo(opts formulaRunOptions) (string, []map[string]interface{}) {
+	if opts.pr <= 0 {
+		return "", nil
+	}
+	prTitle, changedFiles := fetchPRInfo(opts.pr)
+	if prTitle != "" {
+		fmt.Printf("  PR Title: %s\n", prTitle)
+	}
+	if len(changedFiles) > 0 {
+		fmt.Printf("  Changed files: %d\n", len(changedFiles))
+	}
+	return prTitle, changedFiles
+}
+
+func dryRunConvoyOutputDir(ctx *dryRunConvoyCtx) string {
+	if ctx.f.Output == nil || ctx.f.Output.Directory == "" {
+		return ""
+	}
+	dirCtx := formulaTemplateContext(ctx.formulaName, ctx.targetDescription, ctx.reviewID,
+		ctx.opts.pr, ctx.prTitle, ctx.changedFiles, ctx.opts.files, ctx.setVars)
+	outputDir := renderTemplateOrDefault(ctx.f.Output.Directory, dirCtx, ".reviews/"+ctx.reviewID)
+	fmt.Printf("\n  Output directory: %s\n", outputDir)
+	return outputDir
+}
+
+func printDryRunConvoyLeg(ctx *dryRunConvoyCtx, leg formula.Leg) {
+	agentSuffix := resolveFormulaLegAgent(leg.Agent, ctx.opts.agent, ctx.f.Agent)
+	if agentSuffix != "" {
+		agentSuffix = fmt.Sprintf(" [agent: %s]", agentSuffix)
+	}
+	if ctx.f.Output == nil || ctx.outputDir == "" {
+		fmt.Printf("    • %s: %s%s\n", leg.ID, leg.Title, agentSuffix)
+		return
+	}
+	legCtx := formulaTemplateContext(ctx.formulaName, ctx.targetDescription, ctx.reviewID,
+		ctx.opts.pr, ctx.prTitle, ctx.changedFiles, ctx.opts.files, ctx.setVars)
+	legCtx["leg"] = map[string]interface{}{
+		"id":          leg.ID,
+		"title":       leg.Title,
+		"focus":       leg.Focus,
+		"description": leg.Description,
+	}
+	legPattern := renderTemplateOrDefault(ctx.f.Output.LegPattern, legCtx, leg.ID+"-findings.md")
+	fmt.Printf("    • %s: %s%s\n      → %s\n", leg.ID, leg.Title, agentSuffix, filepath.Join(ctx.outputDir, legPattern))
+}
+
+func printDryRunConvoySynthesis(f *formula.Formula, outputDir string) {
+	if f.Synthesis == nil {
+		return
+	}
+	fmt.Printf("\n  Synthesis:\n")
+	if f.Output != nil && outputDir != "" {
+		fmt.Printf("    • %s\n      → %s\n", f.Synthesis.Title, filepath.Join(outputDir, f.Output.Synthesis))
+		return
+	}
+	fmt.Printf("    • %s\n", f.Synthesis.Title)
+}
+
+func dryRunWorkflowFormula(f *formula.Formula) {
+	fmt.Printf("\n  Steps (%d sequential):\n", len(f.Steps))
+	for i, step := range f.Steps {
+		needsStr := ""
+		if len(step.Needs) > 0 {
+			needsStr = fmt.Sprintf(" [needs: %s]", strings.Join(step.Needs, ", "))
+		}
+		readyStr := ""
+		if len(step.Needs) == 0 {
+			readyStr = " ← ready"
+		}
+		fmt.Printf("    %d. %s: %s%s%s\n", i+1, step.ID, step.Title, needsStr, readyStr)
+	}
 }
 
 // truncate shortens a string to maxLen, appending "..." if truncated.
