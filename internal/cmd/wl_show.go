@@ -15,8 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var wlShowJSON bool
-
 var wlShowCmd = &cobra.Command{
 	Use:   "show <work-id>",
 	Short: "Show full details of a wanted item",
@@ -35,11 +33,12 @@ EXAMPLES:
 }
 
 func init() {
-	wlShowCmd.Flags().BoolVar(&wlShowJSON, "json", false, "Output as JSON")
+	wlShowCmd.Flags().Bool("json", false, "Output as JSON")
 	wlCmd.AddCommand(wlShowCmd)
 }
 
-func runWLShow(_ *cobra.Command, args []string) error {
+func runWLShow(cmd *cobra.Command, args []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
 	wantedID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -51,7 +50,7 @@ func runWLShow(_ *cobra.Command, args []string) error {
 	dbName := wasteland.ResolveDBName(townRoot)
 	if doltserver.DatabaseExists(townRoot, dbName) {
 		store := doltserver.NewWLCommonsWithDB(townRoot, dbName)
-		return showWanted(store, wantedID, wlShowJSON)
+		return showWanted(store, wantedID, jsonOutput)
 	}
 
 	// Fallback: read from local filesystem clone.
@@ -73,7 +72,7 @@ func runWLShow(_ *cobra.Command, args []string) error {
 
 	query := buildWLShowQuery(wantedID)
 
-	if wlShowJSON {
+	if jsonOutput {
 		sqlCmd := exec.Command(doltPath, "sql", "-q", query, "-r", "json")
 		sqlCmd.Dir = cloneDir
 		sqlCmd.Stdout = os.Stdout

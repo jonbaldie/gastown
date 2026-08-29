@@ -12,9 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var wlSyncDryRun bool
-var wlSyncUpgrade bool
-
 var wlSyncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Pull upstream changes into local wl-commons fork",
@@ -36,13 +33,15 @@ EXAMPLES:
 }
 
 func init() {
-	wlSyncCmd.Flags().BoolVar(&wlSyncDryRun, "dry-run", false, "Show what would change without pulling")
-	wlSyncCmd.Flags().BoolVar(&wlSyncUpgrade, "upgrade", false, "Allow MAJOR schema version upgrades")
+	wlSyncCmd.Flags().Bool("dry-run", false, "Show what would change without pulling")
+	wlSyncCmd.Flags().Bool("upgrade", false, "Allow MAJOR schema version upgrades")
 
 	wlCmd.AddCommand(wlSyncCmd)
 }
 
-func runWLSync(_ *cobra.Command, _ []string) error {
+func runWLSync(cmd *cobra.Command, _ []string) error {
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	allowUpgrade := commandBoolFlag(cmd, "upgrade")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -70,7 +69,7 @@ func runWLSync(_ *cobra.Command, _ []string) error {
 
 	fmt.Printf("Local fork: %s\n", style.Dim.Render(forkDir))
 
-	if wlSyncDryRun {
+	if dryRun {
 		fmt.Printf("\n%s Dry run — checking upstream for changes...\n", style.Bold.Render("~"))
 
 		fetchCmd := exec.Command(doltPath, "fetch", "upstream")
@@ -80,7 +79,7 @@ func runWLSync(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("fetching upstream: %w", err)
 		}
 
-		if err := checkSchemaEvolution(doltPath, forkDir, wlSyncUpgrade); err != nil {
+		if err := checkSchemaEvolution(doltPath, forkDir, allowUpgrade); err != nil {
 			return err
 		}
 
@@ -103,7 +102,7 @@ func runWLSync(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("fetching upstream: %w", err)
 	}
 
-	if err := checkSchemaEvolution(doltPath, forkDir, wlSyncUpgrade); err != nil {
+	if err := checkSchemaEvolution(doltPath, forkDir, allowUpgrade); err != nil {
 		return err
 	}
 
