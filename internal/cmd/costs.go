@@ -715,23 +715,7 @@ func findLatestTranscript(projectDir string) (string, error) {
 	var latestTime time.Time
 
 	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && path != projectDir {
-			return fs.SkipDir // Don't recurse into subdirectories
-		}
-		if !d.IsDir() && strings.HasSuffix(path, ".jsonl") {
-			info, err := d.Info()
-			if err != nil {
-				return nil // Skip files we can't stat
-			}
-			if info.ModTime().After(latestTime) {
-				latestTime = info.ModTime()
-				latestPath = path
-			}
-		}
-		return nil
+		return inspectTranscriptEntry(path, d, err, projectDir, &latestPath, &latestTime)
 	})
 
 	if err != nil {
@@ -741,6 +725,27 @@ func findLatestTranscript(projectDir string) (string, error) {
 		return "", fmt.Errorf("no transcript files found in %s", projectDir)
 	}
 	return latestPath, nil
+}
+
+func inspectTranscriptEntry(path string, d fs.DirEntry, walkErr error, projectDir string, latestPath *string, latestTime *time.Time) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if d.IsDir() && path != projectDir {
+		return fs.SkipDir // Don't recurse into subdirectories
+	}
+	if d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+		return nil
+	}
+	info, err := d.Info()
+	if err != nil {
+		return nil // Skip files we can't stat
+	}
+	if info.ModTime().After(*latestTime) {
+		*latestTime = info.ModTime()
+		*latestPath = path
+	}
+	return nil
 }
 
 // parseTranscriptUsage reads a transcript file and sums token usage from assistant messages.
