@@ -28,26 +28,23 @@ Examples:
 	RunE: runFormulaOverlayEdit,
 }
 
-var (
-	formulaOverlayEditRig  string
-	formulaOverlayEditTown bool
-)
-
 func init() {
 	formulaOverlayCmd.AddCommand(formulaOverlayEditCmd)
-	formulaOverlayEditCmd.Flags().StringVar(&formulaOverlayEditRig, "rig", "", "Rig name (default: auto-detect from cwd)")
-	formulaOverlayEditCmd.Flags().BoolVar(&formulaOverlayEditTown, "town", false, "Edit town-level overlay instead of rig-level")
+	formulaOverlayEditCmd.Flags().String("rig", "", "Rig name (default: auto-detect from cwd)")
+	formulaOverlayEditCmd.Flags().Bool("town", false, "Edit town-level overlay instead of rig-level")
 }
 
-func runFormulaOverlayEdit(_ *cobra.Command, args []string) error {
+func runFormulaOverlayEdit(cmd *cobra.Command, args []string) error {
 	formulaName := args[0]
+	rigName := commandStringFlag(cmd, "rig")
+	townLevel := commandBoolFlag(cmd, "town")
 
-	townRoot, rigName, err := resolveOverlayContext(formulaOverlayEditRig)
+	townRoot, rigName, err := resolveOverlayContext(rigName)
 	if err != nil {
 		return err
 	}
 
-	path := formulaOverlayEditPath(townRoot, rigName, formulaName, formulaOverlayEditTown)
+	path := formulaOverlayEditPath(townRoot, rigName, formulaName, townLevel)
 	if err := ensureFormulaOverlayFile(path, formulaName); err != nil {
 		return err
 	}
