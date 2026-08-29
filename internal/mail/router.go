@@ -998,70 +998,59 @@ func (r *Router) validateRecipient(identity string) error {
 		return fmt.Errorf("no agent found")
 	}
 
-	// Overseer is the human operator, not an agent bead
-	if identity == "overseer" {
-		return nil
-	}
-
-	// Well-known town-level singletons always valid
-	switch identity {
-	case "mayor", "mayor/", "deacon", "deacon/":
-		return nil
-	}
-	if _, ok := DogAddressName(identity); !ok && isReservedTownSubpath(identity) {
-		return fmt.Errorf("no agent found")
-	}
-
-	// Well-known rig-level singletons are valid without an active session, but
-	// the containing rig must exist so typos do not queue mail to a dead inbox.
-	parts := strings.SplitN(identity, "/", 3)
-	if len(parts) == 2 {
-		switch parts[1] {
-		case "witness", "refinery":
-			if r.townRoot == "" || dirExists(filepath.Join(r.townRoot, parts[0])) {
-				return nil
-			}
-			return fmt.Errorf("no agent found")
-		}
+	if handled, err := r.validateKnownRecipient(identity); handled {
+		return err
 	}
 
 	// Query agents from town-level beads
-	agents := r.queryAgents("")
-
-	for _, agent := range agents {
-		if agentBeadToAddress(agent) == identity {
-			return nil // Found matching agent
-		}
+	if r.queryContainsRecipient(identity) {
+		return nil
 	}
 
-	// Query agents from rig-level beads via routes.jsonl
-	var routeQueryErr error
-	if r.townRoot != "" {
-		townBeadsDir := filepath.Join(r.townRoot, ".beads")
-		routes, err := beads.LoadRoutes(townBeadsDir)
-		if err == nil {
-			var queryErrors []string
-			for _, route := range routes {
-				// Skip hq- routes (town-level, already queried)
-				if strings.HasPrefix(route.Prefix, "hq-") {
-					continue
-				}
-				rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
-				rigAgents, err := r.queryAgentsFromDir(rigBeadsDir)
-				if err != nil {
-					queryErrors = append(queryErrors, fmt.Sprintf("%s: %v", route.Path, err))
-					continue
-				}
-				for _, agent := range rigAgents {
-					if agentBeadToAddress(agent) == identity {
-						return nil // Found matching agent
-					}
-				}
-			}
-			if len(queryErrors) > 0 {
-				routeQueryErr = fmt.Errorf("no agent found (query errors: %s)", strings.Join(queryErrors, "; "))
-			}
+	return r.validateRecipientFromSources(identity)
+}
+
+func (r *Router) validateKnownRecipient(identity string) (bool, error) {
+	if handled, err := validateTownRecipient(identity); handled {
+		return true, err
+	}
+	return r.validateRigSingleton(identity)
+}
+
+func validateTownRecipient(identity string) (bool, error) {
+	// Overseer is the human operator, not an agent bead.
+	if identity == "overseer" {
+		return true, nil
+	}
+	// Well-known town-level singletons always valid.
+	switch identity {
+	case "mayor", "mayor/", "deacon", "deacon/":
+		return true, nil
+	}
+	if _, ok := DogAddressName(identity); !ok && isReservedTownSubpath(identity) {
+		return true, fmt.Errorf("no agent found")
+	}
+	return false, nil
+}
+
+func (r *Router) validateRigSingleton(identity string) (bool, error) {
+	// Well-known rig-level singletons are valid without an active session, but
+	// the containing rig must exist so typos do not queue mail to a dead inbox.
+	parts := strings.SplitN(identity, "/", 3)
+	if len(parts) == 2 && (parts[1] == "witness" || parts[1] == "refinery") {
+		if r.townRoot == "" || dirExists(filepath.Join(r.townRoot, parts[0])) {
+			return true, nil
 		}
+		return true, fmt.Errorf("no agent found")
+	}
+	return false, nil
+}
+
+func (r *Router) validateRecipientFromSources(identity string) error {
+	// Query agents from rig-level beads via routes.jsonl.
+	found, routeQueryErr := r.queryRoutesForRecipient(identity)
+	if found {
+		return nil
 	}
 
 	// Fall back to workspace directory validation. Agent beads may be missing
@@ -1069,12 +1058,61 @@ func (r *Router) validateRecipient(identity string) error {
 	if r.townRoot != "" && r.validateAgentWorkspace(identity) {
 		return nil
 	}
-
 	if routeQueryErr != nil {
 		return routeQueryErr
 	}
-
 	return fmt.Errorf("no agent found")
+}
+
+func (r *Router) queryContainsRecipient(identity string) bool {
+	for _, agent := range r.queryAgents("") {
+		if agentBeadToAddress(agent) == identity {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Router) queryRoutesForRecipient(identity string) (bool, error) {
+	if r.townRoot == "" {
+		return false, nil
+	}
+
+	routes, err := beads.LoadRoutes(filepath.Join(r.townRoot, ".beads"))
+	if err != nil {
+		return false, nil
+	}
+	var queryErrors []string
+	for _, route := range routes {
+		if strings.HasPrefix(route.Prefix, "hq-") {
+			continue
+		}
+		found, err := r.queryRouteForRecipient(identity, route)
+		if found {
+			return true, nil
+		}
+		if err != nil {
+			queryErrors = append(queryErrors, fmt.Sprintf("%s: %v", route.Path, err))
+		}
+	}
+	if len(queryErrors) > 0 {
+		return false, fmt.Errorf("no agent found (query errors: %s)", strings.Join(queryErrors, "; "))
+	}
+	return false, nil
+}
+
+func (r *Router) queryRouteForRecipient(identity string, route beads.Route) (bool, error) {
+	rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
+	agents, err := r.queryAgentsFromDir(rigBeadsDir)
+	if err != nil {
+		return false, err
+	}
+	for _, agent := range agents {
+		if agentBeadToAddress(agent) == identity {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // validateAgentWorkspace checks if an agent's workspace directory exists on disk.
