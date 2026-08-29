@@ -33,21 +33,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	installForce      bool
-	installName       string
-	installOwner      string
-	installPublicName string
-	installNoBeads    bool
-	installGit        bool
-	installGitHub     string
-	installPublic     bool
-	installShell      bool
-	installWrappers   bool
-	installSupervisor bool
-	installDoltPort   int
-)
-
 var installCmd = &cobra.Command{
 	Use:     "install [path]",
 	GroupID: GroupWorkspace,
@@ -80,40 +65,40 @@ Examples:
 }
 
 func init() {
-	installCmd.Flags().BoolVarP(&installForce, "force", "f", false, "Re-run install in existing HQ (preserves town.json and rigs.json)")
-	installCmd.Flags().StringVarP(&installName, "name", "n", "", "Town name (defaults to directory name)")
-	installCmd.Flags().StringVar(&installOwner, "owner", "", "Owner email for entity identity (defaults to git config user.email)")
-	installCmd.Flags().StringVar(&installPublicName, "public-name", "", "Public display name (defaults to town name)")
-	installCmd.Flags().BoolVar(&installNoBeads, "no-beads", false, "Skip town beads initialization")
-	installCmd.Flags().BoolVar(&installGit, "git", false, "Initialize git with .gitignore")
-	installCmd.Flags().StringVar(&installGitHub, "github", "", "Create GitHub repo (format: owner/repo, private by default)")
-	installCmd.Flags().BoolVar(&installPublic, "public", false, "Make GitHub repo public (use with --github)")
-	installCmd.Flags().BoolVar(&installShell, "shell", false, "Install shell integration and enable Gas Town machine-wide")
-	installCmd.Flags().BoolVar(&installWrappers, "wrappers", false, "Install gt-codex/gt-gemini/gt-opencode wrapper scripts to ~/bin/")
-	installCmd.Flags().BoolVar(&installSupervisor, "supervisor", false, "Configure launchd/systemd for daemon auto-restart")
-	installCmd.Flags().IntVar(&installDoltPort, "dolt-port", 0, "Dolt SQL server port (default 3307; set when another instance owns the default port)")
+	installCmd.Flags().BoolP("force", "f", false, "Re-run install in existing HQ (preserves town.json and rigs.json)")
+	installCmd.Flags().StringP("name", "n", "", "Town name (defaults to directory name)")
+	installCmd.Flags().String("owner", "", "Owner email for entity identity (defaults to git config user.email)")
+	installCmd.Flags().String("public-name", "", "Public display name (defaults to town name)")
+	installCmd.Flags().Bool("no-beads", false, "Skip town beads initialization")
+	installCmd.Flags().Bool("git", false, "Initialize git with .gitignore")
+	installCmd.Flags().String("github", "", "Create GitHub repo (format: owner/repo, private by default)")
+	installCmd.Flags().Bool("public", false, "Make GitHub repo public (use with --github)")
+	installCmd.Flags().Bool("shell", false, "Install shell integration and enable Gas Town machine-wide")
+	installCmd.Flags().Bool("wrappers", false, "Install gt-codex/gt-gemini/gt-opencode wrapper scripts to ~/bin/")
+	installCmd.Flags().Bool("supervisor", false, "Configure launchd/systemd for daemon auto-restart")
+	installCmd.Flags().Int("dolt-port", 0, "Dolt SQL server port (default 3307; set when another instance owns the default port)")
 	rootCmd.AddCommand(installCmd)
 }
 
-func runInstall(_ *cobra.Command, args []string) error {
+func runInstall(cmd *cobra.Command, args []string) error {
 	targetPath := "."
 	if len(args) > 0 {
 		targetPath = args[0]
 	}
 	return installTown(installTownOptions{
 		destPath:   targetPath,
-		name:       installName,
-		owner:      installOwner,
-		publicName: installPublicName,
-		noBeads:    installNoBeads,
-		git:        installGit,
-		github:     installGitHub,
-		public:     installPublic,
-		shell:      installShell,
-		wrappers:   installWrappers,
-		supervisor: installSupervisor,
-		doltPort:   installDoltPort,
-		force:      installForce,
+		name:       commandStringFlag(cmd, "name"),
+		owner:      commandStringFlag(cmd, "owner"),
+		publicName: commandStringFlag(cmd, "public-name"),
+		noBeads:    commandBoolFlag(cmd, "no-beads"),
+		git:        commandBoolFlag(cmd, "git"),
+		github:     commandStringFlag(cmd, "github"),
+		public:     commandBoolFlag(cmd, "public"),
+		shell:      commandBoolFlag(cmd, "shell"),
+		wrappers:   commandBoolFlag(cmd, "wrappers"),
+		supervisor: commandBoolFlag(cmd, "supervisor"),
+		doltPort:   commandIntFlag(cmd, "dolt-port"),
+		force:      commandBoolFlag(cmd, "force"),
 	})
 }
 
