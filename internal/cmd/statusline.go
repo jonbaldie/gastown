@@ -448,12 +448,7 @@ func countRegisteredDeaconRigs(sessions []string, registered map[string]bool) in
 // Shows: crew count, hook or mail preview
 // Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
 func runWitnessStatusLine(t *tmux.Tmux, rigName, sessionName string) error {
-	if rigName == "" {
-		// Try to extract from session name: <prefix>-witness
-		if identity, err := session.ParseSessionName(sessionName); err == nil && identity.Role == session.RoleWitness {
-			rigName = identity.Rig
-		}
-	}
+	rigName = witnessRigName(rigName, sessionName)
 
 	// Count crew in this rig (crew are persistent, worth tracking)
 	sessions, err := t.ListSessions()
@@ -461,16 +456,7 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName, sessionName string) error {
 		return nil // Silent fail
 	}
 
-	crewCount := 0
-	for _, s := range sessions {
-		agent := categorizeSession(s)
-		if agent == nil {
-			continue
-		}
-		if agent.Rig == rigName && agent.Type == AgentCrew {
-			crewCount++
-		}
-	}
+	crewCount := countCrewSessions(sessions, rigName)
 
 	// Build status
 	var parts []string
@@ -483,6 +469,28 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName, sessionName string) error {
 
 	fmt.Print(strings.Join(parts, " | ") + " |")
 	return nil
+}
+
+func witnessRigName(rigName, sessionName string) string {
+	if rigName != "" {
+		return rigName
+	}
+	identity, err := session.ParseSessionName(sessionName)
+	if err == nil && identity.Role == session.RoleWitness {
+		return identity.Rig
+	}
+	return ""
+}
+
+func countCrewSessions(sessions []string, rigName string) int {
+	count := 0
+	for _, s := range sessions {
+		agent := categorizeSession(s)
+		if agent != nil && agent.Rig == rigName && agent.Type == AgentCrew {
+			count++
+		}
+	}
+	return count
 }
 
 // runRefineryStatusLine outputs status for a refinery session.
