@@ -269,12 +269,31 @@ func (m *Manager) lockPool() (*flock.Flock, error) {
 // Returns nil if beads is not configured (test/setup environments).
 // If read-only errors persist after retries, attempts server recovery (gt-chx92).
 // Fails fast on configuration/initialization errors (gt-2ra).
+func doltHealthProbeSucceeded(err error) bool {
+	return err == nil || errors.Is(err, beads.ErrNotFound) || strings.Contains(err.Error(), "not found")
+}
+
+func doltHealthProbeUnavailable(err error) bool {
+	return strings.Contains(err.Error(), "does not exist") || errors.Is(err, beads.ErrNotInstalled)
+}
+
+func (m *Manager) recoverDoltReadOnly(lastErr error) bool {
+	if lastErr == nil || !doltserver.IsReadOnlyError(lastErr.Error()) {
+		return false
+	}
+	if err := doltserver.RecoverReadOnly(m.townRoot); err != nil {
+		return false
+	}
+	_, err := m.beads.Show("__health_check_nonexistent__")
+	return doltHealthProbeSucceeded(err)
+}
+
 func (m *Manager) CheckDoltHealth() error {
 	var lastErr error
 	for attempt := 1; attempt <= doltMaxRetries; attempt++ {
 		// Use a lightweight beads operation to verify Dolt is responsive
 		_, err := m.beads.Show("__health_check_nonexistent__")
-		if err == nil || errors.Is(err, beads.ErrNotFound) || strings.Contains(err.Error(), "not found") {
+		if doltHealthProbeSucceeded(err) {
 			// Dolt is healthy — a "not found" error means the DB responded
 			return nil
 		}
@@ -283,7 +302,7 @@ func (m *Manager) CheckDoltHealth() error {
 			return nil
 		}
 		// If beads isn't configured at all, skip the health check
-		if strings.Contains(err.Error(), "does not exist") || errors.Is(err, beads.ErrNotInstalled) {
+		if doltHealthProbeUnavailable(err) {
 			return nil
 		}
 		// Fail fast on config/init errors — retrying won't help (gt-2ra, gas-tc4)
@@ -301,14 +320,8 @@ func (m *Manager) CheckDoltHealth() error {
 
 	// If the persistent failure looks like read-only, attempt server recovery
 	// before giving up. This is the gt-level recovery path (gt-chx92).
-	if lastErr != nil && doltserver.IsReadOnlyError(lastErr.Error()) {
-		if recoverErr := doltserver.RecoverReadOnly(m.townRoot); recoverErr == nil {
-			// Recovery succeeded — verify health once more
-			_, err := m.beads.Show("__health_check_nonexistent__")
-			if err == nil || errors.Is(err, beads.ErrNotFound) || strings.Contains(err.Error(), "not found") {
-				return nil
-			}
-		}
+	if m.recoverDoltReadOnly(lastErr) {
+		return nil
 	}
 
 	return fmt.Errorf("%w: %v\n\nRecovery: run 'gt doctor --fix' to diagnose and repair Dolt configuration", ErrDoltUnhealthy, lastErr)
