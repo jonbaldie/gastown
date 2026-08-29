@@ -473,106 +473,30 @@ func logAutoHandoff(subject string) {
 // The successor session starts via SessionStart hook (gt prime --hook),
 // finds the hooked work, and continues from where we left off.
 func runHandoffCycle() error {
-	// Build subject
-	subject := handoffSubject
-	if subject == "" {
-		reason := handoffReason
-		if reason == "" {
-			reason = "context-cycle"
-		}
-		subject = fmt.Sprintf("🤝 HANDOFF: %s", reason)
-	}
-
-	// Auto-collect state if no explicit message
-	message := handoffMessage
-	if message == "" {
-		message = collectHandoffState()
-	}
-
-	// Must be in tmux to respawn
-	if !tmux.IsInsideTmux() {
-		// Fall back to auto mode (save state only) if not in tmux
-		fmt.Fprintf(os.Stderr, "handoff --cycle: not in tmux, falling back to state-save only\n")
-		handoffMessage = message
-		handoffSubject = subject
+	subject, message := cycleHandoffInputs()
+	t, pane, currentSession, fallback := prepareCycleSession(subject, message)
+	if fallback {
 		return runHandoffAuto()
 	}
-
-	pane := os.Getenv("TMUX_PANE")
-	if pane == "" {
-		fmt.Fprintf(os.Stderr, "handoff --cycle: TMUX_PANE not set, falling back to state-save only\n")
-		handoffMessage = message
-		handoffSubject = subject
-		return runHandoffAuto()
-	}
-
-	currentSession, err := getCurrentTmuxSession()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "handoff --cycle: could not get session: %v, falling back to state-save only\n", err)
-		handoffMessage = message
-		handoffSubject = subject
-		return runHandoffAuto()
-	}
-
-	// Use the caller's socket for pane operations (same as runHandoff).
-	callerSocket := tmux.SocketFromEnv()
-	t := tmux.NewTmuxWithSocket(callerSocket)
 
 	if handoffDryRun {
-		fmt.Printf("[cycle] Would send handoff mail: subject=%q\n", subject)
-		fmt.Printf("[cycle] Would write handoff marker\n")
-		fmt.Printf("[cycle] Would execute: tmux clear-history -t %s\n", pane)
-		fmt.Printf("[cycle] Would execute: tmux respawn-pane -k -t %s <restart-cmd>\n", pane)
+		printCycleHandoffDryRun(subject, pane)
 		return nil
 	}
 
 	// Close any in-progress molecule steps before cycling (gt-e26g).
 	cleanupMoleculeOnHandoff()
 
-	// Send handoff mail to self (auto-hooked for successor).
-	// Fatal on failure — same rationale as runHandoff: silent failure causes
-	// the next session to find an empty hook and lose all context.
-	beadID, err := sendHandoffMail(subject, message)
-	if err != nil {
-		agent := sessionToGTRole(currentSession)
-		if agent == "" {
-			agent = currentSession
-		}
-		if townRoot, trErr := workspace.FindFromCwd(); trErr == nil && townRoot != "" {
-			_ = LogHandoffNoPersist(townRoot, agent, subject, err)
-		}
-		fmt.Fprintf(os.Stderr, "The session was NOT respawned. Fix the issue and retry.\n")
-		return fmt.Errorf("handoff --cycle: mail failed to persist: %w", err)
+	if err := persistCycleHandoff(subject, message, currentSession); err != nil {
+		return err
 	}
-	fmt.Fprintf(os.Stderr, "handoff --cycle: saved state to %s\n", beadID)
 
-	// Write handoff marker so post-cycle prime knows it's post-handoff.
-	// Format: "session_id\nreason" — the reason enables isCompactResume()
-	// to detect compaction-triggered cycles and use a lighter continuation
-	// directive instead of full re-initialization. (GH#1965)
-	if cwd, err := os.Getwd(); err == nil {
-		runtimeDir := filepath.Join(cwd, constants.DirRuntime)
-		_ = os.MkdirAll(runtimeDir, 0755)
-		markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
-		markerContent := currentSession
-		if handoffReason != "" {
-			markerContent += "\n" + handoffReason
-		}
-		_ = os.WriteFile(markerPath, []byte(markerContent), 0644)
-	}
+	writeCycleHandoffMarker(currentSession)
 
 	// Record handoff time for cooldown enforcement (gt-058d).
 	recordHandoffTime()
 
-	// Log cycle event AFTER persistence succeeds.
-	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
-		agent := sessionToGTRole(currentSession)
-		if agent == "" {
-			agent = currentSession
-		}
-		_ = LogHandoff(townRoot, agent, subject)
-		_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(subject, true))
-	}
+	logCycleHandoff(currentSession, subject)
 
 	// Build restart command with --continue so the new session resumes
 	// the previous conversation (preserves context across compaction cycles).
@@ -587,27 +511,111 @@ func runHandoffCycle() error {
 
 	fmt.Fprintf(os.Stderr, "handoff --cycle: cycling session %s\n", currentSession)
 
-	// Set remain-on-exit so the pane survives process death during handoff
+	return respawnCyclePane(t, pane, currentSession, restartCmd)
+}
+
+func cycleHandoffInputs() (string, string) {
+	subject := handoffSubject
+	if subject == "" {
+		reason := handoffReason
+		if reason == "" {
+			reason = "context-cycle"
+		}
+		subject = fmt.Sprintf("🤝 HANDOFF: %s", reason)
+	}
+	message := handoffMessage
+	if message == "" {
+		message = collectHandoffState()
+	}
+	return subject, message
+}
+
+func prepareCycleSession(subject, message string) (*tmux.Tmux, string, string, bool) {
+	if !tmux.IsInsideTmux() {
+		return cycleFallback(subject, message, "not in tmux, falling back to state-save only")
+	}
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return cycleFallback(subject, message, "TMUX_PANE not set, falling back to state-save only")
+	}
+	currentSession, err := getCurrentTmuxSession()
+	if err != nil {
+		return cycleFallback(subject, message, fmt.Sprintf("could not get session: %v, falling back to state-save only", err))
+	}
+	return tmux.NewTmuxWithSocket(tmux.SocketFromEnv()), pane, currentSession, false
+}
+
+func cycleFallback(subject, message, reason string) (*tmux.Tmux, string, string, bool) {
+	fmt.Fprintf(os.Stderr, "handoff --cycle: %s\n", reason)
+	handoffMessage = message
+	handoffSubject = subject
+	return nil, "", "", true
+}
+
+func printCycleHandoffDryRun(subject, pane string) {
+	fmt.Printf("[cycle] Would send handoff mail: subject=%q\n", subject)
+	fmt.Printf("[cycle] Would write handoff marker\n")
+	fmt.Printf("[cycle] Would execute: tmux clear-history -t %s\n", pane)
+	fmt.Printf("[cycle] Would execute: tmux respawn-pane -k -t %s <restart-cmd>\n", pane)
+}
+
+func persistCycleHandoff(subject, message, currentSession string) error {
+	beadID, err := sendHandoffMail(subject, message)
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "handoff --cycle: saved state to %s\n", beadID)
+		return nil
+	}
+	agent := sessionToGTRole(currentSession)
+	if agent == "" {
+		agent = currentSession
+	}
+	if townRoot, trErr := workspace.FindFromCwd(); trErr == nil && townRoot != "" {
+		_ = LogHandoffNoPersist(townRoot, agent, subject, err)
+	}
+	fmt.Fprintf(os.Stderr, "The session was NOT respawned. Fix the issue and retry.\n")
+	return fmt.Errorf("handoff --cycle: mail failed to persist: %w", err)
+}
+
+func writeCycleHandoffMarker(currentSession string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	runtimeDir := filepath.Join(cwd, constants.DirRuntime)
+	_ = os.MkdirAll(runtimeDir, 0755)
+	markerContent := currentSession
+	if handoffReason != "" {
+		markerContent += "\n" + handoffReason
+	}
+	_ = os.WriteFile(filepath.Join(runtimeDir, constants.FileHandoffMarker), []byte(markerContent), 0644)
+}
+
+func logCycleHandoff(currentSession, subject string) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return
+	}
+	agent := sessionToGTRole(currentSession)
+	if agent == "" {
+		agent = currentSession
+	}
+	_ = LogHandoff(townRoot, agent, subject)
+	_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(subject, true))
+}
+
+func respawnCyclePane(t *tmux.Tmux, pane, currentSession, restartCmd string) error {
 	if err := t.SetRemainOnExit(pane, true); err != nil {
 		style.PrintWarning("could not set remain-on-exit: %v", err)
 	}
-
-	// Clear scrollback history before respawn
 	if err := t.ClearHistory(pane); err != nil {
 		style.PrintWarning("could not clear history: %v", err)
 	}
-
-	// Check if pane's working directory exists (may have been deleted)
 	paneWorkDir, _ := t.GetPaneWorkDir(currentSession)
-	if paneWorkDir != "" {
-		if _, err := os.Stat(paneWorkDir); err != nil {
-			if townRoot := detectTownRootFromCwd(); townRoot != "" {
-				return t.RespawnPaneWithWorkDir(pane, townRoot, restartCmd)
-			}
+	if paneWorkDir != "" && !handoffPathExists(paneWorkDir) {
+		if townRoot := detectTownRootFromCwd(); townRoot != "" {
+			return t.RespawnPaneWithWorkDir(pane, townRoot, restartCmd)
 		}
 	}
-
-	// Respawn pane — this atomically kills current process and starts fresh
 	return t.RespawnPane(pane, restartCmd)
 }
 
