@@ -10,13 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// MQ next command flags
-var (
-	mqNextStrategy string // "priority" (default) or "fifo"
-	mqNextJSON     bool
-	mqNextQuiet    bool
-)
-
 var mqNextCmd = &cobra.Command{
 	Use:   "next <rig>",
 	Short: "Show the highest-priority merge request",
@@ -40,15 +33,18 @@ Examples:
 }
 
 func init() {
-	mqNextCmd.Flags().StringVar(&mqNextStrategy, "strategy", "priority", "Ordering strategy: 'priority' or 'fifo'")
-	mqNextCmd.Flags().BoolVar(&mqNextJSON, "json", false, "Output as JSON")
-	mqNextCmd.Flags().BoolVarP(&mqNextQuiet, "quiet", "q", false, "Just print the MR ID")
+	mqNextCmd.Flags().String("strategy", "priority", "Ordering strategy: 'priority' or 'fifo'")
+	mqNextCmd.Flags().Bool("json", false, "Output as JSON")
+	mqNextCmd.Flags().BoolP("quiet", "q", false, "Just print the MR ID")
 
 	mqCmd.AddCommand(mqNextCmd)
 }
 
-func runMQNext(_ *cobra.Command, args []string) error {
+func runMQNext(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
+	strategy := commandStringFlag(cmd, "strategy")
+	jsonOutput := commandBoolFlag(cmd, "json")
+	quiet := commandBoolFlag(cmd, "quiet")
 
 	_, r, _, err := getRefineryManager(rigName)
 	if err != nil {
@@ -82,7 +78,7 @@ func runMQNext(_ *cobra.Command, args []string) error {
 	}
 
 	if len(ready) == 0 {
-		if mqNextQuiet {
+		if quiet {
 			return nil // Silent exit
 		}
 		fmt.Printf("%s No ready merge requests in queue\n", style.Dim.Render("ℹ"))
@@ -92,7 +88,7 @@ func runMQNext(_ *cobra.Command, args []string) error {
 	now := time.Now()
 
 	// Sort based on strategy
-	if mqNextStrategy == "fifo" {
+	if strategy == "fifo" {
 		// FIFO: oldest first by creation time
 		sort.Slice(ready, func(i, j int) bool {
 			ti, _ := time.Parse(time.RFC3339, ready[i].CreatedAt)
@@ -127,12 +123,12 @@ func runMQNext(_ *cobra.Command, args []string) error {
 	fields := beads.ParseMRFields(next)
 
 	// Output based on format flags
-	if mqNextQuiet {
+	if quiet {
 		fmt.Println(next.ID)
 		return nil
 	}
 
-	if mqNextJSON {
+	if jsonOutput {
 		return outputJSON(next)
 	}
 
