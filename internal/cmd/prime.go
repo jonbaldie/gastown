@@ -33,8 +33,6 @@ import (
 
 var primeHookMode bool
 var primeDryRun bool
-var primeState bool
-var primeStateJSON bool
 var primeExplain bool
 var primeStructuredSessionStartOutput bool
 
@@ -111,9 +109,9 @@ func init() {
 		"Hook mode: read session ID from stdin JSON (for LLM runtime hooks)")
 	primeCmd.Flags().BoolVar(&primeDryRun, "dry-run", false,
 		"Show what would be injected without side effects (no marker removal, no mail)")
-	primeCmd.Flags().BoolVar(&primeState, "state", false,
+	primeCmd.Flags().Bool("state", false,
 		"Show detected session state only (normal/post-handoff/crash/autonomous)")
-	primeCmd.Flags().BoolVar(&primeStateJSON, "json", false,
+	primeCmd.Flags().Bool("json", false,
 		"Output state as JSON (requires --state)")
 	primeCmd.Flags().BoolVar(&primeExplain, "explain", false,
 		"Show why each section was included")
@@ -124,9 +122,11 @@ func init() {
 // New code should use RoleInfo directly.
 type RoleContext = RoleInfo
 
-func runPrime(_ *cobra.Command, _ []string) (retErr error) {
+func runPrime(cmd *cobra.Command, _ []string) (retErr error) {
+	stateMode := commandBoolFlag(cmd, "state")
+	stateJSON := commandBoolFlag(cmd, "json")
 	defer func() { telemetry.RecordPrime(context.Background(), os.Getenv("GT_ROLE"), primeHookMode, retErr) }()
-	if err := validatePrimeFlags(); err != nil {
+	if err := validatePrimeFlags(stateMode, stateJSON); err != nil {
 		return err
 	}
 
@@ -173,8 +173,8 @@ func runPrime(_ *cobra.Command, _ []string) (retErr error) {
 	}
 
 	// --state mode: output state only and exit
-	if primeState {
-		outputState(ctx, primeStateJSON)
+	if stateMode {
+		outputState(ctx, stateJSON)
 		return nil
 	}
 
@@ -337,11 +337,11 @@ func ensurePrimeSkills(workDir, townRoot, agent string) error {
 	return skills.ProvisionFor(workDir, agent)
 }
 
-func validatePrimeFlags() error {
-	if primeState && (primeHookMode || primeDryRun || primeExplain) {
+func validatePrimeFlags(stateMode, stateJSON bool) error {
+	if stateMode && (primeHookMode || primeDryRun || primeExplain) {
 		return fmt.Errorf("--state cannot be combined with other flags (except --json)")
 	}
-	if primeStateJSON && !primeState {
+	if stateJSON && !stateMode {
 		return fmt.Errorf("--json requires --state")
 	}
 	return nil
