@@ -629,179 +629,120 @@ func EnsureDaemonPatrolConfig(townRoot string) error {
 // in daemon.json. Uses raw JSON manipulation to preserve fields not in PatrolConfig
 // (e.g., dolt_server config). If daemon.json doesn't exist, this is a no-op.
 func AddRigToDaemonPatrols(townRoot string, rigName string) error {
-	path := DaemonPatrolConfigPath(townRoot)
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path is constructed internally
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No daemon.json yet, nothing to update
-		}
-		return fmt.Errorf("reading daemon config: %w", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parsing daemon config: %w", err)
-	}
-
-	patrolsRaw, ok := raw["patrols"]
-	if !ok {
-		return nil // No patrols section
-	}
-
-	var patrols map[string]json.RawMessage
-	if err := json.Unmarshal(patrolsRaw, &patrols); err != nil {
-		return fmt.Errorf("parsing patrols: %w", err)
-	}
-
-	modified := false
-	for _, patrolName := range []string{"witness", "refinery"} {
-		pRaw, ok := patrols[patrolName]
-		if !ok {
-			continue
-		}
-
-		var patrol map[string]json.RawMessage
-		if err := json.Unmarshal(pRaw, &patrol); err != nil {
-			continue
-		}
-
-		// Parse existing rigs array
-		var rigs []string
-		if rigsRaw, ok := patrol["rigs"]; ok {
-			if err := json.Unmarshal(rigsRaw, &rigs); err != nil {
-				rigs = nil
-			}
-		}
-
-		// Check if already present
-		found := false
-		for _, r := range rigs {
-			if r == rigName {
-				found = true
-				break
-			}
-		}
-		if found {
-			continue
-		}
-
-		// Append and update
-		rigs = append(rigs, rigName)
-		rigsJSON, err := json.Marshal(rigs)
-		if err != nil {
-			return fmt.Errorf("encoding rigs: %w", err)
-		}
-		patrol["rigs"] = rigsJSON
-
-		patrolJSON, err := json.Marshal(patrol)
-		if err != nil {
-			return fmt.Errorf("encoding patrol %s: %w", patrolName, err)
-		}
-		patrols[patrolName] = patrolJSON
-		modified = true
-	}
-
-	if !modified {
-		return nil
-	}
-
-	patrolsJSON, err := json.Marshal(patrols)
-	if err != nil {
-		return fmt.Errorf("encoding patrols: %w", err)
-	}
-	raw["patrols"] = patrolsJSON
-
-	out, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding daemon config: %w", err)
-	}
-
-	if err := os.WriteFile(path, append(out, '\n'), 0644); err != nil { //nolint:gosec // G306: config file
-		return fmt.Errorf("writing daemon config: %w", err)
-	}
-
-	return nil
+	return updateDaemonPatrolRigs(townRoot, rigName, true)
 }
 
 // RemoveRigFromDaemonPatrols removes a rig from the witness and refinery patrol rigs arrays
 // in daemon.json. Uses raw JSON manipulation to preserve fields not in PatrolConfig
 // (e.g., dolt_server config). If daemon.json doesn't exist, this is a no-op.
 func RemoveRigFromDaemonPatrols(townRoot string, rigName string) error {
+	return updateDaemonPatrolRigs(townRoot, rigName, false)
+}
+
+func updateDaemonPatrolRigs(townRoot, rigName string, add bool) error {
 	path := DaemonPatrolConfigPath(townRoot)
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path is constructed internally
+	raw, patrols, ok, err := loadDaemonPatrolData(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No daemon.json yet, nothing to update
-		}
-		return fmt.Errorf("reading daemon config: %w", err)
+		return err
 	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parsing daemon config: %w", err)
-	}
-
-	patrolsRaw, ok := raw["patrols"]
 	if !ok {
-		return nil // No patrols section
-	}
-
-	var patrols map[string]json.RawMessage
-	if err := json.Unmarshal(patrolsRaw, &patrols); err != nil {
-		return fmt.Errorf("parsing patrols: %w", err)
+		return nil
 	}
 
 	modified := false
 	for _, patrolName := range []string{"witness", "refinery"} {
-		pRaw, ok := patrols[patrolName]
-		if !ok {
+		updated, changed, err := updateDaemonPatrol(patrols[patrolName], patrolName, rigName, add)
+		if err != nil {
+			return err
+		}
+		if !changed {
 			continue
 		}
-
-		var patrol map[string]json.RawMessage
-		if err := json.Unmarshal(pRaw, &patrol); err != nil {
-			continue
-		}
-
-		// Parse existing rigs array
-		var rigs []string
-		if rigsRaw, ok := patrol["rigs"]; ok {
-			if err := json.Unmarshal(rigsRaw, &rigs); err != nil {
-				rigs = nil
-			}
-		}
-
-		// Filter out the rig
-		var filtered []string
-		for _, r := range rigs {
-			if r != rigName {
-				filtered = append(filtered, r)
-			}
-		}
-
-		if len(filtered) == len(rigs) {
-			continue // Rig wasn't present
-		}
-
-		// Update with filtered list
-		rigsJSON, err := json.Marshal(filtered)
-		if err != nil {
-			return fmt.Errorf("encoding rigs: %w", err)
-		}
-		patrol["rigs"] = rigsJSON
-
-		patrolJSON, err := json.Marshal(patrol)
-		if err != nil {
-			return fmt.Errorf("encoding patrol %s: %w", patrolName, err)
-		}
-		patrols[patrolName] = patrolJSON
+		patrols[patrolName] = updated
 		modified = true
 	}
-
 	if !modified {
 		return nil
 	}
+	return saveDaemonPatrolData(path, raw, patrols)
+}
 
+func loadDaemonPatrolData(path string) (map[string]json.RawMessage, map[string]json.RawMessage, bool, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is constructed internally
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, fmt.Errorf("reading daemon config: %w", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, nil, false, fmt.Errorf("parsing daemon config: %w", err)
+	}
+	patrolsRaw, ok := raw["patrols"]
+	if !ok {
+		return raw, nil, false, nil
+	}
+
+	var patrols map[string]json.RawMessage
+	if err := json.Unmarshal(patrolsRaw, &patrols); err != nil {
+		return nil, nil, false, fmt.Errorf("parsing patrols: %w", err)
+	}
+	return raw, patrols, true, nil
+}
+
+func updateDaemonPatrol(pRaw json.RawMessage, patrolName, rigName string, add bool) (json.RawMessage, bool, error) {
+	var patrol map[string]json.RawMessage
+	if err := json.Unmarshal(pRaw, &patrol); err != nil {
+		return nil, false, nil
+	}
+	rigs := daemonPatrolRigs(patrol["rigs"])
+	updatedRigs, changed := updateDaemonRigList(rigs, rigName, add)
+	if !changed {
+		return nil, false, nil
+	}
+
+	rigsJSON, err := json.Marshal(updatedRigs)
+	if err != nil {
+		return nil, false, fmt.Errorf("encoding rigs: %w", err)
+	}
+	patrol["rigs"] = rigsJSON
+	patrolJSON, err := json.Marshal(patrol)
+	if err != nil {
+		return nil, false, fmt.Errorf("encoding patrol %s: %w", patrolName, err)
+	}
+	return patrolJSON, true, nil
+}
+
+func daemonPatrolRigs(raw json.RawMessage) []string {
+	var rigs []string
+	if err := json.Unmarshal(raw, &rigs); err != nil {
+		return nil
+	}
+	return rigs
+}
+
+func updateDaemonRigList(rigs []string, rigName string, add bool) ([]string, bool) {
+	if add {
+		for _, rig := range rigs {
+			if rig == rigName {
+				return rigs, false
+			}
+		}
+		return append(rigs, rigName), true
+	}
+
+	var filtered []string
+	for _, rig := range rigs {
+		if rig != rigName {
+			filtered = append(filtered, rig)
+		}
+	}
+	return filtered, len(filtered) != len(rigs)
+}
+
+func saveDaemonPatrolData(path string, raw, patrols map[string]json.RawMessage) error {
 	patrolsJSON, err := json.Marshal(patrols)
 	if err != nil {
 		return fmt.Errorf("encoding patrols: %w", err)
@@ -812,11 +753,9 @@ func RemoveRigFromDaemonPatrols(townRoot string, rigName string) error {
 	if err != nil {
 		return fmt.Errorf("encoding daemon config: %w", err)
 	}
-
 	if err := os.WriteFile(path, append(out, '\n'), 0644); err != nil { //nolint:gosec // G306: config file
 		return fmt.Errorf("writing daemon config: %w", err)
 	}
-
 	return nil
 }
 
