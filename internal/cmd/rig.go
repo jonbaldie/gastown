@@ -1765,73 +1765,73 @@ func runRigStart(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigShutdown(_ *cobra.Command, args []string) error {
-	rigName := args[0]
-
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	// Load rigs config and get rig
-	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsPath)
-	if err != nil {
-		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
-	}
-
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
-	r, err := rigMgr.GetRig(rigName)
-	if err != nil {
-		return fmt.Errorf("rig '%s' not found", rigName)
-	}
-
-	// Check all polecats for uncommitted work (unless nuclear)
-	if !rigShutdownNuclear && !checkUncommittedWork(r, rigName, "shutdown", rigShutdownForce) {
-		return fmt.Errorf("refusing to shutdown with uncommitted work")
-	}
-
-	fmt.Printf("Shutting down rig %s...\n", style.Bold.Render(rigName))
-
-	var errors []string
-
-	// 1. Stop all polecat sessions
+func stopRigPolecats(r *rig.Rig) []string {
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewSessionManager(t, r)
 	infos, err := polecatMgr.ListPolecats()
 	if err == nil && len(infos) > 0 {
 		fmt.Printf("  Stopping %d polecat session(s)...\n", len(infos))
 		if err := polecatMgr.StopAll(rigShutdownForce); err != nil {
-			errors = append(errors, fmt.Sprintf("polecat sessions: %v", err))
+			return []string{fmt.Sprintf("polecat sessions: %v", err)}
 		}
 	}
+	return nil
+}
 
-	// 2. Stop the refinery
+func stopRigRefinery(r *rig.Rig) []string {
 	refMgr := refinery.NewManager(r)
 	if running, _ := refMgr.IsRunning(); running {
 		fmt.Printf("  Stopping refinery...\n")
 		if err := refMgr.Stop(); err != nil {
-			errors = append(errors, fmt.Sprintf("refinery: %v", err))
+			return []string{fmt.Sprintf("refinery: %v", err)}
 		}
 	}
+	return nil
+}
 
-	// 3. Stop the witness
+func stopRigWitness(r *rig.Rig) []string {
 	witMgr := witness.NewManager(r)
 	if running, _ := witMgr.IsRunning(); running {
 		fmt.Printf("  Stopping witness...\n")
 		if err := witMgr.Stop(); err != nil {
-			errors = append(errors, fmt.Sprintf("witness: %v", err))
+			return []string{fmt.Sprintf("witness: %v", err)}
 		}
 	}
+	return nil
+}
 
-	if len(errors) > 0 {
-		fmt.Printf("\n%s Some agents failed to stop:\n", style.Warning.Render("⚠"))
-		for _, e := range errors {
-			fmt.Printf("  - %s\n", e)
-		}
-		return fmt.Errorf("shutdown incomplete")
+func stopRigAgents(r *rig.Rig) []string {
+	var errors []string
+	errors = append(errors, stopRigPolecats(r)...)
+	errors = append(errors, stopRigRefinery(r)...)
+	errors = append(errors, stopRigWitness(r)...)
+	return errors
+}
+
+func reportRigShutdownErrors(errors []string) error {
+	if len(errors) == 0 {
+		return nil
+	}
+	fmt.Printf("\n%s Some agents failed to stop:\n", style.Warning.Render("⚠"))
+	for _, e := range errors {
+		fmt.Printf("  - %s\n", e)
+	}
+	return fmt.Errorf("shutdown incomplete")
+}
+
+func runRigShutdown(_ *cobra.Command, args []string) error {
+	rigName := args[0]
+	_, r, err := getRig(rigName)
+	if err != nil {
+		return err
+	}
+	if !rigShutdownNuclear && !checkUncommittedWork(r, rigName, "shutdown", rigShutdownForce) {
+		return fmt.Errorf("refusing to shutdown with uncommitted work")
+	}
+
+	fmt.Printf("Shutting down rig %s...\n", style.Bold.Render(rigName))
+	if err := reportRigShutdownErrors(stopRigAgents(r)); err != nil {
+		return err
 	}
 
 	fmt.Printf("%s Rig %s shut down successfully\n", style.Success.Render("✓"), rigName)
