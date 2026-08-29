@@ -285,28 +285,7 @@ func startCrewRefresh(crewMgr *crew.Manager, name string) error {
 // Remaining args (or all args if rig is inferred) are crew member names.
 // Defaults to all crew members if no names specified.
 func runCrewStart(cmd *cobra.Command, args []string) error {
-	var rigName string
-	var crewNames []string
-
-	// --rig flag takes priority (matches crew stop behavior)
-	if crewRig != "" {
-		rigName = crewRig
-		crewNames = args
-	} else if len(args) == 0 {
-		// No args - infer rig from cwd
-		rigName = "" // getCrewManager will infer from cwd
-	} else {
-		// Check if first arg is a valid rig name
-		if _, _, err := getRig(args[0]); err == nil {
-			// First arg is a rig name
-			rigName = args[0]
-			crewNames = args[1:]
-		} else {
-			// First arg is not a rig - infer rig from cwd and treat all args as crew names
-			rigName = "" // getCrewManager will infer from cwd
-			crewNames = args
-		}
-	}
+	rigName, crewNames := resolveCrewStartTargets(args)
 
 	// Get the rig manager and rig (infers from cwd if rigName is empty)
 	crewMgr, r, err := getCrewManager(rigName)
@@ -316,75 +295,107 @@ func runCrewStart(cmd *cobra.Command, args []string) error {
 	// Update rigName in case it was inferred
 	rigName = r.Name
 
-	// If --all flag OR no crew names specified, get all crew members
-	if crewAll || len(crewNames) == 0 {
-		workers, err := crewMgr.List()
-		if err != nil {
-			return fmt.Errorf("listing crew: %w", err)
-		}
-		if len(workers) == 0 {
-			fmt.Printf("No crew members in rig %s\n", rigName)
-			return nil
-		}
-		for _, w := range workers {
-			crewNames = append(crewNames, w.Name)
-		}
+	crewNames, err = loadCrewStartNames(crewMgr, rigName, crewNames)
+	if err != nil {
+		return err
+	}
+	if len(crewNames) == 0 {
+		return nil
 	}
 
-	// Resolve account config once for all crew members
-	townRoot, _ := workspace.Find(r.Path)
+	opts, err := crewStartOptions(cmd, crewMgr, r.Path, crewNames)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Starting %d crew member(s) in %s...\n", len(crewNames), rigName)
+	results := startCrewMembersInParallel(crewMgr, crewNames, opts)
+	lastErr, startedCount, skippedCount := collectCrewStartResults(results, rigName)
+	printCrewStartSummary(startedCount, skippedCount, r.Name)
+	return lastErr
+}
+
+func resolveCrewStartTargets(args []string) (string, []string) {
+	if crewRig != "" {
+		return crewRig, args
+	}
+	if len(args) == 0 {
+		return "", nil
+	}
+	if _, _, err := getRig(args[0]); err == nil {
+		return args[0], args[1:]
+	}
+	return "", args
+}
+
+func loadCrewStartNames(crewMgr *crew.Manager, rigName string, crewNames []string) ([]string, error) {
+	if !crewAll && len(crewNames) > 0 {
+		return crewNames, nil
+	}
+	workers, err := crewMgr.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing crew: %w", err)
+	}
+	if len(workers) == 0 {
+		fmt.Printf("No crew members in rig %s\n", rigName)
+		return nil, nil
+	}
+	for _, worker := range workers {
+		crewNames = append(crewNames, worker.Name)
+	}
+	return crewNames, nil
+}
+
+func crewStartOptions(cmd *cobra.Command, crewMgr *crew.Manager, rigPath string, crewNames []string) (crew.StartOptions, error) {
+	townRoot, _ := workspace.Find(rigPath)
 	if townRoot == "" {
-		townRoot = filepath.Dir(r.Path)
+		townRoot = filepath.Dir(rigPath)
 	}
 	accountsPath := constants.MayorAccountsPath(townRoot)
 	claudeConfigDir, _, _ := config.ResolveAccountConfigDir(accountsPath, crewAccount)
-
-	// Validate: --resume with a specific session ID only makes sense for a single
-	// crew member. Resuming N members with the same session ID is always a mistake.
-	if crewResume != "" && crewResume != "last" && len(crewNames) > 1 {
-		return fmt.Errorf("--resume with a specific session ID can only target a single crew member, got %d", len(crewNames))
+	if err := validateCrewStartResume(crewMgr, crewNames); err != nil {
+		return crew.StartOptions{}, err
 	}
-
-	// Guard against pflag NoOptDefVal parsing ambiguity: `--resume ace` (space-separated)
-	// treats "ace" as the session ID, not a crew name. If the value matches a known crew
-	// member, it's almost certainly a misparse. Use --resume=<id> for explicit session IDs.
-	if crewResume != "" && crewResume != "last" {
-		workers, listErr := crewMgr.List()
-		if listErr == nil {
-			for _, w := range workers {
-				if w.Name == crewResume {
-					return fmt.Errorf("%q looks like a crew member name, not a session ID; use --resume=%s if you meant a session ID, or use --resume (no value) to auto-resume the most recent session", crewResume, crewResume)
-				}
-			}
-		}
-	}
-
-	// Warn when --resume last targets multiple crew members, since agents that
-	// have never had a session may fail or behave unexpectedly.
 	if crewResume == "last" && len(crewNames) > 1 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: --resume will auto-resume the most recent session for all %d crew members\n", len(crewNames))
 	}
-
-	// Build start options (shared across all crew members)
-	opts := crew.StartOptions{
+	return crew.StartOptions{
 		Account:         crewAccount,
 		ClaudeConfigDir: claudeConfigDir,
 		AgentOverride:   crewAgentOverride,
 		ResumeSessionID: crewResume,
 		KillExisting:    crewResume != "", // Resume needs to kill existing session first
-	}
+	}, nil
+}
 
-	// Start each crew member in parallel
-	type result struct {
-		name    string
-		err     error
-		skipped bool // true if session was already running
+func validateCrewStartResume(crewMgr *crew.Manager, crewNames []string) error {
+	if crewResume == "" || crewResume == "last" {
+		return nil
 	}
-	results := make(chan result, len(crewNames))
+	if len(crewNames) > 1 {
+		return fmt.Errorf("--resume with a specific session ID can only target a single crew member, got %d", len(crewNames))
+	}
+	workers, err := crewMgr.List()
+	if err != nil {
+		return nil
+	}
+	for _, worker := range workers {
+		if worker.Name == crewResume {
+			return fmt.Errorf("%q looks like a crew member name, not a session ID; use --resume=%s if you meant a session ID, or use --resume (no value) to auto-resume the most recent session", crewResume, crewResume)
+		}
+	}
+	return nil
+}
+
+type crewStartResult struct {
+	name    string
+	err     error
+	skipped bool
+}
+
+func startCrewMembersInParallel(crewMgr *crew.Manager, crewNames []string, opts crew.StartOptions) <-chan crewStartResult {
+	results := make(chan crewStartResult, len(crewNames))
 	var wg sync.WaitGroup
-
-	fmt.Printf("Starting %d crew member(s) in %s...\n", len(crewNames), rigName)
-
 	for _, name := range crewNames {
 		wg.Add(1)
 		go func(crewName string) {
@@ -392,43 +403,43 @@ func runCrewStart(cmd *cobra.Command, args []string) error {
 			err := crewMgr.Start(crewName, opts)
 			skipped := errors.Is(err, crew.ErrSessionRunning)
 			if skipped {
-				err = nil // Not an error, just already running
+				err = nil
 			}
-			results <- result{name: crewName, err: err, skipped: skipped}
+			results <- crewStartResult{name: crewName, err: err, skipped: skipped}
 		}(name)
 	}
-
-	// Wait for all goroutines to complete
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
+	return results
+}
 
-	// Collect results
+func collectCrewStartResults(results <-chan crewStartResult, rigName string) (error, int, int) {
 	var lastErr error
 	startedCount := 0
 	skippedCount := 0
-	for res := range results {
-		if res.err != nil {
-			fmt.Printf("  %s %s/%s: %v\n", style.ErrorPrefix, rigName, res.name, res.err)
-			lastErr = res.err
-		} else if res.skipped {
-			fmt.Printf("  %s %s/%s: already running\n", style.Dim.Render("○"), rigName, res.name)
+	for result := range results {
+		if result.err != nil {
+			fmt.Printf("  %s %s/%s: %v\n", style.ErrorPrefix, rigName, result.name, result.err)
+			lastErr = result.err
+		} else if result.skipped {
+			fmt.Printf("  %s %s/%s: already running\n", style.Dim.Render("○"), rigName, result.name)
 			skippedCount++
 		} else {
-			fmt.Printf("  %s %s/%s: started\n", style.SuccessPrefix, rigName, res.name)
+			fmt.Printf("  %s %s/%s: started\n", style.SuccessPrefix, rigName, result.name)
 			startedCount++
 		}
 	}
+	return lastErr, startedCount, skippedCount
+}
 
-	// Summary
+func printCrewStartSummary(startedCount, skippedCount int, rigName string) {
 	fmt.Println()
 	if startedCount > 0 || skippedCount > 0 {
 		fmt.Printf("%s Started %d, skipped %d (already running) in %s\n",
-			style.Bold.Render("✓"), startedCount, skippedCount, r.Name)
+			style.Bold.Render("✓"), startedCount, skippedCount, rigName)
 	}
-
-	return lastErr
 }
 
 func runCrewRestart(_ *cobra.Command, args []string) error {
