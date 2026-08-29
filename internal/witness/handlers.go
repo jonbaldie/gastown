@@ -873,52 +873,67 @@ func notifyMayorSlotOpen(workDir, rigName, polecatName, exitType string) {
 	if townRoot == "" {
 		return
 	}
+	if !slotOpenNotificationAllowed(workDir, townRoot, rigName, polecatName, exitType) {
+		return
+	}
+	if notifyMayorViaScheduler(townRoot, rigName, polecatName, exitType) {
+		return
+	}
+	notifyMayorSlotOpenFallback(townRoot, rigName, polecatName, exitType)
+}
+
+func slotOpenNotificationAllowed(workDir, townRoot, rigName, polecatName, exitType string) bool {
 	if exitType != string(ExitTypeCompleted) {
 		decision := slotOpenDecisionForNotify(workDir, townRoot, rigName, polecatName, exitType)
 		if !decision.Reusable {
-			_, _ = channelevents.EmitToTown(townRoot, "mayor", "SLOT_BLOCKED", []string{
-				"source=witness",
-				"rig=" + rigName,
-				"polecat=" + polecatName,
-				"exit=" + exitType,
-				"reason=" + decision.Reason,
-			})
+			emitSlotBlocked(townRoot, rigName, polecatName, exitType, decision.Reason)
 		}
-		return
+		return false
 	}
 	if ok, reason := shouldNotifyMayorSlotOpen(workDir, rigName, polecatName); !ok {
 		fmt.Fprintf(os.Stderr, "witness: suppressing SLOT_OPEN for %s/%s: %s\n", rigName, polecatName, reason)
-		return
+		return false
 	}
 	decision := slotOpenDecisionForNotify(workDir, townRoot, rigName, polecatName, exitType)
 	if !decision.Reusable {
-		_, _ = channelevents.EmitToTown(townRoot, "mayor", "SLOT_BLOCKED", []string{
-			"source=witness",
-			"rig=" + rigName,
-			"polecat=" + polecatName,
-			"exit=" + exitType,
-			"reason=" + decision.Reason,
-		})
-		return
+		emitSlotBlocked(townRoot, rigName, polecatName, exitType, decision.Reason)
+		return false
 	}
-	if result, err := runSchedulerForSlotOpen(townRoot); err != nil {
+	return true
+}
+
+func emitSlotBlocked(townRoot, rigName, polecatName, exitType, reason string) {
+	_, _ = channelevents.EmitToTown(townRoot, "mayor", "SLOT_BLOCKED", []string{
+		"source=witness",
+		"rig=" + rigName,
+		"polecat=" + polecatName,
+		"exit=" + exitType,
+		"reason=" + reason,
+	})
+}
+
+func notifyMayorViaScheduler(townRoot, rigName, polecatName, exitType string) bool {
+	result, err := runSchedulerForSlotOpen(townRoot)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "witness: SLOT_OPEN scheduler trigger failed for %s/%s: %v\n", rigName, polecatName, err)
-		if result.Dispatched > 0 {
-			return
-		}
-	} else if result.Dispatched > 0 {
+		return result.Dispatched > 0
+	}
+	if result.Dispatched > 0 {
 		if status, ok := schedulerOpenAfterSlot(result); ok {
 			notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType, status)
 		}
-		return
-	} else if status, ok := schedulerOpenAfterSlot(result); ok {
-		notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType, status)
-		return
-	} else if status := schedulerStatusAfterSlot(result); status.Capacity.Max > 0 && (status.Paused || status.Capacity.Free <= 0) {
-		return
+		return true
 	}
+	if status, ok := schedulerOpenAfterSlot(result); ok {
+		notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType, status)
+		return true
+	}
+	status := schedulerStatusAfterSlot(result)
+	return status.Capacity.Max > 0 && (status.Paused || status.Capacity.Free <= 0)
+}
 
-	// Emit SLOT_OPEN channel event so Mayor's await-event unblocks instantly.
+func notifyMayorSlotOpenFallback(townRoot, rigName, polecatName, exitType string) {
+	// Emit SLOT_OPEN so Mayor's await-event unblocks instantly.
 	_, _ = channelevents.EmitToTown(townRoot, "mayor", "SLOT_OPEN", []string{
 		"source=witness",
 		"rig=" + rigName,
@@ -926,18 +941,14 @@ func notifyMayorSlotOpen(workDir, rigName, polecatName, exitType string) {
 		"exit=" + exitType,
 	})
 
-	// Try nudge first — lightweight, no Dolt commit.
 	mayorSession := session.MayorSessionName()
 	t := tmux.NewTmux()
 	if running, err := t.HasSession(mayorSession); err == nil && running {
 		msg := fmt.Sprintf("SLOT_OPEN: %s/%s completed (exit=%s) — slot available. Run `gt polecat list` to verify and sling next bead.", rigName, polecatName, exitType)
 		if err := t.NudgeSession(mayorSession, msg); err == nil {
-			return // Nudge delivered — no mail needed.
+			return
 		}
 	}
-
-	// Nudge failed or Mayor not in tmux (e.g., ACP/Claude Code session).
-	// Fall back to mail so the completion is not silently lost.
 	subject := fmt.Sprintf("SLOT_OPEN: %s/%s completed (exit=%s)", rigName, polecatName, exitType)
 	body := fmt.Sprintf("Polecat %s/%s finished (exit=%s). Slot available for next bead.", rigName, polecatName, exitType)
 	cmd := exec.Command("gt", "mail", "send", "mayor/", "-s", subject, "-m", body)
