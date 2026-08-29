@@ -126,10 +126,10 @@ func runEpicScheduleByID(epicID string, opts epicScheduleOpts) error {
 	successCount := 0
 	for _, c := range candidates {
 		err := scheduleBead(c.ID, c.RigName, ScheduleOptions{
-			Formula:     formula,
-			Force:       opts.Force,
-			HookRawBead: opts.HookRawBead,
-			NoConvoy:    true, // Epic is the organizing structure
+			ScheduleWork: ScheduleWork{Formula: formula},
+			Force:        opts.Force,
+			HookRawBead:  opts.HookRawBead,
+			NoConvoy:     true, // Epic is the organizing structure
 		})
 		if err != nil {
 			fmt.Printf("  %s %s: %v\n", style.Dim.Render("✗"), c.ID, err)

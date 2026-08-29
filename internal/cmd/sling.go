@@ -408,22 +408,24 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			beadID := slingOnTarget
 			return scheduleBead(beadID, rigName, ScheduleOptions{
-				Formula:      formulaName,
-				Args:         slingArgs,
-				Vars:         slingVars,
-				Merge:        slingMerge,
-				BaseBranch:   slingBaseBranch,
-				ResumeBranch: slingResumeBranch,
-				NoConvoy:     slingNoConvoy,
-				Owned:        slingOwned,
-				DryRun:       slingDryRun,
-				Force:        slingForce,
-				NoMerge:      slingNoMerge,
-				ReviewOnly:   slingReviewOnly,
-				Account:      slingAccount,
-				Agent:        slingAgent,
-				HookRawBead:  slingHookRawBead,
-				Ralph:        slingRalph,
+				ScheduleWork: ScheduleWork{
+					Formula:      formulaName,
+					Args:         slingArgs,
+					Vars:         slingVars,
+					Merge:        slingMerge,
+					BaseBranch:   slingBaseBranch,
+					ResumeBranch: slingResumeBranch,
+				},
+				NoConvoy:    slingNoConvoy,
+				Owned:       slingOwned,
+				DryRun:      slingDryRun,
+				Force:       slingForce,
+				NoMerge:     slingNoMerge,
+				ReviewOnly:  slingReviewOnly,
+				Account:     slingAccount,
+				Agent:       slingAgent,
+				HookRawBead: slingHookRawBead,
+				Ralph:       slingRalph,
 			})
 		}
 	}
@@ -449,22 +451,24 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 			formulaName = ""
 		}
 		return scheduleBead(slingOnTarget, rigName, ScheduleOptions{
-			Formula:      formulaName,
-			Args:         slingArgs,
-			Vars:         slingVars,
-			Merge:        slingMerge,
-			BaseBranch:   slingBaseBranch,
-			ResumeBranch: slingResumeBranch,
-			NoConvoy:     slingNoConvoy,
-			Owned:        slingOwned,
-			DryRun:       slingDryRun,
-			Force:        slingForce,
-			NoMerge:      slingNoMerge,
-			ReviewOnly:   slingReviewOnly,
-			Account:      slingAccount,
-			Agent:        slingAgent,
-			HookRawBead:  slingHookRawBead,
-			Ralph:        slingRalph,
+			ScheduleWork: ScheduleWork{
+				Formula:      formulaName,
+				Args:         slingArgs,
+				Vars:         slingVars,
+				Merge:        slingMerge,
+				BaseBranch:   slingBaseBranch,
+				ResumeBranch: slingResumeBranch,
+			},
+			NoConvoy:    slingNoConvoy,
+			Owned:       slingOwned,
+			DryRun:      slingDryRun,
+			Force:       slingForce,
+			NoMerge:     slingNoMerge,
+			ReviewOnly:  slingReviewOnly,
+			Account:     slingAccount,
+			Agent:       slingAgent,
+			HookRawBead: slingHookRawBead,
+			Ralph:       slingRalph,
 		})
 	}
 
@@ -494,22 +498,24 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 			beadID := args[0]
 			formula := resolveFormula(slingFormula, slingHookRawBead, townRoot, rigName)
 			return scheduleBead(beadID, rigName, ScheduleOptions{
-				Formula:      formula,
-				Args:         slingArgs,
-				Vars:         slingVars,
-				Merge:        slingMerge,
-				BaseBranch:   slingBaseBranch,
-				ResumeBranch: slingResumeBranch,
-				NoConvoy:     slingNoConvoy,
-				Owned:        slingOwned,
-				DryRun:       slingDryRun,
-				Force:        slingForce,
-				NoMerge:      slingNoMerge,
-				ReviewOnly:   slingReviewOnly,
-				Account:      slingAccount,
-				Agent:        slingAgent,
-				HookRawBead:  slingHookRawBead,
-				Ralph:        slingRalph,
+				ScheduleWork: ScheduleWork{
+					Formula:      formula,
+					Args:         slingArgs,
+					Vars:         slingVars,
+					Merge:        slingMerge,
+					BaseBranch:   slingBaseBranch,
+					ResumeBranch: slingResumeBranch,
+				},
+				NoConvoy:    slingNoConvoy,
+				Owned:       slingOwned,
+				DryRun:      slingDryRun,
+				Force:       slingForce,
+				NoMerge:     slingNoMerge,
+				ReviewOnly:  slingReviewOnly,
+				Account:     slingAccount,
+				Agent:       slingAgent,
+				HookRawBead: slingHookRawBead,
+				Ralph:       slingRalph,
 			})
 		}
 		// Dog targets (deacon/dogs, deacon/dogs/<name>, dog:, dog:<name>) fall through

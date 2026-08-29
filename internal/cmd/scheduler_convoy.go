@@ -125,10 +125,10 @@ func runConvoyScheduleByID(convoyID string, opts convoyScheduleOpts) error {
 	successCount := 0
 	for _, c := range candidates {
 		err := scheduleBead(c.ID, c.RigName, ScheduleOptions{
-			Formula:     formula,
-			NoConvoy:    true, // Already tracked by this convoy
-			Force:       opts.Force,
-			HookRawBead: opts.HookRawBead,
+			ScheduleWork: ScheduleWork{Formula: formula},
+			NoConvoy:     true, // Already tracked by this convoy
+			Force:        opts.Force,
+			HookRawBead:  opts.HookRawBead,
 		})
 		if err != nil {
 			fmt.Printf("  %s %s: %v\n", style.Dim.Render("✗"), c.ID, err)
