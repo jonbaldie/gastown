@@ -1377,47 +1377,9 @@ func (h *APIHandler) handleIssueUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ID == "" {
-		h.sendError(w, "Issue ID is required", http.StatusBadRequest)
-		return
-	}
-	if !isValidID(req.ID) {
-		h.sendError(w, "Invalid issue ID format", http.StatusBadRequest)
-		return
-	}
-
-	// Build bd update args
-	args := []string{"update", req.ID}
-	hasUpdate := false
-
-	if req.Status != "" {
-		// Validate allowed status values
-		switch req.Status {
-		case "open", "in_progress":
-			args = append(args, "--status="+req.Status)
-			hasUpdate = true
-		default:
-			h.sendError(w, "Invalid status (allowed: open, in_progress)", http.StatusBadRequest)
-			return
-		}
-	}
-
-	if req.Priority >= 1 && req.Priority <= 4 {
-		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
-		hasUpdate = true
-	}
-
-	if req.Assignee != "" {
-		if !isValidID(req.Assignee) {
-			h.sendError(w, "Invalid assignee format", http.StatusBadRequest)
-			return
-		}
-		args = append(args, "--assignee="+req.Assignee)
-		hasUpdate = true
-	}
-
-	if !hasUpdate {
-		h.sendError(w, "No update fields provided", http.StatusBadRequest)
+	args, errMessage := issueUpdateArgs(req)
+	if errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
@@ -1437,6 +1399,68 @@ func (h *APIHandler) handleIssueUpdate(w http.ResponseWriter, r *http.Request) {
 		"message": "Issue updated",
 		"output":  output,
 	})
+}
+
+func issueUpdateArgs(req IssueUpdateRequest) ([]string, string) {
+	if req.ID == "" {
+		return nil, "Issue ID is required"
+	}
+	if !isValidID(req.ID) {
+		return nil, "Invalid issue ID format"
+	}
+
+	args := []string{"update", req.ID}
+	statusArg, errMessage := issueUpdateStatusArg(req.Status)
+	if errMessage != "" {
+		return nil, errMessage
+	}
+	args = appendIssueUpdateArg(args, statusArg)
+	args = appendIssueUpdateArg(args, issueUpdatePriorityArg(req.Priority))
+	assigneeArg, errMessage := issueUpdateAssigneeArg(req.Assignee)
+	if errMessage != "" {
+		return nil, errMessage
+	}
+	args = appendIssueUpdateArg(args, assigneeArg)
+	if len(args) == 2 {
+		return nil, "No update fields provided"
+	}
+	return args, ""
+}
+
+func appendIssueUpdateArg(args []string, arg string) []string {
+	if arg == "" {
+		return args
+	}
+	return append(args, arg)
+}
+
+func issueUpdateStatusArg(status string) (string, string) {
+	if status == "" {
+		return "", ""
+	}
+	switch status {
+	case "open", "in_progress":
+		return "--status=" + status, ""
+	default:
+		return "", "Invalid status (allowed: open, in_progress)"
+	}
+}
+
+func issueUpdatePriorityArg(priority int) string {
+	if priority < 1 || priority > 4 {
+		return ""
+	}
+	return fmt.Sprintf("--priority=%d", priority)
+}
+
+func issueUpdateAssigneeArg(assignee string) (string, string) {
+	if assignee == "" {
+		return "", ""
+	}
+	if !isValidID(assignee) {
+		return "", "Invalid assignee format"
+	}
+	return "--assignee=" + assignee, ""
 }
 
 // runBdCommand executes a bd command with the given args.
