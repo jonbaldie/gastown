@@ -1461,14 +1461,16 @@ func (r *Router) sendToAnnounce(msg *Message) error {
 		}
 	}
 
-	// Build labels for type, from/thread/reply-to/cc plus announce metadata.
-	// Note: delivery:pending is intentionally omitted for announce messages —
-	// broadcast messages have no single recipient to ack against. Subscriber
-	// fan-out copies go through sendToSingle which adds delivery tracking.
-	var labels []string
-	labels = append(labels, "gt:message")
-	labels = append(labels, "from:"+msg.From)
-	labels = append(labels, "announce:"+announceName)
+	labels := announceMessageLabels(msg, announceName)
+	args := announceMessageArgs(msg, labels)
+	return sendAnnounceMessage(r, announceName, args)
+}
+
+func announceMessageLabels(msg *Message, announceName string) []string {
+	// delivery:pending is intentionally omitted for announce messages — broadcast
+	// messages have no single recipient to ack against. Subscriber fan-out copies
+	// go through sendToSingle which adds delivery tracking.
+	labels := []string{"gt:message", "from:" + msg.From, "announce:" + announceName}
 	if msg.ThreadID != "" {
 		labels = append(labels, "thread:"+msg.ThreadID)
 	}
@@ -1476,51 +1478,40 @@ func (r *Router) sendToAnnounce(msg *Message) error {
 		labels = append(labels, "reply-to:"+msg.ReplyTo)
 	}
 	for _, cc := range msg.CC {
-		ccIdentity := AddressToIdentity(cc)
-		labels = append(labels, "cc:"+ccIdentity)
+		labels = append(labels, "cc:"+AddressToIdentity(cc))
 	}
+	return labels
+}
 
-	// Build command: bd create --assignee=announce:<name> -d <body> ... -- <subject>
+func announceMessageArgs(msg *Message, labels []string) []string {
 	// Flags go first, then -- to end flag parsing, then the positional subject.
 	// This prevents subjects like "--help" from being parsed as flags.
-	// Use announce:<name> as assignee so queries can filter by channel
-	args := []string{"create",
+	args := []string{
+		"create",
 		"--assignee", msg.To, // announce:name
 		"-d", msg.Body,
+		"--priority", fmt.Sprintf("%d", PriorityToBeads(msg.Priority)),
 	}
-
-	// Add priority flag
-	beadsPriority := PriorityToBeads(msg.Priority)
-	args = append(args, "--priority", fmt.Sprintf("%d", beadsPriority))
-
-	// Add labels (includes announce name for filtering)
 	if len(labels) > 0 {
 		args = append(args, "--labels", strings.Join(labels, ","))
 	}
-
-	// Add actor for attribution (sender identity)
 	args = append(args, "--actor", msg.From)
+	// Announce messages are never ephemeral — they need to persist for readers.
+	return append(args, "--", msg.Subject)
+}
 
-	// Announce messages are never ephemeral - they need to persist for readers
-	// (deliberately not checking shouldBeWisp)
-
-	// End flag parsing, then subject as positional argument
-	args = append(args, "--", msg.Subject)
-
-	// Announce messages go to town-level beads (shared location)
+func sendAnnounceMessage(r *Router, announceName string, args []string) error {
+	// Announce messages go to town-level beads (shared location).
 	beadsDir := r.resolveBeadsDir()
 	if err := r.ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
 	defer cancel()
-	_, err = runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir)
-	if err != nil {
+	if _, err := runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir); err != nil {
 		return fmt.Errorf("sending to announce %s: %w", announceName, err)
 	}
-
-	// No notification for announce messages - readers poll or check on their own schedule
-
+	// No notification for announce messages — readers poll or check on their own schedule.
 	return nil
 }
 
