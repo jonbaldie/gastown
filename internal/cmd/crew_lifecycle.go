@@ -482,39 +482,19 @@ func runCrewRestart(_ *cobra.Command, args []string) error {
 // runCrewRestartAll restarts all running crew sessions.
 // If crewRig is set, only restarts crew in that rig.
 func runCrewRestartAll() error {
-	// Get all agent sessions (including polecats to find crew)
 	agents, err := getAgentSessions(true)
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
-
-	// Filter to crew agents only
-	var targets []*AgentSession
-	for _, agent := range agents {
-		if agent.Type != AgentCrew {
-			continue
-		}
-		// Filter by rig if specified
-		if crewRig != "" && agent.Rig != crewRig {
-			continue
-		}
-		targets = append(targets, agent)
-	}
+	targets := crewSessionsForStop(agents)
 
 	if len(targets) == 0 {
-		fmt.Println("No running crew sessions to restart.")
-		if crewRig != "" {
-			fmt.Printf("  (filtered by rig: %s)\n", crewRig)
-		}
+		printNoCrewSessionsToRestart()
 		return nil
 	}
 
-	// Dry run - just show what would be restarted
 	if crewDryRun {
-		fmt.Printf("Would restart %d crew session(s):\n\n", len(targets))
-		for _, agent := range targets {
-			fmt.Printf("  %s %s/crew/%s\n", AgentTypeIcons[AgentCrew], agent.Rig, agent.AgentName)
-		}
+		printCrewRestartAllDryRun(targets)
 		return nil
 	}
 
@@ -525,51 +505,66 @@ func runCrewRestartAll() error {
 
 	for _, agent := range targets {
 		agentName := fmt.Sprintf("%s/crew/%s", agent.Rig, agent.AgentName)
-
-		// Use crewRig temporarily to get the right crew manager
-		savedRig := crewRig
-		crewRig = agent.Rig
-
-		crewMgr, _, err := getCrewManager(crewRig)
-		if err != nil {
+		if err := restartCrewSession(agent, agentName); err != nil {
 			failed++
 			failures = append(failures, fmt.Sprintf("%s: %v", agentName, err))
-			fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
-			crewRig = savedRig
 			continue
 		}
-
-		// Use manager's Start() with restart options
-		err = crewMgr.Start(agent.AgentName, crew.StartOptions{
-			KillExisting:  true,      // Kill old session if running
-			Topic:         "restart", // Startup nudge topic
-			AgentOverride: crewAgentOverride,
-		})
-		if err != nil {
-			failed++
-			failures = append(failures, fmt.Sprintf("%s: %v", agentName, err))
-			fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
-		} else {
-			succeeded++
-			fmt.Printf("  %s %s\n", style.SuccessPrefix, agentName)
-		}
-
-		crewRig = savedRig
-
-		// Small delay between restarts to avoid overwhelming the system
-		time.Sleep(constants.ShutdownNotifyDelay)
+		succeeded++
 	}
 
+	return summarizeCrewRestartAll(succeeded, failed, failures)
+}
+
+func printNoCrewSessionsToRestart() {
+	fmt.Println("No running crew sessions to restart.")
+	if crewRig != "" {
+		fmt.Printf("  (filtered by rig: %s)\n", crewRig)
+	}
+}
+
+func printCrewRestartAllDryRun(targets []*AgentSession) {
+	fmt.Printf("Would restart %d crew session(s):\n\n", len(targets))
+	for _, agent := range targets {
+		fmt.Printf("  %s %s/crew/%s\n", AgentTypeIcons[AgentCrew], agent.Rig, agent.AgentName)
+	}
+}
+
+func restartCrewSession(agent *AgentSession, agentName string) error {
+	savedRig := crewRig
+	crewRig = agent.Rig
+	crewMgr, _, err := getCrewManager(crewRig)
+	if err != nil {
+		crewRig = savedRig
+		fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
+		return err
+	}
+	err = crewMgr.Start(agent.AgentName, crew.StartOptions{
+		KillExisting:  true,      // Kill old session if running
+		Topic:         "restart", // Startup nudge topic
+		AgentOverride: crewAgentOverride,
+	})
+	crewRig = savedRig
+	if err != nil {
+		fmt.Printf("  %s %s\n", style.ErrorPrefix, agentName)
+		time.Sleep(constants.ShutdownNotifyDelay)
+		return err
+	}
+	fmt.Printf("  %s %s\n", style.SuccessPrefix, agentName)
+	time.Sleep(constants.ShutdownNotifyDelay)
+	return nil
+}
+
+func summarizeCrewRestartAll(succeeded, failed int, failures []string) error {
 	fmt.Println()
 	if failed > 0 {
 		fmt.Printf("%s Restart complete: %d succeeded, %d failed\n",
 			style.WarningPrefix, succeeded, failed)
-		for _, f := range failures {
-			fmt.Printf("  %s\n", style.Dim.Render(f))
+		for _, failure := range failures {
+			fmt.Printf("  %s\n", style.Dim.Render(failure))
 		}
 		return fmt.Errorf("%d restart(s) failed", failed)
 	}
-
 	fmt.Printf("%s Restart complete: %d crew session(s) restarted\n", style.SuccessPrefix, succeeded)
 	return nil
 }
