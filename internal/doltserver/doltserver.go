@@ -2490,16 +2490,20 @@ func (c *Config) displayDSN() string {
 	return c.User
 }
 
-// dbCache deduplicates and caches SHOW DATABASES results to prevent the
+// databaseCache deduplicates and caches SHOW DATABASES results to prevent the
 // "thundering herd" problem where multiple concurrent callers each spawn a
 // dolt sql subprocess. See GH#2180.
-var dbCache = struct {
+type databaseCache struct {
 	mu       sync.Mutex
 	result   []string
 	err      error
 	updated  time.Time
 	inflight chan struct{} // non-nil when a fetch is in progress
-}{} //nolint:gochecknoglobals // process-level cache, intentional
+}
+
+var databaseCacheState = sync.OnceValue(func() *databaseCache {
+	return &databaseCache{}
+})
 
 const dbCacheTTL = 30 * time.Second
 
@@ -2507,11 +2511,12 @@ const dbCacheTTL = 30 * time.Second
 // call to re-query. Use after operations that change the database set (e.g.,
 // CREATE DATABASE, DROP DATABASE, InitRig).
 func InvalidateDBCache() {
-	dbCache.mu.Lock()
-	dbCache.result = nil
-	dbCache.err = nil
-	dbCache.updated = time.Time{}
-	dbCache.mu.Unlock()
+	cache := databaseCacheState()
+	cache.mu.Lock()
+	cache.result = nil
+	cache.err = nil
+	cache.updated = time.Time{}
+	cache.mu.Unlock()
 }
 
 // ListDatabases returns the list of available rig databases.
@@ -2567,47 +2572,48 @@ func listDatabasesLocal(config *Config) ([]string, error) {
 // listDatabasesCached returns cached SHOW DATABASES results for remote servers,
 // deduplicating concurrent queries via a shared in-flight channel.
 func listDatabasesCached(config *Config) ([]string, error) {
-	dbCache.mu.Lock()
+	cache := databaseCacheState()
+	cache.mu.Lock()
 
 	// Return cached result if fresh.
-	if dbCache.result != nil && time.Since(dbCache.updated) < dbCacheTTL {
-		result := make([]string, len(dbCache.result))
-		copy(result, dbCache.result)
-		dbCache.mu.Unlock()
+	if cache.result != nil && time.Since(cache.updated) < dbCacheTTL {
+		result := make([]string, len(cache.result))
+		copy(result, cache.result)
+		cache.mu.Unlock()
 		return result, nil
 	}
 
 	// If another goroutine is already fetching, wait for it.
-	if dbCache.inflight != nil {
-		ch := dbCache.inflight
-		dbCache.mu.Unlock()
+	if cache.inflight != nil {
+		ch := cache.inflight
+		cache.mu.Unlock()
 		<-ch
 		// Re-read the result the fetcher stored.
-		dbCache.mu.Lock()
-		result := make([]string, len(dbCache.result))
-		copy(result, dbCache.result)
-		err := dbCache.err
-		dbCache.mu.Unlock()
+		cache.mu.Lock()
+		result := make([]string, len(cache.result))
+		copy(result, cache.result)
+		err := cache.err
+		cache.mu.Unlock()
 		return result, err
 	}
 
 	// We're the fetcher. Mark in-flight.
 	ch := make(chan struct{})
-	dbCache.inflight = ch
-	dbCache.mu.Unlock()
+	cache.inflight = ch
+	cache.mu.Unlock()
 
 	// Execute the actual query.
 	result, err := listDatabasesRemote(config)
 
 	// Store result and wake waiters.
-	dbCache.mu.Lock()
-	dbCache.result = result
-	dbCache.err = err
+	cache.mu.Lock()
+	cache.result = result
+	cache.err = err
 	if err == nil {
-		dbCache.updated = time.Now()
+		cache.updated = time.Now()
 	}
-	dbCache.inflight = nil
-	dbCache.mu.Unlock()
+	cache.inflight = nil
+	cache.mu.Unlock()
 	close(ch)
 
 	if err != nil {
