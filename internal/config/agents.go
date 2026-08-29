@@ -85,37 +85,39 @@ type AgentPresetInfo struct {
 	// E.g., ["node"] for Claude, ["cursor-agent", "agent"] for Cursor (install script symlinks both names).
 	ProcessNames []string `json:"process_names,omitempty"`
 
+	// NonInteractive contains settings for non-interactive mode.
+	NonInteractive *NonInteractiveConfig `json:"non_interactive,omitempty"`
+
+	AgentProcessSettings
+	AgentRuntimeSettings
+	AgentHookSettings
+}
+
+// AgentProcessSettings contains process and resume behavior for an agent
+// preset. It is embedded so registry JSON remains flat.
+type AgentProcessSettings struct {
 	// SessionIDEnv is the environment variable for session ID.
-	// Used for resuming sessions across restarts.
 	SessionIDEnv string `json:"session_id_env,omitempty"`
 
 	// ResumeFlag is the flag/subcommand for resuming a specific session.
-	// For claude/gemini: "--resume"
-	// For codex: "resume" (subcommand)
 	ResumeFlag string `json:"resume_flag,omitempty"`
 
 	// ContinueFlag is the flag for auto-resuming the most recent session.
-	// For claude: "--continue" (--resume without args opens interactive picker)
-	// If empty, --resume without a session ID is rejected with a clear error.
 	ContinueFlag string `json:"continue_flag,omitempty"`
 
-	// ResumeStyle indicates how to invoke resume:
-	// "flag" - pass as --resume <id> argument
-	// "subcommand" - pass as 'codex resume <id>'
+	// ResumeStyle indicates how to invoke resume: "flag" or "subcommand".
 	ResumeStyle string `json:"resume_style,omitempty"`
 
 	// SupportsHooks indicates if the agent supports hooks system.
 	SupportsHooks bool `json:"supports_hooks,omitempty"`
 
 	// SupportsForkSession indicates if --fork-session is available.
-	// Used by the seance command for session forking.
 	SupportsForkSession bool `json:"supports_fork_session,omitempty"`
+}
 
-	// NonInteractive contains settings for non-interactive mode.
-	NonInteractive *NonInteractiveConfig `json:"non_interactive,omitempty"`
-
-	// --- Runtime default fields (replaces scattered default*() switch statements) ---
-
+// AgentRuntimeSettings contains launch defaults for an agent preset. It is
+// embedded so registry JSON remains flat while launch defaults have one owner.
+type AgentRuntimeSettings struct {
 	// PromptMode controls how the initial prompt is delivered: "arg" or "none".
 	// Defaults to "arg" if empty.
 	PromptMode string `json:"prompt_mode,omitempty"`
@@ -127,6 +129,30 @@ type AgentPresetInfo struct {
 	// Used for slash command provisioning. Empty means no command provisioning.
 	ConfigDir string `json:"config_dir,omitempty"`
 
+	// ReadyPromptPrefix is the prompt prefix for tmux readiness detection (e.g., "❯ ").
+	// Empty means delay-based detection only.
+	ReadyPromptPrefix string `json:"ready_prompt_prefix,omitempty"`
+
+	// ReadyDelayMs is the delay-based readiness fallback in milliseconds.
+	ReadyDelayMs int `json:"ready_delay_ms,omitempty"`
+
+	// InstructionsFile is the instructions file for this agent (e.g., "CLAUDE.md", "AGENTS.md").
+	// Defaults to "AGENTS.md" if empty.
+	InstructionsFile string `json:"instructions_file,omitempty"`
+
+	// AutoCompactFlag is the CLI flag that sets this runtime's auto-compact
+	// window in tokens (e.g. "--autocompact"). Empty means no native flag.
+	AutoCompactFlag string `json:"auto_compact_flag,omitempty"`
+
+	// AutoCompactEnv is the environment variable this runtime uses for its
+	// auto-compact window in tokens. Empty means no native env var; Gas Town
+	// still sets GT_AUTO_COMPACT_WINDOW for every agent type.
+	AutoCompactEnv string `json:"auto_compact_env,omitempty"`
+}
+
+// AgentHookSettings contains hook and ACP behavior for an agent preset. It is
+// embedded so registry JSON remains flat while hook integration has one owner.
+type AgentHookSettings struct {
 	// HooksProvider is the hooks framework provider type (e.g., "claude", "opencode").
 	// Empty or "none" means no hooks support.
 	HooksProvider string `json:"hooks_provider,omitempty"`
@@ -146,47 +172,22 @@ type AgentPresetInfo struct {
 	// settingsDir; when false, they're installed in workDir.
 	HooksUseSettingsDir bool `json:"hooks_use_settings_dir,omitempty"`
 
-	// ReadyPromptPrefix is the prompt prefix for tmux readiness detection (e.g., "❯ ").
-	// Empty means delay-based detection only.
-	ReadyPromptPrefix string `json:"ready_prompt_prefix,omitempty"`
-
-	// ReadyDelayMs is the delay-based readiness fallback in milliseconds.
-	ReadyDelayMs int `json:"ready_delay_ms,omitempty"`
-
-	// InstructionsFile is the instructions file for this agent (e.g., "CLAUDE.md", "AGENTS.md").
-	// Defaults to "AGENTS.md" if empty.
-	InstructionsFile string `json:"instructions_file,omitempty"`
-
 	// EmitsPermissionWarning indicates the agent shows a bypass-permissions warning on startup
 	// that needs to be acknowledged via tmux.
 	EmitsPermissionWarning bool `json:"emits_permission_warning,omitempty"`
 
 	// HasTurnBoundaryDrain indicates the agent's hooks system drains the nudge
-	// queue on every turn boundary (like Claude's UserPromptSubmit hook). When
-	// false, a background nudge-poller process is started to periodically drain
-	// the queue and inject via tmux.
+	// queue on every turn boundary. When false, a background nudge-poller
+	// process is started to periodically drain the queue and inject via tmux.
 	HasTurnBoundaryDrain bool `json:"has_turn_boundary_drain,omitempty"`
 
 	// EscapeCancelsRequest indicates that sending an Escape keystroke to this
-	// agent cancels its in-flight generation. NudgeSession normally sends
-	// Escape (step 5) to exit vim INSERT mode — harmless for bash, but
-	// destructive for agents where Escape aborts the active request. When true,
-	// NudgeSessionWithOpts skips the Escape
-	// keystroke and the 600ms readline timeout that follows it.
+	// agent cancels its in-flight generation.
 	EscapeCancelsRequest bool `json:"escape_cancels_request,omitempty"`
 
 	// ACP is the configuration for ACP (Agent Communication Protocol) support.
 	// nil means the agent does not support ACP.
 	ACP *ACPConfig `json:"acp,omitempty"`
-
-	// AutoCompactFlag is the CLI flag that sets this runtime's auto-compact
-	// window in tokens (e.g. "--autocompact"). Empty means no native flag.
-	AutoCompactFlag string `json:"auto_compact_flag,omitempty"`
-
-	// AutoCompactEnv is the environment variable this runtime uses for its
-	// auto-compact window in tokens. Empty means no native env var; Gas Town
-	// still sets GT_AUTO_COMPACT_WINDOW for every agent type.
-	AutoCompactEnv string `json:"auto_compact_env,omitempty"`
 }
 
 // ACPConfig contains configuration for ACP (Agent Communication Protocol) support.
@@ -245,76 +246,89 @@ const CurrentAgentRegistryVersion = 1
 // Each preset is the single source of truth for its agent's behavior.
 var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 	AgentClaude: {
-		Name:                AgentClaude,
-		Command:             "claude",
-		Args:                []string{"--dangerously-skip-permissions"},
-		ProcessNames:        []string{"node", "claude"}, // Claude runs as Node.js
-		SessionIDEnv:        "CLAUDE_SESSION_ID",
-		ResumeFlag:          "--resume",
-		ContinueFlag:        "--continue",
-		ResumeStyle:         "flag",
-		SupportsHooks:       true,
-		SupportsForkSession: true,
-		NonInteractive:      nil, // Claude is native non-interactive
-		// Runtime defaults
-		PromptMode:             "arg",
-		ConfigDirEnv:           "CLAUDE_CONFIG_DIR",
-		ConfigDir:              ".claude",
-		HooksProvider:          "claude",
-		HooksDir:               ".claude",
-		HooksSettingsFile:      "settings.json",
-		HooksUseSettingsDir:    true,
-		ReadyPromptPrefix:      "❯ ",
-		ReadyDelayMs:           10000,
-		InstructionsFile:       "CLAUDE.md",
-		EmitsPermissionWarning: true,
-		HasTurnBoundaryDrain:   true,
-		AutoCompactFlag:        ClaudeAutoCompactFlag,
-		AutoCompactEnv:         ClaudeAutoCompactWindowEnv,
+		Name:         AgentClaude,
+		Command:      "claude",
+		Args:         []string{"--dangerously-skip-permissions"},
+		ProcessNames: []string{"node", "claude"}, // Claude runs as Node.js
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "CLAUDE_SESSION_ID",
+			ResumeFlag:          "--resume",
+			ContinueFlag:        "--continue",
+			ResumeStyle:         "flag",
+			SupportsHooks:       true,
+			SupportsForkSession: true,
+		},
+		NonInteractive: nil, // Claude is native non-interactive
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:        "arg",
+			ConfigDirEnv:      "CLAUDE_CONFIG_DIR",
+			ConfigDir:         ".claude",
+			ReadyPromptPrefix: "❯ ",
+			ReadyDelayMs:      10000,
+			InstructionsFile:  "CLAUDE.md",
+			AutoCompactFlag:   ClaudeAutoCompactFlag,
+			AutoCompactEnv:    ClaudeAutoCompactWindowEnv,
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:          "claude",
+			HooksDir:               ".claude",
+			HooksSettingsFile:      "settings.json",
+			HooksUseSettingsDir:    true,
+			EmitsPermissionWarning: true,
+			HasTurnBoundaryDrain:   true,
+		},
 	},
 	AgentGemini: {
-		Name:                AgentGemini,
-		Command:             "gemini",
-		Args:                []string{"--approval-mode", "yolo"},
-		ProcessNames:        []string{"gemini"}, // Gemini CLI binary
-		SessionIDEnv:        "GEMINI_SESSION_ID",
-		ResumeFlag:          "--resume",
-		ResumeStyle:         "flag",
-		SupportsHooks:       true,
-		SupportsForkSession: false,
+		Name:         AgentGemini,
+		Command:      "gemini",
+		Args:         []string{"--approval-mode", "yolo"},
+		ProcessNames: []string{"gemini"}, // Gemini CLI binary
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "GEMINI_SESSION_ID",
+			ResumeFlag:          "--resume",
+			ResumeStyle:         "flag",
+			SupportsHooks:       true,
+			SupportsForkSession: false,
+		},
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 			OutputFlag: "--output-format json",
 		},
-		// Runtime defaults
-		PromptMode:           "arg",
-		ConfigDir:            ".gemini",
-		HooksProvider:        "gemini",
-		HooksDir:             ".gemini",
-		HooksSettingsFile:    "settings.json",
-		ReadyDelayMs:         5000,
-		InstructionsFile:     "AGENTS.md",
-		EscapeCancelsRequest: true, // Gemini CLI uses Escape to abort active generation
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:       "arg",
+			ConfigDir:        ".gemini",
+			ReadyDelayMs:     5000,
+			InstructionsFile: "AGENTS.md",
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:        "gemini",
+			HooksDir:             ".gemini",
+			HooksSettingsFile:    "settings.json",
+			EscapeCancelsRequest: true, // Gemini CLI uses Escape to abort active generation
+		},
 	},
 	AgentCodex: {
-		Name:                AgentCodex,
-		Command:             "codex",
-		Args:                []string{"-c", codexUpdateCheckConfig, "--dangerously-bypass-approvals-and-sandbox"},
-		ProcessNames:        []string{"codex"}, // Codex CLI binary
-		SessionIDEnv:        "",                // Codex captures from JSONL output
-		ResumeFlag:          "resume",
-		ResumeStyle:         "subcommand",
-		SupportsHooks:       false, // Use env/files instead
-		SupportsForkSession: false,
+		Name:         AgentCodex,
+		Command:      "codex",
+		Args:         []string{"-c", codexUpdateCheckConfig, "--dangerously-bypass-approvals-and-sandbox"},
+		ProcessNames: []string{"codex"}, // Codex CLI binary
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "", // Codex captures from JSONL output
+			ResumeFlag:          "resume",
+			ResumeStyle:         "subcommand",
+			SupportsHooks:       false, // Use env/files instead
+			SupportsForkSession: false,
+		},
 		NonInteractive: &NonInteractiveConfig{
 			Subcommand: "exec",
 			OutputFlag: "--json",
 		},
-		// Runtime defaults
-		PromptMode:        "arg",
-		ReadyPromptPrefix: "› ",
-		ReadyDelayMs:      3000,
-		InstructionsFile:  "AGENTS.md",
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:        "arg",
+			ReadyPromptPrefix: "› ",
+			ReadyDelayMs:      3000,
+			InstructionsFile:  "AGENTS.md",
+		},
 	},
 	AgentKiro: {
 		Name:         AgentKiro,
@@ -323,16 +337,20 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		ProcessNames: []string{"kiro-cli"},
 		// Kiro sessions are stored per directory; the CLI resumes by flag, not
 		// by an environment variable that Gas Town needs to manage.
-		SessionIDEnv:        "",
-		ResumeFlag:          "--resume-id",
-		ContinueFlag:        "--resume",
-		ResumeStyle:         "flag",
-		SupportsHooks:       false, // Kiro has hooks, but Gas Town has no Kiro hook adapter yet.
-		SupportsForkSession: false,
-		NonInteractive:      nil, // Kiro's --no-interactive shape is not modeled by NonInteractiveConfig yet.
-		PromptMode:          "arg",
-		ReadyDelayMs:        5000,
-		InstructionsFile:    "AGENTS.md",
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "",
+			ResumeFlag:          "--resume-id",
+			ContinueFlag:        "--resume",
+			ResumeStyle:         "flag",
+			SupportsHooks:       false, // Kiro has hooks, but Gas Town has no Kiro hook adapter yet.
+			SupportsForkSession: false,
+		},
+		NonInteractive: nil, // Kiro's --no-interactive shape is not modeled by NonInteractiveConfig yet.
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:       "arg",
+			ReadyDelayMs:     5000,
+			InstructionsFile: "AGENTS.md",
+		},
 	},
 	AgentCursor: {
 		Name:    AgentCursor,
@@ -340,54 +358,65 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		// -f/--force: auto-approve tool use (see cursor-agent --help). Install script also symlinks "agent" -> same binary.
 		Args: []string{"-f"},
 		// cursor-agent + agent (install symlinks). Pane matching for "agent" requires session env (GT_AGENT=cursor or GT_PROCESS_NAMES includes cursor-agent); see internal/tmux processNamesForSession.
-		ProcessNames:        []string{"cursor-agent", "agent"},
-		SessionIDEnv:        "", // Uses --resume with chatId directly
-		ResumeFlag:          "--resume",
-		ResumeStyle:         "flag",
-		SupportsHooks:       true,
-		SupportsForkSession: false,
+		ProcessNames: []string{"cursor-agent", "agent"},
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "", // Uses --resume with chatId directly
+			ResumeFlag:          "--resume",
+			ResumeStyle:         "flag",
+			SupportsHooks:       true,
+			SupportsForkSession: false,
+		},
 		// Non-interactive/headless: -p/--print + --output-format json (matches cursor-agent --help).
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 			OutputFlag: "--output-format json",
 		},
-		// Runtime defaults
-		PromptMode:        "arg",
-		ConfigDir:         ".cursor",
-		HooksProvider:     "cursor",
-		HooksDir:          ".cursor",
-		HooksSettingsFile: "hooks.json", // installed path: .cursor/hooks.json
-		InstructionsFile:  "AGENTS.md",
-		// No stable ReadyPromptPrefix yet; delay before nudge poller / early input (HasTurnBoundaryDrain is false — see Copilot).
-		ReadyDelayMs: 5000,
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:       "arg",
+			ConfigDir:        ".cursor",
+			InstructionsFile: "AGENTS.md",
+			// No stable ReadyPromptPrefix yet; delay before nudge poller / early input (HasTurnBoundaryDrain is false — see Copilot).
+			ReadyDelayMs: 5000,
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:     "cursor",
+			HooksDir:          ".cursor",
+			HooksSettingsFile: "hooks.json", // installed path: .cursor/hooks.json
+		},
 	},
 	AgentAuggie: {
-		Name:                AgentAuggie,
-		Command:             "auggie",
-		Args:                []string{"--allow-indexing"},
-		ProcessNames:        []string{"auggie"},
-		SessionIDEnv:        "",
-		ResumeFlag:          "--resume",
-		ResumeStyle:         "flag",
-		SupportsHooks:       false,
-		SupportsForkSession: false,
-		// Runtime defaults
-		PromptMode:       "arg",
-		InstructionsFile: "AGENTS.md",
+		Name:         AgentAuggie,
+		Command:      "auggie",
+		Args:         []string{"--allow-indexing"},
+		ProcessNames: []string{"auggie"},
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "",
+			ResumeFlag:          "--resume",
+			ResumeStyle:         "flag",
+			SupportsHooks:       false,
+			SupportsForkSession: false,
+		},
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:       "arg",
+			InstructionsFile: "AGENTS.md",
+		},
 	},
 	AgentAmp: {
-		Name:                AgentAmp,
-		Command:             "amp",
-		Args:                []string{"--dangerously-allow-all", "--no-ide"},
-		ProcessNames:        []string{"amp"},
-		SessionIDEnv:        "",
-		ResumeFlag:          "threads continue",
-		ResumeStyle:         "subcommand", // 'amp threads continue <threadId>'
-		SupportsHooks:       false,
-		SupportsForkSession: false,
-		// Runtime defaults
-		PromptMode:       "arg",
-		InstructionsFile: "AGENTS.md",
+		Name:         AgentAmp,
+		Command:      "amp",
+		Args:         []string{"--dangerously-allow-all", "--no-ide"},
+		ProcessNames: []string{"amp"},
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "",
+			ResumeFlag:          "threads continue",
+			ResumeStyle:         "subcommand", // 'amp threads continue <threadId>'
+			SupportsHooks:       false,
+			SupportsForkSession: false,
+		},
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:       "arg",
+			InstructionsFile: "AGENTS.md",
+		},
 	},
 	AgentOpenCode: {
 		Name:    AgentOpenCode,
@@ -398,70 +427,79 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			"OPENCODE_PERMISSION":     `{"*":"allow"}`,
 			"OPENCODE_CONFIG_CONTENT": `{"lsp":true}`,
 		},
-		ProcessNames:        []string{"opencode", "node", "bun"}, // Runs as Node.js or Bun
-		SessionIDEnv:        "",                                  // OpenCode manages sessions internally
-		ResumeFlag:          "",                                  // No resume support yet
-		ResumeStyle:         "",
-		SupportsHooks:       true, // Uses .opencode/plugins/gastown.js
-		SupportsForkSession: false,
+		ProcessNames: []string{"opencode", "node", "bun"}, // Runs as Node.js or Bun
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "", // OpenCode manages sessions internally
+			ResumeFlag:          "", // No resume support yet
+			ResumeStyle:         "",
+			SupportsHooks:       true, // Uses .opencode/plugins/gastown.js
+			SupportsForkSession: false,
+		},
 		NonInteractive: &NonInteractiveConfig{
 			Subcommand: "run",
 			OutputFlag: "--format json",
 		},
-		// Runtime defaults
-		PromptMode:        "arg",
-		ConfigDir:         ".opencode",
-		HooksProvider:     "opencode",
-		HooksDir:          ".opencode/plugins",
-		HooksSettingsFile: "gastown.js",
-		ReadyDelayMs:      8000,
-		InstructionsFile:  "AGENTS.md",
-		// ACP support
-		ACP: &ACPConfig{
-			Command: "acp",
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:       "arg",
+			ConfigDir:        ".opencode",
+			ReadyDelayMs:     8000,
+			InstructionsFile: "AGENTS.md",
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:     "opencode",
+			HooksDir:          ".opencode/plugins",
+			HooksSettingsFile: "gastown.js",
+			// ACP support
+			ACP: &ACPConfig{
+				Command: "acp",
+			},
 		},
 	},
 	AgentCopilot: {
-		Name:                AgentCopilot,
-		Command:             "copilot",
-		Args:                []string{"--yolo"},
-		ProcessNames:        []string{"copilot"}, // Copilot CLI binary (Node.js but reports as "copilot")
-		SessionIDEnv:        "",                  // Session IDs stored on disk (~/.copilot/session-state/), not in env
-		ResumeFlag:          "--resume",
-		ContinueFlag:        "--continue", // GA: resumes most recent session without picker
-		ResumeStyle:         "flag",
-		SupportsHooks:       true, // Copilot CLI supports .github/hooks/*.json lifecycle hooks
-		SupportsForkSession: false,
+		Name:         AgentCopilot,
+		Command:      "copilot",
+		Args:         []string{"--yolo"},
+		ProcessNames: []string{"copilot"}, // Copilot CLI binary (Node.js but reports as "copilot")
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "", // Session IDs stored on disk (~/.copilot/session-state/), not in env
+			ResumeFlag:          "--resume",
+			ContinueFlag:        "--continue", // GA: resumes most recent session without picker
+			ResumeStyle:         "flag",
+			SupportsHooks:       true, // Copilot CLI supports .github/hooks/*.json lifecycle hooks
+			SupportsForkSession: false,
+		},
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 		},
-		// Runtime defaults
-		PromptMode:           "arg",
-		ConfigDirEnv:         "COPILOT_HOME", // GA: overrides ~/.copilot/ config directory
-		ConfigDir:            ".copilot",
-		HooksProvider:        "copilot",
-		HooksDir:             ".github/hooks",
-		HooksSettingsFile:    "gastown.json",
-		HooksInformational:   false,
-		ReadyPromptPrefix:    "",   // GA: no ❯ prompt; Copilot uses hint text, not a detectable prefix
-		ReadyDelayMs:         5000, // Delay-based readiness detection (no prompt prefix)
-		InstructionsFile:     "AGENTS.md",
-		EscapeCancelsRequest: true,
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:        "arg",
+			ConfigDirEnv:      "COPILOT_HOME", // GA: overrides ~/.copilot/ config directory
+			ConfigDir:         ".copilot",
+			ReadyPromptPrefix: "",   // GA: no ❯ prompt; Copilot uses hint text, not a detectable prefix
+			ReadyDelayMs:      5000, // Delay-based readiness detection (no prompt prefix)
+			InstructionsFile:  "AGENTS.md",
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:        "copilot",
+			HooksDir:             ".github/hooks",
+			HooksSettingsFile:    "gastown.json",
+			HooksInformational:   false,
+			EscapeCancelsRequest: true,
+		},
 	},
 	AgentPi: {
-		Name:                AgentPi,
-		Command:             "pi",
-		Args:                []string{"-e", ".pi/extensions/gastown-hooks.js", "--approve"},
-		RequiredArgGroups:   [][]string{{"-e", ".pi/extensions/gastown-hooks.js"}, {"--approve"}},
-		ProcessNames:        []string{"pi", "node", "bun"}, // Pi runs as Node.js
-		SessionIDEnv:        "PI_SESSION_ID",
-		ResumeFlag:          "--session",
-		ResumeStyle:         "flag",
-		SupportsHooks:       true, // Uses .pi/extensions/gastown-hooks.js
-		HooksProvider:       "pi",
-		HooksDir:            ".pi/extensions",
-		HooksSettingsFile:   "gastown-hooks.js",
-		SupportsForkSession: false,
+		Name:              AgentPi,
+		Command:           "pi",
+		Args:              []string{"-e", ".pi/extensions/gastown-hooks.js", "--approve"},
+		RequiredArgGroups: [][]string{{"-e", ".pi/extensions/gastown-hooks.js"}, {"--approve"}},
+		ProcessNames:      []string{"pi", "node", "bun"}, // Pi runs as Node.js
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "PI_SESSION_ID",
+			ResumeFlag:          "--session",
+			ResumeStyle:         "flag",
+			SupportsHooks:       true, // Uses .pi/extensions/gastown-hooks.js
+			SupportsForkSession: false,
+		},
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 			OutputFlag: "--no-session",
@@ -469,47 +507,65 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		// Pi's Node.js TUI takes several seconds to initialize before it can
 		// receive tmux input. Without a readiness delay, the startup nudge
 		// arrives before the TUI is ready and gets dropped silently.
-		PromptMode:   "arg",
-		ReadyDelayMs: 8000,
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:   "arg",
+			ReadyDelayMs: 8000,
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:     "pi",
+			HooksDir:          ".pi/extensions",
+			HooksSettingsFile: "gastown-hooks.js",
+		},
 	},
 	AgentOmp: {
-		Name:                AgentOmp,
-		Command:             "omp",
-		Args:                []string{"--hook", ".omp/hooks/gastown-hook.ts"},
-		ProcessNames:        []string{"omp", "node", "bun"},
-		SessionIDEnv:        "OMP_SESSION_ID",
-		SupportsHooks:       true,
-		HooksProvider:       "omp",
-		HooksDir:            ".omp/hooks",
-		HooksSettingsFile:   "gastown-hook.ts",
-		SupportsForkSession: false,
+		Name:         AgentOmp,
+		Command:      "omp",
+		Args:         []string{"--hook", ".omp/hooks/gastown-hook.ts"},
+		ProcessNames: []string{"omp", "node", "bun"},
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "OMP_SESSION_ID",
+			SupportsHooks:       true,
+			SupportsForkSession: false,
+		},
+		AgentRuntimeSettings: AgentRuntimeSettings{},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:     "omp",
+			HooksDir:          ".omp/hooks",
+			HooksSettingsFile: "gastown-hook.ts",
+		},
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "--prompt",
 		},
 	},
 	AgentMistral: {
-		Name:                AgentMistral,
-		Command:             "vibe",
-		Args:                []string{"--agent", "auto-approve"},
-		ProcessNames:        []string{"vibe"},
-		SessionIDEnv:        "VIBE_SESSION_ID",
-		ResumeFlag:          "--resume",
-		ContinueFlag:        "--continue",
-		ResumeStyle:         "flag",
-		SupportsHooks:       true,
-		SupportsForkSession: false,
+		Name:         AgentMistral,
+		Command:      "vibe",
+		Args:         []string{"--agent", "auto-approve"},
+		ProcessNames: []string{"vibe"},
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "VIBE_SESSION_ID",
+			ResumeFlag:          "--resume",
+			ContinueFlag:        "--continue",
+			ResumeStyle:         "flag",
+			SupportsHooks:       true,
+			SupportsForkSession: false,
+		},
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 			OutputFlag: "json",
 		},
-		PromptMode:        "arg",
-		ConfigDir:         ".vibe",
-		HooksProvider:     "vibe",
-		HooksDir:          ".vibe",
-		HooksSettingsFile: "config.toml",
-		ReadyPromptPrefix: "❯ ",
-		ReadyDelayMs:      5000,
-		InstructionsFile:  "AGENTS.md",
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:        "arg",
+			ConfigDir:         ".vibe",
+			ReadyPromptPrefix: "❯ ",
+			ReadyDelayMs:      5000,
+			InstructionsFile:  "AGENTS.md",
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:     "vibe",
+			HooksDir:          ".vibe",
+			HooksSettingsFile: "config.toml",
+		},
 	},
 	AgentAgy: {
 		Name:    AgentAgy,
@@ -517,24 +573,27 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		Args:    []string{"--dangerously-skip-permissions"},
 		// agy is a native Go binary (Google Antigravity CLI), not Node-wrapped.
 		ProcessNames: []string{"agy"},
-		SessionIDEnv: "", // agy has no session-id env var; sessions are resumed by conversation ID.
-		ResumeFlag:   "--conversation",
-		ContinueFlag: "--continue",
-		ResumeStyle:  "flag",
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "", // agy has no session-id env var; sessions are resumed by conversation ID.
+			ResumeFlag:          "--conversation",
+			ContinueFlag:        "--continue",
+			ResumeStyle:         "flag",
+			SupportsHooks:       false,
+			SupportsForkSession: false,
+		},
 		// agy has a plugin/hooks.json system, but it's for plugin lifecycle
 		// hooks, not a Gas Town-compatible adapter yet.
-		SupportsHooks: false,
 		// Conversation forking exists in agy's internal API but isn't exposed
 		// as a CLI flag.
-		SupportsForkSession: false,
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 			OutputFlag: "--output-format json",
 		},
-		// Runtime defaults
-		PromptMode:       "arg",
-		ReadyDelayMs:     5000,
-		InstructionsFile: "AGENTS.md",
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:       "arg",
+			ReadyDelayMs:     5000,
+			InstructionsFile: "AGENTS.md",
+		},
 	},
 	// AgentGroqCompound uses the Claude CLI as an SDK proxy but routes all
 	// requests to Groq's OpenAI-compatible endpoint by overriding the two
@@ -563,25 +622,32 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			"ANTHROPIC_MODEL":    "compound-beta",
 			"ANTHROPIC_API_KEY":  "$GROQ_API_KEY",
 		},
-		ProcessNames:         []string{"node", "claude"},
-		SessionIDEnv:         "CLAUDE_SESSION_ID",
-		ResumeFlag:           "--resume",
-		ContinueFlag:         "--continue",
-		ResumeStyle:          "flag",
-		SupportsHooks:        true,
-		PromptMode:           "arg",
-		ConfigDirEnv:         "CLAUDE_CONFIG_DIR",
-		ConfigDir:            ".claude",
-		HooksProvider:        "claude",
-		HooksDir:             ".claude",
-		HooksSettingsFile:    "settings.json",
-		HooksUseSettingsDir:  true,
-		ReadyPromptPrefix:    "❯ ",
-		ReadyDelayMs:         10000,
-		InstructionsFile:     "CLAUDE.md",
-		HasTurnBoundaryDrain: true,
-		AutoCompactFlag:      ClaudeAutoCompactFlag,
-		AutoCompactEnv:       ClaudeAutoCompactWindowEnv,
+		ProcessNames: []string{"node", "claude"},
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv:        "CLAUDE_SESSION_ID",
+			ResumeFlag:          "--resume",
+			ContinueFlag:        "--continue",
+			ResumeStyle:         "flag",
+			SupportsHooks:       true,
+			SupportsForkSession: false,
+		},
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:        "arg",
+			ConfigDirEnv:      "CLAUDE_CONFIG_DIR",
+			ConfigDir:         ".claude",
+			ReadyPromptPrefix: "❯ ",
+			ReadyDelayMs:      10000,
+			InstructionsFile:  "CLAUDE.md",
+			AutoCompactFlag:   ClaudeAutoCompactFlag,
+			AutoCompactEnv:    ClaudeAutoCompactWindowEnv,
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider:        "claude",
+			HooksDir:             ".claude",
+			HooksSettingsFile:    "settings.json",
+			HooksUseSettingsDir:  true,
+			HasTurnBoundaryDrain: true,
+		},
 	},
 }
 
@@ -1181,12 +1247,14 @@ func NewExampleAgentRegistry() *AgentRegistry {
 		Agents: map[string]*AgentPresetInfo{
 			// Include one example custom agent
 			"my-custom-agent": {
-				Name:         "my-custom-agent",
-				Command:      "my-agent-cli",
-				Args:         []string{"--autonomous", "--no-confirm"},
-				SessionIDEnv: "MY_AGENT_SESSION_ID",
-				ResumeFlag:   "--resume",
-				ResumeStyle:  "flag",
+				Name:    "my-custom-agent",
+				Command: "my-agent-cli",
+				Args:    []string{"--autonomous", "--no-confirm"},
+				AgentProcessSettings: AgentProcessSettings{
+					SessionIDEnv: "MY_AGENT_SESSION_ID",
+					ResumeFlag:   "--resume",
+					ResumeStyle:  "flag",
+				},
 				NonInteractive: &NonInteractiveConfig{
 					PromptFlag: "-p",
 					OutputFlag: "--json",
