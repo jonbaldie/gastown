@@ -128,25 +128,10 @@ func warrantFilePath(dir, target string) string {
 }
 
 func runWarrantFile(cmd *cobra.Command, args []string) error {
-	reason := commandStringFlag(cmd, "reason")
-	readStdin := commandBoolFlag(cmd, "stdin")
-	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
-	if readStdin {
-		if reason != "" {
-			return fmt.Errorf("cannot use --stdin with --reason/-r")
-		}
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading stdin: %w", err)
-		}
-		reason = strings.TrimRight(string(data), "\n")
+	reason, err := warrantReason(cmd)
+	if err != nil {
+		return err
 	}
-
-	// Require reason via --reason or --stdin
-	if reason == "" {
-		return fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
-	}
-
 	target := args[0]
 
 	warrantDir, err := getWarrantDir()
@@ -154,53 +139,90 @@ func runWarrantFile(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Create warrants directory if needed
 	if err := os.MkdirAll(warrantDir, 0755); err != nil {
 		return fmt.Errorf("creating warrants directory: %w", err)
 	}
 
-	// Check if warrant already exists
 	warrantPath := warrantFilePath(warrantDir, target)
-	if _, err := os.Stat(warrantPath); err == nil {
-		// Load existing warrant
-		data, _ := os.ReadFile(warrantPath)
-		var existing Warrant
-		if json.Unmarshal(data, &existing) == nil && !existing.Executed {
-			fmt.Printf("Warrant already exists for %s\n", target)
-			fmt.Printf("  Reason: %s\n", existing.Reason)
-			fmt.Printf("  Filed: %s\n", existing.FiledAt.Format(time.RFC3339))
-			return nil
-		}
+	if existing, ok := readPendingWarrant(warrantPath); ok {
+		printExistingWarrant(target, existing)
+		return nil
 	}
 
-	// Get filer identity
-	filedBy := os.Getenv("BD_ACTOR")
-	if filedBy == "" {
-		filedBy = "unknown"
-	}
-
-	warrant := Warrant{
-		ID:       fmt.Sprintf("warrant-%d", time.Now().UnixMilli()),
-		Target:   target,
-		Reason:   reason,
-		FiledBy:  filedBy,
-		FiledAt:  time.Now(),
-		Executed: false,
-	}
-
-	data, err := json.MarshalIndent(warrant, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling warrant: %w", err)
-	}
-
-	if err := os.WriteFile(warrantPath, data, 0644); err != nil {
-		return fmt.Errorf("writing warrant: %w", err)
+	warrant := buildWarrant(target, reason)
+	if err := writeWarrant(warrantPath, warrant); err != nil {
+		return err
 	}
 
 	fmt.Printf("✓ Filed death warrant for %s\n", style.Bold.Render(target))
 	fmt.Printf("  Reason: %s\n", reason)
 	fmt.Printf("  ID: %s\n", warrant.ID)
 
+	return nil
+}
+
+func warrantReason(cmd *cobra.Command) (string, error) {
+	reason := commandStringFlag(cmd, "reason")
+	if commandBoolFlag(cmd, "stdin") {
+		if reason != "" {
+			return "", fmt.Errorf("cannot use --stdin with --reason/-r")
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("reading stdin: %w", err)
+		}
+		reason = strings.TrimRight(string(data), "\n")
+	}
+	if reason == "" {
+		return "", fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
+	}
+	return reason, nil
+}
+
+func readPendingWarrant(path string) (*Warrant, bool) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var warrant Warrant
+	if err := json.Unmarshal(data, &warrant); err != nil || warrant.Executed {
+		return nil, false
+	}
+	return &warrant, true
+}
+
+func printExistingWarrant(target string, warrant *Warrant) {
+	fmt.Printf("Warrant already exists for %s\n", target)
+	fmt.Printf("  Reason: %s\n", warrant.Reason)
+	fmt.Printf("  Filed: %s\n", warrant.FiledAt.Format(time.RFC3339))
+}
+
+func buildWarrant(target, reason string) Warrant {
+	filedBy := os.Getenv("BD_ACTOR")
+	if filedBy == "" {
+		filedBy = "unknown"
+	}
+	now := time.Now()
+	return Warrant{
+		ID:      fmt.Sprintf("warrant-%d", now.UnixMilli()),
+		Target:  target,
+		Reason:  reason,
+		FiledBy: filedBy,
+		FiledAt: now,
+	}
+}
+
+func writeWarrant(path string, warrant Warrant) error {
+	data, err := json.MarshalIndent(warrant, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling warrant: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("writing warrant: %w", err)
+	}
 	return nil
 }
 
@@ -211,34 +233,13 @@ func runWarrantList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	entries, err := os.ReadDir(warrantDir)
+	warrants, err := loadWarrants(warrantDir, showAll)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("No warrants filed")
 			return nil
 		}
-		return fmt.Errorf("reading warrants directory: %w", err)
-	}
-
-	var warrants []Warrant
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".warrant.json") {
-			continue
-		}
-
-		data, err := os.ReadFile(filepath.Join(warrantDir, entry.Name()))
-		if err != nil {
-			continue
-		}
-
-		var w Warrant
-		if err := json.Unmarshal(data, &w); err != nil {
-			continue
-		}
-
-		if showAll || !w.Executed {
-			warrants = append(warrants, w)
-		}
+		return err
 	}
 
 	if len(warrants) == 0 {
@@ -250,24 +251,61 @@ func runWarrantList(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	fmt.Println(style.Bold.Render("Death Warrants"))
-	fmt.Println()
-
-	for _, w := range warrants {
-		status := "⚠️  PENDING"
-		if w.Executed {
-			status = "✓ EXECUTED"
-		}
-		fmt.Printf("  %s %s\n", status, style.Bold.Render(w.Target))
-		fmt.Printf("     Reason: %s\n", w.Reason)
-		fmt.Printf("     Filed: %s by %s\n", w.FiledAt.Format("2006-01-02 15:04"), w.FiledBy)
-		if w.Executed && w.ExecutedAt != nil {
-			fmt.Printf("     Executed: %s\n", w.ExecutedAt.Format("2006-01-02 15:04"))
-		}
-		fmt.Println()
-	}
+	printWarrants(warrants)
 
 	return nil
+}
+
+func loadWarrants(warrantDir string, showAll bool) ([]Warrant, error) {
+	entries, err := os.ReadDir(warrantDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading warrants directory: %w", err)
+	}
+	var warrants []Warrant
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".warrant.json") {
+			continue
+		}
+		warrant, ok := loadWarrantFile(filepath.Join(warrantDir, entry.Name()))
+		if ok && (showAll || !warrant.Executed) {
+			warrants = append(warrants, warrant)
+		}
+	}
+	return warrants, nil
+}
+
+func loadWarrantFile(path string) (Warrant, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Warrant{}, false
+	}
+	var warrant Warrant
+	if err := json.Unmarshal(data, &warrant); err != nil {
+		return Warrant{}, false
+	}
+	return warrant, true
+}
+
+func printWarrants(warrants []Warrant) {
+	fmt.Println(style.Bold.Render("Death Warrants"))
+	fmt.Println()
+	for _, warrant := range warrants {
+		printWarrant(warrant)
+	}
+}
+
+func printWarrant(w Warrant) {
+	status := "⚠️  PENDING"
+	if w.Executed {
+		status = "✓ EXECUTED"
+	}
+	fmt.Printf("  %s %s\n", status, style.Bold.Render(w.Target))
+	fmt.Printf("     Reason: %s\n", w.Reason)
+	fmt.Printf("     Filed: %s by %s\n", w.FiledAt.Format("2006-01-02 15:04"), w.FiledBy)
+	if w.Executed && w.ExecutedAt != nil {
+		fmt.Printf("     Executed: %s\n", w.ExecutedAt.Format("2006-01-02 15:04"))
+	}
+	fmt.Println()
 }
 
 func runWarrantExecute(cmd *cobra.Command, args []string) error {
@@ -280,15 +318,7 @@ func runWarrantExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	warrantPath := warrantFilePath(warrantDir, target)
-	var warrant *Warrant
-
-	// Load warrant if exists
-	if data, err := os.ReadFile(warrantPath); err == nil {
-		var w Warrant
-		if json.Unmarshal(data, &w) == nil {
-			warrant = &w
-		}
-	}
+	warrant := loadWarrant(warrantPath)
 
 	if warrant == nil && !force {
 		return fmt.Errorf("no warrant found for %s (use --force to execute anyway)", target)
@@ -306,24 +336,40 @@ func runWarrantExecute(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("executing warrant: %w", err)
 		}
 	} else {
-		// --force without a warrant file: just kill the session
-		sessionName, err := targetToSessionName(target)
-		if err != nil {
-			return fmt.Errorf("determining session name: %w", err)
-		}
-		if has, err := tm.HasSession(sessionName); err != nil {
-			return fmt.Errorf("checking session %s: %w", sessionName, err)
-		} else if has {
-			if err := tm.KillSessionWithProcesses(sessionName); err != nil {
-				return fmt.Errorf("killing session %s: %w", sessionName, err)
-			}
-			fmt.Printf("✓ Terminated session %s\n", sessionName)
-		} else {
-			fmt.Printf("  Session %s not found (already dead)\n", sessionName)
+		if err := executeForcedWarrant(target, tm); err != nil {
+			return err
 		}
 	}
 
 	fmt.Printf("✓ Warrant executed for %s\n", style.Bold.Render(target))
+	return nil
+}
+
+func loadWarrant(path string) *Warrant {
+	warrant, ok := loadWarrantFile(path)
+	if !ok {
+		return nil
+	}
+	return &warrant
+}
+
+func executeForcedWarrant(target string, tm *tmux.Tmux) error {
+	sessionName, err := targetToSessionName(target)
+	if err != nil {
+		return fmt.Errorf("determining session name: %w", err)
+	}
+	has, err := tm.HasSession(sessionName)
+	if err != nil {
+		return fmt.Errorf("checking session %s: %w", sessionName, err)
+	}
+	if !has {
+		fmt.Printf("  Session %s not found (already dead)\n", sessionName)
+		return nil
+	}
+	if err := tm.KillSessionWithProcesses(sessionName); err != nil {
+		return fmt.Errorf("killing session %s: %w", sessionName, err)
+	}
+	fmt.Printf("✓ Terminated session %s\n", sessionName)
 	return nil
 }
 
@@ -368,30 +414,44 @@ func executeOneWarrant(w *Warrant, warrantPath string, tm *tmux.Tmux) error {
 // targetToSessionName converts a target path to a tmux session name
 func targetToSessionName(target string) (string, error) {
 	parts := strings.Split(target, "/")
-
-	switch {
-	case len(parts) == 3 && parts[1] == "polecats":
-		// gastown/polecats/alpha -> {prefix}-alpha
-		return session.PolecatSessionName(session.PrefixFor(parts[0]), parts[2]), nil
-	case len(parts) == 3 && parts[1] == "crew":
-		// gastown/crew/bob -> {prefix}-crew-bob
-		return session.CrewSessionName(session.PrefixFor(parts[0]), parts[2]), nil
-	case len(parts) == 2 && parts[1] == "witness":
-		// gastown/witness -> {prefix}-witness
-		return session.WitnessSessionName(session.PrefixFor(parts[0])), nil
-	case len(parts) == 2 && parts[1] == "refinery":
-		// gastown/refinery -> {prefix}-refinery
-		return session.RefinerySessionName(session.PrefixFor(parts[0])), nil
-	case len(parts) == 2 && parts[0] == "deacon" && parts[1] == "dogs":
-		return "", fmt.Errorf("invalid target: need dog name (e.g., deacon/dogs/alpha)")
-	case len(parts) == 3 && parts[0] == "deacon" && parts[1] == "dogs":
-		// deacon/dogs/alpha -> hq-dog-alpha
-		return fmt.Sprintf("hq-dog-%s", parts[2]), nil
-	default:
-		prefix := session.DefaultPrefix
-		if len(parts) > 0 {
-			prefix = session.PrefixFor(parts[0])
-		}
-		return prefix + "-" + strings.ReplaceAll(target, "/", "-"), nil
+	if name, err, ok := targetSessionSpecialCase(parts); ok {
+		return name, err
 	}
+	return defaultTargetSessionName(target, parts), nil
+}
+
+func targetSessionSpecialCase(parts []string) (string, error, bool) {
+	if len(parts) == 3 {
+		switch parts[1] {
+		case "polecats":
+			return session.PolecatSessionName(session.PrefixFor(parts[0]), parts[2]), nil, true
+		case "crew":
+			return session.CrewSessionName(session.PrefixFor(parts[0]), parts[2]), nil, true
+		case "dogs":
+			if parts[0] == "deacon" {
+				return fmt.Sprintf("hq-dog-%s", parts[2]), nil, true
+			}
+		}
+	}
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "witness":
+			return session.WitnessSessionName(session.PrefixFor(parts[0])), nil, true
+		case "refinery":
+			return session.RefinerySessionName(session.PrefixFor(parts[0])), nil, true
+		case "dogs":
+			if parts[0] == "deacon" {
+				return "", fmt.Errorf("invalid target: need dog name (e.g., deacon/dogs/alpha)"), true
+			}
+		}
+	}
+	return "", nil, false
+}
+
+func defaultTargetSessionName(target string, parts []string) string {
+	prefix := session.DefaultPrefix
+	if len(parts) > 0 {
+		prefix = session.PrefixFor(parts[0])
+	}
+	return prefix + "-" + strings.ReplaceAll(target, "/", "-")
 }
