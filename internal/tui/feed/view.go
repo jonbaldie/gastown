@@ -487,7 +487,7 @@ func (m *Model) renderStatusBar() string {
 			}
 		}
 		left = fmt.Sprintf("[problems] %d need attention", problemCount)
-		if selected := m.getSelectedProblemAgent(); selected != nil {
+		if selected := getSelectedProblemAgent(m); selected != nil {
 			left += fmt.Sprintf(" | selected: %s", selected.Name)
 		}
 	} else {

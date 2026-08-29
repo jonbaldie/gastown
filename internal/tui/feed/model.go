@@ -73,7 +73,6 @@ type Rig struct {
 
 // Model is the main bubbletea model for the feed TUI
 type Model struct {
-	modelDimensions
 	modelPanels
 	modelData
 	modelUIState
@@ -84,14 +83,9 @@ type Model struct {
 	// events, rigs, convoyState, eventChan, townRoot, width, height,
 	// focusedPanel, showHelp, help, viewMode, problemAgents,
 	// selectedProblem, selectedBeadID, problemsError, lastProblemsCheck,
-	// and all viewports. Write lock is held during Update/handleKey
+	// and all viewports. Write lock is held during Update/key handling
 	// mutations; read lock is held during View/render.
 	mu sync.RWMutex
-}
-
-type modelDimensions struct {
-	width  int
-	height int
 }
 
 type modelPanels struct {
@@ -109,6 +103,8 @@ type modelData struct {
 }
 
 type modelUIState struct {
+	width    int
+	height   int
 	keys     KeyMap
 	help     help.Model
 	showHelp bool
@@ -289,174 +285,108 @@ func (m *Model) problemsRefreshTick() tea.Cmd {
 
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
+	return updateModel(m, msg)
+}
 
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		return m.handleKey(msg)
-
-	case tea.WindowSizeMsg:
-		m.mu.Lock()
-		m.width = msg.Width
-		m.height = msg.Height
-		m.mu.Unlock()
-		m.updateViewportSizes()
-
-	case eventMsg:
-		m.addEvent(Event(msg))
-		cmds = append(cmds, m.listenForEvents())
-
-	case convoyUpdateMsg:
-		if msg.state != nil {
-			// Fresh data arrived - update state and schedule next tick
-			m.mu.Lock()
-			m.convoyState = msg.state
-			m.updateViewContentLocked()
-			m.mu.Unlock()
-			cmds = append(cmds, m.convoyRefreshTick())
-		} else {
-			// Tick fired - fetch new data
-			cmds = append(cmds, m.fetchConvoys())
-		}
-
-	case problemsUpdateMsg:
-		if msg.err != nil {
-			// Error fetching problems - record error, schedule delayed retry
-			m.mu.Lock()
-			m.problemsError = msg.err
-			m.updateViewContentLocked()
-			scheduleNext := m.viewMode == ViewProblems
-			m.mu.Unlock()
-			if scheduleNext {
-				cmds = append(cmds, m.problemsRefreshTick())
-			}
-		} else if msg.fetched {
-			// Fresh data arrived - update state and schedule next tick
-			m.mu.Lock()
-			m.problemAgents = msg.agents
-			m.problemsError = nil
-			m.lastProblemsCheck = time.Now()
-			// Restore selection by bead ID for stability across refreshes
-			m.restoreSelectionByBeadID()
-			m.updateViewContentLocked()
-			scheduleNext := m.viewMode == ViewProblems
-			m.mu.Unlock()
-			if scheduleNext {
-				cmds = append(cmds, m.problemsRefreshTick())
-			}
-		}
-
-	case problemsTickMsg:
-		// Timer tick - fetch new data if in problems view
-		m.mu.RLock()
-		inProblems := m.viewMode == ViewProblems
-		m.mu.RUnlock()
-		if inProblems {
-			cmds = append(cmds, m.fetchProblems())
-		}
-
-	case tickMsg:
-		cmds = append(cmds, tick())
+func updateModel(m *Model, msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		return handleModelKey(m, keyMsg)
 	}
-
-	// Update viewports (under lock to protect from concurrent View)
-	m.mu.Lock()
-	var cmd tea.Cmd
-	switch m.focusedPanel {
-	case PanelTree:
-		m.treeViewport, cmd = m.treeViewport.Update(msg)
-	case PanelConvoy:
-		m.convoyViewport, cmd = m.convoyViewport.Update(msg)
-	case PanelFeed:
-		m.feedViewport, cmd = m.feedViewport.Update(msg)
-	case PanelProblems:
-		m.problemsViewport, cmd = m.problemsViewport.Update(msg)
-	}
-	m.mu.Unlock()
-	cmds = append(cmds, cmd)
-
+	cmds := updateModelMessage(m, msg)
+	cmds = append(cmds, updateFocusedViewport(m, msg))
 	return m, tea.Batch(cmds...)
 }
 
-// handleKey processes key presses
-func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Quit):
-		m.closeOnce.Do(func() { close(m.done) })
-		return m, tea.Quit
-
-	case key.Matches(msg, m.keys.Help):
-		m.mu.Lock()
-		m.showHelp = !m.showHelp
-		m.help.ShowAll = m.showHelp
-		m.mu.Unlock()
-		return m, nil
-
-	case key.Matches(msg, m.keys.ToggleProblems):
-		return m.toggleProblemsView()
-
-	case key.Matches(msg, m.keys.Tab):
-		return m.handleTabKey()
-
-	case key.Matches(msg, m.keys.FocusTree):
-		if m.viewMode == ViewActivity {
-			m.mu.Lock()
-			m.focusedPanel = PanelTree
-			m.mu.Unlock()
-		}
-		return m, nil
-
-	case key.Matches(msg, m.keys.FocusFeed):
-		if m.viewMode == ViewActivity {
-			m.mu.Lock()
-			m.focusedPanel = PanelFeed
-			m.mu.Unlock()
-		}
-		return m, nil
-
-	case key.Matches(msg, m.keys.FocusConvoy):
-		if m.viewMode == ViewActivity {
-			m.mu.Lock()
-			m.focusedPanel = PanelConvoy
-			m.mu.Unlock()
-		}
-		return m, nil
-
-	case key.Matches(msg, m.keys.Refresh):
-		m.updateViewContent()
-		if m.viewMode == ViewProblems {
-			return m, m.fetchProblems()
-		}
-		return m, nil
-
-	case key.Matches(msg, m.keys.Enter):
-		if m.viewMode == ViewProblems {
-			return m.attachToSelected()
-		}
-
-	case key.Matches(msg, m.keys.Nudge):
-		if m.viewMode == ViewProblems {
-			return m.nudgeSelected()
-		}
-
-	case key.Matches(msg, m.keys.Handoff):
-		if m.viewMode == ViewProblems {
-			return m.handoffSelected()
-		}
-
-	case key.Matches(msg, m.keys.Up):
-		if m.viewMode == ViewProblems {
-			return m.selectPrevProblem()
-		}
-
-	case key.Matches(msg, m.keys.Down):
-		if m.viewMode == ViewProblems {
-			return m.selectNextProblem()
-		}
+func updateModelMessage(m *Model, msg tea.Msg) []tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		updateWindowSize(m, msg)
+	case eventMsg:
+		m.addEvent(Event(msg))
+		return []tea.Cmd{m.listenForEvents()}
+	case convoyUpdateMsg:
+		return updateConvoyMessage(m, msg)
+	case problemsUpdateMsg:
+		return updateProblemsMessage(m, msg)
+	case problemsTickMsg:
+		return updateProblemsTick(m)
+	case tickMsg:
+		return []tea.Cmd{tick()}
 	}
+	return nil
+}
 
-	// Pass to focused viewport (under lock to protect from concurrent View)
+func updateWindowSize(m *Model, msg tea.WindowSizeMsg) {
 	m.mu.Lock()
+	m.width = msg.Width
+	m.height = msg.Height
+	m.mu.Unlock()
+	updateViewportSizes(m)
+}
+
+func updateConvoyMessage(m *Model, msg convoyUpdateMsg) []tea.Cmd {
+	if msg.state == nil {
+		return []tea.Cmd{m.fetchConvoys()}
+	}
+	// Fresh data arrived - update state and schedule next tick.
+	m.mu.Lock()
+	m.convoyState = msg.state
+	updateViewContentLocked(m)
+	m.mu.Unlock()
+	return []tea.Cmd{m.convoyRefreshTick()}
+}
+
+func updateProblemsMessage(m *Model, msg problemsUpdateMsg) []tea.Cmd {
+	if msg.err != nil {
+		return updateProblemsError(m, msg.err)
+	}
+	if !msg.fetched {
+		return nil
+	}
+	return updateProblemsData(m, msg.agents)
+}
+
+func updateProblemsError(m *Model, err error) []tea.Cmd {
+	m.mu.Lock()
+	m.problemsError = err
+	updateViewContentLocked(m)
+	scheduleNext := m.viewMode == ViewProblems
+	m.mu.Unlock()
+	if !scheduleNext {
+		return nil
+	}
+	return []tea.Cmd{m.problemsRefreshTick()}
+}
+
+func updateProblemsData(m *Model, agents []*ProblemAgent) []tea.Cmd {
+	m.mu.Lock()
+	m.problemAgents = agents
+	m.problemsError = nil
+	m.lastProblemsCheck = time.Now()
+	// Restore selection by bead ID for stability across refreshes.
+	restoreSelectionByBeadID(m)
+	updateViewContentLocked(m)
+	scheduleNext := m.viewMode == ViewProblems
+	m.mu.Unlock()
+	if !scheduleNext {
+		return nil
+	}
+	return []tea.Cmd{m.problemsRefreshTick()}
+}
+
+func updateProblemsTick(m *Model) []tea.Cmd {
+	m.mu.RLock()
+	inProblems := m.viewMode == ViewProblems
+	m.mu.RUnlock()
+	if !inProblems {
+		return nil
+	}
+	return []tea.Cmd{m.fetchProblems()}
+}
+
+func updateFocusedViewport(m *Model, msg tea.Msg) tea.Cmd {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var cmd tea.Cmd
 	switch m.focusedPanel {
 	case PanelTree:
@@ -468,25 +398,126 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case PanelProblems:
 		m.problemsViewport, cmd = m.problemsViewport.Update(msg)
 	}
-	m.mu.Unlock()
-	return m, cmd
+	return cmd
 }
 
-// toggleProblemsView switches between activity and problems view
-func (m *Model) toggleProblemsView() (tea.Model, tea.Cmd) {
+func handleModelKey(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if model, cmd, handled := handleQuitOrHelp(m, msg); handled {
+		return model, cmd
+	}
+	if model, cmd, handled := handleViewNavigation(m, msg); handled {
+		return model, cmd
+	}
+	if model, cmd, handled := handleActivityFocus(m, msg); handled {
+		return model, cmd
+	}
+	if model, cmd, handled := handleRefreshKey(m, msg); handled {
+		return model, cmd
+	}
+	if model, cmd, handled := handleProblemActionKey(m, msg); handled {
+		return model, cmd
+	}
+	return m, updateFocusedViewport(m, msg)
+}
+
+func handleQuitOrHelp(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if key.Matches(msg, m.keys.Quit) {
+		m.closeOnce.Do(func() { close(m.done) })
+		return m, tea.Quit, true
+	}
+	if !key.Matches(msg, m.keys.Help) {
+		return nil, nil, false
+	}
+	m.mu.Lock()
+	m.showHelp = !m.showHelp
+	m.help.ShowAll = m.showHelp
+	m.mu.Unlock()
+	return m, nil, true
+}
+
+func handleViewNavigation(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if key.Matches(msg, m.keys.ToggleProblems) {
+		model, cmd := toggleProblemsView(m)
+		return model, cmd, true
+	}
+	if key.Matches(msg, m.keys.Tab) {
+		model, cmd := handleTabKey(m)
+		return model, cmd, true
+	}
+	return nil, nil, false
+}
+
+func handleActivityFocus(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	panel := Panel(-1)
+	switch {
+	case key.Matches(msg, m.keys.FocusTree):
+		panel = PanelTree
+	case key.Matches(msg, m.keys.FocusFeed):
+		panel = PanelFeed
+	case key.Matches(msg, m.keys.FocusConvoy):
+		panel = PanelConvoy
+	default:
+		return nil, nil, false
+	}
+	if m.viewMode == ViewActivity {
+		m.mu.Lock()
+		m.focusedPanel = panel
+		m.mu.Unlock()
+	}
+	return m, nil, true
+}
+
+func handleRefreshKey(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if !key.Matches(msg, m.keys.Refresh) {
+		return nil, nil, false
+	}
+	updateViewContent(m)
+	if m.viewMode == ViewProblems {
+		return m, m.fetchProblems(), true
+	}
+	return m, nil, true
+}
+
+func handleProblemActionKey(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if m.viewMode != ViewProblems {
+		return nil, nil, false
+	}
+	switch {
+	case key.Matches(msg, m.keys.Enter):
+		model, cmd := attachToSelected(m)
+		return model, cmd, true
+	case key.Matches(msg, m.keys.Nudge):
+		model, cmd := nudgeSelected(m)
+		return model, cmd, true
+	case key.Matches(msg, m.keys.Handoff):
+		model, cmd := handoffSelected(m)
+		return model, cmd, true
+	case key.Matches(msg, m.keys.Up):
+		model, cmd := selectPrevProblem(m)
+		return model, cmd, true
+	case key.Matches(msg, m.keys.Down):
+		model, cmd := selectNextProblem(m)
+		return model, cmd, true
+	default:
+		return nil, nil, false
+	}
+}
+
+// toggleProblemsView switches between activity and problems view.
+func toggleProblemsView(m *Model) (tea.Model, tea.Cmd) {
 	m.mu.Lock()
 	if m.viewMode == ViewProblems {
 		m.viewMode = ViewActivity
 		m.focusedPanel = PanelTree
 		m.mu.Unlock()
-		m.updateViewportSizes()
+		updateViewportSizes(m)
 		return m, nil
 	}
 	m.viewMode = ViewProblems
 	m.focusedPanel = PanelProblems
 	lastCheck := m.lastProblemsCheck
 	m.mu.Unlock()
-	m.updateViewportSizes()
+	updateViewportSizes(m)
 	// Fetch problems if we haven't recently
 	if time.Since(lastCheck) > 5*time.Second {
 		return m, m.fetchProblems()
@@ -494,11 +525,11 @@ func (m *Model) toggleProblemsView() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleTabKey handles Tab key for panel/problem cycling
-func (m *Model) handleTabKey() (tea.Model, tea.Cmd) {
+// handleTabKey handles Tab key for panel/problem cycling.
+func handleTabKey(m *Model) (tea.Model, tea.Cmd) {
 	if m.viewMode == ViewProblems {
 		// In problems view, Tab cycles through problem agents
-		return m.selectNextProblem()
+		return selectNextProblem(m)
 	}
 	// In activity view, Tab cycles panels
 	m.mu.Lock()
@@ -516,19 +547,36 @@ func (m *Model) handleTabKey() (tea.Model, tea.Cmd) {
 
 // restoreSelectionByBeadID finds the previously-selected agent by bead ID
 // after a data refresh and updates the index. Falls back to clamping if not found.
-func (m *Model) restoreSelectionByBeadID() {
-	if m.selectedBeadID != "" {
-		idx := 0
-		for _, agent := range m.problemAgents {
-			if agent.State.NeedsAttention() {
-				if agent.CurrentBeadID == m.selectedBeadID {
-					m.selectedProblem = idx
-					return
-				}
-				idx++
-			}
-		}
+func restoreSelectionByBeadID(m *Model) {
+	if idx, found := findSelectedProblem(m); found {
+		m.selectedProblem = idx
+		return
 	}
+	clampProblemSelection(m)
+	// Update tracked bead ID
+	if selected := getSelectedProblemAgent(m); selected != nil {
+		m.selectedBeadID = selected.CurrentBeadID
+	}
+}
+
+func findSelectedProblem(m *Model) (int, bool) {
+	if m.selectedBeadID == "" {
+		return 0, false
+	}
+	idx := 0
+	for _, agent := range m.problemAgents {
+		if !agent.State.NeedsAttention() {
+			continue
+		}
+		if agent.CurrentBeadID == m.selectedBeadID {
+			return idx, true
+		}
+		idx++
+	}
+	return 0, false
+}
+
+func clampProblemSelection(m *Model) {
 	// Not found or no previous selection - clamp to bounds
 	problemCount := 0
 	for _, agent := range m.problemAgents {
@@ -542,14 +590,10 @@ func (m *Model) restoreSelectionByBeadID() {
 	if m.selectedProblem < 0 {
 		m.selectedProblem = 0
 	}
-	// Update tracked bead ID
-	if selected := m.getSelectedProblemAgent(); selected != nil {
-		m.selectedBeadID = selected.CurrentBeadID
-	}
 }
 
-// selectNextProblem moves selection to next problem agent
-func (m *Model) selectNextProblem() (tea.Model, tea.Cmd) {
+// selectNextProblem moves selection to next problem agent.
+func selectNextProblem(m *Model) (tea.Model, tea.Cmd) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.problemAgents) == 0 {
@@ -568,15 +612,15 @@ func (m *Model) selectNextProblem() (tea.Model, tea.Cmd) {
 	if m.selectedProblem >= problemCount {
 		m.selectedProblem = 0
 	}
-	if selected := m.getSelectedProblemAgent(); selected != nil {
+	if selected := getSelectedProblemAgent(m); selected != nil {
 		m.selectedBeadID = selected.CurrentBeadID
 	}
-	m.updateViewContentLocked()
+	updateViewContentLocked(m)
 	return m, nil
 }
 
-// selectPrevProblem moves selection to previous problem agent
-func (m *Model) selectPrevProblem() (tea.Model, tea.Cmd) {
+// selectPrevProblem moves selection to previous problem agent.
+func selectPrevProblem(m *Model) (tea.Model, tea.Cmd) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.problemAgents) == 0 {
@@ -595,15 +639,15 @@ func (m *Model) selectPrevProblem() (tea.Model, tea.Cmd) {
 	if m.selectedProblem < 0 {
 		m.selectedProblem = problemCount - 1
 	}
-	if selected := m.getSelectedProblemAgent(); selected != nil {
+	if selected := getSelectedProblemAgent(m); selected != nil {
 		m.selectedBeadID = selected.CurrentBeadID
 	}
-	m.updateViewContentLocked()
+	updateViewContentLocked(m)
 	return m, nil
 }
 
-// getSelectedProblemAgent returns the currently selected problem agent
-func (m *Model) getSelectedProblemAgent() *ProblemAgent {
+// getSelectedProblemAgent returns the currently selected problem agent.
+func getSelectedProblemAgent(m *Model) *ProblemAgent {
 	if m.selectedProblem < 0 || len(m.problemAgents) == 0 {
 		return nil
 	}
@@ -620,9 +664,9 @@ func (m *Model) getSelectedProblemAgent() *ProblemAgent {
 	return nil
 }
 
-// attachToSelected attaches to the selected agent's tmux session
-func (m *Model) attachToSelected() (tea.Model, tea.Cmd) {
-	agent := m.getSelectedProblemAgent()
+// attachToSelected attaches to the selected agent's tmux session.
+func attachToSelected(m *Model) (tea.Model, tea.Cmd) {
+	agent := getSelectedProblemAgent(m)
 	if agent == nil {
 		return m, nil
 	}
@@ -663,9 +707,9 @@ func nudgeTarget(agent *ProblemAgent) string {
 	}
 }
 
-// nudgeSelected sends a nudge to the selected agent
-func (m *Model) nudgeSelected() (tea.Model, tea.Cmd) {
-	agent := m.getSelectedProblemAgent()
+// nudgeSelected sends a nudge to the selected agent.
+func nudgeSelected(m *Model) (tea.Model, tea.Cmd) {
+	agent := getSelectedProblemAgent(m)
 	if agent == nil {
 		return m, nil
 	}
@@ -679,9 +723,9 @@ func (m *Model) nudgeSelected() (tea.Model, tea.Cmd) {
 	})
 }
 
-// handoffSelected sends a handoff request to the selected agent
-func (m *Model) handoffSelected() (tea.Model, tea.Cmd) {
-	agent := m.getSelectedProblemAgent()
+// handoffSelected sends a handoff request to the selected agent.
+func handoffSelected(m *Model) (tea.Model, tea.Cmd) {
+	agent := getSelectedProblemAgent(m)
 	if agent == nil {
 		return m, nil
 	}
@@ -697,7 +741,7 @@ func (m *Model) handoffSelected() (tea.Model, tea.Cmd) {
 // updateViewportSizes recalculates viewport dimensions.
 // Acquires the write lock for the entire operation so that reads of
 // width/height/showHelp and writes to viewports are atomic with View().
-func (m *Model) updateViewportSizes() {
+func updateViewportSizes(m *Model) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -752,20 +796,20 @@ func (m *Model) updateViewportSizes() {
 		m.feedViewport.Height = feedHeight
 	}
 
-	m.updateViewContentLocked()
+	updateViewContentLocked(m)
 }
 
 // updateViewContent refreshes the content of all viewports.
 // Acquires the write lock to protect viewport and data access.
-func (m *Model) updateViewContent() {
+func updateViewContent(m *Model) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateViewContentLocked()
+	updateViewContentLocked(m)
 }
 
 // updateViewContentLocked refreshes viewport content.
 // Caller must hold m.mu.
-func (m *Model) updateViewContentLocked() {
+func updateViewContentLocked(m *Model) {
 	if m.viewMode == ViewProblems {
 		m.problemsViewport.SetContent(m.renderProblemsContent())
 	} else {
@@ -782,7 +826,7 @@ func (m *Model) addEvent(e Event) {
 	defer m.mu.Unlock()
 
 	if m.addEventLocked(e) {
-		m.updateViewContentLocked()
+		updateViewContentLocked(m)
 	}
 }
 
@@ -791,59 +835,15 @@ func (m *Model) addEvent(e Event) {
 // Caller must hold m.mu write lock.
 func (m *Model) addEventLocked(e Event) bool {
 	// Update agent tree first (always do this for status tracking)
-	if e.Rig != "" {
-		rig, ok := m.rigs[e.Rig]
-		if !ok {
-			rig = &Rig{
-				Name:     e.Rig,
-				Agents:   make(map[string]*Agent),
-				Expanded: true,
-			}
-			m.rigs[e.Rig] = rig
-		}
-
-		if e.Actor != "" {
-			agent, ok := rig.Agents[e.Actor]
-			if !ok {
-				agent = &Agent{
-					ID:   e.Actor,
-					Name: e.Actor,
-					Role: e.Role,
-					Rig:  e.Rig,
-				}
-				rig.Agents[e.Actor] = agent
-			}
-			agent.LastEvent = &e
-			agent.LastUpdate = e.Time
-		}
-	}
-
-	// Filter out events with empty bead IDs (malformed mutations)
-	if e.Type == "update" && e.Target == "" {
-		return false
-	}
-
-	// Filter out noisy agent session updates from the event feed.
-	// Agent session molecules (like gt-gastown-crew-joe) update frequently
-	// for status tracking. These updates are visible in the agent tree,
-	// so we don't need to clutter the event feed with them.
-	// We still show create/complete/fail/delete events for agent sessions.
-	if e.Type == "update" && beads.IsAgentSessionBead(e.Target) {
-		// Skip adding to event feed, but still refresh the view
-		// (agent tree was updated above)
-		return true
+	updateAgentTreeLocked(m, e)
+	if skipEvent(e) {
+		return e.Type == "update" && beads.IsAgentSessionBead(e.Target)
 	}
 
 	// Deduplicate rapid updates to the same bead within 2 seconds.
 	// This prevents spam when multiple deps/labels are added to one issue.
-	if e.Type == "update" && e.Target != "" && len(m.events) > 0 {
-		lastEvent := m.events[len(m.events)-1]
-		if lastEvent.Type == "update" && lastEvent.Target == e.Target {
-			// Same bead updated within 2 seconds - skip duplicate
-			if e.Time.Sub(lastEvent.Time) < 2*time.Second {
-				return false
-			}
-		}
+	if isDuplicateEvent(m.events, e) {
+		return false
 	}
 
 	// Add to event feed
@@ -855,6 +855,41 @@ func (m *Model) addEventLocked(e Event) bool {
 	}
 
 	return true
+}
+
+func updateAgentTreeLocked(m *Model, e Event) {
+	if e.Rig == "" {
+		return
+	}
+	rig, ok := m.rigs[e.Rig]
+	if !ok {
+		rig = &Rig{Name: e.Rig, Agents: make(map[string]*Agent), Expanded: true}
+		m.rigs[e.Rig] = rig
+	}
+	if e.Actor == "" {
+		return
+	}
+	agent, ok := rig.Agents[e.Actor]
+	if !ok {
+		agent = &Agent{ID: e.Actor, Name: e.Actor, Role: e.Role, Rig: e.Rig}
+		rig.Agents[e.Actor] = agent
+	}
+	agent.LastEvent = &e
+	agent.LastUpdate = e.Time
+}
+
+func skipEvent(e Event) bool {
+	return e.Type == "update" && (e.Target == "" || beads.IsAgentSessionBead(e.Target))
+}
+
+func isDuplicateEvent(events []Event, e Event) bool {
+	if e.Type != "update" || e.Target == "" || len(events) == 0 {
+		return false
+	}
+	lastEvent := events[len(events)-1]
+	return lastEvent.Type == "update" &&
+		lastEvent.Target == e.Target &&
+		e.Time.Sub(lastEvent.Time) < 2*time.Second
 }
 
 // SetEventChannel sets the channel to receive events from.
