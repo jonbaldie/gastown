@@ -1088,53 +1088,61 @@ func runConfigSet(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
-
 	if spec := findTownSettingsKeySpec(key); spec != nil {
-		settingsPath := config.TownSettingsPath(townRoot)
-		townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
-		if err != nil {
-			return fmt.Errorf("loading town settings: %w", err)
-		}
-		if err := spec.set(townSettings, value); err != nil {
-			return err
-		}
-		if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
-			return fmt.Errorf("saving town settings: %w", err)
-		}
-		fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
-		return nil
+		return setTownSettingsConfig(townRoot, key, value, spec)
 	}
+	return setDaemonBackedConfig(townRoot, key, value)
+}
 
+func setTownSettingsConfig(townRoot, key, value string, spec *townSettingsKeySpec) error {
+	settingsPath := config.TownSettingsPath(townRoot)
+	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
+	if err != nil {
+		return fmt.Errorf("loading town settings: %w", err)
+	}
+	if err := spec.set(townSettings, value); err != nil {
+		return err
+	}
+	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
+		return fmt.Errorf("saving town settings: %w", err)
+	}
+	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
+	return nil
+}
+
+func setDaemonBackedConfig(townRoot, key, value string) error {
 	switch key {
 	case "maintenance.window", "maintenance.interval", "maintenance.threshold":
 		return setMaintenanceConfig(townRoot, key, value)
-
 	case "dolt.port":
-		port, err := strconv.Atoi(value)
-		if err != nil || port < 1024 || port > 65535 {
-			return fmt.Errorf("invalid value for %s: expected port number 1024-65535", key)
-		}
-		patrolCfg := daemon.LoadPatrolConfig(townRoot)
-		if patrolCfg == nil {
-			patrolCfg = &daemon.DaemonPatrolConfig{Type: "daemon-patrol-config", Version: 1}
-		}
-		if patrolCfg.Env == nil {
-			patrolCfg.Env = make(map[string]string)
-		}
-		patrolCfg.Env["GT_DOLT_PORT"] = value
-		if err := daemon.SavePatrolConfig(townRoot, patrolCfg); err != nil {
-			return fmt.Errorf("saving daemon.json: %w", err)
-		}
-		fmt.Printf("Set GT_DOLT_PORT = %s in mayor/daemon.json\n", style.Bold.Render(value))
-		fmt.Printf("  %s\n", style.Dim.Render("Restart the daemon for the change to take effect: gt daemon restart"))
-		return nil
-
+		return setDoltPortConfig(townRoot, key, value)
 	default:
 		if strings.HasPrefix(key, "lifecycle.") {
 			return setLifecycleConfig(townRoot, key, value)
 		}
 		return unknownConfigKeyError(key)
 	}
+}
+
+func setDoltPortConfig(townRoot, key, value string) error {
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1024 || port > 65535 {
+		return fmt.Errorf("invalid value for %s: expected port number 1024-65535", key)
+	}
+	patrolCfg := daemon.LoadPatrolConfig(townRoot)
+	if patrolCfg == nil {
+		patrolCfg = &daemon.DaemonPatrolConfig{Type: "daemon-patrol-config", Version: 1}
+	}
+	if patrolCfg.Env == nil {
+		patrolCfg.Env = make(map[string]string)
+	}
+	patrolCfg.Env["GT_DOLT_PORT"] = value
+	if err := daemon.SavePatrolConfig(townRoot, patrolCfg); err != nil {
+		return fmt.Errorf("saving daemon.json: %w", err)
+	}
+	fmt.Printf("Set GT_DOLT_PORT = %s in mayor/daemon.json\n", style.Bold.Render(value))
+	fmt.Printf("  %s\n", style.Dim.Render("Restart the daemon for the change to take effect: gt daemon restart"))
+	return nil
 }
 
 func runConfigGet(_ *cobra.Command, args []string) error {
