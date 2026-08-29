@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
@@ -20,13 +21,36 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Polecat command flags
-var (
-	polecatListJSON  bool
-	polecatListAll   bool
-	polecatForce     bool
-	polecatRemoveAll bool
-)
+type polecatCommandState struct {
+	listJSON                    bool
+	listAll                     bool
+	force                       bool
+	removeAll                   bool
+	statusJSON                  bool
+	gitStateJSON                bool
+	gcDryRun                    bool
+	nukeAll                     bool
+	nukeDryRun                  bool
+	nukeForce                   bool
+	checkRecoveryJSON           bool
+	checkRecoveryReconcileClean bool
+	poolInitDryRun              bool
+	poolInitSize                int
+	staleJSON                   bool
+	staleThreshold              int
+	staleCleanup                bool
+	staleDryRun                 bool
+	pruneDryRun                 bool
+	pruneRemote                 bool
+}
+
+var polecatCommandStateInstance = sync.OnceValue(func() *polecatCommandState {
+	return &polecatCommandState{}
+})
+
+func polecatState() *polecatCommandState {
+	return polecatCommandStateInstance()
+}
 
 var polecatCmd = &cobra.Command{
 	Use:     "polecat",
@@ -135,19 +159,6 @@ Examples:
 	RunE: runPolecatStatus,
 }
 
-var (
-	polecatStatusJSON                    bool
-	polecatGitStateJSON                  bool
-	polecatGCDryRun                      bool
-	polecatNukeAll                       bool
-	polecatNukeDryRun                    bool
-	polecatNukeForce                     bool
-	polecatCheckRecoveryJSON             bool
-	polecatCheckRecoveryReconcileCleanup bool
-	polecatPoolInitDryRun                bool
-	polecatPoolInitSize                  int
-)
-
 var polecatGCCmd = &cobra.Command{
 	Use:   "gc <rig>",
 	Short: "Garbage collect stale polecat branches",
@@ -238,15 +249,6 @@ Examples:
 	RunE: runPolecatCheckRecovery,
 }
 
-var (
-	polecatStaleJSON      bool
-	polecatStaleThreshold int
-	polecatStaleCleanup   bool
-	polecatStaleDryRun    bool
-	polecatPruneDryRun    bool
-	polecatPruneRemote    bool
-)
-
 var polecatStaleCmd = &cobra.Command{
 	Use:   "stale <rig>",
 	Short: "Detect stale polecats that may need cleanup",
@@ -325,45 +327,46 @@ Examples:
 }
 
 func init() {
+	state := polecatState()
 	// List flags
-	polecatListCmd.Flags().BoolVar(&polecatListJSON, "json", false, "Output as JSON")
-	polecatListCmd.Flags().BoolVar(&polecatListAll, "all", false, "List polecats in all rigs")
+	polecatListCmd.Flags().BoolVar(&state.listJSON, "json", false, "Output as JSON")
+	polecatListCmd.Flags().BoolVar(&state.listAll, "all", false, "List polecats in all rigs")
 
 	// Remove flags
-	polecatRemoveCmd.Flags().BoolVarP(&polecatForce, "force", "f", false, "Force removal, bypassing checks")
-	polecatRemoveCmd.Flags().BoolVar(&polecatRemoveAll, "all", false, "Remove all polecats in the rig")
+	polecatRemoveCmd.Flags().BoolVarP(&state.force, "force", "f", false, "Force removal, bypassing checks")
+	polecatRemoveCmd.Flags().BoolVar(&state.removeAll, "all", false, "Remove all polecats in the rig")
 
 	// Status flags
-	polecatStatusCmd.Flags().BoolVar(&polecatStatusJSON, "json", false, "Output as JSON")
+	polecatStatusCmd.Flags().BoolVar(&state.statusJSON, "json", false, "Output as JSON")
 
 	// Git-state flags
-	polecatGitStateCmd.Flags().BoolVar(&polecatGitStateJSON, "json", false, "Output as JSON")
+	polecatGitStateCmd.Flags().BoolVar(&state.gitStateJSON, "json", false, "Output as JSON")
 
 	// GC flags
-	polecatGCCmd.Flags().BoolVar(&polecatGCDryRun, "dry-run", false, "Show what would be deleted without deleting")
+	polecatGCCmd.Flags().BoolVar(&state.gcDryRun, "dry-run", false, "Show what would be deleted without deleting")
 
 	// Nuke flags
-	polecatNukeCmd.Flags().BoolVar(&polecatNukeAll, "all", false, "Nuke all polecats in the rig")
-	polecatNukeCmd.Flags().BoolVar(&polecatNukeDryRun, "dry-run", false, "Show what would be nuked without doing it")
-	polecatNukeCmd.Flags().BoolVarP(&polecatNukeForce, "force", "f", false, "Force nuke, bypassing all safety checks (LOSES WORK)")
+	polecatNukeCmd.Flags().BoolVar(&state.nukeAll, "all", false, "Nuke all polecats in the rig")
+	polecatNukeCmd.Flags().BoolVar(&state.nukeDryRun, "dry-run", false, "Show what would be nuked without doing it")
+	polecatNukeCmd.Flags().BoolVarP(&state.nukeForce, "force", "f", false, "Force nuke, bypassing all safety checks (LOSES WORK)")
 
 	// Check-recovery flags
-	polecatCheckRecoveryCmd.Flags().BoolVar(&polecatCheckRecoveryJSON, "json", false, "Output as JSON")
-	polecatCheckRecoveryCmd.Flags().BoolVar(&polecatCheckRecoveryReconcileCleanup, "reconcile-cleanup", false, "Safely rewrite stale dirty cleanup_status to clean when live recovery predicates prove no work is at risk")
+	polecatCheckRecoveryCmd.Flags().BoolVar(&state.checkRecoveryJSON, "json", false, "Output as JSON")
+	polecatCheckRecoveryCmd.Flags().BoolVar(&state.checkRecoveryReconcileClean, "reconcile-cleanup", false, "Safely rewrite stale dirty cleanup_status to clean when live recovery predicates prove no work is at risk")
 
 	// Stale flags
-	polecatStaleCmd.Flags().BoolVar(&polecatStaleJSON, "json", false, "Output as JSON")
-	polecatStaleCmd.Flags().IntVar(&polecatStaleThreshold, "threshold", 20, "Commits behind main to consider stale")
-	polecatStaleCmd.Flags().BoolVar(&polecatStaleCleanup, "cleanup", false, "Automatically nuke stale polecats")
-	polecatStaleCmd.Flags().BoolVar(&polecatStaleDryRun, "dry-run", false, "Show what would be cleaned without doing it")
+	polecatStaleCmd.Flags().BoolVar(&state.staleJSON, "json", false, "Output as JSON")
+	polecatStaleCmd.Flags().IntVar(&state.staleThreshold, "threshold", 20, "Commits behind main to consider stale")
+	polecatStaleCmd.Flags().BoolVar(&state.staleCleanup, "cleanup", false, "Automatically nuke stale polecats")
+	polecatStaleCmd.Flags().BoolVar(&state.staleDryRun, "dry-run", false, "Show what would be cleaned without doing it")
 
 	// Prune flags
-	polecatPruneCmd.Flags().BoolVar(&polecatPruneDryRun, "dry-run", false, "Show what would be pruned without doing it")
-	polecatPruneCmd.Flags().BoolVar(&polecatPruneRemote, "remote", false, "Also prune remote polecat branches on origin")
+	polecatPruneCmd.Flags().BoolVar(&state.pruneDryRun, "dry-run", false, "Show what would be pruned without doing it")
+	polecatPruneCmd.Flags().BoolVar(&state.pruneRemote, "remote", false, "Also prune remote polecat branches on origin")
 
 	// Pool-init flags
-	polecatPoolInitCmd.Flags().BoolVar(&polecatPoolInitDryRun, "dry-run", false, "Show what would be created without doing it")
-	polecatPoolInitCmd.Flags().IntVar(&polecatPoolInitSize, "size", 0, "Pool size (overrides rig config)")
+	polecatPoolInitCmd.Flags().BoolVar(&state.poolInitDryRun, "dry-run", false, "Show what would be created without doing it")
+	polecatPoolInitCmd.Flags().IntVar(&state.poolInitSize, "size", 0, "Pool size (overrides rig config)")
 
 	// Add subcommands
 	polecatCmd.AddCommand(polecatListCmd)
@@ -469,7 +472,7 @@ func runPolecatList(_ *cobra.Command, args []string) error {
 }
 
 func polecatListRigs(args []string) ([]*rig.Rig, error) {
-	if polecatListAll {
+	if polecatState().listAll {
 		return getAllRigs()
 	}
 	if len(args) < 1 {
@@ -579,7 +582,7 @@ func appendPolecatZombieItems(items []PolecatListItem, rigName string, knownName
 }
 
 func outputPolecatList(allPolecats []PolecatListItem) error {
-	if polecatListJSON {
+	if polecatState().listJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(allPolecats)
@@ -709,7 +712,7 @@ func reportPolecatRemovals(removeErrors []string, removed int) error {
 }
 
 func runPolecatRemove(_ *cobra.Command, args []string) error {
-	targets, err := resolvePolecatTargets(args, polecatRemoveAll)
+	targets, err := resolvePolecatTargets(args, polecatState().removeAll)
 	if err != nil {
 		return err
 	}
@@ -721,7 +724,7 @@ func runPolecatRemove(_ *cobra.Command, args []string) error {
 	var removeErrors []string
 	removed := 0
 	for _, target := range targets {
-		wasRemoved, removeErr := removePolecatTarget(target, t, polecatForce)
+		wasRemoved, removeErr := removePolecatTarget(target, t, polecatState().force)
 		if removeErr != "" {
 			removeErrors = append(removeErrors, removeErr)
 		} else if wasRemoved {
@@ -777,7 +780,7 @@ func runPolecatStatus(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if polecatStatusJSON {
+	if polecatState().statusJSON {
 		status := PolecatStatus{
 			Rig:            rigName,
 			Name:           polecatName,
@@ -915,7 +918,7 @@ func runPolecatGitState(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if polecatGitStateJSON {
+	if polecatState().gitStateJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(state)
@@ -1061,12 +1064,12 @@ func runPolecatCheckRecovery(_ *cobra.Command, args []string) error {
 	applyRecoveryAgentFields(&status, fields, agentErr)
 	disposition := polecat.InspectWorkstate(polecatName, bd, p.ClonePath, p.State, status.Issue)
 	applyWorkstateDispositionToRecoveryStatus(&status, disposition)
-	if polecatCheckRecoveryReconcileCleanup {
+	if polecatState().checkRecoveryReconcileClean {
 		reconcileCleanupStatusIfSafe(&status, bd, agentBeadID, p, fields)
 	}
 
 	// JSON output
-	if polecatCheckRecoveryJSON {
+	if polecatState().checkRecoveryJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(status)
@@ -1461,7 +1464,7 @@ func runPolecatGC(_ *cobra.Command, args []string) error {
 
 	fmt.Printf("Garbage collecting stale polecat branches in %s...\n\n", r.Name)
 
-	if polecatGCDryRun {
+	if polecatState().gcDryRun {
 		return runPolecatGCDryRun(mgr, r.Path)
 	}
 
@@ -1527,7 +1530,7 @@ func splitLines(s string) []string {
 }
 
 func runPolecatNuke(_ *cobra.Command, args []string) error {
-	targets, err := resolvePolecatTargets(args, polecatNukeAll)
+	targets, err := resolvePolecatTargets(args, polecatState().nukeAll)
 	if err != nil {
 		return err
 	}
@@ -1542,7 +1545,7 @@ func runPolecatNuke(_ *cobra.Command, args []string) error {
 	}
 
 	result := executePolecatNukeTargets(targets)
-	batchPurge := !polecatNukeDryRun && len(targets) > 1
+	batchPurge := !polecatState().nukeDryRun && len(targets) > 1
 	if batchPurge && len(result.purgeRigs) > 0 {
 		for _, r := range result.purgeRigs {
 			purgeClosedEphemeralBeads(beads.New(r.Path))
@@ -1560,7 +1563,7 @@ type polecatNukeResult struct {
 }
 
 func checkPolecatNukeSafety(targets []polecatTarget) error {
-	if polecatNukeForce || polecatNukeDryRun {
+	if polecatState().nukeForce || polecatState().nukeDryRun {
 		return nil
 	}
 	var blocked []*SafetyCheckResult
@@ -1579,9 +1582,9 @@ func checkPolecatNukeSafety(targets []polecatTarget) error {
 
 func executePolecatNukeTargets(targets []polecatTarget) polecatNukeResult {
 	result := polecatNukeResult{purgeRigs: make(map[string]*rig.Rig)}
-	batchPurge := !polecatNukeDryRun && len(targets) > 1
+	batchPurge := !polecatState().nukeDryRun && len(targets) > 1
 	for _, target := range targets {
-		if polecatNukeDryRun {
+		if polecatState().nukeDryRun {
 			result.dryRunBlocked += reportPolecatNukeDryRun(target)
 			continue
 		}
@@ -1598,7 +1601,7 @@ func executePolecatNukeTargets(targets []polecatTarget) polecatNukeResult {
 }
 
 func reportPolecatNukeDryRun(target polecatTarget) int {
-	blocked := !polecatNukeForce && checkPolecatSafety(target).Blocked
+	blocked := !polecatState().nukeForce && checkPolecatSafety(target).Blocked
 	if blocked {
 		fmt.Printf("Would refuse to nuke %s/%s without --force:\n", target.rigName, target.polecatName)
 	} else {
@@ -1620,16 +1623,16 @@ func reportPolecatNukeDryRun(target polecatTarget) int {
 }
 
 func nukePolecatTarget(target polecatTarget, batchPurge bool) error {
-	if polecatNukeForce {
+	if polecatState().nukeForce {
 		fmt.Printf("%s Nuking %s/%s (--force)...\n", style.Warning.Render("⚠"), target.rigName, target.polecatName)
 	} else {
 		fmt.Printf("Nuking %s/%s...\n", target.rigName, target.polecatName)
 	}
-	return nukePolecatFullWithOptions(target.polecatName, target.rigName, target.mgr, target.r, nukePolecatOptions{Force: polecatNukeForce, PurgeClosedEphemerals: !batchPurge})
+	return nukePolecatFullWithOptions(target.polecatName, target.rigName, target.mgr, target.r, nukePolecatOptions{Force: polecatState().nukeForce, PurgeClosedEphemerals: !batchPurge})
 }
 
 func reportPolecatNukeResult(total int, result polecatNukeResult) error {
-	if polecatNukeDryRun {
+	if polecatState().nukeDryRun {
 		if result.dryRunBlocked > 0 {
 			fmt.Printf("\n%s %s\n", style.Warning.Render("⚠"), dryRunNukeSummary(total, result.dryRunBlocked))
 		} else {
@@ -1930,9 +1933,9 @@ func runPolecatStale(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Detecting stale polecats in %s (threshold: %d commits behind main)...\n\n", r.Name, polecatStaleThreshold)
+	fmt.Printf("Detecting stale polecats in %s (threshold: %d commits behind main)...\n\n", r.Name, polecatState().staleThreshold)
 
-	staleInfos, err := mgr.DetectStalePolecats(polecatStaleThreshold)
+	staleInfos, err := mgr.DetectStalePolecats(polecatState().staleThreshold)
 	if err != nil {
 		return fmt.Errorf("detecting stale polecats: %w", err)
 	}
@@ -1943,12 +1946,12 @@ func runPolecatStale(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if polecatStaleJSON {
+	if polecatState().staleJSON {
 		return json.NewEncoder(os.Stdout).Encode(staleInfos)
 	}
 
 	staleCount, safeCount := summarizePolecatStaleness(staleInfos)
-	printPolecatStaleness(staleInfos, polecatStaleThreshold)
+	printPolecatStaleness(staleInfos, polecatState().staleThreshold)
 	fmt.Printf("Summary: %d stale, %d active\n", staleCount, safeCount)
 	cleanupStalePolecats(staleInfos, staleCount, rigName, mgr, r)
 
@@ -2005,11 +2008,11 @@ func printPolecatStalenessEntry(info *polecat.StalenessInfo, threshold int) {
 }
 
 func cleanupStalePolecats(staleInfos []*polecat.StalenessInfo, staleCount int, rigName string, mgr *polecat.Manager, r *rig.Rig) {
-	if !polecatStaleCleanup || staleCount == 0 {
+	if !polecatState().staleCleanup || staleCount == 0 {
 		return
 	}
 	fmt.Println()
-	if polecatStaleDryRun {
+	if polecatState().staleDryRun {
 		fmt.Printf("Would clean up %d stale polecat(s):\n", staleCount)
 		for _, info := range staleInfos {
 			if info.IsStale {
@@ -2057,19 +2060,19 @@ func runPolecatPrune(_ *cobra.Command, args []string) error {
 
 	fmt.Printf("Pruning stale polecat branches in %s...\n", r.Name)
 
-	if err := fetchPolecatPruneOrigin(repoGit, polecatPruneRemote); err != nil {
+	if err := fetchPolecatPruneOrigin(repoGit, polecatState().pruneRemote); err != nil {
 		return err
 	}
 
-	if err := pruneAndReportLocalPolecatBranches(repoGit, polecatPruneDryRun); err != nil {
+	if err := pruneAndReportLocalPolecatBranches(repoGit, polecatState().pruneDryRun); err != nil {
 		return err
 	}
 
-	if !polecatPruneRemote {
+	if !polecatState().pruneRemote {
 		return nil
 	}
 
-	return pruneAndReportRemotePolecatBranches(repoGit, polecatPruneDryRun)
+	return pruneAndReportRemotePolecatBranches(repoGit, polecatState().pruneDryRun)
 }
 
 func polecatPruneRepoGit(rigPath string) *git.Git {
@@ -2214,7 +2217,7 @@ func runPolecatPoolInit(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if polecatPoolInitDryRun {
+	if polecatState().poolInitDryRun {
 		fmt.Printf("\nWould create %d polecat(s):\n", len(namesToCreate))
 		for _, name := range namesToCreate {
 			fmt.Printf("  %s %s\n", style.Dim.Render("→"), name)
@@ -2238,8 +2241,8 @@ func polecatPoolConfig(rigPath string) (int, []string) {
 	if cfgErr == nil && rigCfg.PolecatPoolSize > 0 {
 		poolSize = rigCfg.PolecatPoolSize
 	}
-	if polecatPoolInitSize > 0 {
-		poolSize = polecatPoolInitSize
+	if polecatState().poolInitSize > 0 {
+		poolSize = polecatState().poolInitSize
 	}
 	if cfgErr == nil && len(rigCfg.PolecatNames) > 0 {
 		return poolSize, rigCfg.PolecatNames

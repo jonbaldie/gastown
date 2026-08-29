@@ -38,12 +38,12 @@ func TestRunPolecatPruneRemoteDryRunIncludesPatchEquivalentBranch(t *testing.T) 
 	branch := "polecat/prune-command-patch-equivalent"
 	createPatchEquivalentRemoteBranch(t, repoGit, localDir, mainBranch, branch)
 
-	oldRemote, oldDryRun := polecatPruneRemote, polecatPruneDryRun
-	polecatPruneRemote = true
-	polecatPruneDryRun = true
+	oldRemote, oldDryRun := polecatState().pruneRemote, polecatState().pruneDryRun
+	polecatState().pruneRemote = true
+	polecatState().pruneDryRun = true
 	t.Cleanup(func() {
-		polecatPruneRemote = oldRemote
-		polecatPruneDryRun = oldDryRun
+		polecatState().pruneRemote = oldRemote
+		polecatState().pruneDryRun = oldDryRun
 	})
 
 	out := captureStdout(t, func() {
