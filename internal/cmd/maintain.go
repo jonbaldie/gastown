@@ -29,12 +29,6 @@ const (
 	maintainQueryTimeout = 30 * time.Second
 )
 
-var (
-	maintainForce     bool
-	maintainDryRun    bool
-	maintainThreshold int
-)
-
 var maintainCmd = &cobra.Command{
 	Use:     "maintain",
 	GroupID: GroupServices,
@@ -61,9 +55,9 @@ Examples:
 }
 
 func init() {
-	maintainCmd.Flags().BoolVar(&maintainForce, "force", false, "Non-interactive mode (skip confirmation)")
-	maintainCmd.Flags().BoolVar(&maintainDryRun, "dry-run", false, "Preview without making changes")
-	maintainCmd.Flags().IntVar(&maintainThreshold, "threshold", defaultMaintainThreshold, "Commit count threshold for flatten")
+	maintainCmd.Flags().Bool("force", false, "Non-interactive mode (skip confirmation)")
+	maintainCmd.Flags().Bool("dry-run", false, "Preview without making changes")
+	maintainCmd.Flags().Int("threshold", defaultMaintainThreshold, "Commit count threshold for flatten")
 	rootCmd.AddCommand(maintainCmd)
 }
 
@@ -74,7 +68,10 @@ type maintainDBInfo struct {
 	hasBackup   bool
 }
 
-func runMaintain(_ *cobra.Command, _ []string) error {
+func runMaintain(cmd *cobra.Command, _ []string) error {
+	force := commandBoolFlag(cmd, "force")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	threshold := commandIntFlag(cmd, "threshold")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -119,7 +116,7 @@ func runMaintain(_ *cobra.Command, _ []string) error {
 	fmt.Printf("\n%s Maintenance plan:\n", style.Bold.Render("●"))
 	for _, db := range dbInfos {
 		tags := ""
-		if db.commitCount >= maintainThreshold {
+		if db.commitCount >= threshold {
 			tags += fmt.Sprintf(" %s", style.Warning.Render("→ flatten"))
 			flattenCount++
 		}
@@ -131,16 +128,16 @@ func runMaintain(_ *cobra.Command, _ []string) error {
 	}
 	fmt.Printf("\n  Databases: %d\n", len(dbInfos))
 	fmt.Printf("  Will backup: %d\n", backupCount)
-	fmt.Printf("  Will flatten: %d (threshold: %d commits)\n", flattenCount, maintainThreshold)
+	fmt.Printf("  Will flatten: %d (threshold: %d commits)\n", flattenCount, threshold)
 	fmt.Printf("  Will gc: %d\n", len(dbInfos))
 
-	if maintainDryRun {
+	if dryRun {
 		fmt.Printf("\n%s Dry run complete — no changes made\n", style.Dim.Render("ℹ"))
 		return nil
 	}
 
 	// Interactive confirmation.
-	if !maintainForce {
+	if !force {
 		fmt.Printf("\nProceed? [y/N] ")
 		reader := bufio.NewReader(os.Stdin)
 		answer, _ := reader.ReadString('\n')
@@ -192,7 +189,7 @@ func runMaintain(_ *cobra.Command, _ []string) error {
 	if flattenCount > 0 {
 		fmt.Printf("\n%s Flattening databases...\n", style.Bold.Render("●"))
 		for _, db := range dbInfos {
-			if db.commitCount < maintainThreshold {
+			if db.commitCount < threshold {
 				continue
 			}
 			preCount := db.commitCount
