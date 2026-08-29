@@ -1497,7 +1497,19 @@ func detectZombiePolecatEntry(bd *BdCli, workDir, townRoot, rigName, polecatName
 			return dirtyIdlePolecatZombie(polecatName, snap)
 		}
 
-		zombie, found := detectZombieLiveSession(bd, workDir, townRoot, rigName, polecatName, sessionName, t, doneIntent, witCfg, snap)
+		ctx := zombieSessionContext{
+			bd:          bd,
+			workDir:     workDir,
+			townRoot:    townRoot,
+			rigName:     rigName,
+			polecatName: polecatName,
+			sessionName: sessionName,
+			t:           t,
+			doneIntent:  doneIntent,
+			witCfg:      witCfg,
+			snap:        snap,
+		}
+		zombie, found := detectZombieLiveSession(ctx)
 		return zombie, found, nil
 	}
 
@@ -1527,153 +1539,157 @@ func dirtyIdlePolecatZombie(polecatName string, snap *agentBeadSnapshot) (Zombie
 	}, true, nil
 }
 
+type zombieSessionContext struct {
+	bd          *BdCli
+	workDir     string
+	townRoot    string
+	rigName     string
+	polecatName string
+	sessionName string
+	t           *tmux.Tmux
+	doneIntent  *DoneIntent
+	witCfg      *config.WitnessThresholds
+	snap        *agentBeadSnapshot
+}
+
+func zombieSnapshotState(snap *agentBeadSnapshot) (string, string) {
+	if snap == nil {
+		return "", ""
+	}
+	return snap.AgentState, snap.HookBead
+}
+
 // detectZombieLiveSession checks a polecat with a live tmux session for zombie indicators:
 // stuck done-intent, dead agent process, or closed bead while still running.
 //
 // gt-dsgp: Uses restart-first policy. Instead of nuking polecats, restarts their
 // sessions to preserve worktrees and branches.
-func detectZombieLiveSession(bd *BdCli, workDir, townRoot, rigName, polecatName, sessionName string, t *tmux.Tmux, doneIntent *DoneIntent, witCfg *config.WitnessThresholds, snap *agentBeadSnapshot) (ZombieResult, bool) {
-	// gt-2gra: Agent state and hook bead are read from the pre-fetched snapshot
-	// instead of calling getAgentBeadState multiple times per code path.
-	snapState, snapHook := "", ""
-	if snap != nil {
-		snapState, snapHook = snap.AgentState, snap.HookBead
+func detectZombieLiveSession(ctx zombieSessionContext) (ZombieResult, bool) {
+	snapState, snapHook := zombieSnapshotState(ctx.snap)
+	hb := polecat.ReadSessionHeartbeat(ctx.townRoot, ctx.sessionName)
+	if zombie, handled := freshLiveHeartbeatResult(hb, ctx.polecatName, snapState, snapHook); handled {
+		return zombie, zombie.PolecatName != ""
 	}
-
-	// Heartbeat v2 check (gt-3vr5): if the agent reports its own state via heartbeat,
-	// trust the agent-reported state instead of inferring from timers.
-	// The witness makes exactly ONE inference: is the heartbeat fresh?
-	hb := polecat.ReadSessionHeartbeat(townRoot, sessionName)
-	if hb != nil && hb.IsV2() {
-		stale := time.Since(hb.Timestamp) >= polecat.SessionHeartbeatStaleThreshold
-		if !stale {
-			switch hb.EffectiveState() {
-			case polecat.HeartbeatExiting:
-				// Agent self-reports exiting — trust it, no timer-based inference.
-				// Replaces done-intent stuck timeout for v2 agents.
-				return ZombieResult{}, false
-
-			case polecat.HeartbeatStuck:
-				// Agent self-reports stuck — escalate (don't restart, agent is alive).
-				zombie := ZombieResult{
-					PolecatName:    polecatName,
-					AgentState:     snapState,
-					Classification: ZombieAgentSelfReportedStuck,
-					HookBead:       snapHook,
-					WasActive:      true,
-					Action:         fmt.Sprintf("escalated (agent self-reported stuck: %s)", hb.Context),
-				}
-				return zombie, true
-
-			case polecat.HeartbeatWorking, polecat.HeartbeatIdle:
-				// Fresh heartbeat, healthy state — not a zombie.
-				return ZombieResult{}, false
-			}
-		}
-		// Stale v2 heartbeat — fall through to legacy detection.
-		// Agent may have died; let the existing checks determine action.
+	if zombie, found, handled := detectLiveDoneIntent(ctx, snapState, snapHook); handled {
+		return zombie, found
 	}
-
-	// Legacy detection: Check for done-intent stuck too long (polecat hung in gt done).
-	// gt-dsgp: Restart instead of nuke — the session is stuck trying to exit,
-	// a fresh start will let it retry or pick up its hook cleanly.
-	if doneIntent != nil && time.Since(doneIntent.Timestamp) > witCfg.DoneIntentStuckTimeoutD() {
-		zombie := ZombieResult{
-			PolecatName:    polecatName,
-			AgentState:     snapState,
-			Classification: ZombieStuckInDone,
-			HookBead:       snapHook,
-			WasActive:      true,
-			Action:         fmt.Sprintf("restarted-stuck-session (done-intent age=%v)", time.Since(doneIntent.Timestamp).Round(time.Second)),
-		}
-		// TOCTOU guard (gt-0pst): Re-check session liveness before restarting.
-		// The session could have exited normally between our initial check and here.
-		if alive, _ := t.HasSession(sessionName); !alive {
-			return ZombieResult{}, false
-		}
-		if err := RestartPolecatSession(workDir, rigName, polecatName); err != nil {
-			zombie.Error = err
-			zombie.Action = fmt.Sprintf("restart-stuck-session-failed: %v", err)
-		}
+	if zombie, found := detectLiveAgentDead(ctx, snapState, snapHook); found {
 		return zombie, true
 	}
-
-	// Tmux alive but agent process dead (gt-kj6r6).
-	// gt-dsgp: Restart instead of nuke — preserve worktree and branch.
-	if !t.IsAgentAlive(sessionName) {
-		zombie := ZombieResult{
-			PolecatName:    polecatName,
-			AgentState:     snapState,
-			Classification: ZombieAgentDeadInSession,
-			HookBead:       snapHook,
-			WasActive:      true,
-			Action:         "restarted-agent-dead-session",
-		}
-		// TOCTOU guard (gt-0pst): Re-check session liveness before restarting.
-		// The session could have exited normally between our initial check and here.
-		if alive, _ := t.HasSession(sessionName); !alive {
-			return ZombieResult{}, false
-		}
-		if err := RestartPolecatSession(workDir, rigName, polecatName); err != nil {
-			zombie.Error = err
-			zombie.Action = fmt.Sprintf("restart-agent-dead-session-failed: %v", err)
-		}
+	if zombie, found := detectLiveClosedHook(ctx, snapState, snapHook); found {
 		return zombie, true
 	}
-
-	// Agent alive but hooked bead closed — occupying slot without work (gt-h1l6i).
-	// gt-dsgp: Restart instead of nuke — the fresh session will pick up its hook
-	// and run gt done properly, or go idle waiting for new work.
-	if hookSt, hookOk := getBeadStatus(bd, workDir, snapHook); snapHook != "" && hookOk && hookSt == "closed" {
-		zombie := ZombieResult{
-			PolecatName:    polecatName,
-			AgentState:     snapState,
-			Classification: ZombieBeadClosedStillRunning,
-			HookBead:       snapHook,
-			WasActive:      true,
-			Action:         "restarted-bead-closed-polecat",
-		}
-		// TOCTOU guard (gt-0pst): Re-check session liveness before restarting.
-		// The session could have exited normally between our initial check and here.
-		if alive, _ := t.HasSession(sessionName); !alive {
-			return ZombieResult{}, false
-		}
-		if err := RestartPolecatSession(workDir, rigName, polecatName); err != nil {
-			zombie.Error = err
-			zombie.Action = fmt.Sprintf("restart-bead-closed-failed: %v", err)
-		}
-		return zombie, true
-	}
-
 	// GH#3055: gt done can successfully submit work and leave cleanup_status=clean,
 	// but fail before exiting the polecat session. If successful MR evidence exists
 	// and the hook is either gone or still open, nudge the live session to finish
 	// instead of letting it sit idle forever.
-	if zombie, found := detectSubmittedStillRunning(bd, workDir, polecatName, sessionName, t, hb, snap, witCfg.HeartbeatStartupGraceD()); found {
+	if zombie, found := detectSubmittedStillRunning(ctx.bd, ctx.workDir, ctx.polecatName, ctx.sessionName, ctx.t, hb, ctx.snap, ctx.witCfg.HeartbeatStartupGraceD()); found {
 		return zombie, true
 	}
+	return detectLiveNeverHeartbeated(ctx, hb, snapState, snapHook)
+}
 
-	// Live session with assigned work but no heartbeat file: agent stuck at startup
-	// (e.g., auth 401 blocking initialization). Once the session is old enough to
-	// have written a first heartbeat and hasn't, flag for formula-step review.
-	// ZFC (gt-uk7): No auto-restart — auth errors don't self-heal on restart.
-	if snapHook != "" && hb == nil {
-		if createdAt, err := t.GetSessionCreatedTime(sessionName); err == nil {
-			age := time.Since(createdAt)
-			if age > witCfg.HeartbeatStartupGraceD() {
-				return ZombieResult{
-					PolecatName:    polecatName,
-					AgentState:     snapState,
-					Classification: ZombieNeverHeartbeated,
-					HookBead:       snapHook,
-					WasActive:      true,
-					Action:         fmt.Sprintf("flagged-for-review (no heartbeat, session-age=%v)", age.Round(time.Second)),
-				}, true
-			}
-		}
+func freshLiveHeartbeatResult(hb *polecat.SessionHeartbeat, polecatName, snapState, snapHook string) (ZombieResult, bool) {
+	if hb == nil || !hb.IsV2() || time.Since(hb.Timestamp) >= polecat.SessionHeartbeatStaleThreshold {
+		return ZombieResult{}, false
 	}
+	switch hb.EffectiveState() {
+	case polecat.HeartbeatExiting, polecat.HeartbeatWorking, polecat.HeartbeatIdle:
+		return ZombieResult{}, true
+	case polecat.HeartbeatStuck:
+		return ZombieResult{
+			PolecatName:    polecatName,
+			AgentState:     snapState,
+			Classification: ZombieAgentSelfReportedStuck,
+			HookBead:       snapHook,
+			WasActive:      true,
+			Action:         fmt.Sprintf("escalated (agent self-reported stuck: %s)", hb.Context),
+		}, true
+	default:
+		return ZombieResult{}, false
+	}
+}
 
-	return ZombieResult{}, false
+func detectLiveDoneIntent(ctx zombieSessionContext, snapState, snapHook string) (ZombieResult, bool, bool) {
+	if ctx.doneIntent == nil || time.Since(ctx.doneIntent.Timestamp) <= ctx.witCfg.DoneIntentStuckTimeoutD() {
+		return ZombieResult{}, false, false
+	}
+	zombie := ZombieResult{
+		PolecatName:    ctx.polecatName,
+		AgentState:     snapState,
+		Classification: ZombieStuckInDone,
+		HookBead:       snapHook,
+		WasActive:      true,
+		Action:         fmt.Sprintf("restarted-stuck-session (done-intent age=%v)", time.Since(ctx.doneIntent.Timestamp).Round(time.Second)),
+	}
+	return restartLiveZombie(ctx, zombie, "restart-stuck-session-failed"), true, true
+}
+
+func detectLiveAgentDead(ctx zombieSessionContext, snapState, snapHook string) (ZombieResult, bool) {
+	if ctx.t.IsAgentAlive(ctx.sessionName) {
+		return ZombieResult{}, false
+	}
+	zombie := ZombieResult{
+		PolecatName:    ctx.polecatName,
+		AgentState:     snapState,
+		Classification: ZombieAgentDeadInSession,
+		HookBead:       snapHook,
+		WasActive:      true,
+		Action:         "restarted-agent-dead-session",
+	}
+	return restartLiveZombie(ctx, zombie, "restart-agent-dead-session-failed"), true
+}
+
+func detectLiveClosedHook(ctx zombieSessionContext, snapState, snapHook string) (ZombieResult, bool) {
+	if snapHook == "" {
+		return ZombieResult{}, false
+	}
+	hookStatus, hookFound := getBeadStatus(ctx.bd, ctx.workDir, snapHook)
+	if !hookFound || hookStatus != "closed" {
+		return ZombieResult{}, false
+	}
+	zombie := ZombieResult{
+		PolecatName:    ctx.polecatName,
+		AgentState:     snapState,
+		Classification: ZombieBeadClosedStillRunning,
+		HookBead:       snapHook,
+		WasActive:      true,
+		Action:         "restarted-bead-closed-polecat",
+	}
+	return restartLiveZombie(ctx, zombie, "restart-bead-closed-failed"), true
+}
+
+func restartLiveZombie(ctx zombieSessionContext, zombie ZombieResult, failureAction string) ZombieResult {
+	if alive, _ := ctx.t.HasSession(ctx.sessionName); !alive {
+		return ZombieResult{}
+	}
+	if err := RestartPolecatSession(ctx.workDir, ctx.rigName, ctx.polecatName); err != nil {
+		zombie.Error = err
+		zombie.Action = fmt.Sprintf("%s: %v", failureAction, err)
+	}
+	return zombie
+}
+
+func detectLiveNeverHeartbeated(ctx zombieSessionContext, hb *polecat.SessionHeartbeat, snapState, snapHook string) (ZombieResult, bool) {
+	if snapHook == "" || hb != nil {
+		return ZombieResult{}, false
+	}
+	createdAt, err := ctx.t.GetSessionCreatedTime(ctx.sessionName)
+	if err != nil {
+		return ZombieResult{}, false
+	}
+	age := time.Since(createdAt)
+	if age <= ctx.witCfg.HeartbeatStartupGraceD() {
+		return ZombieResult{}, false
+	}
+	return ZombieResult{
+		PolecatName:    ctx.polecatName,
+		AgentState:     snapState,
+		Classification: ZombieNeverHeartbeated,
+		HookBead:       snapHook,
+		WasActive:      true,
+		Action:         fmt.Sprintf("flagged-for-review (no heartbeat, session-age=%v)", age.Round(time.Second)),
+	}, true
 }
 
 func detectSubmittedStillRunning(bd *BdCli, workDir, polecatName, sessionName string, t *tmux.Tmux, hb *polecat.SessionHeartbeat, snap *agentBeadSnapshot, staleThreshold time.Duration) (ZombieResult, bool) {
