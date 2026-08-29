@@ -781,72 +781,68 @@ func runPolecatStatus(_ *cobra.Command, args []string) error {
 		return enc.Encode(status)
 	}
 
-	// Human-readable output
+	printPolecatStatus(rigName, polecatName, p, sessInfo)
+	return nil
+}
+
+func printPolecatStatus(rigName, polecatName string, p *polecat.Polecat, sessInfo *polecat.SessionInfo) {
 	fmt.Printf("%s\n\n", style.Bold.Render(fmt.Sprintf("Polecat: %s/%s", rigName, polecatName)))
-
-	// State with color
-	stateStr := string(p.State)
-	switch p.State {
-	case polecat.StateWorking:
-		stateStr = style.Info.Render(stateStr)
-	case polecat.StateStuck:
-		stateStr = style.Warning.Render(stateStr)
-	case polecat.StateStalled:
-		stateStr = style.Error.Render(stateStr)
-	case polecat.StateReviewNeeded:
-		stateStr = style.Warning.Render(stateStr)
-	case polecat.StateDone:
-		stateStr = style.Success.Render(stateStr)
-	default:
-		stateStr = style.Dim.Render(stateStr)
-	}
-	fmt.Printf("  State:         %s\n", stateStr)
-
-	// Issue
+	fmt.Printf("  State:         %s\n", polecatStatusState(p.State))
 	if p.Issue != "" {
 		fmt.Printf("  Issue:         %s\n", p.Issue)
 	} else {
 		fmt.Printf("  Issue:         %s\n", style.Dim.Render("(none)"))
 	}
-
-	// Clone path and branch
 	fmt.Printf("  Clone:         %s\n", style.Dim.Render(p.ClonePath))
 	fmt.Printf("  Branch:        %s\n", style.Dim.Render(p.Branch))
+	printPolecatSessionStatus(sessInfo)
+}
 
-	// Session info
+func polecatStatusState(state polecat.State) string {
+	stateStr := string(state)
+	switch state {
+	case polecat.StateWorking:
+		return style.Info.Render(stateStr)
+	case polecat.StateStuck:
+		return style.Warning.Render(stateStr)
+	case polecat.StateStalled:
+		return style.Error.Render(stateStr)
+	case polecat.StateReviewNeeded:
+		return style.Warning.Render(stateStr)
+	case polecat.StateDone:
+		return style.Success.Render(stateStr)
+	default:
+		return style.Dim.Render(stateStr)
+	}
+}
+
+func printPolecatSessionStatus(sessInfo *polecat.SessionInfo) {
 	fmt.Println()
 	fmt.Printf("%s\n", style.Bold.Render("Session"))
-
-	if sessInfo.Running {
-		fmt.Printf("  Status:        %s\n", style.Success.Render("running"))
-		fmt.Printf("  Session ID:    %s\n", style.Dim.Render(sessInfo.SessionID))
-
-		if sessInfo.Attached {
-			fmt.Printf("  Attached:      %s\n", style.Info.Render("yes"))
-		} else {
-			fmt.Printf("  Attached:      %s\n", style.Dim.Render("no"))
-		}
-
-		if sessInfo.Windows > 0 {
-			fmt.Printf("  Windows:       %d\n", sessInfo.Windows)
-		}
-
-		if !sessInfo.Created.IsZero() {
-			fmt.Printf("  Created:       %s\n", sessInfo.Created.Format("2006-01-02 15:04:05"))
-		}
-
-		if !sessInfo.LastActivity.IsZero() {
-			// Show relative time for activity
-			ago := formatActivityTime(sessInfo.LastActivity)
-			fmt.Printf("  Last Activity: %s (%s)\n",
-				sessInfo.LastActivity.Format("15:04:05"),
-				style.Dim.Render(ago))
-		}
-	} else {
+	if !sessInfo.Running {
 		fmt.Printf("  Status:        %s\n", style.Dim.Render("not running"))
+		return
 	}
 
-	return nil
+	fmt.Printf("  Status:        %s\n", style.Success.Render("running"))
+	fmt.Printf("  Session ID:    %s\n", style.Dim.Render(sessInfo.SessionID))
+	if sessInfo.Attached {
+		fmt.Printf("  Attached:      %s\n", style.Info.Render("yes"))
+	} else {
+		fmt.Printf("  Attached:      %s\n", style.Dim.Render("no"))
+	}
+	if sessInfo.Windows > 0 {
+		fmt.Printf("  Windows:       %d\n", sessInfo.Windows)
+	}
+	if !sessInfo.Created.IsZero() {
+		fmt.Printf("  Created:       %s\n", sessInfo.Created.Format("2006-01-02 15:04:05"))
+	}
+	if !sessInfo.LastActivity.IsZero() {
+		ago := formatActivityTime(sessInfo.LastActivity)
+		fmt.Printf("  Last Activity: %s (%s)\n",
+			sessInfo.LastActivity.Format("15:04:05"),
+			style.Dim.Render(ago))
+	}
 }
 
 // formatActivityTime returns a human-readable relative time string.
