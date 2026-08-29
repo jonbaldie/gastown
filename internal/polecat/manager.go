@@ -827,6 +827,10 @@ func (m *Manager) finishPolecatSetup(name, clonePath, polecatDir string, opts Ad
 // Caller MUST hold the polecat lock and have already created polecatDir.
 func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir string) (_ *Polecat, retErr error) {
 	defer func() { telemetry.RecordPolecatSpawn(context.Background(), name, retErr) }()
+	return m.addWithOptionsLockedBody(name, opts, polecatDir)
+}
+
+func (m *Manager) addWithOptionsLockedBody(name string, opts AddOptions, polecatDir string) (*Polecat, error) {
 
 	// Pre-check: Verify sufficient disk space before expensive worktree creation.
 	if level, msg, err := checkDiskSpace(m.rig.Path); err == nil && level == util.DiskSpaceCritical {
@@ -901,20 +905,7 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retE
 		return nil, fmt.Errorf("%w: %s", ErrDiskSpaceLow, msg)
 	}
 
-	// New structure: polecats/<name>/<rigname>/ for LLM ergonomics
-	// The polecat's home dir is polecats/<name>/, worktree is polecats/<name>/<rigname>/
 	polecatDir := m.polecatDir(name)
-	clonePath := filepath.Join(polecatDir, m.rig.Name)
-
-	// Build branch name using configured template or default format.
-	// When resuming an existing branch (gh#3602), use that branch's name directly
-	// so pushes go back to the same ref and update the existing PR.
-	branchName := m.buildBranchName(name, opts.HookBead)
-	if opts.ResumeBranch != "" {
-		branchName = opts.ResumeBranch
-	}
-
-	// Create polecat directory (polecats/<name>/)
 	if err := os.MkdirAll(polecatDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating polecat dir: %w", err)
 	}
@@ -923,157 +914,7 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retE
 	// reconcilePoolInternal will now find the directory directly and treat the
 	// name as in-use without needing the .pending file.
 	_ = os.Remove(m.pendingPath(name))
-
-	// Track resources created for rollback on error.
-	// AddWithOptions creates several resources in sequence (directory, worktree,
-	// agent bead); on failure, all created resources must be cleaned up to prevent
-	// leaking names, orphaning beads, or leaving stale worktree registrations.
-	// See: gt-2vs22
-	var worktreeCreated bool
-	cleanupOnError := func() {
-		// Best-effort reset of agent bead (may have been partially created
-		// by a failed createAgentBeadWithRetry)
-		aid := m.agentBeadID(name)
-		_ = m.resetAgentBeadForReuse(aid, "spawn rollback")
-
-		// Remove git worktree registration if worktree was successfully added.
-		// Must happen before directory removal so git can clean up properly.
-		if worktreeCreated {
-			if rg, repoErr := m.repoBase(); repoErr == nil {
-				_ = rg.WorktreeRemove(clonePath, true)
-			}
-		}
-
-		// Remove polecat directory
-		_ = os.RemoveAll(polecatDir)
-
-		// Release name back to pool so it can be reallocated immediately
-		// rather than waiting for the next reconcile cycle.
-		m.namePool.Release(name)
-		_ = m.namePool.Save()
-	}
-
-	// Get the repo base (bare repo or mayor/rig)
-	repoGit, err := m.repoBase()
-	if err != nil {
-		cleanupOnError()
-		return nil, fmt.Errorf("finding repo base: %w", err)
-	}
-
-	// Fetch latest from origin to ensure worktree starts from up-to-date code
-	if err := repoGit.Fetch("origin"); err != nil {
-		// Non-fatal - proceed with potentially stale code
-		style.PrintWarning("could not fetch origin: %v", err)
-	}
-
-	if opts.ResumeBranch != "" {
-		// Resume an existing branch (gh#3602): attach the worktree directly to the
-		// named branch. WorktreeAddExistingForce tolerates the branch being checked
-		// out elsewhere (stale worktree), and the explicit fetch ensures we have
-		// the latest tip before checkout.
-		if err := repoGit.FetchBranch("origin", opts.ResumeBranch); err != nil {
-			style.PrintWarning("could not fetch resume branch %s: %v", opts.ResumeBranch, err)
-		}
-		if err := repoGit.WorktreeAddExistingForce(clonePath, opts.ResumeBranch); err != nil {
-			cleanupOnError()
-			return nil, fmt.Errorf("creating worktree on existing branch %s: %w", opts.ResumeBranch, err)
-		}
-		worktreeCreated = true
-	} else {
-		// Determine the start point for the new worktree
-		var startPoint string
-		if opts.BaseBranch != "" {
-			startPoint = opts.BaseBranch
-		} else {
-			defaultBranch := "main"
-			if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
-				defaultBranch = rigCfg.DefaultBranch
-			}
-			startPoint = fmt.Sprintf("origin/%s", defaultBranch)
-		}
-
-		// Validate that startPoint ref exists before attempting worktree creation
-		if exists, err := repoGit.RefExists(startPoint); err != nil {
-			cleanupOnError()
-			return nil, fmt.Errorf("checking ref %s: %w", startPoint, err)
-		} else if !exists {
-			cleanupOnError()
-			return nil, fmt.Errorf("configured default_branch not found as %s in bare repo\n\n"+
-				"Possible causes:\n"+
-				"  - Branch doesn't exist on the remote (create it there first)\n"+
-				"  - default_branch is misconfigured (check %s/config.json)\n"+
-				"  - Bare repo fetch failed (try: git -C %s fetch origin)\n\n"+
-				"Run 'gt doctor' to diagnose.",
-				startPoint, m.rig.Path, filepath.Join(m.rig.Path, ".repo.git"))
-		}
-
-		// Always create fresh branch - unique name guarantees no collision
-		// git worktree add -b polecat/<name>-<timestamp> <path> <startpoint>
-		// Worktree goes in polecats/<name>/<rigname>/ for LLM ergonomics
-		if err := repoGit.WorktreeAddFromRef(clonePath, branchName, startPoint); err != nil {
-			cleanupOnError()
-			return nil, fmt.Errorf("creating worktree from %s: %w", startPoint, err)
-		}
-		worktreeCreated = true
-	}
-
-	// Provision the instruction pair with gt done instructions and lifecycle context.
-	// This is the primary mechanism for polecats to learn about completion —
-	// the file persists across compaction and session restarts (unlike ephemeral
-	// gt prime output which scrolls past and gets lost).
-	rigName := filepath.Base(m.rig.Path)
-	if _, err := templates.CreatePolecatAgentsMD(clonePath, rigName, name); err != nil {
-		// Non-fatal — polecat can still learn via gt prime hook
-		style.PrintWarning("could not provision polecat instruction pair: %v", err)
-	}
-
-	// Set up shared beads: polecat uses rig's .beads via redirect file.
-	// This eliminates git sync overhead - all polecats share one database.
-	// Fatal: without shared beads, gt done writes MR beads to a local .beads/
-	// that the Refinery never reads, causing the merge queue to stay empty.
-	if err := m.provisionWorktree(clonePath); err != nil {
-		cleanupOnError()
-		return nil, fmt.Errorf("setting up shared beads: %w (polecat cannot submit MRs without shared beads)", err)
-	}
-	if err := m.runSetupCommand(clonePath); err != nil {
-		cleanupOnError()
-		return nil, err
-	}
-
-	// NOTE: Slash commands (.claude/commands/) are provisioned at town level by gt install.
-	// All agents inherit them via Claude's directory traversal - no per-workspace copies needed.
-
-	// Create or reopen agent bead for ZFC compliance (self-report state).
-	// State starts as "spawning" - will be updated to "working" when Claude starts.
-	// HookBead is set atomically at creation time if provided (avoids cross-beads routing issues).
-	// Uses CreateOrReopenAgentBead to handle re-spawning with same name (GH #332).
-	// Retries with backoff — a polecat without an agent bead is untrackable (gt-94llt7).
-	agentID := m.agentBeadID(name)
-	if err = m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
-		RoleType:   "polecat",
-		Rig:        m.rig.Name,
-		AgentState: "spawning",
-		HookBead:   opts.HookBead, // Set atomically at spawn time
-	}); err != nil {
-		// Hard fail — an untrackable polecat is worse than no polecat
-		cleanupOnError()
-		return nil, fmt.Errorf("agent bead required for polecat tracking: %w", err)
-	}
-
-	// Return polecat with working state (transient model: polecats are spawned with work)
-	// State is derived from beads, not stored in state.json
-	now := time.Now()
-	polecat := &Polecat{
-		Name:      name,
-		Rig:       m.rig.Name,
-		State:     StateWorking, // Transient model: polecat spawns with work
-		ClonePath: clonePath,
-		Branch:    branchName,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	return polecat, nil
+	return m.addWithOptionsLockedBody(name, opts, polecatDir)
 }
 
 // Remove deletes a polecat worktree.
