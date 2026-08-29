@@ -1396,36 +1396,38 @@ func looksLikeBeadID(s string) bool {
 		return false
 	}
 
-	// Check prefix is all lowercase letters
-	prefix := s[:idx]
+	return validHandoffBeadPrefix(s[:idx]) && validHandoffBeadSuffix(s[idx+1:])
+}
+
+func validHandoffBeadPrefix(prefix string) bool {
 	for _, c := range prefix {
 		if c < 'a' || c > 'z' {
 			return false
 		}
 	}
+	return true
+}
 
-	// Check there's something after the hyphen
-	rest := s[idx+1:]
-	if len(rest) == 0 {
+func validHandoffBeadSuffix(suffix string) bool {
+	if suffix == "" {
 		return false
 	}
-
-	// Check rest starts with alphanumeric and contains only alphanumeric, dots, hyphens
-	for i, c := range rest {
+	for i, c := range suffix {
 		if i == 0 {
-			// First char must be alphanumeric
-			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			if !isHandoffLowerAlphaOrDigit(c) {
 				return false
 			}
-		} else {
-			// Subsequent chars: alphanumeric, dots, hyphens
-			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-') {
-				return false
-			}
+			continue
+		}
+		if !isHandoffLowerAlphaOrDigit(c) && c != '.' && c != '-' {
+			return false
 		}
 	}
-
 	return true
+}
+
+func isHandoffLowerAlphaOrDigit(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
 // hookBeadForHandoff attaches a bead to the current agent's hook.
