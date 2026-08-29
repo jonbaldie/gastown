@@ -1447,6 +1447,109 @@ func (m *Manager) ReleaseName(name string) {
 	_ = m.namePool.Save() // non-fatal: state file update
 }
 
+func checkRepairUncommittedWork(name, clonePath string, force bool) error {
+	if force {
+		return nil
+	}
+	status, err := git.NewGit(clonePath).CheckUncommittedWork()
+	if err == nil && !status.Clean() {
+		return &UncommittedWorkError{PolecatName: name, Status: status}
+	}
+	return nil
+}
+
+func (m *Manager) prepareRepairWorktree(repoGit *git.Git, name, polecatDir string, opts AddOptions) (string, string, error) {
+	_ = repoGit.Fetch("origin")
+	if err := os.MkdirAll(polecatDir, 0755); err != nil {
+		return "", "", fmt.Errorf("creating polecat dir: %w", err)
+	}
+	branchName := m.buildBranchName(name, opts.HookBead)
+	if opts.ResumeBranch != "" {
+		branchName = opts.ResumeBranch
+	}
+	newClonePath := filepath.Join(polecatDir, m.rig.Name)
+	tmpClonePath := newClonePath + ".repair-tmp"
+	_ = os.RemoveAll(tmpClonePath)
+	if _, err := m.createPolecatWorktree(repoGit, tmpClonePath, branchName, opts); err != nil {
+		return "", "", err
+	}
+	return tmpClonePath, branchName, nil
+}
+
+func cleanupRepairWorktree(repoGit *git.Git, clonePath string) {
+	_ = repoGit.WorktreeRemove(clonePath, true)
+	_ = os.RemoveAll(clonePath)
+}
+
+func (m *Manager) replaceOldWorktreeForRepair(repoGit *git.Git, name, oldClonePath, tmpClonePath string) error {
+	if err := m.killExistingPolecatSession(name, "repair"); err != nil {
+		cleanupRepairWorktree(repoGit, tmpClonePath)
+		return err
+	}
+	if err := repoGit.WorktreeRemove(oldClonePath, true); err != nil {
+		if removeErr := os.RemoveAll(oldClonePath); removeErr != nil {
+			cleanupRepairWorktree(repoGit, tmpClonePath)
+			return fmt.Errorf("removing old clone path: %w", removeErr)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) resetRepairedPolecatAgent(name string) {
+	agentID := m.agentBeadID(name)
+	if err := m.resetAgentBeadForReuse(agentID, "polecat repair"); err != nil && !errors.Is(err, beads.ErrNotFound) {
+		style.PrintWarning("could not reset old agent bead %s: %v", agentID, err)
+	}
+}
+
+func moveRepairedWorktree(repoGit *git.Git, tmpClonePath, newClonePath string) error {
+	_ = repoGit.WorktreePrune()
+	if err := repoGit.WorktreeMove(tmpClonePath, newClonePath); err != nil {
+		cleanupRepairWorktree(repoGit, tmpClonePath)
+		return fmt.Errorf("moving repaired worktree to final path: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) finishRepairSetup(repoGit *git.Git, name, newClonePath, polecatDir, agentID string, opts AddOptions) error {
+	repairRigName := filepath.Base(m.rig.Path)
+	if _, err := templates.CreatePolecatAgentsMD(newClonePath, repairRigName, name); err != nil {
+		style.PrintWarning("could not provision polecat instruction pair during repair: %v", err)
+	}
+	if err := m.provisionWorktree(newClonePath); err != nil {
+		cleanupRepairWorktree(repoGit, newClonePath)
+		return fmt.Errorf("setting up shared beads after repair: %w (polecat cannot submit MRs without shared beads)", err)
+	}
+	if err := m.runSetupCommand(newClonePath); err != nil {
+		cleanupRepairWorktree(repoGit, newClonePath)
+		_ = os.RemoveAll(polecatDir)
+		return err
+	}
+	if err := m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
+		RoleType:   "polecat",
+		Rig:        m.rig.Name,
+		AgentState: "spawning",
+		HookBead:   opts.HookBead,
+	}); err != nil {
+		cleanupRepairWorktree(repoGit, newClonePath)
+		_ = os.RemoveAll(polecatDir)
+		return fmt.Errorf("agent bead required for polecat tracking: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) lockExistingPolecat(name string) (*flock.Flock, error) {
+	fl, err := m.lockPolecat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !m.exists(name) {
+		_ = fl.Unlock()
+		return nil, ErrPolecatNotFound
+	}
+	return fl, nil
+}
+
 // RepairWorktree repairs a stale polecat by removing it and creating a fresh worktree.
 // This is NOT for normal operation - it handles reconciliation when AllocateName
 // returns a name that unexpectedly already exists (stale state recovery).
@@ -1467,180 +1570,50 @@ func (m *Manager) RepairWorktree(name string, force bool) (*Polecat, error) {
 // After repair, uses new structure: polecats/<name>/<rigname>/
 func (m *Manager) RepairWorktreeWithOptions(name string, force bool, opts AddOptions) (*Polecat, error) {
 	// Acquire per-polecat file lock to prevent concurrent Repair/Remove races
-	fl, err := m.lockPolecat(name)
+	fl, err := m.lockExistingPolecat(name)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = fl.Unlock() }()
 
-	if !m.exists(name) {
-		return nil, ErrPolecatNotFound
-	}
-
-	// Get the old clone path (may be old or new structure)
 	oldClonePath := m.clonePath(name)
-	polecatGit := git.NewGit(oldClonePath)
-
-	// New clone path uses new structure
 	polecatDir := m.polecatDir(name)
 	newClonePath := filepath.Join(polecatDir, m.rig.Name)
-
-	// Get the repo base (bare repo or mayor/rig)
 	repoGit, err := m.repoBase()
 	if err != nil {
 		return nil, fmt.Errorf("finding repo base: %w", err)
 	}
-
-	// Check for uncommitted work unless forced
-	if !force {
-		status, err := polecatGit.CheckUncommittedWork()
-		if err == nil && !status.Clean() {
-			return nil, &UncommittedWorkError{PolecatName: name, Status: status}
-		}
+	if err := checkRepairUncommittedWork(name, oldClonePath, force); err != nil {
+		return nil, err
 	}
-
-	// Fetch latest from origin to ensure we have fresh commits (non-fatal: may be offline)
-	_ = repoGit.Fetch("origin")
-
-	// Ensure polecat directory exists for new structure
-	if err := os.MkdirAll(polecatDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating polecat dir: %w", err)
-	}
-
-	// Build branch name. When resuming an existing branch (gh#3602), use that
-	// branch's name directly so pushes update the existing PR.
-	branchName := m.buildBranchName(name, opts.HookBead)
-	if opts.ResumeBranch != "" {
-		branchName = opts.ResumeBranch
-	}
-
-	tmpClonePath := newClonePath + ".repair-tmp"
-	_ = os.RemoveAll(tmpClonePath) // clean up any leftover temp dir
-
-	if opts.ResumeBranch != "" {
-		// Resume an existing branch: fetch and attach the temp worktree directly
-		// to the named branch instead of creating a fresh polecat/<name>/<bead>+<ts>.
-		if err := repoGit.FetchBranch("origin", opts.ResumeBranch); err != nil {
-			style.PrintWarning("could not fetch resume branch %s: %v", opts.ResumeBranch, err)
-		}
-		if err := repoGit.WorktreeAddExistingForce(tmpClonePath, opts.ResumeBranch); err != nil {
-			return nil, fmt.Errorf("creating fresh worktree on existing branch %s: %w", opts.ResumeBranch, err)
-		}
-	} else {
-		// Determine the start point for the new worktree
-		var startPoint string
-		if opts.BaseBranch != "" {
-			startPoint = opts.BaseBranch
-		} else {
-			defaultBranch := "main"
-			if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
-				defaultBranch = rigCfg.DefaultBranch
-			}
-			startPoint = fmt.Sprintf("origin/%s", defaultBranch)
-		}
-
-		// Validate that startPoint ref exists before attempting worktree creation
-		if exists, err := repoGit.RefExists(startPoint); err != nil {
-			return nil, fmt.Errorf("checking ref %s: %w", startPoint, err)
-		} else if !exists {
-			return nil, fmt.Errorf("configured default_branch not found as %s in bare repo\n\n"+
-				"Possible causes:\n"+
-				"  - Branch doesn't exist on the remote (create it there first)\n"+
-				"  - default_branch is misconfigured (check %s/config.json)\n"+
-				"  - Bare repo fetch failed (try: git -C %s fetch origin)\n\n"+
-				"Run 'gt doctor' to diagnose.",
-				startPoint, m.rig.Path, filepath.Join(m.rig.Path, ".repo.git"))
-		}
-
-		// Create fresh worktree to a temporary path first, so we can roll back if it fails.
-		// This prevents destroying the old worktree before the new one is confirmed working.
-		if err := repoGit.WorktreeAddFromRef(tmpClonePath, branchName, startPoint); err != nil {
-			return nil, fmt.Errorf("creating fresh worktree from %s: %w", startPoint, err)
-		}
+	tmpClonePath, branchName, err := m.prepareRepairWorktree(repoGit, name, polecatDir, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// New worktree created successfully — now safe to remove old worktree and reset bead.
 	// Kill the existing session first: its cwd is about to disappear, and leaving
 	// a live idle session around makes SessionManager.Start return ErrSessionRunning
 	// instead of creating a fresh session for the repaired worktree.
-	if err := m.killExistingPolecatSession(name, "repair"); err != nil {
-		_ = repoGit.WorktreeRemove(tmpClonePath, true)
-		_ = os.RemoveAll(tmpClonePath)
+	if err := m.replaceOldWorktreeForRepair(repoGit, name, oldClonePath, tmpClonePath); err != nil {
 		return nil, err
-	}
-
-	// Remove old worktree BEFORE resetting bead to prevent name collision if a new
-	// spawn sees the clean bead while the old worktree still exists.
-	if err := repoGit.WorktreeRemove(oldClonePath, true); err != nil {
-		// Fall back to direct removal
-		if removeErr := os.RemoveAll(oldClonePath); removeErr != nil {
-			// Clean up temp worktree before returning
-			_ = repoGit.WorktreeRemove(tmpClonePath, true)
-			_ = os.RemoveAll(tmpClonePath)
-			return nil, fmt.Errorf("removing old clone path: %w", removeErr)
-		}
 	}
 
 	// Reset agent bead AFTER old worktree is confirmed removed.
 	// NOTE: We use ResetAgentBeadForReuse to avoid the close/reopen cycle
 	// that fails on Dolt backend (gt-14b8o).
 	agentID := m.agentBeadID(name)
-	if err := m.resetAgentBeadForReuse(agentID, "polecat repair"); err != nil {
-		if !errors.Is(err, beads.ErrNotFound) {
-			style.PrintWarning("could not reset old agent bead %s: %v", agentID, err)
-		}
-	}
-
-	// Prune stale worktree entries (non-fatal: cleanup only)
-	_ = repoGit.WorktreePrune()
+	m.resetRepairedPolecatAgent(name)
 
 	// Move temp worktree to final location using git worktree move.
 	// os.Rename breaks worktrees: the .git file and registry gitdir still
 	// reference the old temp path, leaving a broken worktree. (GH#2056)
-	if err := repoGit.WorktreeMove(tmpClonePath, newClonePath); err != nil {
-		// Clean up temp worktree if move fails
-		_ = repoGit.WorktreeRemove(tmpClonePath, true)
-		_ = os.RemoveAll(tmpClonePath)
-		return nil, fmt.Errorf("moving repaired worktree to final path: %w", err)
-	}
-
-	// Provision the instruction pair (same as spawn path — repair creates a fresh worktree).
-	repairRigName := filepath.Base(m.rig.Path)
-	if _, err := templates.CreatePolecatAgentsMD(newClonePath, repairRigName, name); err != nil {
-		style.PrintWarning("could not provision polecat instruction pair during repair: %v", err)
-	}
-
-	// Set up shared beads — fatal during repair too, same reason as spawn.
-	if err := m.provisionWorktree(newClonePath); err != nil {
-		_ = repoGit.WorktreeRemove(newClonePath, true)
-		_ = os.RemoveAll(newClonePath)
-		return nil, fmt.Errorf("setting up shared beads after repair: %w (polecat cannot submit MRs without shared beads)", err)
-	}
-
-	if err := m.runSetupCommand(newClonePath); err != nil {
-		_ = repoGit.WorktreeRemove(newClonePath, true)
-		_ = os.RemoveAll(newClonePath)
-		_ = os.RemoveAll(polecatDir)
+	if err := moveRepairedWorktree(repoGit, tmpClonePath, newClonePath); err != nil {
 		return nil, err
 	}
 
-	// Create or reopen agent bead for ZFC compliance
-	// HookBead is set atomically at recreation time if provided.
-	// Uses CreateOrReopenAgentBead to handle re-spawning with same name (GH #332).
-	// Retries with backoff — a polecat without an agent bead is untrackable (gt-94llt7).
-	if err = m.createAgentBeadWithRetry(agentID, &beads.AgentFields{
-		RoleType:   "polecat",
-		Rig:        m.rig.Name,
-		AgentState: "spawning",
-		HookBead:   opts.HookBead, // Set atomically at spawn time
-	}); err != nil {
-		// Hard fail — clean up the new worktree since we can't track this polecat
-		_ = repoGit.WorktreeRemove(newClonePath, true)
-		_ = os.RemoveAll(newClonePath)
-		// Remove polecatDir to prevent limbo state where m.exists(name) returns true
-		// but no valid worktree exists. Matches AddWithOptions cleanupOnError behavior.
-		_ = os.RemoveAll(polecatDir)
-		return nil, fmt.Errorf("agent bead required for polecat tracking: %w", err)
+	if err := m.finishRepairSetup(repoGit, name, newClonePath, polecatDir, agentID, opts); err != nil {
+		return nil, err
 	}
 
 	// Return fresh polecat in working state (transient model: polecats are spawned with work)
