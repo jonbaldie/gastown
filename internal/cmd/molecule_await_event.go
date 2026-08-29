@@ -124,6 +124,7 @@ type EventFile struct {
 }
 
 func init() {
+	state := moleculeState()
 	moleculeAwaitEventCmd.Flags().String("channel", "",
 		"Event channel name (required, e.g., 'refinery')")
 	moleculeAwaitEventCmd.Flags().String("timeout", "60s",
@@ -142,7 +143,7 @@ func init() {
 		"Delete event files after reading them")
 	moleculeAwaitEventCmd.Flags().String("context-check-interval", "",
 		"Yield after this wall-clock interval so the caller can assess context (e.g., 5m). Returns reason 'context-yield'.")
-	moleculeAwaitEventCmd.Flags().BoolVar(&moleculeJSON, "json", false,
+	moleculeAwaitEventCmd.Flags().BoolVar(&state.json, "json", false,
 		"Output as JSON")
 	_ = moleculeAwaitEventCmd.MarkFlagRequired("channel")
 

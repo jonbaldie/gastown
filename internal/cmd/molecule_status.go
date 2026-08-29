@@ -200,7 +200,7 @@ func runMoleculeProgress(_ *cobra.Command, args []string) error {
 	if progress == nil {
 		return fmt.Errorf("no steps found for %s (not a molecule root?)", rootID)
 	}
-	if moleculeJSON {
+	if moleculeState().json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(*progress)
@@ -478,7 +478,7 @@ func lookupMoleculeStatusWork(b *beads.Beads, target, townRoot string) ([]*beads
 }
 
 func outputMoleculeStatusResult(status MoleculeStatusInfo) error {
-	if moleculeJSON {
+	if moleculeState().json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(status)
@@ -1017,7 +1017,7 @@ func setMoleculeCurrentStatus(info *MoleculeCurrentInfo, inProgressSteps, readyS
 
 // outputMoleculeCurrent outputs the current info in the appropriate format.
 func outputMoleculeCurrent(info MoleculeCurrentInfo) error {
-	if moleculeJSON {
+	if moleculeState().json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(info)

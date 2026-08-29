@@ -151,6 +151,7 @@ Related commands:
 
 func init() {
 	hookCmd := newHookCmd()
+	state := moleculeState()
 	// Flags for attaching work (gt hook <bead-id>)
 	hookCmd.Flags().StringP("subject", "s", "", "Subject for handoff mail (optional)")
 	hookCmd.Flags().StringP("message", "m", "", "Message for handoff mail (optional)")
@@ -159,9 +160,9 @@ func init() {
 	hookCmd.Flags().Bool("clear", false, "Clear your hook (alias for 'gt unhook')")
 
 	// --json flag for status output (used when no args, i.e., gt hook --json)
-	hookCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON (for status)")
-	hookStatusCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
-	hookShowCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	hookCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON (for status)")
+	hookStatusCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
+	hookShowCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
 	// Flags for attach subcommand
 	hookAttachCmd.Flags().BoolP("force", "f", false, "Replace existing incomplete hooked bead")
@@ -532,7 +533,7 @@ func runHookShow(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if moleculeJSON {
+	if moleculeState().json {
 		type compactInfo struct {
 			Agent  string `json:"agent"`
 			BeadID string `json:"bead_id,omitempty"`

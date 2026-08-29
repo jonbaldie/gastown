@@ -107,6 +107,7 @@ type AwaitSignalResult struct {
 }
 
 func init() {
+	state := moleculeState()
 	moleculeAwaitSignalCmd.Flags().String("timeout", "60s",
 		"Maximum time to wait for signal (e.g., 30s, 5m)")
 	moleculeAwaitSignalCmd.Flags().String("backoff-base", "",
@@ -119,7 +120,7 @@ func init() {
 		"Agent bead ID for tracking idle cycles (reads/writes idle:N label)")
 	moleculeAwaitSignalCmd.Flags().Bool("quiet", false,
 		"Suppress output (for scripting)")
-	moleculeAwaitSignalCmd.Flags().BoolVar(&moleculeJSON, "json", false,
+	moleculeAwaitSignalCmd.Flags().BoolVar(&state.json, "json", false,
 		"Output as JSON")
 
 	moleculeStepCmd.AddCommand(moleculeAwaitSignalCmd)
@@ -137,7 +138,7 @@ func init() {
 		"Agent bead ID for tracking idle cycles (reads/writes idle:N label)")
 	moleculeAwaitSignalShortcutCmd.Flags().Bool("quiet", false,
 		"Suppress output (for scripting)")
-	moleculeAwaitSignalShortcutCmd.Flags().BoolVar(&moleculeJSON, "json", false,
+	moleculeAwaitSignalShortcutCmd.Flags().BoolVar(&state.json, "json", false,
 		"Output as JSON")
 
 	// alias: gt mol await-signal (in addition to gt mol step await-signal)

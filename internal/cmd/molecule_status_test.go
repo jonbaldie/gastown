@@ -75,9 +75,9 @@ esac
 		t.Fatalf("chdir town root: %v", err)
 	}
 
-	previousJSON := moleculeJSON
-	moleculeJSON = true
-	t.Cleanup(func() { moleculeJSON = previousJSON })
+	previousJSON := moleculeState().json
+	moleculeState().json = true
+	t.Cleanup(func() { moleculeState().json = previousJSON })
 
 	previousStdout := os.Stdout
 	reader, writer, err := os.Pipe()
@@ -162,9 +162,9 @@ esac
 		t.Fatalf("chdir town root: %v", err)
 	}
 
-	previousJSON := moleculeJSON
-	moleculeJSON = true
-	t.Cleanup(func() { moleculeJSON = previousJSON })
+	previousJSON := moleculeState().json
+	moleculeState().json = true
+	t.Cleanup(func() { moleculeState().json = previousJSON })
 
 	previousStdout := os.Stdout
 	reader, writer, err := os.Pipe()

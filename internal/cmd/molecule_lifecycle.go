@@ -68,7 +68,7 @@ func burnAttachedMolecule(cmd *cobra.Command, target string, b *beads.Beads, han
 		rootClosed = false
 	}
 
-	if moleculeJSON {
+	if moleculeState().json {
 		result := map[string]interface{}{
 			"burned":          moleculeID,
 			"from":            target,
@@ -149,7 +149,7 @@ func runMoleculeSquash(cmd *cobra.Command, args []string) (retErr error) {
 	// Parse jitter early so invalid flags fail fast, but defer the sleep
 	// until after workspace/attachment validation so no-op invocations
 	// (wrong directory, no attached molecule) don't wait unnecessarily.
-	jitterMax, err := parseMoleculeJitter(moleculeJitter)
+	jitterMax, err := parseMoleculeJitter(moleculeState().jitter)
 	if err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func runMoleculeSquash(cmd *cobra.Command, args []string) (retErr error) {
 
 	var doneSteps, totalSteps int
 	defer func() {
-		telemetry.RecordMolSquash(cmd.Context(), moleculeID, doneSteps, totalSteps, !moleculeNoDigest, retErr)
+		telemetry.RecordMolSquash(cmd.Context(), moleculeID, doneSteps, totalSteps, !moleculeState().noDigest, retErr)
 	}()
 
 	// Apply jitter before acquiring any Dolt locks.
@@ -190,7 +190,7 @@ func runMoleculeSquash(cmd *cobra.Command, args []string) (retErr error) {
 	// Skip digest creation if --no-digest flag is set (gt-t2bjt).
 	// Patrol molecules (deacon, witness, refinery) run frequently and their
 	// digests pollute the database with thousands of low-value beads.
-	if !moleculeNoDigest {
+	if !moleculeState().noDigest {
 		doneSteps, totalSteps, err = createMoleculeDigest(b, moleculeID, target)
 		if err != nil {
 			return err
@@ -214,7 +214,7 @@ func moleculeAttachmentID(handoff *beads.Issue) string {
 
 func detachAndCloseMolecule(b *beads.Beads, handoff *beads.Issue, target, moleculeID string) (bool, error) {
 	detachReason := "molecule squashed"
-	if moleculeNoDigest {
+	if moleculeState().noDigest {
 		detachReason = "molecule squashed (no digest)"
 	}
 	_, err := b.DetachMoleculeWithAudit(handoff.ID, beads.DetachOptions{
@@ -237,13 +237,13 @@ func detachAndCloseMolecule(b *beads.Beads, handoff *beads.Issue, target, molecu
 }
 
 func renderMoleculeSquashResult(moleculeID, target, handoffID string, childrenClosed int, rootClosed bool) error {
-	if moleculeJSON {
+	if moleculeState().json {
 		result := map[string]interface{}{
 			"squashed":        moleculeID,
 			"from":            target,
 			"handoff_id":      handoffID,
 			"children_closed": childrenClosed,
-			"digest_skipped":  moleculeNoDigest,
+			"digest_skipped":  moleculeState().noDigest,
 			"root_closed":     rootClosed,
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -252,7 +252,7 @@ func renderMoleculeSquashResult(moleculeID, target, handoffID string, childrenCl
 	}
 
 	digestSuffix := ""
-	if moleculeNoDigest {
+	if moleculeState().noDigest {
 		digestSuffix = " (no digest)"
 	}
 	fmt.Printf("%s Squashed molecule %s%s\n", style.Bold.Render("📦"), moleculeID, digestSuffix)
@@ -301,8 +301,8 @@ squashed_at: %s
 `, moleculeID, target, time.Now().UTC().Format(time.RFC3339))
 
 	doneSteps, totalSteps := 0, 0
-	if moleculeSummary != "" {
-		digestDesc += fmt.Sprintf("\n## Summary\n%s\n", moleculeSummary)
+	if moleculeState().summary != "" {
+		digestDesc += fmt.Sprintf("\n## Summary\n%s\n", moleculeState().summary)
 	}
 	if progress != nil {
 		doneSteps = progress.DoneSteps

@@ -144,7 +144,7 @@ func runMoleculeAttachment(_ *cobra.Command, args []string) error {
 
 	attachment := beads.ParseAttachmentFields(issue)
 
-	if moleculeJSON {
+	if moleculeState().json {
 		type attachmentOutput struct {
 			IssueID          string `json:"issue_id"`
 			IssueTitle       string `json:"issue_title"`

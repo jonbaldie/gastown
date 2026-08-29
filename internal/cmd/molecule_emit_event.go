@@ -44,13 +44,14 @@ type EmitEventResult struct {
 }
 
 func init() {
+	state := moleculeState()
 	moleculeEmitEventCmd.Flags().String("channel", "",
 		"Event channel name (required, e.g., 'refinery')")
 	moleculeEmitEventCmd.Flags().String("type", "",
 		"Event type (required, e.g., 'MERGE_READY')")
 	moleculeEmitEventCmd.Flags().StringArray("payload", nil,
 		"Payload key=value pairs (repeatable)")
-	moleculeEmitEventCmd.Flags().BoolVar(&moleculeJSON, "json", false,
+	moleculeEmitEventCmd.Flags().BoolVar(&state.json, "json", false,
 		"Output as JSON")
 	_ = moleculeEmitEventCmd.MarkFlagRequired("channel")
 	_ = moleculeEmitEventCmd.MarkFlagRequired("type")
@@ -77,7 +78,7 @@ func runMoleculeEmitEvent(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if moleculeJSON {
+	if moleculeState().json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(EmitEventResult{
