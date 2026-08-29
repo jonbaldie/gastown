@@ -624,13 +624,27 @@ func runDogClear(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting dog %s: %w", name, err)
 	}
 
-	// Check if already idle
 	if d.State == dog.StateIdle && d.Work == "" {
 		fmt.Printf("Dog %s is already idle\n", name)
 		return nil
 	}
 
-	// Check for live tmux session
+	if err := validateDogClear(name, d, force); err != nil {
+		return err
+	}
+
+	if err := clearDogWork(mgr, name, d); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Cleared dog %s (now idle)\n", name)
+	if d.Work != "" {
+		fmt.Printf("  Previous work: %s\n", d.Work)
+	}
+	return nil
+}
+
+func validateDogClear(name string, d *dog.Dog, force bool) error {
 	if !force {
 		sessionName := fmt.Sprintf("hq-dog-%s", name)
 		tm := tmux.NewTmux()
@@ -638,25 +652,19 @@ func runDogClear(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("dog %s has an active session (%s)\nUse --force to clear anyway", name, sessionName)
 		}
 	}
-
-	// Source-backed work cannot be cleared independently: doing so would return
-	// the dog to the pool while its bead remains assigned to it.
-	if !dog.CanClearStateOnly(d.Work, d.WorkKind) {
-		return fmt.Errorf("dog %s has source-backed work %s; recover or re-sling the source before clearing the dog", name, d.Work)
+	if dog.CanClearStateOnly(d.Work, d.WorkKind) {
+		return nil
 	}
+	return fmt.Errorf("dog %s has source-backed work %s; recover or re-sling the source before clearing the dog", name, d.Work)
+}
 
-	// Clear only the state-only assignment observed above.
+func clearDogWork(mgr *dog.Manager, name string, d *dog.Dog) error {
 	cleared, err := mgr.ClearWorkIfMatches(name, d.Work, d.WorkStartedAt)
 	if err != nil {
 		return fmt.Errorf("clearing work for dog %s: %w", name, err)
 	}
 	if !cleared {
 		return fmt.Errorf("dog %s assignment changed during clear; state preserved", name)
-	}
-
-	fmt.Printf("✓ Cleared dog %s (now idle)\n", name)
-	if d.Work != "" {
-		fmt.Printf("  Previous work: %s\n", d.Work)
 	}
 	return nil
 }
