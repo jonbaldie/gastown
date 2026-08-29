@@ -267,15 +267,11 @@ func warnIfTownRootOffMain() {
 		style.Dim.Render("gt doctor --fix"))
 }
 
-// staleBinaryWarned tracks if we've already warned about stale binary in this session.
-// We use an environment variable since the binary restarts on each command.
-var staleBinaryWarned = os.Getenv("GT_STALE_WARNED") == "1"
-
 // checkStaleBinaryWarning checks if the installed binary is stale and prints a warning.
 // This is a non-blocking check - errors are silently ignored.
 func checkStaleBinaryWarning() {
 	// Only warn once per shell session
-	if staleBinaryWarned {
+	if os.Getenv("GT_STALE_WARNED") == "1" {
 		return
 	}
 
@@ -292,7 +288,6 @@ func checkStaleBinaryWarning() {
 	}
 
 	if info.IsStale {
-		staleBinaryWarned = true
 		_ = os.Setenv("GT_STALE_WARNED", "1")
 
 		msg := info.Describe("gt binary")
