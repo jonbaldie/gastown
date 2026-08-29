@@ -1323,7 +1323,6 @@ func doltProcessOwnerPath(townRoot string, pid int) string {
 func VerifyServerDataDir(townRoot string) (bool, error) {
 	config := DefaultConfig(townRoot)
 
-	// First check: inspect the state file for data-dir (ZFC fix: gt-utuk).
 	running, pid, err := IsRunning(townRoot)
 	if err != nil || !running {
 		return false, fmt.Errorf("server not running")
@@ -1331,14 +1330,21 @@ func VerifyServerDataDir(townRoot string) (bool, error) {
 
 	ownerPath := doltProcessOwnerPath(townRoot, pid)
 	if ownerPath != "" {
-		expectedDir, _ := filepath.Abs(config.DataDir)
-		if !doltProcessMatchesTown(townRoot, pid, config) {
-			return false, fmt.Errorf("server ownership mismatch: expected %s, got %s (PID %d)", expectedDir, ownerPath, pid)
-		}
-		return true, nil
+		return verifyDoltOwnerPath(townRoot, config, pid, ownerPath)
 	}
 
-	// No state file or PID mismatch — check served databases
+	return verifyDoltServedDatabases(townRoot)
+}
+
+func verifyDoltOwnerPath(townRoot string, config *Config, pid int, ownerPath string) (bool, error) {
+	expectedDir, _ := filepath.Abs(config.DataDir)
+	if !doltProcessMatchesTown(townRoot, pid, config) {
+		return false, fmt.Errorf("server ownership mismatch: expected %s, got %s (PID %d)", expectedDir, ownerPath, pid)
+	}
+	return true, nil
+}
+
+func verifyDoltServedDatabases(townRoot string) (bool, error) {
 	fsDatabases, fsErr := ListDatabases(townRoot)
 	if fsErr != nil || len(fsDatabases) == 0 {
 		// Can't verify if no databases expected
@@ -1350,22 +1356,30 @@ func VerifyServerDataDir(townRoot string) (bool, error) {
 		return false, fmt.Errorf("could not query server databases: %w", verifyErr)
 	}
 
-	// If the server is serving none of our expected databases, it's an imposter
-	servedSet := make(map[string]bool, len(served))
-	for _, db := range served {
-		servedSet[strings.ToLower(db)] = true
-	}
-	matchCount := 0
-	for _, db := range fsDatabases {
-		if servedSet[strings.ToLower(db)] {
-			matchCount++
-		}
-	}
-	if matchCount == 0 && len(fsDatabases) > 0 {
+	// If the server is serving none of our expected databases, it's an imposter.
+	if countMatchingDatabases(fsDatabases, databaseNameSet(served)) == 0 {
 		return false, fmt.Errorf("server serves none of the expected %d databases — likely an imposter", len(fsDatabases))
 	}
 
 	return true, nil
+}
+
+func databaseNameSet(databases []string) map[string]bool {
+	set := make(map[string]bool, len(databases))
+	for _, database := range databases {
+		set[strings.ToLower(database)] = true
+	}
+	return set
+}
+
+func countMatchingDatabases(databases []string, expected map[string]bool) int {
+	count := 0
+	for _, database := range databases {
+		if expected[strings.ToLower(database)] {
+			count++
+		}
+	}
+	return count
 }
 
 // KillImposters finds and kills any dolt sql-server process on the configured
