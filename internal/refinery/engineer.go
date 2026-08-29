@@ -566,17 +566,77 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 		return eligibility
 	}
 
-	// Step 1: Verify source branch exists locally (shared .repo.git with polecats)
+	mergeRef, preparation := e.prepareMerge(mr, branch, target)
+	if !preparation.Success {
+		return preparation
+	}
+
+	shouldSkipGates := skipMergeGates(skipGates)
+	if result := e.runConfiguredMergeGates(ctx, shouldSkipGates); !result.Success {
+		return result
+	}
+
+	mergeCommit, mergeResult := e.executeMerge(ctx, mr, branch, target, mergeRef, shouldSkipGates)
+	if !mergeResult.Success {
+		return mergeResult
+	}
+
+	if result := e.publishMergeResult(ctx, mr, target, mergeCommit); !result.Success {
+		return result
+	}
+
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged: %s\n", shortSHA(mergeCommit))
+	return ProcessResult{
+		Success:     true,
+		MergeCommit: mergeCommit,
+	}
+}
+
+func skipMergeGates(skipGates []bool) bool {
+	return len(skipGates) > 0 && skipGates[0]
+}
+
+func (e *Engineer) executeMerge(ctx context.Context, mr *MRInfo, branch, target, mergeRef string, skipGates bool) (string, ProcessResult) {
+	if e.config.MergeStrategy == "pr" {
+		result := e.doMergePR(ctx, mr)
+		return result.MergeCommit, result
+	}
+	return e.mergeTarget(ctx, mr, branch, target, mergeRef, skipGates)
+}
+
+func (e *Engineer) publishMergeResult(ctx context.Context, mr *MRInfo, target, mergeCommit string) ProcessResult {
+	if !e.config.AutoPush {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-push disabled, skipping push to origin/%s\n", target)
+		return ProcessResult{Success: true}
+	}
+	return e.pushMergeResult(ctx, mr, target, mergeCommit)
+}
+
+func (e *Engineer) prepareMerge(mr *MRInfo, branch, target string) (string, ProcessResult) {
+	mergeRef, result := e.validateMergeSource(mr, branch)
+	if !result.Success {
+		return "", result
+	}
+	if result := e.checkoutMergeTarget(target, mergeRef); !result.Success {
+		return "", result
+	}
+	if result := e.pushSubmoduleChanges(mr, target, mergeRef); !result.Success {
+		return "", result
+	}
+	return mergeRef, ProcessResult{Success: true}
+}
+
+func (e *Engineer) validateMergeSource(mr *MRInfo, branch string) (string, ProcessResult) {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking local branch %s...\n", branch)
 	exists, err := e.git.BranchExists(branch)
 	if err != nil {
-		return ProcessResult{
+		return "", ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to check branch %s: %v", branch, err),
 		}
 	}
 	if !exists {
-		return ProcessResult{
+		return "", ProcessResult{
 			Success:        false,
 			BranchNotFound: true,
 			Error:          fmt.Sprintf("branch %s not found locally", branch),
@@ -584,10 +644,12 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 	}
 	mergeRef, err := e.submittedBranchHead(mr)
 	if err != nil {
-		return ProcessResult{Success: false, Error: err.Error()}
+		return "", ProcessResult{Success: false, Error: err.Error()}
 	}
+	return mergeRef, ProcessResult{Success: true}
+}
 
-	// Step 2: Checkout the target branch
+func (e *Engineer) checkoutMergeTarget(target, mergeRef string) ProcessResult {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking out target branch %s...\n", target)
 	if err := e.git.Checkout(target); err != nil {
 		return ProcessResult{
@@ -595,14 +657,11 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 			Error:   fmt.Sprintf("failed to checkout target %s: %v", target, err),
 		}
 	}
-
-	// Make sure target is up to date with origin
 	if err := e.git.Pull("origin", target); err != nil {
 		// Pull might fail if nothing to pull, that's ok
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: pull from origin/%s: %v (continuing)\n", target, err)
 	}
 
-	// Step 3: Check for merge conflicts (using local branch)
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking for conflicts...\n")
 	conflicts, err := e.git.CheckConflicts(mergeRef, target)
 	if err != nil {
@@ -619,203 +678,177 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 			Error:    fmt.Sprintf("merge conflicts in: %v", conflicts),
 		}
 	}
+	return ProcessResult{Success: true}
+}
 
-	// Step 3.5: Push submodule commits if the branch changes submodule pointers.
-	// The refinery owns all remote pushes — submodule commits must land before the
-	// parent pointer is merged, otherwise main gets dangling submodule references.
+func (e *Engineer) pushSubmoduleChanges(mr *MRInfo, target, mergeRef string) ProcessResult {
 	subChanges, err := e.git.SubmoduleChanges(target, mergeRef)
 	if err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not check submodule changes: %v\n", err)
 	}
-	if len(subChanges) > 0 {
-		// Ensure submodules are initialized in the refinery worktree
-		// Use mayor/rig as reference to avoid re-fetching from remote
-		mayorRig := filepath.Join(e.rig.Path, "mayor", "rig")
-		if initErr := git.InitSubmodules(e.git.WorkDir(), mayorRig); initErr != nil {
+	if len(subChanges) == 0 {
+		return ProcessResult{Success: true}
+	}
+
+	// Ensure submodules are initialized in the refinery worktree.
+	// Use mayor/rig as reference to avoid re-fetching from remote.
+	mayorRig := filepath.Join(e.rig.Path, "mayor", "rig")
+	if initErr := git.InitSubmodules(e.git.WorkDir(), mayorRig); initErr != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to init submodules in refinery worktree: %v", initErr),
+		}
+	}
+	for _, sc := range subChanges {
+		if sc.NewSHA == "" {
+			continue // Submodule removed, nothing to push
+		}
+		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
+			return eligibility
+		}
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing submodule %s (commit %s)...\n", sc.Path, shortSHA(sc.NewSHA))
+		if pushErr := e.git.PushSubmoduleCommit(sc.Path, sc.NewSHA, "origin"); pushErr != nil {
 			return ProcessResult{
 				Success: false,
-				Error:   fmt.Sprintf("failed to init submodules in refinery worktree: %v", initErr),
+				Error:   fmt.Sprintf("failed to push submodule %s: %v", sc.Path, pushErr),
 			}
 		}
-		for _, sc := range subChanges {
-			if sc.NewSHA == "" {
-				continue // Submodule removed, nothing to push
-			}
-			if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-				return eligibility
-			}
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing submodule %s (commit %s)...\n", sc.Path, shortSHA(sc.NewSHA))
-			if pushErr := e.git.PushSubmoduleCommit(sc.Path, sc.NewSHA, "origin"); pushErr != nil {
-				return ProcessResult{
-					Success: false,
-					Error:   fmt.Sprintf("failed to push submodule %s: %v", sc.Path, pushErr),
-				}
-			}
-		}
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushed %d submodule(s)\n", len(subChanges))
 	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Pushed %d submodule(s)\n", len(subChanges))
+	return ProcessResult{Success: true}
+}
 
-	// Step 4: Run quality gates (or legacy tests) if configured.
-	// Phase 3 fast-path: if skipGates is true (pre-verified MR with matching base),
-	// skip all gate execution — the polecat already ran gates after rebasing.
-	shouldSkipGates := len(skipGates) > 0 && skipGates[0]
-	if shouldSkipGates {
+func (e *Engineer) runConfiguredMergeGates(ctx context.Context, shouldSkip bool) ProcessResult {
+	if shouldSkip {
 		_, _ = fmt.Fprintln(e.output, "[Engineer] Skipping gates (pre-verified by polecat)")
-	} else if len(e.config.Gates) > 0 {
-		// New gates system: run configured quality gates
-		gateResult := e.runGates(ctx)
-		if !gateResult.Success {
-			return gateResult
-		}
-	} else if e.config.RunTests && e.config.TestCommand != "" {
-		// Legacy test command path (backward compatible)
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
-		result := e.runTests(ctx)
-		if !result.Success {
-			return ProcessResult{
-				Success:     false,
-				TestsFailed: true,
-				Error:       result.Error,
-			}
-		}
-		_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
+		return ProcessResult{Success: true}
+	}
+	if len(e.config.Gates) > 0 {
+		return e.runGates(ctx)
+	}
+	if !e.config.RunTests || e.config.TestCommand == "" {
+		return ProcessResult{Success: true}
 	}
 
-	// PR merge path: when merge_strategy=pr, use the VCS provider's merge API
-	// instead of local merge + direct push. This respects branch
-	// protection/restriction rules and preserves the PR audit trail.
-	// The VCS provider (GitHub, Bitbucket) is selected via vcs_provider config.
-	if e.config.MergeStrategy == "pr" {
-		return e.doMergePR(ctx, mr)
-	}
-
-	// Step 5: Perform the actual merge, preserving the submitted head in target ancestry.
-	// Get the original commit message from the polecat branch to preserve the
-	// conventional commit format (feat:/fix:) in the merge commit message.
-	mergeMsg, err := e.git.GetBranchCommitMessage(branch)
-	if err != nil {
-		// Fallback to a descriptive message if we can't get the original
-		mergeMsg = fmt.Sprintf("Merge %s into %s", branch, target)
-		if mr.SourceIssue != "" {
-			mergeMsg = fmt.Sprintf("Merge %s into %s (%s)", branch, target, mr.SourceIssue)
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
+	result := e.runTests(ctx)
+	if !result.Success {
+		return ProcessResult{
+			Success:     false,
+			TestsFailed: true,
+			Error:       result.Error,
 		}
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not get original commit message: %v\n", err)
 	}
+	_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) mergeTarget(ctx context.Context, mr *MRInfo, branch, target, mergeRef string, skipGates bool) (string, ProcessResult) {
+	mergeMsg := e.mergeMessage(branch, target, mr.SourceIssue)
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Merging with message: %s\n", strings.TrimSpace(mergeMsg))
 	if err := e.git.MergeNoFF(mergeRef, mergeMsg); err != nil {
-		// ZFC: Use git's porcelain output to detect conflicts instead of parsing stderr.
-		// GetConflictingFiles() uses `git diff --diff-filter=U` which is proper.
 		conflicts, conflictErr := e.git.GetConflictingFiles()
 		if conflictErr == nil && len(conflicts) > 0 {
 			_ = e.git.AbortMerge()
-			return ProcessResult{
+			return "", ProcessResult{
 				Success:  false,
 				Conflict: true,
 				Error:    "merge conflict during actual merge",
 			}
 		}
-		// Non-conflict failure: still need to abort to clean up dirty merge state
 		_ = e.git.AbortMerge()
-		return ProcessResult{
+		return "", ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("merge failed: %v", err),
 		}
 	}
 
-	// Step 5.5: Run post-squash gates on the merged result.
-	// These validate the actual combined code before it goes anywhere.
-	// On failure, reset the merge to undo the local merge commit.
-	if !shouldSkipGates {
+	if !skipGates {
 		postResult := e.runGatesForPhase(ctx, GatePhasePostSquash)
 		if !postResult.Success {
 			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
 				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after post-squash gate failure: %v\n", target, resetErr)
 			}
-			return postResult
+			return "", postResult
 		}
 	}
 
-	// Step 6: Get the merge commit SHA
 	mergeCommit, err := e.git.Rev("HEAD")
 	if err != nil {
-		return ProcessResult{
+		return "", ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to get merge commit SHA: %v", err),
 		}
 	}
+	return mergeCommit, ProcessResult{Success: true}
+}
 
-	// Step 7-8: Push to origin (when auto_push is enabled).
-	if e.config.AutoPush {
-		// Acquire merge slot before push to serialize writes to the default branch.
-		// Only serialize pushes to the rig's default branch (typically main).
-		// Integration-branch and feature-branch pushes don't need serialization.
-		var pushHolder string
-		if target == e.rig.DefaultBranch() {
-			var slotErr error
-			pushHolder, slotErr = e.acquireMainPushSlot(ctx)
-			if slotErr != nil {
-				// Reset the checked-out target branch to origin to undo the local merge commit.
-				// ResetHard is required because target is the current branch (checked out in Step 2).
-				if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-					_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after slot failure: %v\n", target, resetErr)
-				}
-				// Only classify as SlotTimeout for actual contention (retries exhausted).
-				// Infrastructure errors (beads down, permission errors) should surface
-				// through the normal failure/notification path for operator visibility.
-				return ProcessResult{
-					Success:     false,
-					SlotTimeout: errors.Is(slotErr, errMergeSlotTimeout),
-					Error:       fmt.Sprintf("failed to acquire merge slot before push: %v", slotErr),
-				}
-			}
-			defer func() {
-				// pushHolder is empty when the self-conflict bypass fires — conflict-resolution
-				// owns the slot, so we must not release it here.
-				if pushHolder != "" {
-					if releaseErr := e.mergeSlotRelease(pushHolder); releaseErr != nil {
-						_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to release merge slot for push (%s): %v\n", pushHolder, releaseErr)
-					}
-				}
-			}()
-		}
+func (e *Engineer) mergeMessage(branch, target, sourceIssue string) string {
+	mergeMsg, err := e.git.GetBranchCommitMessage(branch)
+	if err == nil {
+		return mergeMsg
+	}
+	mergeMsg = fmt.Sprintf("Merge %s into %s", branch, target)
+	if sourceIssue != "" {
+		mergeMsg = fmt.Sprintf("Merge %s into %s (%s)", branch, target, sourceIssue)
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not get original commit message: %v\n", err)
+	return mergeMsg
+}
 
-		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)
-			}
-			return eligibility
+func (e *Engineer) pushMergeResult(ctx context.Context, mr *MRInfo, target, mergeCommit string) ProcessResult {
+	pushHolder, slotErr := e.acquirePushSlot(ctx, target)
+	if slotErr != nil {
+		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after slot failure: %v\n", target, resetErr)
 		}
-
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing to origin/%s...\n", target)
-		if err := e.git.Push("origin", target, false); err != nil {
-			// Reset the checked-out target branch to undo the local merge commit.
-			// Without this, the next retry could see stale local state from the failed push.
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
-			}
-			return ProcessResult{
-				Success: false,
-				Error:   fmt.Sprintf("failed to push to origin: %v", err),
-			}
+		return ProcessResult{
+			Success:     false,
+			SlotTimeout: errors.Is(slotErr, errMergeSlotTimeout),
+			Error:       fmt.Sprintf("failed to acquire merge slot before push: %v", slotErr),
 		}
-		if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after verified-push failure: %v\n", target, resetErr)
-			}
-			return ProcessResult{
-				Success: false,
-				Error:   err.Error(),
-			}
-		}
-	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-push disabled, skipping push to origin/%s\n", target)
+	}
+	if pushHolder != "" {
+		defer e.releasePushSlot(pushHolder)
 	}
 
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged: %s\n", shortSHA(mergeCommit))
-	return ProcessResult{
-		Success:     true,
-		MergeCommit: mergeCommit,
+	if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
+		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)
+		}
+		return eligibility
 	}
+	if err := e.pushAndVerifyMerge(target, mergeCommit); err != nil {
+		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
+		}
+		return ProcessResult{Success: false, Error: err.Error()}
+	}
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) acquirePushSlot(ctx context.Context, target string) (string, error) {
+	if target != e.rig.DefaultBranch() {
+		return "", nil
+	}
+	return e.acquireMainPushSlot(ctx)
+}
+
+func (e *Engineer) releasePushSlot(holder string) {
+	if releaseErr := e.mergeSlotRelease(holder); releaseErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to release merge slot for push (%s): %v\n", holder, releaseErr)
+	}
+}
+
+func (e *Engineer) pushAndVerifyMerge(target, mergeCommit string) error {
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing to origin/%s...\n", target)
+	if err := e.git.Push("origin", target, false); err != nil {
+		return fmt.Errorf("failed to push to origin: %w", err)
+	}
+	if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
+		return err
+	}
+	return nil
 }
 
 // doMergePR handles merging via the VCS provider's PR merge API (merge_strategy=pr).
