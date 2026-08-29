@@ -272,9 +272,9 @@ func TestCheckHandoffMarkerDryRun(t *testing.T) {
 	}
 
 	// Enable explain mode for this test
-	oldExplain := primeExplain
-	primeExplain = true
-	defer func() { primeExplain = oldExplain }()
+	oldExplain := primeState().explain
+	primeState().explain = true
+	defer func() { primeState().explain = oldExplain }()
 
 	// Capture stdout to verify explain output
 	output := captureStdout(t, func() {
@@ -312,9 +312,9 @@ func TestCheckHandoffMarkerDryRun_NoMarker(t *testing.T) {
 	}
 
 	// Enable explain mode
-	oldExplain := primeExplain
-	primeExplain = true
-	defer func() { primeExplain = oldExplain }()
+	oldExplain := primeState().explain
+	primeState().explain = true
+	defer func() { primeState().explain = oldExplain }()
 
 	// Should not panic when marker doesn't exist
 	output := captureStdout(t, func() {
@@ -530,9 +530,9 @@ func TestOutputState(t *testing.T) {
 func TestExplain(t *testing.T) {
 	t.Run("explain_enabled_condition_true", func(t *testing.T) {
 		// Enable explain mode
-		oldExplain := primeExplain
-		primeExplain = true
-		defer func() { primeExplain = oldExplain }()
+		oldExplain := primeState().explain
+		primeState().explain = true
+		defer func() { primeState().explain = oldExplain }()
 
 		output := captureStdout(t, func() {
 			explain(true, "This is a test explanation")
@@ -548,9 +548,9 @@ func TestExplain(t *testing.T) {
 
 	t.Run("explain_enabled_condition_false", func(t *testing.T) {
 		// Enable explain mode
-		oldExplain := primeExplain
-		primeExplain = true
-		defer func() { primeExplain = oldExplain }()
+		oldExplain := primeState().explain
+		primeState().explain = true
+		defer func() { primeState().explain = oldExplain }()
 
 		output := captureStdout(t, func() {
 			explain(false, "This should not appear")
@@ -563,9 +563,9 @@ func TestExplain(t *testing.T) {
 
 	t.Run("explain_disabled", func(t *testing.T) {
 		// Disable explain mode
-		oldExplain := primeExplain
-		primeExplain = false
-		defer func() { primeExplain = oldExplain }()
+		oldExplain := primeState().explain
+		primeState().explain = false
+		defer func() { primeState().explain = oldExplain }()
 
 		output := captureStdout(t, func() {
 			explain(true, "This should not appear either")
@@ -630,11 +630,11 @@ func TestDryRunSkipsSideEffects(t *testing.T) {
 // compaction-triggered handoff cycles (GH#1965).
 func TestIsCompactResume(t *testing.T) {
 	// Save and restore package-level state
-	origSource := primeHookSource
-	origReason := primeHandoffReason
+	origSource := primeState().hookSource
+	origReason := primeState().handoffReason
 	defer func() {
-		primeHookSource = origSource
-		primeHandoffReason = origReason
+		primeState().hookSource = origSource
+		primeState().handoffReason = origReason
 	}()
 
 	cases := []struct {
@@ -685,8 +685,8 @@ func TestIsCompactResume(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			primeHookSource = tc.hookSource
-			primeHandoffReason = tc.handoffReason
+			primeState().hookSource = tc.hookSource
+			primeState().handoffReason = tc.handoffReason
 
 			got := isCompactResume()
 			if got != tc.wantCompact {
@@ -698,18 +698,18 @@ func TestIsCompactResume(t *testing.T) {
 }
 
 func TestHookSessionBeaconLines(t *testing.T) {
-	origStructured := primeStructuredSessionStartOutput
+	origStructured := primeState().structuredSessionStartOutput
 	defer func() {
-		primeStructuredSessionStartOutput = origStructured
+		primeState().structuredSessionStartOutput = origStructured
 	}()
 
-	primeStructuredSessionStartOutput = false
+	primeState().structuredSessionStartOutput = false
 	lines := hookSessionBeaconLines("abc", "startup")
 	if len(lines) != 2 || lines[0] != "[session:abc]" || lines[1] != "[source:startup]" {
 		t.Fatalf("hookSessionBeaconLines() = %v", lines)
 	}
 
-	primeStructuredSessionStartOutput = true
+	primeState().structuredSessionStartOutput = true
 	lines = hookSessionBeaconLines("abc", "startup")
 	if len(lines) != 0 {
 		t.Fatalf("hookSessionBeaconLines() in structured mode = %v, want no beacon lines", lines)
@@ -717,30 +717,30 @@ func TestHookSessionBeaconLines(t *testing.T) {
 }
 
 func TestFormatSessionMetadataLine(t *testing.T) {
-	origStructured := primeStructuredSessionStartOutput
-	defer func() { primeStructuredSessionStartOutput = origStructured }()
+	origStructured := primeState().structuredSessionStartOutput
+	defer func() { primeState().structuredSessionStartOutput = origStructured }()
 
-	primeStructuredSessionStartOutput = false
+	primeState().structuredSessionStartOutput = false
 	if got := formatSessionMetadataLine("crew/quick", "sess-1"); !strings.HasPrefix(got, "[GAS TOWN] ") {
 		t.Fatalf("formatSessionMetadataLine() = %q, want bracketed prefix", got)
 	}
 
-	primeStructuredSessionStartOutput = true
+	primeState().structuredSessionStartOutput = true
 	if got := formatSessionMetadataLine("crew/quick", "sess-1"); strings.HasPrefix(got, "[") {
 		t.Fatalf("formatSessionMetadataLine() structured = %q, should not start with '['", got)
 	}
 }
 
 func TestStructuredOutputOnlyForSessionStart(t *testing.T) {
-	origStructured := primeStructuredSessionStartOutput
-	defer func() { primeStructuredSessionStartOutput = origStructured }()
+	origStructured := primeState().structuredSessionStartOutput
+	defer func() { primeState().structuredSessionStartOutput = origStructured }()
 
 	// Simulate a non-SessionStart hook event (e.g., Stop)
-	primeStructuredSessionStartOutput = false
+	primeState().structuredSessionStartOutput = false
 	input := hookInput{HookEventName: "Stop"}
-	primeStructuredSessionStartOutput = input.HookEventName == "SessionStart"
-	if primeStructuredSessionStartOutput {
-		t.Fatal("primeStructuredSessionStartOutput should be false for HookEventName=Stop")
+	primeState().structuredSessionStartOutput = input.HookEventName == "SessionStart"
+	if primeState().structuredSessionStartOutput {
+		t.Fatal("structured session-start output should be false for HookEventName=Stop")
 	}
 
 	// Verify beacon lines are emitted (not suppressed) for non-SessionStart
@@ -759,11 +759,11 @@ func TestStructuredOutputOnlyForSessionStart(t *testing.T) {
 // parses the reason field from the marker file (GH#1965).
 func TestCheckHandoffMarkerParsesReason(t *testing.T) {
 	// Save and restore package-level state
-	origReason := primeHandoffReason
-	defer func() { primeHandoffReason = origReason }()
+	origReason := primeState().handoffReason
+	defer func() { primeState().handoffReason = origReason }()
 
 	t.Run("marker_with_reason", func(t *testing.T) {
-		primeHandoffReason = ""
+		primeState().handoffReason = ""
 		workDir := t.TempDir()
 
 		runtimeDir := filepath.Join(workDir, constants.DirRuntime)
@@ -783,8 +783,8 @@ func TestCheckHandoffMarkerParsesReason(t *testing.T) {
 		})
 
 		// Verify reason was parsed
-		if primeHandoffReason != "compaction" {
-			t.Fatalf("primeHandoffReason = %q, want %q", primeHandoffReason, "compaction")
+		if primeState().handoffReason != "compaction" {
+			t.Fatalf("handoff reason = %q, want %q", primeState().handoffReason, "compaction")
 		}
 
 		// Verify marker was removed
@@ -794,7 +794,7 @@ func TestCheckHandoffMarkerParsesReason(t *testing.T) {
 	})
 
 	t.Run("marker_without_reason", func(t *testing.T) {
-		primeHandoffReason = ""
+		primeState().handoffReason = ""
 		workDir := t.TempDir()
 
 		runtimeDir := filepath.Join(workDir, constants.DirRuntime)
@@ -813,20 +813,20 @@ func TestCheckHandoffMarkerParsesReason(t *testing.T) {
 		})
 
 		// Verify reason is empty (backward compatible)
-		if primeHandoffReason != "" {
-			t.Fatalf("primeHandoffReason = %q, want empty", primeHandoffReason)
+		if primeState().handoffReason != "" {
+			t.Fatalf("handoff reason = %q, want empty", primeState().handoffReason)
 		}
 	})
 
 	t.Run("no_marker", func(t *testing.T) {
-		primeHandoffReason = ""
+		primeState().handoffReason = ""
 		workDir := t.TempDir()
 
 		checkHandoffMarker(workDir)
 
 		// Verify reason is still empty
-		if primeHandoffReason != "" {
-			t.Fatalf("primeHandoffReason = %q, want empty", primeHandoffReason)
+		if primeState().handoffReason != "" {
+			t.Fatalf("handoff reason = %q, want empty", primeState().handoffReason)
 		}
 	})
 }
@@ -1059,8 +1059,8 @@ func TestCheckSlungWork_RalphModeUsesLoopDirective(t *testing.T) {
 func TestCompactResumeReminder_PolecatGetsGtDone(t *testing.T) {
 	ctx := RoleContext{Role: RolePolecat}
 	// Simulate compact source
-	primeHookSource = "compact"
-	defer func() { primeHookSource = "" }()
+	primeState().hookSource = "compact"
+	defer func() { primeState().hookSource = "" }()
 
 	output := captureStdout(t, func() {
 		runPrimeCompactResume(ctx)
@@ -1075,8 +1075,8 @@ func TestCompactResumeReminder_PolecatGetsGtDone(t *testing.T) {
 // do NOT get the gt done reminder (it's polecat-specific).
 func TestCompactResumeReminder_NonPolecatNoGtDone(t *testing.T) {
 	ctx := RoleContext{Role: RoleCrew}
-	primeHookSource = "compact"
-	defer func() { primeHookSource = "" }()
+	primeState().hookSource = "compact"
+	defer func() { primeState().hookSource = "" }()
 
 	output := captureStdout(t, func() {
 		runPrimeCompactResume(ctx)
@@ -1103,8 +1103,8 @@ func TestEnsurePrimeSkills_WritesWorkDirAndTownRoot(t *testing.T) {
 
 func TestCompactResumeReminder_IncludesSkillDirectives(t *testing.T) {
 	ctx := RoleContext{Role: RoleCrew}
-	primeHookSource = "compact"
-	defer func() { primeHookSource = "" }()
+	primeState().hookSource = "compact"
+	defer func() { primeState().hookSource = "" }()
 
 	output := captureStdout(t, func() {
 		runPrimeCompactResume(ctx)

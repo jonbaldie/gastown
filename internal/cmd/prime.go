@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
@@ -31,23 +32,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var primeHookMode bool
-var primeDryRun bool
-var primeExplain bool
-var primeStructuredSessionStartOutput bool
+type primeCommandState struct {
+	hookMode                     bool
+	dryRun                       bool
+	explain                      bool
+	structuredSessionStartOutput bool
+	hookSource                   string
+	handoffReason                string
+}
+
+var primeCommandStateInstance = sync.OnceValue(func() *primeCommandState {
+	return &primeCommandState{}
+})
+
+func primeState() *primeCommandState {
+	return primeCommandStateInstance()
+}
 
 // Prime's external injections are best-effort; role context should still
 // return when bd/mail is slow or wedged.
 var primeExternalToolTimeout = 5 * time.Second
 var primeExternalToolWaitDelay = time.Second
-
-// primeHookSource stores the SessionStart source ("startup", "resume", "clear", "compact")
-// when running in hook mode. Used to provide lighter output on compaction/resume.
-var primeHookSource string
-
-// primeHandoffReason stores the reason from the handoff marker (e.g., "compaction").
-// Set by checkHandoffMarker when a marker with a reason field is found.
-var primeHandoffReason string
 
 // Role represents a detected agent role.
 type Role string
@@ -105,15 +110,16 @@ HOOK MODE (--hook):
 }
 
 func init() {
-	primeCmd.Flags().BoolVar(&primeHookMode, "hook", false,
+	state := primeState()
+	primeCmd.Flags().BoolVar(&state.hookMode, "hook", false,
 		"Hook mode: read session ID from stdin JSON (for LLM runtime hooks)")
-	primeCmd.Flags().BoolVar(&primeDryRun, "dry-run", false,
+	primeCmd.Flags().BoolVar(&state.dryRun, "dry-run", false,
 		"Show what would be injected without side effects (no marker removal, no mail)")
 	primeCmd.Flags().Bool("state", false,
 		"Show detected session state only (normal/post-handoff/crash/autonomous)")
 	primeCmd.Flags().Bool("json", false,
 		"Output state as JSON (requires --state)")
-	primeCmd.Flags().BoolVar(&primeExplain, "explain", false,
+	primeCmd.Flags().BoolVar(&state.explain, "explain", false,
 		"Show why each section was included")
 	rootCmd.AddCommand(primeCmd)
 }
@@ -125,7 +131,9 @@ type RoleContext = RoleInfo
 func runPrime(cmd *cobra.Command, _ []string) (retErr error) {
 	stateMode := commandBoolFlag(cmd, "state")
 	stateJSON := commandBoolFlag(cmd, "json")
-	defer func() { telemetry.RecordPrime(context.Background(), os.Getenv("GT_ROLE"), primeHookMode, retErr) }()
+	defer func() {
+		telemetry.RecordPrime(context.Background(), os.Getenv("GT_ROLE"), primeState().hookMode, retErr)
+	}()
 	if err := validatePrimeFlags(stateMode, stateJSON); err != nil {
 		return err
 	}
@@ -169,10 +177,10 @@ func preparePrimeContext(cwd, townRoot string) (RoleContext, RoleInfo, error) {
 	if err := ensureRoleWorktreeIntegrity(cwd, townRoot, roleInfo.Role); err != nil {
 		return RoleContext{}, RoleInfo{}, err
 	}
-	if primeHookMode {
+	if primeState().hookMode {
 		handlePrimeHookMode(townRoot, cwd)
 	}
-	if primeDryRun {
+	if primeState().dryRun {
 		checkHandoffMarkerDryRun(cwd)
 	} else {
 		checkHandoffMarker(cwd)
@@ -185,7 +193,7 @@ func preparePrimeContext(cwd, townRoot string) (RoleContext, RoleInfo, error) {
 		TownRoot: townRoot,
 		WorkDir:  cwd,
 	}
-	if !primeDryRun {
+	if !primeState().dryRun {
 		if err := ensurePrimeSkills(cwd, townRoot, os.Getenv("GT_AGENT")); err != nil {
 			explain(true, fmt.Sprintf("mattpocock skills: provision failed: %v", err))
 		}
@@ -209,7 +217,7 @@ func runPrimeFull(ctx RoleContext, roleInfo RoleInfo, cwd string) error {
 	if err != nil {
 		return err
 	}
-	telemetry.RecordPrimeContext(context.Background(), formula, os.Getenv("GT_ROLE"), primeHookMode)
+	telemetry.RecordPrimeContext(context.Background(), formula, os.Getenv("GT_ROLE"), primeState().hookMode)
 	hasSlungWork, err := checkSlungWork(ctx, hookedBead)
 	if err != nil {
 		return err
@@ -276,9 +284,10 @@ func roleRequiresWorktreeIntegrity(role Role) bool {
 func runPrimeCompactResume(ctx RoleContext) {
 	// Brief identity confirmation
 	actor := getAgentIdentity(ctx)
-	source := primeHookSource
-	if source == "" && primeHandoffReason != "" {
-		source = "handoff-" + primeHandoffReason
+	state := primeState()
+	source := state.hookSource
+	if source == "" && state.handoffReason != "" {
+		source = "handoff-" + state.handoffReason
 	}
 	fmt.Printf("\n> **Recovery**: Context %s complete. You are **%s** (%s).\n",
 		source, actor, ctx.Role)
@@ -288,7 +297,7 @@ func runPrimeCompactResume(ctx RoleContext) {
 
 	fmt.Println("\n---")
 	fmt.Println()
-	if !primeDryRun {
+	if !state.dryRun {
 		if err := ensurePrimeSkills(ctx.WorkDir, ctx.TownRoot, os.Getenv("GT_AGENT")); err != nil {
 			explain(true, fmt.Sprintf("mattpocock skills: provision failed: %v", err))
 		}
@@ -329,7 +338,8 @@ func ensurePrimeSkills(workDir, townRoot, agent string) error {
 }
 
 func validatePrimeFlags(stateMode, stateJSON bool) error {
-	if stateMode && (primeHookMode || primeDryRun || primeExplain) {
+	state := primeState()
+	if stateMode && (state.hookMode || state.dryRun || state.explain) {
 		return fmt.Errorf("--state cannot be combined with other flags (except --json)")
 	}
 	if stateJSON && !stateMode {
@@ -367,7 +377,7 @@ func resolvePrimeWorkspace() (cwd, townRoot string, err error) {
 // Called when --hook flag is set for LLM runtime hook integration.
 func handlePrimeHookMode(townRoot, cwd string) {
 	sessionID, source := readHookSessionID()
-	if !primeDryRun {
+	if !primeState().dryRun {
 		persistSessionID(townRoot, sessionID)
 		if cwd != townRoot {
 			persistSessionID(cwd, sessionID)
@@ -383,7 +393,7 @@ func handlePrimeHookMode(townRoot, cwd string) {
 	signalAgentReady()
 
 	// Store source for compact/resume detection in runPrime
-	primeHookSource = source
+	primeState().hookSource = source
 
 	explain(true, "Session beacon: hook mode enabled, session ID from stdin")
 	for _, line := range hookSessionBeaconLines(sessionID, source) {
@@ -396,7 +406,7 @@ func handlePrimeHookMode(townRoot, cwd string) {
 // tries to auto-detect JSON, sees the leading '[', and misclassifies the startup
 // stream as JSON instead of plain text metadata.
 func hookSessionBeaconLines(sessionID, source string) []string {
-	if primeStructuredSessionStartOutput {
+	if primeState().structuredSessionStartOutput {
 		return nil
 	}
 	lines := []string{fmt.Sprintf("[session:%s]", sessionID)}
@@ -431,7 +441,8 @@ func signalAgentReady() {
 // Without this, the new session runs full prime with AUTONOMOUS WORK MODE,
 // causing the agent to re-initialize instead of continuing. (GH#1965)
 func isCompactResume() bool {
-	return primeHookSource == "compact" || primeHookSource == "resume" || primeHandoffReason == "compaction"
+	state := primeState()
+	return state.hookSource == "compact" || state.hookSource == "resume" || state.handoffReason == "compaction"
 }
 
 // warnRoleMismatch outputs a prominent warning if GT_ROLE disagrees with cwd detection.
@@ -455,7 +466,7 @@ func warnRoleMismatch(roleInfo RoleInfo, cwd string) {
 // setupPrimeSession handles identity locking, beads redirect, and session events.
 // Skipped entirely in dry-run mode.
 func setupPrimeSession(ctx RoleContext, roleInfo RoleInfo) error {
-	if primeDryRun {
+	if primeState().dryRun {
 		return nil
 	}
 	if err := acquireIdentityLock(ctx); err != nil {
@@ -470,7 +481,7 @@ func setupPrimeSession(ctx RoleContext, roleInfo RoleInfo) error {
 	// agent's context) must not emit session_start — doing so logs a spurious
 	// event with the target agent's persisted session_id, which pollutes the
 	// event stream and can confuse gt seance discovery.
-	if primeHookMode {
+	if primeState().hookMode {
 		emitSessionEvent(ctx)
 	}
 	return nil
@@ -572,7 +583,7 @@ func outputRoleContext(ctx RoleContext) (string, error) {
 		return "", err
 	}
 
-	outputRoleDirectives(ctx, os.Stdout, primeExplain)
+	outputRoleDirectives(ctx, os.Stdout, primeState().explain)
 	outputContextFile(ctx)
 	outputHandoffContent(ctx)
 	outputAttachmentStatus(ctx)
@@ -582,7 +593,7 @@ func outputRoleContext(ctx RoleContext) (string, error) {
 // runPrimeExternalTools runs lightweight memory and mail injection.
 // Skipped in dry-run mode with explain output.
 func runPrimeExternalTools(ctx RoleContext, cwd string) {
-	if primeDryRun {
+	if primeState().dryRun {
 		explain(true, "memory injection: skipped in dry-run mode")
 		explain(true, "gt mail check --inject: skipped in dry-run mode")
 		return
@@ -1555,7 +1566,7 @@ func worktreeBeadsNeedsCleanup(workDir string) bool {
 // from a previous prime cycle does not leak into the current one.
 // No-op in dry-run mode.
 func injectWorkContext(ctx RoleContext, hookedBead *beads.Issue) {
-	if primeDryRun || !telemetry.IsActive() {
+	if primeState().dryRun || !telemetry.IsActive() {
 		return
 	}
 	workRig := ""
@@ -1575,7 +1586,7 @@ func injectWorkContext(ctx RoleContext, hookedBead *beads.Issue) {
 }
 
 func pushPrimeToWorker(ctx RoleContext, hookedBead *beads.Issue) {
-	if primeDryRun || ctx.TownRoot == "" {
+	if primeState().dryRun || ctx.TownRoot == "" {
 		return
 	}
 	run := primeWorkerRun(ctx)

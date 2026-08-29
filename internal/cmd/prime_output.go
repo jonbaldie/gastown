@@ -160,7 +160,7 @@ func outputSkillDirectives(w io.Writer) {
 // and override formula defaults where they conflict.
 //
 // w and explainEnabled are injected so tests can capture output without
-// mutating os.Stdout or the primeExplain global (avoiding data races
+// mutating os.Stdout or command state (avoiding data races
 // under t.Parallel).
 func outputRoleDirectives(ctx RoleContext, w io.Writer, explainEnabled bool) {
 	role := string(ctx.Role)
@@ -968,7 +968,7 @@ func outputDeaconPausedMessage(state *deacon.PauseState) {
 
 // explain outputs an explanatory message if --explain mode is enabled.
 func explain(condition bool, reason string) {
-	if primeExplain && condition {
+	if primeState().explain && condition {
 		fmt.Printf("\n[EXPLAIN] %s\n", reason)
 	}
 }

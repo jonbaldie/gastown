@@ -43,7 +43,7 @@ type hookInput struct {
 //	SessionStart: "export GT_SESSION_ID=$(uuidgen) GT_HOOK_SOURCE=startup && gt prime --hook"
 //	PreCompress:  "export GT_HOOK_SOURCE=compact && gt prime --hook"
 func readHookSessionID() (sessionID, source string) {
-	primeStructuredSessionStartOutput = false
+	primeState().structuredSessionStartOutput = false
 	// Source can come from env (any runtime) or stdin JSON (Claude only).
 	// Check env first so it's available even when stdin provides the session ID.
 	source = os.Getenv("GT_HOOK_SOURCE")
@@ -59,7 +59,7 @@ func readHookSessionID() (sessionID, source string) {
 	//    Checked before persisted file so a fresh Claude session always wins
 	//    over a potentially stale .runtime/session_id from a previous session.
 	if input := readStdinJSON(); input != nil {
-		primeStructuredSessionStartOutput = input.HookEventName == "SessionStart"
+		primeState().structuredSessionStartOutput = input.HookEventName == "SessionStart"
 		if input.SessionID != "" {
 			// Stdin source overrides env source when both are present
 			if input.Source != "" {
@@ -263,7 +263,7 @@ func outputSessionMetadata(ctx RoleContext) {
 // SessionStart hooks because Codex will see '[' and try to parse the line as
 // JSON instead of treating it as plain text session metadata.
 func formatSessionMetadataLine(actor, sessionID string) string {
-	if primeStructuredSessionStartOutput {
+	if primeState().structuredSessionStartOutput {
 		return fmt.Sprintf("GAS TOWN role:%s pid:%d session:%s", actor, os.Getpid(), sessionID)
 	}
 	return fmt.Sprintf("[GAS TOWN] role:%s pid:%d session:%s", actor, os.Getpid(), sessionID)
@@ -423,7 +423,7 @@ func checkHandoffMarker(workDir string) {
 	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
 	prevSession := strings.TrimSpace(lines[0])
 	if len(lines) > 1 {
-		primeHandoffReason = strings.TrimSpace(lines[1])
+		primeState().handoffReason = strings.TrimSpace(lines[1])
 	}
 
 	// Remove the marker FIRST so we don't warn twice
@@ -447,10 +447,10 @@ func checkHandoffMarkerDryRun(workDir string) {
 	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
 	prevSession := strings.TrimSpace(lines[0])
 	if len(lines) > 1 {
-		primeHandoffReason = strings.TrimSpace(lines[1])
+		primeState().handoffReason = strings.TrimSpace(lines[1])
 	}
 
-	explain(true, fmt.Sprintf("Post-handoff: marker found (predecessor: %s, reason: %s), marker NOT removed in dry-run", prevSession, primeHandoffReason))
+	explain(true, fmt.Sprintf("Post-handoff: marker found (predecessor: %s, reason: %s), marker NOT removed in dry-run", prevSession, primeState().handoffReason))
 
 	// Output the warning but don't remove marker
 	outputHandoffWarning(prevSession)

@@ -35,7 +35,7 @@ func setupPrimeExternalToolTest(t *testing.T, bdScript, gtScript string) string 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("PRIME_TOOL_CALL_LOG", logPath)
 	t.Setenv("TMUX", "")
-	primeDryRun = false
+	primeState().dryRun = false
 
 	return t.TempDir()
 }

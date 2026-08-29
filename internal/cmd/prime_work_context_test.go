@@ -17,7 +17,7 @@ func setupWorkContextTest(t *testing.T) {
 	t.Setenv("GT_WORK_RIG", "")
 	t.Setenv("GT_WORK_BEAD", "")
 	t.Setenv("GT_WORK_MOL", "")
-	primeDryRun = false
+	primeState().dryRun = false
 }
 
 func TestInjectWorkContext_NoBeadClearsVars(t *testing.T) {
@@ -100,7 +100,7 @@ func TestInjectWorkContext_NoopWhenOTelDisabled(t *testing.T) {
 	t.Setenv("GT_WORK_RIG", "")
 	t.Setenv("GT_WORK_BEAD", "")
 	t.Setenv("TMUX", "")
-	primeDryRun = false
+	primeState().dryRun = false
 
 	ctx := RoleContext{Rig: "gastown"}
 	bead := &beads.Issue{ID: "sg-05iq"}
@@ -114,8 +114,8 @@ func TestInjectWorkContext_NoopWhenOTelDisabled(t *testing.T) {
 
 func TestInjectWorkContext_NoopInDryRun(t *testing.T) {
 	setupWorkContextTest(t)
-	primeDryRun = true
-	t.Cleanup(func() { primeDryRun = false })
+	primeState().dryRun = true
+	t.Cleanup(func() { primeState().dryRun = false })
 
 	ctx := RoleContext{Rig: "gastown"}
 	bead := &beads.Issue{ID: "sg-05iq"}
