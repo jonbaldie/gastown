@@ -527,6 +527,117 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 	})
 }
 
+func newRigBeadsWorkDir(townRoot, name string, newRig *rig.Rig) string {
+	if newRig.Config.Prefix == "" {
+		return ""
+	}
+	mayorRigBeads := filepath.Join(townRoot, name, "mayor", "rig", ".beads")
+	if _, err := os.Stat(mayorRigBeads); err == nil {
+		return filepath.Join(townRoot, name, "mayor", "rig")
+	}
+	return filepath.Join(townRoot, name)
+}
+
+func createNewRigAgentBeads(townRoot string, opts rig.AddRigOptions, newRig *rig.Rig) {
+	beadsWorkDir := newRigBeadsWorkDir(townRoot, opts.Name, newRig)
+	if beadsWorkDir == "" {
+		return
+	}
+	bd := beads.New(beadsWorkDir)
+	fields := &beads.RigFields{Repo: opts.GitURL, Prefix: newRig.Config.Prefix, State: beads.RigStateActive}
+	if _, err := bd.CreateRigBead(opts.Name, fields); err != nil {
+		fmt.Printf("  %s Could not create rig identity bead: %v\n", style.Warning.Render("!"), err)
+	} else {
+		rigBeadID := beads.RigBeadIDWithPrefix(newRig.Config.Prefix, opts.Name)
+		fmt.Printf("  Created rig identity bead: %s\n", rigBeadID)
+	}
+
+	prefix := newRig.Config.Prefix
+	witnessID := beads.WitnessBeadIDWithPrefix(prefix, opts.Name)
+	if _, err := bd.CreateAgentBead(witnessID,
+		fmt.Sprintf("Witness for %s - monitors polecat health and progress.", opts.Name),
+		&beads.AgentFields{RoleType: "witness", Rig: opts.Name, AgentState: "idle"},
+	); err != nil {
+		fmt.Printf("  %s Could not create witness agent bead: %v\n", style.Warning.Render("!"), err)
+	} else {
+		fmt.Printf("  Created agent bead: %s\n", witnessID)
+	}
+
+	refineryID := beads.RefineryBeadIDWithPrefix(prefix, opts.Name)
+	if _, err := bd.CreateAgentBead(refineryID,
+		fmt.Sprintf("Refinery for %s - processes merge queue.", opts.Name),
+		&beads.AgentFields{RoleType: "refinery", Rig: opts.Name, AgentState: "idle"},
+	); err != nil {
+		fmt.Printf("  %s Could not create refinery agent bead: %v\n", style.Warning.Render("!"), err)
+	} else {
+		fmt.Printf("  Created agent bead: %s\n", refineryID)
+	}
+}
+
+func finalizeNewRig(townRoot string, opts rig.AddRigOptions, mgr *rig.Manager) {
+	autoAssignNamepoolTheme(townRoot, opts.Name, mgr)
+	ensureHooksBase()
+	if err := syncRigHooks(townRoot, opts.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks for new rig: %v\n", err)
+	}
+	commitTownConfigChanges(townRoot, opts.Name)
+	refreshCycleBindingsOnExistingSessions()
+}
+
+func reportNewRig(townRoot string, opts rig.AddRigOptions, newRig *rig.Rig, startTime time.Time) {
+	elapsed := time.Since(startTime)
+	defaultBranch := "main"
+	if rigCfg, err := rig.LoadRigConfig(filepath.Join(townRoot, opts.Name)); err == nil && rigCfg.DefaultBranch != "" {
+		defaultBranch = rigCfg.DefaultBranch
+	}
+	fmt.Printf("\n%s Rig created in %.1fs\n", style.Success.Render("✓"), elapsed.Seconds())
+	fmt.Printf("\nStructure:\n")
+	fmt.Printf("  %s/\n", opts.Name)
+	fmt.Printf("  ├── config.json\n")
+	fmt.Printf("  ├── .repo.git/        (shared bare repo for refinery+polecats)\n")
+	fmt.Printf("  ├── .beads/           (prefix: %s)\n", newRig.Config.Prefix)
+	fmt.Printf("  ├── plugins/          (rig-level plugins)\n")
+	fmt.Printf("  ├── mayor/rig/        (clone: %s)\n", defaultBranch)
+	fmt.Printf("  ├── refinery/rig/     (worktree: %s, sees polecat branches)\n", defaultBranch)
+	fmt.Printf("  ├── crew/             (empty - add crew with 'gt crew add')\n")
+	fmt.Printf("  ├── witness/\n")
+	fmt.Printf("  └── polecats/         (.claude/ scaffolded for polecat sessions)\n")
+	fmt.Printf("\nNext steps:\n")
+	fmt.Printf("  gt crew add <name> --rig %s   # Create your personal workspace\n", opts.Name)
+	fmt.Printf("  cd %s/crew/<name>              # Start working\n", filepath.Join(townRoot, opts.Name))
+}
+
+func validRigCloneFilter(filter string) bool {
+	for _, supported := range []string{"blob:none", "tree:0"} {
+		if filter == supported {
+			return true
+		}
+	}
+	return false
+}
+
+func validateRigAddOptions(opts *rig.AddRigOptions) error {
+	opts.PushURL = strings.TrimSpace(opts.PushURL)
+	opts.UpstreamURL = strings.TrimSpace(opts.UpstreamURL)
+	warnThirdPartyRigAdd(opts.GitURL, opts.PushURL)
+	if opts.PushURL != "" && !isGitRemoteURL(opts.PushURL) {
+		return fmt.Errorf("invalid push URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://)", opts.PushURL)
+	}
+	if opts.UpstreamURL != "" && !isGitRemoteURL(opts.UpstreamURL) {
+		return fmt.Errorf("invalid upstream URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://)", opts.UpstreamURL)
+	}
+	if opts.CloneFilter != "" {
+		if !validRigCloneFilter(opts.CloneFilter) {
+			return fmt.Errorf("invalid --filter %q: supported values are %v", opts.CloneFilter, []string{"blob:none", "tree:0"})
+		}
+		fmt.Printf("  Partial clone: --filter=%s\n", opts.CloneFilter)
+	}
+	if len(opts.SparseCheckout) > 0 {
+		fmt.Printf("  Sparse checkout: %v\n", opts.SparseCheckout)
+	}
+	return nil
+}
+
 func addRigToTown(townRoot string, opts rig.AddRigOptions) error {
 	if !isGitRemoteURL(opts.GitURL) {
 		return fmt.Errorf("invalid git URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)\n\nTo use a local repo as the source, pass a file:// URL. To register an already-assembled rig directory, use:\n  gt rig add %s --adopt", opts.GitURL, opts.Name)
@@ -553,33 +664,8 @@ func addRigToTown(townRoot string, opts rig.AddRigOptions) error {
 	if opts.LocalRepo != "" {
 		fmt.Printf("  Local repo: %s\n", opts.LocalRepo)
 	}
-	opts.PushURL = strings.TrimSpace(opts.PushURL)
-	opts.UpstreamURL = strings.TrimSpace(opts.UpstreamURL)
-	warnThirdPartyRigAdd(opts.GitURL, opts.PushURL)
-
-	if opts.PushURL != "" && !isGitRemoteURL(opts.PushURL) {
-		return fmt.Errorf("invalid push URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://)", opts.PushURL)
-	}
-	if opts.UpstreamURL != "" && !isGitRemoteURL(opts.UpstreamURL) {
-		return fmt.Errorf("invalid upstream URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://)", opts.UpstreamURL)
-	}
-
-	if opts.CloneFilter != "" {
-		validFilters := []string{"blob:none", "tree:0"}
-		valid := false
-		for _, f := range validFilters {
-			if opts.CloneFilter == f {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return fmt.Errorf("invalid --filter %q: supported values are %v", opts.CloneFilter, validFilters)
-		}
-		fmt.Printf("  Partial clone: --filter=%s\n", opts.CloneFilter)
-	}
-	if len(opts.SparseCheckout) > 0 {
-		fmt.Printf("  Sparse checkout: %v\n", opts.SparseCheckout)
+	if err := validateRigAddOptions(&opts); err != nil {
+		return err
 	}
 
 	startTime := time.Now()
@@ -593,83 +679,9 @@ func addRigToTown(townRoot string, opts rig.AddRigOptions) error {
 		fmt.Printf("  %s Could not update daemon.json patrols: %v\n", style.Warning.Render("!"), err)
 	}
 
-	var beadsWorkDir string
-	if newRig.Config.Prefix != "" {
-		mayorRigBeads := filepath.Join(townRoot, opts.Name, "mayor", "rig", ".beads")
-		if _, err := os.Stat(mayorRigBeads); err == nil {
-			beadsWorkDir = filepath.Join(townRoot, opts.Name, "mayor", "rig")
-		} else {
-			beadsWorkDir = filepath.Join(townRoot, opts.Name)
-		}
-	}
-
-	if newRig.Config.Prefix != "" && beadsWorkDir != "" {
-		bd := beads.New(beadsWorkDir)
-		fields := &beads.RigFields{
-			Repo:   opts.GitURL,
-			Prefix: newRig.Config.Prefix,
-			State:  beads.RigStateActive,
-		}
-		if _, err := bd.CreateRigBead(opts.Name, fields); err != nil {
-			fmt.Printf("  %s Could not create rig identity bead: %v\n", style.Warning.Render("!"), err)
-		} else {
-			rigBeadID := beads.RigBeadIDWithPrefix(newRig.Config.Prefix, opts.Name)
-			fmt.Printf("  Created rig identity bead: %s\n", rigBeadID)
-		}
-
-		prefix := newRig.Config.Prefix
-		witnessID := beads.WitnessBeadIDWithPrefix(prefix, opts.Name)
-		if _, err := bd.CreateAgentBead(witnessID,
-			fmt.Sprintf("Witness for %s - monitors polecat health and progress.", opts.Name),
-			&beads.AgentFields{RoleType: "witness", Rig: opts.Name, AgentState: "idle"},
-		); err != nil {
-			fmt.Printf("  %s Could not create witness agent bead: %v\n", style.Warning.Render("!"), err)
-		} else {
-			fmt.Printf("  Created agent bead: %s\n", witnessID)
-		}
-
-		refineryID := beads.RefineryBeadIDWithPrefix(prefix, opts.Name)
-		if _, err := bd.CreateAgentBead(refineryID,
-			fmt.Sprintf("Refinery for %s - processes merge queue.", opts.Name),
-			&beads.AgentFields{RoleType: "refinery", Rig: opts.Name, AgentState: "idle"},
-		); err != nil {
-			fmt.Printf("  %s Could not create refinery agent bead: %v\n", style.Warning.Render("!"), err)
-		} else {
-			fmt.Printf("  Created agent bead: %s\n", refineryID)
-		}
-	}
-
-	autoAssignNamepoolTheme(townRoot, opts.Name, mgr)
-	ensureHooksBase()
-	if err := syncRigHooks(townRoot, opts.Name); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks for new rig: %v\n", err)
-	}
-	commitTownConfigChanges(townRoot, opts.Name)
-	refreshCycleBindingsOnExistingSessions()
-
-	elapsed := time.Since(startTime)
-
-	defaultBranch := "main"
-	if rigCfg, err := rig.LoadRigConfig(filepath.Join(townRoot, opts.Name)); err == nil && rigCfg.DefaultBranch != "" {
-		defaultBranch = rigCfg.DefaultBranch
-	}
-
-	fmt.Printf("\n%s Rig created in %.1fs\n", style.Success.Render("✓"), elapsed.Seconds())
-	fmt.Printf("\nStructure:\n")
-	fmt.Printf("  %s/\n", opts.Name)
-	fmt.Printf("  ├── config.json\n")
-	fmt.Printf("  ├── .repo.git/        (shared bare repo for refinery+polecats)\n")
-	fmt.Printf("  ├── .beads/           (prefix: %s)\n", newRig.Config.Prefix)
-	fmt.Printf("  ├── plugins/          (rig-level plugins)\n")
-	fmt.Printf("  ├── mayor/rig/        (clone: %s)\n", defaultBranch)
-	fmt.Printf("  ├── refinery/rig/     (worktree: %s, sees polecat branches)\n", defaultBranch)
-	fmt.Printf("  ├── crew/             (empty - add crew with 'gt crew add')\n")
-	fmt.Printf("  ├── witness/\n")
-	fmt.Printf("  └── polecats/         (.claude/ scaffolded for polecat sessions)\n")
-
-	fmt.Printf("\nNext steps:\n")
-	fmt.Printf("  gt crew add <name> --rig %s   # Create your personal workspace\n", opts.Name)
-	fmt.Printf("  cd %s/crew/<name>              # Start working\n", filepath.Join(townRoot, opts.Name))
+	createNewRigAgentBeads(townRoot, opts, newRig)
+	finalizeNewRig(townRoot, opts, mgr)
+	reportNewRig(townRoot, opts, newRig, startTime)
 
 	return nil
 }
