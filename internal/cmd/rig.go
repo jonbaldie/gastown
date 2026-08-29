@@ -2493,47 +2493,48 @@ func looksLikeHostedGitRemote(raw string) bool {
 // local path. Accepts any scheme:// URL (including file:// for explicit local
 // mirrors) as well as SCP-style SSH URLs.
 func isGitRemoteURL(s string) bool {
-	// Reject flag-like strings (defense-in-depth against argument injection)
-	if strings.HasPrefix(s, "-") {
+	if isLocalGitPath(s) {
 		return false
 	}
-	// Reject absolute paths
-	if strings.HasPrefix(s, "/") {
-		return false
-	}
-	// Reject Windows-style paths (C:\...)
-	if len(s) >= 3 && s[1] == ':' && (s[2] == '/' || s[2] == '\\') {
-		return false
-	}
-	// Reject relative paths
-	if strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
-		return false
-	}
-	// Reject home-relative paths
-	if strings.HasPrefix(s, "~/") {
-		return false
-	}
-	// Accept any scheme:// URL where scheme is alphanumeric (plus + - .).
-	// This covers https://, ssh://, git://, s3://, file://, codecommit://, etc.
-	// Git invokes git-remote-<scheme> for non-builtin schemes.
-	if idx := strings.Index(s, "://"); idx > 0 {
-		scheme := s[:idx]
-		for _, c := range scheme {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-				(c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.') {
-				return false
-			}
-		}
+	if hasValidGitURLScheme(s) {
 		return true
 	}
+	return isSCPStyleSSHURL(s)
+}
+
+func isLocalGitPath(s string) bool {
+	return strings.HasPrefix(s, "-") ||
+		strings.HasPrefix(s, "/") ||
+		(len(s) >= 3 && s[1] == ':' && (s[2] == '/' || s[2] == '\\')) ||
+		strings.HasPrefix(s, "./") ||
+		strings.HasPrefix(s, "../") ||
+		strings.HasPrefix(s, "~/")
+}
+
+func hasValidGitURLScheme(s string) bool {
+	idx := strings.Index(s, "://")
+	if idx <= 0 {
+		return false
+	}
+	for _, c := range s[:idx] {
+		if !isGitURLSchemeRune(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isGitURLSchemeRune(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'
+}
+
+func isSCPStyleSSHURL(s string) bool {
 	// Accept SCP-style SSH URLs (user@host:path) where user and host are non-empty
 	// and host contains no slashes (distinguishes from file:// or path-like strings)
 	atIdx := strings.Index(s, "@")
 	colonIdx := strings.Index(s, ":")
-	if atIdx > 0 && colonIdx > atIdx+1 && !strings.Contains(s[:colonIdx], "/") {
-		return true
-	}
-	return false
+	return atIdx > 0 && colonIdx > atIdx+1 && !strings.Contains(s[:colonIdx], "/")
 }
 
 // autoAssignNamepoolTheme picks a namepool theme for a new rig that doesn't collide
