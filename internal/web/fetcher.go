@@ -1731,108 +1731,19 @@ func stripModelSuffix(model string) string {
 func (f *LiveConvoyFetcher) FetchIssues() ([]IssueRow, error) {
 	// Query both open AND hooked issues for the Work panel
 	// Open = ready to assign, Hooked = in progress
-	var allBeads []struct {
-		ID        string   `json:"id"`
-		Title     string   `json:"title"`
-		Type      string   `json:"type"`
-		Priority  int      `json:"priority"`
-		Labels    []string `json:"labels"`
-		CreatedAt string   `json:"created_at"`
-	}
-
-	// Fetch open issues
-	if stdout, err := f.runBdCmd(f.townRoot, "list", "--status=open", "--json", "--limit=50"); err == nil {
-		var openBeads []struct {
-			ID        string   `json:"id"`
-			Title     string   `json:"title"`
-			Type      string   `json:"type"`
-			Priority  int      `json:"priority"`
-			Labels    []string `json:"labels"`
-			CreatedAt string   `json:"created_at"`
-		}
-		if err := json.Unmarshal(stdout.Bytes(), &openBeads); err == nil {
-			allBeads = append(allBeads, openBeads...)
-		}
-	}
-
-	// Fetch hooked issues (in progress)
-	if stdout, err := f.runBdCmd(f.townRoot, "list", "--status=hooked", "--json", "--limit=50"); err == nil {
-		var hookedBeads []struct {
-			ID        string   `json:"id"`
-			Title     string   `json:"title"`
-			Type      string   `json:"type"`
-			Priority  int      `json:"priority"`
-			Labels    []string `json:"labels"`
-			CreatedAt string   `json:"created_at"`
-		}
-		if err := json.Unmarshal(stdout.Bytes(), &hookedBeads); err == nil {
-			allBeads = append(allBeads, hookedBeads...)
-		}
-	}
-
-	beads := allBeads
+	beads := f.fetchIssueBeads("open")
+	beads = append(beads, f.fetchIssueBeads("hooked")...)
 
 	var rows []IssueRow
 	for _, bead := range beads {
-		// Skip internal types (messages, convoys, queues, merge-requests, wisps)
-		// Check both legacy type field and gt: labels
-		isInternal := false
-		switch bead.Type {
-		case "message", "convoy", "queue", "merge-request", "wisp", "agent":
-			isInternal = true
+		if row, ok := issueRowFromBead(bead); ok {
+			rows = append(rows, row)
 		}
-		for _, l := range bead.Labels {
-			switch l {
-			case "gt:message", "gt:convoy", "gt:queue", "gt:merge-request", "gt:wisp", "gt:agent":
-				isInternal = true
-			}
-		}
-		if isInternal {
-			continue
-		}
-
-		row := IssueRow{
-			ID:       bead.ID,
-			Title:    bead.Title,
-			Type:     bead.Type,
-			Priority: bead.Priority,
-		}
-
-		// Keep full title - CSS handles overflow
-
-		// Format labels (skip internal labels)
-		var displayLabels []string
-		for _, label := range bead.Labels {
-			if !strings.HasPrefix(label, "gt:") && !strings.HasPrefix(label, "internal:") {
-				displayLabels = append(displayLabels, label)
-			}
-		}
-		if len(displayLabels) > 0 {
-			row.Labels = strings.Join(displayLabels, ", ")
-			if len(row.Labels) > 25 {
-				row.Labels = row.Labels[:22] + "..."
-			}
-		}
-
-		// Calculate age
-		if bead.CreatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, bead.CreatedAt); err == nil {
-				row.Age = formatTimestamp(t)
-			}
-		}
-
-		rows = append(rows, row)
 	}
 
 	// Sort by priority (1=critical first), then by age
 	sort.Slice(rows, func(i, j int) bool {
-		pi, pj := rows[i].Priority, rows[j].Priority
-		if pi == 0 {
-			pi = 5 // Treat unset priority as low
-		}
-		if pj == 0 {
-			pj = 5
-		}
+		pi, pj := issueSortPriority(rows[i].Priority), issueSortPriority(rows[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
@@ -1840,6 +1751,85 @@ func (f *LiveConvoyFetcher) FetchIssues() ([]IssueRow, error) {
 	})
 
 	return rows, nil
+}
+
+type issueListBead struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Type      string   `json:"type"`
+	Priority  int      `json:"priority"`
+	Labels    []string `json:"labels"`
+	CreatedAt string   `json:"created_at"`
+}
+
+func (f *LiveConvoyFetcher) fetchIssueBeads(status string) []issueListBead {
+	stdout, err := f.runBdCmd(f.townRoot, "list", "--status="+status, "--json", "--limit=50")
+	if err != nil {
+		return nil
+	}
+	var beads []issueListBead
+	if err := json.Unmarshal(stdout.Bytes(), &beads); err != nil {
+		return nil
+	}
+	return beads
+}
+
+func issueRowFromBead(bead issueListBead) (IssueRow, bool) {
+	if isInternalIssueBead(bead) {
+		return IssueRow{}, false
+	}
+
+	row := IssueRow{
+		ID:       bead.ID,
+		Title:    bead.Title,
+		Type:     bead.Type,
+		Priority: bead.Priority,
+		Labels:   displayIssueLabels(bead.Labels),
+	}
+	if bead.CreatedAt != "" {
+		if timestamp, err := time.Parse(time.RFC3339, bead.CreatedAt); err == nil {
+			row.Age = formatTimestamp(timestamp)
+		}
+	}
+	return row, true
+}
+
+func isInternalIssueBead(bead issueListBead) bool {
+	switch bead.Type {
+	case "message", "convoy", "queue", "merge-request", "wisp", "agent":
+		return true
+	}
+	for _, label := range bead.Labels {
+		switch label {
+		case "gt:message", "gt:convoy", "gt:queue", "gt:merge-request", "gt:wisp", "gt:agent":
+			return true
+		}
+	}
+	return false
+}
+
+func displayIssueLabels(labels []string) string {
+	var displayLabels []string
+	for _, label := range labels {
+		if !strings.HasPrefix(label, "gt:") && !strings.HasPrefix(label, "internal:") {
+			displayLabels = append(displayLabels, label)
+		}
+	}
+	if len(displayLabels) == 0 {
+		return ""
+	}
+	joined := strings.Join(displayLabels, ", ")
+	if len(joined) > 25 {
+		return joined[:22] + "..."
+	}
+	return joined
+}
+
+func issueSortPriority(priority int) int {
+	if priority == 0 {
+		return 5
+	}
+	return priority
 }
 
 // FetchActivity returns recent activity from the event log.
