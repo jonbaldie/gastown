@@ -466,10 +466,34 @@ func runDeaconStart(cmd *cobra.Command, _ []string) error {
 
 // startDeaconSession creates and initializes the Deacon tmux session.
 func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
+	setup, err := prepareDeaconSession(sessionName, agentOverride)
+	if err != nil {
+		return err
+	}
+
+	// Create session with command and env vars via -e flags so the initial
+	// shell (and subprocesses Claude spawns) inherit them from the start.
+	// See: https://github.com/anthropics/gastown/issues/280 (race condition fix)
+	fmt.Println("Starting Deacon session...")
+	if err := t.NewSessionWithCommandAndEnv(sessionName, setup.deaconDir, setup.startupCmd, setup.envVars); err != nil {
+		return fmt.Errorf("creating session: %w", err)
+	}
+
+	return finishDeaconSession(t, setup.townRoot, sessionName)
+}
+
+type deaconSessionSetup struct {
+	townRoot   string
+	deaconDir  string
+	startupCmd string
+	envVars    map[string]string
+}
+
+func prepareDeaconSession(sessionName, agentOverride string) (deaconSessionSetup, error) {
 	// Find workspace root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return deaconSessionSetup{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Deacon runs from its own directory (for correct role detection by gt prime)
@@ -477,7 +501,7 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 
 	// Ensure deacon directory exists
 	if err := os.MkdirAll(deaconDir, 0755); err != nil {
-		return fmt.Errorf("creating deacon directory: %w", err)
+		return deaconSessionSetup{}, fmt.Errorf("creating deacon directory: %w", err)
 	}
 
 	// Resolve CLAUDE_CONFIG_DIR from accounts.json so deacon sessions
@@ -491,7 +515,7 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	// Ensure runtime settings exist (autonomous role needs mail in SessionStart)
 	runtimeConfig := config.ResolveRoleAgentConfig("deacon", townRoot, deaconDir)
 	if err := runtime.EnsureSettingsForRole(deaconDir, deaconDir, "deacon", runtimeConfig); err != nil {
-		return fmt.Errorf("ensuring runtime settings: %w", err)
+		return deaconSessionSetup{}, fmt.Errorf("ensuring runtime settings: %w", err)
 	}
 
 	initialPrompt := session.BuildStartupPrompt(session.BeaconConfig{
@@ -508,7 +532,7 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 		SessionName:      sessionName,
 	}, "", initialPrompt, agentOverride)
 	if err != nil {
-		return fmt.Errorf("building startup command: %w", err)
+		return deaconSessionSetup{}, fmt.Errorf("building startup command: %w", err)
 	}
 
 	// Compute env vars BEFORE creating the session so they reach the agent's
@@ -521,13 +545,15 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 		Agent:            agentOverride,
 	})
 
-	// Create session with command and env vars via -e flags so the initial
-	// shell (and subprocesses Claude spawns) inherit them from the start.
-	// See: https://github.com/anthropics/gastown/issues/280 (race condition fix)
-	fmt.Println("Starting Deacon session...")
-	if err := t.NewSessionWithCommandAndEnv(sessionName, deaconDir, startupCmd, envVars); err != nil {
-		return fmt.Errorf("creating session: %w", err)
-	}
+	return deaconSessionSetup{
+		townRoot:   townRoot,
+		deaconDir:  deaconDir,
+		startupCmd: startupCmd,
+		envVars:    envVars,
+	}, nil
+}
+
+func finishDeaconSession(t *tmux.Tmux, townRoot, sessionName string) error {
 
 	// Record agent's pane_id for ZFC-compliant liveness checks (gt-qmsx).
 	if paneID, err := t.GetPaneID(sessionName); err == nil {
