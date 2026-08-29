@@ -1907,18 +1907,12 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 	// Find our session
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	for _, line := range lines {
-		parts := strings.Split(line, "|")
-		if len(parts) < 3 || parts[0] != sessionName {
+		activityUnix, attached, ok := crewSessionLine(line, sessionName)
+		if !ok {
 			continue
 		}
 
 		// Found session
-		var activityUnix int64
-		if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil {
-			continue
-		}
-		attached := parts[2] == "1"
-
 		sessionStatus := "detached"
 		if attached {
 			sessionStatus = "attached"
@@ -1935,7 +1929,7 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 		state := determineCrewState(activityAge, isClaudeRunning, hook)
 
 		// Check for questions if state is potentially finished
-		if state == "finished" || (state == "ready" && hook != "") {
+		if crewStateNeedsQuestion(state, hook) {
 			if h.hasQuestionInPane(ctx, sessionName) {
 				state = "questions"
 			}
@@ -1946,6 +1940,21 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 
 	// Session not found
 	return "ready", "", "none"
+}
+
+func crewSessionLine(line, sessionName string) (activityUnix int64, attached, ok bool) {
+	parts := strings.Split(line, "|")
+	if len(parts) < 3 || parts[0] != sessionName {
+		return 0, false, false
+	}
+	if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil {
+		return 0, false, false
+	}
+	return activityUnix, parts[2] == "1", true
+}
+
+func crewStateNeedsQuestion(state, hook string) bool {
+	return state == "finished" || (state == "ready" && hook != "")
 }
 
 // isClaudeRunningInSession checks if Claude/agent is actively running.
