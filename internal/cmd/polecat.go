@@ -1245,23 +1245,35 @@ func reconcileCleanupStatusIfSafe(status *RecoveryStatus, updater cleanupStatusU
 }
 
 func cleanupStatusReconcileCandidate(status *RecoveryStatus, p *polecat.Polecat, fields *beads.AgentFields) (polecat.CleanupStatus, bool) {
-	if status == nil || p == nil || fields == nil {
+	if !cleanupStatusReconcileInputsPresent(status, p, fields) {
 		return "", false
 	}
 	previous := polecat.CleanupStatus(fields.CleanupStatus)
-	if previous == "" || previous == polecat.CleanupClean {
+	if !cleanupStatusNeedsReconcile(previous) {
 		return previous, false
 	}
-	if p.State != polecat.StateIdle || beads.AgentState(fields.AgentState) != beads.AgentStateIdle {
-		return previous, false
-	}
-	if status.NeedsRecovery || status.Verdict != "SAFE_TO_NUKE" {
-		return previous, false
-	}
-	if status.Branch != "" && status.MQStatus != "submitted" && status.MQStatus != "not_required" {
+	if !cleanupStatusReconcileStateSafe(status, p, fields) {
 		return previous, false
 	}
 	return previous, true
+}
+
+func cleanupStatusReconcileInputsPresent(status *RecoveryStatus, p *polecat.Polecat, fields *beads.AgentFields) bool {
+	return status != nil && p != nil && fields != nil
+}
+
+func cleanupStatusNeedsReconcile(previous polecat.CleanupStatus) bool {
+	return previous != "" && previous != polecat.CleanupClean
+}
+
+func cleanupStatusReconcileStateSafe(status *RecoveryStatus, p *polecat.Polecat, fields *beads.AgentFields) bool {
+	if p.State != polecat.StateIdle || beads.AgentState(fields.AgentState) != beads.AgentStateIdle {
+		return false
+	}
+	if status.NeedsRecovery || status.Verdict != "SAFE_TO_NUKE" {
+		return false
+	}
+	return status.Branch == "" || status.MQStatus == "submitted" || status.MQStatus == "not_required"
 }
 
 func agentSourceIssueHint(currentIssue string, fields *beads.AgentFields) string {
