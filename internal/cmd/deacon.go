@@ -366,13 +366,6 @@ const (
 	defaultHealthCheckCooldown = 5 * time.Minute
 )
 
-var (
-	// Feed-stranded flags
-	feedStrandedMaxFeeds int
-	feedStrandedCooldown time.Duration
-	feedStrandedJSON     bool
-)
-
 func init() {
 	deaconCmd.AddCommand(deaconStartCmd)
 	deaconCmd.AddCommand(deaconStopCmd)
@@ -433,11 +426,11 @@ func init() {
 		"Minimum time between re-dispatches of same bead (default: 5m)")
 
 	// Flags for feed-stranded
-	deaconFeedStrandedCmd.Flags().IntVar(&feedStrandedMaxFeeds, "max-feeds", 0,
+	deaconFeedStrandedCmd.Flags().Int("max-feeds", 0,
 		"Max convoys to feed per invocation (default: 3)")
-	deaconFeedStrandedCmd.Flags().DurationVar(&feedStrandedCooldown, "cooldown", 0,
+	deaconFeedStrandedCmd.Flags().Duration("cooldown", 0,
 		"Minimum time between feeds of same convoy (default: 10m)")
-	deaconFeedStrandedCmd.Flags().BoolVar(&feedStrandedJSON, "json", false,
+	deaconFeedStrandedCmd.Flags().Bool("json", false,
 		"Output results as JSON")
 
 	deaconStartCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
@@ -1605,16 +1598,20 @@ func runDeaconRedispatchState(_ *cobra.Command, _ []string) error {
 }
 
 // runDeaconFeedStranded detects stranded convoys and feeds them.
-func runDeaconFeedStranded(_ *cobra.Command, _ []string) error {
+func runDeaconFeedStranded(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	result := deacon.FeedStranded(townRoot, feedStrandedMaxFeeds, feedStrandedCooldown)
+	result := deacon.FeedStranded(
+		townRoot,
+		commandIntFlag(cmd, "max-feeds"),
+		commandDurationFlag(cmd, "cooldown"),
+	)
 
 	// JSON output
-	if feedStrandedJSON {
+	if commandBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
