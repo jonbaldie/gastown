@@ -3863,20 +3863,18 @@ exit /b 0
 }
 
 func TestBuildSlingFieldUpdatesIncludesConvoyFields(t *testing.T) {
-	got := buildSlingFieldUpdates(
-		"mayor",
-		"review this",
-		[]string{"feature=test"},
-		"gt-wisp-test",
-		"mol-polecat-work",
-		false,
-		false,
-		"ralph",
-		"feature=test",
-		"hq-cv-test1",
-		"local",
-		true,
-	)
+	got := buildSlingFieldUpdates(slingFieldUpdateInput{
+		dispatcher:       "mayor",
+		args:             "review this",
+		vars:             []string{"feature=test"},
+		attachedMolecule: "gt-wisp-test",
+		attachedFormula:  "mol-polecat-work",
+		mode:             "ralph",
+		formulaVars:      "feature=test",
+		convoyID:         "hq-cv-test1",
+		mergeStrategy:    "local",
+		convoyOwned:      true,
+	})
 
 	if got.ConvoyID != "hq-cv-test1" {
 		t.Fatalf("ConvoyID = %q, want %q", got.ConvoyID, "hq-cv-test1")

@@ -607,7 +607,11 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 			rollbackSpawned(dispatchBeadID)
 			return err
 		}
-		return finishFormulaSling(resolved, delayedDogInfo, &delayedDogComplete, &formulaWorkComplete, townBeadsDir, formulaName, dispatchBeadID, targetAgent, &targetPane, isSelfSling, mode)
+		return finishFormulaSling(resolved, delayedDogInfo, formulaSlingFinishState{
+			delayedDogComplete:  &delayedDogComplete,
+			formulaWorkComplete: &formulaWorkComplete,
+			targetPane:          &targetPane,
+		}, townBeadsDir, formulaName, dispatchBeadID, targetAgent, isSelfSling, mode)
 	}
 	if admission == nil && strings.Contains(targetAgent, "/polecats/") {
 		parts := strings.Split(targetAgent, "/")
@@ -680,10 +684,20 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 	if err := persistAndHookFormulaDispatch(townRoot, formulaWorkDir, dispatchBeadID, targetAgent, formulaName, wispRootID, mode); err != nil {
 		return err
 	}
-	return finishFormulaSling(resolved, delayedDogInfo, &delayedDogComplete, &formulaWorkComplete, townBeadsDir, formulaName, dispatchBeadID, targetAgent, &targetPane, isSelfSling, mode)
+	return finishFormulaSling(resolved, delayedDogInfo, formulaSlingFinishState{
+		delayedDogComplete:  &delayedDogComplete,
+		formulaWorkComplete: &formulaWorkComplete,
+		targetPane:          &targetPane,
+	}, townBeadsDir, formulaName, dispatchBeadID, targetAgent, isSelfSling, mode)
 }
 
-func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInfo, delayedDogComplete, formulaWorkComplete *bool, townBeadsDir, formulaName, dispatchBeadID, targetAgent string, targetPane *string, isSelfSling bool, mode string) error {
+type formulaSlingFinishState struct {
+	delayedDogComplete  *bool
+	formulaWorkComplete *bool
+	targetPane          *string
+}
+
+func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInfo, state formulaSlingFinishState, townBeadsDir, formulaName, dispatchBeadID, targetAgent string, isSelfSling bool, mode string) error {
 	if err := updateAgentHookBead(targetAgent, dispatchBeadID, "", townBeadsDir); err != nil {
 		if delayedDogInfo != nil {
 			return fmt.Errorf("updating dog agent hook: %w", err)
@@ -699,7 +713,7 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 		if err != nil {
 			return fmt.Errorf("completing dog formula dispatch: %w", err)
 		}
-		*targetPane = pane
+		*state.targetPane = pane
 	}
 
 	if resolved.NewPolecatInfo != nil {
@@ -708,10 +722,10 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 			rollbackSlingArtifactsFn(resolved.NewPolecatInfo, dispatchBeadID, "", "")
 			return fmt.Errorf("starting polecat session: %w", err)
 		}
-		*targetPane = pane
+		*state.targetPane = pane
 	}
 
-	*formulaWorkComplete = true
+	*state.formulaWorkComplete = true
 
 	if isSelfSling {
 		fmt.Printf("%s Self-sling: work hooked, will process on next turn\n", style.Dim.Render("○"))
@@ -720,7 +734,7 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 
 	if os.Getenv("GT_TEST_NO_NUDGE") != "" {
 		if delayedDogInfo != nil {
-			*delayedDogComplete = true
+			*state.delayedDogComplete = true
 		}
 		return nil
 	}
@@ -735,17 +749,17 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 		if err := nudgeFormulaDog(delayedDogInfo, prompt); err != nil {
 			return err
 		}
-		*delayedDogComplete = true
+		*state.delayedDogComplete = true
 		return nil
 	}
 
-	if targetPane == nil || *targetPane == "" {
+	if state.targetPane == nil || *state.targetPane == "" {
 		fmt.Printf("%s No pane to nudge (agent will discover work via gt prime)\n", style.Dim.Render("○"))
 		return nil
 	}
 
 	t := tmux.NewTmux()
-	if err := t.NudgePane(*targetPane, prompt); err != nil {
+	if err := t.NudgePane(*state.targetPane, prompt); err != nil {
 		fmt.Printf("%s Could not nudge (no tmux?): %v\n", style.Dim.Render("○"), err)
 		fmt.Printf("  Agent will discover work via gt prime / bd show\n")
 	} else {

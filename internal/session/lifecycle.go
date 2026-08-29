@@ -306,8 +306,16 @@ func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr err
 		}
 	}
 
-	RecordAgentInstantiateFromDir(ctx, runID, runtimeConfig.ResolvedAgent,
-		role, work.AgentName, work.SessionID, work.RigName, work.TownRoot, work.Beacon.MolID, work.WorkDir)
+	RecordAgentInstantiateFromDir(ctx, telemetry.AgentInstantiateInfo{
+		RunID:     runID,
+		AgentType: runtimeConfig.ResolvedAgent,
+		Role:      role,
+		AgentName: work.AgentName,
+		SessionID: work.SessionID,
+		RigName:   work.RigName,
+		TownRoot:  work.TownRoot,
+		IssueID:   work.Beacon.MolID,
+	}, work.WorkDir)
 
 	return &StartResult{RuntimeConfig: runtimeConfig, RunID: runID}, nil
 }
@@ -326,13 +334,12 @@ func startSessionCommand(tm TmuxOps, work Work, command string, envVars map[stri
 }
 
 // RecordAgentInstantiateFromDir resolves the git branch/commit from workDir and
-// emits the agent.instantiate root telemetry event. resolvedAgent defaults to
+// emits the agent.instantiate root telemetry event. AgentType defaults to
 // "claudecode" when empty. Use this instead of calling telemetry.RecordAgentInstantiate
-// directly to avoid duplicating the agentType/git-lookup boilerplate.
-func RecordAgentInstantiateFromDir(ctx context.Context, runID, resolvedAgent, role, agentName, sessionID, rigName, townRoot, issueID, workDir string) {
-	agentType := resolvedAgent
-	if agentType == "" {
-		agentType = "claudecode"
+// directly to avoid duplicating the git-lookup boilerplate.
+func RecordAgentInstantiateFromDir(ctx context.Context, info telemetry.AgentInstantiateInfo, workDir string) {
+	if info.AgentType == "" {
+		info.AgentType = "claudecode"
 	}
 	branch, commit := "", ""
 	if g := git.NewGit(workDir); g != nil {
@@ -343,18 +350,9 @@ func RecordAgentInstantiateFromDir(ctx context.Context, runID, resolvedAgent, ro
 			commit = c
 		}
 	}
-	telemetry.RecordAgentInstantiate(ctx, telemetry.AgentInstantiateInfo{
-		RunID:     runID,
-		AgentType: agentType,
-		Role:      role,
-		AgentName: agentName,
-		SessionID: sessionID,
-		RigName:   rigName,
-		TownRoot:  townRoot,
-		IssueID:   issueID,
-		GitBranch: branch,
-		GitCommit: commit,
-	})
+	info.GitBranch = branch
+	info.GitCommit = commit
+	telemetry.RecordAgentInstantiate(ctx, info)
 }
 
 // ErrNotFound is returned by StopSession when the tmux session is already gone.

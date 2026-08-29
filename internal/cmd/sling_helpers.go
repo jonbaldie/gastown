@@ -664,35 +664,37 @@ type beadFieldUpdates struct {
 	FormulaVars      string   // Newline-separated key=value pairs for formula template substitution
 }
 
-func buildSlingFieldUpdates(
-	dispatcher string,
-	args string,
-	vars []string,
-	attachedMolecule string,
-	attachedFormula string,
-	noMerge bool,
-	reviewOnly bool,
-	mode string,
-	formulaVars string,
-	convoyID string,
-	mergeStrategy string,
-	convoyOwned bool,
-) beadFieldUpdates {
+type slingFieldUpdateInput struct {
+	dispatcher       string
+	args             string
+	vars             []string
+	attachedMolecule string
+	attachedFormula  string
+	noMerge          bool
+	reviewOnly       bool
+	mode             string
+	formulaVars      string
+	convoyID         string
+	mergeStrategy    string
+	convoyOwned      bool
+}
+
+func buildSlingFieldUpdates(input slingFieldUpdateInput) beadFieldUpdates {
 	updates := beadFieldUpdates{
-		Dispatcher:       dispatcher,
-		Args:             args,
-		Vars:             vars,
-		AttachedMolecule: attachedMolecule,
-		AttachedFormula:  attachedFormula,
-		NoMerge:          noMerge,
-		ReviewOnly:       reviewOnly,
-		Mode:             &mode,
-		ConvoyID:         convoyID,
-		MergeStrategy:    mergeStrategy,
-		ConvoyOwned:      convoyOwned,
-		FormulaVars:      formulaVars,
+		Dispatcher:       input.dispatcher,
+		Args:             input.args,
+		Vars:             input.vars,
+		AttachedMolecule: input.attachedMolecule,
+		AttachedFormula:  input.attachedFormula,
+		NoMerge:          input.noMerge,
+		ReviewOnly:       input.reviewOnly,
+		Mode:             &input.mode,
+		ConvoyID:         input.convoyID,
+		MergeStrategy:    input.mergeStrategy,
+		ConvoyOwned:      input.convoyOwned,
+		FormulaVars:      input.formulaVars,
 	}
-	if attachedMolecule != "" || attachedFormula != "" || noMerge || reviewOnly {
+	if input.attachedMolecule != "" || input.attachedFormula != "" || input.noMerge || input.reviewOnly {
 		updates.AttachedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	return updates
@@ -718,20 +720,20 @@ func newSlingDispatchFieldUpdates(actor string, intent sling.Intent, vars []stri
 	if intent.Formula != "" && attachedMoleculeID != "" {
 		attachedFormula = intent.Formula
 	}
-	updates := buildSlingFieldUpdates(
-		actor,
-		intent.Args,
-		vars,
-		attachedMoleculeID,
-		attachedFormula,
-		intent.NoMerge,
-		intent.ReviewOnly,
-		intent.Mode,
-		formulaVars,
-		convoyID,
-		intent.Merge,
-		intent.Owned,
-	)
+	updates := buildSlingFieldUpdates(slingFieldUpdateInput{
+		dispatcher:       actor,
+		args:             intent.Args,
+		vars:             vars,
+		attachedMolecule: attachedMoleculeID,
+		attachedFormula:  attachedFormula,
+		noMerge:          intent.NoMerge,
+		reviewOnly:       intent.ReviewOnly,
+		mode:             intent.Mode,
+		formulaVars:      formulaVars,
+		convoyID:         convoyID,
+		mergeStrategy:    intent.Merge,
+		convoyOwned:      intent.Owned,
+	})
 	if intent.Formula != "" && attachedMoleculeID == "" {
 		updates.ClearAttachment = true
 		updates.Vars = nil
