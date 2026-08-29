@@ -3029,29 +3029,27 @@ func closeMoleculeWithDescendants(bd *BdCli, workDir, moleculeID string) (int, e
 
 // closeDescendantsViaCLI recursively closes descendant issues of a parent
 // using bd CLI commands. Returns count of issues closed and any error.
-func closeDescendantsViaCLI(bd *BdCli, workDir, parentID string) (int, error) {
-	// List children of this parent
+type descendantIssue struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func listDescendantIssues(bd *BdCli, workDir, parentID string) ([]descendantIssue, error) {
 	output, err := bd.Exec(workDir, "list", "--parent="+parentID, "--json")
 	if err != nil {
-		return 0, fmt.Errorf("listing children of %s: %w", parentID, err)
+		return nil, fmt.Errorf("listing children of %s: %w", parentID, err)
 	}
 	if output == "" {
-		return 0, nil
+		return nil, nil
 	}
-
-	var children []struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	}
+	var children []descendantIssue
 	if err := json.Unmarshal([]byte(output), &children); err != nil {
-		return 0, fmt.Errorf("parsing children of %s: %w", parentID, err)
+		return nil, fmt.Errorf("parsing children of %s: %w", parentID, err)
 	}
+	return children, nil
+}
 
-	if len(children) == 0 {
-		return 0, nil
-	}
-
-	// Recursively close grandchildren first
+func closeDescendantChildren(bd *BdCli, workDir string, children []descendantIssue) (int, []error) {
 	totalClosed := 0
 	var errs []error
 	for _, child := range children {
@@ -3061,26 +3059,39 @@ func closeDescendantsViaCLI(bd *BdCli, workDir, parentID string) (int, error) {
 			errs = append(errs, err)
 		}
 	}
+	return totalClosed, errs
+}
 
-	// Close open direct children
+func closeOpenDescendantChildren(bd *BdCli, workDir, parentID string, children []descendantIssue) (int, error) {
 	var idsToClose []string
 	for _, child := range children {
 		if child.Status != "closed" {
 			idsToClose = append(idsToClose, child.ID)
 		}
 	}
-
 	if len(idsToClose) > 0 {
 		reason := "Orphaned mol-polecat-work step — owning polecat no longer exists"
 		args := append([]string{"close"}, idsToClose...)
 		args = append(args, "-r", reason)
 		if err := bd.Run(workDir, args...); err != nil {
-			errs = append(errs, fmt.Errorf("closing children of %s: %w", parentID, err))
-		} else {
-			totalClosed += len(idsToClose)
+			return 0, fmt.Errorf("closing children of %s: %w", parentID, err)
 		}
+		return len(idsToClose), nil
 	}
+	return 0, nil
+}
 
+func closeDescendantsViaCLI(bd *BdCli, workDir, parentID string) (int, error) {
+	children, err := listDescendantIssues(bd, workDir, parentID)
+	if err != nil || len(children) == 0 {
+		return 0, err
+	}
+	totalClosed, errs := closeDescendantChildren(bd, workDir, children)
+	directClosed, directErr := closeOpenDescendantChildren(bd, workDir, parentID, children)
+	totalClosed += directClosed
+	if directErr != nil {
+		errs = append(errs, directErr)
+	}
 	if len(errs) > 0 {
 		return totalClosed, errs[0]
 	}
