@@ -1765,18 +1765,22 @@ func (e *Engineer) verifyMRInfoPostMergeProof(mr *MRInfo) error {
 // For slot timeouts, the MR stays in queue for automatic retry without notifying polecats.
 // This enables non-blocking delegation: the queue continues to the next MR.
 func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
-	// Slot timeout is transient infrastructure contention — not a build/test/conflict failure.
-	// The MR stays in queue and will be retried on the next poll cycle.
-	// No polecat notification needed since there's nothing for a worker to fix.
-	if result.SlotTimeout {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] ✗ Slot timeout: %s - %s\n", mr.ID, result.Error)
-		_, _ = fmt.Fprintln(e.output, "[Engineer] MR remains in queue for automatic retry (slot contention)")
+	if e.handleEarlyMRFailure(mr, result) {
 		return
 	}
 
-	// Policy ineligibility is intentional — not a build/test failure.
-	// No polecat or mayor notification needed; close any still-open MR so it
-	// cannot retry forever after a no-merge/review-only/rejected decision.
+	failureType := mrFailureType(result)
+	e.nudgeMergeFailure(mr, result, failureType)
+	e.handleConflictFailure(mr, result)
+	e.logMRFailure(mr, result)
+}
+
+func (e *Engineer) handleEarlyMRFailure(mr *MRInfo, result ProcessResult) bool {
+	if result.SlotTimeout {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] ✗ Slot timeout: %s - %s\n", mr.ID, result.Error)
+		_, _ = fmt.Fprintln(e.output, "[Engineer] MR remains in queue for automatic retry (slot contention)")
+		return true
+	}
 	if result.NoMerge {
 		reason := strings.TrimSpace(result.Error)
 		if reason == "" {
@@ -1786,43 +1790,41 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 		if closeErr := e.closeIneligibleMR(mr, reason); closeErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close ineligible MR %s: %v\n", mr.ID, closeErr)
 		}
-		return
+		return true
 	}
-
-	// NeedsApproval: PR exists but lacks required approving review (merge_strategy=pr).
-	// Not a failure — the MR stays in queue and will be retried on the next poll.
-	// No polecat notification needed; the PR just needs a human review on GitHub.
 	if result.NeedsApproval {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s: PR awaiting human approval, will retry next poll\n", mr.ID)
-		return
+		return true
 	}
-
-	// Branch-not-found: the remote branch doesn't exist. This can mean either
-	// the branch was cleanly cherry-picked to target, OR the polecat's work was
-	// lost (e.g., worktree in /tmp wiped by reboot before gt done pushed).
-	// Escalate to mayor so lost work can be re-dispatched (gas-556).
 	if result.BranchNotFound {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s: branch %s not found on remote — escalating to mayor (possible work loss)\n", mr.ID, mr.Branch)
-		mayorMsg := fmt.Sprintf("BRANCH_MISSING: MR %s branch=%s issue=%s worker=%s — branch not on origin, work may be lost; re-dispatch if needed",
-			mr.ID, mr.Branch, mr.SourceIssue, mr.Worker)
-		mayorCmd := exec.Command("gt", "nudge", "mayor/", mayorMsg)
-		mayorCmd.Dir = e.workDir
-		if err := mayorCmd.Run(); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about missing branch: %v\n", err)
-		}
-		return
+		e.nudgeMayorForMissingBranch(mr)
+		return true
 	}
+	return false
+}
 
-	// Nudge polecat directly about the merge failure.
-	// Previously sent MERGE_FAILED mail to witness (which relayed to polecat),
-	// but that created permanent Dolt commits for routine protocol signals.
-	// The witness discovers merge failures from MR bead status during patrol.
-	failureType := "build"
-	if result.Conflict {
-		failureType = "conflict"
-	} else if result.TestsFailed {
-		failureType = "tests"
+func (e *Engineer) nudgeMayorForMissingBranch(mr *MRInfo) {
+	_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s: branch %s not found on remote — escalating to mayor (possible work loss)\n", mr.ID, mr.Branch)
+	mayorMsg := fmt.Sprintf("BRANCH_MISSING: MR %s branch=%s issue=%s worker=%s — branch not on origin, work may be lost; re-dispatch if needed",
+		mr.ID, mr.Branch, mr.SourceIssue, mr.Worker)
+	mayorCmd := exec.Command("gt", "nudge", "mayor/", mayorMsg)
+	mayorCmd.Dir = e.workDir
+	if err := mayorCmd.Run(); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about missing branch: %v\n", err)
 	}
+}
+
+func mrFailureType(result ProcessResult) string {
+	if result.Conflict {
+		return "conflict"
+	}
+	if result.TestsFailed {
+		return "tests"
+	}
+	return "build"
+}
+
+func (e *Engineer) nudgeMergeFailure(mr *MRInfo, result ProcessResult, failureType string) {
 	polecatName := strings.TrimPrefix(mr.Worker, "polecats/")
 	nudgeTarget := fmt.Sprintf("%s/%s", e.rig.Name, polecatName)
 	nudgeMsg := fmt.Sprintf("MERGE_FAILED: branch=%s issue=%s type=%s error=%s — fix and resubmit with 'gt done'",
@@ -1836,8 +1838,7 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Nudged %s about merge failure (%s)\n", polecatName, failureType)
 	}
 
-	// Nudge mayor about merge failure so dispatcher can unblock or reassign
-	// dependent work immediately. Mirrors the success nudge in HandleMRInfoSuccess.
+	// Nudge mayor about merge failure so dispatcher can unblock or reassign dependent work.
 	mayorMsg := fmt.Sprintf("MERGE_FAILED: %s issue=%s branch=%s type=%s", mr.ID, mr.SourceIssue, mr.Branch, failureType)
 	mayorCmd := exec.Command("gt", "nudge", "mayor/", mayorMsg)
 	util.SetDetachedProcessGroup(mayorCmd)
@@ -1845,34 +1846,44 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 	if err := mayorCmd.Run(); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about merge failure: %v\n", err)
 	}
+}
 
-	// If this was a conflict, create a conflict-resolution task for dispatch
-	// and block the MR until the task is resolved (non-blocking delegation)
-	if result.Conflict {
-		retryCount := mr.RetryCount + 1
-		conflictSHA, revErr := e.git.Rev("origin/" + mr.Target)
-		if revErr != nil {
-			conflictSHA = "unknown-sha"
-		}
-		taskID, err := e.createConflictResolutionTaskForMR(mr, result)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to create conflict resolution task: %v\n", err)
-		} else if taskID != "" {
-			// Block the MR on the conflict resolution task using beads dependency
-			// When the task closes, the MR unblocks and re-enters the ready queue
-			if err := e.beads.AddDependency(mr.ID, taskID); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to block MR on task: %v\n", err)
-			} else {
-				if err := e.recordConflictTaskOnMR(mr, taskID, retryCount, conflictSHA); err != nil {
-					_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to record conflict task on MR %s: %v\n", mr.ID, err)
-				} else {
-					mr.ConflictTaskID = taskID
-					mr.RetryCount = retryCount
-				}
-				_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s blocked on conflict task %s (non-blocking delegation)\n", mr.ID, taskID)
-			}
-		}
+func (e *Engineer) handleConflictFailure(mr *MRInfo, result ProcessResult) {
+	if !result.Conflict {
+		return
 	}
+	retryCount := mr.RetryCount + 1
+	conflictSHA, revErr := e.git.Rev("origin/" + mr.Target)
+	if revErr != nil {
+		conflictSHA = "unknown-sha"
+	}
+	taskID, err := e.createConflictResolutionTaskForMR(mr, result)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to create conflict resolution task: %v\n", err)
+		return
+	}
+	if taskID == "" {
+		return
+	}
+	e.blockMROnConflictTask(mr, taskID, retryCount, conflictSHA)
+}
+
+func (e *Engineer) blockMROnConflictTask(mr *MRInfo, taskID string, retryCount int, conflictSHA string) {
+	// Block the MR on the conflict resolution task; closing the task re-enters the queue.
+	if err := e.beads.AddDependency(mr.ID, taskID); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to block MR on task: %v\n", err)
+		return
+	}
+	if err := e.recordConflictTaskOnMR(mr, taskID, retryCount, conflictSHA); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to record conflict task on MR %s: %v\n", mr.ID, err)
+	} else {
+		mr.ConflictTaskID = taskID
+		mr.RetryCount = retryCount
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s blocked on conflict task %s (non-blocking delegation)\n", mr.ID, taskID)
+}
+
+func (e *Engineer) logMRFailure(mr *MRInfo, result ProcessResult) {
 
 	// Log the failure - MR stays in queue but may be blocked
 	_, _ = fmt.Fprintf(e.output, "[Engineer] ✗ Failed: %s - %s\n", mr.ID, result.Error)
