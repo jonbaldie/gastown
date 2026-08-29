@@ -47,17 +47,19 @@ func main() {
 	}
 
 	agent := &testAgent{
-		townRoot:    *townRoot,
-		runID:       *runID,
-		sessionID:   *sessionID,
-		beadID:      *beadID,
-		agentType:   *agentType,
-		state:       *state,
-		ctlDir:      *ctlDir,
-		exitCode:    *exitCode,
-		noHealth:    *noHealth,
-		healthEvery: *healthEvery,
-		httpOnly:    *httpOnly,
+		testAgentConfig: testAgentConfig{
+			townRoot:    *townRoot,
+			runID:       *runID,
+			sessionID:   *sessionID,
+			beadID:      *beadID,
+			agentType:   *agentType,
+			state:       *state,
+			ctlDir:      *ctlDir,
+			exitCode:    *exitCode,
+			noHealth:    *noHealth,
+			healthEvery: *healthEvery,
+			httpOnly:    *httpOnly,
+		},
 	}
 	if err := agent.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "gt-test-agent: %v\n", err)
@@ -66,6 +68,16 @@ func main() {
 }
 
 type testAgent struct {
+	testAgentConfig
+
+	mu         sync.Mutex
+	client     *worker.AgentClient
+	started    time.Time
+	interrupt  bool
+	lastPrompt *worker.Prompt
+}
+
+type testAgentConfig struct {
 	townRoot    string
 	runID       string
 	sessionID   string
@@ -77,12 +89,6 @@ type testAgent struct {
 	noHealth    bool
 	healthEvery time.Duration
 	httpOnly    bool
-
-	mu         sync.Mutex
-	client     *worker.AgentClient
-	started    time.Time
-	interrupt  bool
-	lastPrompt *worker.Prompt
 }
 
 func (a *testAgent) run() error {
