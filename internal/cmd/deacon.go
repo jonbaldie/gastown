@@ -1316,54 +1316,62 @@ func runDeaconStaleHooks(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Print details for each stale bead
-	for _, r := range result.Results {
-		status := style.Dim.Render("○")
-		action := "skipped (agent alive)"
+	partialWorkCount := reportDeaconStaleHookDetails(result.Results, dryRun)
+	reportDeaconStaleHookSummary(result, dryRun, partialWorkCount)
 
-		if !r.AgentAlive {
-			if dryRun {
-				status = style.Bold.Render("?")
-				action = "would unhook (agent dead)"
-			} else if r.Unhooked {
-				status = style.Bold.Render("✓")
-				action = "unhooked (agent dead)"
-			} else if r.Error != "" {
-				status = style.Dim.Render("✗")
-				action = fmt.Sprintf("error: %s", r.Error)
-			}
-		}
+	return nil
+}
 
-		fmt.Printf("  %s %s: %s (age: %s, assignee: %s)\n",
-			status, r.BeadID, action, r.Age, r.Assignee)
-
-		// Surface partial work warnings
-		if r.PartialWork {
-			var details []string
-			if r.WorktreeDirty {
-				details = append(details, "uncommitted changes")
-			}
-			if r.UnpushedCount > 0 {
-				details = append(details, fmt.Sprintf("%d unpushed commit(s)", r.UnpushedCount))
-			}
-			fmt.Printf("    %s partial work detected: %s\n",
-				style.Bold.Render("⚠"), strings.Join(details, ", "))
-		}
-		if r.WorktreeError != "" {
-			fmt.Printf("    %s worktree check failed: %s\n",
-				style.Dim.Render("⚠"), r.WorktreeError)
-		}
-	}
-
-	// Count beads with partial work
+func reportDeaconStaleHookDetails(results []*deacon.StaleHookResult, dryRun bool) int {
 	partialWorkCount := 0
-	for _, r := range result.Results {
-		if r.PartialWork {
+	for _, result := range results {
+		if reportDeaconStaleHookResult(result, dryRun) {
 			partialWorkCount++
 		}
 	}
+	return partialWorkCount
+}
 
-	// Summary
+func reportDeaconStaleHookResult(result *deacon.StaleHookResult, dryRun bool) bool {
+	status := style.Dim.Render("○")
+	action := "skipped (agent alive)"
+
+	if !result.AgentAlive {
+		if dryRun {
+			status = style.Bold.Render("?")
+			action = "would unhook (agent dead)"
+		} else if result.Unhooked {
+			status = style.Bold.Render("✓")
+			action = "unhooked (agent dead)"
+		} else if result.Error != "" {
+			status = style.Dim.Render("✗")
+			action = fmt.Sprintf("error: %s", result.Error)
+		}
+	}
+
+	fmt.Printf("  %s %s: %s (age: %s, assignee: %s)\n",
+		status, result.BeadID, action, result.Age, result.Assignee)
+
+	if result.PartialWork {
+		var details []string
+		if result.WorktreeDirty {
+			details = append(details, "uncommitted changes")
+		}
+		if result.UnpushedCount > 0 {
+			details = append(details, fmt.Sprintf("%d unpushed commit(s)", result.UnpushedCount))
+		}
+		fmt.Printf("    %s partial work detected: %s\n",
+			style.Bold.Render("⚠"), strings.Join(details, ", "))
+	}
+	if result.WorktreeError != "" {
+		fmt.Printf("    %s worktree check failed: %s\n",
+			style.Dim.Render("⚠"), result.WorktreeError)
+	}
+
+	return result.PartialWork
+}
+
+func reportDeaconStaleHookSummary(result *deacon.StaleHookScanResult, dryRun bool, partialWorkCount int) {
 	if dryRun {
 		fmt.Printf("\n%s Dry run - no changes made. Run without --dry-run to unhook.\n",
 			style.Dim.Render("ℹ"))
@@ -1375,8 +1383,6 @@ func runDeaconStaleHooks(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("%s %d bead(s) had partial work in worktree\n",
 			style.Bold.Render("⚠"), partialWorkCount)
 	}
-
-	return nil
 }
 
 // runDeaconPause pauses the Deacon to prevent patrol actions.
