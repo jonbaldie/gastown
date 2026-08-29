@@ -43,6 +43,56 @@ type Server struct {
 	unixLn  net.Listener
 	tcpLn   net.Listener
 	port    int
+	serverAdapters
+}
+
+type serverAdapters struct {
+	serverHTTP
+	serverDispatch
+	serverRun
+	serverLifecycle
+	serverHealth
+	serverConnections
+	serverDelivery
+}
+
+// serverHTTP owns the HTTP and socket request handlers. Keeping those handlers
+// behind an embedded adapter leaves Server responsible for transport state
+// while preserving the promoted server API used by clients and tests.
+type serverHTTP struct {
+	*Server
+}
+
+// serverDispatch owns request routing between the transport and run
+// operations.
+type serverDispatch struct {
+	*Server
+}
+
+// serverRun owns persistence of run lifecycle and telemetry updates.
+type serverRun struct {
+	*Server
+}
+
+// serverLifecycle owns run state and lifecycle protocol operations.
+type serverLifecycle struct {
+	*Server
+}
+
+// serverHealth owns health reporting derived from persisted run state.
+type serverHealth struct {
+	*Server
+}
+
+// serverConnections owns the live-agent connection bookkeeping used by the
+// lifecycle protocol.
+type serverConnections struct {
+	*Server
+}
+
+// serverDelivery owns prompt delivery and queue operations.
+type serverDelivery struct {
+	*Server
 }
 
 type agentConn struct {
@@ -81,7 +131,7 @@ func healthGrace() time.Duration {
 }
 
 func newServer(store *Store, tmux TmuxSession) *Server {
-	return &Server{
+	s := &Server{
 		store:       store,
 		healthGrace: healthGrace(),
 		readyWait:   defaultReadyWait,
@@ -89,6 +139,16 @@ func newServer(store *Store, tmux TmuxSession) *Server {
 		tmux:        tmux,
 		conns:       map[string]*agentConn{},
 	}
+	s.serverAdapters = serverAdapters{
+		serverHTTP:        serverHTTP{Server: s},
+		serverDispatch:    serverDispatch{Server: s},
+		serverRun:         serverRun{Server: s},
+		serverLifecycle:   serverLifecycle{Server: s},
+		serverHealth:      serverHealth{Server: s},
+		serverConnections: serverConnections{Server: s},
+		serverDelivery:    serverDelivery{Server: s},
+	}
+	return s
 }
 
 // Listen starts the Unix socket and the localhost HTTP fallback.
@@ -185,7 +245,7 @@ func (s *Server) routes() *http.ServeMux {
 	return mux
 }
 
-func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handleHello(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -207,7 +267,7 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "run_id": env.RunID})
 }
 
-func (s *Server) handleLifecycle(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -224,7 +284,7 @@ func (s *Server) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -241,7 +301,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -258,7 +318,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, DecideAuthorize(state, req))
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handleHealth(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		h, err := decodeBody[Health](r.Body)
@@ -284,7 +344,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handlePoll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -307,7 +367,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handlePromptAck(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handlePromptAck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -327,7 +387,7 @@ func (s *Server) handlePromptAck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleTown(w http.ResponseWriter, r *http.Request) {
+func (s *serverHTTP) handleTown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -341,7 +401,7 @@ func (s *Server) handleTown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) dispatchTown(ctx context.Context, req TownRequest) TownResponse {
+func (s *serverDispatch) dispatchTown(ctx context.Context, req TownRequest) TownResponse {
 	switch req.Op {
 	case opPing:
 		return TownResponse{OK: true}
@@ -434,7 +494,7 @@ func (s *Server) dispatchTown(ctx context.Context, req TownRequest) TownResponse
 	}
 }
 
-func (s *Server) startRun(spec StartSpec) (*Run, error) {
+func (s *serverRun) startRun(spec StartSpec) (*Run, error) {
 	if spec.RunID == "" {
 		spec.RunID = uuid.NewString()
 	}
@@ -490,7 +550,7 @@ func (s *Server) startRun(spec StartSpec) (*Run, error) {
 	return run, nil
 }
 
-func (s *Server) applyLifecycle(lc Lifecycle) error {
+func (s *serverRun) applyLifecycle(lc Lifecycle) error {
 	if lc.RunID == "" {
 		return fmt.Errorf("run_id is required")
 	}
@@ -549,7 +609,7 @@ func (s *Server) applyLifecycle(lc Lifecycle) error {
 	return nil
 }
 
-func (s *Server) applyTelemetry(batch TelemetryBatch) error {
+func (s *serverRun) applyTelemetry(batch TelemetryBatch) error {
 	if batch.RunID == "" {
 		return fmt.Errorf("run_id is required")
 	}
@@ -590,7 +650,7 @@ func (s *Server) applyTelemetry(batch TelemetryBatch) error {
 	return nil
 }
 
-func (s *Server) applyHealth(h Health) error {
+func (s *serverRun) applyHealth(h Health) error {
 	if h.RunID == "" {
 		return fmt.Errorf("run_id is required")
 	}
@@ -604,7 +664,7 @@ func (s *Server) applyHealth(h Health) error {
 	return s.store.PutRun(run)
 }
 
-func (s *Server) deliver(ctx context.Context, p Prompt) (*Delivery, error) {
+func (s *serverDelivery) deliver(ctx context.Context, p Prompt) (*Delivery, error) {
 	if p.Priority == "" {
 		p.Priority = PriorityNormal
 	}
@@ -635,21 +695,29 @@ func (s *Server) deliver(ctx context.Context, p Prompt) (*Delivery, error) {
 	return s.deliverTmux(run, p)
 }
 
-func (s *Server) deliverProtocol(ctx context.Context, run *Run, p Prompt) (*Delivery, error) {
+func (s *serverDelivery) deliverProtocol(ctx context.Context, run *Run, p Prompt) (*Delivery, error) {
 	busy := run.State == StateBusy || run.State == StateStarted
 	if busy && (p.Priority == PriorityNormal || p.Priority == PrioritySystem) {
-		pos, err := s.enqueuePrompt(p)
-		if err != nil {
-			return nil, err
-		}
-		d := &Delivery{Accepted: false, Queued: true, Position: pos, Adapter: AdapterProtocol, RunID: run.RunID}
-		_ = s.store.AppendEvent(Event{
-			Type: "queued", RunID: run.RunID, BeadID: run.BeadID,
-			SessionID: run.SessionID, Timestamp: nowUTC(),
-			Payload: map[string]any{"source": p.Source, "priority": p.Priority, "position": pos},
-		})
-		return d, nil
+		return s.queueProtocolPrompt(run, p)
 	}
+	return s.sendProtocolPrompt(ctx, run, p)
+}
+
+func (s *serverDelivery) queueProtocolPrompt(run *Run, p Prompt) (*Delivery, error) {
+	pos, err := s.enqueuePrompt(p)
+	if err != nil {
+		return nil, err
+	}
+	d := &Delivery{Accepted: false, Queued: true, Position: pos, Adapter: AdapterProtocol, RunID: run.RunID}
+	_ = s.store.AppendEvent(Event{
+		Type: "queued", RunID: run.RunID, BeadID: run.BeadID,
+		SessionID: run.SessionID, Timestamp: nowUTC(),
+		Payload: map[string]any{"source": p.Source, "priority": p.Priority, "position": pos},
+	})
+	return d, nil
+}
+
+func (s *serverDelivery) sendProtocolPrompt(ctx context.Context, run *Run, p Prompt) (*Delivery, error) {
 	conn := s.conn(run.RunID)
 	if conn == nil {
 		return nil, ErrNotConnected
@@ -692,7 +760,7 @@ func (s *Server) deliverProtocol(ctx context.Context, run *Run, p Prompt) (*Deli
 	}
 }
 
-func (s *Server) deliverTmux(run *Run, p Prompt) (*Delivery, error) {
+func (s *serverDelivery) deliverTmux(run *Run, p Prompt) (*Delivery, error) {
 	if s.tmux == nil {
 		return nil, fmt.Errorf("%w: tmux adapter unavailable", ErrNotConnected)
 	}
@@ -723,7 +791,7 @@ func (s *Server) deliverTmux(run *Run, p Prompt) (*Delivery, error) {
 	return &Delivery{Accepted: true, Adapter: AdapterTmux, RunID: run.RunID}, nil
 }
 
-func (s *Server) enqueuePrompt(p Prompt) (int, error) {
+func (s *serverDelivery) enqueuePrompt(p Prompt) (int, error) {
 	ttl := normalTTL
 	if p.Priority == PriorityUrgent {
 		ttl = urgentTTL
@@ -753,7 +821,7 @@ func (s *Server) enqueuePrompt(p Prompt) (int, error) {
 	return pos, nil
 }
 
-func (s *Server) drainQueue(runID string) {
+func (s *serverDelivery) drainQueue(runID string) {
 	due, err := s.store.DrainDue(runID)
 	if err != nil || len(due) == 0 {
 		return
@@ -761,7 +829,7 @@ func (s *Server) drainQueue(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.ackWait)
 	defer cancel()
 	for _, item := range due {
-		_, _ = s.deliverProtocol(ctx, mustRun(s, runID), item.Prompt)
+		_, _ = s.deliverProtocol(ctx, mustRun(s.Server, runID), item.Prompt)
 	}
 }
 
@@ -773,7 +841,7 @@ func mustRun(s *Server, runID string) *Run {
 	return run
 }
 
-func (s *Server) stateOf(runID, sessionID string) (State, error) {
+func (s *serverLifecycle) stateOf(runID, sessionID string) (State, error) {
 	run, err := s.resolveRun(runID, sessionID)
 	if err != nil {
 		return StateUnknown, err
@@ -787,11 +855,15 @@ func (s *Server) stateOf(runID, sessionID string) (State, error) {
 	return StateUnknown, nil
 }
 
-func (s *Server) healthOf(id string) (*Health, error) {
+func (s *serverHealth) healthOf(id string) (*Health, error) {
 	run, err := s.resolveRun(id, id)
 	if err != nil {
 		return nil, err
 	}
+	return s.healthReport(run), nil
+}
+
+func (s *serverHealth) healthReport(run *Run) *Health {
 	h := &Health{
 		RunID:        run.RunID,
 		CurrentState: string(run.State),
@@ -800,38 +872,39 @@ func (s *Server) healthOf(id string) (*Health, error) {
 	if run.State == StateUnknown {
 		h.Status = HealthUnhealthy
 		h.Error = ErrUnknownState.Error()
-		return h, nil
+		return h
 	}
 	if s.connected(run.RunID) {
-		if !run.LastHealth.IsZero() && time.Since(run.LastHealth) > s.healthGrace {
+		if s.connectedRunExpired(run) {
 			h.Status = HealthUnhealthy
 			h.Error = ErrUnhealthy.Error()
-			return h, nil
-		}
-		if run.LastHealth.IsZero() && time.Since(run.UpdatedAt) > s.healthGrace && run.State != StateStarted {
-			h.Status = HealthUnhealthy
-			h.Error = ErrUnhealthy.Error()
-			return h, nil
+			return h
 		}
 		h.Status = HealthHealthy
-		return h, nil
+		return h
 	}
 	if s.tmux != nil {
-		alive := s.tmux.IsAgentAlive(run.SessionID)
-		if !alive {
+		if !s.tmux.IsAgentAlive(run.SessionID) {
 			h.Status = HealthUnhealthy
 			h.Error = "tmux agent not alive"
-			return h, nil
+			return h
 		}
 		h.Status = HealthHealthy
-		return h, nil
+		return h
 	}
 	h.Status = HealthUnhealthy
 	h.Error = ErrUnhealthy.Error()
-	return h, nil
+	return h
 }
 
-func (s *Server) kill(runID, sessionID string) error {
+func (s *serverHealth) connectedRunExpired(run *Run) bool {
+	if !run.LastHealth.IsZero() {
+		return time.Since(run.LastHealth) > s.healthGrace
+	}
+	return time.Since(run.UpdatedAt) > s.healthGrace && run.State != StateStarted
+}
+
+func (s *serverLifecycle) kill(runID, sessionID string) error {
 	run, err := s.resolveRun(runID, sessionID)
 	if err != nil {
 		return err
@@ -860,7 +933,7 @@ func (s *Server) kill(runID, sessionID string) error {
 	return markRunStopped(s.store, run)
 }
 
-func (s *Server) pushIdentity(id Identity) error {
+func (s *serverLifecycle) pushIdentity(id Identity) error {
 	if _, err := s.store.GetRun(id.RunID); err != nil {
 		return err
 	}
@@ -882,7 +955,7 @@ func (s *Server) pushIdentity(id Identity) error {
 	return nil
 }
 
-func (s *Server) pushContext(push ContextPush) error {
+func (s *serverLifecycle) pushContext(push ContextPush) error {
 	if _, err := s.store.GetRun(push.RunID); err != nil {
 		return err
 	}
@@ -904,24 +977,15 @@ func (s *Server) pushContext(push ContextPush) error {
 	return nil
 }
 
-func (s *Server) waitReady(ctx context.Context, runID string) error {
+func (s *serverLifecycle) waitReady(ctx context.Context, runID string) error {
 	deadline := time.Now().Add(s.readyWait)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
 	for time.Now().Before(deadline) {
-		run, err := s.store.GetRun(runID)
-		if err != nil {
+		ready, err := s.readyCheck(runID, time.Until(deadline))
+		if ready || err != nil {
 			return err
-		}
-		if run.State == StateReady || run.State == StateIdle {
-			return nil
-		}
-		if run.State == StateStopped {
-			return fmt.Errorf("run %s stopped before ready", runID)
-		}
-		if !s.connected(runID) && s.tmux != nil && run.Adapter == AdapterTmux {
-			return s.tmux.WaitForRuntimeReady(run.SessionID, time.Until(deadline))
 		}
 		select {
 		case <-ctx.Done():
@@ -932,7 +996,24 @@ func (s *Server) waitReady(ctx context.Context, runID string) error {
 	return fmt.Errorf("wait ready: timeout for %s", runID)
 }
 
-func (s *Server) resolveRun(runID, sessionID string) (*Run, error) {
+func (s *serverLifecycle) readyCheck(runID string, remaining time.Duration) (bool, error) {
+	run, err := s.store.GetRun(runID)
+	if err != nil {
+		return false, err
+	}
+	switch run.State {
+	case StateReady, StateIdle:
+		return true, nil
+	case StateStopped:
+		return false, fmt.Errorf("run %s stopped before ready", runID)
+	}
+	if !s.connected(runID) && s.tmux != nil && run.Adapter == AdapterTmux {
+		return true, s.tmux.WaitForRuntimeReady(run.SessionID, remaining)
+	}
+	return false, nil
+}
+
+func (s *serverLifecycle) resolveRun(runID, sessionID string) (*Run, error) {
 	if runID != "" {
 		if run, err := s.store.GetRun(runID); err == nil {
 			return run, nil
@@ -949,7 +1030,7 @@ func (s *Server) resolveRun(runID, sessionID string) (*Run, error) {
 	return nil, ErrRunNotFound
 }
 
-func (s *Server) attach(runID, sessionID string) {
+func (s *serverConnections) attach(runID, sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	conn, ok := s.conns[runID]
@@ -972,20 +1053,20 @@ func (s *Server) attach(runID, sessionID string) {
 	}
 }
 
-func (s *Server) connected(runID string) bool {
+func (s *serverConnections) connected(runID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	conn, ok := s.conns[runID]
 	return ok && conn.connected
 }
 
-func (s *Server) conn(runID string) *agentConn {
+func (s *serverConnections) conn(runID string) *agentConn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conns[runID]
 }
 
-func (s *Server) touch(runID string) {
+func (s *serverConnections) touch(runID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if conn, ok := s.conns[runID]; ok {
@@ -994,7 +1075,7 @@ func (s *Server) touch(runID string) {
 	}
 }
 
-func (s *Server) writeSessionPort(sessionID string) error {
+func (s *serverConnections) writeSessionPort(sessionID string) error {
 	if s.port == 0 {
 		return nil
 	}
