@@ -169,92 +169,94 @@ func init() {
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
-	// Check if arg looks like a crew path (rig/crew/name)
-	if len(args) == 1 && strings.Contains(args[0], "/crew/") {
-		// Parse rig/crew/name format
-		parts := strings.SplitN(args[0], "/crew/", 2)
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			// Route to crew start with rig/name format
-			crewArg := parts[0] + "/" + parts[1]
-			return runStartCrew(cmd, []string{crewArg})
-		}
+	if handled, err := routeStartCrewPath(cmd, args); handled {
+		return err
 	}
 
-	// Verify we're in a Gas Town workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Apply ephemeral cost tier if specified
-	if startCostTier != "" {
-		if !config.IsValidTier(startCostTier) {
-			return fmt.Errorf("invalid cost tier %q (valid: %s)", startCostTier, strings.Join(config.ValidCostTiers(), ", "))
-		}
-		os.Setenv("GT_COST_TIER", startCostTier)
-		fmt.Printf("Using ephemeral cost tier: %s\n", style.Bold.Render(startCostTier))
+	if err := applyStartCostTier(); err != nil {
+		return err
 	}
+	t, rigs := prepareStartTown(townRoot)
+	if startTownDolt(townRoot) {
+		_, _ = doltserver.EnsureAllMetadata(townRoot)
+	}
+	if err := startTownAgents(t, rigs, townRoot); err != nil {
+		return err
+	}
+	printStartSuccess()
+	return nil
+}
 
+func routeStartCrewPath(cmd *cobra.Command, args []string) (bool, error) {
+	if len(args) != 1 || !strings.Contains(args[0], "/crew/") {
+		return false, nil
+	}
+	parts := strings.SplitN(args[0], "/crew/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false, nil
+	}
+	return true, runStartCrew(cmd, []string{parts[0] + "/" + parts[1]})
+}
+
+func applyStartCostTier() error {
+	if startCostTier == "" {
+		return nil
+	}
+	if !config.IsValidTier(startCostTier) {
+		return fmt.Errorf("invalid cost tier %q (valid: %s)", startCostTier, strings.Join(config.ValidCostTiers(), ", "))
+	}
+	os.Setenv("GT_COST_TIER", startCostTier)
+	fmt.Printf("Using ephemeral cost tier: %s\n", style.Bold.Render(startCostTier))
+	return nil
+}
+
+func prepareStartTown(townRoot string) (*tmux.Tmux, []*rig.Rig) {
 	if err := config.EnsureDaemonPatrolConfig(townRoot); err != nil {
 		fmt.Printf("  %s Could not ensure daemon config: %v\n", style.Dim.Render("○"), err)
 	}
-
 	t := tmux.NewTmux()
-
-	// Clean up orphaned tmux sessions before starting new agents.
-	// This prevents session name conflicts and resource accumulation from
-	// zombie sessions (tmux alive but Claude dead).
 	if cleaned, err := t.CleanupOrphanedSessions(session.IsKnownSession); err != nil {
 		fmt.Printf("  %s Could not clean orphaned sessions: %v\n", style.Dim.Render("○"), err)
 	} else if cleaned > 0 {
 		fmt.Printf("  %s Cleaned up %d orphaned session(s)\n", style.Bold.Render("✓"), cleaned)
 	}
-
 	fmt.Printf("Starting Gas Town from %s\n\n", style.Dim.Render(townRoot))
 	fmt.Println("Starting all agents in parallel...")
 	fmt.Println()
-
-	// Discover rigs once upfront to avoid redundant calls from parallel goroutines
-	rigs, rigsErr := discoverAllRigs(townRoot)
-	if rigsErr != nil {
-		fmt.Printf("  %s Could not discover rigs: %v\n", style.Dim.Render("○"), rigsErr)
-		// Continue anyway - core agents don't need rigs
+	rigs, err := discoverAllRigs(townRoot)
+	if err != nil {
+		fmt.Printf("  %s Could not discover rigs: %v\n", style.Dim.Render("○"), err)
 	}
+	return t, rigs
+}
 
-	// Phase 1: Start Dolt server BEFORE agents.
-	// Agents run bd commands on startup (via gt prime → patrol_helpers) that
-	// connect to the Dolt SQL server. Without this sequencing, they race the
-	// server and bd auto-spawns orphan embedded servers. (gt-t2zf)
-	var doltOK bool
+func startTownDolt(townRoot string) bool {
 	cfg := doltserver.DefaultConfig(townRoot)
 	if _, err := os.Stat(cfg.DataDir); os.IsNotExist(err) {
-		// No Dolt data dir — nothing to start
 		fmt.Printf("  %s Dolt server skipped (no data dir)\n", style.Dim.Render("○"))
-	} else {
-		running, _, _ := doltserver.IsRunning(townRoot)
-		if running {
-			doltOK = true
-			fmt.Printf("  %s Dolt server already running\n", style.Dim.Render("○"))
-		} else if err := doltserver.Start(townRoot); err != nil {
-			fmt.Printf("  %s Dolt server failed: %v\n", style.Dim.Render("○"), err)
-		} else {
-			doltOK = true
-			fmt.Printf("  %s Dolt server started (port %d)\n", style.Bold.Render("✓"), doltserver.DefaultPort)
-		}
+		return false
 	}
-
-	// Ensure beads metadata is correct BEFORE agents start.
-	// This prevents bd from seeing stale config and spawning orphan servers.
-	if doltOK {
-		_, _ = doltserver.EnsureAllMetadata(townRoot)
+	running, _, _ := doltserver.IsRunning(townRoot)
+	if running {
+		fmt.Printf("  %s Dolt server already running\n", style.Dim.Render("○"))
+		return true
 	}
+	if err := doltserver.Start(townRoot); err != nil {
+		fmt.Printf("  %s Dolt server failed: %v\n", style.Dim.Render("○"), err)
+		return false
+	}
+	fmt.Printf("  %s Dolt server started (port %d)\n", style.Bold.Render("✓"), doltserver.DefaultPort)
+	return true
+}
 
-	// Phase 2: Start all agents in parallel (Dolt is now ready)
+func startTownAgents(t *tmux.Tmux, rigs []*rig.Rig, townRoot string) error {
 	var wg sync.WaitGroup
-	var mu sync.Mutex // Protects stdout
+	var mu sync.Mutex
 	var coreErr error
-
-	// Start core agents (Mayor and Deacon) in background
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -264,8 +266,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 			mu.Unlock()
 		}
 	}()
-
-	// Start rig agents (witnesses, refineries) if --all
 	if startAll && rigs != nil {
 		wg.Add(1)
 		go func() {
@@ -273,8 +273,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 			startRigAgents(rigs, &mu)
 		}()
 	}
-
-	// Start configured crew
 	if rigs != nil {
 		wg.Add(1)
 		go func() {
@@ -282,21 +280,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 			startConfiguredCrew(t, rigs, townRoot, &mu)
 		}()
 	}
-
 	wg.Wait()
+	return coreErr
+}
 
-	if coreErr != nil {
-		return coreErr
-	}
-
+func printStartSuccess() {
 	fmt.Println()
 	fmt.Printf("%s Gas Town is running\n", style.Bold.Render("✓"))
 	fmt.Println()
 	fmt.Printf("  Attach to Mayor:  %s\n", style.Dim.Render("gt mayor attach"))
 	fmt.Printf("  Attach to Deacon: %s\n", style.Dim.Render("gt deacon attach"))
 	fmt.Printf("  Check status:     %s\n", style.Dim.Render("gt status"))
-
-	return nil
 }
 
 // startCoreAgents starts Mayor and Deacon sessions in parallel using the Manager pattern.
