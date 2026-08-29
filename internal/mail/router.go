@@ -781,11 +781,7 @@ func (r *Router) queryAgents(descContains string) []*agentBead {
 // queryAgentsInDir queries agent beads in a specific beads directory with optional description filtering.
 // Queries both the issues and wisps tables, merging results.
 func (r *Router) queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, error) {
-	args := []string{"list", "--label=gt:agent", "--json", "--flat", "--limit=0"}
-
-	if descContains != "" {
-		args = append(args, "--desc-contains="+descContains)
-	}
+	args := agentListArgs(descContains)
 
 	ctx, cancel := bdReadCtx()
 	defer cancel()
@@ -798,46 +794,79 @@ func (r *Router) queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, 
 	defer wispCancel()
 	wispOut, _ := runBdCommand(wispCtx, []string{"mol", "wisp", "list", "--json"}, filepath.Dir(beadsDir), beadsDir)
 
-	// Merge results: collect agent beads from both sources
-	seenIDs := make(map[string]bool)
-	var agents []*agentBead
-
-	// Parse wisps first (primary source after migration)
-	if len(wispOut) > 0 {
-		var wispAgents []*agentBead
-		if json.Unmarshal(wispOut, &wispAgents) == nil {
-			for _, agent := range wispAgents {
-				if isAgentBeadEntry(agent) {
-					seenIDs[agent.ID] = true
-					agents = append(agents, agent)
-				}
-			}
-		}
-	}
+	// Merge results: collect agent beads from both sources. Wisps are the primary
+	// source after migration; issue rows fill in agents not yet migrated.
+	agents, seenIDs := parseWispAgents(wispOut)
 
 	// Then issues (backward compat, skip duplicates)
 	if len(stdout) > 0 {
-		var issueAgents []*agentBead
-		if json.Unmarshal(stdout, &issueAgents) == nil {
-			for _, agent := range issueAgents {
-				if !seenIDs[agent.ID] {
-					agents = append(agents, agent)
-				}
-			}
-		}
+		agents = appendIssueAgents(agents, seenIDs, stdout)
 	} else if issuesErr != nil && len(agents) == 0 {
 		return nil, fmt.Errorf("querying agents in %s: %w", beadsDir, issuesErr)
 	}
 
 	// Filter for active agents (closed/deleted agents are inactive)
+	return activeAgentBeads(agents), nil
+}
+
+func agentListArgs(descContains string) []string {
+	args := []string{"list", "--label=gt:agent", "--json", "--flat", "--limit=0"}
+	if descContains != "" {
+		args = append(args, "--desc-contains="+descContains)
+	}
+	return args
+}
+
+func parseWispAgents(output []byte) ([]*agentBead, map[string]bool) {
+	seenIDs := make(map[string]bool)
+	if len(output) == 0 {
+		return nil, seenIDs
+	}
+
+	var wispAgents []*agentBead
+	if json.Unmarshal(output, &wispAgents) != nil {
+		return nil, seenIDs
+	}
+	var agents []*agentBead
+	for _, agent := range wispAgents {
+		if isAgentBeadEntry(agent) {
+			seenIDs[agent.ID] = true
+			agents = append(agents, agent)
+		}
+	}
+	return agents, seenIDs
+}
+
+func appendIssueAgents(agents []*agentBead, seenIDs map[string]bool, output []byte) []*agentBead {
+	var issueAgents []*agentBead
+	if json.Unmarshal(output, &issueAgents) != nil {
+		return agents
+	}
+	for _, agent := range issueAgents {
+		if !seenIDs[agent.ID] {
+			agents = append(agents, agent)
+		}
+	}
+	return agents
+}
+
+func activeAgentBeads(agents []*agentBead) []*agentBead {
 	var active []*agentBead
 	for _, agent := range agents {
-		if agent.Status == "open" || agent.Status == "in_progress" || agent.Status == "hooked" || agent.Status == "pinned" {
+		if isActiveAgentStatus(agent.Status) {
 			active = append(active, agent)
 		}
 	}
+	return active
+}
 
-	return active, nil
+func isActiveAgentStatus(status string) bool {
+	switch status {
+	case "open", "in_progress", "hooked", "pinned":
+		return true
+	default:
+		return false
+	}
 }
 
 // isAgentBeadEntry checks if an agentBead entry is an actual agent bead.
