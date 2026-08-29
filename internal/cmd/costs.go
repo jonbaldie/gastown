@@ -1443,6 +1443,26 @@ func deleteSessionCostEntries(targetDate time.Time) (int, error) {
 	}
 
 	targetDay := targetDate.Format("2006-01-02")
+	keepLines, deletedCount := filterSessionCostEntries(data, targetDay)
+
+	if deletedCount == 0 {
+		return 0, nil
+	}
+
+	// Rewrite file without deleted entries
+	newContent := strings.Join(keepLines, "\n")
+	if len(keepLines) > 0 {
+		newContent += "\n"
+	}
+
+	if err := os.WriteFile(logPath, []byte(newContent), 0644); err != nil {
+		return 0, fmt.Errorf("rewriting costs log: %w", err)
+	}
+
+	return deletedCount, nil
+}
+
+func filterSessionCostEntries(data []byte, targetDay string) ([]string, int) {
 	var keepLines []string
 	deletedCount := 0
 
@@ -1470,19 +1490,5 @@ func deleteSessionCostEntries(targetDate time.Time) (int, error) {
 		keepLines = append(keepLines, line)
 	}
 
-	if deletedCount == 0 {
-		return 0, nil
-	}
-
-	// Rewrite file without deleted entries
-	newContent := strings.Join(keepLines, "\n")
-	if len(keepLines) > 0 {
-		newContent += "\n"
-	}
-
-	if err := os.WriteFile(logPath, []byte(newContent), 0644); err != nil {
-		return 0, fmt.Errorf("rewriting costs log: %w", err)
-	}
-
-	return deletedCount, nil
+	return keepLines, deletedCount
 }
