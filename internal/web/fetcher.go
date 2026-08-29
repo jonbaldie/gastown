@@ -1966,47 +1966,78 @@ func eventSummary(eventType, actor string, payload map[string]interface{}) strin
 
 	switch eventType {
 	case "sling":
-		bead, _ := payload["bead"].(string)
-		target, _ := payload["target"].(string)
-		return fmt.Sprintf("%s slung to %s", bead, formatAgentAddress(target))
-	case "done":
-		bead, _ := payload["bead"].(string)
-		return fmt.Sprintf("%s completed %s", shortActor, bead)
+		return summarizeSlingEvent(payload)
+	case "done", "hook", "unhook":
+		return summarizeBeadEvent(eventType, shortActor, payload)
 	case "mail":
-		to, _ := payload["to"].(string)
-		subject, _ := payload["subject"].(string)
-		if len(subject) > 25 {
-			subject = subject[:22] + "..."
-		}
-		return fmt.Sprintf("→ %s: %s", formatAgentAddress(to), subject)
-	case "spawn":
-		return fmt.Sprintf("%s spawned", shortActor)
-	case "kill":
-		return fmt.Sprintf("%s killed", shortActor)
-	case "hook":
-		bead, _ := payload["bead"].(string)
-		return fmt.Sprintf("%s hooked %s", shortActor, bead)
-	case "unhook":
-		bead, _ := payload["bead"].(string)
-		return fmt.Sprintf("%s unhooked %s", shortActor, bead)
-	case "merged":
-		branch, _ := payload["branch"].(string)
-		return fmt.Sprintf("merged %s", branch)
-	case "merge_failed":
-		reason, _ := payload["reason"].(string)
-		if len(reason) > 30 {
-			reason = reason[:27] + "..."
-		}
-		return fmt.Sprintf("merge failed: %s", reason)
+		return summarizeMailEvent(payload)
+	case "spawn", "kill":
+		return summarizeLifecycleEvent(eventType, shortActor)
+	case "merged", "merge_failed":
+		return summarizeMergeEvent(eventType, payload)
 	case "escalation_sent":
 		return "escalation created"
 	case "session_death":
-		role, _ := payload["role"].(string)
-		return fmt.Sprintf("%s session died", formatAgentAddress(role))
+		return summarizeSessionDeath(payload)
 	case "mass_death":
-		count, _ := payload["count"].(float64)
-		return fmt.Sprintf("%.0f sessions died", count)
+		return summarizeMassDeath(payload)
 	default:
 		return eventType
 	}
+}
+
+func summarizeSlingEvent(payload map[string]interface{}) string {
+	bead, _ := payload["bead"].(string)
+	target, _ := payload["target"].(string)
+	return fmt.Sprintf("%s slung to %s", bead, formatAgentAddress(target))
+}
+
+func summarizeBeadEvent(eventType, actor string, payload map[string]interface{}) string {
+	bead, _ := payload["bead"].(string)
+	verb := "completed"
+	if eventType == "hook" {
+		verb = "hooked"
+	} else if eventType == "unhook" {
+		verb = "unhooked"
+	}
+	return fmt.Sprintf("%s %s %s", actor, verb, bead)
+}
+
+func summarizeMailEvent(payload map[string]interface{}) string {
+	to, _ := payload["to"].(string)
+	subject, _ := payload["subject"].(string)
+	if len(subject) > 25 {
+		subject = subject[:22] + "..."
+	}
+	return fmt.Sprintf("→ %s: %s", formatAgentAddress(to), subject)
+}
+
+func summarizeLifecycleEvent(eventType, actor string) string {
+	verb := "killed"
+	if eventType == "spawn" {
+		verb = "spawned"
+	}
+	return fmt.Sprintf("%s %s", actor, verb)
+}
+
+func summarizeMergeEvent(eventType string, payload map[string]interface{}) string {
+	if eventType == "merged" {
+		branch, _ := payload["branch"].(string)
+		return fmt.Sprintf("merged %s", branch)
+	}
+	reason, _ := payload["reason"].(string)
+	if len(reason) > 30 {
+		reason = reason[:27] + "..."
+	}
+	return fmt.Sprintf("merge failed: %s", reason)
+}
+
+func summarizeSessionDeath(payload map[string]interface{}) string {
+	role, _ := payload["role"].(string)
+	return fmt.Sprintf("%s session died", formatAgentAddress(role))
+}
+
+func summarizeMassDeath(payload map[string]interface{}) string {
+	count, _ := payload["count"].(float64)
+	return fmt.Sprintf("%.0f sessions died", count)
 }
