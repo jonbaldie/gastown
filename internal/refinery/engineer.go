@@ -859,14 +859,11 @@ func (e *Engineer) pushAndVerifyMerge(target, mergeCommit string) error {
 //nolint:unparam // ctx is reserved for future use when git methods accept context
 func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 	_ = ctx
-	if mr == nil {
-		return ProcessResult{Success: false, Error: "merge request is missing"}
+	if result := validatePRMergeRequest(mr); !result.Success {
+		return result
 	}
 	branch, target := mr.Branch, mr.Target
-	provider := e.config.VCSProvider
-	if provider == "" {
-		provider = "github"
-	}
+	provider := configuredVCSProvider(e.config.VCSProvider)
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Using PR merge strategy (vcs_provider=%s)\n", provider)
 
 	if e.prProvider == nil {
@@ -875,69 +872,18 @@ func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 			Error:   fmt.Sprintf("no PR provider configured for vcs_provider=%s", provider),
 		}
 	}
-	// Step PR.1: Find the PR for this branch
-	pr, err := e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
-	if err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to find PR for branch %s: %v", branch, err),
-		}
+	pr, result := e.findPRForMerge(mr, branch)
+	if !result.Success {
+		return result
 	}
-	if pr == nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch),
-		}
+	if result := e.checkPRApproval(pr); !result.Success {
+		return result
 	}
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Found PR #%d for branch %s\n", pr.Number, branch)
-	if strings.TrimSpace(mr.CommitSHA) != "" {
-		if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
-			return ProcessResult{Success: false, Error: err.Error()}
-		}
+	pr, result = e.preparePRMerge(mr, branch, target)
+	if !result.Success {
+		return result
 	}
 
-	// Step PR.2: Check approval status if require_review is enabled
-	requireReview := e.config.RequireReview != nil && *e.config.RequireReview
-	if requireReview {
-		approved, err := e.prProvider.IsPRApproved(pr)
-		if err != nil {
-			return ProcessResult{
-				Success: false,
-				Error:   fmt.Sprintf("failed to check PR #%d approval status: %v", pr.Number, err),
-			}
-		}
-		if !approved {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d awaiting human approval — deferring merge\n", pr.Number)
-			return ProcessResult{
-				Success:       false,
-				NeedsApproval: true,
-				Error:         fmt.Sprintf("PR #%d requires approving review before merge", pr.Number),
-			}
-		}
-		_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d has approving review\n", pr.Number)
-	}
-
-	if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-		return eligibility
-	}
-	if err := e.ensureMRInfoCommitSHA(mr); err != nil {
-		return ProcessResult{Success: false, Error: err.Error()}
-	}
-	// Re-read immediately before merge so a PR head advance cannot sneak between
-	// approval/recheck and the provider merge call.
-	pr, err = e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
-	if err != nil {
-		return ProcessResult{Success: false, Error: fmt.Sprintf("failed to refresh PR for branch %s: %v", branch, err)}
-	}
-	if pr == nil {
-		return ProcessResult{Success: false, Error: fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch)}
-	}
-	if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
-		return ProcessResult{Success: false, Error: err.Error()}
-	}
-
-	// Step PR.3: Merge via VCS provider API with a merge commit so the submitted
-	// head remains in target ancestry for post-merge proof.
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Merging PR #%d via %s API (merge)...\n", pr.Number, provider)
 	mergeCommit, err := e.prProvider.MergePR(pr, "merge")
 	if err != nil {
@@ -946,24 +892,9 @@ func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 			Error:   fmt.Sprintf("PR merge failed for PR #%d: %v", pr.Number, err),
 		}
 	}
-
-	// Step PR.4: Sync local target branch after remote merge
-	if err := e.git.Checkout(target); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to checkout %s after PR merge: %v\n", target, err)
-	} else if err := e.git.Pull("origin", target); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to pull %s after PR merge: %v\n", target, err)
-	}
-
-	if mergeCommit == "" {
-		if sha, err := e.git.Rev("HEAD"); err == nil {
-			mergeCommit = sha
-		}
-	}
+	mergeCommit = e.syncPRMergeTarget(target, mergeCommit)
 	if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   err.Error(),
-		}
+		return ProcessResult{Success: false, Error: err.Error()}
 	}
 
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged PR #%d: %s\n", pr.Number, shortSHA(mergeCommit))
@@ -971,6 +902,111 @@ func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 		Success:     true,
 		MergeCommit: mergeCommit,
 	}
+}
+
+func validatePRMergeRequest(mr *MRInfo) ProcessResult {
+	if mr == nil {
+		return ProcessResult{Success: false, Error: "merge request is missing"}
+	}
+	return ProcessResult{Success: true}
+}
+
+func configuredVCSProvider(provider string) string {
+	if provider == "" {
+		return "github"
+	}
+	return provider
+}
+
+func (e *Engineer) findPRForMerge(mr *MRInfo, branch string) (*git.PullRequestInfo, ProcessResult) {
+	pr, err := e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
+	if err != nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to find PR for branch %s: %v", branch, err),
+		}
+	}
+	if pr == nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch),
+		}
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Found PR #%d for branch %s\n", pr.Number, branch)
+	if strings.TrimSpace(mr.CommitSHA) != "" {
+		if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
+			return nil, ProcessResult{Success: false, Error: err.Error()}
+		}
+	}
+	return pr, ProcessResult{Success: true}
+}
+
+func (e *Engineer) checkPRApproval(pr *git.PullRequestInfo) ProcessResult {
+	requireReview := e.config.RequireReview != nil && *e.config.RequireReview
+	if !requireReview {
+		return ProcessResult{Success: true}
+	}
+	approved, err := e.prProvider.IsPRApproved(pr)
+	if err != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to check PR #%d approval status: %v", pr.Number, err),
+		}
+	}
+	if !approved {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d awaiting human approval — deferring merge\n", pr.Number)
+		return ProcessResult{
+			Success:       false,
+			NeedsApproval: true,
+			Error:         fmt.Sprintf("PR #%d requires approving review before merge", pr.Number),
+		}
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d has approving review\n", pr.Number)
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) refreshPRForMerge(mr *MRInfo, branch string) (*git.PullRequestInfo, ProcessResult) {
+	pr, err := e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
+	if err != nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to refresh PR for branch %s: %v", branch, err),
+		}
+	}
+	if pr == nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch),
+		}
+	}
+	if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
+		return nil, ProcessResult{Success: false, Error: err.Error()}
+	}
+	return pr, ProcessResult{Success: true}
+}
+
+func (e *Engineer) preparePRMerge(mr *MRInfo, branch, target string) (*git.PullRequestInfo, ProcessResult) {
+	if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
+		return nil, eligibility
+	}
+	if err := e.ensureMRInfoCommitSHA(mr); err != nil {
+		return nil, ProcessResult{Success: false, Error: err.Error()}
+	}
+	return e.refreshPRForMerge(mr, branch)
+}
+
+func (e *Engineer) syncPRMergeTarget(target, mergeCommit string) string {
+	if err := e.git.Checkout(target); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to checkout %s after PR merge: %v\n", target, err)
+	} else if err := e.git.Pull("origin", target); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to pull %s after PR merge: %v\n", target, err)
+	}
+	if mergeCommit == "" {
+		if sha, err := e.git.Rev("HEAD"); err == nil {
+			return sha
+		}
+	}
+	return mergeCommit
 }
 
 func mergeIneligibleResult(format string, args ...interface{}) ProcessResult {
