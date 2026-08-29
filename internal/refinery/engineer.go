@@ -118,19 +118,7 @@ type MergeQueueConfig struct {
 	// RetryFlakyTests is the number of times to retry flaky tests.
 	RetryFlakyTests int `json:"retry_flaky_tests"`
 
-	// PollInterval is how often to check for new MRs.
-	PollInterval time.Duration `json:"poll_interval"`
-
-	// MaxConcurrent is the maximum number of MRs to process concurrently.
-	MaxConcurrent int `json:"max_concurrent"`
-
-	// StaleClaimTimeout is how long a claimed MR can go without updates before
-	// being considered abandoned and eligible for re-claim. This handles the
-	// case where a refinery crashes mid-merge, leaving an MR permanently claimed.
-	// Set conservatively to avoid re-claiming MRs with long-running test suites.
-	// NOTE: Only one refinery instance runs per rig (enforced by ErrAlreadyRunning
-	// in manager.go), so concurrent re-claim is not a concern in practice.
-	StaleClaimTimeout time.Duration `json:"stale_claim_timeout"`
+	MergeQueueTiming
 
 	// Gates defines named quality gate commands to run before merging.
 	// When non-empty, gates replace the legacy RunTests/TestCommand path.
@@ -140,18 +128,6 @@ type MergeQueueConfig struct {
 	// GatesParallel controls whether gates run concurrently.
 	// When true, all gates start simultaneously; any failure = overall failure.
 	GatesParallel bool `json:"gates_parallel"`
-
-	// StaleClaimWarningAfter is how long a claimed MR can sit without updates
-	// before it triggers a "warning" severity anomaly.
-	StaleClaimWarningAfter time.Duration `json:"stale_claim_warning_after"`
-
-	// StaleClaimCriticalAfter is how long a claimed MR can sit without updates
-	// before it triggers a "critical" severity anomaly.
-	StaleClaimCriticalAfter time.Duration `json:"stale_claim_critical_after"`
-
-	// MaxRetryCount is the maximum number of conflict resolution retries
-	// before escalation to Mayor.
-	MaxRetryCount int `json:"max_retry_count"`
 
 	// AutoPush controls whether the refinery pushes to origin after merging.
 	// When false, the refinery merges locally but does not push — the user
@@ -178,23 +154,56 @@ type MergeQueueConfig struct {
 	Batch *BatchConfig `json:"batch,omitempty"`
 }
 
+// MergeQueueTiming groups polling, concurrency, retry, and stale-claim
+// thresholds used by the queue processor. It is embedded to keep the config
+// JSON keys flat for existing refinery settings.
+type MergeQueueTiming struct {
+	// PollInterval is how often to check for new MRs.
+	PollInterval time.Duration `json:"poll_interval"`
+
+	// MaxConcurrent is the maximum number of MRs to process concurrently.
+	MaxConcurrent int `json:"max_concurrent"`
+
+	// StaleClaimTimeout is how long a claimed MR can go without updates before
+	// being considered abandoned and eligible for re-claim. This handles the
+	// case where a refinery crashes mid-merge, leaving an MR permanently claimed.
+	// Set conservatively to avoid re-claiming MRs with long-running test suites.
+	// NOTE: Only one refinery instance runs per rig (enforced by ErrAlreadyRunning
+	// in manager.go), so concurrent re-claim is not a concern in practice.
+	StaleClaimTimeout time.Duration `json:"stale_claim_timeout"`
+
+	// StaleClaimWarningAfter is how long a claimed MR can sit without updates
+	// before it triggers a "warning" severity anomaly.
+	StaleClaimWarningAfter time.Duration `json:"stale_claim_warning_after"`
+
+	// StaleClaimCriticalAfter is how long a claimed MR can sit without updates
+	// before it triggers a "critical" severity anomaly.
+	StaleClaimCriticalAfter time.Duration `json:"stale_claim_critical_after"`
+
+	// MaxRetryCount is the maximum number of conflict resolution retries
+	// before escalation to Mayor.
+	MaxRetryCount int `json:"max_retry_count"`
+}
+
 // DefaultMergeQueueConfig returns sensible defaults for merge queue configuration.
 func DefaultMergeQueueConfig() *MergeQueueConfig {
 	return &MergeQueueConfig{
-		Enabled:                 true,
-		OnConflict:              "assign_back",
-		RunTests:                true,
-		TestCommand:             "",
-		DeleteMergedBranches:    true,
-		GatesParallel:           true, // gt-8b2i: run gates concurrently (~2x speedup)
-		RetryFlakyTests:         1,
-		PollInterval:            30 * time.Second,
-		MaxConcurrent:           1,
-		StaleClaimTimeout:       DefaultStaleClaimTimeout,
-		StaleClaimWarningAfter:  2 * time.Hour,
-		StaleClaimCriticalAfter: 6 * time.Hour,
-		MaxRetryCount:           5,
-		AutoPush:                true,
+		Enabled:              true,
+		OnConflict:           "assign_back",
+		RunTests:             true,
+		TestCommand:          "",
+		DeleteMergedBranches: true,
+		GatesParallel:        true, // gt-8b2i: run gates concurrently (~2x speedup)
+		RetryFlakyTests:      1,
+		MergeQueueTiming: MergeQueueTiming{
+			PollInterval:            30 * time.Second,
+			MaxConcurrent:           1,
+			StaleClaimTimeout:       DefaultStaleClaimTimeout,
+			StaleClaimWarningAfter:  2 * time.Hour,
+			StaleClaimCriticalAfter: 6 * time.Hour,
+			MaxRetryCount:           5,
+		},
+		AutoPush: true,
 	}
 }
 
