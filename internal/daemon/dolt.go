@@ -859,35 +859,6 @@ func IsDoltUnhealthy(townRoot string) bool {
 // read_timeout_millis and write_timeout_millis, which prevents CLOSE_WAIT
 // accumulation when clients disconnect without completing their SQL sessions.
 func writeDaemonDoltConfig(cfg *DoltServerConfig, configPath string) error {
-	hostLine := ""
-	if cfg.Host != "" {
-		hostLine = fmt.Sprintf("\n  host: %s", cfg.Host)
-	}
-	eventSchedulerLine := "  event_scheduler: \"OFF\"\n"
-	if scheduler, ok := os.LookupEnv("GT_DOLT_EVENT_SCHEDULER"); ok {
-		if strings.EqualFold(scheduler, "omit") {
-			eventSchedulerLine = ""
-		} else if strings.TrimSpace(scheduler) != "" {
-			eventSchedulerLine = fmt.Sprintf("  event_scheduler: %q\n", strings.ToUpper(strings.TrimSpace(scheduler)))
-		}
-	}
-	systemVariablesBlock := "\nsystem_variables:\n  dolt_stats_enabled: 0\n"
-	if stats, ok := os.LookupEnv("GT_DOLT_STATS_ENABLED"); ok {
-		if strings.EqualFold(stats, "omit") {
-			systemVariablesBlock = ""
-		} else if strings.TrimSpace(stats) != "" {
-			systemVariablesBlock = fmt.Sprintf("\nsystem_variables:\n  dolt_stats_enabled: %s\n", strings.TrimSpace(stats))
-		}
-	}
-	// Non-blocking storage GC bounds the sql-server's RSS (hq-excy9g); on by
-	// default. GT_DOLT_AUTO_GC=off (or false/0/disabled) disables it at the next
-	// Dolt restart without a source revert+rebuild — the runtime escape hatch.
-	autoGcBlock := "  auto_gc_behavior:\n    enable: true\n    archive_level: 1\n"
-	if v, ok := os.LookupEnv("GT_DOLT_AUTO_GC"); ok {
-		if vv := strings.ToLower(strings.TrimSpace(v)); vv == "off" || vv == "false" || vv == "0" || vv == "disabled" {
-			autoGcBlock = "  auto_gc_behavior:\n    enable: false\n    archive_level: 0\n"
-		}
-	}
 	content := fmt.Sprintf(`# Dolt SQL server configuration — managed by Gas Town daemon
 # Do not edit manually; overwritten on each daemon-managed server start.
 
@@ -905,13 +876,59 @@ behavior:
   dolt_transaction_commit: false
 %s%s%s`,
 		cfg.Port,
-		hostLine,
+		doltHostLine(cfg.Host),
 		cfg.DataDir,
-		eventSchedulerLine,
-		autoGcBlock,
-		systemVariablesBlock,
+		doltEventSchedulerLine(),
+		doltAutoGCBlock(),
+		doltSystemVariablesBlock(),
 	)
 	return os.WriteFile(configPath, []byte(content), 0600)
+}
+
+func doltHostLine(host string) string {
+	if host == "" {
+		return ""
+	}
+	return fmt.Sprintf("\n  host: %s", host)
+}
+
+func doltEventSchedulerLine() string {
+	scheduler, ok := os.LookupEnv("GT_DOLT_EVENT_SCHEDULER")
+	if !ok {
+		return "  event_scheduler: \"OFF\"\n"
+	}
+	if strings.EqualFold(scheduler, "omit") {
+		return ""
+	}
+	if scheduler = strings.TrimSpace(scheduler); scheduler == "" {
+		return "  event_scheduler: \"OFF\"\n"
+	}
+	return fmt.Sprintf("  event_scheduler: %q\n", strings.ToUpper(scheduler))
+}
+
+func doltSystemVariablesBlock() string {
+	stats, ok := os.LookupEnv("GT_DOLT_STATS_ENABLED")
+	if !ok {
+		return "\nsystem_variables:\n  dolt_stats_enabled: 0\n"
+	}
+	if strings.EqualFold(stats, "omit") {
+		return ""
+	}
+	if stats = strings.TrimSpace(stats); stats == "" {
+		return "\nsystem_variables:\n  dolt_stats_enabled: 0\n"
+	}
+	return fmt.Sprintf("\nsystem_variables:\n  dolt_stats_enabled: %s\n", stats)
+}
+
+func doltAutoGCBlock() string {
+	// Non-blocking storage GC bounds the sql-server's RSS (hq-excy9g); on by
+	// default. GT_DOLT_AUTO_GC=off (or false/0/disabled) disables it at the next
+	// Dolt restart without a source revert+rebuild — the runtime escape hatch.
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("GT_DOLT_AUTO_GC")))
+	if value == "off" || value == "false" || value == "0" || value == "disabled" {
+		return "  auto_gc_behavior:\n    enable: false\n    archive_level: 0\n"
+	}
+	return "  auto_gc_behavior:\n    enable: true\n    archive_level: 1\n"
 }
 
 // Start starts the Dolt SQL server.
