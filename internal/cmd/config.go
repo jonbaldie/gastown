@@ -46,11 +46,13 @@ Commands:
 
 // Agent subcommands
 
-var configAgentListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all agents",
-	Long:  "", // Set in init() — includes full built-in preset list from config.BuiltInAgentPresetSummary()
-	RunE:  runConfigAgentList,
+func newConfigAgentListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all agents",
+		Long:  "", // Set in init() — includes full built-in preset list from config.BuiltInAgentPresetSummary()
+		RunE:  runConfigAgentList,
+	}
 }
 
 var configAgentGetCmd = &cobra.Command{
@@ -100,12 +102,14 @@ Examples:
 	RunE: runConfigAgentSet,
 }
 
-var configAgentRemoveCmd = &cobra.Command{
-	Use:   "remove <name>",
-	Short: "Remove custom agent",
-	Long:  "", // Set in init() — includes full built-in preset list
-	Args:  cobra.ExactArgs(1),
-	RunE:  runConfigAgentRemove,
+func newConfigAgentRemoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove <name>",
+		Short: "Remove custom agent",
+		Long:  "", // Set in init() — includes full built-in preset list
+		Args:  cobra.ExactArgs(1),
+		RunE:  runConfigAgentRemove,
+	}
 }
 
 // Role subcommands provide a typed interface over role_agents and role_effort.
@@ -249,11 +253,13 @@ func applyCostTier(settingsPath string, townSettings *config.TownSettings, tierN
 
 // Default-agent subcommand
 
-var configDefaultAgentCmd = &cobra.Command{
-	Use:   "default-agent [name]",
-	Short: "Get or set default agent",
-	Long:  "", // Set in init() — includes full built-in preset list
-	RunE:  runConfigDefaultAgent,
+func newConfigDefaultAgentCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "default-agent [name]",
+		Short: "Get or set default agent",
+		Long:  "", // Set in init() — includes full built-in preset list
+		RunE:  runConfigDefaultAgent,
+	}
 }
 
 var configDefaultAgentListCmd = &cobra.Command{
@@ -1521,6 +1527,9 @@ func parseBool(s string) (bool, error) {
 
 func init() {
 	presets := config.BuiltInAgentPresetSummary()
+	configAgentListCmd := newConfigAgentListCmd()
+	configAgentRemoveCmd := newConfigAgentRemoveCmd()
+	configDefaultAgentCmd := newConfigDefaultAgentCmd()
 
 	configAgentListCmd.Long = fmt.Sprintf(`List all available agents (built-in and custom).
 
