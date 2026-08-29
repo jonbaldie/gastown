@@ -22,15 +22,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	seanceRole   string
-	seanceRig    string
-	seanceRecent int
-	seanceTalk   string
-	seancePrompt string
-	seanceJSON   bool
-)
-
 var seanceCmd = &cobra.Command{
 	Use:     "seance",
 	GroupID: GroupDiag,
@@ -65,12 +56,12 @@ Sessions are discovered from:
 }
 
 func init() {
-	seanceCmd.Flags().StringVar(&seanceRole, "role", "", "Filter by role (crew, polecat, witness, etc.)")
-	seanceCmd.Flags().StringVar(&seanceRig, "rig", "", "Filter by rig name")
-	seanceCmd.Flags().IntVarP(&seanceRecent, "recent", "n", 20, "Number of recent sessions to show")
-	seanceCmd.Flags().StringVarP(&seanceTalk, "talk", "t", "", "Session ID to commune with")
-	seanceCmd.Flags().StringVarP(&seancePrompt, "prompt", "p", "", "One-shot prompt (with --talk)")
-	seanceCmd.Flags().BoolVar(&seanceJSON, "json", false, "Output as JSON")
+	seanceCmd.Flags().String("role", "", "Filter by role (crew, polecat, witness, etc.)")
+	seanceCmd.Flags().String("rig", "", "Filter by rig name")
+	seanceCmd.Flags().IntP("recent", "n", 20, "Number of recent sessions to show")
+	seanceCmd.Flags().StringP("talk", "t", "", "Session ID to commune with")
+	seanceCmd.Flags().StringP("prompt", "p", "", "One-shot prompt (with --talk)")
+	seanceCmd.Flags().Bool("json", false, "Output as JSON")
 
 	rootCmd.AddCommand(seanceCmd)
 }
@@ -83,17 +74,35 @@ type sessionEvent struct {
 	Payload   map[string]interface{} `json:"payload"`
 }
 
-func runSeance(_ *cobra.Command, _ []string) error {
+type seanceOptions struct {
+	role   string
+	rig    string
+	recent int
+	talk   string
+	prompt string
+	json   bool
+}
+
+func runSeance(cmd *cobra.Command, _ []string) error {
+	opts := seanceOptions{
+		role:   commandStringFlag(cmd, "role"),
+		rig:    commandStringFlag(cmd, "rig"),
+		recent: commandIntFlag(cmd, "recent"),
+		talk:   commandStringFlag(cmd, "talk"),
+		prompt: commandStringFlag(cmd, "prompt"),
+		json:   commandBoolFlag(cmd, "json"),
+	}
+
 	// If --talk is provided, spawn a seance
-	if seanceTalk != "" {
-		return runSeanceTalk(seanceTalk, seancePrompt)
+	if opts.talk != "" {
+		return runSeanceTalk(opts.talk, opts.prompt)
 	}
 
 	// Otherwise, list discoverable sessions
-	return runSeanceList()
+	return runSeanceList(opts)
 }
 
-func runSeanceList() error {
+func runSeanceList(opts seanceOptions) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil || townRoot == "" {
 		return fmt.Errorf("not in a Gas Town workspace")
@@ -108,15 +117,15 @@ func runSeanceList() error {
 	// Apply filters
 	var filtered []sessionEvent
 	for _, s := range sessions {
-		if seanceRole != "" {
+		if opts.role != "" {
 			actor := strings.ToLower(s.Actor)
-			if !strings.Contains(actor, strings.ToLower(seanceRole)) {
+			if !strings.Contains(actor, strings.ToLower(opts.role)) {
 				continue
 			}
 		}
-		if seanceRig != "" {
+		if opts.rig != "" {
 			actor := strings.ToLower(s.Actor)
-			if !strings.Contains(actor, strings.ToLower(seanceRig)) {
+			if !strings.Contains(actor, strings.ToLower(opts.rig)) {
 				continue
 			}
 		}
@@ -124,11 +133,11 @@ func runSeanceList() error {
 	}
 
 	// Apply limit
-	if seanceRecent > 0 && len(filtered) > seanceRecent {
-		filtered = filtered[:seanceRecent]
+	if opts.recent > 0 && len(filtered) > opts.recent {
+		filtered = filtered[:opts.recent]
 	}
 
-	if seanceJSON {
+	if opts.json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(filtered)
