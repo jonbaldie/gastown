@@ -148,20 +148,17 @@ This command does not require a prior 'gt enable'. Enable is machine-wide
 	RunE: runUp,
 }
 
-var (
-	upQuiet   bool
-	upRestore bool
-	upJSON    bool
-)
-
 func init() {
-	upCmd.Flags().BoolVarP(&upQuiet, "quiet", "q", false, "Only show errors (ignored with --json)")
-	upCmd.Flags().BoolVar(&upRestore, "restore", false, "Also restore crew (from settings) and polecats (from hooks)")
-	upCmd.Flags().BoolVar(&upJSON, "json", false, "Output as JSON")
+	upCmd.Flags().BoolP("quiet", "q", false, "Only show errors (ignored with --json)")
+	upCmd.Flags().Bool("restore", false, "Also restore crew (from settings) and polecats (from hooks)")
+	upCmd.Flags().Bool("json", false, "Output as JSON")
 	rootCmd.AddCommand(upCmd)
 }
 
-func runUp(_ *cobra.Command, _ []string) error {
+func runUp(cmd *cobra.Command, _ []string) error {
+	quiet := commandBoolFlag(cmd, "quiet")
+	restore := commandBoolFlag(cmd, "restore")
+	jsonOutput := commandBoolFlag(cmd, "json")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -195,7 +192,7 @@ func runUp(_ *cobra.Command, _ []string) error {
 	// are not silently muted after a previous incident/debug session.
 	if changed, err := disableCurrentAgentDND(townRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not reset DND state: %v\n", err)
-	} else if changed && !upQuiet {
+	} else if changed && !quiet {
 		fmt.Printf("%s DND was enabled; reset to normal for current agent\n", style.SuccessPrefix)
 	}
 
@@ -373,7 +370,7 @@ func runUp(_ *cobra.Command, _ []string) error {
 	}
 
 	// 7. Crew (if --restore)
-	if upRestore {
+	if restore {
 		for _, rigName := range rigs {
 			crewStarted, crewErrors := startCrewFromSettings(townRoot, rigName)
 			for _, name := range crewStarted {
@@ -433,13 +430,13 @@ func runUp(_ *cobra.Command, _ []string) error {
 	}
 
 	// Output JSON or text
-	if upJSON {
+	if jsonOutput {
 		return emitUpJSON(os.Stdout, services)
 	}
 
 	// Text output
 	for _, svc := range services {
-		printStatus(svc.Name, svc.OK, svc.Detail)
+		printStatus(svc.Name, svc.OK, svc.Detail, quiet)
 	}
 
 	fmt.Println()
@@ -453,8 +450,8 @@ func runUp(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func printStatus(name string, ok bool, detail string) {
-	if upQuiet && ok {
+func printStatus(name string, ok bool, detail string, quiet bool) {
+	if quiet && ok {
 		return
 	}
 	if ok {
