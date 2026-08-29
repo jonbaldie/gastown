@@ -350,16 +350,20 @@ func (h *ConvoyHandler) fetchAndRender(r *http.Request, expandPanel string) []by
 		Rigs:        rigs,
 		Dogs:        dogs,
 		Escalations: escalations,
-		Health:      health,
-		Queues:      queues,
-		Sessions:    sessions,
-		Hooks:       hooks,
-		Mayor:       mayor,
-		Issues:      enrichIssuesWithAssignees(issues, hooks),
 		Activity:    activity,
-		Summary:     summary,
-		Expand:      expandPanel,
-		CSRFToken:   h.csrfToken,
+		ConvoyWorkData: ConvoyWorkData{
+			Queues:   queues,
+			Sessions: sessions,
+			Hooks:    hooks,
+			Issues:   enrichIssuesWithAssignees(issues, hooks),
+		},
+		ConvoyViewState: ConvoyViewState{
+			Health:    health,
+			Mayor:     mayor,
+			Summary:   summary,
+			Expand:    expandPanel,
+			CSRFToken: h.csrfToken,
+		},
 	}
 
 	var buf bytes.Buffer
