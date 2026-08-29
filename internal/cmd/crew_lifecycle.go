@@ -577,108 +577,110 @@ func runCrewRestartAll() error {
 // runCrewStop stops one or more crew workers.
 // Supports: "name", "rig/name" formats, "rig" (to stop all in rig), or --all.
 func runCrewStop(_ *cobra.Command, args []string) error {
-	// Handle --all flag
-	if crewAll {
+	if crewAll || len(args) == 0 {
 		return runCrewStopAll()
 	}
-
-	// Handle 0 args: default to all in inferred rig
-	if len(args) == 0 {
+	if rig, ok := crewStopRig(args); ok {
+		crewRig = rig
 		return runCrewStopAll()
 	}
+	return stopCrewMembers(args)
+}
 
-	// Handle 1 arg without "/": check if it's a rig name
-	// If so, stop all crew in that rig
-	if len(args) == 1 && !strings.Contains(args[0], "/") {
-		// Try to interpret as rig name
-		if _, _, err := getRig(args[0]); err == nil {
-			// It's a valid rig name - stop all crew in that rig
-			crewRig = args[0]
-			return runCrewStopAll()
-		}
-		// Not a rig name - fall through to treat as crew name
+func crewStopRig(args []string) (string, bool) {
+	if len(args) != 1 || strings.Contains(args[0], "/") {
+		return "", false
 	}
+	if _, _, err := getRig(args[0]); err != nil {
+		return "", false
+	}
+	return args[0], true
+}
 
+func stopCrewMembers(args []string) error {
 	var lastErr error
 	t := tmux.NewTmux()
 
 	for _, arg := range args {
-		name := arg
-		rigOverride := crewRig
-
-		// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
-		if rig, crewName, ok := parseRigSlashName(name); ok {
-			if rigOverride == "" {
-				rigOverride = rig
-			}
-			name = crewName
-		}
-
-		_, r, err := getCrewManagerForMember(rigOverride, name)
-		if err != nil {
-			fmt.Printf("Error stopping %s: %v\n", arg, err)
+		if err := stopCrewMember(t, arg); err != nil {
 			lastErr = err
-			continue
-		}
-
-		sessionID := crewSessionName(r.Name, name)
-
-		// Check if session exists
-		hasSession, err := t.HasSession(sessionID)
-		if err != nil {
-			fmt.Printf("Error checking session %s: %v\n", sessionID, err)
-			lastErr = err
-			continue
-		}
-		if !hasSession {
-			fmt.Printf("No session found for %s/%s\n", r.Name, name)
-			continue
-		}
-
-		// Dry run - just show what would be stopped
-		if crewDryRun {
-			fmt.Printf("Would stop %s/%s (session: %s)\n", r.Name, name, sessionID)
-			continue
-		}
-
-		// Capture output before stopping (best effort)
-		var output string
-		if !crewForce {
-			output, _ = t.CapturePane(sessionID, 50)
-		}
-
-		// Kill the session (with proper process cleanup to avoid orphans)
-		if err := t.KillSessionWithProcesses(sessionID); err != nil {
-			fmt.Printf("  %s [%s] %s: %s\n",
-				style.ErrorPrefix,
-				r.Name, name,
-				style.Dim.Render(err.Error()))
-			lastErr = err
-			continue
-		}
-
-		fmt.Printf("  %s [%s] %s: stopped\n",
-			style.SuccessPrefix,
-			r.Name, name)
-
-		// Log kill event to town log
-		townRoot, _ := workspace.Find(r.Path)
-		if townRoot != "" {
-			agent := fmt.Sprintf("%s/crew/%s", r.Name, name)
-			logger := townlog.NewLogger(townRoot)
-			_ = logger.Log(townlog.EventKill, agent, "gt crew stop")
-		}
-
-		// Log captured output (truncated)
-		if len(output) > 200 {
-			output = output[len(output)-200:]
-		}
-		if output != "" {
-			fmt.Printf("      %s\n", style.Dim.Render("(output captured)"))
 		}
 	}
-
 	return lastErr
+}
+
+func stopCrewMember(t *tmux.Tmux, arg string) error {
+	name, rigOverride := crewStopTarget(arg)
+	_, r, err := getCrewManagerForMember(rigOverride, name)
+	if err != nil {
+		fmt.Printf("Error stopping %s: %v\n", arg, err)
+		return err
+	}
+	sessionID := crewSessionName(r.Name, name)
+	hasSession, err := t.HasSession(sessionID)
+	if err != nil {
+		fmt.Printf("Error checking session %s: %v\n", sessionID, err)
+		return err
+	}
+	if !hasSession {
+		fmt.Printf("No session found for %s/%s\n", r.Name, name)
+		return nil
+	}
+	if crewDryRun {
+		fmt.Printf("Would stop %s/%s (session: %s)\n", r.Name, name, sessionID)
+		return nil
+	}
+	return killCrewSession(t, r.Path, r.Name, name, sessionID)
+}
+
+func crewStopTarget(arg string) (string, string) {
+	rigOverride := crewRig
+	if rig, crewName, ok := parseRigSlashName(arg); ok {
+		if rigOverride == "" {
+			rigOverride = rig
+		}
+		return crewName, rigOverride
+	}
+	return arg, rigOverride
+}
+
+func killCrewSession(t *tmux.Tmux, rigPath, rigName, crewName, sessionID string) error {
+	var output string
+	if !crewForce {
+		output, _ = t.CapturePane(sessionID, 50)
+	}
+	if err := t.KillSessionWithProcesses(sessionID); err != nil {
+		fmt.Printf("  %s [%s] %s: %s\n",
+			style.ErrorPrefix,
+			rigName, crewName,
+			style.Dim.Render(err.Error()))
+		return err
+	}
+	fmt.Printf("  %s [%s] %s: stopped\n",
+		style.SuccessPrefix,
+		rigName, crewName)
+	logCrewStop(rigPath, rigName, crewName)
+	printCapturedCrewOutput(output)
+	return nil
+}
+
+func logCrewStop(rigPath, rigName, crewName string) {
+	townRoot, _ := workspace.Find(rigPath)
+	if townRoot == "" {
+		return
+	}
+	agent := fmt.Sprintf("%s/crew/%s", rigName, crewName)
+	logger := townlog.NewLogger(townRoot)
+	_ = logger.Log(townlog.EventKill, agent, "gt crew stop")
+}
+
+func printCapturedCrewOutput(output string) {
+	if len(output) > 200 {
+		output = output[len(output)-200:]
+	}
+	if output != "" {
+		fmt.Printf("      %s\n", style.Dim.Render("(output captured)"))
+	}
 }
 
 // runCrewStopAll stops all running crew sessions.
