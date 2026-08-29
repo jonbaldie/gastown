@@ -834,14 +834,7 @@ func closePluginMails(dogName string) {
 		// the dispatch mail to execute the plugin, so skipping read mail left
 		// every executed dispatch bead open forever. Keep this scoped to Deacon
 		// dispatches so CC or human messages with a similar subject are preserved.
-		if !strings.HasPrefix(msg.Subject, "Plugin: ") {
-			continue
-		}
-		if mail.AddressToIdentity(msg.To) != mail.AddressToIdentity(dogAddress) {
-			continue
-		}
-		sender := mail.AddressToIdentity(msg.From)
-		if sender != "deacon/" && sender != "daemon" {
+		if !isPluginDispatchMail(msg, dogAddress) {
 			continue
 		}
 		if archErr := mailbox.Archive(msg.ID); archErr == nil {
@@ -852,6 +845,17 @@ func closePluginMails(dogName string) {
 	if closed > 0 {
 		fmt.Printf("  Closed %d stale plugin mail(s) from inbox\n", closed)
 	}
+}
+
+func isPluginDispatchMail(msg *mail.Message, dogAddress string) bool {
+	if !strings.HasPrefix(msg.Subject, "Plugin: ") {
+		return false
+	}
+	if mail.AddressToIdentity(msg.To) != mail.AddressToIdentity(dogAddress) {
+		return false
+	}
+	sender := mail.AddressToIdentity(msg.From)
+	return sender == "deacon/" || sender == "daemon"
 }
 
 func runDogStatus(cmd *cobra.Command, args []string) error {
