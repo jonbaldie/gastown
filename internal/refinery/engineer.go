@@ -1177,6 +1177,10 @@ func (e *Engineer) recheckMRSourceStillMergeable(mr *MRInfo, sourceIssue string)
 		}
 		return ProcessResult{Success: false, Error: fmt.Sprintf("pre-push recheck source_issue %s: %v", sourceIssue, err)}
 	}
+	return e.validateSourceIssue(mr, sourceIssue, issue)
+}
+
+func (e *Engineer) validateSourceIssue(mr *MRInfo, sourceIssue string, issue *beads.Issue) ProcessResult {
 	if issue == nil {
 		return e.rejectMRBeforeMerge(mr, fmt.Sprintf("source_issue %s is missing", sourceIssue))
 	}
@@ -1189,6 +1193,10 @@ func (e *Engineer) recheckMRSourceStillMergeable(mr *MRInfo, sourceIssue string)
 	if unchecked := beads.HasUncheckedCriteria(issue); unchecked > 0 {
 		return e.rejectMRBeforeMerge(mr, fmt.Sprintf("source_issue %s has %d unchecked acceptance criteria", sourceIssue, unchecked))
 	}
+	return e.validateSourceAttachments(mr, sourceIssue, issue)
+}
+
+func (e *Engineer) validateSourceAttachments(mr *MRInfo, sourceIssue string, issue *beads.Issue) ProcessResult {
 	if af := beads.ParseAttachmentFields(issue); af != nil {
 		switch {
 		case af.NoMerge:
