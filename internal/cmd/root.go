@@ -21,22 +21,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var rootCmd = &cobra.Command{
-	Use:               "gt", // Updated in init() based on GT_COMMAND
-	Short:             "Gas Town - Multi-agent workspace manager",
-	Version:           Version,
-	Long:              "", // Updated in init() based on GT_COMMAND
-	PersistentPreRunE: persistentPreRun,
-}
+var rootCmd = newRootCommand()
 
-func init() {
-	// Update command name based on GT_COMMAND env var
+func newRootCommand() *cobra.Command {
 	cmdName := cli.Name()
-	rootCmd.Use = cmdName
-	rootCmd.Long = fmt.Sprintf(`Gas Town (%s) manages multi-agent workspaces called rigs.
+	return &cobra.Command{
+		Use:     cmdName,
+		Short:   "Gas Town - Multi-agent workspace manager",
+		Version: Version,
+		Long: fmt.Sprintf(`Gas Town (%s) manages multi-agent workspaces called rigs.
 
 It coordinates agent spawning, work distribution, and communication
-across distributed teams of AI agents working on shared codebases.`, cmdName)
+across distributed teams of AI agents working on shared codebases.`, cmdName),
+		PersistentPreRunE: persistentPreRun,
+	}
 }
 
 // Commands that don't require beads to be installed/checked.
