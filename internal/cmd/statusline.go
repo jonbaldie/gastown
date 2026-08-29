@@ -42,79 +42,90 @@ func init() {
 
 func runStatusLine(cmd *cobra.Command, _ []string) error {
 	sessionName := commandStringFlag(cmd, "session")
-	// Check E-stop first — prepend red indicator if active
-	if townRoot, twErr := workspace.FindFromCwd(); twErr == nil {
-		showEstop := false
-		var info *estop.Info
-		if estop.IsActive(townRoot) {
-			showEstop = true
-			info = estop.Read(townRoot)
-		} else {
-			// Check per-rig E-stop
-			rigEnv := os.Getenv("GT_RIG")
-			if rigEnv != "" && estop.IsRigActive(townRoot, rigEnv) {
-				showEstop = true
-				info = estop.ReadRig(townRoot, rigEnv)
-			}
-		}
-		if showEstop {
-			ts := ""
-			if info != nil && !info.Timestamp.IsZero() {
-				ts = info.Timestamp.Format("15:04")
-			}
-			fmt.Printf("#[bg=red,fg=white,bold] ESTOP %s #[default] ", ts)
-		}
-	}
+	printStatusLineEstop()
 
 	t := tmux.NewTmux()
+	env := readStatusLineEnvironment(t, sessionName)
+	return dispatchStatusLine(t, sessionName, env)
+}
 
-	// Get session environment
-	var rigName, polecat, crew, issue, role string
+type statusLineEnvironment struct {
+	rigName string
+	polecat string
+	crew    string
+	issue   string
+	role    string
+}
 
+func printStatusLineEstop() {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return
+	}
+
+	showEstop := false
+	var info *estop.Info
+	if estop.IsActive(townRoot) {
+		showEstop = true
+		info = estop.Read(townRoot)
+	} else {
+		rigEnv := os.Getenv("GT_RIG")
+		if rigEnv != "" && estop.IsRigActive(townRoot, rigEnv) {
+			showEstop = true
+			info = estop.ReadRig(townRoot, rigEnv)
+		}
+	}
+	if !showEstop {
+		return
+	}
+
+	ts := ""
+	if info != nil && !info.Timestamp.IsZero() {
+		ts = info.Timestamp.Format("15:04")
+	}
+	fmt.Printf("#[bg=red,fg=white,bold] ESTOP %s #[default] ", ts)
+}
+
+func readStatusLineEnvironment(t *tmux.Tmux, sessionName string) statusLineEnvironment {
 	if sessionName != "" {
 		// Fetch the session environment in one tmux call. Missing variables are
 		// intentionally left empty and handled gracefully below.
 		env, _ := t.GetAllEnvironment(sessionName)
-		rigName = env["GT_RIG"]
-		polecat = env["GT_POLECAT"]
-		crew = env["GT_CREW"]
-		issue = env["GT_ISSUE"]
-		role = env["GT_ROLE"]
-	} else {
-		// Fallback to process environment
-		rigName = os.Getenv("GT_RIG")
-		polecat = os.Getenv("GT_POLECAT")
-		crew = os.Getenv("GT_CREW")
-		issue = os.Getenv("GT_ISSUE")
-		role = os.Getenv("GT_ROLE")
+		return statusLineEnvironment{
+			rigName: env["GT_RIG"],
+			polecat: env["GT_POLECAT"],
+			crew:    env["GT_CREW"],
+			issue:   env["GT_ISSUE"],
+			role:    env["GT_ROLE"],
+		}
 	}
+	return statusLineEnvironment{
+		rigName: os.Getenv("GT_RIG"),
+		polecat: os.Getenv("GT_POLECAT"),
+		crew:    os.Getenv("GT_CREW"),
+		issue:   os.Getenv("GT_ISSUE"),
+		role:    os.Getenv("GT_ROLE"),
+	}
+}
 
-	// Get session names for comparison
-	mayorSession := getMayorSessionName()
-	deaconSession := getDeaconSessionName()
-
-	// Determine identity and output based on role
-	if role == "mayor" || sessionName == mayorSession {
+func dispatchStatusLine(t *tmux.Tmux, sessionName string, env statusLineEnvironment) error {
+	if env.role == "mayor" || sessionName == getMayorSessionName() {
 		return runMayorStatusLine(t)
 	}
 
-	// Deacon status line
-	if role == "deacon" || sessionName == deaconSession {
+	if env.role == "deacon" || sessionName == getDeaconSessionName() {
 		return runDeaconStatusLine(t)
 	}
 
-	// Witness status line (session naming: gt-<rig>-witness)
-	if role == "witness" || strings.HasSuffix(sessionName, "-witness") {
-		return runWitnessStatusLine(t, rigName, sessionName)
+	if env.role == "witness" || strings.HasSuffix(sessionName, "-witness") {
+		return runWitnessStatusLine(t, env.rigName, sessionName)
 	}
 
-	// Refinery status line
-	if role == "refinery" || strings.HasSuffix(sessionName, "-refinery") {
-		return runRefineryStatusLine(rigName, sessionName)
+	if env.role == "refinery" || strings.HasSuffix(sessionName, "-refinery") {
+		return runRefineryStatusLine(env.rigName, sessionName)
 	}
 
-	// Crew/Polecat status line
-	return runWorkerStatusLine(polecat, crew, issue)
+	return runWorkerStatusLine(env.polecat, env.crew, env.issue)
 }
 
 // runWorkerStatusLine outputs status for crew or polecat sessions.
