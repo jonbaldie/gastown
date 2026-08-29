@@ -1071,29 +1071,42 @@ func extractWrappedBinary(wrapper string, args []string) string {
 	for i := 0; i < argCount; i++ {
 		a := args[i]
 		if a == "--" {
-			if i+1 < len(args) {
-				return filepath.Base(args[i+1])
-			}
-			return ""
+			return wrappedBinaryAfterSeparator(args, i)
 		}
-		if strings.HasPrefix(a, "-") && a != "-" {
-			// Long option `--foo=bar` carries its own value
-			if strings.HasPrefix(a, "--") && strings.Contains(a, "=") {
-				continue
-			}
-			// Long option `--foo` and unknown short options: assume no value
-			if flagsTakeValue[a] && i+1 < len(args) {
-				i++ // skip the flag's value
-			}
+		if next, skip := skipWrappedOption(a, i, args, flagsTakeValue); skip {
+			i = next
 			continue
 		}
-		// env permits VAR=value assignments interspersed with flags
-		if wrapper == "env" && strings.Contains(a, "=") {
+		if isEnvAssignment(wrapper, a) {
 			continue
 		}
 		return filepath.Base(a)
 	}
 	return ""
+}
+
+func wrappedBinaryAfterSeparator(args []string, index int) string {
+	if index+1 >= len(args) {
+		return ""
+	}
+	return filepath.Base(args[index+1])
+}
+
+func skipWrappedOption(arg string, index int, args []string, flagsTakeValue map[string]bool) (int, bool) {
+	if !strings.HasPrefix(arg, "-") || arg == "-" {
+		return index, false
+	}
+	if strings.HasPrefix(arg, "--") && strings.Contains(arg, "=") {
+		return index, true
+	}
+	if flagsTakeValue[arg] && index+1 < len(args) {
+		return index + 1, true
+	}
+	return index, true
+}
+
+func isEnvAssignment(wrapper, arg string) bool {
+	return wrapper == "env" && strings.Contains(arg, "=")
 }
 
 // ResolveProcessNames determines the correct process names for liveness detection
@@ -1120,70 +1133,89 @@ func ResolveProcessNames(agentName, command string, args ...string) []string {
 	initRegistryLocked()
 	defer registryMu.Unlock()
 
-	// Normalize command to basename for comparison. Commands may be
-	// path-resolved (e.g., "/home/user/.claude/local/claude" from
-	// resolveClaudePath), but built-in presets store bare names ("claude").
-	// Process matching (processMatchesNames, pgrep) also uses basenames.
-	cmdBase := command
-	if command != "" {
-		cmdBase = filepath.Base(command)
-	}
+	cmdBase := processCommandBase(command)
 	unwrappedCmdBase := strings.TrimPrefix(cmdBase, "gt-")
 
-	// Check if agentName matches a built-in/registered preset with matching command.
-	// Compare against both the raw command and basename to handle registry entries
-	// that store absolute-path commands (e.g., "/opt/bin/my-tool").
 	info, infoOK := globalRegistry.Agents[agentName]
-	if infoOK {
-		if len(info.ProcessNames) > 0 &&
-			(info.Command == command ||
-				info.Command == cmdBase ||
-				filepath.Base(info.Command) == cmdBase ||
-				(info.Command == unwrappedCmdBase && strings.HasPrefix(cmdBase, "gt-")) ||
-				cmdBase == "") {
-			return info.ProcessNames
-		}
+	if names := matchingRegisteredProcessNames(info, infoOK, command, cmdBase, unwrappedCmdBase); len(names) > 0 {
+		return names
 	}
 
-	// Wrapper case: command is `env`/`sudo`/etc. — find the real binary in
-	// args (caller-supplied) or the registered preset's Args, and resolve to
-	// THAT binary's preset ProcessNames. Caller args take precedence because
-	// the registered preset may be the canonical built-in (not the wrapper).
-	if wrapperCommands[cmdBase] {
-		argSources := [][]string{args}
-		if infoOK && len(info.Args) > 0 {
-			argSources = append(argSources, info.Args)
-		}
-		for _, src := range argSources {
-			realBin := extractWrappedBinary(cmdBase, src)
-			if realBin == "" {
-				continue
-			}
-			if names := lookupProcessNamesByBinary(realBin); len(names) > 0 {
-				return names
-			}
-			return []string{realBin}
-		}
+	if names := resolveWrappedProcessNames(cmdBase, args, info, infoOK); len(names) > 0 {
+		return names
 	}
 
-	// Agent name doesn't match or command differs — look up by command
 	if cmdBase != "" {
-		for _, info := range globalRegistry.Agents {
-			if len(info.ProcessNames) == 0 {
-				continue
-			}
-			if info.Command == command ||
-				filepath.Base(info.Command) == cmdBase ||
-				(strings.HasPrefix(cmdBase, "gt-") && filepath.Base(info.Command) == unwrappedCmdBase) {
-				return info.ProcessNames
-			}
+		if names := lookupProcessNamesByCommand(command, cmdBase, unwrappedCmdBase); len(names) > 0 {
+			return names
 		}
-		// Unknown command — use the binary basename itself
 		return []string{cmdBase}
 	}
 
-	// No command provided, agent not in registry — Claude defaults
 	return []string{"node", "claude"}
+}
+
+func processCommandBase(command string) string {
+	if command == "" {
+		return ""
+	}
+	return filepath.Base(command)
+}
+
+func matchingRegisteredProcessNames(info *AgentPresetInfo, infoOK bool, command, cmdBase, unwrappedCmdBase string) []string {
+	if !infoOK || len(info.ProcessNames) == 0 {
+		return nil
+	}
+	if info.Command == command || info.Command == cmdBase || filepath.Base(info.Command) == cmdBase {
+		return info.ProcessNames
+	}
+	if strings.HasPrefix(cmdBase, "gt-") && info.Command == unwrappedCmdBase {
+		return info.ProcessNames
+	}
+	if cmdBase == "" {
+		return info.ProcessNames
+	}
+	return nil
+}
+
+func resolveWrappedProcessNames(cmdBase string, args []string, info *AgentPresetInfo, infoOK bool) []string {
+	if !wrapperCommands[cmdBase] {
+		return nil
+	}
+	argSources := [][]string{args}
+	if infoOK && len(info.Args) > 0 {
+		argSources = append(argSources, info.Args)
+	}
+	for _, source := range argSources {
+		realBin := extractWrappedBinary(cmdBase, source)
+		if realBin == "" {
+			continue
+		}
+		if names := lookupProcessNamesByBinary(realBin); len(names) > 0 {
+			return names
+		}
+		return []string{realBin}
+	}
+	return nil
+}
+
+func lookupProcessNamesByCommand(command, cmdBase, unwrappedCmdBase string) []string {
+	for _, info := range globalRegistry.Agents {
+		if len(info.ProcessNames) == 0 {
+			continue
+		}
+		if processCommandMatches(info.Command, command, cmdBase, unwrappedCmdBase) {
+			return info.ProcessNames
+		}
+	}
+	return nil
+}
+
+func processCommandMatches(infoCommand, command, cmdBase, unwrappedCmdBase string) bool {
+	if infoCommand == command || filepath.Base(infoCommand) == cmdBase {
+		return true
+	}
+	return strings.HasPrefix(cmdBase, "gt-") && filepath.Base(infoCommand) == unwrappedCmdBase
 }
 
 // MergeWithPreset applies preset defaults to a RuntimeConfig.

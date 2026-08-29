@@ -957,8 +957,16 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	// Shallow copy to avoid mutating the input
 	copy := *rc
 	rc = &copy
+	cloneNormalizedNestedConfigs(rc)
+	applyNormalizedIdentityDefaults(rc)
+	applyNormalizedSessionDefaults(rc)
+	applyNormalizedHooksDefaults(rc)
+	applyNormalizedTmuxDefaults(rc)
+	applyNormalizedInstructionsDefaults(rc)
+	return rc
+}
 
-	// Deep copy nested structs to avoid shared references
+func cloneNormalizedNestedConfigs(rc *RuntimeConfig) {
 	if rc.Session != nil {
 		s := *rc.Session
 		rc.Session = &s
@@ -975,7 +983,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 		i := *rc.Instructions
 		rc.Instructions = &i
 	}
+}
 
+func applyNormalizedIdentityDefaults(rc *RuntimeConfig) {
 	if rc.Provider == "" {
 		rc.Provider = "claude"
 	}
@@ -992,7 +1002,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.PromptMode == "" {
 		rc.PromptMode = defaultPromptMode(rc.Provider)
 	}
+}
 
+func applyNormalizedSessionDefaults(rc *RuntimeConfig) {
 	if rc.Session == nil {
 		rc.Session = &RuntimeSessionConfig{}
 	}
@@ -1004,7 +1016,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.Session.ConfigDirEnv == "" {
 		rc.Session.ConfigDirEnv = defaultConfigDirEnv(rc.Provider)
 	}
+}
 
+func applyNormalizedHooksDefaults(rc *RuntimeConfig) {
 	if rc.Hooks == nil {
 		rc.Hooks = &RuntimeHooksConfig{}
 	}
@@ -1027,7 +1041,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if !rc.Hooks.Informational {
 		rc.Hooks.Informational = defaultHooksInformational(rc.Provider)
 	}
+}
 
+func applyNormalizedTmuxDefaults(rc *RuntimeConfig) {
 	if rc.Tmux == nil {
 		rc.Tmux = &RuntimeTmuxConfig{}
 	}
@@ -1043,7 +1059,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.Tmux.ReadyDelayMs == 0 {
 		rc.Tmux.ReadyDelayMs = defaultReadyDelayMs(rc.Provider)
 	}
+}
 
+func applyNormalizedInstructionsDefaults(rc *RuntimeConfig) {
 	if rc.Instructions == nil {
 		rc.Instructions = &RuntimeInstructionsConfig{}
 	}
@@ -1051,8 +1069,6 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.Instructions.File == "" {
 		rc.Instructions.File = defaultInstructionsFile(rc.Provider)
 	}
-
-	return rc
 }
 
 const codexUpdateCheckKey = "check_for_update_on_startup"
