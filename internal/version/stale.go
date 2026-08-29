@@ -203,6 +203,11 @@ func CheckStaleBinary(repoDir string) *StaleBinaryInfo {
 // that contain the binary commit, choose the freshest descendant; only use the
 // candidate order below to break truly diverged ties.
 func resolveBuildBranchRef(repoDir, binaryCommit string) (buildBranchRef, bool) {
+	usable := usableBuildBranchRefs(repoDir, binaryCommit)
+	return freshestBuildBranchRef(repoDir, usable)
+}
+
+func usableBuildBranchRefs(repoDir, binaryCommit string) []buildBranchRef {
 	var usable []buildBranchRef
 	for _, candidate := range buildBranchCandidates(repoDir) {
 		commit, err := resolveGitCommit(repoDir, candidate.ref)
@@ -212,27 +217,33 @@ func resolveBuildBranchRef(repoDir, binaryCommit string) (buildBranchRef, bool) 
 		candidate.commit = commit
 		usable = append(usable, candidate)
 	}
+	return usable
+}
+
+func freshestBuildBranchRef(repoDir string, usable []buildBranchRef) (buildBranchRef, bool) {
 	if len(usable) == 0 {
 		return buildBranchRef{}, false
 	}
 
 	frontier := make([]buildBranchRef, 0, len(usable))
-	for i, candidate := range usable {
-		older := false
-		for j, other := range usable {
-			if i == j || candidate.commit == other.commit {
-				continue
-			}
-			if isAncestor(repoDir, candidate.commit, other.commit) {
-				older = true
-				break
-			}
-		}
-		if !older {
+	for _, candidate := range usable {
+		if !hasNewerBuildBranchRef(repoDir, candidate, usable) {
 			frontier = append(frontier, candidate)
 		}
 	}
 	return frontier[0], true
+}
+
+func hasNewerBuildBranchRef(repoDir string, candidate buildBranchRef, usable []buildBranchRef) bool {
+	for _, other := range usable {
+		if candidate.commit == other.commit {
+			continue
+		}
+		if isAncestor(repoDir, candidate.commit, other.commit) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildBranchCandidates(repoDir string) []buildBranchRef {
