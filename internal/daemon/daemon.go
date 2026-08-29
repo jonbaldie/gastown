@@ -199,169 +199,20 @@ var cleanupLegacySocketsForDaemon = func(townRoot string) (int, int) {
 
 // New creates a new daemon instance.
 func New(config *Config) (*Daemon, error) {
-	// Ensure daemon directory exists
-	daemonDir := filepath.Dir(config.LogFile)
-	if err := os.MkdirAll(daemonDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating daemon directory: %w", err)
+	logger, err := newDaemonLogger(config)
+	if err != nil {
+		return nil, err
 	}
-
-	// Open log file with rotation (100MB max, 3 backups, 7 days, compressed)
-	logWriter := &lumberjack.Logger{
-		Filename:   config.LogFile,
-		MaxSize:    100, // megabytes
-		MaxBackups: 3,
-		MaxAge:     7, // days
-		Compress:   true,
-	}
-
-	logger := log.New(logWriter, "", log.LstdFlags)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// PATCH-007 (hq-olcb): Augment PATH with common user/local bin
-	// directories before any subprocess lookup. The daemon is often launched
-	// from systemd / login shells / launchd without user-installed tool dirs
-	// such as ~/.local/bin or /opt/homebrew/bin.
-	augmentDaemonPath(logger)
-
-	// Initialize session prefix and agent registries from town root.
-	if err := session.InitRegistry(config.TownRoot); err != nil {
-		logger.Printf("Warning: failed to initialize town registry: %v", err)
-	}
-
-	// Set GT_TOWN_ROOT in the daemon process env so Go code (e.g.,
-	// sessionPrefixPattern) can read it without relying on GT_ROOT.
-	os.Setenv("GT_TOWN_ROOT", config.TownRoot)
-
-	// Also set GT_TOWN_ROOT in tmux global environment so run-shell subprocesses
-	// (e.g., gt cycle next/prev) can find the workspace even when CWD is $HOME.
-	// Non-fatal: tmux server may not be running yet — daemon creates sessions shortly.
-	t := tmux.NewTmux()
-	if err := t.SetGlobalEnvironment("GT_TOWN_ROOT", config.TownRoot); err != nil {
-		logger.Printf("Warning: failed to set GT_TOWN_ROOT in tmux global env: %v", err)
-	}
-
-	// Clear any agent identity vars that leaked into tmux global env.
-	// Only GT_TOWN_ROOT should be global. Leaked identity vars cause sessions
-	// without their own session-level overrides to inherit a stale identity,
-	// misattributing beads and mail. GH#3006.
-	identityVars := agentconfig.IdentityEnvVars
-	for _, k := range identityVars {
-		_ = t.UnsetGlobalEnvironment(k)
-	}
-
-	// Load patrol config from mayor/daemon.json, ensuring lifecycle defaults
-	// are populated for any missing data maintenance tickers. Without this,
-	// opt-in patrols (compactor, reaper, doctor, JSONL backup, dolt backup)
-	// remain disabled if the file was created before they were implemented.
-	if err := EnsureLifecycleConfigFile(config.TownRoot); err != nil {
-		logger.Printf("Warning: failed to ensure lifecycle config: %v", err)
-	}
-	patrolConfig := LoadPatrolConfig(config.TownRoot)
-	if patrolConfig != nil {
-		logger.Printf("Loaded patrol config from %s", PatrolConfigFile(config.TownRoot))
-		// Propagate env vars from daemon.json to this process and all spawned sessions.
-		for k, v := range patrolConfig.Env {
-			os.Setenv(k, v)
-			logger.Printf("Set env %s=%s from daemon.json", k, v)
-		}
-	}
-	agentconfig.ApplyConfiguredDoltEnv(config.TownRoot)
-
-	// Load disabled_patrols from town settings (settings/config.json).
-	// This provides a simpler way to disable patrols than editing daemon.json.
-	disabledPatrols := loadDisabledPatrolsFromTownSettings(config.TownRoot)
-	if len(disabledPatrols) > 0 {
-		names := make([]string, 0, len(disabledPatrols))
-		for k := range disabledPatrols {
-			names = append(names, k)
-		}
-		logger.Printf("Patrols disabled via town settings: %v", names)
-	}
-
-	// Initialize Dolt server manager if configured
-	var doltServer *DoltServerManager
-	if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoltServer != nil {
-		doltServer = NewDoltServerManager(config.TownRoot, patrolConfig.Patrols.DoltServer, logger.Printf)
-		if doltServer.IsEnabled() {
-			logger.Printf("Dolt server management enabled (port %d)", doltServer.config.Port)
-			// Propagate Dolt connection info to process env so AgentEnv() passes it to
-			// all spawned agent sessions. Without this, bd in agent sessions
-			// auto-starts rogue Dolt instances or connects to localhost. (GH#2412)
-			applyDoltServerConfigEnv(doltServer.config)
-		}
-	}
-
-	// Fallback: if GT_DOLT_PORT still isn't set (no DoltServerManager, daemon
-	// started independently of gt up), detect the port from dolt config.
-	// This ensures AgentEnv() always has the port for spawned sessions. (GH#2412)
-	if os.Getenv("GT_DOLT_PORT") == "" {
-		if port := agentconfig.ResolveConfiguredDoltPort(config.TownRoot); port > 0 {
-			portStr := strconv.Itoa(port)
-			os.Setenv("GT_DOLT_PORT", portStr)
-			os.Setenv("BEADS_DOLT_SERVER_PORT", portStr)
-			os.Setenv("BEADS_DOLT_PORT", portStr)
-			logger.Printf("Set GT_DOLT_PORT=%s from resolved Dolt config (fallback)", portStr)
-		}
-	} else {
-		portStr := os.Getenv("GT_DOLT_PORT")
-		os.Setenv("BEADS_DOLT_SERVER_PORT", portStr)
-		os.Setenv("BEADS_DOLT_PORT", portStr)
-	}
-
-	// Propagate Dolt host to process env so bd doesn't fall back to 127.0.0.1
-	// when the server runs on a remote machine. BEADS_DOLT_SERVER_HOST is a
-	// derived alias, not an authority, so stale inherited values are replaced or
-	// removed here.
-	applyConfiguredDoltHostEnv(config.TownRoot, logger.Printf)
-
-	// PATCH-006: Resolve binary paths at startup.
-	gtPath, err := exec.LookPath("gt")
-	if err != nil {
-		gtPath = "gt"
-		logger.Printf("Warning: gt not found in PATH, subprocess calls may fail")
-	}
-	bdPath, err := exec.LookPath("bd")
-	if err != nil {
-		bdPath = "bd"
-		logger.Printf("Warning: bd not found in PATH, subprocess calls may fail")
-	}
-
-	// Initialize restart tracker with exponential backoff.
-	// Parameters are configurable via patrols.restart_tracker in daemon.json.
-	var rtCfg RestartTrackerConfig
-	if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.RestartTracker != nil {
-		rtCfg = *patrolConfig.Patrols.RestartTracker
-	}
-	restartTracker := NewRestartTracker(config.TownRoot, rtCfg)
-	if err := restartTracker.Load(); err != nil {
-		logger.Printf("Warning: failed to load restart state: %v", err)
-	}
-
-	// Initialize OpenTelemetry (best-effort — telemetry failure never blocks startup).
-	// Activate by setting GT_OTEL_METRICS_URL and/or GT_OTEL_LOGS_URL.
-	otelProvider, otelErr := telemetry.Init(ctx, "gastown-daemon", "")
-	if otelErr != nil {
-		logger.Printf("Warning: telemetry init failed: %v", otelErr)
-	}
-	var dm *daemonMetrics
-	if otelProvider != nil {
-		dm, err = newDaemonMetrics()
-		if err != nil {
-			logger.Printf("Warning: failed to register daemon metrics: %v", err)
-			dm = nil
-		} else {
-			metricsURL := os.Getenv(telemetry.EnvMetricsURL)
-			if metricsURL == "" {
-				metricsURL = telemetry.DefaultMetricsURL
-			}
-			logsURL := os.Getenv(telemetry.EnvLogsURL)
-			if logsURL == "" {
-				logsURL = telemetry.DefaultLogsURL
-			}
-			logger.Printf("Telemetry active (metrics → %s, logs → %s)",
-				metricsURL, logsURL)
-		}
-	}
+	initializeDaemonEnvironment(config, logger)
+	patrolConfig, disabledPatrols := loadDaemonPatrolConfig(config, logger)
+	doltServer := initializeDoltServer(config, patrolConfig, logger)
+	propagateDaemonDoltEnv(config, logger)
+	gtPath := resolveDaemonBinary("gt", logger)
+	bdPath := resolveDaemonBinary("bd", logger)
+	restartTracker := initializeRestartTracker(config, patrolConfig, logger)
+	otelProvider, dm := initializeDaemonTelemetry(ctx, logger)
 
 	d := &Daemon{
 		daemonLifecycle: daemonLifecycle{cancel: cancel},
@@ -388,6 +239,136 @@ func New(config *Config) (*Daemon, error) {
 		},
 	}
 	return d, nil
+}
+
+func newDaemonLogger(config *Config) (*log.Logger, error) {
+	if err := os.MkdirAll(filepath.Dir(config.LogFile), 0755); err != nil {
+		return nil, fmt.Errorf("creating daemon directory: %w", err)
+	}
+	logWriter := &lumberjack.Logger{
+		Filename:   config.LogFile,
+		MaxSize:    100, // megabytes
+		MaxBackups: 3,
+		MaxAge:     7, // days
+		Compress:   true,
+	}
+	return log.New(logWriter, "", log.LstdFlags), nil
+}
+
+func initializeDaemonEnvironment(config *Config, logger *log.Logger) {
+	augmentDaemonPath(logger)
+	if err := session.InitRegistry(config.TownRoot); err != nil {
+		logger.Printf("Warning: failed to initialize town registry: %v", err)
+	}
+	os.Setenv("GT_TOWN_ROOT", config.TownRoot)
+
+	t := tmux.NewTmux()
+	if err := t.SetGlobalEnvironment("GT_TOWN_ROOT", config.TownRoot); err != nil {
+		logger.Printf("Warning: failed to set GT_TOWN_ROOT in tmux global env: %v", err)
+	}
+	for _, k := range agentconfig.IdentityEnvVars {
+		_ = t.UnsetGlobalEnvironment(k)
+	}
+}
+
+func loadDaemonPatrolConfig(config *Config, logger *log.Logger) (*DaemonPatrolConfig, map[string]bool) {
+	if err := EnsureLifecycleConfigFile(config.TownRoot); err != nil {
+		logger.Printf("Warning: failed to ensure lifecycle config: %v", err)
+	}
+	patrolConfig := LoadPatrolConfig(config.TownRoot)
+	if patrolConfig != nil {
+		logger.Printf("Loaded patrol config from %s", PatrolConfigFile(config.TownRoot))
+		for k, v := range patrolConfig.Env {
+			os.Setenv(k, v)
+			logger.Printf("Set env %s=%s from daemon.json", k, v)
+		}
+	}
+	agentconfig.ApplyConfiguredDoltEnv(config.TownRoot)
+
+	disabledPatrols := loadDisabledPatrolsFromTownSettings(config.TownRoot)
+	if len(disabledPatrols) > 0 {
+		names := make([]string, 0, len(disabledPatrols))
+		for k := range disabledPatrols {
+			names = append(names, k)
+		}
+		logger.Printf("Patrols disabled via town settings: %v", names)
+	}
+	return patrolConfig, disabledPatrols
+}
+
+func initializeDoltServer(config *Config, patrolConfig *DaemonPatrolConfig, logger *log.Logger) *DoltServerManager {
+	if patrolConfig == nil || patrolConfig.Patrols == nil || patrolConfig.Patrols.DoltServer == nil {
+		return nil
+	}
+	doltServer := NewDoltServerManager(config.TownRoot, patrolConfig.Patrols.DoltServer, logger.Printf)
+	if !doltServer.IsEnabled() {
+		return doltServer
+	}
+	logger.Printf("Dolt server management enabled (port %d)", doltServer.config.Port)
+	applyDoltServerConfigEnv(doltServer.config)
+	return doltServer
+}
+
+func propagateDaemonDoltEnv(config *Config, logger *log.Logger) {
+	portStr := os.Getenv("GT_DOLT_PORT")
+	if portStr == "" {
+		if port := agentconfig.ResolveConfiguredDoltPort(config.TownRoot); port > 0 {
+			portStr = strconv.Itoa(port)
+			os.Setenv("GT_DOLT_PORT", portStr)
+			logger.Printf("Set GT_DOLT_PORT=%s from resolved Dolt config (fallback)", portStr)
+		}
+	}
+	if portStr != "" {
+		os.Setenv("BEADS_DOLT_SERVER_PORT", portStr)
+		os.Setenv("BEADS_DOLT_PORT", portStr)
+	}
+	applyConfiguredDoltHostEnv(config.TownRoot, logger.Printf)
+}
+
+func resolveDaemonBinary(name string, logger *log.Logger) string {
+	path, err := exec.LookPath(name)
+	if err == nil {
+		return path
+	}
+	logger.Printf("Warning: %s not found in PATH, subprocess calls may fail", name)
+	return name
+}
+
+func initializeRestartTracker(config *Config, patrolConfig *DaemonPatrolConfig, logger *log.Logger) *RestartTracker {
+	var trackerConfig RestartTrackerConfig
+	if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.RestartTracker != nil {
+		trackerConfig = *patrolConfig.Patrols.RestartTracker
+	}
+	tracker := NewRestartTracker(config.TownRoot, trackerConfig)
+	if err := tracker.Load(); err != nil {
+		logger.Printf("Warning: failed to load restart state: %v", err)
+	}
+	return tracker
+}
+
+func initializeDaemonTelemetry(ctx context.Context, logger *log.Logger) (*telemetry.Provider, *daemonMetrics) {
+	provider, err := telemetry.Init(ctx, "gastown-daemon", "")
+	if err != nil {
+		logger.Printf("Warning: telemetry init failed: %v", err)
+	}
+	if provider == nil {
+		return nil, nil
+	}
+	metrics, err := newDaemonMetrics()
+	if err != nil {
+		logger.Printf("Warning: failed to register daemon metrics: %v", err)
+		return provider, nil
+	}
+	metricsURL := os.Getenv(telemetry.EnvMetricsURL)
+	if metricsURL == "" {
+		metricsURL = telemetry.DefaultMetricsURL
+	}
+	logsURL := os.Getenv(telemetry.EnvLogsURL)
+	if logsURL == "" {
+		logsURL = telemetry.DefaultLogsURL
+	}
+	logger.Printf("Telemetry active (metrics → %s, logs → %s)", metricsURL, logsURL)
+	return provider, metrics
 }
 
 func applyDoltServerConfigEnv(config *DoltServerConfig) {
