@@ -148,114 +148,116 @@ func runWorkerStatusLine(polecat, crew, issue string) error {
 	return nil
 }
 
+type mayorRigStatus struct {
+	hasWitness  bool
+	hasRefinery bool
+	opState     string // "OPERATIONAL", "PARKED", or "DOCKED"
+}
+
+type mayorAgentHealth struct {
+	total   int
+	working int
+}
+
+type mayorPendingCheck struct {
+	session string
+	health  *mayorAgentHealth
+}
+
+type mayorRigInfo struct {
+	name   string
+	status *mayorRigStatus
+}
+
 func runMayorStatusLine(t *tmux.Tmux) error {
-	// Count active sessions by listing tmux sessions
 	sessions, err := t.ListSessions()
 	if err != nil {
 		return nil // Silent fail
 	}
 
-	// Get town root from mayor pane's working directory
-	var townRoot string
 	mayorSession := getMayorSessionName()
-	paneDir, err := t.GetPaneWorkDir(mayorSession)
-	if err == nil && paneDir != "" {
-		townRoot, _ = workspace.Find(paneDir)
+	townRoot := statusLineTownRoot(t, mayorSession)
+	registeredRigs := registeredStatusLineRigs(townRoot)
+	rigStatuses, healthByType, hasDeacon, pending := collectMayorStatus(sessions, registeredRigs)
+	checkMayorWorkingSessions(t, pending)
+	for _, status := range rigStatuses {
+		// Status-line is a tmux hot path. Do not query beads for dock/park state here;
+		// `gt rig list/status` remains the authoritative live status view.
+		status.opState = "OPERATIONAL"
 	}
 
-	// Load registered rigs to validate against
-	registeredRigs := make(map[string]bool)
-	if townRoot != "" {
-		rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-		if rigsConfig, err := config.LoadRigsConfig(rigsConfigPath); err == nil {
-			for rigName := range rigsConfig.Rigs {
-				registeredRigs[rigName] = true
-			}
-		}
+	parts := buildMayorAgentParts(healthByType, hasDeacon)
+	rigs := buildMayorRigInfos(rigStatuses)
+	sortMayorRigInfos(rigs)
+	rigParts := renderMayorRigParts(rigs, townRoot)
+	if len(rigParts) > 0 {
+		parts = append(parts, strings.Join(rigParts, " "))
 	}
 
-	// Track per-rig status for LED indicators and sorting
-	type rigStatus struct {
-		hasWitness  bool
-		hasRefinery bool
-		opState     string // "OPERATIONAL", "PARKED", or "DOCKED"
-	}
-	rigStatuses := make(map[string]*rigStatus)
+	fmt.Print(strings.Join(parts, " | ") + " |")
+	return nil
+}
 
-	// Initialize for all registered rigs
+func collectMayorStatus(sessions []string, registeredRigs map[string]bool) (map[string]*mayorRigStatus, map[AgentType]*mayorAgentHealth, bool, []mayorPendingCheck) {
+	rigStatuses := make(map[string]*mayorRigStatus, len(registeredRigs))
 	for rigName := range registeredRigs {
-		rigStatuses[rigName] = &rigStatus{}
+		rigStatuses[rigName] = &mayorRigStatus{}
 	}
-
-	// Track per-agent-type health (working/zombie counts)
-	type agentHealth struct {
-		total   int
-		working int
-	}
-	healthByType := map[AgentType]*agentHealth{
+	healthByType := map[AgentType]*mayorAgentHealth{
 		AgentWitness:  {},
 		AgentRefinery: {},
 	}
-
-	// Track deacon presence (just icon, no count)
+	var pending []mayorPendingCheck
 	hasDeacon := false
-
-	// First pass: categorize sessions and build rig status. This is cheap
-	// (no subprocesses) so it stays a single sequential pass; only the
-	// working-state check below needs to fan out.
-	type pendingCheck struct {
-		session string
-		health  *agentHealth
-	}
-	var pending []pendingCheck
 
 	for _, s := range sessions {
 		agent := categorizeSession(s)
 		if agent == nil {
 			continue
 		}
-
-		// Track rig-level status (witness/refinery presence)
-		// Polecats are not tracked in tmux - they're a GC concern, not a display concern
-		if agent.Rig != "" && registeredRigs[agent.Rig] {
-			if rigStatuses[agent.Rig] == nil {
-				rigStatuses[agent.Rig] = &rigStatus{}
-			}
-			switch agent.Type {
-			case AgentWitness:
-				rigStatuses[agent.Rig].hasWitness = true
-			case AgentRefinery:
-				rigStatuses[agent.Rig].hasRefinery = true
-			}
-		}
-
-		// Track agent health (skip Mayor and Crew)
-		if health := healthByType[agent.Type]; health != nil {
-			health.total++
-			pending = append(pending, pendingCheck{session: s, health: health})
-		}
-
-		// Track deacon presence (just the icon, no count)
-		if agent.Type == AgentDeacon {
+		if recordMayorSession(s, agent, registeredRigs, rigStatuses, healthByType, &pending) {
 			hasDeacon = true
 		}
 	}
+	return rigStatuses, healthByType, hasDeacon, pending
+}
 
-	// Second pass: detect working state (✻ symbol) concurrently. Each check
-	// is an independent `tmux capture-pane` subprocess call; run serially
-	// this scales status-line latency linearly with agent count, which is
-	// directly visible as tmux status-bar redraw lag on towns with many rigs.
+func recordMayorSession(s string, agent *AgentSession, registeredRigs map[string]bool, rigStatuses map[string]*mayorRigStatus, healthByType map[AgentType]*mayorAgentHealth, pending *[]mayorPendingCheck) bool {
+	if agent.Rig != "" && registeredRigs[agent.Rig] {
+		status := rigStatuses[agent.Rig]
+		if status == nil {
+			status = &mayorRigStatus{}
+			rigStatuses[agent.Rig] = status
+		}
+		setMayorRigAgentStatus(status, agent.Type)
+	}
+	if health := healthByType[agent.Type]; health != nil {
+		health.total++
+		*pending = append(*pending, mayorPendingCheck{session: s, health: health})
+	}
+	return agent.Type == AgentDeacon
+}
+
+func setMayorRigAgentStatus(status *mayorRigStatus, agentType AgentType) {
+	switch agentType {
+	case AgentWitness:
+		status.hasWitness = true
+	case AgentRefinery:
+		status.hasRefinery = true
+	}
+}
+
+func checkMayorWorkingSessions(t *tmux.Tmux, pending []mayorPendingCheck) {
 	sem := make(chan struct{}, maxConcurrentWorkingChecks)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	for _, c := range pending {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(c pendingCheck) {
+		go func(c mayorPendingCheck) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			working := isSessionWorking(t, c.session)
-			if working {
+			if isSessionWorking(t, c.session) {
 				mu.Lock()
 				c.health.working++
 				mu.Unlock()
@@ -263,24 +265,11 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		}(c)
 	}
 	wg.Wait()
+}
 
-	// Status-line is a tmux hot path. Do not query beads for dock/park state here;
-	// `gt rig list/status` remains the authoritative live status view.
-	for _, status := range rigStatuses {
-		status.opState = "OPERATIONAL"
-	}
-
-	// Build status
-	var parts []string
-
-	// Add per-agent-type health in consistent order
-	// Format: "1/3 👁️" = 1 working out of 3 total
-	// Only show agent types that have sessions
-	// Note: Polecats excluded - idle state is misleading noise
-	// Deacon gets just an icon (no count) - shown separately below
-	agentOrder := []AgentType{AgentWitness, AgentRefinery}
+func buildMayorAgentParts(healthByType map[AgentType]*mayorAgentHealth, hasDeacon bool) []string {
 	var agentParts []string
-	for _, agentType := range agentOrder {
+	for _, agentType := range []AgentType{AgentWitness, AgentRefinery} {
 		health := healthByType[agentType]
 		if health.total == 0 {
 			continue
@@ -288,96 +277,75 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		icon := AgentTypeIcons[agentType]
 		agentParts = append(agentParts, fmt.Sprintf("%d/%d %s", health.working, health.total, icon))
 	}
+	var parts []string
 	if len(agentParts) > 0 {
 		parts = append(parts, strings.Join(agentParts, " "))
 	}
-
-	// Add deacon icon if running (just presence, no count)
 	if hasDeacon {
 		parts = append(parts, AgentTypeIcons[AgentDeacon])
 	}
+	return parts
+}
 
-	// Build rig status display with LED indicators (see GetRigLED for definitions)
-
-	// Create sortable rig list
-	type rigInfo struct {
-		name   string
-		status *rigStatus
-	}
-	var rigs []rigInfo
-	for rigName, status := range rigStatuses {
-		// Skip docked rigs — they're intentionally disabled and don't need display.
-		// Reserve 🛑 for error states (crashed agents, unreachable Dolt, etc.).
+func buildMayorRigInfos(statuses map[string]*mayorRigStatus) []mayorRigInfo {
+	rigs := make([]mayorRigInfo, 0, len(statuses))
+	for rigName, status := range statuses {
 		if status.opState == "DOCKED" {
 			continue
 		}
-		rigs = append(rigs, rigInfo{name: rigName, status: status})
+		rigs = append(rigs, mayorRigInfo{name: rigName, status: status})
 	}
+	return rigs
+}
 
-	// Sort by: 1) running state, 2) operational state, 3) alphabetical
+func sortMayorRigInfos(rigs []mayorRigInfo) {
 	sort.Slice(rigs, func(i, j int) bool {
 		isRunningI := rigs[i].status.hasWitness || rigs[i].status.hasRefinery
 		isRunningJ := rigs[j].status.hasWitness || rigs[j].status.hasRefinery
-
-		// Primary sort: running rigs before non-running rigs
 		if isRunningI != isRunningJ {
 			return isRunningI
 		}
-
-		// Secondary sort: operational state (for non-running rigs: OPERATIONAL < PARKED < DOCKED)
 		stateOrder := map[string]int{"OPERATIONAL": 0, "PARKED": 1, "DOCKED": 2}
 		stateI := stateOrder[rigs[i].status.opState]
 		stateJ := stateOrder[rigs[j].status.opState]
 		if stateI != stateJ {
 			return stateI < stateJ
 		}
-
-		// Tertiary sort: alphabetical
 		return rigs[i].name < rigs[j].name
 	})
+}
 
-	// Build display with group separators
-	var rigParts []string
-	var lastGroup string
+func renderMayorRigParts(rigs []mayorRigInfo, townRoot string) []string {
+	var parts []string
+	lastGroup := ""
 	for _, rig := range rigs {
-		isRunning := rig.status.hasWitness || rig.status.hasRefinery
-		var currentGroup string
-		if isRunning {
-			currentGroup = "running"
-		} else {
-			currentGroup = "idle-" + rig.status.opState
-		}
-
-		// Add separator when group changes (running -> non-running, or different opStates within non-running)
+		currentGroup, part := mayorRigPart(rig, townRoot, len(rigs))
 		if lastGroup != "" && lastGroup != currentGroup {
-			rigParts = append(rigParts, "|")
+			parts = append(parts, "|")
 		}
 		lastGroup = currentGroup
-
-		status := rig.status
-		led := GetRigLED(status.hasWitness, status.hasRefinery, status.opState)
-
-		// All icons get 1 space, Park gets 2
-		space := " "
-		if led == "🅿️" {
-			space = "  "
-		}
-		// Abbreviate rig names to beads prefix when >2 rigs
-		displayName := rig.name
-		if len(rigs) > 2 && townRoot != "" {
-			if prefix := config.GetRigPrefix(townRoot, rig.name); prefix != "" {
-				displayName = prefix
-			}
-		}
-		rigParts = append(rigParts, led+space+displayName)
+		parts = append(parts, part)
 	}
+	return parts
+}
 
-	if len(rigParts) > 0 {
-		parts = append(parts, strings.Join(rigParts, " "))
+func mayorRigPart(rig mayorRigInfo, townRoot string, rigCount int) (string, string) {
+	currentGroup := "idle-" + rig.status.opState
+	if rig.status.hasWitness || rig.status.hasRefinery {
+		currentGroup = "running"
 	}
-
-	fmt.Print(strings.Join(parts, " | ") + " |")
-	return nil
+	led := GetRigLED(rig.status.hasWitness, rig.status.hasRefinery, rig.status.opState)
+	space := " "
+	if led == "🅿️" {
+		space = "  "
+	}
+	displayName := rig.name
+	if rigCount > 2 && townRoot != "" {
+		if prefix := config.GetRigPrefix(townRoot, rig.name); prefix != "" {
+			displayName = prefix
+		}
+	}
+	return currentGroup, led + space + displayName
 }
 
 // runDeaconStatusLine outputs status for the deacon session.
@@ -391,8 +359,8 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 
 	// Get town root from deacon pane's working directory. Config files only; no beads.
 	deaconSession := getDeaconSessionName()
-	townRoot := deaconStatusLineTownRoot(t, deaconSession)
-	registeredRigs := registeredDeaconRigs(townRoot)
+	townRoot := statusLineTownRoot(t, deaconSession)
+	registeredRigs := registeredStatusLineRigs(townRoot)
 	rigCount := countRegisteredDeaconRigs(sessions, registeredRigs)
 
 	// Build status
@@ -404,7 +372,7 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 	return nil
 }
 
-func deaconStatusLineTownRoot(t *tmux.Tmux, sessionName string) string {
+func statusLineTownRoot(t *tmux.Tmux, sessionName string) string {
 	paneDir, err := t.GetPaneWorkDir(sessionName)
 	if err != nil || paneDir == "" {
 		return ""
@@ -413,7 +381,7 @@ func deaconStatusLineTownRoot(t *tmux.Tmux, sessionName string) string {
 	return townRoot
 }
 
-func registeredDeaconRigs(townRoot string) map[string]bool {
+func registeredStatusLineRigs(townRoot string) map[string]bool {
 	registered := make(map[string]bool)
 	if townRoot == "" {
 		return registered
