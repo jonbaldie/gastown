@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,59 +80,64 @@ type rigGateConfig struct {
 // loadRigGateConfig reads the merge_queue section from a rig's config.json
 // to discover what test/gate commands to run.
 func loadRigGateConfig(rigPath string) (*rigGateConfig, error) {
-	configPath := filepath.Join(rigPath, "config.json")
-	data, err := os.ReadFile(configPath)
+	rawMQ, err := readRigMergeQueue(rigPath)
+	if err != nil || rawMQ == nil {
+		return nil, err
+	}
+	return parseRigGateConfig(rawMQ)
+}
+
+func readRigMergeQueue(rigPath string) (json.RawMessage, error) {
+	data, err := os.ReadFile(filepath.Join(rigPath, "config.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil // No config, skip
 		}
 		return nil, err
 	}
-
 	var raw struct {
 		MergeQueue json.RawMessage `json:"merge_queue"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing config.json: %w", err)
 	}
+	return raw.MergeQueue, nil
+}
 
-	if raw.MergeQueue == nil {
-		return nil, nil // No merge_queue section
-	}
-
+func parseRigGateConfig(rawMQ json.RawMessage) (*rigGateConfig, error) {
 	var mq struct {
 		TestCommand *string                    `json:"test_command"`
 		Gates       map[string]json.RawMessage `json:"gates"`
 	}
-	if err := json.Unmarshal(raw.MergeQueue, &mq); err != nil {
+	if err := json.Unmarshal(rawMQ, &mq); err != nil {
 		return nil, fmt.Errorf("parsing merge_queue: %w", err)
 	}
-
-	cfg := &rigGateConfig{}
-
-	// Extract gates (preferred over legacy test_command)
-	if len(mq.Gates) > 0 {
-		cfg.Gates = make(map[string]string, len(mq.Gates))
-		for name, rawGate := range mq.Gates {
-			var gate struct {
-				Cmd string `json:"cmd"`
-			}
-			if err := json.Unmarshal(rawGate, &gate); err == nil && gate.Cmd != "" {
-				cfg.Gates[name] = gate.Cmd
-			}
-		}
+	cfg := &rigGateConfig{
+		Gates: extractGateCommands(mq.Gates),
 	}
-
-	// Fall back to legacy test_command
 	if mq.TestCommand != nil && *mq.TestCommand != "" {
 		cfg.TestCommand = *mq.TestCommand
 	}
-
 	if len(cfg.Gates) == 0 && cfg.TestCommand == "" {
 		return nil, nil // No runnable commands
 	}
-
 	return cfg, nil
+}
+
+func extractGateCommands(gates map[string]json.RawMessage) map[string]string {
+	if len(gates) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(gates))
+	for name, rawGate := range gates {
+		var gate struct {
+			Cmd string `json:"cmd"`
+		}
+		if err := json.Unmarshal(rawGate, &gate); err == nil && gate.Cmd != "" {
+			out[name] = gate.Cmd
+		}
+	}
+	return out
 }
 
 // runMainBranchTests runs quality gates on each rig's main branch.
@@ -182,7 +188,6 @@ func (d *Daemon) runMainBranchTests() {
 
 // testRigMainBranch tests a single rig's main branch.
 func (d *Daemon) testRigMainBranch(rigName, rigPath string, timeout time.Duration) error {
-	// Load gate config from the rig's config.json
 	gateCfg, err := loadRigGateConfig(rigPath)
 	if err != nil {
 		return fmt.Errorf("loading gate config: %w", err)
@@ -191,65 +196,73 @@ func (d *Daemon) testRigMainBranch(rigName, rigPath string, timeout time.Duratio
 		d.logger.Printf("main_branch_test: %s: no test commands configured, skipping", rigName)
 		return nil
 	}
-
-	// Determine default branch
-	defaultBranch := "main"
-	if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.DefaultBranch != "" {
-		defaultBranch = rigCfg.DefaultBranch
+	worktreePath, bareRepoPath, defaultBranch, err := prepareMainBranchTestWorktree(rigPath)
+	if err != nil {
+		return err
 	}
-
-	// Create a temporary worktree for testing to avoid interfering with
-	// the refinery's working directory.
-	worktreePath := filepath.Join(rigPath, ".main-test-worktree")
-	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-
-	// Verify bare repo exists
-	if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
-		return fmt.Errorf("bare repo not found at %s", bareRepoPath)
-	}
-
-	// Clean up stale worktree if it exists
-	if _, err := os.Stat(worktreePath); err == nil {
-		cleanupCmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
-		cleanupCmd.Dir = bareRepoPath
-		util.SetDetachedProcessGroup(cleanupCmd)
-		_ = cleanupCmd.Run()
-	}
-
 	ctx, cancel := context.WithTimeout(d.ctx, timeout)
 	defer cancel()
+	if err := fetchAndAddMainTestWorktree(ctx, bareRepoPath, worktreePath, defaultBranch); err != nil {
+		return err
+	}
+	defer cleanupMainTestWorktree(d.logger, rigName, bareRepoPath, worktreePath)
+	if len(gateCfg.Gates) > 0 {
+		return d.runGatesOnWorktree(ctx, rigName, worktreePath, gateCfg.Gates)
+	}
+	return d.runCommandOnWorktree(ctx, rigName, worktreePath, "test", gateCfg.TestCommand)
+}
 
-	// Fetch latest main
+func prepareMainBranchTestWorktree(rigPath string) (worktreePath, bareRepoPath, defaultBranch string, err error) {
+	defaultBranch = rigMainBranchName(rigPath)
+	worktreePath = filepath.Join(rigPath, ".main-test-worktree")
+	bareRepoPath = filepath.Join(rigPath, ".repo.git")
+	if _, statErr := os.Stat(bareRepoPath); os.IsNotExist(statErr) {
+		return "", "", "", fmt.Errorf("bare repo not found at %s", bareRepoPath)
+	}
+	removeStaleMainTestWorktree(bareRepoPath, worktreePath)
+	return worktreePath, bareRepoPath, defaultBranch, nil
+}
+
+func rigMainBranchName(rigPath string) string {
+	if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.DefaultBranch != "" {
+		return rigCfg.DefaultBranch
+	}
+	return "main"
+}
+
+func removeStaleMainTestWorktree(bareRepoPath, worktreePath string) {
+	if _, err := os.Stat(worktreePath); err != nil {
+		return
+	}
+	cleanupCmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+	cleanupCmd.Dir = bareRepoPath
+	util.SetDetachedProcessGroup(cleanupCmd)
+	_ = cleanupCmd.Run()
+}
+
+func fetchAndAddMainTestWorktree(ctx context.Context, bareRepoPath, worktreePath, defaultBranch string) error {
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", defaultBranch)
 	fetchCmd.Dir = bareRepoPath
 	util.SetDetachedProcessGroup(fetchCmd)
 	if output, err := fetchCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git fetch failed: %v (%s)", err, strings.TrimSpace(string(output)))
 	}
-
-	// Create temporary worktree at origin/<default_branch>
 	addCmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", worktreePath, "origin/"+defaultBranch)
 	addCmd.Dir = bareRepoPath
 	util.SetDetachedProcessGroup(addCmd)
 	if output, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree add failed: %v (%s)", err, strings.TrimSpace(string(output)))
 	}
+	return nil
+}
 
-	// Always clean up the worktree
-	defer func() {
-		removeCmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
-		removeCmd.Dir = bareRepoPath
-		util.SetDetachedProcessGroup(removeCmd)
-		if err := removeCmd.Run(); err != nil {
-			d.logger.Printf("main_branch_test: %s: warning: worktree cleanup failed: %v", rigName, err)
-		}
-	}()
-
-	// Run gates or legacy test command
-	if len(gateCfg.Gates) > 0 {
-		return d.runGatesOnWorktree(ctx, rigName, worktreePath, gateCfg.Gates)
+func cleanupMainTestWorktree(logger *log.Logger, rigName, bareRepoPath, worktreePath string) {
+	removeCmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+	removeCmd.Dir = bareRepoPath
+	util.SetDetachedProcessGroup(removeCmd)
+	if err := removeCmd.Run(); err != nil {
+		logger.Printf("main_branch_test: %s: warning: worktree cleanup failed: %v", rigName, err)
 	}
-	return d.runCommandOnWorktree(ctx, rigName, worktreePath, "test", gateCfg.TestCommand)
 }
 
 // runGatesOnWorktree runs all configured gates sequentially on the given worktree.
