@@ -21,17 +21,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type polecatCommandState struct {
-	listJSON                    bool
-	listAll                     bool
-	force                       bool
-	removeAll                   bool
-	statusJSON                  bool
-	gitStateJSON                bool
-	gcDryRun                    bool
-	nukeAll                     bool
-	nukeDryRun                  bool
-	nukeForce                   bool
+type polecatListFlags struct {
+	listJSON     bool
+	listAll      bool
+	force        bool
+	removeAll    bool
+	statusJSON   bool
+	gitStateJSON bool
+	gcDryRun     bool
+	nukeAll      bool
+	nukeDryRun   bool
+	nukeForce    bool
+}
+
+type polecatCheckFlags struct {
 	checkRecoveryJSON           bool
 	checkRecoveryReconcileClean bool
 	poolInitDryRun              bool
@@ -44,12 +47,20 @@ type polecatCommandState struct {
 	pruneRemote                 bool
 }
 
+type polecatCommandState struct {
+	polecatListFlags
+	polecatCheckFlags
+}
+
 var polecatCommandStateInstance = sync.OnceValue(func() *polecatCommandState {
 	return &polecatCommandState{}
 })
 
 func polecatState() *polecatCommandState {
-	return polecatCommandStateInstance()
+	state := polecatCommandStateInstance()
+	_ = &state.polecatListFlags
+	_ = &state.polecatCheckFlags
+	return state
 }
 
 var polecatCmd = &cobra.Command{
