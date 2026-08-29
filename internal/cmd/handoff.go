@@ -1179,35 +1179,45 @@ func detectTownRootFromCwd() string {
 	// GT_TOWN_ROOT is set by shell integration, GT_ROOT is set by session manager
 	// This enables handoff to work even when cwd detection fails due to
 	// detached HEAD, wrong branch, deleted worktree, etc.
-	for _, envName := range []string{"GT_TOWN_ROOT", "GT_ROOT"} {
-		if envRoot := os.Getenv(envName); envRoot != "" {
-			// Verify it's actually a workspace
-			if _, statErr := os.Stat(filepath.Join(envRoot, workspace.PrimaryMarker)); statErr == nil {
-				return envRoot
-			}
-			// Try secondary marker too
-			if info, statErr := os.Stat(filepath.Join(envRoot, workspace.SecondaryMarker)); statErr == nil && info.IsDir() {
-				return envRoot
-			}
-		}
+	if townRoot := townRootFromEnvironment(); townRoot != "" {
+		return townRoot
 	}
 
 	// Final fallback: read GT_TOWN_ROOT from tmux global environment.
 	// This handles the run-shell case where CWD is $HOME and process env
 	// vars aren't set — the daemon sets GT_TOWN_ROOT in tmux global env.
-	if socket := tmux.SocketFromEnv(); socket != "" {
-		t := tmux.NewTmuxWithSocket(socket)
-		if envRoot, err := t.GetGlobalEnvironment("GT_TOWN_ROOT"); err == nil && envRoot != "" {
-			if _, statErr := os.Stat(filepath.Join(envRoot, workspace.PrimaryMarker)); statErr == nil {
-				return envRoot
-			}
-			if info, statErr := os.Stat(filepath.Join(envRoot, workspace.SecondaryMarker)); statErr == nil && info.IsDir() {
+	return townRootFromTmux()
+}
+
+func townRootFromEnvironment() string {
+	for _, envName := range []string{"GT_TOWN_ROOT", "GT_ROOT"} {
+		if envRoot := os.Getenv(envName); envRoot != "" {
+			if isTownRoot(envRoot) {
 				return envRoot
 			}
 		}
 	}
-
 	return ""
+}
+
+func townRootFromTmux() string {
+	if socket := tmux.SocketFromEnv(); socket != "" {
+		t := tmux.NewTmuxWithSocket(socket)
+		if envRoot, err := t.GetGlobalEnvironment("GT_TOWN_ROOT"); err == nil && envRoot != "" {
+			if isTownRoot(envRoot) {
+				return envRoot
+			}
+		}
+	}
+	return ""
+}
+
+func isTownRoot(root string) bool {
+	if _, err := os.Stat(filepath.Join(root, workspace.PrimaryMarker)); err == nil {
+		return true
+	}
+	info, err := os.Stat(filepath.Join(root, workspace.SecondaryMarker))
+	return err == nil && info.IsDir()
 }
 
 // handoffRemoteSession respawns a different session and optionally switches to it.
