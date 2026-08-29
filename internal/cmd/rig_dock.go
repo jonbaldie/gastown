@@ -11,6 +11,7 @@ import (
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/polecat"
 	"github.com/jonbaldie/gastown/internal/refinery"
+	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/session"
 	"github.com/jonbaldie/gastown/internal/style"
 	"github.com/jonbaldie/gastown/internal/tmux"
@@ -73,32 +74,49 @@ func init() {
 
 func runRigDock(_ *cobra.Command, args []string) error {
 	rigName := args[0]
-
-	// Check we're on main branch - docking on other branches won't persist
-	branchCmd := exec.Command("git", "branch", "--show-current")
-	branchOutput, err := branchCmd.Output()
-	if err == nil {
-		currentBranch := strings.TrimSpace(string(branchOutput))
-		if currentBranch != "main" && currentBranch != "master" {
-			return fmt.Errorf("cannot dock: must be on main branch (currently on %s)\n"+
-				"Docking on other branches won't persist. Run: git checkout main", currentBranch)
-		}
+	if err := requireMainBranchForDock("dock", "Docking"); err != nil {
+		return err
 	}
-
-	// Get rig
-	_, r, err := getRig(rigName)
+	r, bd, rigBead, err := loadRigDockBead(rigName)
 	if err != nil {
 		return err
 	}
+	if rigHasDockedLabel(rigBead) {
+		fmt.Printf("%s Rig %s is already docked\n", style.Dim.Render("•"), rigName)
+		return nil
+	}
+	fmt.Printf("Docking rig %s...\n", style.Bold.Render(rigName))
+	stoppedAgents := stopDockedRigAgents(r, rigName)
+	if err := bd.Update(rigBead.ID, beads.UpdateOptions{AddLabels: []string{RigDockedLabel}}); err != nil {
+		return fmt.Errorf("setting docked label: %w", err)
+	}
+	updateDaemonPatrolsOnDock(rigName, true)
+	printRigDocked(rigName, stoppedAgents)
+	return nil
+}
 
-	// Get rig prefix for bead ID
-	prefix := "gt" // default
+func requireMainBranchForDock(action, gerund string) error {
+	out, err := exec.Command("git", "branch", "--show-current").Output()
+	if err != nil {
+		return nil
+	}
+	currentBranch := strings.TrimSpace(string(out))
+	if currentBranch == "main" || currentBranch == "master" {
+		return nil
+	}
+	return fmt.Errorf("cannot %s: must be on main branch (currently on %s)\n"+
+		"%s on other branches won't persist. Run: git checkout main", action, currentBranch, gerund)
+}
+
+func loadRigDockBead(rigName string) (*rig.Rig, *beads.Beads, *beads.Issue, error) {
+	_, r, err := getRig(rigName)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	prefix := "gt"
 	if r.Config != nil && r.Config.Prefix != "" {
 		prefix = r.Config.Prefix
 	}
-
-	// Find or create the rig identity bead (idempotent; handles duplicates
-	// and Dolt query hiccups gracefully — gt-d8681).
 	bd := beads.New(r.BeadsPath())
 	rigBead, err := bd.EnsureRigBead(rigName, &beads.RigFields{
 		Repo:   r.GitURL,
@@ -106,161 +124,138 @@ func runRigDock(_ *cobra.Command, args []string) error {
 		State:  beads.RigStateActive,
 	})
 	if err != nil {
-		return fmt.Errorf("ensuring rig identity bead: %w", err)
+		return nil, nil, nil, fmt.Errorf("ensuring rig identity bead: %w", err)
 	}
+	return r, bd, rigBead, nil
+}
 
-	// Check if already docked
+func rigHasDockedLabel(rigBead *beads.Issue) bool {
 	for _, label := range rigBead.Labels {
 		if label == RigDockedLabel {
-			fmt.Printf("%s Rig %s is already docked\n", style.Dim.Render("•"), rigName)
-			return nil
+			return true
 		}
 	}
+	return false
+}
 
-	fmt.Printf("Docking rig %s...\n", style.Bold.Render(rigName))
-
-	var stoppedAgents []string
-
+func stopDockedRigAgents(r *rig.Rig, rigName string) []string {
 	t := tmux.NewTmux()
+	var stopped []string
+	stopped = append(stopped, stopDockedWitness(r, t, rigName)...)
+	stopped = append(stopped, stopDockedRefinery(r, t, rigName)...)
+	stopped = append(stopped, stopDockedPolecats(r, t)...)
+	return stopped
+}
 
-	// Stop witness if running
-	witnessSession := session.WitnessSessionName(session.PrefixFor(rigName))
-	witnessRunning, _ := t.HasSession(witnessSession)
-	if witnessRunning {
-		fmt.Printf("  Stopping witness...\n")
-		witMgr := witness.NewManager(r)
-		if err := witMgr.Stop(); err != nil {
-			fmt.Printf("  %s Failed to stop witness: %v\n", style.Warning.Render("!"), err)
-		} else {
-			stoppedAgents = append(stoppedAgents, "Witness stopped")
-		}
+func stopDockedWitness(r *rig.Rig, t *tmux.Tmux, rigName string) []string {
+	running, _ := t.HasSession(session.WitnessSessionName(session.PrefixFor(rigName)))
+	if !running {
+		return nil
 	}
-
-	// Stop refinery if running
-	refinerySession := session.RefinerySessionName(session.PrefixFor(rigName))
-	refineryRunning, _ := t.HasSession(refinerySession)
-	if refineryRunning {
-		fmt.Printf("  Stopping refinery...\n")
-		refMgr := refinery.NewManager(r)
-		if err := refMgr.Stop(); err != nil {
-			fmt.Printf("  %s Failed to stop refinery: %v\n", style.Warning.Render("!"), err)
-		} else {
-			stoppedAgents = append(stoppedAgents, "Refinery stopped")
-		}
+	fmt.Printf("  Stopping witness...\n")
+	if err := witness.NewManager(r).Stop(); err != nil {
+		fmt.Printf("  %s Failed to stop witness: %v\n", style.Warning.Render("!"), err)
+		return nil
 	}
+	return []string{"Witness stopped"}
+}
 
-	// Stop polecat sessions if any
+func stopDockedRefinery(r *rig.Rig, t *tmux.Tmux, rigName string) []string {
+	running, _ := t.HasSession(session.RefinerySessionName(session.PrefixFor(rigName)))
+	if !running {
+		return nil
+	}
+	fmt.Printf("  Stopping refinery...\n")
+	if err := refinery.NewManager(r).Stop(); err != nil {
+		fmt.Printf("  %s Failed to stop refinery: %v\n", style.Warning.Render("!"), err)
+		return nil
+	}
+	return []string{"Refinery stopped"}
+}
+
+func stopDockedPolecats(r *rig.Rig, t *tmux.Tmux) []string {
 	polecatMgr := polecat.NewSessionManager(t, r)
 	polecatInfos, err := polecatMgr.List()
-	if err == nil && len(polecatInfos) > 0 {
-		fmt.Printf("  Stopping %d polecat session(s)...\n", len(polecatInfos))
-		if err := polecatMgr.StopAll(false); err != nil {
-			fmt.Printf("  %s Failed to stop polecat sessions: %v\n", style.Warning.Render("!"), err)
-		} else {
-			stoppedAgents = append(stoppedAgents, fmt.Sprintf("%d polecat session(s) stopped", len(polecatInfos)))
-		}
+	if err != nil || len(polecatInfos) == 0 {
+		return nil
 	}
-
-	// Set docked label on rig identity bead
-	if err := bd.Update(rigBead.ID, beads.UpdateOptions{
-		AddLabels: []string{RigDockedLabel},
-	}); err != nil {
-		return fmt.Errorf("setting docked label: %w", err)
+	fmt.Printf("  Stopping %d polecat session(s)...\n", len(polecatInfos))
+	if err := polecatMgr.StopAll(false); err != nil {
+		fmt.Printf("  %s Failed to stop polecat sessions: %v\n", style.Warning.Render("!"), err)
+		return nil
 	}
+	return []string{fmt.Sprintf("%d polecat session(s) stopped", len(polecatInfos))}
+}
 
-	// Remove rig from daemon.json patrol config so daemon stops spawning
-	// witness/refinery sessions for this rig on every heartbeat cycle.
-	townRoot, twErr := workspace.FindFromCwdOrError()
-	if twErr == nil {
-		if err := config.RemoveRigFromDaemonPatrols(townRoot, rigName); err != nil {
-			fmt.Printf("  %s Could not update daemon.json patrols: %v\n", style.Warning.Render("!"), err)
-		}
+func updateDaemonPatrolsOnDock(rigName string, docking bool) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return
 	}
+	var updateErr error
+	if docking {
+		updateErr = config.RemoveRigFromDaemonPatrols(townRoot, rigName)
+	} else {
+		updateErr = config.AddRigToDaemonPatrols(townRoot, rigName)
+	}
+	if updateErr != nil {
+		fmt.Printf("  %s Could not update daemon.json patrols: %v\n", style.Warning.Render("!"), updateErr)
+	}
+}
 
-	// Output
+func printRigDocked(rigName string, stoppedAgents []string) {
 	fmt.Printf("%s Rig %s docked (global)\n", style.Success.Render("✓"), rigName)
 	fmt.Printf("  Label added: %s\n", RigDockedLabel)
 	for _, msg := range stoppedAgents {
 		fmt.Printf("  %s\n", msg)
 	}
 	fmt.Printf("  Beads changes persisted via Dolt\n")
-
-	return nil
 }
 
 func runRigUndock(_ *cobra.Command, args []string) error {
 	rigName := args[0]
-
-	// Check we're on main branch - undocking on other branches won't persist
-	branchCmd := exec.Command("git", "branch", "--show-current")
-	branchOutput, err := branchCmd.Output()
-	if err == nil {
-		currentBranch := strings.TrimSpace(string(branchOutput))
-		if currentBranch != "main" && currentBranch != "master" {
-			return fmt.Errorf("cannot undock: must be on main branch (currently on %s)\n"+
-				"Undocking on other branches won't persist. Run: git checkout main", currentBranch)
-		}
+	if err := requireMainBranchForDock("undock", "Undocking"); err != nil {
+		return err
 	}
-
-	// Get rig and town root
 	_, r, err := getRig(rigName)
 	if err != nil {
 		return err
 	}
-
-	// Get rig prefix for bead ID
-	prefix := "gt" // default
-	if r.Config != nil && r.Config.Prefix != "" {
-		prefix = r.Config.Prefix
-	}
-
-	// Find the rig identity bead
-	rigBeadID := beads.RigBeadIDWithPrefix(prefix, rigName)
-	bd := beads.New(r.BeadsPath())
-
-	// Check if rig bead exists, create if not
-	rigBead, err := bd.Show(rigBeadID)
-	if err != nil {
-		// Rig identity bead doesn't exist (legacy rig) - can't be docked
-		fmt.Printf("%s Rig %s has no identity bead and is not docked\n", style.Dim.Render("•"), rigName)
+	bd, rigBead, ok := loadUndockRigBead(r, rigName)
+	if !ok {
 		return nil
 	}
-
-	// Check if actually docked
-	isDocked := false
-	for _, label := range rigBead.Labels {
-		if label == RigDockedLabel {
-			isDocked = true
-			break
-		}
-	}
-	if !isDocked {
+	if !rigHasDockedLabel(rigBead) {
 		fmt.Printf("%s Rig %s is not docked\n", style.Dim.Render("•"), rigName)
 		return nil
 	}
-
-	// Remove docked label from rig identity bead
-	if err := bd.Update(rigBeadID, beads.UpdateOptions{
-		RemoveLabels: []string{RigDockedLabel},
-	}); err != nil {
+	if err := bd.Update(rigBead.ID, beads.UpdateOptions{RemoveLabels: []string{RigDockedLabel}}); err != nil {
 		return fmt.Errorf("removing docked label: %w", err)
 	}
+	updateDaemonPatrolsOnDock(rigName, false)
+	printRigUndocked(rigName)
+	return nil
+}
 
-	// Re-add rig to daemon.json patrol config so daemon resumes spawning
-	// witness/refinery sessions for this rig.
-	townRoot, twErr := workspace.FindFromCwdOrError()
-	if twErr == nil {
-		if err := config.AddRigToDaemonPatrols(townRoot, rigName); err != nil {
-			fmt.Printf("  %s Could not update daemon.json patrols: %v\n", style.Warning.Render("!"), err)
-		}
+func loadUndockRigBead(r *rig.Rig, rigName string) (*beads.Beads, *beads.Issue, bool) {
+	prefix := "gt"
+	if r.Config != nil && r.Config.Prefix != "" {
+		prefix = r.Config.Prefix
 	}
+	bd := beads.New(r.BeadsPath())
+	rigBead, err := bd.Show(beads.RigBeadIDWithPrefix(prefix, rigName))
+	if err != nil {
+		fmt.Printf("%s Rig %s has no identity bead and is not docked\n", style.Dim.Render("•"), rigName)
+		return nil, nil, false
+	}
+	return bd, rigBead, true
+}
 
+func printRigUndocked(rigName string) {
 	fmt.Printf("%s Rig %s undocked\n", style.Success.Render("✓"), rigName)
 	fmt.Printf("  Label removed: %s\n", RigDockedLabel)
 	fmt.Printf("  Daemon can now auto-restart agents\n")
 	fmt.Printf("  Use '%s' to start agents immediately\n", style.Dim.Render("gt rig start "+rigName))
-
-	return nil
 }
 
 // IsRigDocked checks if a rig is docked by checking for the status:docked label
