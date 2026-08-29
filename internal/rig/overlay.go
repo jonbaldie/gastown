@@ -93,60 +93,9 @@ func EnsureGitignorePatterns(worktreePath string) error {
 	// but Cursor still creates .claude/ inside worktrees at runtime. The narrow
 	// .claude/commands/ pattern missed other Cursor-created files, causing gt done
 	// to fail with "uncommitted changes would be lost" on untracked .claude/ entries.
-	requiredPatterns := gasTownIgnorePatterns()
-
-	// Read existing gitignore content
-	var existingContent string
-	if data, err := os.ReadFile(gitignorePath); err == nil {
-		existingContent = string(data)
-	}
-
-	// Find missing patterns
-	var missing []string
-	for _, pattern := range requiredPatterns {
-		found := false
-		for _, line := range strings.Split(existingContent, "\n") {
-			line = strings.TrimSpace(line)
-			if matchesGitignorePattern(line, pattern) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			missing = append(missing, pattern)
-		}
-	}
-
-	if len(missing) == 0 {
-		return nil // All patterns present
-	}
-
-	// Append missing patterns
-	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("opening .gitignore: %w", err)
-	}
-	defer f.Close()
-
-	// Add header if appending to existing file
-	if existingContent != "" && !strings.HasSuffix(existingContent, "\n") {
-		if _, err := f.WriteString("\n"); err != nil {
-			return err
-		}
-	}
-	if existingContent != "" {
-		if _, err := f.WriteString("\n# Gas Town (added by gt)\n"); err != nil {
-			return err
-		}
-	}
-
-	for _, pattern := range missing {
-		if _, err := f.WriteString(pattern + "\n"); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	existingContent := readFileOrEmpty(gitignorePath)
+	missing := missingIgnorePatterns(existingContent, gasTownIgnorePatterns())
+	return appendIgnorePatterns(gitignorePath, existingContent, missing, "opening .gitignore")
 }
 
 // gasTownLocalExcludePatterns returns the patterns to write to git's
@@ -172,61 +121,86 @@ func EnsureLocalExcludePatterns(worktreePath string) error {
 	if err != nil {
 		return err
 	}
-
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0755); err != nil {
 		return fmt.Errorf("creating local exclude dir: %w", err)
 	}
-
-	var existingContent string
-	if data, err := os.ReadFile(excludePath); err == nil {
-		existingContent = string(data)
-	} else if !os.IsNotExist(err) {
+	existingContent, err := readOptionalFile(excludePath)
+	if err != nil {
 		return fmt.Errorf("reading local exclude: %w", err)
 	}
+	missing := missingIgnorePatterns(existingContent, gasTownLocalExcludePatterns())
+	return appendIgnorePatterns(excludePath, existingContent, missing, "opening local exclude")
+}
 
+func readFileOrEmpty(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func readOptionalFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return string(data), nil
+	}
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	return "", err
+}
+
+func missingIgnorePatterns(existingContent string, required []string) []string {
 	var missing []string
-	for _, pattern := range gasTownLocalExcludePatterns() {
-		found := false
-		for _, line := range strings.Split(existingContent, "\n") {
-			line = strings.TrimSpace(line)
-			if matchesGitignorePattern(line, pattern) {
-				found = true
-				break
-			}
-		}
-		if !found {
+	for _, pattern := range required {
+		if !gitignoreContainsPattern(existingContent, pattern) {
 			missing = append(missing, pattern)
 		}
 	}
+	return missing
+}
 
+func gitignoreContainsPattern(existingContent, pattern string) bool {
+	for _, line := range strings.Split(existingContent, "\n") {
+		if matchesGitignorePattern(strings.TrimSpace(line), pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendIgnorePatterns(path, existingContent string, missing []string, openErrPrefix string) error {
 	if len(missing) == 0 {
 		return nil
 	}
-
-	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("opening local exclude: %w", err)
+		return fmt.Errorf("%s: %w", openErrPrefix, err)
 	}
 	defer f.Close()
-
-	if existingContent != "" && !strings.HasSuffix(existingContent, "\n") {
-		if _, err := f.WriteString("\n"); err != nil {
-			return err
-		}
+	if err := writeIgnoreHeader(f, existingContent); err != nil {
+		return err
 	}
-	if existingContent != "" {
-		if _, err := f.WriteString("\n# Gas Town (added by gt)\n"); err != nil {
-			return err
-		}
-	}
-
 	for _, pattern := range missing {
 		if _, err := f.WriteString(pattern + "\n"); err != nil {
 			return err
 		}
 	}
-
 	return nil
+}
+
+func writeIgnoreHeader(f *os.File, existingContent string) error {
+	if existingContent == "" {
+		return nil
+	}
+	if !strings.HasSuffix(existingContent, "\n") {
+		if _, err := f.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	_, err := f.WriteString("\n# Gas Town (added by gt)\n")
+	return err
 }
 
 func gitLocalExcludePath(worktreePath string) (string, error) {
