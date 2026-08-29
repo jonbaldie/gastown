@@ -2104,94 +2104,113 @@ func DetectStalledPolecats(workDir, rigName string) *DetectStalledPolecatsResult
 		}
 
 		polecatName := entry.Name()
-		sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
 		result.Checked++
 
-		if run, err := worker.LatestRunForSession(townRoot, sessionName); err == nil && run != nil {
-			if h, herr := worker.StoreHealth(townRoot, sessionName, 0); herr == nil && h.Status == worker.HealthUnhealthy {
-				stalled := StalledResult{
-					PolecatName: polecatName,
-					StallType:   "unhealthy",
-					Action:      "unhealthy",
-				}
-				result.Stalled = append(result.Stalled, stalled)
-				continue
-			}
-			if run.State == worker.StateBusy {
-				continue // Live tool — do not stall-nudge
-			}
-			if run.State == worker.StateIdle || run.State == worker.StateReady {
-				continue
-			}
-			if run.Adapter == worker.AdapterProtocol {
-				continue
-			}
-		}
-
-		// Only check live sessions with alive agents (the opposite of zombie detection)
-		sessionAlive, err := t.HasSession(sessionName)
-		if err != nil {
-			result.Errors = append(result.Errors,
-				fmt.Errorf("checking session %s: %w", sessionName, err))
+		stalled, found := inspectStalledWorkerRun(townRoot, rigName, polecatName)
+		if found {
+			result.Stalled = append(result.Stalled, stalled)
 			continue
 		}
-		if !sessionAlive {
-			continue // Dead session — zombie detection handles this
-		}
-		if !t.IsAgentAlive(sessionName) {
-			continue // Dead agent — zombie detection handles this
-		}
 
-		// Heartbeat v2 check (gt-3vr5): if the agent has a fresh heartbeat,
-		// it's alive and making progress — skip stall detection entirely.
-		// This replaces tmux activity scraping for v2 agents.
-		if hb := polecat.ReadSessionHeartbeat(townRoot, sessionName); hb != nil && hb.IsV2() {
-			if time.Since(hb.Timestamp) < polecat.SessionHeartbeatStaleThreshold {
-				continue // Fresh v2 heartbeat — agent is alive, not stalled
-			}
-		}
-
-		// Legacy: Use structured signals to detect startup stalls:
-		// session_created (age) + session_activity (last output).
-		createdUnix, err := t.GetSessionCreatedUnix(sessionName)
-		if err != nil {
-			result.Errors = append(result.Errors,
-				fmt.Errorf("getting session created time for %s: %w", sessionName, err))
-			continue
-		}
-		sessionAge := now.Sub(time.Unix(createdUnix, 0))
-		if sessionAge < stallThreshold {
-			continue // Too young — still in normal startup
-		}
-
-		activity, err := t.GetSessionActivity(sessionName)
-		if err != nil {
-			result.Errors = append(result.Errors,
-				fmt.Errorf("getting session activity for %s: %w", sessionName, err))
-			continue
-		}
-		activityAge := now.Sub(activity)
-		if activityAge < activityGrace {
-			continue // Recent activity — agent is making progress
-		}
-
-		// Session is old enough and has no recent activity: startup stall.
-		// Send blind key sequences to dismiss any startup dialogs without
-		// screen-scraping pane content (avoids coupling to third-party TUI strings).
-		stalled := StalledResult{
-			PolecatName: polecatName,
-			StallType:   "startup-stall",
-		}
-		if err := t.DismissStartupDialogsBlind(sessionName); err != nil {
-			stalled.Action = "escalated"
-			stalled.Error = fmt.Errorf("blind dismiss failed: %w", err)
-		} else {
-			stalled.Action = "auto-dismissed"
-		}
-		result.Stalled = append(result.Stalled, stalled)
+		stalled, found, err := inspectStalledPolecatEntry(townRoot, rigName, polecatName, t, now, stallThreshold, activityGrace)
+		recordStalledPolecatInspection(result, stalled, found, err)
 	}
 
 	return result
+}
+
+func recordStalledPolecatInspection(result *DetectStalledPolecatsResult, stalled StalledResult, found bool, err error) {
+	if err != nil {
+		result.Errors = append(result.Errors, err)
+		return
+	}
+	if found {
+		result.Stalled = append(result.Stalled, stalled)
+	}
+}
+
+func inspectStalledWorkerRun(townRoot, rigName, polecatName string) (StalledResult, bool) {
+	sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
+	run, err := worker.LatestRunForSession(townRoot, sessionName)
+	if err != nil || run == nil {
+		return StalledResult{}, false
+	}
+	if h, err := worker.StoreHealth(townRoot, sessionName, 0); err == nil && h.Status == worker.HealthUnhealthy {
+		return StalledResult{PolecatName: polecatName, StallType: "unhealthy", Action: "unhealthy"}, true
+	}
+	if run.State == worker.StateBusy || run.State == worker.StateIdle || run.State == worker.StateReady || run.Adapter == worker.AdapterProtocol {
+		return StalledResult{}, true
+	}
+	return StalledResult{}, false
+}
+
+func inspectStalledPolecatEntry(townRoot, rigName, polecatName string, t *tmux.Tmux, now time.Time, stallThreshold, activityGrace time.Duration) (StalledResult, bool, error) {
+	sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
+	ready, err := stalledSessionReady(t, sessionName)
+	if err != nil {
+		return StalledResult{}, false, fmt.Errorf("checking session %s: %w", sessionName, err)
+	}
+	if !ready || stalledHeartbeatFresh(townRoot, sessionName) {
+		return StalledResult{}, false, nil
+	}
+	oldEnough, err := stalledSessionOldEnough(t, sessionName, now, stallThreshold)
+	if err != nil {
+		return StalledResult{}, false, err
+	}
+	if !oldEnough {
+		return StalledResult{}, false, nil
+	}
+	quiet, err := stalledSessionQuiet(t, sessionName, now, activityGrace)
+	if err != nil {
+		return StalledResult{}, false, err
+	}
+	if !quiet {
+		return StalledResult{}, false, nil
+	}
+	return dismissStalledSession(t, sessionName, polecatName), true, nil
+}
+
+func stalledSessionReady(t *tmux.Tmux, sessionName string) (bool, error) {
+	sessionAlive, err := t.HasSession(sessionName)
+	if err != nil {
+		return false, err
+	}
+	if !sessionAlive || !t.IsAgentAlive(sessionName) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func stalledHeartbeatFresh(townRoot, sessionName string) bool {
+	hb := polecat.ReadSessionHeartbeat(townRoot, sessionName)
+	return hb != nil && hb.IsV2() && time.Since(hb.Timestamp) < polecat.SessionHeartbeatStaleThreshold
+}
+
+func stalledSessionOldEnough(t *tmux.Tmux, sessionName string, now time.Time, threshold time.Duration) (bool, error) {
+	createdUnix, err := t.GetSessionCreatedUnix(sessionName)
+	if err != nil {
+		return false, fmt.Errorf("getting session created time for %s: %w", sessionName, err)
+	}
+	return now.Sub(time.Unix(createdUnix, 0)) >= threshold, nil
+}
+
+func stalledSessionQuiet(t *tmux.Tmux, sessionName string, now time.Time, grace time.Duration) (bool, error) {
+	activity, err := t.GetSessionActivity(sessionName)
+	if err != nil {
+		return false, fmt.Errorf("getting session activity for %s: %w", sessionName, err)
+	}
+	return now.Sub(activity) >= grace, nil
+}
+
+func dismissStalledSession(t *tmux.Tmux, sessionName, polecatName string) StalledResult {
+	stalled := StalledResult{PolecatName: polecatName, StallType: "startup-stall"}
+	if err := t.DismissStartupDialogsBlind(sessionName); err != nil {
+		stalled.Action = "escalated"
+		stalled.Error = fmt.Errorf("blind dismiss failed: %w", err)
+		return stalled
+	}
+	stalled.Action = "auto-dismissed"
+	return stalled
 }
 
 // CompletionDiscovery represents a polecat completion discovered from agent bead
