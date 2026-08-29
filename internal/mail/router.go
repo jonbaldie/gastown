@@ -1515,6 +1515,80 @@ func sendAnnounceMessage(r *Router, announceName string, args []string) error {
 	return nil
 }
 
+func channelMessageLabels(msg *Message, channelName string) []string {
+	labels := []string{
+		"gt:message",
+		"from:" + msg.From,
+		"channel:" + channelName,
+	}
+	if msg.ThreadID != "" {
+		labels = append(labels, "thread:"+msg.ThreadID)
+	}
+	if msg.ReplyTo != "" {
+		labels = append(labels, "reply-to:"+msg.ReplyTo)
+	}
+	for _, cc := range msg.CC {
+		labels = append(labels, "cc:"+AddressToIdentity(cc))
+	}
+	return labels
+}
+
+func channelMessageArgs(msg *Message, labels []string) []string {
+	args := []string{
+		"create",
+		"--assignee", msg.To, // channel:name
+		"-d", msg.Body,
+		"--priority", fmt.Sprintf("%d", PriorityToBeads(msg.Priority)),
+	}
+	if len(labels) > 0 {
+		args = append(args, "--labels", strings.Join(labels, ","))
+	}
+	args = append(args, "--actor", msg.From)
+	// Channel messages are never ephemeral — they persist according to the
+	// channel's retention policy.
+	return append(args, "--", msg.Subject)
+}
+
+func sendChannelMessage(r *Router, channelName string, args []string) error {
+	beadsDir := r.resolveBeadsDir()
+	if err := r.ensureCustomTypes(beadsDir); err != nil {
+		return err
+	}
+	ctx, cancel := bdWriteCtx()
+	defer cancel()
+	if _, err := runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir); err != nil {
+		return fmt.Errorf("sending to channel %s: %w", channelName, err)
+	}
+	return nil
+}
+
+func fanOutChannelMessage(r *Router, msg *Message, channelName string, subscribers []string) error {
+	if len(subscribers) == 0 {
+		return nil
+	}
+
+	var errs []string
+	for _, subscriber := range subscribers {
+		// Skip self-delivery (don't notify the sender).
+		if isSelfMail(msg.From, subscriber) {
+			continue
+		}
+
+		msgCopy := *msg
+		msgCopy.To = subscriber
+		msgCopy.ID = "" // Each fan-out copy gets its own ID from bd create.
+		msgCopy.Subject = fmt.Sprintf("[channel:%s] %s", channelName, msg.Subject)
+
+		if err := r.sendToSingle(&msgCopy); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", subscriber, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("channel %s: some subscriber deliveries failed: %s", channelName, strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 // sendToChannel delivers a message to a beads-native channel.
 // Creates a message with channel:<name> label for channel queries.
 // Also fans out delivery to each subscriber's inbox.
@@ -1538,92 +1612,16 @@ func (r *Router) sendToChannel(msg *Message) error {
 		return fmt.Errorf("channel %s is closed", channelName)
 	}
 
-	// Build labels for type, from/thread/reply-to/cc plus channel metadata.
-	// Note: delivery:pending is intentionally omitted for the channel-origin
-	// copy — it has no single recipient to ack. Subscriber fan-out copies go
-	// through sendToSingle which adds delivery tracking.
-	var labels []string
-	labels = append(labels, "gt:message")
-	labels = append(labels, "from:"+msg.From)
-	labels = append(labels, "channel:"+channelName)
-	if msg.ThreadID != "" {
-		labels = append(labels, "thread:"+msg.ThreadID)
-	}
-	if msg.ReplyTo != "" {
-		labels = append(labels, "reply-to:"+msg.ReplyTo)
-	}
-	for _, cc := range msg.CC {
-		ccIdentity := AddressToIdentity(cc)
-		labels = append(labels, "cc:"+ccIdentity)
-	}
-
-	// Build command: bd create --assignee=channel:<name> -d <body> ... -- <subject>
-	// Flags go first, then -- to end flag parsing, then the positional subject.
-	// This prevents subjects like "--help" from being parsed as flags.
-	// Use channel:<name> as assignee so queries can filter by channel
-	args := []string{"create",
-		"--assignee", msg.To, // channel:name
-		"-d", msg.Body,
-	}
-
-	// Add priority flag
-	beadsPriority := PriorityToBeads(msg.Priority)
-	args = append(args, "--priority", fmt.Sprintf("%d", beadsPriority))
-
-	// Add labels (includes channel name for filtering)
-	if len(labels) > 0 {
-		args = append(args, "--labels", strings.Join(labels, ","))
-	}
-
-	// Add actor for attribution (sender identity)
-	args = append(args, "--actor", msg.From)
-
-	// Channel messages are never ephemeral - they persist according to retention policy
-	// (deliberately not checking shouldBeWisp)
-
-	// End flag parsing, then subject as positional argument
-	args = append(args, "--", msg.Subject)
-
-	// Channel messages go to town-level beads (shared location)
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	labels := channelMessageLabels(msg, channelName)
+	args := channelMessageArgs(msg, labels)
+	if err := sendChannelMessage(r, channelName, args); err != nil {
 		return err
-	}
-	ctx, cancel := bdWriteCtx()
-	defer cancel()
-	_, err = runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir)
-	if err != nil {
-		return fmt.Errorf("sending to channel %s: %w", channelName, err)
 	}
 
 	// Enforce channel retention policy (on-write cleanup)
 	_ = b.EnforceChannelRetention(channelName)
 
-	// Fan-out delivery: send a copy to each subscriber's inbox
-	if len(fields.Subscribers) > 0 {
-		var errs []string
-		for _, subscriber := range fields.Subscribers {
-			// Skip self-delivery (don't notify the sender)
-			if isSelfMail(msg.From, subscriber) {
-				continue
-			}
-
-			// Create a copy for this subscriber with channel context in subject
-			msgCopy := *msg
-			msgCopy.To = subscriber
-			msgCopy.ID = "" // Each fan-out copy gets its own ID from bd create
-			msgCopy.Subject = fmt.Sprintf("[channel:%s] %s", channelName, msg.Subject)
-
-			if err := r.sendToSingle(&msgCopy); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", subscriber, err))
-			}
-		}
-		if len(errs) > 0 {
-			return fmt.Errorf("channel %s: some subscriber deliveries failed: %s", channelName, strings.Join(errs, "; "))
-		}
-	}
-
-	return nil
+	return fanOutChannelMessage(r, msg, channelName, fields.Subscribers)
 }
 
 // pruneAnnounce deletes oldest messages from an announce channel to enforce retention.
