@@ -1026,53 +1026,13 @@ func runCostsRecord(cmd *cobra.Command, _ []string) error {
 	recordSession := commandStringFlag(cmd, "session")
 	recordWorkItem := commandStringFlag(cmd, "work-item")
 	costsVerbose := costsVerboseFromCommand(cmd)
-	// Get session from flag or try to detect from environment
-	session := recordSession
+	session := resolveCostsRecordSession(recordSession, costsVerbose)
 	if session == "" {
-		session = os.Getenv("GT_SESSION")
-	}
-	if session == "" {
-		// Derive session name from GT_* environment variables
-		session = deriveSessionName()
-	}
-	if session == "" {
-		// Try to detect current tmux session (works when running inside tmux)
-		session = detectCurrentTmuxSession()
-	}
-	if session == "" {
-		// Not a Gas Town session (e.g., Claude Code launched outside gt agent system).
-		// Exit silently — no costs to record.
-		if costsVerbose {
-			fmt.Fprintf(os.Stderr, "[costs] no session context found, skipping costs record\n")
-		}
 		return nil
 	}
 
-	// Get working directory from environment or tmux session
-	workDir := os.Getenv("GT_CWD")
-	if workDir == "" {
-		// Try to get from tmux session
-		var err error
-		workDir, err = getTmuxSessionWorkDir(session)
-		if err != nil {
-			if costsVerbose {
-				fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", session, err)
-			}
-		}
-	}
-
-	// Extract cost from Claude transcript
-	var cost float64
-	if workDir != "" {
-		var err error
-		cost, err = extractCostFromWorkDir(workDir)
-		if err != nil {
-			if costsVerbose {
-				fmt.Fprintf(os.Stderr, "[costs] could not extract cost from transcript: %v\n", err)
-			}
-			cost = 0.0
-		}
-	}
+	workDir := resolveCostsRecordWorkDir(session, costsVerbose)
+	cost := extractCostsRecordCost(workDir, costsVerbose)
 
 	// Parse session name
 	role, rig, worker := parseSessionName(session)
@@ -1088,22 +1048,70 @@ func runCostsRecord(cmd *cobra.Command, _ []string) error {
 		WorkItem:  recordWorkItem,
 	}
 
-	// Marshal to JSON
+	if err := appendCostLogEntry(entry); err != nil {
+		return err
+	}
+
+	printCostsRecordConfirmation(cost, recordWorkItem, session)
+
+	return nil
+}
+
+func resolveCostsRecordSession(recordSession string, verbose bool) string {
+	if recordSession != "" {
+		return recordSession
+	}
+	if session := os.Getenv("GT_SESSION"); session != "" {
+		return session
+	}
+	if session := deriveSessionName(); session != "" {
+		return session
+	}
+	if session := detectCurrentTmuxSession(); session != "" {
+		return session
+	}
+	if verbose {
+		fmt.Fprintf(os.Stderr, "[costs] no session context found, skipping costs record\n")
+	}
+	return ""
+}
+
+func resolveCostsRecordWorkDir(session string, verbose bool) string {
+	if workDir := os.Getenv("GT_CWD"); workDir != "" {
+		return workDir
+	}
+	workDir, err := getTmuxSessionWorkDir(session)
+	if err != nil && verbose {
+		fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", session, err)
+	}
+	return workDir
+}
+
+func extractCostsRecordCost(workDir string, verbose bool) float64 {
+	if workDir == "" {
+		return 0
+	}
+	cost, err := extractCostFromWorkDir(workDir)
+	if err != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[costs] could not extract cost from transcript: %v\n", err)
+		}
+		return 0
+	}
+	return cost
+}
+
+func appendCostLogEntry(entry CostLogEntry) error {
 	entryJSON, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("marshaling cost entry: %w", err)
 	}
 
-	// Append to log file
 	logPath := getCostsLogPath()
-
-	// Ensure directory exists
-	logDir := filepath.Dir(logPath)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
-	// Open file for append (create if doesn't exist).
 	// O_APPEND writes are atomic on POSIX for writes < PIPE_BUF (~4KB).
 	// A JSON log entry is ~200 bytes, so concurrent appends are safe.
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -1112,21 +1120,21 @@ func runCostsRecord(cmd *cobra.Command, _ []string) error {
 	}
 	defer f.Close()
 
-	// Write entry with newline
 	if _, err := f.Write(append(entryJSON, '\n')); err != nil {
 		return fmt.Errorf("writing to costs log: %w", err)
 	}
-
-	// Output confirmation (silent if cost is zero and no work item)
-	if cost > 0 || recordWorkItem != "" {
-		fmt.Printf("%s Recorded $%.2f for %s", style.Success.Render("✓"), cost, session)
-		if recordWorkItem != "" {
-			fmt.Printf(" (work: %s)", recordWorkItem)
-		}
-		fmt.Println()
-	}
-
 	return nil
+}
+
+func printCostsRecordConfirmation(cost float64, workItem, session string) {
+	if cost <= 0 && workItem == "" {
+		return
+	}
+	fmt.Printf("%s Recorded $%.2f for %s", style.Success.Render("✓"), cost, session)
+	if workItem != "" {
+		fmt.Printf(" (work: %s)", workItem)
+	}
+	fmt.Println()
 }
 
 // deriveSessionName derives the tmux session name from GT_* environment variables.
