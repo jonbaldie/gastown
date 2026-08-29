@@ -249,11 +249,6 @@ type MRAnomaly struct {
 // transient contention from real failures that need operator attention.
 var errMergeSlotTimeout = errors.New("merge slot contention timeout")
 
-// mergeSlotSeq is a package-level counter for unique merge slot holder IDs.
-// Using time.Now().UnixNano() alone is insufficient on Windows where timer
-// resolution can cause identical timestamps across concurrent goroutines.
-var mergeSlotSeq uint64
-
 // Engineer is the merge queue processor that polls for ready merge-requests
 // and processes them according to the merge queue design.
 type Engineer struct {
@@ -270,6 +265,7 @@ type Engineer struct {
 	mergeSlotRelease      func(holder string) error
 	mergeSlotMaxRetries   int           // Max retries for slot acquisition (0 = no retry)
 	mergeSlotRetryBackoff time.Duration // Initial backoff between retries
+	mergeSlotSeq          atomic.Uint64 // Unique merge slot holder IDs.
 	testAllowSyntheticMRs bool          // Test-only: legacy merge-mechanics tests use synthetic MRs without beads.
 }
 
@@ -1216,7 +1212,7 @@ func (e *Engineer) acquireMainPushSlot(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("ensure merge slot exists: %w", err)
 	}
 
-	seq := atomic.AddUint64(&mergeSlotSeq, 1)
+	seq := e.mergeSlotSeq.Add(1)
 	holder := fmt.Sprintf("%s/refinery/push/%d-%d", e.rig.Name, time.Now().UnixNano(), seq)
 
 	// The conflict-resolution path holds the slot with holder "rigName/refinery".
