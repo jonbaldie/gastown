@@ -119,10 +119,11 @@ Examples:
 	RunE: runDogCall,
 }
 
-var dogDoneCmd = &cobra.Command{
-	Use:   "done [name]",
-	Short: "Mark dog as done and return to idle",
-	Long: `Mark a dog as done with its current work and return to idle state.
+func newDogDoneCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "done [name]",
+		Short: "Mark dog as done and return to idle",
+		Long: `Mark a dog as done with its current work and return to idle state.
 
 Dogs should call this when they complete their work assignment.
 Plugin work is cleared from dog state only. Source-backed bead or formula
@@ -136,8 +137,9 @@ directory (must be run from within a dog's worktree).
 Examples:
   gt dog done         # Auto-detect from cwd
   gt dog done alpha   # Explicit name`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runDogDone,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runDogDone,
+	}
 }
 
 var dogClearCmd = &cobra.Command{
@@ -276,7 +278,7 @@ func init() {
 	dogCmd.AddCommand(dogListCmd)
 	dogCmd.AddCommand(dogCallCmd)
 	dogCmd.AddCommand(dogClearCmd)
-	dogCmd.AddCommand(dogDoneCmd)
+	dogCmd.AddCommand(newDogDoneCmd())
 	dogCmd.AddCommand(dogStatusCmd)
 	dogCmd.AddCommand(dogDispatchCmd)
 	dogCmd.AddCommand(dogHealthCheckCmd)

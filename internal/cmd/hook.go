@@ -18,13 +18,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var hookCmd = &cobra.Command{
-	Use:         "hook [bead-id] [target]",
-	Aliases:     []string{"work"},
-	GroupID:     GroupWork,
-	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
-	Short:       "Show or attach work on a hook",
-	Long: `Show what's on your hook, or attach new work.
+func newHookCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:         "hook [bead-id] [target]",
+		Aliases:     []string{"work"},
+		GroupID:     GroupWork,
+		Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+		Short:       "Show or attach work on a hook",
+		Long: `Show what's on your hook, or attach new work.
 
 With no arguments, shows your current hook status (alias for 'gt mol status').
 With a bead ID, attaches that work to your hook.
@@ -46,8 +47,9 @@ Related commands:
   gt sling <bead>    # Hook + start now (keep context)
   gt handoff <bead>  # Hook + restart (fresh context)
   gt unsling         # Remove work from hook`,
-	Args: cobra.MaximumNArgs(2),
-	RunE: runHookOrStatus,
+		Args: cobra.MaximumNArgs(2),
+		RunE: runHookOrStatus,
+	}
 }
 
 // hookStatusCmd shows hook status (alias for mol status)
@@ -148,6 +150,7 @@ Related commands:
 }
 
 func init() {
+	hookCmd := newHookCmd()
 	// Flags for attaching work (gt hook <bead-id>)
 	hookCmd.Flags().StringP("subject", "s", "", "Subject for handoff mail (optional)")
 	hookCmd.Flags().StringP("message", "m", "", "Message for handoff mail (optional)")

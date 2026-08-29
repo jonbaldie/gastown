@@ -10,15 +10,17 @@ import (
 )
 
 func init() {
+	memoriesCmd := newMemoriesCmd()
 	memoriesCmd.Flags().String("type", "", "Filter by memory type: feedback, project, user, reference, general")
 	memoriesCmd.GroupID = GroupWork
 	rootCmd.AddCommand(memoriesCmd)
 }
 
-var memoriesCmd = &cobra.Command{
-	Use:   "memories [search-term]",
-	Short: "List or search stored memories",
-	Long: `List or search memories stored in the beads key-value store.
+func newMemoriesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "memories [search-term]",
+		Short: "List or search stored memories",
+		Long: `List or search memories stored in the beads key-value store.
 
 Without arguments, lists all memories. With a search term, filters
 memories whose key or value contains the term (case-insensitive).
@@ -34,8 +36,9 @@ Examples:
   gt memories                    # List all memories
   gt memories --type feedback    # Show only behavioral corrections
   gt memories refinery           # Search for memories about refinery`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runMemories,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runMemories,
+	}
 }
 
 func runMemories(cmd *cobra.Command, args []string) error {
