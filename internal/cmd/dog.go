@@ -1410,14 +1410,32 @@ func dogAuthoritativeIssueMatches(d *dog.Dog, issue *beads.Issue) bool {
 func closeDogAuthoritativeSource(sourceDir string, d *dog.Dog, issueID string) error {
 	agentID := fmt.Sprintf("deacon/dogs/%s", d.Name)
 	bd := beads.New(sourceDir)
+	issue, err := loadDogAuthoritativeIssue(bd, issueID, agentID)
+	if err != nil {
+		return err
+	}
+	if err := closeDogAttachedWork(bd, d, issue); err != nil {
+		return err
+	}
+	if err := bd.ForceCloseWithReason("dog done", issue.ID); err != nil && !errors.Is(err, beads.ErrNotFound) {
+		return fmt.Errorf("closing authoritative source %s: %w", issue.ID, err)
+	}
+	return nil
+}
+
+func loadDogAuthoritativeIssue(bd *beads.Beads, issueID, agentID string) (*beads.Issue, error) {
 	issue, err := bd.Show(issueID)
 	if err != nil {
-		return fmt.Errorf("reading authoritative source %s: %w", issueID, err)
+		return nil, fmt.Errorf("reading authoritative source %s: %w", issueID, err)
 	}
 	if issue == nil || issue.Assignee != agentID ||
 		(issue.Status != beads.StatusHooked && issue.Status != string(beads.StatusInProgress)) {
-		return fmt.Errorf("authoritative source %s changed before dog completion", issueID)
+		return nil, fmt.Errorf("authoritative source %s changed before dog completion", issueID)
 	}
+	return issue, nil
+}
+
+func closeDogAttachedWork(bd *beads.Beads, d *dog.Dog, issue *beads.Issue) error {
 	fields := beads.ParseAttachmentFields(issue)
 	if fields != nil && fields.AttachedMolecule != "" {
 		if _, err := forceCloseDescendants(bd, fields.AttachedMolecule); err != nil {
@@ -1426,13 +1444,12 @@ func closeDogAuthoritativeSource(sourceDir string, d *dog.Dog, issueID string) e
 		if err := bd.ForceCloseWithReason("dog done", fields.AttachedMolecule); err != nil && !errors.Is(err, beads.ErrNotFound) {
 			return fmt.Errorf("closing attached molecule %s: %w", fields.AttachedMolecule, err)
 		}
-	} else if d.WorkKind == dog.WorkKindFormula {
+		return nil
+	}
+	if d.WorkKind == dog.WorkKindFormula {
 		if _, err := forceCloseDescendants(bd, issue.ID); err != nil {
 			return fmt.Errorf("closing formula steps for %s: %w", issue.ID, err)
 		}
-	}
-	if err := bd.ForceCloseWithReason("dog done", issue.ID); err != nil && !errors.Is(err, beads.ErrNotFound) {
-		return fmt.Errorf("closing authoritative source %s: %w", issue.ID, err)
 	}
 	return nil
 }
