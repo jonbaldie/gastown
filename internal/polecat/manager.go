@@ -1141,40 +1141,62 @@ func (m *Manager) pushUnpushedBranchBeforeRemoval(name, clonePath string) {
 }
 
 func (m *Manager) removalPushDecision(name string, polecatGit *git.Git) removalPushDecision {
-	d := removalPushDecision{}
-	if m.rig != nil && strings.TrimSpace(m.rig.PushURL) != "" {
-		d.HasPushURL = true
-	} else if m.rig != nil {
-		if cfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && cfg != nil && strings.TrimSpace(cfg.PushURL) != "" {
-			d.HasPushURL = true
-		}
+	d := removalPushDecision{HasPushURL: m.hasWritablePushRemote(polecatGit)}
+	d.PriorPushFail, d.LocalMerge = m.removalAgentFlags(name)
+	return d
+}
+
+func (m *Manager) hasConfiguredRigPushURL() bool {
+	if m.rig == nil {
+		return false
 	}
-	if !d.HasPushURL && polecatGit != nil && polecatGit.ForkBackedRemote("origin") {
-		d.HasPushURL = true
+	if strings.TrimSpace(m.rig.PushURL) != "" {
+		return true
+	}
+	cfg, err := rig.LoadRigConfig(m.rig.Path)
+	return err == nil && cfg != nil && strings.TrimSpace(cfg.PushURL) != ""
+}
+
+func hasWritableLocalRemote(polecatGit *git.Git) bool {
+	if polecatGit == nil {
+		return false
+	}
+	fetchURL, err := polecatGit.RemoteURL("origin")
+	return err == nil && isLocalGitRemote(fetchURL)
+}
+
+func (m *Manager) hasWritablePushRemote(polecatGit *git.Git) bool {
+	if m.hasConfiguredRigPushURL() {
+		return true
+	}
+	if polecatGit == nil {
+		return false
 	}
 	// A missing push URL on a hosted clone is treated as not-writable. Local
 	// file remotes stay writable so owned-repo shutdown still preserves work.
-	if !d.HasPushURL && polecatGit != nil {
-		if fetchURL, err := polecatGit.RemoteURL("origin"); err == nil && isLocalGitRemote(fetchURL) {
-			d.HasPushURL = true
-		}
-	}
+	return polecatGit.ForkBackedRemote("origin") || hasWritableLocalRemote(polecatGit)
+}
+
+func (m *Manager) removalAgentFlags(name string) (priorPushFail, localMerge bool) {
 	agentID := m.agentBeadID(name)
 	_, fields, err := m.agentBeads().GetAgentBead(agentID)
-	if err == nil && fields != nil {
-		d.PriorPushFail = fields.PushFailed
-		sourceID := strings.TrimSpace(fields.HookBead)
-		if sourceID == "" {
-			sourceID = strings.TrimSpace(fields.LastSourceIssue)
-		}
-		if sourceID != "" {
-			if issue, showErr := m.beads.Show(sourceID); showErr == nil {
-				d.LocalMerge = beads.HasLocalMergeStrategy(beads.ParseAttachmentFields(issue)) ||
-					beads.IssueTextImpliesLocalMerge(issue.Title+"\n"+issue.Description)
-			}
-		}
+	if err != nil || fields == nil {
+		return false, false
 	}
-	return d
+	priorPushFail = fields.PushFailed
+	sourceID := strings.TrimSpace(fields.HookBead)
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(fields.LastSourceIssue)
+	}
+	if sourceID == "" {
+		return priorPushFail, false
+	}
+	issue, showErr := m.beads.Show(sourceID)
+	if showErr == nil {
+		localMerge = beads.HasLocalMergeStrategy(beads.ParseAttachmentFields(issue)) ||
+			beads.IssueTextImpliesLocalMerge(issue.Title+"\n"+issue.Description)
+	}
+	return priorPushFail, localMerge
 }
 
 func isLocalGitRemote(raw string) bool {
