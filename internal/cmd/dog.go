@@ -457,52 +457,64 @@ func runDogList(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(dogs) == 0 {
-		if listJSON {
-			fmt.Println("[]")
-		} else {
-			fmt.Println("No dogs in kennel")
-		}
+		printEmptyDogList(listJSON)
 		return nil
 	}
 
 	if listJSON {
-		type DogListItem struct {
-			Name          string            `json:"name"`
-			State         dog.State         `json:"state"`
-			Work          string            `json:"work,omitempty"`
-			WorkStartedAt *time.Time        `json:"work_started_at,omitempty"`
-			LastActive    time.Time         `json:"last_active"`
-			Worktrees     map[string]string `json:"worktrees,omitempty"`
-		}
-
-		var items []DogListItem
-		for _, d := range dogs {
-			item := DogListItem{
-				Name:       d.Name,
-				State:      d.State,
-				Work:       d.Work,
-				LastActive: d.LastActive,
-				Worktrees:  d.Worktrees,
-			}
-			if !d.WorkStartedAt.IsZero() {
-				t := d.WorkStartedAt
-				item.WorkStartedAt = &t
-			}
-			items = append(items, item)
-		}
-
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(items)
+		return printDogListJSON(dogs)
 	}
 
-	// Pretty print
+	printDogListHuman(dogs)
+
+	return nil
+}
+
+func printEmptyDogList(listJSON bool) {
+	if listJSON {
+		fmt.Println("[]")
+		return
+	}
+	fmt.Println("No dogs in kennel")
+}
+
+func printDogListJSON(dogs []*dog.Dog) error {
+	type dogListItem struct {
+		Name          string            `json:"name"`
+		State         dog.State         `json:"state"`
+		Work          string            `json:"work,omitempty"`
+		WorkStartedAt *time.Time        `json:"work_started_at,omitempty"`
+		LastActive    time.Time         `json:"last_active"`
+		Worktrees     map[string]string `json:"worktrees,omitempty"`
+	}
+
+	var items []dogListItem
+	for _, d := range dogs {
+		item := dogListItem{
+			Name:       d.Name,
+			State:      d.State,
+			Work:       d.Work,
+			LastActive: d.LastActive,
+			Worktrees:  d.Worktrees,
+		}
+		if !d.WorkStartedAt.IsZero() {
+			t := d.WorkStartedAt
+			item.WorkStartedAt = &t
+		}
+		items = append(items, item)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(items)
+}
+
+func printDogListHuman(dogs []*dog.Dog) {
 	fmt.Println(style.Bold.Render("The Pack"))
 	fmt.Println()
 
 	idleCount := 0
 	workingCount := 0
-
 	for _, d := range dogs {
 		stateIcon := "○"
 		stateStyle := style.Dim
@@ -513,7 +525,6 @@ func runDogList(cmd *cobra.Command, _ []string) error {
 		} else {
 			idleCount++
 		}
-
 		line := fmt.Sprintf("  %s %s", stateIcon, stateStyle.Render(d.Name))
 		if d.Work != "" {
 			line += fmt.Sprintf(" → %s", style.Dim.Render(d.Work))
@@ -523,8 +534,6 @@ func runDogList(cmd *cobra.Command, _ []string) error {
 
 	fmt.Println()
 	fmt.Printf("  %d idle, %d working\n", idleCount, workingCount)
-
-	return nil
 }
 
 func runDogCall(cmd *cobra.Command, args []string) error {
