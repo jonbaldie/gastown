@@ -905,8 +905,13 @@ func runPolecatGitState(_ *cobra.Command, args []string) error {
 		return enc.Encode(state)
 	}
 
-	// Human-readable output
-	fmt.Printf("%s\n\n", style.Bold.Render(fmt.Sprintf("Git State: %s/%s", r.Name, polecatName)))
+	printPolecatGitState(r.Name, polecatName, state)
+	return nil
+}
+
+func printPolecatGitState(rigName, polecatName string, state *GitState) {
+	// Human-readable output.
+	fmt.Printf("%s\n\n", style.Bold.Render(fmt.Sprintf("Git State: %s/%s", rigName, polecatName)))
 
 	// Working tree status
 	if len(state.UncommittedFiles) == 0 {
@@ -946,8 +951,6 @@ func runPolecatGitState(_ *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("  Verdict:       %s\n", style.Error.Render("DIRTY (needs cleanup)"))
 	}
-
-	return nil
 }
 
 // getGitState checks the git state of a worktree.
