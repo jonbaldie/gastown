@@ -532,7 +532,7 @@ type statusOptions struct {
 	verbose  bool
 }
 
-func runStatus(cmd *cobra.Command, args []string) error {
+func runStatus(cmd *cobra.Command, _ []string) error {
 	opts := statusOptions{
 		json:     commandBoolFlag(cmd, "json"),
 		fast:     commandBoolFlag(cmd, "fast"),

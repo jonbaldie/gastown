@@ -1778,7 +1778,7 @@ func syncDoltDatabases(townRoot string, opts doltserver.SyncOptions, serverRunni
 	return doltserver.SyncDatabases(townRoot, opts)
 }
 
-func printDoltSyncResults(results []doltserver.SyncResult, purgeResults map[string]doltPurgeResult, includePurge, dryRun bool) (pushed, skipped, failed, totalPurged int) {
+func printDoltSyncResults(results []doltserver.SyncResult, purgeResults map[string]doltPurgeResult, includePurge, _ bool) (pushed, skipped, failed, totalPurged int) {
 	for _, result := range results {
 		fmt.Println()
 		if includePurge {

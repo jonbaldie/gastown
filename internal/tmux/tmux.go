@@ -90,7 +90,8 @@ func validateCommandBinary(command string) error {
 }
 
 func commandBinaryStart(fields []string) int {
-	for i := 0; i < len(fields); {
+	fieldCount := len(fields)
+	for i := 0; i < fieldCount; {
 		field := fields[i]
 		if isCommandPrefix(field) || isCommandAssignment(field) {
 			i++
@@ -114,7 +115,8 @@ func isCommandAssignment(field string) bool {
 }
 
 func skipPowerShellAssignment(fields []string, i int) int {
-	for i < len(fields) && !strings.HasSuffix(fields[i-1], ";") {
+	fieldCount := len(fields)
+	for i < fieldCount && !strings.HasSuffix(fields[i-1], ";") {
 		i++
 	}
 	return i
