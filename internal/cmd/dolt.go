@@ -1868,43 +1868,43 @@ func runDoltMigrateWisps(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Determine which rigs to migrate
 	if doltMigrateWispsDB != "" {
-		// Migrate a specific rig
-		rigDir := filepath.Join(townRoot, doltMigrateWispsDB)
-		if _, err := os.Stat(rigDir); os.IsNotExist(err) {
-			return fmt.Errorf("rig directory not found: %s", rigDir)
-		}
-		fmt.Printf("%s Migrating: %s\n", style.Bold.Render("→"), doltMigrateWispsDB)
-		result, err := doltserver.MigrateAgentBeadsToWisps(townRoot, rigDir, doltMigrateWispsDry)
-		if err != nil {
-			return err
-		}
-		printMigrateWispsResult(result)
-		return nil
+		return migrateSpecificRigWisps(townRoot, doltMigrateWispsDB, doltMigrateWispsDry)
 	}
 
-	// Auto-detect: migrate all rigs that have beads databases
+	return migrateAllRigWisps(townRoot, doltMigrateWispsDry)
+}
+
+func migrateSpecificRigWisps(townRoot, rigName string, dryRun bool) error {
+	rigDir := filepath.Join(townRoot, rigName)
+	if _, err := os.Stat(rigDir); os.IsNotExist(err) {
+		return fmt.Errorf("rig directory not found: %s", rigDir)
+	}
+	fmt.Printf("%s Migrating: %s\n", style.Bold.Render("→"), rigName)
+	result, err := doltserver.MigrateAgentBeadsToWisps(townRoot, rigDir, dryRun)
+	if err != nil {
+		return err
+	}
+	printMigrateWispsResult(result)
+	return nil
+}
+
+func migrateAllRigWisps(townRoot string, dryRun bool) error {
 	databases, err := doltserver.ListDatabases(townRoot)
 	if err != nil {
 		return fmt.Errorf("listing databases: %w", err)
 	}
 
 	for _, db := range databases {
-		// Skip non-rig databases
 		if db == "wl_commons" || strings.HasPrefix(db, "testdb_") {
 			continue
 		}
-		// Find the rig directory for this database.
-		// The "hq" database lives at the town root itself, not townRoot/hq.
-		rigDir := filepath.Join(townRoot, db)
-		if db == "hq" {
-			rigDir = townRoot
-		} else if _, err := os.Stat(rigDir); os.IsNotExist(err) {
-			continue // Not a rig directory
+		rigDir, ok := rigDirForWispMigration(townRoot, db)
+		if !ok {
+			continue
 		}
 		fmt.Printf("\n%s Migrating: %s\n", style.Bold.Render("→"), db)
-		result, err := doltserver.MigrateAgentBeadsToWisps(townRoot, rigDir, doltMigrateWispsDry)
+		result, err := doltserver.MigrateAgentBeadsToWisps(townRoot, rigDir, dryRun)
 		if err != nil {
 			fmt.Printf("  %s %s: %v\n", style.Bold.Render("✗"), db, err)
 			continue
@@ -1912,6 +1912,17 @@ func runDoltMigrateWisps(_ *cobra.Command, _ []string) error {
 		printMigrateWispsResult(result)
 	}
 	return nil
+}
+
+func rigDirForWispMigration(townRoot, database string) (string, bool) {
+	if database == "hq" {
+		return townRoot, true
+	}
+	rigDir := filepath.Join(townRoot, database)
+	if _, err := os.Stat(rigDir); os.IsNotExist(err) {
+		return "", false
+	}
+	return rigDir, true
 }
 
 func printMigrateWispsResult(result *doltserver.MigrateWispsResult) {
