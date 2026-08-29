@@ -108,28 +108,9 @@ func runWorkerStatus(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	id := ""
-	if len(args) == 1 {
-		id = args[0]
-	}
+	id := workerStatusID(args)
 	if id == "" {
-		ev, err := w.Events(ctx)
-		if err != nil {
-			return err
-		}
-		if jsonOutput {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(ev)
-		}
-		if len(ev) == 0 {
-			fmt.Println(style.Dim.Render("No worker events."))
-			return nil
-		}
-		for _, e := range ev {
-			fmt.Printf("%s  %s  run=%s  bead=%s\n", e.Timestamp.Format(time.RFC3339), e.Type, e.RunID, e.BeadID)
-		}
-		return nil
+		return outputWorkerEvents(ctx, w, jsonOutput)
 	}
 
 	st, err := w.State(ctx, id, id)
@@ -137,6 +118,37 @@ func runWorkerStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	h, herr := w.Health(ctx, id)
+	return outputWorkerState(st, h, herr, jsonOutput)
+}
+
+func workerStatusID(args []string) string {
+	if len(args) == 1 {
+		return args[0]
+	}
+	return ""
+}
+
+func outputWorkerEvents(ctx context.Context, w *worker.Worker, jsonOutput bool) error {
+	ev, err := w.Events(ctx)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(ev)
+	}
+	if len(ev) == 0 {
+		fmt.Println(style.Dim.Render("No worker events."))
+		return nil
+	}
+	for _, e := range ev {
+		fmt.Printf("%s  %s  run=%s  bead=%s\n", e.Timestamp.Format(time.RFC3339), e.Type, e.RunID, e.BeadID)
+	}
+	return nil
+}
+
+func outputWorkerState(st worker.State, h *worker.Health, herr error, jsonOutput bool) error {
 	if jsonOutput {
 		out := map[string]any{"state": st}
 		if herr == nil {
