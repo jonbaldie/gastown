@@ -73,93 +73,132 @@ func NewClient(opts ...Option) (*Client, error) {
 
 // Request makes an authenticated REST API request and decodes the JSON response.
 func (c *Client) Request(ctx context.Context, method, path string, body any, result any) error {
-	var reqBody io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("github: marshal request: %w", err)
-		}
-		reqBody = bytes.NewReader(b)
-	}
-
-	url := c.restBase + path
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+	reqBody, err := marshalRequestBody(body)
 	if err != nil {
-		return fmt.Errorf("github: create request: %w", err)
+		return err
+	}
+	req, err := c.newRESTRequest(ctx, method, path, body != nil, reqBody)
+	if err != nil {
+		return err
+	}
+	respBody, err := c.doRESTRequest(req, method, path)
+	if err != nil {
+		return err
+	}
+	return decodeJSONResult(respBody, result)
+}
+
+func marshalRequestBody(body any) (io.Reader, error) {
+	if body == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("github: marshal request: %w", err)
+	}
+	return bytes.NewReader(b), nil
+}
+
+func (c *Client) newRESTRequest(ctx context.Context, method, path string, hasBody bool, reqBody io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.restBase+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("github: create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if body != nil {
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return req, nil
+}
 
+func (c *Client) doRESTRequest(req *http.Request, method, path string) ([]byte, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("github: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("github: %s %s: %w", method, path, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readClosedBody(resp)
 	if err != nil {
-		return fmt.Errorf("github: read response: %w", err)
+		return nil, fmt.Errorf("github: read response: %w", err)
 	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{
+		return nil, &APIError{
 			Method:     method,
 			Path:       path,
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
 		}
 	}
+	return respBody, nil
+}
 
-	if result != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, result); err != nil {
-			return fmt.Errorf("github: decode response: %w", err)
-		}
+func readClosedBody(resp *http.Response) ([]byte, error) {
+	defer func() { _ = resp.Body.Close() }()
+	return io.ReadAll(resp.Body)
+}
+
+func decodeJSONResult(respBody []byte, result any) error {
+	if result == nil || len(respBody) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(respBody, result); err != nil {
+		return fmt.Errorf("github: decode response: %w", err)
 	}
 	return nil
 }
 
 // GraphQLRequest makes an authenticated GraphQL request.
 func (c *Client) GraphQLRequest(ctx context.Context, query string, variables map[string]any, result any) error {
-	payload := map[string]any{
+	req, err := c.newGraphQLRequest(ctx, query, variables)
+	if err != nil {
+		return err
+	}
+	respBody, err := c.doGraphQLRequest(req)
+	if err != nil {
+		return err
+	}
+	return decodeGraphQLResult(respBody, result)
+}
+
+func (c *Client) newGraphQLRequest(ctx context.Context, query string, variables map[string]any) (*http.Request, error) {
+	b, err := json.Marshal(map[string]any{
 		"query":     query,
 		"variables": variables,
-	}
-	b, err := json.Marshal(payload)
+	})
 	if err != nil {
-		return fmt.Errorf("github: marshal graphql: %w", err)
+		return nil, fmt.Errorf("github: marshal graphql: %w", err)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.graphqlBase, bytes.NewReader(b))
 	if err != nil {
-		return fmt.Errorf("github: create graphql request: %w", err)
+		return nil, fmt.Errorf("github: create graphql request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
 
+func (c *Client) doGraphQLRequest(req *http.Request) ([]byte, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("github: graphql: %w", err)
+		return nil, fmt.Errorf("github: graphql: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readClosedBody(resp)
 	if err != nil {
-		return fmt.Errorf("github: read graphql response: %w", err)
+		return nil, fmt.Errorf("github: read graphql response: %w", err)
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		return &APIError{
+		return nil, &APIError{
 			Method:     "POST",
 			Path:       "/graphql",
 			StatusCode: resp.StatusCode,
 			Body:       string(respBody),
 		}
 	}
+	return respBody, nil
+}
 
+func decodeGraphQLResult(respBody []byte, result any) error {
 	var gqlResp graphQLResponse
 	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
 		return fmt.Errorf("github: decode graphql response: %w", err)
@@ -167,11 +206,11 @@ func (c *Client) GraphQLRequest(ctx context.Context, query string, variables map
 	if len(gqlResp.Errors) > 0 {
 		return fmt.Errorf("github: graphql: %s", gqlResp.Errors[0].Message)
 	}
-
-	if result != nil {
-		if err := json.Unmarshal(gqlResp.Data, result); err != nil {
-			return fmt.Errorf("github: decode graphql data: %w", err)
-		}
+	if result == nil {
+		return nil
+	}
+	if err := json.Unmarshal(gqlResp.Data, result); err != nil {
+		return fmt.Errorf("github: decode graphql data: %w", err)
 	}
 	return nil
 }
