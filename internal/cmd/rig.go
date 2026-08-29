@@ -1384,69 +1384,73 @@ func adoptedRigBeadsPlan(existing []string, beadsPrefix string) (dirToHandle str
 	return "", beadsPrefix != ""
 }
 
+func resolveRigResetRole(cwd, townRoot string) (string, error) {
+	if rigResetRole != "" {
+		return rigResetRole, nil
+	}
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return "", fmt.Errorf("detecting role: %w", err)
+	}
+	if roleInfo.Role == RoleUnknown {
+		return "", fmt.Errorf("could not detect role; use --role to specify")
+	}
+	return string(roleInfo.Role), nil
+}
+
+func resetRigHandoff(townBd *beads.Beads, roleKey string) error {
+	if err := townBd.ClearHandoffContent(roleKey); err != nil {
+		return fmt.Errorf("clearing handoff content: %w", err)
+	}
+	fmt.Printf("%s Cleared handoff content for %s\n", style.Success.Render("✓"), roleKey)
+	return nil
+}
+
+func resetRigMail(townBd *beads.Beads) error {
+	result, err := townBd.ClearMail("Cleared during reset")
+	if err != nil {
+		return fmt.Errorf("clearing mail: %w", err)
+	}
+	if result.Closed > 0 || result.Cleared > 0 {
+		fmt.Printf("%s Cleared mail: %d closed, %d pinned cleared\n",
+			style.Success.Render("✓"), result.Closed, result.Cleared)
+	} else {
+		fmt.Printf("%s No mail to clear\n", style.Success.Render("✓"))
+	}
+	return nil
+}
+
 func runRigReset(_ *cobra.Command, _ []string) error {
-	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-
-	// Determine role to reset
-	roleKey := rigResetRole
-	if roleKey == "" {
-		// Auto-detect using env-aware role detection
-		roleInfo, err := GetRoleWithContext(cwd, townRoot)
-		if err != nil {
-			return fmt.Errorf("detecting role: %w", err)
-		}
-		if roleInfo.Role == RoleUnknown {
-			return fmt.Errorf("could not detect role; use --role to specify")
-		}
-		roleKey = string(roleInfo.Role)
+	roleKey, err := resolveRigResetRole(cwd, townRoot)
+	if err != nil {
+		return err
 	}
-
-	// If no specific flags, reset all; otherwise only reset what's specified
 	resetAll := !rigResetHandoff && !rigResetMail && !rigResetStale
-
-	// Town beads for handoff/mail operations
 	townBd := beads.New(townRoot)
-	// Rig beads for issue operations (uses cwd to find .beads/)
 	rigBd := beads.New(cwd)
-
-	// Reset handoff content
 	if resetAll || rigResetHandoff {
-		if err := townBd.ClearHandoffContent(roleKey); err != nil {
-			return fmt.Errorf("clearing handoff content: %w", err)
+		if err := resetRigHandoff(townBd, roleKey); err != nil {
+			return err
 		}
-		fmt.Printf("%s Cleared handoff content for %s\n", style.Success.Render("✓"), roleKey)
 	}
-
-	// Clear stale mail messages
 	if resetAll || rigResetMail {
-		result, err := townBd.ClearMail("Cleared during reset")
-		if err != nil {
-			return fmt.Errorf("clearing mail: %w", err)
-		}
-		if result.Closed > 0 || result.Cleared > 0 {
-			fmt.Printf("%s Cleared mail: %d closed, %d pinned cleared\n",
-				style.Success.Render("✓"), result.Closed, result.Cleared)
-		} else {
-			fmt.Printf("%s No mail to clear\n", style.Success.Render("✓"))
+		if err := resetRigMail(townBd); err != nil {
+			return err
 		}
 	}
-
-	// Reset stale in_progress issues
 	if resetAll || rigResetStale {
 		if err := runResetStale(rigBd, rigResetDryRun); err != nil {
 			return fmt.Errorf("resetting stale issues: %w", err)
 		}
 	}
-
 	return nil
 }
 
