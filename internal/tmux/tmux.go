@@ -676,73 +676,19 @@ const processKillGracePeriod = 2 * time.Second
 //
 // This ensures Claude processes and all their children are properly terminated.
 func (t *Tmux) KillSessionWithProcesses(name string) error {
-	// Disarm auto-respawn BEFORE killing anything. The pane-died hook would
-	// otherwise respawn the process 3 seconds after we kill it, creating a
-	// zombie that fights every kill attempt.
-	_ = t.SetRemainOnExit(name, false)
-	_, _ = t.run("set-hook", "-t", name, "-u", "pane-died")
+	t.disarmSessionRespawn(name)
 
 	// Get the pane PID
 	pid, err := t.GetPanePID(name)
 	if err != nil {
-		// Session might not exist or server may have already gone away.
-		killErr := t.KillSession(name)
-		if killErr == nil || killErr == ErrSessionNotFound || killErr == ErrNoServer {
-			return nil
-		}
-		return killErr
+		return t.killMissingSession(name)
 	}
 
 	if pid != "" {
-		// Walk the process tree for all descendants (catches processes that
-		// called setsid() and created their own process groups)
-		descendants := getAllDescendants(pid)
-
-		// Build known PID set for group membership verification
-		knownPIDs := make(map[string]bool, len(descendants)+1)
-		knownPIDs[pid] = true
-		for _, d := range descendants {
-			knownPIDs[d] = true
-		}
-
-		// Find reparented processes from our process group. Instead of killing
-		// the entire group blindly with syscall.Kill(-pgid, ...) — which could
-		// hit unrelated processes sharing the same PGID — we enumerate group
-		// members and only include those reparented to init (PPID == 1), which
-		// indicates they were likely children in our tree that outlived their parent.
-		pgid := getProcessGroupID(pid)
-		if pgid != "" && pgid != "0" && pgid != "1" {
-			reparented := collectReparentedGroupMembers(pgid, knownPIDs)
-			descendants = append(descendants, reparented...)
-		}
-
-		// Send SIGTERM to all descendants (deepest first to avoid orphaning)
-		for _, dpid := range descendants {
-			_ = exec.Command("kill", "-TERM", dpid).Run()
-		}
-
-		// Wait for graceful shutdown (2s gives processes time to clean up)
-		time.Sleep(processKillGracePeriod)
-
-		// Send SIGKILL to any remaining descendants
-		for _, dpid := range descendants {
-			_ = exec.Command("kill", "-KILL", dpid).Run()
-		}
-
-		// Kill the pane process itself (may have called setsid() and detached)
-		_ = exec.Command("kill", "-TERM", pid).Run()
-		time.Sleep(processKillGracePeriod)
-		_ = exec.Command("kill", "-KILL", pid).Run()
+		killSessionProcessTree(pid, nil)
 	}
 
-	// Kill the tmux session
-	// Ignore missing/dead-server errors - killing the pane process may have
-	// already caused tmux to destroy the session automatically.
-	err = t.KillSession(name)
-	if err == ErrSessionNotFound || err == ErrNoServer {
-		return nil
-	}
-	return err
+	return t.killMissingSession(name)
 }
 
 // KillSessionWithProcessesExcluding is like KillSessionWithProcesses but excludes
@@ -750,95 +696,94 @@ func (t *Tmux) KillSessionWithProcesses(name string) error {
 // the calling process (e.g., gt done) is running inside the session it's terminating.
 // Without exclusion, the caller would be killed before completing the cleanup.
 func (t *Tmux) KillSessionWithProcessesExcluding(name string, excludePIDs []string) error {
-	// Disarm auto-respawn BEFORE killing anything (same as KillSessionWithProcesses).
-	_ = t.SetRemainOnExit(name, false)
-	_, _ = t.run("set-hook", "-t", name, "-u", "pane-died")
-
-	// Build exclusion set for O(1) lookup
-	exclude := make(map[string]bool)
-	for _, pid := range excludePIDs {
-		exclude[pid] = true
-	}
+	t.disarmSessionRespawn(name)
+	exclude := processExclusionSet(excludePIDs)
 
 	// Get the pane PID
 	pid, err := t.GetPanePID(name)
 	if err != nil {
-		// Session might not exist or server may have already gone away.
-		killErr := t.KillSession(name)
-		if killErr == nil || killErr == ErrSessionNotFound || killErr == ErrNoServer {
-			return nil
-		}
-		return killErr
+		return t.killMissingSession(name)
 	}
 
 	if pid != "" {
-		// Get the process group ID
-		pgid := getProcessGroupID(pid)
-
-		// Collect all PIDs to kill (from multiple sources)
-		toKill := make(map[string]bool)
-
-		// 1. Get all descendant PIDs recursively (catches processes that called setsid())
-		descendants := getAllDescendants(pid)
-
-		// Build known PID set for group membership verification
-		knownPIDs := make(map[string]bool, len(descendants)+1)
-		knownPIDs[pid] = true
-		for _, dpid := range descendants {
-			if !exclude[dpid] {
-				toKill[dpid] = true
-			}
-			knownPIDs[dpid] = true
-		}
-
-		// 2. Get verified process group members (only reparented-to-init processes).
-		// Instead of adding ALL group members — which could include unrelated
-		// processes sharing the same PGID — we only add those that were reparented
-		// to init (PPID == 1), indicating they were likely children in our tree.
-		if pgid != "" && pgid != "0" && pgid != "1" {
-			for _, member := range collectReparentedGroupMembers(pgid, knownPIDs) {
-				if !exclude[member] {
-					toKill[member] = true
-				}
-			}
-		}
-
-		// Convert to slice for iteration
-		var killList []string
-		for p := range toKill {
-			killList = append(killList, p)
-		}
-
-		// Send SIGTERM to all non-excluded processes
-		for _, dpid := range killList {
-			_ = exec.Command("kill", "-TERM", dpid).Run()
-		}
-
-		// Wait for graceful shutdown (2s gives processes time to clean up)
-		time.Sleep(processKillGracePeriod)
-
-		// Send SIGKILL to any remaining non-excluded processes
-		for _, dpid := range killList {
-			_ = exec.Command("kill", "-KILL", dpid).Run()
-		}
-
-		// Kill the pane process itself (may have called setsid() and detached)
-		// Only if not excluded
-		if !exclude[pid] {
-			_ = exec.Command("kill", "-TERM", pid).Run()
-			time.Sleep(processKillGracePeriod)
-			_ = exec.Command("kill", "-KILL", pid).Run()
-		}
+		killSessionProcessTree(pid, exclude)
 	}
 
-	// Kill the tmux session - this will terminate the excluded process too.
-	// Ignore missing/dead-server errors - if we killed all non-excluded
-	// processes, tmux may have already destroyed the session automatically.
-	err = t.KillSession(name)
+	// Killing the tmux session also terminates any excluded process.
+	return t.killMissingSession(name)
+}
+
+func (t *Tmux) disarmSessionRespawn(name string) {
+	// The pane-died hook would otherwise respawn the process 3 seconds after
+	// we kill it, creating a zombie that fights every kill attempt.
+	_ = t.SetRemainOnExit(name, false)
+	_, _ = t.run("set-hook", "-t", name, "-u", "pane-died")
+}
+
+func (t *Tmux) killMissingSession(name string) error {
+	// Killing the pane process may have already destroyed the session, so
+	// missing-session and dead-server errors are intentionally idempotent.
+	err := t.KillSession(name)
 	if err == ErrSessionNotFound || err == ErrNoServer {
 		return nil
 	}
 	return err
+}
+
+func processExclusionSet(excludePIDs []string) map[string]bool {
+	exclude := make(map[string]bool, len(excludePIDs))
+	for _, pid := range excludePIDs {
+		exclude[pid] = true
+	}
+	return exclude
+}
+
+func killSessionProcessTree(pid string, exclude map[string]bool) {
+	processes := sessionProcessTargets(pid, exclude)
+	killProcesses(processes, "TERM")
+	time.Sleep(processKillGracePeriod)
+	killProcesses(processes, "KILL")
+	if exclude == nil || !exclude[pid] {
+		killProcesses([]string{pid}, "TERM")
+		time.Sleep(processKillGracePeriod)
+		killProcesses([]string{pid}, "KILL")
+	}
+}
+
+func sessionProcessTargets(pid string, exclude map[string]bool) []string {
+	descendants := getAllDescendants(pid)
+	knownPIDs := make(map[string]bool, len(descendants)+1)
+	knownPIDs[pid] = true
+	for _, descendant := range descendants {
+		knownPIDs[descendant] = true
+	}
+
+	pgid := getProcessGroupID(pid)
+	if pgid != "" && pgid != "0" && pgid != "1" {
+		reparented := collectReparentedGroupMembers(pgid, knownPIDs)
+		descendants = append(descendants, reparented...)
+	}
+	if exclude == nil {
+		return descendants
+	}
+
+	toKill := make(map[string]bool, len(descendants))
+	for _, descendant := range descendants {
+		if !exclude[descendant] {
+			toKill[descendant] = true
+		}
+	}
+	killList := make([]string, 0, len(toKill))
+	for process := range toKill {
+		killList = append(killList, process)
+	}
+	return killList
+}
+
+func killProcesses(processes []string, signal string) {
+	for _, pid := range processes {
+		_ = exec.Command("kill", "-"+signal, pid).Run()
+	}
 }
 
 // killSplitBrainSession kills a same-named session on the "default" tmux socket
