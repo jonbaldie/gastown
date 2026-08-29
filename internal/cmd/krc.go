@@ -128,13 +128,6 @@ var krcAutoPruneStatusCmd = &cobra.Command{
 	RunE: runKrcAutoPruneStatus,
 }
 
-var (
-	krcPruneDryRun bool
-	krcPruneAuto   bool
-	krcStatsJSON   bool
-	krcDecayJSON   bool
-)
-
 func init() {
 	rootCmd.AddCommand(krcCmd)
 	krcCmd.AddCommand(krcStatsCmd)
@@ -145,13 +138,14 @@ func init() {
 	krcConfigCmd.AddCommand(krcConfigSetCmd)
 	krcConfigCmd.AddCommand(krcConfigResetCmd)
 
-	krcPruneCmd.Flags().BoolVar(&krcPruneDryRun, "dry-run", false, "Preview changes without modifying files")
-	krcPruneCmd.Flags().BoolVar(&krcPruneAuto, "auto", false, "Daemon mode: only prune if PruneInterval has elapsed")
-	krcStatsCmd.Flags().BoolVar(&krcStatsJSON, "json", false, "Output in JSON format")
-	krcDecayCmd.Flags().BoolVar(&krcDecayJSON, "json", false, "Output in JSON format")
+	krcPruneCmd.Flags().Bool("dry-run", false, "Preview changes without modifying files")
+	krcPruneCmd.Flags().Bool("auto", false, "Daemon mode: only prune if PruneInterval has elapsed")
+	krcStatsCmd.Flags().Bool("json", false, "Output in JSON format")
+	krcDecayCmd.Flags().Bool("json", false, "Output in JSON format")
 }
 
-func runKrcStats(_ *cobra.Command, _ []string) error {
+func runKrcStats(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -167,7 +161,7 @@ func runKrcStats(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("getting stats: %w", err)
 	}
 
-	if krcStatsJSON {
+	if jsonOutput {
 		data, err := json.MarshalIndent(stats, "", "  ")
 		if err != nil {
 			return err
@@ -233,7 +227,9 @@ func runKrcStats(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runKrcPrune(_ *cobra.Command, _ []string) error {
+func runKrcPrune(cmd *cobra.Command, _ []string) error {
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	auto := commandBoolFlag(cmd, "auto")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -245,11 +241,11 @@ func runKrcPrune(_ *cobra.Command, _ []string) error {
 	}
 
 	// Auto mode: respect PruneInterval scheduling
-	if krcPruneAuto {
+	if auto {
 		return runKrcAutoPrune(townRoot, config)
 	}
 
-	if krcPruneDryRun {
+	if dryRun {
 		// Show what would be pruned
 		stats, err := krc.GetStats(townRoot, config)
 		if err != nil {
@@ -503,7 +499,8 @@ func runKrcAutoPrune(townRoot string, config *krc.Config) error {
 	return nil
 }
 
-func runKrcDecay(_ *cobra.Command, _ []string) error {
+func runKrcDecay(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -521,7 +518,7 @@ func runKrcDecay(_ *cobra.Command, _ []string) error {
 
 	report := krc.GenerateDecayReport(stats, config)
 
-	if krcDecayJSON {
+	if jsonOutput {
 		data, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
 			return err
