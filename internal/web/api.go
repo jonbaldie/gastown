@@ -2143,38 +2143,52 @@ func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request
 
 // parseCommandArgs splits a command string into args, respecting quotes.
 func parseCommandArgs(command string) []string {
-	var args []string
-	var current strings.Builder
-	inQuote := false
-	quoteChar := rune(0)
-
+	parser := commandArgParser{}
 	for _, r := range command {
-		switch {
-		case r == '"' || r == '\'':
-			if inQuote && r == quoteChar {
-				inQuote = false
-				quoteChar = 0
-			} else if !inQuote {
-				inQuote = true
-				quoteChar = r
-			} else {
-				current.WriteRune(r)
-			}
-		case r == ' ' && !inQuote:
-			if current.Len() > 0 {
-				args = append(args, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteRune(r)
-		}
+		parser.addRune(r)
 	}
+	parser.flush()
+	return parser.args
+}
 
-	if current.Len() > 0 {
-		args = append(args, current.String())
+type commandArgParser struct {
+	args      []string
+	current   strings.Builder
+	inQuote   bool
+	quoteChar rune
+}
+
+func (p *commandArgParser) addRune(r rune) {
+	switch {
+	case r == '"' || r == '\'':
+		p.handleQuote(r)
+	case r == ' ' && !p.inQuote:
+		p.flush()
+	default:
+		p.current.WriteRune(r)
 	}
+}
 
-	return args
+func (p *commandArgParser) handleQuote(r rune) {
+	if p.inQuote && r == p.quoteChar {
+		p.inQuote = false
+		p.quoteChar = 0
+		return
+	}
+	if !p.inQuote {
+		p.inQuote = true
+		p.quoteChar = r
+		return
+	}
+	p.current.WriteRune(r)
+}
+
+func (p *commandArgParser) flush() {
+	if p.current.Len() == 0 {
+		return
+	}
+	p.args = append(p.args, p.current.String())
+	p.current.Reset()
 }
 
 // handleSSE streams Server-Sent Events to the dashboard client.
