@@ -367,11 +367,6 @@ const (
 )
 
 var (
-	// Redispatch flags
-	redispatchRig         string
-	redispatchMaxAttempts int
-	redispatchCooldown    time.Duration
-
 	// Feed-stranded flags
 	feedStrandedMaxFeeds int
 	feedStrandedCooldown time.Duration
@@ -430,11 +425,11 @@ func init() {
 		"List zombies without killing them")
 
 	// Flags for redispatch
-	deaconRedispatchCmd.Flags().StringVar(&redispatchRig, "rig", "",
+	deaconRedispatchCmd.Flags().String("rig", "",
 		"Target rig to re-dispatch to (auto-detected from bead prefix if omitted)")
-	deaconRedispatchCmd.Flags().IntVar(&redispatchMaxAttempts, "max-attempts", 0,
+	deaconRedispatchCmd.Flags().Int("max-attempts", 0,
 		"Max re-dispatch attempts before escalating to Mayor (default: 3)")
-	deaconRedispatchCmd.Flags().DurationVar(&redispatchCooldown, "cooldown", 0,
+	deaconRedispatchCmd.Flags().Duration("cooldown", 0,
 		"Minimum time between re-dispatches of same bead (default: 5m)")
 
 	// Flags for feed-stranded
@@ -1512,7 +1507,7 @@ func runDeaconZombieScan(cmd *cobra.Command, _ []string) error {
 }
 
 // runDeaconRedispatch handles re-dispatching a recovered bead.
-func runDeaconRedispatch(_ *cobra.Command, args []string) error {
+func runDeaconRedispatch(cmd *cobra.Command, args []string) error {
 	beadID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -1520,7 +1515,13 @@ func runDeaconRedispatch(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	result := deacon.Redispatch(townRoot, beadID, redispatchRig, redispatchMaxAttempts, redispatchCooldown)
+	result := deacon.Redispatch(
+		townRoot,
+		beadID,
+		commandStringFlag(cmd, "rig"),
+		commandIntFlag(cmd, "max-attempts"),
+		commandDurationFlag(cmd, "cooldown"),
+	)
 
 	switch result.Action {
 	case "redispatched":
