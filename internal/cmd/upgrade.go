@@ -193,17 +193,11 @@ func upgradeAgentsMD(townRoot string, dryRun bool) upgradeResult {
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("2."), "Syncing AGENTS.md from template...")
 
 	expected := templates.TownRootAgentsMD()
-	current, err := os.ReadFile(filepath.Join(townRoot, instructions.CanonicalFile))
+	current, err := readTownAgentsMD(townRoot)
 	if err != nil && !os.IsNotExist(err) {
 		result.details = append(result.details, fmt.Sprintf("error reading: %v", err))
 		fmt.Printf("     %s Could not read AGENTS.md: %v\n", style.ErrorPrefix, err)
 		return result
-	}
-	if os.IsNotExist(err) {
-		if data, readErr := os.ReadFile(filepath.Join(townRoot, instructions.AliasFile)); readErr == nil {
-			current = data
-			err = nil
-		}
 	}
 
 	pairValid := instructions.TownPairValid(townRoot)
@@ -213,18 +207,36 @@ func upgradeAgentsMD(townRoot string, dryRun bool) upgradeResult {
 	}
 
 	if dryRun {
-		if os.IsNotExist(err) {
-			fmt.Printf("     %s AGENTS.md %s\n", style.WarningPrefix, style.Dim.Render("would create"))
-		} else {
-			fmt.Printf("     %s AGENTS.md %s\n", style.WarningPrefix, style.Dim.Render("would update"))
-		}
-		result.changed = 1
-		if !pairValid {
-			result.changed++
-		}
-		return result
+		return reportAgentsMDDryRun(result, err, pairValid)
 	}
+	return provisionAgentsMD(townRoot, expected, result, err)
+}
 
+func readTownAgentsMD(townRoot string) ([]byte, error) {
+	current, err := os.ReadFile(filepath.Join(townRoot, instructions.CanonicalFile))
+	if !os.IsNotExist(err) {
+		return current, err
+	}
+	if data, readErr := os.ReadFile(filepath.Join(townRoot, instructions.AliasFile)); readErr == nil {
+		return data, nil
+	}
+	return current, err
+}
+
+func reportAgentsMDDryRun(result upgradeResult, readErr error, pairValid bool) upgradeResult {
+	status := "would update"
+	if os.IsNotExist(readErr) {
+		status = "would create"
+	}
+	fmt.Printf("     %s AGENTS.md %s\n", style.WarningPrefix, style.Dim.Render(status))
+	result.changed = 1
+	if !pairValid {
+		result.changed++
+	}
+	return result
+}
+
+func provisionAgentsMD(townRoot, expected string, result upgradeResult, readErr error) upgradeResult {
 	changed, provErr := instructions.Provision(townRoot, expected, "")
 	if provErr != nil {
 		result.details = append(result.details, fmt.Sprintf("error writing: %v", provErr))
@@ -236,7 +248,7 @@ func upgradeAgentsMD(townRoot string, dryRun bool) upgradeResult {
 		return result
 	}
 
-	if os.IsNotExist(err) {
+	if os.IsNotExist(readErr) {
 		fmt.Printf("     %s AGENTS.md %s\n", style.SuccessPrefix, style.Dim.Render("created"))
 		result.changed = 1
 	} else {
@@ -307,15 +319,29 @@ func upgradeHooksSync(townRoot string, opts upgradeOptions) upgradeResult {
 		return result
 	}
 
-	updated := 0
-	created := 0
-	unchanged := 0
-	errors := 0
+	summary := syncUpgradeTargets(townRoot, targets, opts)
+	result.changed = summary.updated + summary.created
+	if summary.errors > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d sync errors", summary.errors))
+	}
+	printUpgradeHooksSummary(summary, opts)
 
+	return result
+}
+
+type hookSyncSummary struct {
+	updated   int
+	created   int
+	unchanged int
+	errors    int
+}
+
+func syncUpgradeTargets(townRoot string, targets []hooks.Target, opts upgradeOptions) hookSyncSummary {
+	var summary hookSyncSummary
 	for _, target := range targets {
 		syncRes, err := syncTarget(target, opts.dryRun)
 		if err != nil {
-			errors++
+			summary.errors++
 			if opts.verbose {
 				relPath, _ := filepath.Rel(townRoot, target.Path)
 				fmt.Printf("     %s %s: %v\n", style.ErrorPrefix, relPath, err)
@@ -327,103 +353,112 @@ func upgradeHooksSync(townRoot string, opts upgradeOptions) upgradeResult {
 		if pathErr != nil {
 			relPath = target.Path
 		}
+		summary.record(syncRes)
+		printUpgradeHookTarget(relPath, syncRes, opts)
+	}
+	return summary
+}
 
-		switch syncRes {
-		case syncCreated:
-			created++
-			if opts.verbose {
-				if opts.dryRun {
-					fmt.Printf("     %s %s %s\n", style.WarningPrefix, relPath, style.Dim.Render("(would create)"))
-				} else {
-					fmt.Printf("     %s %s %s\n", style.SuccessPrefix, relPath, style.Dim.Render("(created)"))
-				}
-			}
-		case syncUpdated:
-			updated++
-			if opts.verbose {
-				if opts.dryRun {
-					fmt.Printf("     %s %s %s\n", style.WarningPrefix, relPath, style.Dim.Render("(would update)"))
-				} else {
-					fmt.Printf("     %s %s %s\n", style.SuccessPrefix, relPath, style.Dim.Render("(updated)"))
-				}
-			}
-		case syncUnchanged:
-			unchanged++
-		}
+func (s *hookSyncSummary) record(result syncResult) {
+	switch result {
+	case syncCreated:
+		s.created++
+	case syncUpdated:
+		s.updated++
+	case syncUnchanged:
+		s.unchanged++
 	}
+}
 
-	result.changed = updated + created
-
-	// Summary line
-	var parts []string
-	if updated > 0 {
-		parts = append(parts, fmt.Sprintf("%d updated", updated))
+func printUpgradeHookTarget(relPath string, syncRes syncResult, opts upgradeOptions) {
+	if !opts.verbose || syncRes == syncUnchanged {
+		return
 	}
-	if created > 0 {
-		parts = append(parts, fmt.Sprintf("%d created", created))
+	prefix := style.SuccessPrefix
+	verb := "updated"
+	if opts.dryRun {
+		prefix = style.WarningPrefix
+		verb = "would update"
 	}
-	if unchanged > 0 {
-		parts = append(parts, fmt.Sprintf("%d unchanged", unchanged))
-	}
-	if errors > 0 {
-		parts = append(parts, fmt.Sprintf("%d errors", errors))
-		result.details = append(result.details, fmt.Sprintf("%d sync errors", errors))
-	}
-
-	summary := strings.Join(parts, ", ")
-	if result.changed > 0 {
+	if syncRes == syncCreated {
+		verb = "created"
 		if opts.dryRun {
-			fmt.Printf("     %s %s %s\n", style.WarningPrefix, "settings.json", style.Dim.Render(summary))
-		} else {
-			fmt.Printf("     %s %s %s\n", style.SuccessPrefix, "settings.json", style.Dim.Render(summary))
+			verb = "would create"
 		}
-	} else {
-		fmt.Printf("     %s %s %s\n", style.SuccessPrefix, "settings.json", style.Dim.Render(summary))
 	}
+	fmt.Printf("     %s %s %s\n", prefix, relPath, style.Dim.Render("("+verb+")"))
+}
 
-	return result
+func printUpgradeHooksSummary(summary hookSyncSummary, opts upgradeOptions) {
+	var parts []string
+	if summary.updated > 0 {
+		parts = append(parts, fmt.Sprintf("%d updated", summary.updated))
+	}
+	if summary.created > 0 {
+		parts = append(parts, fmt.Sprintf("%d created", summary.created))
+	}
+	if summary.unchanged > 0 {
+		parts = append(parts, fmt.Sprintf("%d unchanged", summary.unchanged))
+	}
+	if summary.errors > 0 {
+		parts = append(parts, fmt.Sprintf("%d errors", summary.errors))
+	}
+	prefix := style.SuccessPrefix
+	if opts.dryRun && summary.updated+summary.created > 0 {
+		prefix = style.WarningPrefix
+	}
+	fmt.Printf("     %s %s %s\n", prefix, "settings.json", style.Dim.Render(strings.Join(parts, ", ")))
 }
 
 // upgradeFormulas updates formulas from embedded copies.
 func upgradeFormulas(townRoot string, dryRun bool) upgradeResult {
+	if dryRun {
+		return checkFormulaUpgrade(townRoot)
+	}
+	return applyFormulaUpgrade(townRoot)
+}
+
+func checkFormulaUpgrade(townRoot string) upgradeResult {
 	result := upgradeResult{step: "Formulas"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("5."), "Updating formulas from embedded copies...")
 
-	if dryRun {
-		// In dry-run mode, just check health
-		report, err := formula.CheckFormulaHealth(townRoot)
-		if err != nil {
-			result.details = append(result.details, fmt.Sprintf("health check error: %v", err))
-			fmt.Printf("     %s Could not check formulas: %v\n", style.ErrorPrefix, err)
-			return result
-		}
-
-		needsUpdate := report.Outdated + report.Missing + report.New + report.Untracked
-		if needsUpdate == 0 {
-			fmt.Printf("     %s %d formulas %s\n", style.SuccessPrefix, report.OK, style.Dim.Render("up-to-date"))
-			return result
-		}
-
-		result.changed = needsUpdate
-		if report.Outdated > 0 {
-			result.details = append(result.details, fmt.Sprintf("%d would update", report.Outdated))
-		}
-		if report.Missing > 0 {
-			result.details = append(result.details, fmt.Sprintf("%d would reinstall", report.Missing))
-		}
-		if report.New > 0 {
-			result.details = append(result.details, fmt.Sprintf("%d would install", report.New))
-		}
-		if report.Modified > 0 {
-			result.skipped = report.Modified
-			result.details = append(result.details, fmt.Sprintf("%d locally modified (skipped)", report.Modified))
-		}
-
-		fmt.Printf("     %s formulas: %s\n", style.WarningPrefix, style.Dim.Render(strings.Join(result.details, ", ")))
+	// In dry-run mode, just check health.
+	report, err := formula.CheckFormulaHealth(townRoot)
+	if err != nil {
+		result.details = append(result.details, fmt.Sprintf("health check error: %v", err))
+		fmt.Printf("     %s Could not check formulas: %v\n", style.ErrorPrefix, err)
 		return result
 	}
 
+	needsUpdate := report.Outdated + report.Missing + report.New + report.Untracked
+	if needsUpdate == 0 {
+		fmt.Printf("     %s %d formulas %s\n", style.SuccessPrefix, report.OK, style.Dim.Render("up-to-date"))
+		return result
+	}
+
+	result.changed = needsUpdate
+	if report.Outdated > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d would update", report.Outdated))
+	}
+	if report.Missing > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d would reinstall", report.Missing))
+	}
+	if report.New > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d would install", report.New))
+	}
+	if report.Modified > 0 {
+		result.skipped = report.Modified
+		result.details = append(result.details, fmt.Sprintf("%d locally modified (skipped)", report.Modified))
+	}
+
+	fmt.Printf("     %s formulas: %s\n", style.WarningPrefix, style.Dim.Render(strings.Join(result.details, ", ")))
+	return result
+}
+
+func applyFormulaUpgrade(townRoot string) upgradeResult {
+	result := upgradeResult{step: "Formulas"}
+	fmt.Printf("\n  %s %s\n", style.Bold.Render("5."), "Updating formulas from embedded copies...")
 	updated, skipped, reinstalled, err := formula.UpdateFormulas(townRoot)
 	if err != nil {
 		result.details = append(result.details, fmt.Sprintf("update error: %v", err))
