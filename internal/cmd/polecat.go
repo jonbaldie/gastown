@@ -2186,65 +2186,22 @@ func runPolecatPoolInit(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Determine pool size: flag > rig config > default
-	poolSize := 4 // default
-	rigCfg, cfgErr := rig.LoadRigConfig(r.Path)
-	if cfgErr == nil && rigCfg.PolecatPoolSize > 0 {
-		poolSize = rigCfg.PolecatPoolSize
-	}
-	if polecatPoolInitSize > 0 {
-		poolSize = polecatPoolInitSize
-	}
+	poolSize, fixedNames := polecatPoolConfig(r.Path)
 
-	// Determine names: rig config > name pool theme
-	var fixedNames []string
-	if cfgErr == nil && len(rigCfg.PolecatNames) > 0 {
-		fixedNames = rigCfg.PolecatNames
-	}
-
-	// List existing polecats to avoid recreating them
 	existing, err := mgr.List()
 	if err != nil {
 		return fmt.Errorf("listing existing polecats: %w", err)
 	}
-	existingNames := make(map[string]bool)
-	for _, p := range existing {
-		existingNames[p.Name] = true
-	}
+	existingNames := polecatPoolExistingNames(existing)
 
 	fmt.Printf("Initializing persistent polecat pool for %s (target size: %d)\n", rigName, poolSize)
 	if len(existing) > 0 {
 		fmt.Printf("  Existing polecats: %d\n", len(existing))
 	}
 
-	// Build the list of names to create
-	var namesToCreate []string
-	if len(fixedNames) > 0 {
-		// Use configured names, skip ones that already exist
-		for _, name := range fixedNames {
-			if len(namesToCreate)+len(existingNames) >= poolSize {
-				break
-			}
-			if !existingNames[name] {
-				namesToCreate = append(namesToCreate, name)
-			}
-		}
-	} else {
-		// Use name pool allocation for new names
-		namePool := mgr.GetNamePool()
-		namePool.Reconcile(existingNamesList(existing))
-		nameCount := len(namesToCreate)
-		existingCount := len(existingNames)
-		for nameCount+existingCount < poolSize {
-			name, allocErr := namePool.Allocate()
-			if allocErr != nil {
-				return fmt.Errorf("allocating polecat name: %w", allocErr)
-			}
-			if !existingNames[name] {
-				namesToCreate = append(namesToCreate, name)
-				nameCount++
-			}
-		}
+	namesToCreate, err := polecatPoolNamesToCreate(mgr, existing, existingNames, poolSize, fixedNames)
+	if err != nil {
+		return err
 	}
 
 	if len(namesToCreate) == 0 {
@@ -2260,22 +2217,82 @@ func runPolecatPoolInit(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Create each polecat
-	fmt.Printf("\nCreating %d polecat(s)...\n", len(namesToCreate))
+	created := createPolecatPool(mgr, r, namesToCreate)
+
+	fmt.Printf("\n%s Pool initialized: %d created, %d total (target: %d)\n",
+		style.Bold.Render("✓"), created, created+len(existing), poolSize)
+
+	syncPolecatPoolHooks(rigName)
+
+	return nil
+}
+
+func polecatPoolConfig(rigPath string) (int, []string) {
+	poolSize := 4
+	rigCfg, cfgErr := rig.LoadRigConfig(rigPath)
+	if cfgErr == nil && rigCfg.PolecatPoolSize > 0 {
+		poolSize = rigCfg.PolecatPoolSize
+	}
+	if polecatPoolInitSize > 0 {
+		poolSize = polecatPoolInitSize
+	}
+	if cfgErr == nil && len(rigCfg.PolecatNames) > 0 {
+		return poolSize, rigCfg.PolecatNames
+	}
+	return poolSize, nil
+}
+
+func polecatPoolExistingNames(existing []*polecat.Polecat) map[string]bool {
+	existingNames := make(map[string]bool)
+	for _, p := range existing {
+		existingNames[p.Name] = true
+	}
+	return existingNames
+}
+
+func polecatPoolNamesToCreate(mgr *polecat.Manager, existing []*polecat.Polecat, existingNames map[string]bool, poolSize int, fixedNames []string) ([]string, error) {
+	if len(fixedNames) > 0 {
+		var names []string
+		for _, name := range fixedNames {
+			if len(names)+len(existingNames) >= poolSize {
+				break
+			}
+			if !existingNames[name] {
+				names = append(names, name)
+			}
+		}
+		return names, nil
+	}
+
+	namePool := mgr.GetNamePool()
+	namePool.Reconcile(existingNamesList(existing))
+	var names []string
+	nameCount := 0
+	existingCount := len(existingNames)
+	for nameCount+existingCount < poolSize {
+		name, err := namePool.Allocate()
+		if err != nil {
+			return nil, fmt.Errorf("allocating polecat name: %w", err)
+		}
+		if existingNames[name] {
+			continue
+		}
+		names = append(names, name)
+		nameCount++
+	}
+	return names, nil
+}
+
+func createPolecatPool(mgr *polecat.Manager, r *rig.Rig, names []string) int {
+	fmt.Printf("\nCreating %d polecat(s)...\n", len(names))
 	created := 0
-	for _, name := range namesToCreate {
+	for _, name := range names {
 		fmt.Printf("  %s Creating %s...", style.Dim.Render("→"), name)
 		p, addErr := mgr.Add(name)
 		if addErr != nil {
 			fmt.Printf(" %s %v\n", style.Warning.Render("FAILED"), addErr)
 			continue
 		}
-		// Set agent state to idle (polecat was created without work).
-		// Use the retry variant: createAgentBeadWithRetry above leaves a brief
-		// Dolt MVCC visibility window where the just-committed bead isn't yet
-		// readable by the next UpdateAgentState query, surfacing as "issue not
-		// found". Retries with backoff close that window — same pattern as
-		// SetAgentStateWithRetry's other call site in polecat_spawn.go.
 		if stateErr := mgr.SetAgentStateWithRetry(name, "idle"); stateErr != nil {
 			fmt.Printf(" %s (created but couldn't set idle state: %v)\n", style.Warning.Render("⚠"), stateErr)
 		} else {
@@ -2283,21 +2300,19 @@ func runPolecatPoolInit(_ *cobra.Command, args []string) error {
 		}
 		created++
 	}
+	return created
+}
 
-	fmt.Printf("\n%s Pool initialized: %d created, %d total (target: %d)\n",
-		style.Bold.Render("✓"), created, created+len(existing), poolSize)
-
-	// Sync hooks so all polecat settings.json files reflect current defaults.
+func syncPolecatPoolHooks(rigName string) {
 	// Pool-init may run long after rig-add, when gt defaults have changed.
-	townRoot, twErr := workspace.FindFromCwdOrError()
-	if twErr == nil {
-		ensureHooksBase()
-		if err := syncRigHooks(townRoot, rigName); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks after pool-init: %v\n", err)
-		}
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return
 	}
-
-	return nil
+	ensureHooksBase()
+	if err := syncRigHooks(townRoot, rigName); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks after pool-init: %v\n", err)
+	}
 }
 
 // existingNamesList extracts polecat names from a slice of Polecat pointers.
