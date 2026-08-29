@@ -390,36 +390,10 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 	}
 
 	// Get town root from deacon pane's working directory. Config files only; no beads.
-	var townRoot string
 	deaconSession := getDeaconSessionName()
-	paneDir, err := t.GetPaneWorkDir(deaconSession)
-	if err == nil && paneDir != "" {
-		townRoot, _ = workspace.Find(paneDir)
-	}
-
-	// Load registered rigs to validate against
-	registeredRigs := make(map[string]bool)
-	if townRoot != "" {
-		rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-		if rigsConfig, err := config.LoadRigsConfig(rigsConfigPath); err == nil {
-			for rigName := range rigsConfig.Rigs {
-				registeredRigs[rigName] = true
-			}
-		}
-	}
-
-	rigs := make(map[string]bool)
-	for _, s := range sessions {
-		agent := categorizeSession(s)
-		if agent == nil {
-			continue
-		}
-		// Only count registered rigs
-		if agent.Rig != "" && registeredRigs[agent.Rig] {
-			rigs[agent.Rig] = true
-		}
-	}
-	rigCount := len(rigs)
+	townRoot := deaconStatusLineTownRoot(t, deaconSession)
+	registeredRigs := registeredDeaconRigs(townRoot)
+	rigCount := countRegisteredDeaconRigs(sessions, registeredRigs)
 
 	// Build status
 	// Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
@@ -428,6 +402,46 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 
 	fmt.Print(strings.Join(parts, " | ") + " |")
 	return nil
+}
+
+func deaconStatusLineTownRoot(t *tmux.Tmux, sessionName string) string {
+	paneDir, err := t.GetPaneWorkDir(sessionName)
+	if err != nil || paneDir == "" {
+		return ""
+	}
+	townRoot, _ := workspace.Find(paneDir)
+	return townRoot
+}
+
+func registeredDeaconRigs(townRoot string) map[string]bool {
+	registered := make(map[string]bool)
+	if townRoot == "" {
+		return registered
+	}
+	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	if err != nil {
+		return registered
+	}
+	for rigName := range rigsConfig.Rigs {
+		registered[rigName] = true
+	}
+	return registered
+}
+
+func countRegisteredDeaconRigs(sessions []string, registered map[string]bool) int {
+	rigs := make(map[string]bool)
+	for _, s := range sessions {
+		agent := categorizeSession(s)
+		if agent == nil {
+			continue
+		}
+		// Only count registered rigs
+		if agent.Rig != "" && registered[agent.Rig] {
+			rigs[agent.Rig] = true
+		}
+	}
+	return len(rigs)
 }
 
 // runWitnessStatusLine outputs status for a witness session.
