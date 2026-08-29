@@ -188,71 +188,95 @@ func runCrewRemove(_ *cobra.Command, args []string) error {
 }
 
 func runCrewRefresh(_ *cobra.Command, args []string) error {
-	name := args[0]
-	// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
-	if rig, crewName, ok := parseRigSlashName(name); ok {
-		if crewRig == "" {
-			crewRig = rig
-		}
-		name = crewName
-	}
+	name := resolveCrewRefreshName(args[0])
 
 	crewMgr, r, err := getCrewManagerForMember(crewRig, name)
 	if err != nil {
 		return err
 	}
 
-	// Get the crew worker (must exist for refresh)
-	worker, err := crewMgr.Get(name)
+	worker, err := getCrewRefreshWorker(crewMgr, name)
 	if err != nil {
-		if err == crew.ErrCrewNotFound {
-			return fmt.Errorf("crew workspace '%s' not found", name)
-		}
-		return fmt.Errorf("getting crew worker: %w", err)
+		return err
 	}
 
-	// Create handoff message
-	handoffMsg := crewMessage
-	if handoffMsg == "" {
-		handoffMsg = fmt.Sprintf("Context refresh for %s. Check mail and beads for current work state.", name)
+	handoffMsg := crewRefreshMessage(name)
+	if err := sendCrewRefreshMail(worker.ClonePath, r.Name, name, handoffMsg); err != nil {
+		return err
 	}
 
-	// Send handoff mail to self
-	mailDir := filepath.Join(worker.ClonePath, "mail")
-	if _, err := os.Stat(mailDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(mailDir, 0755); err != nil {
-			return fmt.Errorf("creating mail dir: %w", err)
-		}
-	}
-
-	// Create and send mail
-	mailbox := mail.NewMailbox(mailDir)
-	msg := &mail.Message{
-		From:    fmt.Sprintf("%s/%s", r.Name, name),
-		To:      fmt.Sprintf("%s/%s", r.Name, name),
-		Subject: "🤝 HANDOFF: Context Refresh",
-		Body:    handoffMsg,
-	}
-	if err := mailbox.Append(msg); err != nil {
-		return fmt.Errorf("sending handoff mail: %w", err)
-	}
 	fmt.Printf("Sent handoff mail to %s/%s\n", r.Name, name)
 
-	// Use manager's Start() with refresh options
-	err = crewMgr.Start(name, crew.StartOptions{
-		KillExisting:  true,      // Kill old session if running
-		Topic:         "refresh", // Startup nudge topic
-		Interactive:   true,      // No --dangerously-skip-permissions
-		AgentOverride: crewAgentOverride,
-	})
-	if err != nil {
-		return fmt.Errorf("starting crew session: %w", err)
+	if err := startCrewRefresh(crewMgr, name); err != nil {
+		return err
 	}
 
 	fmt.Printf("%s Refreshed crew workspace: %s/%s\n",
 		style.Bold.Render("✓"), r.Name, name)
 	fmt.Printf("Attach with: %s\n", style.Dim.Render(fmt.Sprintf("gt crew at %s", name)))
 
+	return nil
+}
+
+func resolveCrewRefreshName(name string) string {
+	// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
+	if rig, crewName, ok := parseRigSlashName(name); ok {
+		if crewRig == "" {
+			crewRig = rig
+		}
+		return crewName
+	}
+	return name
+}
+
+func getCrewRefreshWorker(crewMgr *crew.Manager, name string) (*crew.CrewWorker, error) {
+	worker, err := crewMgr.Get(name)
+	if err != nil {
+		if err == crew.ErrCrewNotFound {
+			return nil, fmt.Errorf("crew workspace '%s' not found", name)
+		}
+		return nil, fmt.Errorf("getting crew worker: %w", err)
+	}
+	return worker, nil
+}
+
+func crewRefreshMessage(name string) string {
+	if crewMessage != "" {
+		return crewMessage
+	}
+	return fmt.Sprintf("Context refresh for %s. Check mail and beads for current work state.", name)
+}
+
+func sendCrewRefreshMail(clonePath, rigName, name, handoffMsg string) error {
+	mailDir := filepath.Join(clonePath, "mail")
+	if _, err := os.Stat(mailDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(mailDir, 0755); err != nil {
+			return fmt.Errorf("creating mail dir: %w", err)
+		}
+	}
+	mailbox := mail.NewMailbox(mailDir)
+	address := fmt.Sprintf("%s/%s", rigName, name)
+	msg := &mail.Message{
+		From:    address,
+		To:      address,
+		Subject: "🤝 HANDOFF: Context Refresh",
+		Body:    handoffMsg,
+	}
+	if err := mailbox.Append(msg); err != nil {
+		return fmt.Errorf("sending handoff mail: %w", err)
+	}
+	return nil
+}
+
+func startCrewRefresh(crewMgr *crew.Manager, name string) error {
+	if err := crewMgr.Start(name, crew.StartOptions{
+		KillExisting:  true,      // Kill old session if running
+		Topic:         "refresh", // Startup nudge topic
+		Interactive:   true,      // No --dangerously-skip-permissions
+		AgentOverride: crewAgentOverride,
+	}); err != nil {
+		return fmt.Errorf("starting crew session: %w", err)
+	}
 	return nil
 }
 
