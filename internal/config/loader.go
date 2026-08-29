@@ -1892,7 +1892,14 @@ func fillRuntimeDefaults(rc *RuntimeConfig) *RuntimeConfig {
 		return DefaultRuntimeConfig()
 	}
 
-	// Create result with scalar fields (strings are immutable in Go)
+	result := cloneRuntimeConfig(rc)
+	preset := runtimePresetFor(result)
+	applyRuntimeCommandDefaults(result, preset)
+	applyRuntimePresetDefaults(result, preset)
+	return result
+}
+
+func cloneRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	result := &RuntimeConfig{
 		Provider:      rc.Provider,
 		Command:       rc.Command,
@@ -1900,35 +1907,33 @@ func fillRuntimeDefaults(rc *RuntimeConfig) *RuntimeConfig {
 		PromptMode:    rc.PromptMode,
 		ResolvedAgent: rc.ResolvedAgent,
 	}
+	cloneRuntimeSlices(result, rc)
+	cloneRuntimeNestedConfigs(result, rc)
+	return result
+}
 
-	// Deep copy Args slice to avoid sharing backing array
+func cloneRuntimeSlices(result, rc *RuntimeConfig) {
 	if rc.Args != nil {
-		result.Args = make([]string, len(rc.Args))
-		copy(result.Args, rc.Args)
+		result.Args = cloneStringSlice(rc.Args)
 	}
-
-	// Deep copy ExecWrapper slice
 	if rc.ExecWrapper != nil {
-		result.ExecWrapper = make([]string, len(rc.ExecWrapper))
-		copy(result.ExecWrapper, rc.ExecWrapper)
+		result.ExecWrapper = cloneStringSlice(rc.ExecWrapper)
 	}
-
-	// Deep copy Env map
 	if len(rc.Env) > 0 {
 		result.Env = make(map[string]string, len(rc.Env))
-		for k, v := range rc.Env {
-			result.Env[k] = v
+		for key, value := range rc.Env {
+			result.Env[key] = value
 		}
 	}
+}
 
-	// Deep copy nested structs (nil checks prevent panic on access)
+func cloneRuntimeNestedConfigs(result, rc *RuntimeConfig) {
 	if rc.Session != nil {
 		result.Session = &RuntimeSessionConfig{
 			SessionIDEnv: rc.Session.SessionIDEnv,
 			ConfigDirEnv: rc.Session.ConfigDirEnv,
 		}
 	}
-
 	if rc.Hooks != nil {
 		result.Hooks = &RuntimeHooksConfig{
 			Provider:     rc.Hooks.Provider,
@@ -1936,49 +1941,55 @@ func fillRuntimeDefaults(rc *RuntimeConfig) *RuntimeConfig {
 			SettingsFile: rc.Hooks.SettingsFile,
 		}
 	}
-
 	if rc.Tmux != nil {
-		result.Tmux = &RuntimeTmuxConfig{
-			ReadyPromptPrefix: rc.Tmux.ReadyPromptPrefix,
-			ReadyDelayMs:      rc.Tmux.ReadyDelayMs,
-		}
-		// Deep copy ProcessNames slice
-		if rc.Tmux.ProcessNames != nil {
-			result.Tmux.ProcessNames = make([]string, len(rc.Tmux.ProcessNames))
-			copy(result.Tmux.ProcessNames, rc.Tmux.ProcessNames)
-		}
+		result.Tmux = cloneRuntimeTmux(rc.Tmux)
 	}
-
 	if rc.Instructions != nil {
-		result.Instructions = &RuntimeInstructionsConfig{
-			File: rc.Instructions.File,
-		}
+		result.Instructions = &RuntimeInstructionsConfig{File: rc.Instructions.File}
 	}
-
-	// Deep copy ACP config
 	if rc.ACP != nil {
-		result.ACP = &ACPConfig{
-			Mode:    rc.ACP.Mode,
-			Command: rc.ACP.Command,
-		}
-		if rc.ACP.Args != nil {
-			result.ACP.Args = make([]string, len(rc.ACP.Args))
-			copy(result.ACP.Args, rc.ACP.Args)
-		}
+		result.ACP = cloneACPConfig(rc.ACP)
 	}
+}
 
-	// Resolve preset for data-driven defaults.
-	// Use provider if set, otherwise try to match by command name.
+func cloneRuntimeTmux(tmux *RuntimeTmuxConfig) *RuntimeTmuxConfig {
+	return &RuntimeTmuxConfig{
+		ProcessNames:      cloneStringSlice(tmux.ProcessNames),
+		ReadyPromptPrefix: tmux.ReadyPromptPrefix,
+		ReadyDelayMs:      tmux.ReadyDelayMs,
+	}
+}
+
+func cloneACPConfig(acp *ACPConfig) *ACPConfig {
+	return &ACPConfig{
+		Mode:    acp.Mode,
+		Command: acp.Command,
+		Args:    cloneStringSlice(acp.Args),
+	}
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func runtimePresetFor(result *RuntimeConfig) *AgentPresetInfo {
 	presetName := result.Provider
 	if presetName == "" && result.Command != "" {
 		presetName = result.Command
 	}
 	preset := GetAgentPresetByName(presetName)
 	if preset == nil {
-		preset = GetAgentPreset(AgentClaude) // fall back to Claude defaults
+		preset = GetAgentPreset(AgentClaude)
 	}
+	return preset
+}
 
-	// Apply defaults for required fields from preset
+func applyRuntimeCommandDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
 	if result.Command == "" && preset != nil {
 		result.Command = preset.Command
 	}
@@ -1989,96 +2000,80 @@ func fillRuntimeDefaults(rc *RuntimeConfig) *RuntimeConfig {
 		result.Args = ensureRequiredArgGroups(result.Args, preset.RequiredArgGroups)
 	}
 	result.Args = ensureCodexAutomationArgs(result.Command, result.Args)
+}
 
-	// Auto-fill Hooks defaults from preset for agents that support hooks.
-	if result.Hooks == nil && preset != nil && preset.HooksProvider != "" {
+func applyRuntimePresetDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if preset == nil {
+		return
+	}
+	applyRuntimeHooksDefaults(result, preset)
+	applyRuntimeSessionDefaults(result, preset)
+	applyRuntimeTmuxDefaults(result, preset)
+	applyRuntimePromptDefaults(result, preset)
+	applyRuntimeInstructionsDefaults(result, preset)
+	applyRuntimeEnvDefaults(result, preset)
+	applyRuntimeACPDefaults(result, preset)
+}
+
+func applyRuntimeHooksDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if result.Hooks == nil && preset.HooksProvider != "" {
 		result.Hooks = &RuntimeHooksConfig{
 			Provider:     preset.HooksProvider,
 			Dir:          preset.HooksDir,
 			SettingsFile: preset.HooksSettingsFile,
 		}
 	}
+}
 
-	// Auto-fill Session defaults from preset.
-	if result.Session == nil && preset != nil && (preset.SessionIDEnv != "" || preset.ConfigDirEnv != "") {
+func applyRuntimeSessionDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if result.Session == nil && (preset.SessionIDEnv != "" || preset.ConfigDirEnv != "") {
 		result.Session = &RuntimeSessionConfig{
 			SessionIDEnv: preset.SessionIDEnv,
 			ConfigDirEnv: preset.ConfigDirEnv,
 		}
 	}
+}
 
-	// Auto-fill Tmux defaults from preset (process detection, readiness).
-	if result.Tmux == nil && preset != nil && (len(preset.ProcessNames) > 0 || preset.ReadyPromptPrefix != "" || preset.ReadyDelayMs > 0) {
+func applyRuntimeTmuxDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if result.Tmux == nil && (len(preset.ProcessNames) > 0 || preset.ReadyPromptPrefix != "" || preset.ReadyDelayMs > 0) {
 		result.Tmux = &RuntimeTmuxConfig{
 			ProcessNames:      append([]string(nil), preset.ProcessNames...),
 			ReadyPromptPrefix: preset.ReadyPromptPrefix,
 			ReadyDelayMs:      preset.ReadyDelayMs,
 		}
 	}
+}
 
-	// Auto-fill PromptMode from preset.
-	if result.PromptMode == "" && preset != nil && preset.PromptMode != "" {
+func applyRuntimePromptDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if result.PromptMode == "" && preset.PromptMode != "" {
 		result.PromptMode = preset.PromptMode
 	}
+}
 
-	// Auto-fill Instructions defaults from preset.
-	if result.Instructions == nil && preset != nil && preset.InstructionsFile != "" {
-		result.Instructions = &RuntimeInstructionsConfig{
-			File: preset.InstructionsFile,
+func applyRuntimeInstructionsDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if result.Instructions == nil && preset.InstructionsFile != "" {
+		result.Instructions = &RuntimeInstructionsConfig{File: preset.InstructionsFile}
+	}
+}
+
+func applyRuntimeEnvDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if len(preset.Env) == 0 {
+		return
+	}
+	if result.Env == nil {
+		result.Env = make(map[string]string)
+	}
+	for key, value := range preset.Env {
+		if _, ok := result.Env[key]; !ok {
+			result.Env[key] = value
 		}
 	}
+}
 
-	// Auto-fill Session defaults from preset when not explicitly set.
-	// Custom agents (e.g., "claude-opus" with Command:"claude") inherit
-	// SessionIDEnv/ConfigDirEnv from the matched preset, enabling session
-	// resume and GT_SESSION_ID_ENV propagation in handoffs.
-	if result.Session == nil && preset != nil && (preset.SessionIDEnv != "" || preset.ConfigDirEnv != "") {
-		result.Session = &RuntimeSessionConfig{
-			SessionIDEnv: preset.SessionIDEnv,
-			ConfigDirEnv: preset.ConfigDirEnv,
-		}
+func applyRuntimeACPDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if result.ACP == nil && preset.ACP != nil {
+		result.ACP = cloneACPConfig(preset.ACP)
 	}
-
-	// Auto-fill Tmux defaults from preset for process detection and readiness.
-	// Custom agents matching a known preset by command (e.g., "claude-opus" →
-	// claude preset) get ProcessNames and ReadyPromptPrefix needed for
-	// WaitForRuntimeReady to detect agent startup correctly.
-	if result.Tmux == nil && preset != nil && (len(preset.ProcessNames) > 0 || preset.ReadyPromptPrefix != "" || preset.ReadyDelayMs > 0) {
-		result.Tmux = &RuntimeTmuxConfig{
-			ReadyPromptPrefix: preset.ReadyPromptPrefix,
-			ReadyDelayMs:      preset.ReadyDelayMs,
-		}
-		if len(preset.ProcessNames) > 0 {
-			result.Tmux.ProcessNames = append([]string(nil), preset.ProcessNames...)
-		}
-	}
-
-	// Auto-fill Env defaults from preset.
-	if preset != nil && len(preset.Env) > 0 {
-		if result.Env == nil {
-			result.Env = make(map[string]string)
-		}
-		for k, v := range preset.Env {
-			if _, ok := result.Env[k]; !ok {
-				result.Env[k] = v
-			}
-		}
-	}
-
-	// Auto-fill ACP config from preset if not explicitly set.
-	// This allows custom agents to inherit ACP support from their base preset.
-	if result.ACP == nil && preset != nil && preset.ACP != nil {
-		result.ACP = &ACPConfig{
-			Mode:    preset.ACP.Mode,
-			Command: preset.ACP.Command,
-		}
-		if preset.ACP.Args != nil {
-			result.ACP.Args = make([]string, len(preset.ACP.Args))
-			copy(result.ACP.Args, preset.ACP.Args)
-		}
-	}
-
-	return result
 }
 
 // inferAgentName determines the agent name from a legacy RuntimeConfig.
