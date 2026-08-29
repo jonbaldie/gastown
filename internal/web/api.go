@@ -170,14 +170,7 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine timeout
-	timeout := h.defaultRunTimeout
-	if req.Timeout > 0 {
-		timeout = time.Duration(req.Timeout) * time.Second
-		if timeout > h.maxRunTimeout {
-			timeout = h.maxRunTimeout
-		}
-	}
+	timeout := h.runCommandTimeout(req.Timeout)
 
 	// Parse command into args
 	args := parseCommandArgs(req.Command)
@@ -189,24 +182,7 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	// Sanitize args
 	args = SanitizeArgs(args)
 
-	// Execute command
-	start := time.Now()
-	output, err := h.runGtCommand(r.Context(), timeout, args)
-	duration := time.Since(start)
-
-	resp := CommandResponse{
-		Command:    req.Command,
-		DurationMs: duration.Milliseconds(),
-	}
-
-	if err != nil {
-		resp.Success = false
-		resp.Error = err.Error()
-		resp.Output = output // Include partial output on error
-	} else {
-		resp.Success = true
-		resp.Output = output
-	}
+	resp := h.executeCommand(r.Context(), req.Command, args, timeout)
 
 	// Log command execution (but not for safe read-only commands to reduce noise)
 	if !meta.Safe || !resp.Success {
@@ -216,6 +192,32 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *APIHandler) runCommandTimeout(requestedSeconds int) time.Duration {
+	if requestedSeconds <= 0 {
+		return h.defaultRunTimeout
+	}
+	timeout := time.Duration(requestedSeconds) * time.Second
+	if timeout > h.maxRunTimeout {
+		return h.maxRunTimeout
+	}
+	return timeout
+}
+
+func (h *APIHandler) executeCommand(ctx context.Context, command string, args []string, timeout time.Duration) CommandResponse {
+	start := time.Now()
+	output, err := h.runGtCommand(ctx, timeout, args)
+	resp := CommandResponse{
+		Command:    command,
+		DurationMs: time.Since(start).Milliseconds(),
+		Output:     output,
+		Success:    err == nil,
+	}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+	return resp
 }
 
 // handleCommands returns the list of available commands for the palette.
