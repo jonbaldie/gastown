@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -42,10 +43,12 @@ func TestEffectivePolecatState(t *testing.T) {
 		{
 			name: "session-running-done-with-issue-becomes-working",
 			item: PolecatListItem{
-				State:                polecat.StateDone,
-				Issue:                "gt-abc",
-				SessionRunning:       true,
-				CountsTowardCapacity: true,
+				State:          polecat.StateDone,
+				Issue:          "gt-abc",
+				SessionRunning: true,
+				PolecatRecoveryState: PolecatRecoveryState{
+					CountsTowardCapacity: true,
+				},
 			},
 			want: polecat.StateWorking,
 		},
@@ -93,20 +96,24 @@ func TestEffectivePolecatState(t *testing.T) {
 		{
 			name: "idle-session-running-with-issue-becomes-working",
 			item: PolecatListItem{
-				State:                polecat.StateIdle,
-				Issue:                "gt-abc",
-				SessionRunning:       true,
-				CountsTowardCapacity: true,
+				State:          polecat.StateIdle,
+				Issue:          "gt-abc",
+				SessionRunning: true,
+				PolecatRecoveryState: PolecatRecoveryState{
+					CountsTowardCapacity: true,
+				},
 			},
 			want: polecat.StateWorking,
 		},
 		{
 			name: "idle-session-running-with-protected-issue-stays-idle",
 			item: PolecatListItem{
-				State:                polecat.StateIdle,
-				Issue:                "gt-blocked",
-				SessionRunning:       true,
-				CountsTowardCapacity: false,
+				State:          polecat.StateIdle,
+				Issue:          "gt-blocked",
+				SessionRunning: true,
+				PolecatRecoveryState: PolecatRecoveryState{
+					CountsTowardCapacity: false,
+				},
 			},
 			want: polecat.StateIdle,
 		},
@@ -143,6 +150,29 @@ func TestEffectivePolecatState(t *testing.T) {
 				t.Fatalf("effectivePolecatState() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPolecatRecoveryStateJSONFlattens(t *testing.T) {
+	data, err := json.Marshal(PolecatListItem{
+		PolecatRecoveryState: PolecatRecoveryState{
+			Verdict:       "SAFE_TO_NUKE",
+			NeedsRecovery: false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal polecat list item: %v", err)
+	}
+
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatalf("unmarshal polecat list item JSON: %v", err)
+	}
+	if _, ok := encoded["verdict"]; !ok {
+		t.Fatalf("JSON omitted flattened verdict field: %s", data)
+	}
+	if _, ok := encoded["PolecatRecoveryState"]; ok {
+		t.Fatalf("JSON nested PolecatRecoveryState: %s", data)
 	}
 }
 
@@ -273,15 +303,17 @@ func TestWorkstateDispositionProjectionAgreement(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			disposition := polecat.DecideWorkstate(tt.in)
 			list := PolecatListItem{
-				Verdict:              disposition.Verdict,
-				Reason:               disposition.Reason,
-				Reusable:             disposition.Reusable,
-				SafeToNuke:           disposition.SafeToNuke,
-				NeedsRecovery:        disposition.NeedsRecovery,
-				NeedsMQSubmit:        disposition.NeedsMQSubmit,
-				MQStatus:             disposition.MQStatus,
-				CountsTowardCapacity: disposition.CountsTowardCapacity,
-				ReuseStatus:          disposition.ReuseStatus,
+				PolecatRecoveryState: PolecatRecoveryState{
+					Verdict:              disposition.Verdict,
+					Reason:               disposition.Reason,
+					Reusable:             disposition.Reusable,
+					SafeToNuke:           disposition.SafeToNuke,
+					NeedsRecovery:        disposition.NeedsRecovery,
+					NeedsMQSubmit:        disposition.NeedsMQSubmit,
+					MQStatus:             disposition.MQStatus,
+					CountsTowardCapacity: disposition.CountsTowardCapacity,
+					ReuseStatus:          disposition.ReuseStatus,
+				},
 			}
 			recovery := RecoveryStatus{}
 			applyWorkstateDispositionToRecoveryStatus(&recovery, disposition)
