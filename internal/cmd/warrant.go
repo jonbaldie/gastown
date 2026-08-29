@@ -422,27 +422,37 @@ func targetToSessionName(target string) (string, error) {
 
 func targetSessionSpecialCase(parts []string) (string, error, bool) {
 	if len(parts) == 3 {
-		switch parts[1] {
-		case "polecats":
-			return session.PolecatSessionName(session.PrefixFor(parts[0]), parts[2]), nil, true
-		case "crew":
-			return session.CrewSessionName(session.PrefixFor(parts[0]), parts[2]), nil, true
-		case "dogs":
-			if parts[0] == "deacon" {
-				return fmt.Sprintf("hq-dog-%s", parts[2]), nil, true
-			}
-		}
+		return targetThreePartSpecialCase(parts)
 	}
 	if len(parts) == 2 {
-		switch parts[1] {
-		case "witness":
-			return session.WitnessSessionName(session.PrefixFor(parts[0])), nil, true
-		case "refinery":
-			return session.RefinerySessionName(session.PrefixFor(parts[0])), nil, true
-		case "dogs":
-			if parts[0] == "deacon" {
-				return "", fmt.Errorf("invalid target: need dog name (e.g., deacon/dogs/alpha)"), true
-			}
+		return targetTwoPartSpecialCase(parts)
+	}
+	return "", nil, false
+}
+
+func targetThreePartSpecialCase(parts []string) (string, error, bool) {
+	switch parts[1] {
+	case "polecats":
+		return session.PolecatSessionName(session.PrefixFor(parts[0]), parts[2]), nil, true
+	case "crew":
+		return session.CrewSessionName(session.PrefixFor(parts[0]), parts[2]), nil, true
+	case "dogs":
+		if parts[0] == "deacon" {
+			return fmt.Sprintf("hq-dog-%s", parts[2]), nil, true
+		}
+	}
+	return "", nil, false
+}
+
+func targetTwoPartSpecialCase(parts []string) (string, error, bool) {
+	switch parts[1] {
+	case "witness":
+		return session.WitnessSessionName(session.PrefixFor(parts[0])), nil, true
+	case "refinery":
+		return session.RefinerySessionName(session.PrefixFor(parts[0])), nil, true
+	case "dogs":
+		if parts[0] == "deacon" {
+			return "", fmt.Errorf("invalid target: need dog name (e.g., deacon/dogs/alpha)"), true
 		}
 	}
 	return "", nil, false
