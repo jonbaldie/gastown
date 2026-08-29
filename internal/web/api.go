@@ -666,20 +666,10 @@ func parseMailReadOutput(output string, msgID string) MailMessage {
 	var bodyLines []string
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "📬 ") || strings.HasPrefix(line, "Subject: ") {
-			msg.Subject = strings.TrimPrefix(strings.TrimPrefix(line, "📬 "), "Subject: ")
-			msg.Subject = strings.TrimSpace(msg.Subject)
-		} else if strings.HasPrefix(line, "From: ") {
-			msg.From = strings.TrimPrefix(line, "From: ")
-		} else if strings.HasPrefix(line, "To: ") {
-			msg.To = strings.TrimPrefix(line, "To: ")
-		} else if strings.HasPrefix(line, "ID: ") {
-			msg.ID = strings.TrimPrefix(line, "ID: ")
-		} else if strings.HasPrefix(line, "Thread: ") {
-			msg.ThreadID = strings.TrimSpace(strings.TrimPrefix(line, "Thread: "))
-		} else if strings.HasPrefix(line, "Reply-To: ") {
-			msg.ReplyTo = strings.TrimSpace(strings.TrimPrefix(line, "Reply-To: "))
-		} else if line == "" && msg.From != "" && !inBody {
+		if applyMailReadHeader(line, &msg) {
+			continue
+		}
+		if line == "" && msg.From != "" && !inBody {
 			inBody = true
 		} else if inBody {
 			bodyLines = append(bodyLines, line)
@@ -688,6 +678,27 @@ func parseMailReadOutput(output string, msgID string) MailMessage {
 
 	msg.Body = strings.TrimSpace(strings.Join(bodyLines, "\n"))
 	return msg
+}
+
+func applyMailReadHeader(line string, msg *MailMessage) bool {
+	switch {
+	case strings.HasPrefix(line, "📬 ") || strings.HasPrefix(line, "Subject: "):
+		msg.Subject = strings.TrimPrefix(strings.TrimPrefix(line, "📬 "), "Subject: ")
+		msg.Subject = strings.TrimSpace(msg.Subject)
+	case strings.HasPrefix(line, "From: "):
+		msg.From = strings.TrimPrefix(line, "From: ")
+	case strings.HasPrefix(line, "To: "):
+		msg.To = strings.TrimPrefix(line, "To: ")
+	case strings.HasPrefix(line, "ID: "):
+		msg.ID = strings.TrimPrefix(line, "ID: ")
+	case strings.HasPrefix(line, "Thread: "):
+		msg.ThreadID = strings.TrimSpace(strings.TrimPrefix(line, "Thread: "))
+	case strings.HasPrefix(line, "Reply-To: "):
+		msg.ReplyTo = strings.TrimSpace(strings.TrimPrefix(line, "Reply-To: "))
+	default:
+		return false
+	}
+	return true
 }
 
 // OptionItem represents an option with name and status.
