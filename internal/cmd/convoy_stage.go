@@ -268,31 +268,20 @@ func runConvoyStage(cmd *cobra.Command, args []string) error {
 	return runConvoyStageWithForce(cmd, args, false)
 }
 
-func runConvoyStageWithForce(cmd *cobra.Command, args []string, launchForce bool) error {
-	if cmd != nil {
-		cmd.SilenceErrors = convoyStageJSON
-		cmd.SilenceUsage = convoyStageJSON
+func handleConvoyStageError(category string, ids []string, err error, dag *ConvoyDAG, input *StageInput) error {
+	if convoyStageJSON {
+		return emitStageJSONError(category, ids, err, dag, input)
 	}
+	return err
+}
 
-	// Step 1: Validate args.
-	if err := validateStageArgs(args); err != nil {
-		if convoyStageJSON {
-			return emitStageJSONError("validation", nil, err, nil, nil)
-		}
-		return err
-	}
-
-	// Step 2: Resolve bead types via bd show for each arg.
+func resolveStageBeads(args []string) (map[string]string, map[string]*bdShowResult, string, error) {
 	beadTypes := make(map[string]string)
 	beadResults := make(map[string]*bdShowResult)
 	for _, arg := range args {
 		result, err := bdShow(arg)
 		if err != nil {
-			err = fmt.Errorf("cannot resolve bead %s: %w", arg, err)
-			if convoyStageJSON {
-				return emitStageJSONError("resolve", []string{arg}, err, nil, nil)
-			}
-			return err
+			return nil, nil, arg, fmt.Errorf("cannot resolve bead %s: %w", arg, err)
 		}
 		if isConvoyIssue(result.IssueType, result.Labels) {
 			beadTypes[arg] = "convoy"
@@ -301,114 +290,56 @@ func runConvoyStageWithForce(cmd *cobra.Command, args []string, launchForce bool
 		}
 		beadResults[arg] = result
 	}
+	return beadTypes, beadResults, "", nil
+}
 
-	// Step 3: Determine input kind.
-	input, err := resolveInputKind(beadTypes)
+func stageRestageState(input *StageInput, beadResults map[string]*bdShowResult) (bool, string) {
+	if input.Kind != StageInputConvoy {
+		return false, ""
+	}
+	convoyResult := beadResults[input.IDs[0]]
+	if strings.HasPrefix(convoyResult.Status, "staged_") {
+		return true, input.IDs[0]
+	}
+	return false, ""
+}
+
+func checkStageOverlap(dag *ConvoyDAG, input *StageInput, isRestage bool) ([]string, bool, string, error) {
+	if isRestage || input.Kind == StageInputConvoy {
+		return nil, false, "", nil
+	}
+	slingableIDs := dagSlingableIDs(dag)
+	overlaps, err := findOverlappingConvoys(slingableIDs)
 	if err != nil {
-		if convoyStageJSON {
-			return emitStageJSONError("input", args, err, nil, nil)
-		}
-		return err
+		return slingableIDs, false, "", fmt.Errorf("checking for overlapping convoys: %w", err)
 	}
-
-	// Step 3b: Detect re-stage scenario.
-	// If input is a convoy that is already staged, we update in place.
-	isRestage := false
-	restageConvoyID := ""
-	if input.Kind == StageInputConvoy {
-		convoyResult := beadResults[input.IDs[0]]
-		if strings.HasPrefix(convoyResult.Status, "staged_") {
-			isRestage = true
-			restageConvoyID = input.IDs[0]
-		}
-	}
-
-	// Step 4: Collect beads and deps.
-	beads, deps, err := collectBeads(input)
+	autoRestage, autoConvoyID, err := handleOverlappingConvoys(overlaps)
 	if err != nil {
-		if convoyStageJSON {
-			return emitStageJSONError("collect", input.IDs, err, nil, nil)
-		}
-		return err
+		return slingableIDs, false, "", err
 	}
-
-	// Step 5: Build the DAG.
-	dag := buildConvoyDAG(beads, deps)
-
-	// Step 5b: Detect overlapping convoys (epic or task-list input only).
-	// When the user stages from an epic (or task list), check if an existing
-	// convoy already tracks these beads. This prevents duplicate convoys.
-	if !isRestage && input.Kind != StageInputConvoy {
-		slingableIDs := dagSlingableIDs(dag)
-		overlaps, err := findOverlappingConvoys(slingableIDs)
-		if err != nil {
-			err = fmt.Errorf("checking for overlapping convoys: %w", err)
-			if convoyStageJSON {
-				return emitStageJSONError("overlap", slingableIDs, err, dag, input)
-			}
-			return err
-		}
-		autoRestage, autoConvoyID, err := handleOverlappingConvoys(overlaps)
-		if err != nil {
-			if convoyStageJSON {
-				return emitStageJSONError("overlap", slingableIDs, err, dag, input)
-			}
-			return err
-		}
-		if autoRestage {
-			isRestage = true
-			restageConvoyID = autoConvoyID
-			if !convoyStageJSON {
-				fmt.Printf("Re-staging existing convoy %s\n", autoConvoyID)
-			}
-		}
+	if autoRestage && !convoyStageJSON {
+		fmt.Printf("Re-staging existing convoy %s\n", autoConvoyID)
 	}
+	return slingableIDs, autoRestage, autoConvoyID, nil
+}
 
-	// Step 6: Detect errors.
-	errFindings := detectErrors(dag)
-
-	// Step 7: Detect warnings.
-	warnFindings := detectWarnings(dag, input)
-
-	// Step 8: Categorize findings.
-	allFindings := append(errFindings, warnFindings...)
-	errs, warns := categorizeFindings(allFindings)
-
-	// Step 9: Choose status.
-	status := chooseStatus(errs, warns)
-
-	// --- JSON mode: build result and output ---
-	if convoyStageJSON {
-		return runConvoyStageJSON(dag, input, errs, warns, status, isRestage, restageConvoyID)
-	}
-
-	// Step 10: If errors, render and return.
-	if len(errs) > 0 {
-		fmt.Fprint(os.Stderr, renderErrors(errs))
-		return fmt.Errorf("convoy staging failed: %d error(s) found", len(errs))
-	}
-
-	// Step 11: Compute waves (only when no errors).
+func prepareStageTextWaves(dag *ConvoyDAG, input *StageInput, errs, warns []StagingFinding, status string) ([]Wave, []GatedTask, string, error) {
 	waves, gated, err := computeWaves(dag)
 	if err != nil {
-		return err
+		return nil, nil, status, err
 	}
-
-	// Step 11a: Append validation bead as final wave (epic input only).
 	if input.Kind == StageInputEpic && !convoyStageNoValidate {
 		epicID := input.IDs[0]
 		var validationID string
 		waves, validationID, err = appendValidationWave(dag, waves, epicID)
 		if err != nil {
-			return fmt.Errorf("creating validation bead: %w", err)
+			return nil, nil, status, fmt.Errorf("creating validation bead: %w", err)
 		}
 		if validationID != "" && !convoyStageJSON {
 			blockerCount := len(dag.Nodes[validationID].BlockedBy)
 			fmt.Printf("Validation bead created: %s (blocked by %d tasks, formula: mol-validate-prd)\n", validationID, blockerCount)
 		}
 	}
-
-	// Step 11b: Add gated task warnings and recalculate status.
 	for _, g := range gated {
 		warns = append(warns, StagingFinding{
 			Severity:     "warning",
@@ -421,41 +352,29 @@ func runConvoyStageWithForce(cmd *cobra.Command, args []string, launchForce bool
 	if len(gated) > 0 {
 		status = chooseStatus(errs, warns)
 	}
+	return waves, gated, status, nil
+}
 
-	// Step 12: Render DAG tree and print.
-	treeOutput := renderDAGTree(dag, input)
-	fmt.Print(treeOutput)
-
-	// Step 13: Render wave table and print.
-	waveOutput := renderWaveTable(waves, dag)
-	fmt.Print(waveOutput)
-
-	// Step 13b: Render gated tasks if any.
+func renderStageText(dag *ConvoyDAG, input *StageInput, waves []Wave, gated []GatedTask, warns []StagingFinding) {
+	fmt.Print(renderDAGTree(dag, input))
+	fmt.Print(renderWaveTable(waves, dag))
 	if len(gated) > 0 {
-		gatedOutput := renderGatedTasks(gated, dag)
-		fmt.Print(gatedOutput)
+		fmt.Print(renderGatedTasks(gated, dag))
 	}
-
-	// Step 14: If warnings, render and print.
 	if len(warns) > 0 {
-		warnOutput := renderWarnings(warns)
-		fmt.Print(warnOutput)
+		fmt.Print(renderWarnings(warns))
 	}
+}
 
-	// Step 14b: Resolve convoy title.
-	title := resolveConvoyTitle(convoyStageTitle, input, beadResults)
-
-	// Step 15: Create or update the staged convoy.
+func persistStageText(dag *ConvoyDAG, waves []Wave, status, title string, isRestage bool, restageConvoyID string, launchForce bool) error {
 	var convoyID string
 	if isRestage {
-		// Re-stage: update existing convoy in place.
 		if err := updateStagedConvoy(restageConvoyID, dag, waves, status, title); err != nil {
 			return err
 		}
 		convoyID = restageConvoyID
 		fmt.Printf("Convoy updated: %s (status: %s)\n", restageConvoyID, status)
 	} else {
-		// First stage: create a new convoy.
 		var err error
 		convoyID, err = createStagedConvoy(dag, waves, status, title)
 		if err != nil {
@@ -463,16 +382,93 @@ func runConvoyStageWithForce(cmd *cobra.Command, args []string, launchForce bool
 		}
 		fmt.Printf("Convoy created: %s (status: %s)\n", convoyID, status)
 	}
-
-	// Step 16: If --launch flag is set, transition to open immediately.
 	if convoyStageLaunch {
 		if err := transitionConvoyToOpen(convoyID, launchForce); err != nil {
 			return err
 		}
 		fmt.Printf("Convoy launched: %s (status: open)\n", convoyID)
 	}
-
 	return nil
+}
+
+func completeConvoyStageText(dag *ConvoyDAG, input *StageInput, errs, warns []StagingFinding, status string, isRestage bool, restageConvoyID string, beadResults map[string]*bdShowResult, launchForce bool) error {
+	if len(errs) > 0 {
+		fmt.Fprint(os.Stderr, renderErrors(errs))
+		return fmt.Errorf("convoy staging failed: %d error(s) found", len(errs))
+	}
+	waves, gated, status, err := prepareStageTextWaves(dag, input, errs, warns, status)
+	if err != nil {
+		return err
+	}
+	renderStageText(dag, input, waves, gated, warns)
+	title := resolveConvoyTitle(convoyStageTitle, input, beadResults)
+	return persistStageText(dag, waves, status, title, isRestage, restageConvoyID, launchForce)
+}
+
+type convoyStageContext struct {
+	dag             *ConvoyDAG
+	input           *StageInput
+	beadResults     map[string]*bdShowResult
+	isRestage       bool
+	restageConvoyID string
+}
+
+func prepareConvoyStage(args []string) (*convoyStageContext, error) {
+	if err := validateStageArgs(args); err != nil {
+		return nil, handleConvoyStageError("validation", nil, err, nil, nil)
+	}
+	beadTypes, beadResults, failedArg, err := resolveStageBeads(args)
+	if err != nil {
+		return nil, handleConvoyStageError("resolve", []string{failedArg}, err, nil, nil)
+	}
+	input, err := resolveInputKind(beadTypes)
+	if err != nil {
+		return nil, handleConvoyStageError("input", args, err, nil, nil)
+	}
+	isRestage, restageConvoyID := stageRestageState(input, beadResults)
+	beads, deps, err := collectBeads(input)
+	if err != nil {
+		return nil, handleConvoyStageError("collect", input.IDs, err, nil, nil)
+	}
+	dag := buildConvoyDAG(beads, deps)
+	slingableIDs, autoRestage, autoConvoyID, err := checkStageOverlap(dag, input, isRestage)
+	if err != nil {
+		return nil, handleConvoyStageError("overlap", slingableIDs, err, dag, input)
+	}
+	if autoRestage {
+		isRestage = true
+		restageConvoyID = autoConvoyID
+	}
+	return &convoyStageContext{
+		dag:             dag,
+		input:           input,
+		beadResults:     beadResults,
+		isRestage:       isRestage,
+		restageConvoyID: restageConvoyID,
+	}, nil
+}
+
+func runConvoyStageWithForce(cmd *cobra.Command, args []string, launchForce bool) error {
+	if cmd != nil {
+		cmd.SilenceErrors = convoyStageJSON
+		cmd.SilenceUsage = convoyStageJSON
+	}
+
+	stage, err := prepareConvoyStage(args)
+	if err != nil {
+		return err
+	}
+
+	errFindings := detectErrors(stage.dag)
+	warnFindings := detectWarnings(stage.dag, stage.input)
+	allFindings := append(errFindings, warnFindings...)
+	errs, warns := categorizeFindings(allFindings)
+	status := chooseStatus(errs, warns)
+
+	if convoyStageJSON {
+		return runConvoyStageJSON(stage.dag, stage.input, errs, warns, status, stage.isRestage, stage.restageConvoyID)
+	}
+	return completeConvoyStageText(stage.dag, stage.input, errs, warns, status, stage.isRestage, stage.restageConvoyID, stage.beadResults, launchForce)
 }
 
 // runConvoyStageJSON handles the --json output path for convoy staging.
