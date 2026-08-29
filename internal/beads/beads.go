@@ -177,45 +177,58 @@ type Issue struct {
 	ID          string   `json:"id"`
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
-	Design      string   `json:"design,omitempty"`
-	Notes       string   `json:"notes,omitempty"`
 	Status      string   `json:"status"`
 	Priority    int      `json:"priority"`
 	Type        string   `json:"issue_type"`
-	CreatedAt   string   `json:"created_at"`
-	CreatedBy   string   `json:"created_by,omitempty"`
-	UpdatedAt   string   `json:"updated_at"`
-	ClosedAt    string   `json:"closed_at,omitempty"`
-	Parent      string   `json:"parent,omitempty"`
-	ExternalRef string   `json:"external_ref,omitempty"`
 	Assignee    string   `json:"assignee,omitempty"`
-	Children    []string `json:"children,omitempty"`
-	DependsOn   []string `json:"depends_on,omitempty"`
 	Blocks      []string `json:"blocks,omitempty"`
 	BlockedBy   []string `json:"blocked_by,omitempty"`
 	Labels      []string `json:"labels,omitempty"`
-	Ephemeral   bool     `json:"ephemeral,omitempty"` // Wisp/ephemeral issues, not synced to git
 
-	// Content fields (parsed from bd show --json)
+	IssueAuditFields
+	IssueHierarchyFields
+	IssueDependencyFields
+	IssueAgentFields
+}
+
+// IssueAuditFields contains descriptive and timestamp fields returned by the
+// beads API. It is embedded so the public issue JSON remains flat.
+type IssueAuditFields struct {
+	Design             string `json:"design,omitempty"`
+	Notes              string `json:"notes,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	CreatedBy          string `json:"created_by,omitempty"`
+	UpdatedAt          string `json:"updated_at"`
+	ClosedAt           string `json:"closed_at,omitempty"`
+	ExternalRef        string `json:"external_ref,omitempty"`
+	Ephemeral          bool   `json:"ephemeral,omitempty"` // Wisp/ephemeral issues, not synced to git
 	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"`
+}
 
-	// Agent bead slots (type=agent only)
+// IssueHierarchyFields contains parent/child relationships for an issue. It
+// is embedded so the public issue JSON remains flat.
+type IssueHierarchyFields struct {
+	Parent   string   `json:"parent,omitempty"`
+	Children []string `json:"children,omitempty"`
+}
+
+// IssueDependencyFields contains dependency IDs and list-output counts. It is
+// embedded so the public issue JSON remains flat.
+type IssueDependencyFields struct {
+	DependsOn       []string   `json:"depends_on,omitempty"`
+	DependencyCount int        `json:"dependency_count,omitempty"`
+	DependentCount  int        `json:"dependent_count,omitempty"`
+	BlockedByCount  int        `json:"blocked_by_count,omitempty"`
+	Dependencies    []IssueDep `json:"dependencies,omitempty"`
+	Dependents      []IssueDep `json:"dependents,omitempty"`
+}
+
+// IssueAgentFields contains agent-bead lifecycle and extension metadata. It
+// is embedded so the public issue JSON remains flat.
+type IssueAgentFields struct {
 	HookBead   string `json:"hook_bead,omitempty"`   // Current work attached to agent's hook
 	AgentState string `json:"agent_state,omitempty"` // Agent lifecycle state (spawning, working, done, stuck)
 	// Note: role_bead field removed - role definitions are now config-based
-
-	// Counts from list output
-	DependencyCount int `json:"dependency_count,omitempty"`
-	DependentCount  int `json:"dependent_count,omitempty"`
-	BlockedByCount  int `json:"blocked_by_count,omitempty"`
-
-	// Detailed dependency info from show output
-	Dependencies []IssueDep `json:"dependencies,omitempty"`
-	Dependents   []IssueDep `json:"dependents,omitempty"`
-
-	// Arbitrary metadata blob (JSON object). Used for extension points such as
-	// delegation state (delegated_from key) and merge-slot state (holder/waiters).
-	// Populated by both bd show --json and the in-process store path.
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 	Comments []Comment       `json:"comments,omitempty"`
 }
@@ -1397,10 +1410,12 @@ func issueFromMergeRequestWispRow(row mergeRequestWispRow) *Issue {
 		Status:      row.Status,
 		Priority:    row.Priority,
 		Assignee:    row.Assignee,
-		CreatedAt:   row.CreatedAt,
-		UpdatedAt:   row.UpdatedAt,
-		CreatedBy:   row.CreatedBy,
-		Ephemeral:   true,
+		IssueAuditFields: IssueAuditFields{
+			CreatedAt: row.CreatedAt,
+			UpdatedAt: row.UpdatedAt,
+			CreatedBy: row.CreatedBy,
+			Ephemeral: true,
+		},
 	}
 	if row.LabelsCSV != "" {
 		issue.Labels = strings.Split(row.LabelsCSV, ",")

@@ -25,6 +25,59 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestIssueJSONFlattensEmbeddedFields(t *testing.T) {
+	issue := Issue{
+		ID:          "gt-1",
+		Title:       "work",
+		Description: "description",
+		Status:      "open",
+		Priority:    2,
+		Type:        "task",
+		Labels:      []string{"gt:task"},
+		IssueAuditFields: IssueAuditFields{
+			CreatedAt:          "2026-01-01T00:00:00Z",
+			UpdatedAt:          "2026-01-02T00:00:00Z",
+			AcceptanceCriteria: "tests pass",
+		},
+		IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-parent"},
+		IssueDependencyFields: IssueDependencyFields{
+			DependsOn:       []string{"gt-blocker"},
+			DependencyCount: 1,
+		},
+		IssueAgentFields: IssueAgentFields{
+			HookBead:   "gt-hook",
+			AgentState: "working",
+		},
+	}
+
+	data, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatalf("json.Marshal(Issue) failed: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("json.Unmarshal(Issue) failed: %v", err)
+	}
+	for _, key := range []string{"created_at", "parent", "depends_on", "hook_bead"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("flattened JSON missing %q: %s", key, data)
+		}
+	}
+	for _, key := range []string{"IssueAuditFields", "IssueHierarchyFields", "IssueDependencyFields", "IssueAgentFields"} {
+		if _, ok := fields[key]; ok {
+			t.Errorf("flattened JSON unexpectedly contains nested %q: %s", key, data)
+		}
+	}
+
+	var roundTrip Issue
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatalf("round-trip unmarshal failed: %v", err)
+	}
+	if roundTrip.CreatedAt != issue.CreatedAt || roundTrip.Parent != issue.Parent || roundTrip.DependencyCount != issue.DependencyCount || roundTrip.HookBead != issue.HookBead {
+		t.Errorf("round-trip settings = %+v, want flattened values preserved", roundTrip)
+	}
+}
+
 // TestListOptions verifies ListOptions defaults.
 func TestListOptions(t *testing.T) {
 	opts := ListOptions{
@@ -1115,7 +1168,7 @@ func TestConcreteWorkIssueRejectReason(t *testing.T) {
 	}{
 		{name: "nil", issue: nil, want: "source-missing"},
 		{name: "empty id", issue: &Issue{}, want: "source-missing"},
-		{name: "ephemeral", issue: &Issue{ID: "gt-work", Ephemeral: true}, want: "ephemeral"},
+		{name: "ephemeral", issue: &Issue{ID: "gt-work", IssueAuditFields: IssueAuditFields{Ephemeral: true}}, want: "ephemeral"},
 		{name: "wisp id", issue: &Issue{ID: "gt-wisp-123"}, want: "wisp-id"},
 		{name: "formula id", issue: &Issue{ID: "mol-polecat-work"}, want: "formula-id"},
 		{name: "internal type", issue: &Issue{ID: "gt-mr", Type: "merge-request"}, want: "internal-type:merge-request"},

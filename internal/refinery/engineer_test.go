@@ -78,30 +78,30 @@ func TestEngineerFirstOpenBlockerUsesDependencySemantics(t *testing.T) {
 	}{
 		{
 			name:  "open blocking dependency blocks",
-			issue: &beads.Issue{Dependencies: []beads.IssueDep{{ID: "gt-blocker", Status: "open", DependencyType: "blocks"}}},
+			issue: &beads.Issue{IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "gt-blocker", Status: "open", DependencyType: "blocks"}}}},
 			want:  "gt-blocker",
 		},
 		{
 			name:  "external blocker ID is normalized",
-			issue: &beads.Issue{Dependencies: []beads.IssueDep{{ID: "external:gt:gt-blocker", Status: "open", DependencyType: "waits-for"}}},
+			issue: &beads.Issue{IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "external:gt:gt-blocker", Status: "open", DependencyType: "waits-for"}}}},
 			want:  "gt-blocker",
 		},
 		{
 			name:  "closed blocking dependency is resolved",
-			issue: &beads.Issue{Dependencies: []beads.IssueDep{{ID: "gt-closed", Status: "closed", DependencyType: "blocks"}}},
+			issue: &beads.Issue{IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "gt-closed", Status: "closed", DependencyType: "blocks"}}}},
 		},
 		{
 			name:  "tombstone blocking dependency is resolved",
-			issue: &beads.Issue{Dependencies: []beads.IssueDep{{ID: "gt-tombstone", Status: "tombstone", DependencyType: "blocks"}}},
+			issue: &beads.Issue{IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "gt-tombstone", Status: "tombstone", DependencyType: "blocks"}}}},
 		},
 		{
 			name:  "closed merge-block without merge reason still blocks",
-			issue: &beads.Issue{Dependencies: []beads.IssueDep{{ID: "gt-closed-only", Status: "closed", DependencyType: "merge-blocks"}}},
+			issue: &beads.Issue{IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "gt-closed-only", Status: "closed", DependencyType: "merge-blocks"}}}},
 			want:  "gt-closed-only",
 		},
 		{
 			name:  "merged merge-block is resolved",
-			issue: &beads.Issue{Dependencies: []beads.IssueDep{{ID: "gt-merged", Status: "closed", DependencyType: "merge-blocks", CloseReason: "Merged in gt-wisp"}}},
+			issue: &beads.Issue{IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "gt-merged", Status: "closed", DependencyType: "merge-blocks", CloseReason: "Merged in gt-wisp"}}}},
 		},
 		{
 			name:  "raw blocked_by fallback uses shared normalization",

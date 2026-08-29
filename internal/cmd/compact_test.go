@@ -67,7 +67,7 @@ func TestWispAge(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &compactIssue{
-				Issue: beads.Issue{UpdatedAt: tc.updatedAt},
+				Issue: beads.Issue{IssueAuditFields: beads.IssueAuditFields{UpdatedAt: tc.updatedAt}},
 			}
 			got, err := wispAge(w, now)
 			if tc.wantErr {
@@ -147,8 +147,10 @@ func TestIsReferenced(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &compactIssue{
 				Issue: beads.Issue{
-					DependencyCount: tc.depCnt,
-					DependentCount:  tc.deptCnt,
+					IssueDependencyFields: beads.IssueDependencyFields{
+						DependencyCount: tc.depCnt,
+						DependentCount:  tc.deptCnt,
+					},
 				},
 			}
 			if got := isReferenced(w); got != tc.want {

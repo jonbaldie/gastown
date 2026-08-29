@@ -161,15 +161,17 @@ func (m *mockBeadsForStep) Close(ids ...string) error {
 // The mock simulates this: List() clears DependsOn, Show() returns the full issue.
 func makeStepIssue(id, title, parent, status string, dependsOn []string) *beads.Issue {
 	issue := &beads.Issue{
-		ID:        id,
-		Title:     title,
-		Type:      "task",
-		Status:    status,
-		Priority:  2,
-		Parent:    parent,
-		DependsOn: dependsOn, // This gets cleared by mock List() to simulate bd list
-		CreatedAt: "2025-01-01T12:00:00Z",
-		UpdatedAt: "2025-01-01T12:00:00Z",
+		ID:                    id,
+		Title:                 title,
+		Type:                  "task",
+		Status:                status,
+		Priority:              2,
+		IssueHierarchyFields:  beads.IssueHierarchyFields{Parent: parent},
+		IssueDependencyFields: beads.IssueDependencyFields{DependsOn: dependsOn}, // This gets cleared by mock List() to simulate bd list
+		IssueAuditFields: beads.IssueAuditFields{
+			CreatedAt: "2025-01-01T12:00:00Z",
+			UpdatedAt: "2025-01-01T12:00:00Z",
+		},
 	}
 	// Also set Dependencies (what bd show returns) for proper testing.
 	// Use "blocks" dependency type since that's what formula instantiation creates
@@ -333,15 +335,17 @@ func TestStepDoneScenarios(t *testing.T) {
 // bd mol wisp or other code paths create dependencies with non-"blocks" types.
 func makeStepIssueWithDepType(id, title, parent, status string, deps []beads.IssueDep) *beads.Issue {
 	return &beads.Issue{
-		ID:           id,
-		Title:        title,
-		Type:         "task",
-		Status:       status,
-		Priority:     2,
-		Parent:       parent,
-		CreatedAt:    "2025-01-01T12:00:00Z",
-		UpdatedAt:    "2025-01-01T12:00:00Z",
-		Dependencies: deps,
+		ID:                   id,
+		Title:                title,
+		Type:                 "task",
+		Status:               status,
+		Priority:             2,
+		IssueHierarchyFields: beads.IssueHierarchyFields{Parent: parent},
+		IssueAuditFields: beads.IssueAuditFields{
+			CreatedAt: "2025-01-01T12:00:00Z",
+			UpdatedAt: "2025-01-01T12:00:00Z",
+		},
+		IssueDependencyFields: beads.IssueDependencyFields{Dependencies: deps},
 	}
 }
 

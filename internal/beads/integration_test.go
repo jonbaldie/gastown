@@ -342,7 +342,7 @@ func (m *mockIssueShower) Show(id string) (*Issue, error) {
 func TestDetectIntegrationBranch(t *testing.T) {
 	t.Run("child of epic with metadata and remote branch", func(t *testing.T) {
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-epic"},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic"}},
 			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "integration_branch: custom/branch"},
 		}}
 		checker := &mockBranchChecker{
@@ -362,7 +362,7 @@ func TestDetectIntegrationBranch(t *testing.T) {
 	t.Run("child of epic without metadata falls back to naming on remote", func(t *testing.T) {
 		// Title "gt-epic" sanitizes to "gt-epic", matching the remote branch name
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-epic"},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic"}},
 			"gt-epic": {ID: "gt-epic", Type: "epic", Title: "gt-epic", Description: "Some epic description"},
 		}}
 		checker := &mockBranchChecker{
@@ -380,8 +380,8 @@ func TestDetectIntegrationBranch(t *testing.T) {
 
 	t.Run("nested parent chain task-to-subtask-to-epic", func(t *testing.T) {
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-sub":  {ID: "gt-sub", Type: "task", Parent: "gt-task"},
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-epic"},
+			"gt-sub":  {ID: "gt-sub", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-task"}},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic"}},
 			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "integration_branch: nested/branch"},
 		}}
 		checker := &mockBranchChecker{
@@ -400,8 +400,8 @@ func TestDetectIntegrationBranch(t *testing.T) {
 
 	t.Run("no epic in parent chain returns empty", func(t *testing.T) {
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-other"},
-			"gt-other": {ID: "gt-other", Type: "task", Parent: ""},
+			"gt-task":  {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-other"}},
+			"gt-other": {ID: "gt-other", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: ""}},
 		}}
 		checker := &mockBranchChecker{}
 
@@ -416,8 +416,8 @@ func TestDetectIntegrationBranch(t *testing.T) {
 
 	t.Run("epic exists but no branch found anywhere", func(t *testing.T) {
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-epic"},
-			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "No metadata here", Parent: ""},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic"}},
+			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "No metadata here", IssueHierarchyFields: IssueHierarchyFields{Parent: ""}},
 		}}
 		// No branches exist at all
 		checker := &mockBranchChecker{}
@@ -440,7 +440,7 @@ func TestDetectIntegrationBranch(t *testing.T) {
 			if i < 11 {
 				parent = fmt.Sprintf("gt-%d", i+1)
 			}
-			issues[id] = &Issue{ID: id, Type: "task", Parent: parent}
+			issues[id] = &Issue{ID: id, Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: parent}}
 		}
 		// Put an epic at the very end (unreachable within depth 10)
 		issues["gt-11"].Type = "epic"
@@ -473,7 +473,7 @@ func TestDetectIntegrationBranch(t *testing.T) {
 
 	t.Run("BranchExists error is swallowed when remote also fails (best-effort)", func(t *testing.T) {
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-epic"},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic"}},
 			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "integration_branch: custom/branch"},
 		}}
 		checker := &mockBranchChecker{
@@ -495,8 +495,8 @@ func TestDetectIntegrationBranch(t *testing.T) {
 		// Epic1 has no local branch and remote check errors out.
 		// Epic1's parent is Epic2 which has a local branch.
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task":  {ID: "gt-task", Type: "task", Parent: "gt-epic1"},
-			"gt-epic1": {ID: "gt-epic1", Type: "epic", Description: "No metadata", Parent: "gt-epic2"},
+			"gt-task":  {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic1"}},
+			"gt-epic1": {ID: "gt-epic1", Type: "epic", Description: "No metadata", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic2"}},
 			"gt-epic2": {ID: "gt-epic2", Type: "epic", Description: "integration_branch: parent/branch"},
 		}}
 		checker := &mockBranchChecker{
@@ -516,8 +516,8 @@ func TestDetectIntegrationBranch(t *testing.T) {
 	t.Run("stale local branch ignored when remote is deleted", func(t *testing.T) {
 		// Local branch exists but remote was deleted — should NOT use stale local ref
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-epic"},
-			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "integration_branch: integration/gt-epic", Parent: ""},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic"}},
+			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "integration_branch: integration/gt-epic", IssueHierarchyFields: IssueHierarchyFields{Parent: ""}},
 		}}
 		checker := &mockBranchChecker{
 			localBranches:  map[string]bool{"integration/gt-epic": true},
@@ -536,8 +536,8 @@ func TestDetectIntegrationBranch(t *testing.T) {
 	t.Run("local branch used as fallback when remote check fails", func(t *testing.T) {
 		// Remote check errors out (network issue) — fall back to local
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-epic"},
-			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "integration_branch: integration/gt-epic", Parent: ""},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic"}},
+			"gt-epic": {ID: "gt-epic", Type: "epic", Description: "integration_branch: integration/gt-epic", IssueHierarchyFields: IssueHierarchyFields{Parent: ""}},
 		}}
 		checker := &mockBranchChecker{
 			localBranches: map[string]bool{"integration/gt-epic": true},
@@ -558,7 +558,7 @@ func TestDetectIntegrationBranch(t *testing.T) {
 		// The branch was created with the old "integration/{epic}" convention.
 		// Detection should try {title} first, fail, then find the {epic} branch.
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task": {ID: "gt-task", Type: "task", Parent: "gt-abc"},
+			"gt-task": {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-abc"}},
 			"gt-abc":  {ID: "gt-abc", Type: "epic", Title: "Add User Auth", Description: "Some description"},
 		}}
 		checker := &mockBranchChecker{
@@ -578,8 +578,8 @@ func TestDetectIntegrationBranch(t *testing.T) {
 	t.Run("epic without branch continues to grandparent epic", func(t *testing.T) {
 		// task -> epic1 (no branch anywhere) -> epic2 (has remote branch)
 		shower := &mockIssueShower{issues: map[string]*Issue{
-			"gt-task":  {ID: "gt-task", Type: "task", Parent: "gt-epic1"},
-			"gt-epic1": {ID: "gt-epic1", Type: "epic", Description: "No branch metadata", Parent: "gt-epic2"},
+			"gt-task":  {ID: "gt-task", Type: "task", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic1"}},
+			"gt-epic1": {ID: "gt-epic1", Type: "epic", Description: "No branch metadata", IssueHierarchyFields: IssueHierarchyFields{Parent: "gt-epic2"}},
 			"gt-epic2": {ID: "gt-epic2", Type: "epic", Description: "integration_branch: grandparent/branch"},
 		}}
 		checker := &mockBranchChecker{

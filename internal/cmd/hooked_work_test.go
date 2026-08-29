@@ -99,13 +99,13 @@ func TestActiveWorkStatusesPreferHookedOverInProgress(t *testing.T) {
 
 func TestActiveWorkMergeBeadListsDedupeAndSort(t *testing.T) {
 	primary := []*beads.Issue{
-		{ID: "gt-older", UpdatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "gt-same", UpdatedAt: "2026-01-02T00:00:00Z", Title: "durable"},
-		{ID: "gt-whole", UpdatedAt: "2026-01-03T00:00:00Z"},
+		{ID: "gt-older", IssueAuditFields: beads.IssueAuditFields{UpdatedAt: "2026-01-01T00:00:00Z"}},
+		{ID: "gt-same", IssueAuditFields: beads.IssueAuditFields{UpdatedAt: "2026-01-02T00:00:00Z"}, Title: "durable"},
+		{ID: "gt-whole", IssueAuditFields: beads.IssueAuditFields{UpdatedAt: "2026-01-03T00:00:00Z"}},
 	}
 	secondary := []*beads.Issue{
-		{ID: "gt-fractional", UpdatedAt: "2026-01-03T00:00:00.1Z"},
-		{ID: "gt-same", UpdatedAt: "2026-01-04T00:00:00Z", Title: "wisp"},
+		{ID: "gt-fractional", IssueAuditFields: beads.IssueAuditFields{UpdatedAt: "2026-01-03T00:00:00.1Z"}},
+		{ID: "gt-same", IssueAuditFields: beads.IssueAuditFields{UpdatedAt: "2026-01-04T00:00:00Z"}, Title: "wisp"},
 	}
 
 	got := mergeBeadLists(primary, secondary)

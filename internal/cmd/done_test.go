@@ -146,8 +146,10 @@ func TestReviewOnlyCloseRejectsNotesAndDesignEvidence(t *testing.T) {
 		ID:          "gt-review",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Notes:       "FINDINGS: reviewed and no code changes needed",
-		Design:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+		IssueAuditFields: beads.IssueAuditFields{
+			Notes:  "FINDINGS: reviewed and no code changes needed",
+			Design: "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+		},
 	}
 
 	reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, "abc123")
@@ -161,11 +163,13 @@ func TestReviewOnlyCloseAllowsFreshEvidenceComment(t *testing.T) {
 		ID:          "gt-review",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Comments: []beads.Comment{
-			{
-				Author:    "gastown/polecats/toast",
-				CreatedAt: "2026-07-01T12:05:00Z",
-				Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+		IssueAgentFields: beads.IssueAgentFields{
+			Comments: []beads.Comment{
+				{
+					Author:    "gastown/polecats/toast",
+					CreatedAt: "2026-07-01T12:05:00Z",
+					Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+				},
 			},
 		},
 	}
@@ -181,9 +185,11 @@ func TestReviewOnlyGeneratedCommentsDoNotCountAsEvidence(t *testing.T) {
 		ID:          "gt-review",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Comments: []beads.Comment{
-			{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:05:00Z", Text: "verified_push_skipped: --skip-verify on no-MR close\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
-			{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:06:00Z", Text: "MR created: gt-wisp-abc\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
+		IssueAgentFields: beads.IssueAgentFields{
+			Comments: []beads.Comment{
+				{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:05:00Z", Text: "verified_push_skipped: --skip-verify on no-MR close\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
+				{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:06:00Z", Text: "MR created: gt-wisp-abc\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
+			},
 		},
 	}
 
@@ -207,11 +213,11 @@ func TestReviewOnlyCloseRejectsStaleComment(t *testing.T) {
 				ID:          "gt-review",
 				Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 				Assignee:    "gastown/polecats/toast",
-				Comments: []beads.Comment{{
+				IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 					Author:    "gastown/polecats/toast",
 					CreatedAt: tt.createdAt,
 					Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
-				}},
+				}}},
 			}
 
 			reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, "abc123")
@@ -243,11 +249,11 @@ func TestReviewOnlyCloseRejectsWrongAuthorOrHead(t *testing.T) {
 				ID:          "gt-review",
 				Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 				Assignee:    "gastown/polecats/toast",
-				Comments: []beads.Comment{{
+				IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 					Author:    tt.author,
 					CreatedAt: "2026-07-01T12:05:00Z",
 					Text:      text,
-				}},
+				}}},
 			}
 			reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, tt.current)
 			if reason == "" || !fatal {
@@ -272,11 +278,11 @@ func TestReviewOnlyCloseRejectsMissingAssigneeOrInvalidCommentTime(t *testing.T)
 				ID:          "gt-review",
 				Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 				Assignee:    tt.assignee,
-				Comments: []beads.Comment{{
+				IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 					Author:    "gastown/polecats/toast",
 					CreatedAt: tt.createdAt,
 					Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
-				}},
+				}}},
 			}
 			reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, "abc123")
 			if reason == "" || !fatal {
@@ -300,9 +306,9 @@ func TestNonReviewOnlyCloseDoesNotRequireEvidence(t *testing.T) {
 
 func TestNonReviewOnlyReviewGateDoesNotChangeCriteriaHandling(t *testing.T) {
 	issue := &beads.Issue{
-		ID:                 "gt-review",
-		Description:        "no_merge: true\n",
-		AcceptanceCriteria: "- [ ] still open\n",
+		ID:               "gt-review",
+		Description:      "no_merge: true\n",
+		IssueAuditFields: beads.IssueAuditFields{AcceptanceCriteria: "- [ ] still open\n"},
 	}
 
 	reason, fatal := doneSourceCloseSkipReason(nil, issue.ID, issue)
@@ -476,11 +482,11 @@ func TestDirectMergeRejectsUnsafeSourceBeforePush(t *testing.T) {
 		Type:        "task",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Comments: []beads.Comment{{
+		IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 			Author:    "gastown/polecats/toast",
 			CreatedAt: "2026-07-01T12:05:00Z",
 			Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
-		}},
+		}}},
 	}
 	tests := []struct {
 		name        string
@@ -521,7 +527,7 @@ func TestDirectMergeRejectsUnsafeSourceBeforePush(t *testing.T) {
 		{
 			name:       "unchecked criteria",
 			issueID:    "gt-work",
-			issue:      &beads.Issue{ID: "gt-work", Type: "task", AcceptanceCriteria: "- [ ] still open\n"},
+			issue:      &beads.Issue{ID: "gt-work", Type: "task", IssueAuditFields: beads.IssueAuditFields{AcceptanceCriteria: "- [ ] still open\n"}},
 			wantReason: "unchecked acceptance criteria",
 		},
 		{

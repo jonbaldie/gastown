@@ -132,22 +132,26 @@ func sdkIssueToIssue(si *beadsdk.Issue) *Issue {
 
 func sdkIssueCore(si *beadsdk.Issue) *Issue {
 	issue := &Issue{
-		ID:                 si.ID,
-		Title:              si.Title,
-		Description:        si.Description,
-		Design:             si.Design,
-		Notes:              si.Notes,
-		Status:             string(si.Status),
-		Priority:           si.Priority,
-		Type:               string(si.IssueType),
-		CreatedAt:          si.CreatedAt.Format(time.RFC3339),
-		CreatedBy:          si.CreatedBy,
-		UpdatedAt:          si.UpdatedAt.Format(time.RFC3339),
-		Assignee:           si.Assignee,
-		Labels:             si.Labels,
-		Ephemeral:          si.Ephemeral,
-		AcceptanceCriteria: si.AcceptanceCriteria,
-		Metadata:           si.Metadata,
+		ID:          si.ID,
+		Title:       si.Title,
+		Description: si.Description,
+		Status:      string(si.Status),
+		Priority:    si.Priority,
+		Type:        string(si.IssueType),
+		Assignee:    si.Assignee,
+		Labels:      si.Labels,
+		IssueAuditFields: IssueAuditFields{
+			Design:             si.Design,
+			Notes:              si.Notes,
+			CreatedAt:          si.CreatedAt.Format(time.RFC3339),
+			CreatedBy:          si.CreatedBy,
+			UpdatedAt:          si.UpdatedAt.Format(time.RFC3339),
+			Ephemeral:          si.Ephemeral,
+			AcceptanceCriteria: si.AcceptanceCriteria,
+		},
+		IssueAgentFields: IssueAgentFields{
+			Metadata: si.Metadata,
+		},
 	}
 	if si.ClosedAt != nil {
 		issue.ClosedAt = si.ClosedAt.Format(time.RFC3339)

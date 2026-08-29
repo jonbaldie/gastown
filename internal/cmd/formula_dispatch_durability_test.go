@@ -15,10 +15,10 @@ import (
 
 func TestShouldReuseExistingFormulaIgnoresLegacyWisps(t *testing.T) {
 	wisp := &beads.Issue{
-		ID:          "gt-wisp-existing",
-		Ephemeral:   true,
-		Labels:      []string{"gt:task"},
-		Description: "attached_formula: mol-anything",
+		ID:               "gt-wisp-existing",
+		IssueAuditFields: beads.IssueAuditFields{Ephemeral: true},
+		Labels:           []string{"gt:task"},
+		Description:      "attached_formula: mol-anything",
 	}
 	if shouldReuseExistingFormula(wisp, nil, false) {
 		t.Fatal("legacy wisp must not be reused as durable formula dispatch")
@@ -80,9 +80,9 @@ exit 0
 	slingNoBoot = true
 	findHookedFormulaSingletonFn = func(workDir, targetAgent, formulaName string) (*beads.Issue, error) {
 		return &beads.Issue{
-			ID:          "gt-wisp-existing",
-			Ephemeral:   true,
-			Description: "attached_formula: mol-anything",
+			ID:               "gt-wisp-existing",
+			IssueAuditFields: beads.IssueAuditFields{Ephemeral: true},
+			Description:      "attached_formula: mol-anything",
 		}, nil
 	}
 

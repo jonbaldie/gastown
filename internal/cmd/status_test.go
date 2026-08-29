@@ -54,9 +54,8 @@ func TestDiscoverRigAgents_UsesRigPrefix(t *testing.T) {
 
 	allAgentBeads := map[string]*beads.Issue{
 		"bd-beads-witness": {
-			ID:         "bd-beads-witness",
-			AgentState: "running",
-			HookBead:   "bd-hook",
+			ID:               "bd-beads-witness",
+			IssueAgentFields: beads.IssueAgentFields{AgentState: "running", HookBead: "bd-hook"},
 		},
 	}
 	allHookBeads := map[string]*beads.Issue{
