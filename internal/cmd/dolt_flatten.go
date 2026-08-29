@@ -57,11 +57,52 @@ func runDoltFlatten(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
+	return runDoltFlattenDatabase(townRoot, dbName)
+}
 
-	// Verify server is running.
+func runDoltFlattenDatabase(townRoot, dbName string) error {
+	db, err := openDoltFlattenDB(townRoot, dbName)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var dummy int
+	if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&dummy); err != nil {
+		return fmt.Errorf("database %q not reachable: %w", dbName, err)
+	}
+
+	plan, err := prepareDoltFlatten(ctx, db, townRoot, dbName)
+	if err != nil {
+		return err
+	}
+	if plan == nil {
+		return nil
+	}
+	if err := executeDoltFlatten(ctx, db, dbName, plan.rootHash); err != nil {
+		return err
+	}
+	if err := verifyDoltFlatten(db, dbName, plan.preCounts); err != nil {
+		return err
+	}
+	finalCount := doltFlattenFinalCommitCount(ctx, db, dbName)
+	fmt.Printf("\n%s Flatten complete: %d → %d commits\n",
+		style.Bold.Render("✓"), plan.commitCount, finalCount)
+	return nil
+}
+
+type doltFlattenPlan struct {
+	commitCount int
+	preCounts   map[string]int
+	rootHash    string
+}
+
+func openDoltFlattenDB(townRoot, dbName string) (*sql.DB, error) {
 	running, _, err := doltserver.IsRunning(townRoot)
 	if err != nil || !running {
-		return fmt.Errorf("Dolt server is not running — start with 'gt dolt start'")
+		return nil, fmt.Errorf("Dolt server is not running — start with 'gt dolt start'")
 	}
 
 	config := doltserver.DefaultConfig(townRoot)
@@ -72,96 +113,85 @@ func runDoltFlatten(_ *cobra.Command, args []string) error {
 		ReadTimeout:  "30s",
 		WriteTimeout: "30s",
 	})
-
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return fmt.Errorf("connecting to database %s: %w", dbName, err)
+		return nil, fmt.Errorf("connecting to database %s: %w", dbName, err)
 	}
-	defer db.Close()
+	return db, nil
+}
 
-	// Verify database exists by querying it.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var dummy int
-	if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&dummy); err != nil {
-		return fmt.Errorf("database %q not reachable: %w", dbName, err)
-	}
-
-	// Pre-flight: check backup freshness.
+func prepareDoltFlatten(ctx context.Context, db *sql.DB, townRoot, dbName string) (*doltFlattenPlan, error) {
 	fmt.Printf("%s Pre-flight checks for %s\n", style.Bold.Render("●"), style.Bold.Render(dbName))
+	printDoltFlattenBackupStatus(townRoot)
 
-	backupDir := filepath.Join(townRoot, ".dolt-backup")
-	if _, err := os.Stat(backupDir); err == nil {
-		newest := findNewestFile(backupDir)
-		if !newest.IsZero() {
-			age := time.Since(newest)
-			if age > 30*time.Minute {
-				fmt.Printf("  %s Backup is %v old — consider running backup first\n",
-					style.Bold.Render("!"), age.Round(time.Minute))
-			} else {
-				fmt.Printf("  %s Backup is %v old (OK)\n", style.Bold.Render("✓"), age.Round(time.Second))
-			}
-		}
-	} else {
-		fmt.Printf("  %s No backup directory found — proceed with caution\n", style.Bold.Render("!"))
-	}
-
-	// Count commits.
 	var commitCount int
 	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.dolt_log", dbName)).Scan(&commitCount); err != nil {
-		return fmt.Errorf("counting commits: %w", err)
+		return nil, fmt.Errorf("counting commits: %w", err)
 	}
 	fmt.Printf("  Commits: %d\n", commitCount)
-
 	if commitCount <= 2 {
 		fmt.Printf("  %s Already minimal — nothing to flatten\n", style.Bold.Render("✓"))
-		return nil
+		return nil, nil
 	}
 
-	// Record pre-flight row counts.
 	preCounts, err := flattenGetRowCounts(db, dbName)
 	if err != nil {
-		return fmt.Errorf("recording row counts: %w", err)
+		return nil, fmt.Errorf("recording row counts: %w", err)
 	}
 	fmt.Printf("  Tables: %d\n", len(preCounts))
 	for table, count := range preCounts {
 		fmt.Printf("    %s: %d rows\n", table, count)
 	}
 
-	// Get root commit.
 	var rootHash string
 	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT commit_hash FROM `%s`.dolt_log ORDER BY date ASC LIMIT 1", dbName)).Scan(&rootHash); err != nil {
-		return fmt.Errorf("finding root commit: %w", err)
+		return nil, fmt.Errorf("finding root commit: %w", err)
 	}
 	fmt.Printf("  Root: %s\n", rootHash[:12])
+	return &doltFlattenPlan{commitCount: commitCount, preCounts: preCounts, rootHash: rootHash}, nil
+}
 
+func printDoltFlattenBackupStatus(townRoot string) {
+	backupDir := filepath.Join(townRoot, ".dolt-backup")
+	if _, err := os.Stat(backupDir); err != nil {
+		fmt.Printf("  %s No backup directory found — proceed with caution\n", style.Bold.Render("!"))
+		return
+	}
+	newest := findNewestFile(backupDir)
+	if newest.IsZero() {
+		return
+	}
+	age := time.Since(newest)
+	if age > 30*time.Minute {
+		fmt.Printf("  %s Backup is %v old — consider running backup first\n",
+			style.Bold.Render("!"), age.Round(time.Minute))
+		return
+	}
+	fmt.Printf("  %s Backup is %v old (OK)\n", style.Bold.Render("✓"), age.Round(time.Second))
+}
+
+func executeDoltFlatten(ctx context.Context, db *sql.DB, dbName, rootHash string) error {
 	fmt.Printf("\n%s Flattening %s (direct SQL — no downtime)...\n", style.Bold.Render("●"), dbName)
-
-	// USE database for session-scoped operations.
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("USE `%s`", dbName)); err != nil {
 		return fmt.Errorf("use database: %w", err)
 	}
-
-	// Soft-reset to root on main — all data remains staged.
-	// This is trivially cheap: just moves the parent pointer (Tim Sehn).
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_RESET('--soft', '%s')", rootHash)); err != nil {
 		return fmt.Errorf("soft reset: %w", err)
 	}
 	fmt.Printf("  Soft-reset to root %s\n", rootHash[:12])
-
-	// Commit flattened data.
 	commitMsg := fmt.Sprintf("flatten: compact %s history to single commit", dbName)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_COMMIT('-Am', '%s')", commitMsg)); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	fmt.Printf("  Committed flattened data\n")
+	return nil
+}
 
-	// Verify integrity.
+func verifyDoltFlatten(db *sql.DB, dbName string, preCounts map[string]int) error {
 	postCounts, err := flattenGetRowCounts(db, dbName)
 	if err != nil {
 		return fmt.Errorf("post-compact row counts: %w", err)
 	}
-
 	for table, preCount := range preCounts {
 		postCount, ok := postCounts[table]
 		if !ok {
@@ -176,16 +206,15 @@ func runDoltFlatten(_ *cobra.Command, args []string) error {
 		}
 	}
 	fmt.Printf("  %s Integrity verified (%d tables match)\n", style.Bold.Render("✓"), len(preCounts))
+	return nil
+}
 
-	// Verify final state.
+func doltFlattenFinalCommitCount(ctx context.Context, db *sql.DB, dbName string) int {
 	var finalCount int
 	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.dolt_log", dbName)).Scan(&finalCount); err == nil {
 		fmt.Printf("  Final commit count: %d\n", finalCount)
 	}
-
-	fmt.Printf("\n%s Flatten complete: %d → %d commits\n",
-		style.Bold.Render("✓"), commitCount, finalCount)
-	return nil
+	return finalCount
 }
 
 // flattenGetRowCounts returns table -> row count for all user tables.
