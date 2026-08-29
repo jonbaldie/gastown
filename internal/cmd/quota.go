@@ -28,11 +28,6 @@ func (quotaLogger) Warn(format string, args ...interface{}) {
 	style.PrintWarning(format, args...)
 }
 
-// Quota command flags
-var (
-	quotaJSON bool
-)
-
 var quotaCmd = &cobra.Command{
 	Use:     "quota",
 	GroupID: GroupServices,
@@ -75,7 +70,8 @@ type QuotaStatusItem struct {
 	IsDefault bool   `json:"is_default"`
 }
 
-func runQuotaStatus(_ *cobra.Command, _ []string) error {
+func runQuotaStatus(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -113,7 +109,7 @@ func runQuotaStatus(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	if quotaJSON {
+	if jsonOutput {
 		return printQuotaStatusJSON(acctCfg, state)
 	}
 	return printQuotaStatusText(acctCfg, state)
@@ -198,11 +194,6 @@ func printQuotaStatusText(acctCfg *config.AccountsConfig, state *config.QuotaSta
 	return nil
 }
 
-// Scan command flags
-var (
-	scanUpdate bool
-)
-
 var quotaScanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Detect rate-limited sessions",
@@ -220,7 +211,9 @@ Examples:
 	RunE: runQuotaScan,
 }
 
-func runQuotaScan(_ *cobra.Command, _ []string) error {
+func runQuotaScan(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	update := commandBoolFlag(cmd, "update")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -244,13 +237,13 @@ func runQuotaScan(_ *cobra.Command, _ []string) error {
 	}
 
 	// Optionally update quota state
-	if scanUpdate && loadErr == nil && acctCfg != nil {
+	if update && loadErr == nil && acctCfg != nil {
 		if err := updateQuotaState(townRoot, results, acctCfg); err != nil {
 			return fmt.Errorf("updating quota state: %w", err)
 		}
 	}
 
-	if quotaJSON {
+	if jsonOutput {
 		return printScanJSON(results)
 	}
 	return printScanText(results)
@@ -349,13 +342,6 @@ func printScanText(results []quota.ScanResult) error {
 	return nil
 }
 
-// Rotate command flags
-var (
-	rotateDryRun bool
-	rotateFrom   string
-	rotateIdle   bool
-)
-
 var quotaRotateCmd = &cobra.Command{
 	Use:   "rotate",
 	Short: "Swap blocked sessions to available accounts",
@@ -384,7 +370,11 @@ Examples:
 	RunE: runQuotaRotate,
 }
 
-func runQuotaRotate(_ *cobra.Command, _ []string) error {
+func runQuotaRotate(cmd *cobra.Command, _ []string) error {
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	jsonOutput := commandBoolFlag(cmd, "json")
+	fromAccount := commandStringFlag(cmd, "from")
+	idleOnly := commandBoolFlag(cmd, "idle")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -401,10 +391,10 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	}
 
 	// Validate --from account if specified
-	if rotateFrom != "" {
-		if _, ok := acctCfg.Accounts[rotateFrom]; !ok {
+	if fromAccount != "" {
+		if _, ok := acctCfg.Accounts[fromAccount]; !ok {
 			return fmt.Errorf("account %q not found (available: %s)",
-				rotateFrom, strings.Join(accountHandles(acctCfg), ", "))
+				fromAccount, strings.Join(accountHandles(acctCfg), ", "))
 		}
 	}
 
@@ -416,7 +406,7 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	}
 
 	mgr := quota.NewManager(townRoot)
-	plan, err := quota.PlanRotation(scanner, mgr, acctCfg, quota.PlanOpts{FromAccount: rotateFrom})
+	plan, err := quota.PlanRotation(scanner, mgr, acctCfg, quota.PlanOpts{FromAccount: fromAccount})
 	if err != nil {
 		return fmt.Errorf("planning rotation: %w", err)
 	}
@@ -428,11 +418,11 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	// successful rotation execution (LastUsed in executeKeychainRotation).
 
 	if len(plan.LimitedSessions) == 0 {
-		if quotaJSON {
+		if jsonOutput {
 			return json.NewEncoder(os.Stdout).Encode([]quota.RotateResult{})
 		}
-		if rotateFrom != "" {
-			fmt.Printf(" %s No sessions found using account %q\n", style.SuccessPrefix, rotateFrom)
+		if fromAccount != "" {
+			fmt.Printf(" %s No sessions found using account %q\n", style.SuccessPrefix, fromAccount)
 		} else {
 			fmt.Printf(" %s No rate-limited sessions detected\n", style.SuccessPrefix)
 		}
@@ -440,12 +430,12 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	}
 
 	if len(plan.Assignments) == 0 {
-		if quotaJSON {
+		if jsonOutput {
 			return json.NewEncoder(os.Stdout).Encode([]quota.RotateResult{})
 		}
-		if rotateFrom != "" {
+		if fromAccount != "" {
 			fmt.Printf(" %s %d session(s) on %q but no available accounts to rotate to\n",
-				style.WarningPrefix, len(plan.LimitedSessions), rotateFrom)
+				style.WarningPrefix, len(plan.LimitedSessions), fromAccount)
 		} else {
 			fmt.Printf(" %s %d sessions rate-limited but no available accounts to rotate to\n",
 				style.WarningPrefix, len(plan.LimitedSessions))
@@ -476,10 +466,10 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	// Filter to idle sessions only when --idle is set.
 	// This avoids interrupting agents that are actively working.
 	skippedBusy := 0
-	if rotateIdle {
+	if idleOnly {
 		for session := range plan.Assignments {
 			if !t.IsIdle(session) {
-				if !quotaJSON {
+				if !jsonOutput {
 					fmt.Printf(" %s %-25s %s\n",
 						style.Dim.Render("-"), session,
 						style.Dim.Render("skipped (busy)"))
@@ -489,7 +479,7 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 			}
 		}
 		if len(plan.Assignments) == 0 {
-			if quotaJSON {
+			if jsonOutput {
 				return json.NewEncoder(os.Stdout).Encode([]quota.RotateResult{})
 			}
 			fmt.Printf("\n %s No idle sessions to rotate\n", style.WarningPrefix)
@@ -501,7 +491,7 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	sortedSessions := slices.Sorted(maps.Keys(plan.Assignments))
 
 	// Show plan (text only — skip for JSON consumers)
-	if !quotaJSON {
+	if !jsonOutput {
 		fmt.Println(style.Bold.Render("Rotation Plan"))
 		fmt.Println()
 		for _, session := range sortedSessions {
@@ -540,8 +530,8 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	if rotateDryRun {
-		if quotaJSON {
+	if dryRun {
+		if jsonOutput {
 			// Return plan as JSON for machine consumers
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -555,7 +545,7 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 	// Execute rotation with keychain swap deduplication.
 	// Track which config dirs have already been swapped so we only do
 	// one keychain operation per config dir, not per session.
-	if !quotaJSON {
+	if !jsonOutput {
 		fmt.Println()
 	}
 	swappedConfigDirs := make(map[string]*quota.KeychainCredential)
@@ -565,7 +555,7 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 		result := executeKeychainRotation(t, mgr, acctCfg, session, newAccount, swappedConfigDirs)
 		results = append(results, result)
 
-		if !quotaJSON {
+		if !jsonOutput {
 			if result.Rotated {
 				suffix := ""
 				if result.ResumedSession != "" {
@@ -581,7 +571,7 @@ func runQuotaRotate(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	if quotaJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(results)
@@ -801,12 +791,6 @@ func executeKeychainRotation(
 	return result
 }
 
-// Watch command flags
-var (
-	watchInterval time.Duration
-	watchDryRun   bool
-)
-
 var quotaWatchCmd = &cobra.Command{
 	Use:   "watch",
 	Short: "Monitor sessions and rotate proactively before hard 429",
@@ -825,7 +809,15 @@ Examples:
 	RunE: runQuotaWatch,
 }
 
-func runQuotaWatch(_ *cobra.Command, _ []string) error {
+func runQuotaWatch(cmd *cobra.Command, _ []string) error {
+	interval, err := cmd.Flags().GetDuration("interval")
+	if err != nil {
+		return fmt.Errorf("reading --interval: %w", err)
+	}
+	dryRun, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return fmt.Errorf("reading --dry-run: %w", err)
+	}
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -841,8 +833,8 @@ func runQuotaWatch(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf(" %s Watching for near-limit signals (interval: %s)\n",
-		style.Info.Render("Watch:"), watchInterval)
-	if watchDryRun {
+		style.Info.Render("Watch:"), interval)
+	if dryRun {
 		fmt.Println(style.Dim.Render(" (dry run — detections only, no rotation)"))
 	}
 	fmt.Println()
@@ -851,12 +843,12 @@ func runQuotaWatch(_ *cobra.Command, _ []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	ticker := time.NewTicker(watchInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Run immediately on start, then on each tick
 	for {
-		runWatchCycle(townRoot, acctCfg)
+		runWatchCycle(townRoot, acctCfg, dryRun)
 
 		select {
 		case <-sigCh:
@@ -867,7 +859,7 @@ func runQuotaWatch(_ *cobra.Command, _ []string) error {
 	}
 }
 
-func runWatchCycle(townRoot string, acctCfg *config.AccountsConfig) {
+func runWatchCycle(townRoot string, acctCfg *config.AccountsConfig, dryRun bool) {
 	t := ttmux.NewTmux()
 	scanner, err := quota.NewScanner(t, nil, acctCfg)
 	if err != nil {
@@ -930,7 +922,7 @@ func runWatchCycle(townRoot string, acctCfg *config.AccountsConfig) {
 			style.Dim.Render(detail))
 	}
 
-	if watchDryRun || len(plan.Assignments) == 0 {
+	if dryRun || len(plan.Assignments) == 0 {
 		return
 	}
 
@@ -956,18 +948,18 @@ func runWatchCycle(townRoot string, acctCfg *config.AccountsConfig) {
 }
 
 func init() {
-	quotaStatusCmd.Flags().BoolVar(&quotaJSON, "json", false, "Output as JSON")
+	quotaStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
-	quotaScanCmd.Flags().BoolVar(&quotaJSON, "json", false, "Output as JSON")
-	quotaScanCmd.Flags().BoolVar(&scanUpdate, "update", false, "Update quota state with detected limits")
+	quotaScanCmd.Flags().Bool("json", false, "Output as JSON")
+	quotaScanCmd.Flags().Bool("update", false, "Update quota state with detected limits")
 
-	quotaRotateCmd.Flags().BoolVar(&rotateDryRun, "dry-run", false, "Show plan without executing")
-	quotaRotateCmd.Flags().BoolVar(&quotaJSON, "json", false, "Output as JSON")
-	quotaRotateCmd.Flags().StringVar(&rotateFrom, "from", "", "Preemptively rotate sessions using this account")
-	quotaRotateCmd.Flags().BoolVar(&rotateIdle, "idle", false, "Only rotate sessions at the idle prompt (skip busy agents)")
+	quotaRotateCmd.Flags().Bool("dry-run", false, "Show plan without executing")
+	quotaRotateCmd.Flags().Bool("json", false, "Output as JSON")
+	quotaRotateCmd.Flags().String("from", "", "Preemptively rotate sessions using this account")
+	quotaRotateCmd.Flags().Bool("idle", false, "Only rotate sessions at the idle prompt (skip busy agents)")
 
-	quotaWatchCmd.Flags().DurationVar(&watchInterval, "interval", 5*time.Minute, "Poll interval")
-	quotaWatchCmd.Flags().BoolVar(&watchDryRun, "dry-run", false, "Show detections without executing rotation")
+	quotaWatchCmd.Flags().Duration("interval", 5*time.Minute, "Poll interval")
+	quotaWatchCmd.Flags().Bool("dry-run", false, "Show detections without executing rotation")
 
 	quotaCmd.AddCommand(quotaStatusCmd)
 	quotaCmd.AddCommand(quotaScanCmd)
