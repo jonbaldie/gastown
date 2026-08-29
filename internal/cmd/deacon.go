@@ -931,12 +931,35 @@ func runDeaconHealthCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("sending health check nudge: %w", err)
 	}
 
+	baselineTime, baselineActivity, activityErr := captureDeaconHealthBaselines(t, townRoot, beadID, sessionName)
+
+	fmt.Printf("%s Sent HEALTH_CHECK to %s, waiting %s...\n",
+		style.Bold.Render("→"), agent, timeout)
+
+	responded := waitForDeaconHealthResponse(
+		t,
+		townRoot,
+		beadID,
+		sessionName,
+		timeout,
+		baselineTime,
+		baselineActivity,
+		activityErr,
+	)
+
+	return recordDeaconHealthResult(townRoot, agent, failures, state, agentState, responded)
+}
+
+func captureDeaconHealthBaselines(
+	t *tmux.Tmux,
+	townRoot, beadID, sessionName string,
+) (time.Time, time.Time, error) {
 	// Get baseline times AFTER sending nudge to avoid false positives.
 	// By sampling after the nudge, we only detect activity caused by our check.
 	baselineTime, err := getAgentBeadUpdateTime(townRoot, beadID)
 	if err != nil {
-		// Bead might not exist yet - use current time as baseline
-		// This way only updates AFTER this point count as responses
+		// Bead might not exist yet - use current time as baseline.
+		// This way only updates AFTER this point count as responses.
 		baselineTime = time.Now()
 	}
 
@@ -946,48 +969,16 @@ func runDeaconHealthCheck(cmd *cobra.Command, args []string) error {
 	// updated its bead (e.g., witness agents that respond in prose rather than
 	// via a structured bead-update channel).
 	baselineActivity, activityErr := t.GetSessionActivity(sessionName)
+	return baselineTime, baselineActivity, activityErr
+}
 
-	fmt.Printf("%s Sent HEALTH_CHECK to %s, waiting %s...\n",
-		style.Bold.Render("→"), agent, timeout)
-
-	// Wait for response using context and ticker for reliability
-	// This prevents loop hangs if system clock changes
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	responded := false
-
-waitLoop:
-	for {
-		select {
-		case <-ctx.Done():
-			break waitLoop
-		case <-ticker.C:
-			// Primary signal: bead update (structured response channel)
-			newTime, err := getAgentBeadUpdateTime(townRoot, beadID)
-			if err == nil && newTime.After(baselineTime) {
-				responded = true
-				break waitLoop
-			}
-
-			// Secondary signal: tmux session activity (prose/command response)
-			// Agents like the Witness respond to HEALTH_CHECK by running commands
-			// in their session, producing output, but may not update their bead.
-			// Session activity is a reliable liveness signal for these agents.
-			if activityErr == nil {
-				newActivity, err := t.GetSessionActivity(sessionName)
-				if err == nil && newActivity.After(baselineActivity) {
-					responded = true
-					break waitLoop
-				}
-			}
-		}
-	}
-
-	// Record result
+func recordDeaconHealthResult(
+	townRoot, agent string,
+	failures int,
+	state *deacon.HealthCheckState,
+	agentState *deacon.AgentHealthState,
+	responded bool,
+) error {
 	if responded {
 		agentState.RecordResponse()
 		if err := deacon.SaveHealthCheckState(townRoot, state); err != nil {
@@ -1014,6 +1005,49 @@ waitLoop:
 	}
 
 	return nil
+}
+
+func waitForDeaconHealthResponse(
+	t *tmux.Tmux,
+	townRoot, beadID, sessionName string,
+	timeout time.Duration,
+	baselineTime, baselineActivity time.Time,
+	activityErr error,
+) bool {
+	// Wait for response using context and ticker for reliability
+	// This prevents loop hangs if system clock changes
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+waitLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			break waitLoop
+		case <-ticker.C:
+			// Primary signal: bead update (structured response channel)
+			newTime, err := getAgentBeadUpdateTime(townRoot, beadID)
+			if err == nil && newTime.After(baselineTime) {
+				return true
+			}
+
+			// Secondary signal: tmux session activity (prose/command response)
+			// Agents like the Witness respond to HEALTH_CHECK by running commands
+			// in their session, producing output, but may not update their bead.
+			// Session activity is a reliable liveness signal for these agents.
+			if activityErr == nil {
+				newActivity, err := t.GetSessionActivity(sessionName)
+				if err == nil && newActivity.After(baselineActivity) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // runDeaconForceKill implements the force-kill command.
