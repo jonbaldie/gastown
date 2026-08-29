@@ -1043,77 +1043,97 @@ func runDogHealthCheck(cmd *cobra.Command, args []string) error {
 	tm := tmux.NewTmux()
 	hc := dog.NewHealthChecker(mgr, tm)
 
-	var results []dog.DogHealthResult
-
-	if len(args) > 0 {
-		// Single dog
-		d, err := mgr.Get(args[0])
-		if err != nil {
-			return fmt.Errorf("getting dog %s: %w", args[0], err)
-		}
-		r := hc.Check(d, maxInactivity, autoClear)
-		results = []dog.DogHealthResult{r}
-	} else {
-		// All dogs
-		results, err = hc.CheckAll(maxInactivity, autoClear)
-		if err != nil {
-			return err
-		}
+	results, err := collectDogHealthResults(mgr, hc, args, maxInactivity, autoClear)
+	if err != nil {
+		return err
 	}
 
 	attention := dog.NeedsAttentionCount(results)
 
 	if healthJSON {
-		type HealthReport struct {
-			Dogs           []dog.DogHealthResult `json:"dogs"`
-			NeedsAttention int                   `json:"needs_attention"`
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(HealthReport{Dogs: results, NeedsAttention: attention}); err != nil {
+		if err := printDogHealthJSON(results, attention); err != nil {
 			return err
 		}
 	} else {
-		if len(results) == 0 {
-			fmt.Println("No dogs in kennel")
-			return nil
-		}
-
-		fmt.Println(style.Bold.Render("Dog Health Check"))
-		fmt.Println()
-
-		for _, r := range results {
-			icon := "✓"
-			if r.NeedsAttention {
-				icon = "✗"
-			}
-			line := fmt.Sprintf("  %s %s [%s] session=%s", icon, r.Name, r.State, r.SessionStatus)
-			if r.WorkDuration > 0 {
-				line += fmt.Sprintf(" duration=%s", r.WorkDuration.Truncate(time.Second))
-			}
-			if r.AutoCleared {
-				line += " (auto-cleared)"
-			}
-			fmt.Println(line)
-			if r.Recommendation != "" && r.NeedsAttention {
-				fmt.Printf("    → %s\n", r.Recommendation)
-			}
-		}
-
-		fmt.Println()
-		if attention > 0 {
-			fmt.Printf("  %d dog(s) need attention\n", attention)
-		} else {
-			fmt.Println("  All dogs healthy")
-		}
+		printDogHealthHuman(results, attention)
 	}
 
-	// Exit code 2 for needs-attention
 	if attention > 0 {
-		os.Exit(2)
+		exitWithCode(2, os.Exit)
 	}
 
 	return nil
+}
+
+func collectDogHealthResults(
+	mgr *dog.Manager,
+	hc *dog.HealthChecker,
+	args []string,
+	maxInactivity time.Duration,
+	autoClear bool,
+) ([]dog.DogHealthResult, error) {
+	if len(args) > 0 {
+		d, err := mgr.Get(args[0])
+		if err != nil {
+			return nil, fmt.Errorf("getting dog %s: %w", args[0], err)
+		}
+		return []dog.DogHealthResult{hc.Check(d, maxInactivity, autoClear)}, nil
+	}
+	return hc.CheckAll(maxInactivity, autoClear)
+}
+
+func printDogHealthJSON(results []dog.DogHealthResult, attention int) error {
+	type healthReport struct {
+		Dogs           []dog.DogHealthResult `json:"dogs"`
+		NeedsAttention int                   `json:"needs_attention"`
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(healthReport{Dogs: results, NeedsAttention: attention})
+}
+
+func printDogHealthHuman(results []dog.DogHealthResult, attention int) {
+	if len(results) == 0 {
+		fmt.Println("No dogs in kennel")
+		return
+	}
+	fmt.Println(style.Bold.Render("Dog Health Check"))
+	fmt.Println()
+	for _, result := range results {
+		fmt.Println(formatDogHealthLine(result))
+	}
+	fmt.Println()
+	printDogHealthSummary(attention)
+}
+
+func formatDogHealthLine(result dog.DogHealthResult) string {
+	icon := "✓"
+	if result.NeedsAttention {
+		icon = "✗"
+	}
+	line := fmt.Sprintf("  %s %s [%s] session=%s", icon, result.Name, result.State, result.SessionStatus)
+	if result.WorkDuration > 0 {
+		line += fmt.Sprintf(" duration=%s", result.WorkDuration.Truncate(time.Second))
+	}
+	if result.AutoCleared {
+		line += " (auto-cleared)"
+	}
+	if result.Recommendation != "" && result.NeedsAttention {
+		line += fmt.Sprintf("\n    → %s", result.Recommendation)
+	}
+	return line
+}
+
+func printDogHealthSummary(attention int) {
+	if attention > 0 {
+		fmt.Printf("  %d dog(s) need attention\n", attention)
+		return
+	}
+	fmt.Println("  All dogs healthy")
+}
+
+func exitWithCode(code int, exit func(int)) {
+	exit(code)
 }
 
 type dogDispatchOptions struct {
