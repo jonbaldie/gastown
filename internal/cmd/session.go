@@ -22,20 +22,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Session command flags
-var (
-	sessionIssue               string
-	sessionForce               bool
-	sessionLines               int
-	sessionMessage             string
-	sessionFile                string
-	sessionRigFilter           string
-	sessionListJSON            bool
-	sessionStatusJSON          bool
-	sessionHealthJSON          bool
-	sessionHealthMaxInactivity time.Duration
-)
-
 var sessionCmd = &cobra.Command{
 	Use:     "session",
 	Aliases: []string{"sess"},
@@ -191,31 +177,31 @@ Examples:
 
 func init() {
 	// Start flags
-	sessionStartCmd.Flags().StringVar(&sessionIssue, "issue", "", "Issue ID to work on")
+	sessionStartCmd.Flags().String("issue", "", "Issue ID to work on")
 
 	// Stop flags
-	sessionStopCmd.Flags().BoolVarP(&sessionForce, "force", "f", false, "Force immediate shutdown")
+	sessionStopCmd.Flags().BoolP("force", "f", false, "Force immediate shutdown")
 
 	// List flags
-	sessionListCmd.Flags().StringVar(&sessionRigFilter, "rig", "", "Filter by rig name")
-	sessionListCmd.Flags().BoolVar(&sessionListJSON, "json", false, "Output as JSON")
+	sessionListCmd.Flags().String("rig", "", "Filter by rig name")
+	sessionListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Capture flags
-	sessionCaptureCmd.Flags().IntVarP(&sessionLines, "lines", "n", 100, "Number of lines to capture")
+	sessionCaptureCmd.Flags().IntP("lines", "n", 100, "Number of lines to capture")
 
 	// Inject flags
-	sessionInjectCmd.Flags().StringVarP(&sessionMessage, "message", "m", "", "Message to inject")
-	sessionInjectCmd.Flags().StringVarP(&sessionFile, "file", "f", "", "File to read message from")
+	sessionInjectCmd.Flags().StringP("message", "m", "", "Message to inject")
+	sessionInjectCmd.Flags().StringP("file", "f", "", "File to read message from")
 
 	// Restart flags
-	sessionRestartCmd.Flags().BoolVarP(&sessionForce, "force", "f", false, "Force immediate shutdown")
+	sessionRestartCmd.Flags().BoolP("force", "f", false, "Force immediate shutdown")
 
 	// Status flags
-	sessionStatusCmd.Flags().BoolVar(&sessionStatusJSON, "json", false, "Output as JSON")
+	sessionStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Health flags
-	sessionHealthCmd.Flags().BoolVar(&sessionHealthJSON, "json", false, "Output as JSON")
-	sessionHealthCmd.Flags().DurationVar(&sessionHealthMaxInactivity, "max-inactivity", 0, "Maximum tmux inactivity before reporting agent-hung (0 disables activity check)")
+	sessionHealthCmd.Flags().Bool("json", false, "Output as JSON")
+	sessionHealthCmd.Flags().Duration("max-inactivity", 0, "Maximum tmux inactivity before reporting agent-hung (0 disables activity check)")
 
 	// Add subcommands
 	sessionCmd.AddCommand(sessionStartCmd)
@@ -285,7 +271,8 @@ func getSessionManager(rigName string) (*polecat.SessionManager, *rig.Rig, error
 	return polecatMgr, r, nil
 }
 
-func runSessionStart(_ *cobra.Command, args []string) error {
+func runSessionStart(cmd *cobra.Command, args []string) error {
+	issue := commandStringFlag(cmd, "issue")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -311,7 +298,7 @@ func runSessionStart(_ *cobra.Command, args []string) error {
 	}
 
 	opts := polecat.SessionStartOptions{
-		Issue: sessionIssue,
+		Issue: issue,
 	}
 
 	fmt.Printf("Starting session for %s/%s...\n", rigName, polecatName)
@@ -327,13 +314,14 @@ func runSessionStart(_ *cobra.Command, args []string) error {
 	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
 		agent := fmt.Sprintf("%s/%s", rigName, polecatName)
 		logger := townlog.NewLogger(townRoot)
-		_ = logger.Log(townlog.EventWake, agent, sessionIssue)
+		_ = logger.Log(townlog.EventWake, agent, issue)
 	}
 
 	return nil
 }
 
-func runSessionStop(_ *cobra.Command, args []string) error {
+func runSessionStop(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -344,12 +332,12 @@ func runSessionStop(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	if sessionForce {
+	if force {
 		fmt.Printf("Force stopping session for %s/%s...\n", rigName, polecatName)
 	} else {
 		fmt.Printf("Stopping session for %s/%s...\n", rigName, polecatName)
 	}
-	if err := polecatMgr.Stop(polecatName, sessionForce); err != nil {
+	if err := polecatMgr.Stop(polecatName, force); err != nil {
 		return fmt.Errorf("stopping session: %w", err)
 	}
 
@@ -359,7 +347,7 @@ func runSessionStop(_ *cobra.Command, args []string) error {
 	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
 		agent := fmt.Sprintf("%s/%s", rigName, polecatName)
 		reason := "gt session stop"
-		if sessionForce {
+		if force {
 			reason = "gt session stop --force"
 		}
 		logger := townlog.NewLogger(townRoot)
@@ -402,7 +390,9 @@ type SessionListItem struct {
 	Running   bool   `json:"running"`
 }
 
-func runSessionList(_ *cobra.Command, _ []string) error {
+func runSessionList(cmd *cobra.Command, _ []string) error {
+	rigFilter := commandStringFlag(cmd, "rig")
+	listJSON := commandBoolFlag(cmd, "json")
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -425,10 +415,10 @@ func runSessionList(_ *cobra.Command, _ []string) error {
 	}
 
 	// Filter if requested
-	if sessionRigFilter != "" {
+	if rigFilter != "" {
 		var filtered []*rig.Rig
 		for _, r := range rigs {
-			if r.Name == sessionRigFilter {
+			if r.Name == rigFilter {
 				filtered = append(filtered, r)
 			}
 		}
@@ -457,7 +447,7 @@ func runSessionList(_ *cobra.Command, _ []string) error {
 	}
 
 	// Output
-	if sessionListJSON {
+	if listJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(allSessions)
@@ -481,7 +471,8 @@ func runSessionList(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runSessionCapture(_ *cobra.Command, args []string) error {
+func runSessionCapture(cmd *cobra.Command, args []string) error {
+	lines := commandIntFlag(cmd, "lines")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -493,7 +484,6 @@ func runSessionCapture(_ *cobra.Command, args []string) error {
 	}
 
 	// Use positional count if provided, otherwise use flag value
-	lines := sessionLines
 	if len(args) > 1 {
 		n, err := strconv.Atoi(args[1])
 		if err != nil {
@@ -514,16 +504,17 @@ func runSessionCapture(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionInject(_ *cobra.Command, args []string) error {
+func runSessionInject(cmd *cobra.Command, args []string) error {
+	message := commandStringFlag(cmd, "message")
+	file := commandStringFlag(cmd, "file")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
 	}
 
 	// Get message
-	message := sessionMessage
-	if sessionFile != "" {
-		data, err := os.ReadFile(sessionFile)
+	if file != "" {
+		data, err := os.ReadFile(file)
 		if err != nil {
 			return fmt.Errorf("reading file: %w", err)
 		}
@@ -548,7 +539,8 @@ func runSessionInject(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionRestart(_ *cobra.Command, args []string) error {
+func runSessionRestart(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -567,12 +559,12 @@ func runSessionRestart(_ *cobra.Command, args []string) error {
 
 	if running {
 		// Stop first
-		if sessionForce {
+		if force {
 			fmt.Printf("Force stopping session for %s/%s...\n", rigName, polecatName)
 		} else {
 			fmt.Printf("Stopping session for %s/%s...\n", rigName, polecatName)
 		}
-		if err := polecatMgr.Stop(polecatName, sessionForce); err != nil {
+		if err := polecatMgr.Stop(polecatName, force); err != nil {
 			return fmt.Errorf("stopping session: %w", err)
 		}
 
@@ -601,7 +593,8 @@ func runSessionRestart(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionStatus(_ *cobra.Command, args []string) error {
+func runSessionStatus(cmd *cobra.Command, args []string) error {
+	statusJSON := commandBoolFlag(cmd, "json")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -617,7 +610,7 @@ func runSessionStatus(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("getting status: %w", err)
 	}
 
-	if sessionStatusJSON {
+	if statusJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(info)
@@ -650,12 +643,14 @@ func runSessionStatus(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionHealth(_ *cobra.Command, args []string) error {
+func runSessionHealth(cmd *cobra.Command, args []string) error {
+	healthJSON := commandBoolFlag(cmd, "json")
+	maxInactivity, _ := cmd.Flags().GetDuration("max-inactivity")
 	sessionName := args[0]
-	status := tmux.NewTmux().CheckSessionHealth(sessionName, sessionHealthMaxInactivity)
-	report := newSessionHealthReport(sessionName, status, sessionHealthMaxInactivity)
+	status := tmux.NewTmux().CheckSessionHealth(sessionName, maxInactivity)
+	report := newSessionHealthReport(sessionName, status, maxInactivity)
 
-	if sessionHealthJSON {
+	if healthJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(report)
