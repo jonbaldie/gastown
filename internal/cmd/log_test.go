@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	gtevents "github.com/jonbaldie/gastown/internal/events"
+	"github.com/spf13/cobra"
 )
 
 func TestRunLogCrashEmitsFeedSessionDeath(t *testing.T) {
@@ -28,17 +29,12 @@ func TestRunLogCrashEmitsFeedSessionDeath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
-	origAgent, origSession, origExitCode := crashAgent, crashSession, crashExitCode
-	t.Cleanup(func() {
-		crashAgent = origAgent
-		crashSession = origSession
-		crashExitCode = origExitCode
-	})
-	crashAgent = "gastown/polecats/rust"
-	crashSession = "gt-gastown-rust"
-	crashExitCode = 42
+	cmd := &cobra.Command{}
+	cmd.Flags().String("agent", "gastown/polecats/rust", "")
+	cmd.Flags().String("session", "gt-gastown-rust", "")
+	cmd.Flags().Int("exit-code", 42, "")
 
-	if err := runLogCrash(nil, nil); err != nil {
+	if err := runLogCrash(cmd, nil); err != nil {
 		t.Fatalf("runLogCrash: %v", err)
 	}
 

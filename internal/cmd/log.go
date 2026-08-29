@@ -14,21 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Log command flags
-var (
-	logTail   int
-	logType   string
-	logAgent  string
-	logSince  string
-	logFollow bool
-	logAcp    bool
-
-	// log crash flags
-	crashAgent    string
-	crashSession  string
-	crashExitCode int
-)
-
 var logCmd = &cobra.Command{
 	Use:     "log",
 	GroupID: GroupDiag,
@@ -72,38 +57,55 @@ Examples:
 }
 
 func init() {
-	logCmd.Flags().IntVarP(&logTail, "tail", "n", 20, "Number of events to show")
-	logCmd.Flags().StringVarP(&logType, "type", "t", "", "Filter by event type (spawn,wake,nudge,handoff,done,crash,kill)")
-	logCmd.Flags().StringVarP(&logAgent, "agent", "a", "", "Filter by agent prefix (e.g., gastown/, greenplace/crew/max)")
-	logCmd.Flags().StringVar(&logSince, "since", "", "Show events since duration (e.g., 1h, 30m, 24h)")
-	logCmd.Flags().BoolVarP(&logFollow, "follow", "f", false, "Follow log output (like tail -f)")
-	logCmd.Flags().BoolVar(&logAcp, "acp", false, "View ACP debug logs (requires GT_ACP_DEBUG=1)")
+	logCmd.Flags().IntP("tail", "n", 20, "Number of events to show")
+	logCmd.Flags().StringP("type", "t", "", "Filter by event type (spawn,wake,nudge,handoff,done,crash,kill)")
+	logCmd.Flags().StringP("agent", "a", "", "Filter by agent prefix (e.g., gastown/, greenplace/crew/max)")
+	logCmd.Flags().String("since", "", "Show events since duration (e.g., 1h, 30m, 24h)")
+	logCmd.Flags().BoolP("follow", "f", false, "Follow log output (like tail -f)")
+	logCmd.Flags().Bool("acp", false, "View ACP debug logs (requires GT_ACP_DEBUG=1)")
 
 	// crash subcommand flags
-	logCrashCmd.Flags().StringVar(&crashAgent, "agent", "", "Agent ID (e.g., greenplace/Toast)")
-	logCrashCmd.Flags().StringVar(&crashSession, "session", "", "Tmux session name")
-	logCrashCmd.Flags().IntVar(&crashExitCode, "exit-code", -1, "Exit code from pane")
+	logCrashCmd.Flags().String("agent", "", "Agent ID (e.g., greenplace/Toast)")
+	logCrashCmd.Flags().String("session", "", "Tmux session name")
+	logCrashCmd.Flags().Int("exit-code", -1, "Exit code from pane")
 	_ = logCrashCmd.MarkFlagRequired("agent")
 
 	logCmd.AddCommand(logCrashCmd)
 	rootCmd.AddCommand(logCmd)
 }
 
-func runLog(_ *cobra.Command, _ []string) error {
+type logOptions struct {
+	tail     int
+	typeName string
+	agent    string
+	since    string
+	follow   bool
+	acp      bool
+}
+
+func runLog(cmd *cobra.Command, _ []string) error {
+	opts := logOptions{
+		tail:     commandIntFlag(cmd, "tail"),
+		typeName: commandStringFlag(cmd, "type"),
+		agent:    commandStringFlag(cmd, "agent"),
+		since:    commandStringFlag(cmd, "since"),
+		follow:   commandBoolFlag(cmd, "follow"),
+		acp:      commandBoolFlag(cmd, "acp"),
+	}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Handle --acp flag to view ACP debug logs
-	if logAcp {
-		return viewACPLogs(townRoot)
+	if opts.acp {
+		return viewACPLogs(townRoot, opts.tail, opts.follow)
 	}
 
 	logPath := fmt.Sprintf("%s/logs/town.log", townRoot)
 
 	// If following, use tail -f
-	if logFollow {
+	if opts.follow {
 		return followLog(logPath)
 	}
 
@@ -127,16 +129,16 @@ func runLog(_ *cobra.Command, _ []string) error {
 	// Build filter
 	filter := townlog.Filter{}
 
-	if logType != "" {
-		filter.Type = townlog.EventType(logType)
+	if opts.typeName != "" {
+		filter.Type = townlog.EventType(opts.typeName)
 	}
 
-	if logAgent != "" {
-		filter.Agent = logAgent
+	if opts.agent != "" {
+		filter.Agent = opts.agent
 	}
 
-	if logSince != "" {
-		duration, err := time.ParseDuration(logSince)
+	if opts.since != "" {
+		duration, err := time.ParseDuration(opts.since)
 		if err != nil {
 			return fmt.Errorf("invalid --since duration: %w", err)
 		}
@@ -147,8 +149,8 @@ func runLog(_ *cobra.Command, _ []string) error {
 	events = townlog.FilterEvents(events, filter)
 
 	// Apply tail limit
-	if logTail > 0 && len(events) > logTail {
-		events = events[len(events)-logTail:]
+	if opts.tail > 0 && len(events) > opts.tail {
+		events = events[len(events)-opts.tail:]
 	}
 
 	if len(events) == 0 {
@@ -187,11 +189,11 @@ func followLog(logPath string) error {
 }
 
 // viewACPLogs displays the ACP debug log file.
-func viewACPLogs(townRoot string) error {
+func viewACPLogs(townRoot string, tail int, follow bool) error {
 	logPath := fmt.Sprintf("%s/logs/acp.log", townRoot)
 
 	// If following, use tail -f
-	if logFollow {
+	if follow {
 		return followLog(logPath)
 	}
 
@@ -210,8 +212,8 @@ func viewACPLogs(townRoot string) error {
 	lines := strings.Split(string(content), "\n")
 
 	// Apply tail limit
-	if logTail > 0 && len(lines) > logTail {
-		lines = lines[len(lines)-logTail:]
+	if tail > 0 && len(lines) > tail {
+		lines = lines[len(lines)-tail:]
 	}
 
 	// Print lines
@@ -356,7 +358,10 @@ func truncateStr(s string, maxLen int) string {
 }
 
 // runLogCrash handles the "gt log crash" command from tmux pane-died hooks.
-func runLogCrash(_ *cobra.Command, _ []string) error {
+func runLogCrash(cmd *cobra.Command, _ []string) error {
+	agent := commandStringFlag(cmd, "agent")
+	session := commandStringFlag(cmd, "session")
+	exitCode := commandIntFlag(cmd, "exit-code")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil || townRoot == "" {
 		// Try to find town root from conventional location
@@ -375,33 +380,33 @@ func runLogCrash(_ *cobra.Command, _ []string) error {
 	var eventType townlog.EventType
 	var context string
 
-	if crashExitCode == 0 {
+	if exitCode == 0 {
 		// Exit code 0 = normal exit
 		// Could be handoff, done, or user quit - we log as "done" if no prior done event
 		// The Witness can analyze further if needed
 		eventType = townlog.EventDone
 		context = "exited normally"
-	} else if crashExitCode == 130 {
+	} else if exitCode == 130 {
 		// Exit code 130 = Ctrl+C (SIGINT)
 		// This is typically intentional user interrupt
 		eventType = townlog.EventKill
-		context = fmt.Sprintf("interrupted (exit %d)", crashExitCode)
+		context = fmt.Sprintf("interrupted (exit %d)", exitCode)
 	} else {
 		// Non-zero exit = crash
 		eventType = townlog.EventCrash
-		context = fmt.Sprintf("exit code %d", crashExitCode)
-		if crashSession != "" {
-			context += fmt.Sprintf(" (session: %s)", crashSession)
+		context = fmt.Sprintf("exit code %d", exitCode)
+		if session != "" {
+			context += fmt.Sprintf(" (session: %s)", session)
 		}
 	}
 
 	// Log the event
 	logger := townlog.NewLogger(townRoot)
-	if err := logger.Log(eventType, crashAgent, context); err != nil {
+	if err := logger.Log(eventType, agent, context); err != nil {
 		return fmt.Errorf("logging event: %w", err)
 	}
 	if eventType == townlog.EventCrash {
-		logCrashFeedEvent(townRoot, crashAgent, crashSession, crashExitCode)
+		logCrashFeedEvent(townRoot, agent, session, exitCode)
 	}
 
 	return nil
