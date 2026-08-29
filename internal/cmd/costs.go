@@ -942,49 +942,64 @@ func outputLedgerHuman(output CostsOutput, entries []CostEntry) error {
 	// Total
 	fmt.Printf("%s $%.2f\n", style.Bold.Render("Total:"), output.Total)
 
-	// By role breakdown
-	if output.ByRole != nil && len(output.ByRole) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("By Role:"))
-		for role, cost := range output.ByRole {
-			icon := constants.RoleEmoji(role)
-			fmt.Printf("  %s %-12s $%.2f\n", icon, role, cost)
-		}
-	}
-
-	// By rig breakdown
-	if output.ByRig != nil && len(output.ByRig) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("By Rig:"))
-		for rig, cost := range output.ByRig {
-			fmt.Printf("  %-15s $%.2f\n", rig, cost)
-		}
-	}
-
-	if output.ByAgentType != nil && len(output.ByAgentType) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("By Agent Type:"))
-		for agent, cost := range output.ByAgentType {
-			fmt.Printf("  %-15s $%.2f\n", agent, cost)
-		}
-	}
-
-	if len(entries) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("Runs:"))
-		for _, e := range entries {
-			bead := e.WorkItem
-			if bead == "" {
-				bead = "-"
-			}
-			agent := e.AgentType
-			if agent == "" {
-				agent = "-"
-			}
-			fmt.Printf("  bead=%s role=%s agent=%s $%.2f\n", bead, e.Role, agent, e.CostUSD)
-		}
-	}
+	printLedgerRoleBreakdown(output.ByRole)
+	printLedgerRigBreakdown(output.ByRig)
+	printLedgerAgentBreakdown(output.ByAgentType)
+	printLedgerRuns(entries)
 
 	// Session count
 	fmt.Printf("\n%s %d sessions\n", style.Dim.Render("Entries:"), len(entries))
 
 	return nil
+}
+
+func printLedgerRoleBreakdown(byRole map[string]float64) {
+	if len(byRole) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("By Role:"))
+	for role, cost := range byRole {
+		icon := constants.RoleEmoji(role)
+		fmt.Printf("  %s %-12s $%.2f\n", icon, role, cost)
+	}
+}
+
+func printLedgerRigBreakdown(byRig map[string]float64) {
+	if len(byRig) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("By Rig:"))
+	for rig, cost := range byRig {
+		fmt.Printf("  %-15s $%.2f\n", rig, cost)
+	}
+}
+
+func printLedgerAgentBreakdown(byAgentType map[string]float64) {
+	if len(byAgentType) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("By Agent Type:"))
+	for agent, cost := range byAgentType {
+		fmt.Printf("  %-15s $%.2f\n", agent, cost)
+	}
+}
+
+func printLedgerRuns(entries []CostEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("Runs:"))
+	for _, e := range entries {
+		bead := e.WorkItem
+		if bead == "" {
+			bead = "-"
+		}
+		agent := e.AgentType
+		if agent == "" {
+			agent = "-"
+		}
+		fmt.Printf("  bead=%s role=%s agent=%s $%.2f\n", bead, e.Role, agent, e.CostUSD)
+	}
 }
 
 // CostLogEntry represents a single entry in the costs.jsonl log file.
