@@ -1804,29 +1804,15 @@ func runDoltPull(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("Dolt server is remote (%s) — pull requires local server access", config.HostPort())
 	}
 
-	// Validate --db flag if set
-	if doltPullDB != "" && !doltserver.DatabaseExists(townRoot, doltPullDB) {
-		return fmt.Errorf("database %q not found in .dolt-data/\nRun 'gt dolt list' to see available databases", doltPullDB)
+	if err := validateDoltPullDatabase(townRoot, doltPullDB); err != nil {
+		return err
 	}
-
-	// Check server state
-	wasRunning, _, _ := doltserver.IsRunning(townRoot)
 
 	opts := doltserver.SyncOptions{
 		DryRun: doltPullDry,
 		Filter: doltPullDB,
 	}
-
-	// Use SQL pull through the running server (no lock contention).
-	// Fall back to CLI pull only when server isn't running.
-	var results []doltserver.SyncResult
-	if wasRunning {
-		fmt.Printf("Pulling via SQL (server stays running)...\n")
-		results = doltserver.PullDatabasesSQL(townRoot, opts)
-	} else {
-		fmt.Printf("Server not running — using CLI pull...\n")
-		results = doltserver.PullDatabases(townRoot, opts)
-	}
+	results := pullDoltDatabases(townRoot, opts)
 
 	if len(results) == 0 {
 		fmt.Println("No databases to pull.")
@@ -1834,8 +1820,34 @@ func runDoltPull(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("\nPulling %d database(s)...\n", len(results))
+	pulled, skipped, failed := printDoltPullResults(results)
 
-	var pulled, skipped, failed int
+	fmt.Printf("\nSummary: %d pulled, %d skipped, %d failed\n", pulled, skipped, failed)
+
+	if failed > 0 {
+		return fmt.Errorf("%d database(s) failed to pull", failed)
+	}
+	return nil
+}
+
+func validateDoltPullDatabase(townRoot, database string) error {
+	if database != "" && !doltserver.DatabaseExists(townRoot, database) {
+		return fmt.Errorf("database %q not found in .dolt-data/\nRun 'gt dolt list' to see available databases", database)
+	}
+	return nil
+}
+
+func pullDoltDatabases(townRoot string, opts doltserver.SyncOptions) []doltserver.SyncResult {
+	wasRunning, _, _ := doltserver.IsRunning(townRoot)
+	if wasRunning {
+		fmt.Printf("Pulling via SQL (server stays running)...\n")
+		return doltserver.PullDatabasesSQL(townRoot, opts)
+	}
+	fmt.Printf("Server not running — using CLI pull...\n")
+	return doltserver.PullDatabases(townRoot, opts)
+}
+
+func printDoltPullResults(results []doltserver.SyncResult) (pulled, skipped, failed int) {
 	for _, r := range results {
 		switch {
 		case r.Pushed: // reused field = success
@@ -1853,13 +1865,7 @@ func runDoltPull(_ *cobra.Command, _ []string) error {
 			failed++
 		}
 	}
-
-	fmt.Printf("\nSummary: %d pulled, %d skipped, %d failed\n", pulled, skipped, failed)
-
-	if failed > 0 {
-		return fmt.Errorf("%d database(s) failed to pull", failed)
-	}
-	return nil
+	return pulled, skipped, failed
 }
 
 func runDoltMigrateWisps(_ *cobra.Command, _ []string) error {
