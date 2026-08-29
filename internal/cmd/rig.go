@@ -303,8 +303,7 @@ Examples:
 	RunE: runRigRestart,
 }
 
-// Flags
-type rigCommandState struct {
+type rigAddFlags struct {
 	addPrefix         string
 	addLocalRepo      string
 	addBranch         string
@@ -318,19 +317,27 @@ type rigCommandState struct {
 	addImportBeads    bool
 	resetHandoff      bool
 	resetMail         bool
-	resetStale        bool
-	resetDryRun       bool
-	resetRole         string
-	shutdownForce     bool
-	shutdownNuclear   bool
-	rebootForce       bool
-	rebootNuclear     bool
-	stopForce         bool
-	stopNuclear       bool
-	restartForce      bool
-	restartNuclear    bool
-	listJSON          bool
-	removeForce       bool
+}
+
+type rigLifecycleFlags struct {
+	resetStale      bool
+	resetDryRun     bool
+	resetRole       string
+	shutdownForce   bool
+	shutdownNuclear bool
+	rebootForce     bool
+	rebootNuclear   bool
+	stopForce       bool
+	stopNuclear     bool
+	restartForce    bool
+	restartNuclear  bool
+	listJSON        bool
+	removeForce     bool
+}
+
+type rigCommandState struct {
+	rigAddFlags
+	rigLifecycleFlags
 }
 
 var rigCommandStateInstance = sync.OnceValue(func() *rigCommandState {
@@ -338,7 +345,10 @@ var rigCommandStateInstance = sync.OnceValue(func() *rigCommandState {
 })
 
 func rigState() *rigCommandState {
-	return rigCommandStateInstance()
+	state := rigCommandStateInstance()
+	_ = &state.rigAddFlags
+	_ = &state.rigLifecycleFlags
+	return state
 }
 
 var (
