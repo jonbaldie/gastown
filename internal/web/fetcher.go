@@ -769,26 +769,9 @@ func determineCIStatus(checks []struct {
 	hasPending := false
 
 	for _, check := range checks {
-		// Check conclusion first (for completed checks)
-		switch check.Conclusion {
-		case "failure", "cancelled", "timed_out", "action_required": //nolint:misspell // GitHub API returns "cancelled" (British spelling)
-			hasFailure = true
-		case "success", "skipped", "neutral":
-			// Pass
-		default:
-			// Check status for in-progress checks
-			switch check.Status {
-			case "queued", "in_progress", "waiting", "pending", "requested":
-				hasPending = true
-			}
-			// Also check state field
-			switch check.State {
-			case "FAILURE", "ERROR":
-				hasFailure = true
-			case "PENDING", "EXPECTED":
-				hasPending = true
-			}
-		}
+		failure, pending := classifyCICheck(check)
+		hasFailure = hasFailure || failure
+		hasPending = hasPending || pending
 	}
 
 	if hasFailure {
@@ -798,6 +781,33 @@ func determineCIStatus(checks []struct {
 		return "pending"
 	}
 	return "pass"
+}
+
+func classifyCICheck(check struct {
+	State      string `json:"state"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}) (failure, pending bool) {
+	// Check conclusion first (for completed checks).
+	switch check.Conclusion {
+	case "failure", "cancelled", "timed_out", "action_required": //nolint:misspell // GitHub API returns "cancelled" (British spelling)
+		return true, false
+	case "success", "skipped", "neutral":
+		return false, false
+	}
+
+	// Check status and state for in-progress checks.
+	switch check.Status {
+	case "queued", "in_progress", "waiting", "pending", "requested":
+		pending = true
+	}
+	switch check.State {
+	case "FAILURE", "ERROR":
+		failure = true
+	case "PENDING", "EXPECTED":
+		pending = true
+	}
+	return failure, pending
 }
 
 // determineMergeableStatus converts GitHub's mergeable field to display value.
