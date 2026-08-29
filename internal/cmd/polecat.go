@@ -1991,64 +1991,84 @@ func runPolecatPrune(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Use the mayor/rig clone (or bare repo) for branch operations
-	var repoGit *git.Git
-	bareRepoPath := filepath.Join(r.Path, ".repo.git")
-	if info, statErr := os.Stat(bareRepoPath); statErr == nil && info.IsDir() {
-		repoGit = git.NewGitWithDir(bareRepoPath, "")
-	} else {
-		repoGit = git.NewGit(filepath.Join(r.Path, "mayor", "rig"))
-	}
+	repoGit := polecatPruneRepoGit(r.Path)
 
 	fmt.Printf("Pruning stale polecat branches in %s...\n", r.Name)
 
-	// First, prune stale remote-tracking refs so we detect deleted remote branches
+	if err := fetchPolecatPruneOrigin(repoGit, polecatPruneRemote); err != nil {
+		return err
+	}
+
+	if err := pruneAndReportLocalPolecatBranches(repoGit, polecatPruneDryRun); err != nil {
+		return err
+	}
+
+	if !polecatPruneRemote {
+		return nil
+	}
+
+	return pruneAndReportRemotePolecatBranches(repoGit, polecatPruneDryRun)
+}
+
+func polecatPruneRepoGit(rigPath string) *git.Git {
+	// Use the mayor/rig clone (or bare repo) for branch operations.
+	bareRepoPath := filepath.Join(rigPath, ".repo.git")
+	if info, statErr := os.Stat(bareRepoPath); statErr == nil && info.IsDir() {
+		return git.NewGitWithDir(bareRepoPath, "")
+	}
+	return git.NewGit(filepath.Join(rigPath, "mayor", "rig"))
+}
+
+func fetchPolecatPruneOrigin(repoGit *git.Git, remotePrune bool) error {
+	// First, prune stale remote-tracking refs so we detect deleted remote branches.
 	if err := repoGit.FetchPrune("origin"); err != nil {
-		if polecatPruneRemote {
+		if remotePrune {
 			return fmt.Errorf("refreshing origin before remote prune: %w", err)
 		}
 		fmt.Printf("  %s fetch --prune: %v (continuing anyway)\n", style.Warning.Render("⚠"), err)
 	}
+	return nil
+}
 
-	// Prune local branches that are merged or have no remote
-	pruned, err := repoGit.PruneStaleBranches("polecat/*", polecatPruneDryRun)
+func pruneAndReportLocalPolecatBranches(repoGit *git.Git, dryRun bool) error {
+	pruned, err := repoGit.PruneStaleBranches("polecat/*", dryRun)
 	if err != nil {
 		return fmt.Errorf("pruning local branches: %w", err)
 	}
-
 	if len(pruned) == 0 {
 		fmt.Println("No stale local polecat branches found.")
-	} else {
-		verb := "Pruned"
-		if polecatPruneDryRun {
-			verb = "Would prune"
-		}
-		for _, b := range pruned {
-			fmt.Printf("  %s %s (%s)\n", style.Success.Render("✓"), b.Name, b.Reason)
-		}
-		fmt.Printf("\n%s %d local branch(es).\n", verb, len(pruned))
+		return nil
 	}
 
-	// Optionally prune remote polecat branches
-	if polecatPruneRemote {
-		fmt.Println()
-		fmt.Println("Pruning remote polecat branches...")
-
-		remotePruned, remoteErr := pruneRemotePolecatBranches(repoGit, polecatPruneDryRun)
-		if remoteErr != nil {
-			return remoteErr
-		}
-
-		if remotePruned == 0 {
-			fmt.Println("No stale remote polecat branches found.")
-		} else {
-			verb := "Pruned"
-			if polecatPruneDryRun {
-				verb = "Would prune"
-			}
-			fmt.Printf("\n%s %d remote branch(es).\n", verb, remotePruned)
-		}
+	verb := "Pruned"
+	if dryRun {
+		verb = "Would prune"
 	}
+	for _, b := range pruned {
+		fmt.Printf("  %s %s (%s)\n", style.Success.Render("✓"), b.Name, b.Reason)
+	}
+	fmt.Printf("\n%s %d local branch(es).\n", verb, len(pruned))
+	return nil
+}
+
+func pruneAndReportRemotePolecatBranches(repoGit *git.Git, dryRun bool) error {
+	fmt.Println()
+	fmt.Println("Pruning remote polecat branches...")
+
+	remotePruned, err := pruneRemotePolecatBranches(repoGit, dryRun)
+	if err != nil {
+		return err
+	}
+	if remotePruned == 0 {
+		fmt.Println("No stale remote polecat branches found.")
+		return nil
+	}
+
+	verb := "Pruned"
+	if dryRun {
+		verb = "Would prune"
+	}
+	fmt.Printf("\n%s %d remote branch(es).\n", verb, remotePruned)
 
 	return nil
 }
