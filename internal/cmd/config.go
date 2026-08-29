@@ -472,41 +472,54 @@ func runConfigAgentSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	// Load town settings
 	settingsPath := config.TownSettingsPath(townRoot)
 	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
 	if err != nil {
 		return fmt.Errorf("loading town settings: %w", err)
 	}
 
-	// Parse command line into command and args
-	parts := strings.Fields(commandLine)
-	if len(parts) == 0 {
-		return fmt.Errorf("command cannot be empty")
+	parts, err := parseConfigAgentCommand(commandLine)
+	if err != nil {
+		return err
+	}
+	provider := configAgentProvider(cmd, parts[0])
+	updateConfigAgent(townSettings, name, provider, parts)
+
+	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
+		return fmt.Errorf("saving town settings: %w", err)
 	}
 
-	// Initialize agents map if needed
+	printConfigAgentSet(name, commandLine)
+	return nil
+}
+
+func parseConfigAgentCommand(commandLine string) ([]string, error) {
+	parts := strings.Fields(commandLine)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("command cannot be empty")
+	}
+	return parts, nil
+}
+
+func configAgentProvider(cmd *cobra.Command, command string) string {
+	provider := commandStringFlag(cmd, "provider")
+	if provider != "" {
+		return provider
+	}
+	cmdBase := command
+	if idx := strings.LastIndexByte(cmdBase, '/'); idx >= 0 {
+		cmdBase = cmdBase[idx+1:]
+	}
+	if config.IsKnownPreset(cmdBase) {
+		return cmdBase
+	}
+	return ""
+}
+
+func updateConfigAgent(townSettings *config.TownSettings, name, provider string, parts []string) {
 	if townSettings.Agents == nil {
 		townSettings.Agents = make(map[string]*config.RuntimeConfig)
 	}
-
-	// Determine the provider: use --provider flag if given, otherwise infer
-	// from the command binary name if it matches a known preset.
-	provider := commandStringFlag(cmd, "provider")
-	if provider == "" {
-		cmdBase := parts[0]
-		if idx := strings.LastIndexByte(cmdBase, '/'); idx >= 0 {
-			cmdBase = cmdBase[idx+1:]
-		}
-		if config.IsKnownPreset(cmdBase) {
-			provider = cmdBase
-		}
-	}
-
-	// Create or update the agent. When an entry already exists, mutate it in
-	// place rather than replacing it wholesale — a wholesale replace would
-	// silently discard fields like Env/Session/Hooks/Tmux/Instructions that
-	// aren't set by this command.
 	agent := townSettings.Agents[name]
 	if agent == nil {
 		agent = &config.RuntimeConfig{}
@@ -515,24 +528,16 @@ func runConfigAgentSet(cmd *cobra.Command, args []string) error {
 	agent.Provider = provider
 	agent.Command = parts[0]
 	agent.Args = parts[1:]
+}
 
-	// Save settings
-	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
-		return fmt.Errorf("saving town settings: %w", err)
-	}
-
+func printConfigAgentSet(name, commandLine string) {
 	fmt.Printf("Agent '%s' set to: %s\n", style.Bold.Render(name), commandLine)
-
-	// Check if this overrides a built-in
-	builtInAgents := config.ListAgentPresets()
-	for _, builtin := range builtInAgents {
+	for _, builtin := range config.ListAgentPresets() {
 		if name == builtin {
 			fmt.Printf("\n%s\n", style.Dim.Render("(overriding built-in '"+builtin+"' preset)"))
 			break
 		}
 	}
-
-	return nil
 }
 
 func runConfigAgentRemove(_ *cobra.Command, args []string) error {
