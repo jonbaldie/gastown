@@ -44,55 +44,82 @@ func init() {
 }
 
 func runWlPost(cmd *cobra.Command, _ []string) error {
-	title := commandStringFlag(cmd, "title")
-	description := commandStringFlag(cmd, "description")
-	project := commandStringFlag(cmd, "project")
-	itemType := commandStringFlag(cmd, "type")
-	priority := commandIntFlag(cmd, "priority")
-	effort := commandStringFlag(cmd, "effort")
-	tagsText := commandStringFlag(cmd, "tags")
+	input := readWlPostInput(cmd)
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	var tags []string
-	if tagsText != "" {
-		for _, t := range strings.Split(tagsText, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				tags = append(tags, t)
-			}
-		}
-	}
-
-	if err := validatePostInputs(itemType, effort, priority); err != nil {
+	if err := validatePostInputs(input.itemType, input.effort, input.priority); err != nil {
 		return err
 	}
 
-	store := doltserver.NewWLCommons(townRoot)
+	item, err := newWlPostItem(townRoot, input)
+	if err != nil {
+		return err
+	}
 
+	if err := postWanted(doltserver.NewWLCommons(townRoot), item); err != nil {
+		return err
+	}
+
+	printPostedWlItem(item)
+	return nil
+}
+
+type wlPostInput struct {
+	title       string
+	description string
+	project     string
+	itemType    string
+	priority    int
+	effort      string
+	tagsText    string
+}
+
+func readWlPostInput(cmd *cobra.Command) wlPostInput {
+	return wlPostInput{
+		title:       commandStringFlag(cmd, "title"),
+		description: commandStringFlag(cmd, "description"),
+		project:     commandStringFlag(cmd, "project"),
+		itemType:    commandStringFlag(cmd, "type"),
+		priority:    commandIntFlag(cmd, "priority"),
+		effort:      commandStringFlag(cmd, "effort"),
+		tagsText:    commandStringFlag(cmd, "tags"),
+	}
+}
+
+func newWlPostItem(townRoot string, input wlPostInput) (*doltserver.WantedItem, error) {
 	wlCfg, err := wasteland.LoadConfig(townRoot)
 	if err != nil {
-		return fmt.Errorf("loading wasteland config: %w", err)
+		return nil, fmt.Errorf("loading wasteland config: %w", err)
 	}
 
-	item := &doltserver.WantedItem{
-		ID:          doltserver.GenerateWantedID(title),
-		Title:       title,
-		Description: description,
-		Project:     project,
-		Type:        itemType,
-		Priority:    priority,
-		Tags:        tags,
+	return &doltserver.WantedItem{
+		ID:          doltserver.GenerateWantedID(input.title),
+		Title:       input.title,
+		Description: input.description,
+		Project:     input.project,
+		Type:        input.itemType,
+		Priority:    input.priority,
+		Tags:        parseWlPostTags(input.tagsText),
 		PostedBy:    wlCfg.RigHandle,
-		EffortLevel: effort,
-	}
+		EffortLevel: input.effort,
+	}, nil
+}
 
-	if err := postWanted(store, item); err != nil {
-		return err
+func parseWlPostTags(tagsText string) []string {
+	var tags []string
+	for _, tag := range strings.Split(tagsText, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag != "" {
+			tags = append(tags, tag)
+		}
 	}
+	return tags
+}
 
+func printPostedWlItem(item *doltserver.WantedItem) {
 	fmt.Printf("%s Posted wanted item: %s\n", style.Bold.Render("✓"), style.Bold.Render(item.ID))
 	fmt.Printf("  Title:    %s\n", item.Title)
 	if item.Project != "" {
@@ -107,8 +134,6 @@ func runWlPost(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("  Tags:     %s\n", strings.Join(item.Tags, ", "))
 	}
 	fmt.Printf("  Posted by: %s\n", item.PostedBy)
-
-	return nil
 }
 
 // validatePostInputs validates the type, effort, and priority fields.
