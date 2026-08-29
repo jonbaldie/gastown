@@ -15,11 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	themeListFlag     bool
-	themeApplyAllFlag bool
-)
-
 // Valid CLI theme modes
 var validCLIThemes = []string{"auto", "dark", "light"}
 
@@ -79,14 +74,15 @@ func init() {
 	rootCmd.AddCommand(themeCmd)
 	themeCmd.AddCommand(themeApplyCmd)
 	themeCmd.AddCommand(themeCLICmd)
-	themeCmd.Flags().BoolVarP(&themeListFlag, "list", "l", false, "List available themes")
-	themeApplyCmd.Flags().BoolVarP(&themeApplyAllFlag, "all", "a", false, "Apply to all rigs, not just current")
+	themeCmd.Flags().BoolP("list", "l", false, "List available themes")
+	themeApplyCmd.Flags().BoolP("all", "a", false, "Apply to all rigs, not just current")
 
 }
 
-func runTheme(_ *cobra.Command, args []string) error {
+func runTheme(cmd *cobra.Command, args []string) error {
+	list := commandBoolFlag(cmd, "list")
 	// List mode
-	if themeListFlag {
+	if list {
 		fmt.Println("Available themes:")
 		for _, name := range tmux.ListThemeNames() {
 			theme := tmux.GetThemeByName(name)
@@ -134,7 +130,8 @@ func runTheme(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runThemeApply(_ *cobra.Command, _ []string) error {
+func runThemeApply(cmd *cobra.Command, _ []string) error {
+	applyAll := commandBoolFlag(cmd, "all")
 	t := tmux.NewTmux()
 	townRoot, _ := workspace.FindFromCwd()
 
@@ -177,7 +174,7 @@ func runThemeApply(_ *cobra.Command, _ []string) error {
 			rig = identity.Rig
 
 			// Skip if not matching current rig (unless --all flag)
-			if !themeApplyAllFlag && rigName != "" && rig != rigName {
+			if !applyAll && rigName != "" && rig != rigName {
 				continue
 			}
 
