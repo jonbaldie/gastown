@@ -319,17 +319,22 @@ type BeadsMessage struct {
 	Pinned      bool      `json:"pinned,omitempty"`
 	Wisp        bool      `json:"wisp,omitempty"` // Ephemeral message (not synced to git)
 
-	// Cached parsed values (populated by ParseLabels)
-	sender    string
-	threadID  string
-	replyTo   string
-	msgType   string
-	cc        []string   // CC recipients
-	queue     string     // Queue name (for queue messages)
-	channel   string     // Channel name (for broadcast messages)
-	claimedBy string     // Who claimed the queue message
-	claimedAt *time.Time // When the queue message was claimed
-	// Two-phase delivery metadata
+	beadsMessageMetadata
+}
+
+// beadsMessageMetadata caches values parsed from message labels. It is
+// embedded so the cache remains an implementation detail without changing
+// BeadsMessage's JSON representation.
+type beadsMessageMetadata struct {
+	sender          string
+	threadID        string
+	replyTo         string
+	msgType         string
+	cc              []string   // CC recipients
+	queue           string     // Queue name (for queue messages)
+	channel         string     // Channel name (for broadcast messages)
+	claimedBy       string     // Who claimed the queue message
+	claimedAt       *time.Time // When the queue message was claimed
 	deliveryState   string
 	deliveryAckedBy string
 	deliveryAckedAt *time.Time
@@ -338,18 +343,19 @@ type BeadsMessage struct {
 // ParseLabels extracts metadata from the labels array.
 // Safe to call multiple times - resets parsed state before re-parsing.
 func (bm *BeadsMessage) ParseLabels() {
-	bm.sender = ""
-	bm.threadID = ""
-	bm.replyTo = ""
-	bm.msgType = ""
-	bm.cc = nil
-	bm.queue = ""
-	bm.channel = ""
-	bm.claimedBy = ""
-	bm.claimedAt = nil
-	bm.deliveryState = ""
-	bm.deliveryAckedBy = ""
-	bm.deliveryAckedAt = nil
+	cache := &bm.beadsMessageMetadata
+	cache.sender = ""
+	cache.threadID = ""
+	cache.replyTo = ""
+	cache.msgType = ""
+	cache.cc = nil
+	cache.queue = ""
+	cache.channel = ""
+	cache.claimedBy = ""
+	cache.claimedAt = nil
+	cache.deliveryState = ""
+	cache.deliveryAckedBy = ""
+	cache.deliveryAckedAt = nil
 
 	for _, label := range bm.Labels {
 		bm.parseLabel(label)
