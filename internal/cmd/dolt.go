@@ -1489,93 +1489,118 @@ func runDoltRecover(_ *cobra.Command, _ []string) error {
 }
 
 func runDoltRollback(_ *cobra.Command, args []string) error {
-	townRoot, err := workspace.FindFromCwdOrError()
+	townRoot, backupPath, handled, err := prepareDoltRollback(args)
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return err
 	}
-
-	config := doltserver.DefaultConfig(townRoot)
-	if config.IsRemote() {
-		return fmt.Errorf("Dolt server is remote (%s) — rollback requires local server access", config.HostPort())
-	}
-
-	// Find available backups
-	backups, err := doltserver.FindBackups(townRoot)
-	if err != nil {
-		return fmt.Errorf("finding backups: %w", err)
-	}
-
-	if len(backups) == 0 {
-		return fmt.Errorf("no migration backups found in %s\nExpected directories matching: migration-backup-YYYYMMDD-HHMMSS/", townRoot)
-	}
-
-	// List mode: show available backups and exit
-	if doltRollbackList {
-		fmt.Printf("Available migration backups in %s:\n\n", townRoot)
-		for i, b := range backups {
-			label := ""
-			if i == 0 {
-				label = " (most recent)"
-			}
-			fmt.Printf("  %s%s\n", b.Timestamp, label)
-			fmt.Printf("    %s\n", style.Dim.Render(b.Path))
-			if b.Metadata != nil {
-				if createdAt, ok := b.Metadata["created_at"]; ok {
-					fmt.Printf("    Created: %v\n", createdAt)
-				}
-			}
-		}
+	if handled {
 		return nil
 	}
 
-	// Determine which backup to use
-	var backupPath string
-	if len(args) > 0 {
-		// User specified a backup directory
-		backupPath = args[0]
-		// Check if it's a relative path or timestamp
-		if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-			// Try as a timestamp suffix
-			candidate := fmt.Sprintf("migration-backup-%s", args[0])
-			candidatePath := fmt.Sprintf("%s/%s", townRoot, candidate)
-			if _, err := os.Stat(candidatePath); err == nil {
-				backupPath = candidatePath
-			} else {
-				return fmt.Errorf("backup not found: %s\nUse --list to see available backups", args[0])
-			}
-		}
-	} else {
-		// Use the most recent backup
-		backupPath = backups[0].Path
+	if err := stopDoltBeforeRollback(townRoot); err != nil {
+		return err
 	}
 
-	fmt.Printf("Backup: %s\n", backupPath)
-
-	// Dry-run mode: show what would be restored
-	if doltRollbackDry {
-		fmt.Printf("\n%s Dry run - no changes will be made\n\n", style.Bold.Render("!"))
-		printBackupContents(backupPath, townRoot)
-		return nil
-	}
-
-	// Stop Dolt server if running
-	running, _, _ := doltserver.IsRunning(townRoot)
-	if running {
-		fmt.Println("Stopping Dolt server...")
-		if err := doltserver.Stop(townRoot); err != nil {
-			return fmt.Errorf("stopping Dolt server: %w", err)
-		}
-		fmt.Printf("%s Dolt server stopped\n", style.Bold.Render("✓"))
-	}
-
-	// Perform the rollback
 	fmt.Println("\nRestoring from backup...")
 	result, err := doltserver.RestoreFromBackup(townRoot, backupPath)
 	if err != nil {
 		return fmt.Errorf("rollback failed: %w", err)
 	}
 
-	// Report results
+	printDoltRollbackResult(result)
+	validateDoltRollback(townRoot)
+
+	fmt.Printf("\n%s Rollback complete from %s\n", style.Bold.Render("✓"), backupPath)
+
+	return nil
+}
+
+func prepareDoltRollback(args []string) (townRoot, backupPath string, handled bool, err error) {
+	townRoot, err = workspace.FindFromCwdOrError()
+	if err != nil {
+		return "", "", false, fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	config := doltserver.DefaultConfig(townRoot)
+	if config.IsRemote() {
+		return "", "", false, fmt.Errorf("Dolt server is remote (%s) — rollback requires local server access", config.HostPort())
+	}
+
+	backups, err := doltserver.FindBackups(townRoot)
+	if err != nil {
+		return "", "", false, fmt.Errorf("finding backups: %w", err)
+	}
+
+	if len(backups) == 0 {
+		return "", "", false, fmt.Errorf("no migration backups found in %s\nExpected directories matching: migration-backup-YYYYMMDD-HHMMSS/", townRoot)
+	}
+
+	if doltRollbackList {
+		printDoltBackupList(townRoot, backups)
+		return townRoot, "", true, nil
+	}
+
+	backupPath, err = resolveDoltRollbackBackup(townRoot, backups, args)
+	if err != nil {
+		return "", "", false, err
+	}
+
+	fmt.Printf("Backup: %s\n", backupPath)
+
+	if doltRollbackDry {
+		fmt.Printf("\n%s Dry run - no changes will be made\n\n", style.Bold.Render("!"))
+		printBackupContents(backupPath, townRoot)
+		return townRoot, backupPath, true, nil
+	}
+	return townRoot, backupPath, false, nil
+}
+
+func printDoltBackupList(townRoot string, backups []doltserver.Backup) {
+	fmt.Printf("Available migration backups in %s:\n\n", townRoot)
+	for i, b := range backups {
+		label := ""
+		if i == 0 {
+			label = " (most recent)"
+		}
+		fmt.Printf("  %s%s\n", b.Timestamp, label)
+		fmt.Printf("    %s\n", style.Dim.Render(b.Path))
+		if b.Metadata != nil {
+			if createdAt, ok := b.Metadata["created_at"]; ok {
+				fmt.Printf("    Created: %v\n", createdAt)
+			}
+		}
+	}
+}
+
+func resolveDoltRollbackBackup(townRoot string, backups []doltserver.Backup, args []string) (string, error) {
+	if len(args) == 0 {
+		return backups[0].Path, nil
+	}
+	backupPath := args[0]
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		return backupPath, nil
+	}
+	candidatePath := fmt.Sprintf("%s/migration-backup-%s", townRoot, args[0])
+	if _, err := os.Stat(candidatePath); err == nil {
+		return candidatePath, nil
+	}
+	return "", fmt.Errorf("backup not found: %s\nUse --list to see available backups", args[0])
+}
+
+func stopDoltBeforeRollback(townRoot string) error {
+	running, _, _ := doltserver.IsRunning(townRoot)
+	if !running {
+		return nil
+	}
+	fmt.Println("Stopping Dolt server...")
+	if err := doltserver.Stop(townRoot); err != nil {
+		return fmt.Errorf("stopping Dolt server: %w", err)
+	}
+	fmt.Printf("%s Dolt server stopped\n", style.Bold.Render("✓"))
+	return nil
+}
+
+func printDoltRollbackResult(result *doltserver.RollbackResult) {
 	fmt.Println()
 	if result.RestoredTown {
 		fmt.Printf("  %s Restored town-level .beads\n", style.Bold.Render("✓"))
@@ -1586,36 +1611,30 @@ func runDoltRollback(_ *cobra.Command, args []string) error {
 	for _, rig := range result.SkippedRigs {
 		fmt.Printf("  %s Skipped %s (restore failed)\n", style.Dim.Render("⚠"), rig)
 	}
-
 	if len(result.MetadataReset) > 0 {
 		fmt.Printf("\n  Metadata reset for: %s\n", strings.Join(result.MetadataReset, ", "))
 	}
+}
 
-	// Validate restored state
+func validateDoltRollback(townRoot string) {
 	fmt.Println("\nValidating restored state...")
 	validateCmd := beads.Spawn("list", "--limit", "5")
 	validateCmd.Dir = townRoot
-	output, validateErr := validateCmd.CombinedOutput()
-	if validateErr != nil {
-		fmt.Printf("  %s bd list returned an error: %v\n",
-			style.Dim.Render("⚠"), validateErr)
+	output, err := validateCmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("  %s bd list returned an error: %v\n", style.Dim.Render("⚠"), err)
 		if len(output) > 0 {
 			fmt.Printf("  %s\n", string(output))
 		}
-	} else {
-		fmt.Printf("  %s bd list succeeded\n", style.Bold.Render("✓"))
-		if len(output) > 0 {
-			// Show first few lines of output
-			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-			for _, line := range lines {
-				fmt.Printf("  %s\n", style.Dim.Render(line))
-			}
+		return
+	}
+	fmt.Printf("  %s bd list succeeded\n", style.Bold.Render("✓"))
+	if len(output) > 0 {
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, line := range lines {
+			fmt.Printf("  %s\n", style.Dim.Render(line))
 		}
 	}
-
-	fmt.Printf("\n%s Rollback complete from %s\n", style.Bold.Render("✓"), backupPath)
-
-	return nil
 }
 
 // printBackupContents shows what's in a backup directory for dry-run output.
