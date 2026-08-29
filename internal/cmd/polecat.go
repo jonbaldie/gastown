@@ -1278,17 +1278,21 @@ func agentSourceIssueHint(currentIssue string, fields *beads.AgentFields) string
 }
 
 func partialSpawnWithoutDurableHook(bd issueShower, fields *beads.AgentFields, assignee, currentIssue string) (bool, string) {
-	if bd == nil || fields == nil || fields.AgentState != "spawning" || fields.HookBead == "" || currentIssue != "" {
+	if !partialSpawnCandidate(bd, fields, currentIssue) {
 		return false, ""
 	}
 	issue, err := bd.Show(fields.HookBead)
 	if err != nil || issue == nil {
 		return false, ""
 	}
-	if (issue.Status == beads.StatusHooked && issue.Assignee == assignee) || issue.Assignee == assignee {
+	if issue.Assignee == assignee {
 		return false, ""
 	}
 	return true, fmt.Sprintf("partial_spawn_without_durable_hook agent_state=%s hook_bead=%s hook_status=%s hook_assignee=%q", fields.AgentState, fields.HookBead, issue.Status, issue.Assignee)
+}
+
+func partialSpawnCandidate(bd issueShower, fields *beads.AgentFields, currentIssue string) bool {
+	return bd != nil && fields != nil && fields.AgentState == "spawning" && fields.HookBead != "" && currentIssue == ""
 }
 
 func recoveryGitStateBlocker(worktreePath string, gitState *GitState, gitErr error) string {
