@@ -1515,7 +1515,10 @@ func runDeaconRedispatch(cmd *cobra.Command, args []string) error {
 		commandIntFlag(cmd, "max-attempts"),
 		commandDurationFlag(cmd, "cooldown"),
 	)
+	return reportDeaconRedispatchResult(result)
+}
 
+func reportDeaconRedispatchResult(result *deacon.RedispatchResult) error {
 	switch result.Action {
 	case "redispatched":
 		fmt.Printf("%s %s\n", style.Bold.Render("✓"), result.Message)
