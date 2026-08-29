@@ -1342,18 +1342,21 @@ func runCostsDigest(cmd *cobra.Command, _ []string) error {
 
 // querySessionCostEntries reads session cost entries from the local log file for a target date.
 func querySessionCostEntries(targetDate time.Time, verbose bool) ([]CostEntry, error) {
-	logPath := getCostsLogPath()
-
-	// Read log file
 	targetDay := targetDate.UTC().Format("2006-01-02")
-	var entries []CostEntry
+	entries, err := readCostLogEntries(getCostsLogPath(), targetDay, verbose)
+	if err != nil {
+		return nil, err
+	}
+	return append(entries, readWorkerCostEntries(targetDay)...), nil
+}
 
+func readCostLogEntries(logPath, targetDay string, verbose bool) ([]CostEntry, error) {
 	data, err := os.ReadFile(logPath)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading costs log: %w", err)
 	}
 
-	// Parse each line as a CostLogEntry
+	var entries []CostEntry
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -1374,46 +1377,63 @@ func querySessionCostEntries(targetDate time.Time, verbose bool) ([]CostEntry, e
 			continue
 		}
 
+		entries = append(entries, costEntryFromLog(logEntry))
+	}
+	return entries, nil
+}
+
+func costEntryFromLog(logEntry CostLogEntry) CostEntry {
+	return CostEntry{
+		SessionID: logEntry.SessionID,
+		Role:      logEntry.Role,
+		Rig:       logEntry.Rig,
+		Worker:    logEntry.Worker,
+		CostUSD:   logEntry.CostUSD,
+		EndedAt:   logEntry.EndedAt,
+		WorkItem:  logEntry.WorkItem,
+	}
+}
+
+func readWorkerCostEntries(targetDay string) []CostEntry {
+	townRoot := costTownRoot()
+	if townRoot == "" {
+		return nil
+	}
+
+	recs, err := worker.ReadCosts(townRoot)
+	if err != nil {
+		return nil
+	}
+	return costEntriesFromWorkerRecords(recs, targetDay)
+}
+
+func costTownRoot() string {
+	townRoot, err := workspace.FindFromCwd()
+	if err == nil && townRoot != "" {
+		return townRoot
+	}
+	return os.Getenv("GT_TOWN_ROOT")
+}
+
+func costEntriesFromWorkerRecords(recs []worker.CostRecord, targetDay string) []CostEntry {
+	entries := make([]CostEntry, 0, len(recs))
+	for _, rec := range recs {
+		if !rec.Timestamp.IsZero() && rec.Timestamp.UTC().Format("2006-01-02") != targetDay {
+			continue
+		}
 		entries = append(entries, CostEntry{
-			SessionID: logEntry.SessionID,
-			Role:      logEntry.Role,
-			Rig:       logEntry.Rig,
-			Worker:    logEntry.Worker,
-			CostUSD:   logEntry.CostUSD,
-			EndedAt:   logEntry.EndedAt,
-			WorkItem:  logEntry.WorkItem,
+			SessionID: rec.SessionID,
+			Role:      rec.Role,
+			Rig:       rec.Rig,
+			Worker:    rec.AgentName,
+			AgentType: rec.AgentType,
+			RunID:     rec.RunID,
+			CostUSD:   rec.CostUSD,
+			EndedAt:   rec.Timestamp,
+			WorkItem:  rec.BeadID,
 		})
 	}
-
-	townRoot, townErr := workspace.FindFromCwd()
-	if townErr != nil || townRoot == "" {
-		if env := os.Getenv("GT_TOWN_ROOT"); env != "" {
-			townRoot = env
-			townErr = nil
-		}
-	}
-	if townErr == nil && townRoot != "" {
-		if recs, err := worker.ReadCosts(townRoot); err == nil {
-			for _, rec := range recs {
-				if !rec.Timestamp.IsZero() && rec.Timestamp.UTC().Format("2006-01-02") != targetDay {
-					continue
-				}
-				entries = append(entries, CostEntry{
-					SessionID: rec.SessionID,
-					Role:      rec.Role,
-					Rig:       rec.Rig,
-					Worker:    rec.AgentName,
-					AgentType: rec.AgentType,
-					RunID:     rec.RunID,
-					CostUSD:   rec.CostUSD,
-					EndedAt:   rec.Timestamp,
-					WorkItem:  rec.BeadID,
-				})
-			}
-		}
-	}
-
-	return entries, nil
+	return entries
 }
 
 // createCostDigestBead creates a permanent bead for the daily cost digest.
