@@ -2337,24 +2337,41 @@ func processDiscoveredCompletion(bd *BdCli, workDir, rigName string, payload *Po
 	// Push failed: branch never reached origin. Work is committed locally only.
 	// The polecat's worktree may be in /tmp and lost on reboot. Escalate so the
 	// witness agent can investigate and trigger recovery (gas-556).
-	if payload.PushFailed {
-		discovery.Action = fmt.Sprintf("push-failed-recovery-needed (branch=%s issue=%s) — branch not on origin, worktree may be at risk",
-			payload.Branch, payload.IssueID)
-		// Notify mayor so a new polecat can be dispatched if work is lost.
-		townRoot, _ := workspace.Find(workDir)
-		if townRoot != "" {
-			mayorMsg := fmt.Sprintf("PUSH_FAILED: polecat=%s branch=%s issue=%s — branch not on origin, possible work loss",
-				payload.PolecatName, payload.Branch, payload.IssueID)
-			mayorSession := session.MayorSessionName()
-			t := tmux.NewTmux()
-			if running, err := t.HasSession(mayorSession); err == nil && running {
-				_ = t.NudgeSession(mayorSession, mayorMsg)
-			}
-		}
+	if notifyPushFailureRecovery(workDir, payload, discovery) {
 		return
 	}
 
-	hasMR := false
+	if discoveredCompletionHasMR(bd, workDir, rigName, payload) {
+		handleDiscoveredCompletionMR(bd, workDir, rigName, payload, discovery)
+		return
+	}
+
+	// No MR — polecat is idle (persistent polecat model, gt-4ac)
+	acknowledgeDiscoveredIdle(workDir, rigName, payload, discovery)
+}
+
+func notifyPushFailureRecovery(workDir string, payload *PolecatDonePayload, discovery *CompletionDiscovery) bool {
+	if !payload.PushFailed {
+		return false
+	}
+	discovery.Action = fmt.Sprintf("push-failed-recovery-needed (branch=%s issue=%s) — branch not on origin, worktree may be at risk",
+		payload.Branch, payload.IssueID)
+	// Notify mayor so a new polecat can be dispatched if work is lost.
+	townRoot, _ := workspace.Find(workDir)
+	if townRoot == "" {
+		return true
+	}
+	mayorMsg := fmt.Sprintf("PUSH_FAILED: polecat=%s branch=%s issue=%s — branch not on origin, possible work loss",
+		payload.PolecatName, payload.Branch, payload.IssueID)
+	mayorSession := session.MayorSessionName()
+	t := tmux.NewTmux()
+	if running, err := t.HasSession(mayorSession); err == nil && running {
+		_ = t.NudgeSession(mayorSession, mayorMsg)
+	}
+	return true
+}
+
+func discoveredCompletionHasMR(bd *BdCli, workDir, rigName string, payload *PolecatDonePayload) bool {
 	if payload.MRID != "" {
 		assessment := polecat.AssessActiveMR(beadCLIShower{bd: bd, workDir: workDir}, polecat.ActiveMRInput{
 			ActiveMR:        payload.MRID,
@@ -2362,48 +2379,50 @@ func processDiscoveredCompletion(bd *BdCli, workDir, rigName string, payload *Po
 			RequireGitSafe:  true,
 			GitSafe:         activeMRGitSafe(workDir, rigName, payload.PolecatName),
 		})
-		hasMR = assessment.Pending
+		if assessment.Pending {
+			return true
+		}
 	}
 
 	// When Exit==COMPLETED but MRID is empty and MR creation didn't explicitly
 	// fail, query beads to check if an MR bead exists for this branch.
-	if !hasMR && payload.Exit == string(ExitTypeCompleted) && !payload.MRFailed && payload.Branch != "" {
-		if mrID := findMRBeadForBranch(bd, workDir, payload.Branch); mrID != "" {
-			payload.MRID = mrID
-			hasMR = true
-		}
+	if payload.Exit != string(ExitTypeCompleted) || payload.MRFailed || payload.Branch == "" {
+		return false
 	}
+	mrID := findMRBeadForBranch(bd, workDir, payload.Branch)
+	if mrID == "" {
+		return false
+	}
+	payload.MRID = mrID
+	return true
+}
 
-	if hasMR {
-		wispID, err := createCleanupWisp(bd, workDir, payload.PolecatName, payload.IssueID, payload.Branch)
-		if err != nil {
-			discovery.Error = fmt.Errorf("creating cleanup wisp: %w", err)
-			return
-		}
-		discovery.WispCreated = wispID
-
-		if err := UpdateCleanupWispState(bd, workDir, wispID, "merge-requested"); err != nil {
-			discovery.Error = fmt.Errorf("updating wisp state: %w", err)
-		}
-
-		// Nudge refinery to check merge queue (no permanent mail needed).
-		townRoot, _ := workspace.Find(workDir)
-		if nudgeErr := nudgeRefinery(townRoot, rigName); nudgeErr != nil {
-			if discovery.Error == nil {
-				discovery.Error = fmt.Errorf("nudging refinery: %w (non-fatal)", nudgeErr)
-			}
-		}
-
-		discovery.Action = fmt.Sprintf("merge-ready-nudged (MR=%s, wisp=%s)", payload.MRID, wispID)
-
-		// Notify Mayor that a slot is open even with pending MR — polecat is idle. (GH#2727)
-		notifyMayorSlotOpen(workDir, rigName, payload.PolecatName, payload.Exit)
+func handleDiscoveredCompletionMR(bd *BdCli, workDir, rigName string, payload *PolecatDonePayload, discovery *CompletionDiscovery) {
+	wispID, err := createCleanupWisp(bd, workDir, payload.PolecatName, payload.IssueID, payload.Branch)
+	if err != nil {
+		discovery.Error = fmt.Errorf("creating cleanup wisp: %w", err)
 		return
 	}
+	discovery.WispCreated = wispID
 
-	// No MR — polecat is idle (persistent polecat model, gt-4ac)
+	if err := UpdateCleanupWispState(bd, workDir, wispID, "merge-requested"); err != nil {
+		discovery.Error = fmt.Errorf("updating wisp state: %w", err)
+	}
+
+	// Nudge refinery to check merge queue (no permanent mail needed).
+	townRoot, _ := workspace.Find(workDir)
+	if nudgeErr := nudgeRefinery(townRoot, rigName); nudgeErr != nil && discovery.Error == nil {
+		discovery.Error = fmt.Errorf("nudging refinery: %w (non-fatal)", nudgeErr)
+	}
+
+	discovery.Action = fmt.Sprintf("merge-ready-nudged (MR=%s, wisp=%s)", payload.MRID, wispID)
+
+	// Notify Mayor that a slot is open even with pending MR — polecat is idle. (GH#2727)
+	notifyMayorSlotOpen(workDir, rigName, payload.PolecatName, payload.Exit)
+}
+
+func acknowledgeDiscoveredIdle(workDir, rigName string, payload *PolecatDonePayload, discovery *CompletionDiscovery) {
 	discovery.Action = fmt.Sprintf("acknowledged-idle (exit=%s)", payload.Exit)
-
 	// Notify Mayor that a slot is open (bead-based discovery path). (GH#2727)
 	notifyMayorSlotOpen(workDir, rigName, payload.PolecatName, payload.Exit)
 }
