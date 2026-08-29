@@ -304,34 +304,42 @@ Examples:
 }
 
 // Flags
-var (
-	rigAddPrefix         string
-	rigAddLocalRepo      string
-	rigAddBranch         string
-	rigAddPushURL        string
-	rigAddUpstreamURL    string
-	rigAddAdopt          bool
-	rigAddAdoptURL       string
-	rigAddAdoptForce     bool
-	rigAddFilter         string
-	rigAddSparseCheckout []string
-	rigAddImportBeads    bool
-	rigResetHandoff      bool
-	rigResetMail         bool
-	rigResetStale        bool
-	rigResetDryRun       bool
-	rigResetRole         string
-	rigShutdownForce     bool
-	rigShutdownNuclear   bool
-	rigRebootForce       bool
-	rigRebootNuclear     bool
-	rigStopForce         bool
-	rigStopNuclear       bool
-	rigRestartForce      bool
-	rigRestartNuclear    bool
-	rigListJSON          bool
-	rigRemoveForce       bool
-)
+type rigCommandState struct {
+	addPrefix         string
+	addLocalRepo      string
+	addBranch         string
+	addPushURL        string
+	addUpstreamURL    string
+	addAdopt          bool
+	addAdoptURL       string
+	addAdoptForce     bool
+	addFilter         string
+	addSparseCheckout []string
+	addImportBeads    bool
+	resetHandoff      bool
+	resetMail         bool
+	resetStale        bool
+	resetDryRun       bool
+	resetRole         string
+	shutdownForce     bool
+	shutdownNuclear   bool
+	rebootForce       bool
+	rebootNuclear     bool
+	stopForce         bool
+	stopNuclear       bool
+	restartForce      bool
+	restartNuclear    bool
+	listJSON          bool
+	removeForce       bool
+}
+
+var rigCommandStateInstance = sync.OnceValue(func() *rigCommandState {
+	return &rigCommandState{}
+})
+
+func rigState() *rigCommandState {
+	return rigCommandStateInstance()
+}
 
 var (
 	// Test seams for checkUncommittedWork.
@@ -365,39 +373,39 @@ func init() {
 	rigCmd.AddCommand(rigStatusCmd)
 	rigCmd.AddCommand(rigStopCmd)
 
-	rigListCmd.Flags().BoolVar(&rigListJSON, "json", false, "Output as JSON")
+	rigListCmd.Flags().BoolVar(&rigState().listJSON, "json", false, "Output as JSON")
 
-	rigRemoveCmd.Flags().BoolVarP(&rigRemoveForce, "force", "f", false, "Kill running tmux sessions before removing (may lose uncommitted work)")
+	rigRemoveCmd.Flags().BoolVarP(&rigState().removeForce, "force", "f", false, "Kill running tmux sessions before removing (may lose uncommitted work)")
 
-	rigAddCmd.Flags().StringVar(&rigAddPrefix, "prefix", "", "Beads issue prefix (default: derived from name)")
-	rigAddCmd.Flags().StringVar(&rigAddLocalRepo, "local-repo", "", "Local repo path to share git objects (optional)")
-	rigAddCmd.Flags().StringVar(&rigAddBranch, "branch", "", "Default branch name (default: auto-detected from remote)")
-	rigAddCmd.Flags().StringVar(&rigAddPushURL, "push-url", "", "Push URL for read-only upstreams, i.e. push to fork (see docs/guides/fork-rig-setup.md)")
-	rigAddCmd.Flags().StringVar(&rigAddUpstreamURL, "upstream-url", "", "Upstream repository URL for fork workflows (see docs/guides/fork-rig-setup.md)")
-	rigAddCmd.Flags().BoolVar(&rigAddAdopt, "adopt", false, "Adopt an existing directory instead of creating new")
-	rigAddCmd.Flags().StringVar(&rigAddAdoptURL, "url", "", "Git remote URL for --adopt (default: auto-detected from origin)")
-	rigAddCmd.Flags().BoolVar(&rigAddAdoptForce, "force", false, "With --adopt, register even if git remote cannot be detected")
-	rigAddCmd.Flags().StringVar(&rigAddFilter, "filter", "", "Partial clone filter (e.g. \"blob:none\", \"tree:0\") to reduce clone size")
-	rigAddCmd.Flags().StringSliceVar(&rigAddSparseCheckout, "sparse-checkout", nil, "Sparse checkout paths (cone mode); comma-separated or repeated")
-	rigAddCmd.Flags().BoolVar(&rigAddImportBeads, "import-beads", false, "Consent to activate tracked Beads data and executable hooks from the source repo")
+	rigAddCmd.Flags().StringVar(&rigState().addPrefix, "prefix", "", "Beads issue prefix (default: derived from name)")
+	rigAddCmd.Flags().StringVar(&rigState().addLocalRepo, "local-repo", "", "Local repo path to share git objects (optional)")
+	rigAddCmd.Flags().StringVar(&rigState().addBranch, "branch", "", "Default branch name (default: auto-detected from remote)")
+	rigAddCmd.Flags().StringVar(&rigState().addPushURL, "push-url", "", "Push URL for read-only upstreams, i.e. push to fork (see docs/guides/fork-rig-setup.md)")
+	rigAddCmd.Flags().StringVar(&rigState().addUpstreamURL, "upstream-url", "", "Upstream repository URL for fork workflows (see docs/guides/fork-rig-setup.md)")
+	rigAddCmd.Flags().BoolVar(&rigState().addAdopt, "adopt", false, "Adopt an existing directory instead of creating new")
+	rigAddCmd.Flags().StringVar(&rigState().addAdoptURL, "url", "", "Git remote URL for --adopt (default: auto-detected from origin)")
+	rigAddCmd.Flags().BoolVar(&rigState().addAdoptForce, "force", false, "With --adopt, register even if git remote cannot be detected")
+	rigAddCmd.Flags().StringVar(&rigState().addFilter, "filter", "", "Partial clone filter (e.g. \"blob:none\", \"tree:0\") to reduce clone size")
+	rigAddCmd.Flags().StringSliceVar(&rigState().addSparseCheckout, "sparse-checkout", nil, "Sparse checkout paths (cone mode); comma-separated or repeated")
+	rigAddCmd.Flags().BoolVar(&rigState().addImportBeads, "import-beads", false, "Consent to activate tracked Beads data and executable hooks from the source repo")
 
-	rigResetCmd.Flags().BoolVar(&rigResetHandoff, "handoff", false, "Clear handoff content")
-	rigResetCmd.Flags().BoolVar(&rigResetMail, "mail", false, "Clear stale mail messages")
-	rigResetCmd.Flags().BoolVar(&rigResetStale, "stale", false, "Reset orphaned in_progress issues (no active session)")
-	rigResetCmd.Flags().BoolVar(&rigResetDryRun, "dry-run", false, "Show what would be reset without making changes")
-	rigResetCmd.Flags().StringVar(&rigResetRole, "role", "", "Role to reset (default: auto-detect from cwd)")
+	rigResetCmd.Flags().BoolVar(&rigState().resetHandoff, "handoff", false, "Clear handoff content")
+	rigResetCmd.Flags().BoolVar(&rigState().resetMail, "mail", false, "Clear stale mail messages")
+	rigResetCmd.Flags().BoolVar(&rigState().resetStale, "stale", false, "Reset orphaned in_progress issues (no active session)")
+	rigResetCmd.Flags().BoolVar(&rigState().resetDryRun, "dry-run", false, "Show what would be reset without making changes")
+	rigResetCmd.Flags().StringVar(&rigState().resetRole, "role", "", "Role to reset (default: auto-detect from cwd)")
 
-	rigShutdownCmd.Flags().BoolVarP(&rigShutdownForce, "force", "f", false, "Force immediate shutdown (prompts if uncommitted work)")
-	rigShutdownCmd.Flags().BoolVar(&rigShutdownNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks (loses uncommitted work!)")
+	rigShutdownCmd.Flags().BoolVarP(&rigState().shutdownForce, "force", "f", false, "Force immediate shutdown (prompts if uncommitted work)")
+	rigShutdownCmd.Flags().BoolVar(&rigState().shutdownNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks (loses uncommitted work!)")
 
-	rigRebootCmd.Flags().BoolVarP(&rigRebootForce, "force", "f", false, "Force immediate shutdown during reboot (prompts if uncommitted work)")
-	rigRebootCmd.Flags().BoolVar(&rigRebootNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks during reboot (loses uncommitted work!)")
+	rigRebootCmd.Flags().BoolVarP(&rigState().rebootForce, "force", "f", false, "Force immediate shutdown during reboot (prompts if uncommitted work)")
+	rigRebootCmd.Flags().BoolVar(&rigState().rebootNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks during reboot (loses uncommitted work!)")
 
-	rigStopCmd.Flags().BoolVarP(&rigStopForce, "force", "f", false, "Force immediate shutdown (prompts if uncommitted work)")
-	rigStopCmd.Flags().BoolVar(&rigStopNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks (loses uncommitted work!)")
+	rigStopCmd.Flags().BoolVarP(&rigState().stopForce, "force", "f", false, "Force immediate shutdown (prompts if uncommitted work)")
+	rigStopCmd.Flags().BoolVar(&rigState().stopNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks (loses uncommitted work!)")
 
-	rigRestartCmd.Flags().BoolVarP(&rigRestartForce, "force", "f", false, "Force immediate shutdown during restart (prompts if uncommitted work)")
-	rigRestartCmd.Flags().BoolVar(&rigRestartNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks (loses uncommitted work!)")
+	rigRestartCmd.Flags().BoolVarP(&rigState().restartForce, "force", "f", false, "Force immediate shutdown during restart (prompts if uncommitted work)")
+	rigRestartCmd.Flags().BoolVar(&rigState().restartNuclear, "nuclear", false, "DANGER: Bypass ALL safety checks (loses uncommitted work!)")
 }
 
 func confirmUnsafeProceed(force bool) bool {
@@ -491,7 +499,7 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	// Handle --adopt mode: register existing directory
-	if rigAddAdopt {
+	if rigState().addAdopt {
 		return runRigAdopt(cmd, args)
 	}
 
@@ -516,14 +524,14 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 	return addRigToTown(townRoot, rig.AddRigOptions{
 		Name:           name,
 		GitURL:         gitURL,
-		PushURL:        rigAddPushURL,
-		UpstreamURL:    rigAddUpstreamURL,
-		BeadsPrefix:    rigAddPrefix,
-		LocalRepo:      rigAddLocalRepo,
-		DefaultBranch:  rigAddBranch,
-		CloneFilter:    rigAddFilter,
-		SparseCheckout: rigAddSparseCheckout,
-		ImportBeads:    rigAddImportBeads,
+		PushURL:        rigState().addPushURL,
+		UpstreamURL:    rigState().addUpstreamURL,
+		BeadsPrefix:    rigState().addPrefix,
+		LocalRepo:      rigState().addLocalRepo,
+		DefaultBranch:  rigState().addBranch,
+		CloneFilter:    rigState().addFilter,
+		SparseCheckout: rigState().addSparseCheckout,
+		ImportBeads:    rigState().addImportBeads,
 	})
 }
 
@@ -851,7 +859,7 @@ func runRigList(_ *cobra.Command, _ []string) error {
 		rigs = append(rigs, rigListInfoFor(name, townRoot, mgr, t))
 	}
 	sortRigList(rigs)
-	if rigListJSON {
+	if rigState().listJSON {
 		return encodeRigListJSON(rigs)
 	}
 	renderRigList(townRoot, rigs)
@@ -1102,7 +1110,7 @@ func runRigRemove(_ *cobra.Command, args []string) error {
 		return err
 	}
 	t := tmux.NewTmux()
-	sessions, err := checkRigRemovalSessions(name, t, rigRemoveForce)
+	sessions, err := checkRigRemovalSessions(name, t, rigState().removeForce)
 	if err != nil {
 		return err
 	}
@@ -1164,16 +1172,17 @@ func loadRigAdoptContext(name string) (rigAdoptContext, error) {
 }
 
 func validateRigAdoptURLs() error {
-	if rigAddAdoptURL != "" && !isGitRemoteURL(rigAddAdoptURL) {
-		return fmt.Errorf("invalid git URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", rigAddAdoptURL)
+	state := rigState()
+	if state.addAdoptURL != "" && !isGitRemoteURL(state.addAdoptURL) {
+		return fmt.Errorf("invalid git URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", state.addAdoptURL)
 	}
-	rigAddPushURL = strings.TrimSpace(rigAddPushURL)
-	if rigAddPushURL != "" && !isGitRemoteURL(rigAddPushURL) {
-		return fmt.Errorf("invalid push URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", rigAddPushURL)
+	state.addPushURL = strings.TrimSpace(state.addPushURL)
+	if state.addPushURL != "" && !isGitRemoteURL(state.addPushURL) {
+		return fmt.Errorf("invalid push URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", state.addPushURL)
 	}
-	rigAddUpstreamURL = strings.TrimSpace(rigAddUpstreamURL)
-	if rigAddUpstreamURL != "" && !isGitRemoteURL(rigAddUpstreamURL) {
-		return fmt.Errorf("invalid upstream URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", rigAddUpstreamURL)
+	state.addUpstreamURL = strings.TrimSpace(state.addUpstreamURL)
+	if state.addUpstreamURL != "" && !isGitRemoteURL(state.addUpstreamURL) {
+		return fmt.Errorf("invalid upstream URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", state.addUpstreamURL)
 	}
 	return nil
 }
@@ -1184,11 +1193,11 @@ func registerAdoptedRig(ctx rigAdoptContext) (*rig.RegisterRigResult, error) {
 	}
 	result, err := ctx.mgr.RegisterRig(rig.RegisterRigOptions{
 		Name:        ctx.name,
-		GitURL:      rigAddAdoptURL,
-		PushURL:     rigAddPushURL,
-		UpstreamURL: rigAddUpstreamURL,
-		BeadsPrefix: rigAddPrefix,
-		Force:       rigAddAdoptForce,
+		GitURL:      rigState().addAdoptURL,
+		PushURL:     rigState().addPushURL,
+		UpstreamURL: rigState().addUpstreamURL,
+		BeadsPrefix: rigState().addPrefix,
+		Force:       rigState().addAdoptForce,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("adopting rig: %w", err)
@@ -1254,8 +1263,8 @@ func applyAdoptedBeadsPrefix(result *rig.RegisterRigResult, detected string) err
 	if detected == "" {
 		return nil
 	}
-	if rigAddPrefix != "" && strings.TrimSuffix(rigAddPrefix, "-") != detected {
-		return fmt.Errorf("prefix mismatch: source repo uses '%s' but --prefix '%s' was provided", detected, rigAddPrefix)
+	if rigState().addPrefix != "" && strings.TrimSuffix(rigState().addPrefix, "-") != detected {
+		return fmt.Errorf("prefix mismatch: source repo uses '%s' but --prefix '%s' was provided", detected, rigState().addPrefix)
 	}
 	if result.BeadsPrefix == "" {
 		result.BeadsPrefix = detected
@@ -1450,8 +1459,8 @@ func adoptedRigBeadsPlan(existing []string, beadsPrefix string) (dirToHandle str
 }
 
 func resolveRigResetRole(cwd, townRoot string) (string, error) {
-	if rigResetRole != "" {
-		return rigResetRole, nil
+	if rigState().resetRole != "" {
+		return rigState().resetRole, nil
 	}
 	roleInfo, err := GetRoleWithContext(cwd, townRoot)
 	if err != nil {
@@ -1486,24 +1495,24 @@ func resetRigMail(townBd *beads.Beads) error {
 }
 
 func maybeResetRigHandoff(resetAll bool, townBd *beads.Beads, roleKey string) error {
-	if !resetAll && !rigResetHandoff {
+	if !resetAll && !rigState().resetHandoff {
 		return nil
 	}
 	return resetRigHandoff(townBd, roleKey)
 }
 
 func maybeResetRigMail(resetAll bool, townBd *beads.Beads) error {
-	if !resetAll && !rigResetMail {
+	if !resetAll && !rigState().resetMail {
 		return nil
 	}
 	return resetRigMail(townBd)
 }
 
 func maybeResetRigStale(resetAll bool, rigBd *beads.Beads) error {
-	if !resetAll && !rigResetStale {
+	if !resetAll && !rigState().resetStale {
 		return nil
 	}
-	if err := runResetStale(rigBd, rigResetDryRun); err != nil {
+	if err := runResetStale(rigBd, rigState().resetDryRun); err != nil {
 		return fmt.Errorf("resetting stale issues: %w", err)
 	}
 	return nil
@@ -1522,7 +1531,8 @@ func runRigReset(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	resetAll := !rigResetHandoff && !rigResetMail && !rigResetStale
+	state := rigState()
+	resetAll := !state.resetHandoff && !state.resetMail && !state.resetStale
 	townBd := beads.New(townRoot)
 	rigBd := beads.New(cwd)
 	if err := maybeResetRigHandoff(resetAll, townBd, roleKey); err != nil {
@@ -1915,12 +1925,13 @@ func runRigShutdown(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if !rigShutdownNuclear && !checkUncommittedWork(r, rigName, "shutdown", rigShutdownForce) {
+	state := rigState()
+	if !state.shutdownNuclear && !checkUncommittedWork(r, rigName, "shutdown", state.shutdownForce) {
 		return fmt.Errorf("refusing to shutdown with uncommitted work")
 	}
 
 	fmt.Printf("Shutting down rig %s...\n", style.Bold.Render(rigName))
-	if err := reportRigShutdownErrors(stopRigAgents(r, rigShutdownForce)); err != nil {
+	if err := reportRigShutdownErrors(stopRigAgents(r, state.shutdownForce)); err != nil {
 		return err
 	}
 
@@ -1933,9 +1944,10 @@ func runRigReboot(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Rebooting rig %s...\n\n", style.Bold.Render(rigName))
 
-	// Propagate reboot flags to shutdown globals
-	rigShutdownForce = rigRebootForce
-	rigShutdownNuclear = rigRebootNuclear
+	// Propagate reboot flags to shutdown state.
+	state := rigState()
+	state.shutdownForce = state.rebootForce
+	state.shutdownNuclear = state.rebootNuclear
 
 	// Shutdown first
 	if err := runRigShutdown(cmd, args); err != nil {
@@ -2220,8 +2232,9 @@ func runRigStop(_ *cobra.Command, args []string) error {
 	}
 	var succeeded []string
 	var failed []string
+	state := rigState()
 	for _, rigName := range args {
-		stopped, stopFailed := stopRigByName(rigMgr, rigName, rigStopForce, rigStopNuclear)
+		stopped, stopFailed := stopRigByName(rigMgr, rigName, state.stopForce, state.stopNuclear)
 		if stopFailed {
 			failed = append(failed, rigName)
 		} else if stopped {
@@ -2351,8 +2364,9 @@ func runRigRestart(_ *cobra.Command, args []string) error {
 	}
 	var succeeded []string
 	var failed []string
+	state := rigState()
 	for _, rigName := range args {
-		restarted, restartFailed := restartRigByName(rigMgr, rigName, rigRestartForce, rigRestartNuclear)
+		restarted, restartFailed := restartRigByName(rigMgr, rigName, state.restartForce, state.restartNuclear)
 		if restartFailed {
 			failed = append(failed, rigName)
 		} else if restarted {
