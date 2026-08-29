@@ -16,14 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Warrant flags
-var (
-	warrantReason  string
-	warrantListAll bool
-	warrantForce   bool
-	warrantStdin   bool // Read reason from stdin
-)
-
 // Warrant represents a death warrant for an agent
 type Warrant struct {
 	ID         string     `json:"id"`
@@ -103,14 +95,14 @@ Examples:
 
 func init() {
 	// File flags
-	warrantFileCmd.Flags().StringVarP(&warrantReason, "reason", "r", "", "Reason for the warrant (required unless --stdin)")
-	warrantFileCmd.Flags().BoolVar(&warrantStdin, "stdin", false, "Read reason from stdin (avoids shell quoting issues)")
+	warrantFileCmd.Flags().StringP("reason", "r", "", "Reason for the warrant (required unless --stdin)")
+	warrantFileCmd.Flags().Bool("stdin", false, "Read reason from stdin (avoids shell quoting issues)")
 
 	// List flags
-	warrantListCmd.Flags().BoolVarP(&warrantListAll, "all", "a", false, "Include executed warrants")
+	warrantListCmd.Flags().BoolP("all", "a", false, "Include executed warrants")
 
 	// Execute flags
-	warrantExecuteCmd.Flags().BoolVarP(&warrantForce, "force", "f", false, "Execute even without a warrant")
+	warrantExecuteCmd.Flags().BoolP("force", "f", false, "Execute even without a warrant")
 
 	warrantCmd.AddCommand(warrantFileCmd)
 	warrantCmd.AddCommand(warrantListCmd)
@@ -135,21 +127,23 @@ func warrantFilePath(dir, target string) string {
 	return filepath.Join(dir, safe+".warrant.json")
 }
 
-func runWarrantFile(_ *cobra.Command, args []string) error {
+func runWarrantFile(cmd *cobra.Command, args []string) error {
+	reason := commandStringFlag(cmd, "reason")
+	readStdin := commandBoolFlag(cmd, "stdin")
 	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
-	if warrantStdin {
-		if warrantReason != "" {
+	if readStdin {
+		if reason != "" {
 			return fmt.Errorf("cannot use --stdin with --reason/-r")
 		}
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("reading stdin: %w", err)
 		}
-		warrantReason = strings.TrimRight(string(data), "\n")
+		reason = strings.TrimRight(string(data), "\n")
 	}
 
 	// Require reason via --reason or --stdin
-	if warrantReason == "" {
+	if reason == "" {
 		return fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
 	}
 
@@ -188,7 +182,7 @@ func runWarrantFile(_ *cobra.Command, args []string) error {
 	warrant := Warrant{
 		ID:       fmt.Sprintf("warrant-%d", time.Now().UnixMilli()),
 		Target:   target,
-		Reason:   warrantReason,
+		Reason:   reason,
 		FiledBy:  filedBy,
 		FiledAt:  time.Now(),
 		Executed: false,
@@ -204,13 +198,14 @@ func runWarrantFile(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("✓ Filed death warrant for %s\n", style.Bold.Render(target))
-	fmt.Printf("  Reason: %s\n", warrantReason)
+	fmt.Printf("  Reason: %s\n", reason)
 	fmt.Printf("  ID: %s\n", warrant.ID)
 
 	return nil
 }
 
-func runWarrantList(_ *cobra.Command, _ []string) error {
+func runWarrantList(cmd *cobra.Command, _ []string) error {
+	showAll := commandBoolFlag(cmd, "all")
 	warrantDir, err := getWarrantDir()
 	if err != nil {
 		return err
@@ -241,13 +236,13 @@ func runWarrantList(_ *cobra.Command, _ []string) error {
 			continue
 		}
 
-		if warrantListAll || !w.Executed {
+		if showAll || !w.Executed {
 			warrants = append(warrants, w)
 		}
 	}
 
 	if len(warrants) == 0 {
-		if warrantListAll {
+		if showAll {
 			fmt.Println("No warrants found")
 		} else {
 			fmt.Println("No pending warrants")
@@ -275,7 +270,8 @@ func runWarrantList(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runWarrantExecute(_ *cobra.Command, args []string) error {
+func runWarrantExecute(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	target := args[0]
 
 	warrantDir, err := getWarrantDir()
@@ -294,7 +290,7 @@ func runWarrantExecute(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	if warrant == nil && !warrantForce {
+	if warrant == nil && !force {
 		return fmt.Errorf("no warrant found for %s (use --force to execute anyway)", target)
 	}
 
