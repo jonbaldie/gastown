@@ -15,9 +15,7 @@ import (
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/constants"
 	"github.com/jonbaldie/gastown/internal/crew"
-	"github.com/jonbaldie/gastown/internal/daemon"
 	"github.com/jonbaldie/gastown/internal/doltserver"
-	"github.com/jonbaldie/gastown/internal/events"
 	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/polecat"
 	"github.com/jonbaldie/gastown/internal/process"
@@ -26,7 +24,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/style"
 	"github.com/jonbaldie/gastown/internal/tmux"
 	"github.com/jonbaldie/gastown/internal/worker"
-	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -87,445 +84,24 @@ func init() {
 	rootCmd.AddCommand(downCmd)
 }
 
-func runDown(cmd *cobra.Command, _ []string) error {
-	quiet := commandBoolFlag(cmd, "quiet")
-	force := commandBoolFlag(cmd, "force")
-	polecats := commandBoolFlag(cmd, "polecats")
-	all := commandBoolFlag(cmd, "all")
-	nuke := commandBoolFlag(cmd, "nuke")
-	dryRun := commandBoolFlag(cmd, "dry-run")
-	printStatus := func(name string, ok bool, detail string) {
-		printDownStatus(name, ok, detail, quiet)
-	}
-
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	t := tmux.NewTmux()
-	if !t.IsAvailable() {
-		return fmt.Errorf("tmux not available (is tmux installed and on PATH?)")
-	}
-
-	// Phase 0: Acquire shutdown lock (skip for dry-run)
-	if !dryRun {
-		lock, err := acquireShutdownLock(townRoot)
-		if err != nil {
-			return fmt.Errorf("cannot proceed: %w", err)
-		}
-		defer func() {
-			_ = lock.Unlock()
-			// Do NOT remove the lock file. Flock works on file descriptors,
-			// not paths. Removing the file while another process is waiting
-			// on the flock causes it to acquire a lock on the deleted inode,
-			// providing no mutual exclusion against a process that creates a
-			// new file at the same path.
-		}()
-
-		// GH#2656: Write shutdown sentinel to prevent agents from restarting the
-		// daemon while we're tearing down. ensureDaemon checks for this file.
-		sentinelPath := filepath.Join(townRoot, ShutdownSentinel)
-		_ = os.WriteFile(sentinelPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
-		defer os.Remove(sentinelPath)
-
-		// Prevent tmux server from exiting when all sessions are killed.
-		// By default, tmux exits when there are no sessions (exit-empty on).
-		// This ensures the server stays running for subsequent `gt up`.
-		// Ignore errors - if there's no server, nothing to configure.
-		_ = t.SetExitEmpty(false)
-	}
-	allOK := true
-
-	if dryRun {
-		fmt.Println("═══ DRY RUN: Preview of shutdown actions ═══")
-		fmt.Println()
-	}
-
-	rigs := discoverRigs(townRoot)
-
-	// Phase 0.5: Stop polecats if --polecats
-	if polecats {
-		if dryRun {
-			fmt.Println("Would stop polecats...")
-		} else {
-			fmt.Println("Stopping polecats...")
-		}
-		polecatsStopped := stopAllPolecats(t, townRoot, rigs, force, dryRun)
-		if dryRun {
-			if polecatsStopped > 0 {
-				printStatus("Polecats", true, fmt.Sprintf("%d would stop", polecatsStopped))
-			} else {
-				printStatus("Polecats", true, "none running")
-			}
-		} else {
-			if polecatsStopped > 0 {
-				printStatus("Polecats", true, fmt.Sprintf("%d stopped", polecatsStopped))
-			} else {
-				printStatus("Polecats", true, "none running")
-			}
-		}
-		fmt.Println()
-	}
-
-	// Phase 0.6: Stop crew member sessions.
-	// Crew sessions consume tokens and must be stopped during any shutdown.
-	crewStopped := stopAllCrew(t, townRoot, rigs, force, dryRun)
-	if dryRun {
-		if crewStopped > 0 {
-			printStatus("Crew", true, fmt.Sprintf("%d would stop", crewStopped))
-		}
-	} else {
-		if crewStopped > 0 {
-			printStatus("Crew", true, fmt.Sprintf("%d stopped", crewStopped))
-		}
-	}
-
-	// Phase 1: Stop refineries
-	for _, rigName := range rigs {
-		sessionName := session.RefinerySessionName(session.PrefixFor(rigName))
-		if dryRun {
-			if running, _ := t.HasSession(sessionName); running {
-				printStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "would stop")
-			}
-			continue
-		}
-		wasRunning, err := stopSession(t, sessionName, force)
-		if err != nil {
-			printStatus(fmt.Sprintf("Refinery (%s)", rigName), false, err.Error())
-			allOK = false
-		} else if wasRunning {
-			printStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "stopped")
-		} else {
-			printStatus(fmt.Sprintf("Refinery (%s)", rigName), true, "not running")
-		}
-	}
-
-	// Phase 2: Stop witnesses
-	for _, rigName := range rigs {
-		sessionName := session.WitnessSessionName(session.PrefixFor(rigName))
-		if dryRun {
-			if running, _ := t.HasSession(sessionName); running {
-				printStatus(fmt.Sprintf("Witness (%s)", rigName), true, "would stop")
-			}
-			continue
-		}
-		wasRunning, err := stopSession(t, sessionName, force)
-		if err != nil {
-			printStatus(fmt.Sprintf("Witness (%s)", rigName), false, err.Error())
-			allOK = false
-		} else if wasRunning {
-			printStatus(fmt.Sprintf("Witness (%s)", rigName), true, "stopped")
-		} else {
-			printStatus(fmt.Sprintf("Witness (%s)", rigName), true, "not running")
-		}
-	}
-
-	// Phase 3: Stop town-level sessions (Mayor, Boot, Deacon)
-	for _, ts := range session.TownSessions() {
-		if dryRun {
-			if running, _ := t.HasSession(ts.SessionID); running {
-				printStatus(ts.Name, true, "would stop")
-			}
-			continue
-		}
-		stopped, err := session.StopTownSession(t, ts, force)
-		if err != nil {
-			printStatus(ts.Name, false, err.Error())
-			allOK = false
-		} else if stopped {
-			printStatus(ts.Name, true, "stopped")
-		} else {
-			printStatus(ts.Name, true, "not running")
-		}
-	}
-
-	// Phase 4: Stop Daemon
-	running, pid, daemonErr := daemon.IsRunning(townRoot)
-	if daemonErr != nil {
-		printStatus("Daemon", false, fmt.Sprintf("status check failed: %v", daemonErr))
-		allOK = false
-	} else if dryRun {
-		if running {
-			printStatus("Daemon", true, fmt.Sprintf("would stop (PID %d)", pid))
-		}
-	} else {
-		if running {
-			if err := daemon.StopDaemon(townRoot); err != nil {
-				printStatus("Daemon", false, err.Error())
-				allOK = false
-			} else if pid > 0 {
-				printStatus("Daemon", true, fmt.Sprintf("stopped (was PID %d)", pid))
-			} else {
-				printStatus("Daemon", true, "stopped (stale lock cleaned)")
-			}
-		} else {
-			printStatus("Daemon", true, "not running")
-		}
-	}
-
-	// Phase 4b-i: Stop bd dolt idle-monitor processes.
-	// These background processes respawn per-agent Dolt servers after they're
-	// terminated, creating a race condition where rogues grab the port before
-	// the canonical server can restart. Must be stopped BEFORE Dolt shutdown.
-	idleMonitors := doltserver.FindIdleMonitorProcesses(townRoot)
-	if len(idleMonitors) > 0 {
-		if dryRun {
-			printStatus("Dolt idle-monitors", true, fmt.Sprintf("%d would stop", len(idleMonitors)))
-		} else {
-			stopped := stopIdleMonitors(idleMonitors)
-			if stopped > 0 {
-				printStatus("Dolt idle-monitors", true, fmt.Sprintf("stopped %d", stopped))
-			}
-		}
-	}
-
-	// Phase 4b-ii: Stop Dolt server
-	doltCfg := doltserver.DefaultConfig(townRoot)
-	if _, statErr := os.Stat(doltCfg.DataDir); statErr == nil {
-		doltRunning, doltPid, doltErr := doltserver.IsRunning(townRoot)
-		if doltErr != nil {
-			printStatus("Dolt", false, fmt.Sprintf("status check failed: %v", doltErr))
-			allOK = false
-		} else if dryRun {
-			if doltRunning {
-				printStatus("Dolt", true, fmt.Sprintf("would stop (PID %d)", doltPid))
-			}
-		} else {
-			if doltRunning {
-				if err := doltserver.Stop(townRoot); err != nil {
-					printStatus("Dolt", false, err.Error())
-					allOK = false
-				} else {
-					printStatus("Dolt", true, fmt.Sprintf("stopped (was PID %d)", doltPid))
-				}
-			} else {
-				printStatus("Dolt", true, "not running")
-			}
-		}
-	}
-
-	// Phase 4b-iii: Stop imposter Dolt servers.
-	// After stopping the canonical server, rogue Dolt servers spawned by bd
-	// from .beads/dolt/ directories may still be running. KillImposters only
-	// catches servers on our port, so also scan for any dolt sql-server
-	// processes rooted in this town's directory tree.
-	if !dryRun {
-		if err := doltserver.KillImposters(townRoot); err != nil {
-			printStatus("Dolt imposters", false, err.Error())
-			allOK = false
-		}
-		orphanDolts := findOrphanDoltServers(townRoot)
-		if len(orphanDolts) > 0 {
-			stopped := stopOrphanDoltServers(orphanDolts)
-			if stopped > 0 {
-				printStatus("Dolt orphans", true, fmt.Sprintf("stopped %d rogue server(s)", stopped))
-			}
-		}
-	} else {
-		conflictPID, _ := doltserver.CheckPortConflict(townRoot)
-		if conflictPID > 0 {
-			printStatus("Dolt imposters", true, fmt.Sprintf("would stop imposter (PID %d)", conflictPID))
-		}
-		orphanDolts := findOrphanDoltServers(townRoot)
-		if len(orphanDolts) > 0 {
-			printStatus("Dolt orphans", true, fmt.Sprintf("%d rogue server(s) would stop", len(orphanDolts)))
-		}
-	}
-
-	// Phase 4b-iiia: Stop this town's `gt worker serve` process.
-	workerPIDs := worker.FindServePIDs(townRoot)
-	if len(workerPIDs) > 0 {
-		if dryRun {
-			printStatus("Worker serve", true, fmt.Sprintf("%d would stop", len(workerPIDs)))
-		} else {
-			stopped := worker.StopServe(townRoot)
-			if leftover := worker.FindServePIDs(townRoot); len(leftover) > 0 {
-				printStatus("Worker serve", false, fmt.Sprintf("still running (PIDs %v)", leftover))
-				allOK = false
-			} else if stopped > 0 {
-				printStatus("Worker serve", true, fmt.Sprintf("stopped %d", stopped))
-			}
-		}
-	} else if !dryRun {
-		printStatus("Worker serve", true, "not running")
-	}
-
-	// Phase 4b-iv: Remove .beads/dolt directories.
-	// These legacy per-agent data directories trigger bd to auto-spawn local
-	// Dolt servers. Removing them prevents rogue respawn on next gt up.
-	// Data has already been migrated to .dolt-data/ by gt dolt migrate.
-	beadsDoltDirs := findBeadsDoltDirs(townRoot)
-	if len(beadsDoltDirs) > 0 {
-		if dryRun {
-			printStatus("Beads dolt dirs", true, fmt.Sprintf("%d would remove", len(beadsDoltDirs)))
-		} else {
-			removed := removeBeadsDoltDirs(beadsDoltDirs)
-			if removed > 0 {
-				printStatus("Beads dolt dirs", true, fmt.Sprintf("removed %d", removed))
-			}
-		}
-	}
-
-	// Phase 4c: Clean up legacy socket sessions.
-	// Old binaries created sessions on the "default" tmux socket or on the
-	// basename-only socket (e.g., "gt" instead of "gt-a1b2c3"). After
-	// transitioning to path-hashed sockets, ghost sessions on old sockets
-	// persist and cause split-brain.
-	if !dryRun {
-		cleaned := cleanupLegacyDefaultSocket()
-		if cleaned > 0 {
-			printStatus("Legacy sessions", true, fmt.Sprintf("cleaned %d from 'default' socket", cleaned))
-		}
-		cleaned = cleanupLegacyBaseSocket(townRoot)
-		if cleaned > 0 {
-			printStatus("Legacy sessions", true, fmt.Sprintf("cleaned %d from old basename socket", cleaned))
-		}
-	} else {
-		count := countLegacyDefaultSocketSessions()
-		if count > 0 {
-			printStatus("Legacy sessions", true, fmt.Sprintf("%d would be cleaned from 'default' socket", count))
-		}
-		count = countLegacyBaseSocketSessions(townRoot)
-		if count > 0 {
-			printStatus("Legacy sessions", true, fmt.Sprintf("%d would be cleaned from old basename socket", count))
-		}
-	}
-
-	// Phase 5: Orphan cleanup and verification (--all or --force)
-	if (all || force) && !dryRun {
-		fmt.Println()
-
-		// Kill any processes tracked via PID files (defense-in-depth for
-		// processes that survived normal session teardown).
-		killed, pidErrs := session.KillTrackedPIDs(townRoot)
-		if killed > 0 {
-			fmt.Printf("  Killed %d tracked orphan process(es) via PID files\n", killed)
-		}
-		for _, e := range pidErrs {
-			fmt.Printf("  PID cleanup warning: %s\n", e)
-		}
-
-		fmt.Println("Cleaning up orphaned Claude processes...")
-		cleanupOrphanedClaude(defaultDownOrphanGraceSecs)
-
-		time.Sleep(500 * time.Millisecond)
-		respawned := verifyShutdown(t, townRoot)
-		if len(respawned) > 0 {
-			fmt.Println()
-			fmt.Printf("%s Warning: Some processes may have respawned:\n", style.Bold.Render("⚠"))
-			for _, r := range respawned {
-				fmt.Printf("  • %s\n", r)
-			}
-			fmt.Println()
-			fmt.Printf("This may indicate a process manager is respawning agents.\n")
-			fmt.Printf("Check with:\n")
-			fmt.Printf("  %s\n", style.Dim.Render("ps aux | grep claude  # Find respawned processes"))
-			fmt.Printf("  %s\n", style.Dim.Render("gt status             # Verify town state"))
-			allOK = false
-		}
-	}
-
-	// Phase 6: Nuke tmux server (--nuke only)
-	// Each town uses a per-town tmux socket derived from a hash of the town's
-	// canonical path (see registry.go townSocketName), so --nuke only affects
-	// this town's server. Users may also have opened custom windows/panes, so
-	// we require confirmation.
-	if nuke {
-		socket := tmux.GetDefaultSocket()
-		socketLabel := "default"
-		if socket != "" {
-			socketLabel = socket
-		}
-		if dryRun {
-			printStatus("Tmux server", true, fmt.Sprintf("would kill (socket: %s)", socketLabel))
-		} else if os.Getenv("GT_NUKE_ACKNOWLEDGED") == "" {
-			fmt.Println()
-			fmt.Printf("%s The --nuke flag kills this town's tmux server (socket: %s).\n",
-				style.Bold.Render("⚠ BLOCKED:"), socketLabel)
-			fmt.Printf("This will destroy all tmux sessions on this socket, including any custom windows you opened.\n")
-			fmt.Println()
-			fmt.Printf("To proceed, run with: %s\n", style.Bold.Render("GT_NUKE_ACKNOWLEDGED=1 gt down --nuke"))
-			allOK = false
-		} else {
-			if err := t.KillServer(); err != nil {
-				printStatus("Tmux server", false, err.Error())
-				allOK = false
-			} else {
-				printStatus("Tmux server", true, fmt.Sprintf("killed (socket: %s)", socketLabel))
-			}
-		}
-	}
-
-	// Summary
-	fmt.Println()
-	if dryRun {
-		fmt.Println("═══ DRY RUN COMPLETE (no changes made) ═══")
-		return nil
-	}
-
-	if allOK {
-		fmt.Printf("%s All services stopped\n", style.Bold.Render("✓"))
-		stoppedServices := []string{"dolt", "daemon", "deacon", "boot", "mayor"}
-		for _, rigName := range rigs {
-			stoppedServices = append(stoppedServices, fmt.Sprintf("%s/refinery", rigName))
-			stoppedServices = append(stoppedServices, fmt.Sprintf("%s/witness", rigName))
-		}
-		if crewStopped > 0 {
-			stoppedServices = append(stoppedServices, "crew")
-		}
-		if polecats {
-			stoppedServices = append(stoppedServices, "polecats")
-		}
-		if all {
-			stoppedServices = append(stoppedServices, "bd-processes")
-		}
-		if nuke {
-			stoppedServices = append(stoppedServices, "tmux-server")
-		}
-		_ = events.LogFeed(events.TypeHalt, "gt", events.HaltPayload(stoppedServices))
-	} else {
-		fmt.Printf("%s Some services failed to stop\n", style.Bold.Render("✗"))
-		return fmt.Errorf("not all services stopped")
-	}
-
-	return nil
-}
-
 // stopAllPolecats stops all polecat sessions across all rigs.
 // Stops are performed in parallel for faster teardown.
 // Returns the number of polecats stopped (or would be stopped in dry-run).
-func stopAllPolecats(t *tmux.Tmux, townRoot string, rigNames []string, force bool, dryRun bool) int {
-	stopped := 0
-
-	// Load rigs config
+func downRigManager(townRoot string) *rig.Manager {
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
 	if err != nil {
 		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
 	}
+	return rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+}
 
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
-
+func stopAllPolecats(t *tmux.Tmux, townRoot string, rigNames []string, force bool, dryRun bool) int {
+	rigMgr := downRigManager(townRoot)
 	if dryRun {
-		for _, rigName := range rigNames {
-			r, err := rigMgr.GetRig(rigName)
-			if err != nil {
-				continue
-			}
-			polecatMgr := polecat.NewSessionManager(t, r)
-			infos, err := polecatMgr.ListPolecats()
-			if err != nil {
-				continue
-			}
-			for _, info := range infos {
-				stopped++
-				fmt.Printf("  %s [%s] %s would stop\n", style.Dim.Render("○"), rigName, info.Polecat)
-			}
-		}
-		return stopped
+		return countPolecatsDryRun(t, rigMgr, rigNames)
 	}
+	stopped := 0
 
 	// Collect targets and stop all in parallel.
 	type polecatResult struct {
@@ -575,62 +151,69 @@ func stopAllPolecats(t *tmux.Tmux, townRoot string, rigNames []string, force boo
 	return stopped
 }
 
-// stopAllCrew stops all crew member sessions across all rigs.
-// Stops are performed in parallel for faster teardown.
-// Returns the number of crew sessions stopped (or would be stopped in dry-run).
-func stopAllCrew(t *tmux.Tmux, townRoot string, rigNames []string, force bool, dryRun bool) int {
+func countPolecatsDryRun(t *tmux.Tmux, rigMgr *rig.Manager, rigNames []string) int {
 	stopped := 0
-
-	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err != nil {
-		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
-	}
-
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
-
-	// Collect all running crew sessions to stop.
-	type crewTarget struct {
-		rigName   string
-		name      string
-		sessionID string
-	}
-	var targets []crewTarget
-
 	for _, rigName := range rigNames {
 		r, err := rigMgr.GetRig(rigName)
 		if err != nil {
 			continue
 		}
+		polecatMgr := polecat.NewSessionManager(t, r)
+		infos, err := polecatMgr.ListPolecats()
+		if err != nil {
+			continue
+		}
+		for _, info := range infos {
+			stopped++
+			fmt.Printf("  %s [%s] %s would stop\n", style.Dim.Render("○"), rigName, info.Polecat)
+		}
+	}
+	return stopped
+}
 
+type downCrewTarget struct {
+	rigName   string
+	name      string
+	sessionID string
+}
+
+func collectCrewStopTargets(t *tmux.Tmux, rigMgr *rig.Manager, g *git.Git, rigNames []string, dryRun bool) ([]downCrewTarget, int) {
+	var targets []downCrewTarget
+	stopped := 0
+	for _, rigName := range rigNames {
+		r, err := rigMgr.GetRig(rigName)
+		if err != nil {
+			continue
+		}
 		crewMgr := crew.NewManager(r, g)
 		workers, err := crewMgr.List()
 		if err != nil {
 			continue
 		}
-
 		for _, worker := range workers {
 			sessionID := crewMgr.SessionName(worker.Name)
 			running, err := t.HasSession(sessionID)
 			if err != nil || !running {
 				continue
 			}
-
 			if dryRun {
 				stopped++
 				fmt.Printf("  %s [%s] crew/%s would stop\n", style.Dim.Render("○"), rigName, worker.Name)
 				continue
 			}
-			targets = append(targets, crewTarget{rigName: rigName, name: worker.Name, sessionID: sessionID})
+			targets = append(targets, downCrewTarget{rigName: rigName, name: worker.Name, sessionID: sessionID})
 		}
 	}
+	return targets, stopped
+}
 
+func stopAllCrew(t *tmux.Tmux, townRoot string, rigNames []string, force bool, dryRun bool) int {
+	rigMgr := downRigManager(townRoot)
+	targets, stopped := collectCrewStopTargets(t, rigMgr, git.NewGit(townRoot), rigNames, dryRun)
 	if len(targets) == 0 {
 		return stopped
 	}
 
-	// Stop all crew sessions in parallel.
 	type crewResult struct {
 		rigName string
 		name    string
@@ -641,7 +224,7 @@ func stopAllCrew(t *tmux.Tmux, townRoot string, rigNames []string, force bool, d
 
 	for i, tgt := range targets {
 		wg.Add(1)
-		go func(i int, tgt crewTarget) {
+		go func(i int, tgt downCrewTarget) {
 			defer wg.Done()
 			_, err := stopSession(t, tgt.sessionID, force)
 			results[i] = crewResult{rigName: tgt.rigName, name: tgt.name, err: err}
@@ -725,49 +308,55 @@ func acquireShutdownLock(townRoot string) (*flock.Flock, error) {
 // Returns list of things that are still running or respawned.
 func verifyShutdown(t *tmux.Tmux, townRoot string) []string {
 	var respawned []string
+	respawned = appendShutdownTmuxSessions(respawned, t)
+	respawned = appendShutdownDaemonPID(respawned, townRoot)
+	return appendShutdownProcessChecks(respawned, townRoot)
+}
 
+func appendShutdownTmuxSessions(respawned []string, t *tmux.Tmux) []string {
 	sessions, err := t.ListSessions()
-	if err == nil {
-		for _, sess := range sessions {
-			if session.IsKnownSession(sess) {
-				respawned = append(respawned, fmt.Sprintf("tmux session %s", sess))
-			}
+	if err != nil {
+		return respawned
+	}
+	for _, sess := range sessions {
+		if session.IsKnownSession(sess) {
+			respawned = append(respawned, fmt.Sprintf("tmux session %s", sess))
 		}
 	}
+	return respawned
+}
 
-	pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
-	if pidData, err := os.ReadFile(pidFile); err == nil {
-		var pid int
-		if _, err := fmt.Sscanf(string(pidData), "%d", &pid); err == nil {
-			if isProcessRunning(pid) {
-				respawned = append(respawned, fmt.Sprintf("gt daemon (PID %d)", pid))
-			}
-		}
+func appendShutdownDaemonPID(respawned []string, townRoot string) []string {
+	pidData, err := os.ReadFile(filepath.Join(townRoot, "daemon", "daemon.pid"))
+	if err != nil {
+		return respawned
 	}
+	var pid int
+	if _, err := fmt.Sscanf(string(pidData), "%d", &pid); err != nil {
+		return respawned
+	}
+	if isProcessRunning(pid) {
+		respawned = append(respawned, fmt.Sprintf("gt daemon (PID %d)", pid))
+	}
+	return respawned
+}
 
-	// Check for orphaned Claude/node processes
-	// These can be left behind if tmux sessions were killed but child processes didn't terminate
+func appendShutdownProcessChecks(respawned []string, townRoot string) []string {
 	if pids := findOrphanedClaudeProcesses(townRoot); len(pids) > 0 {
 		respawned = append(respawned, fmt.Sprintf("orphaned Claude processes (PIDs: %v)", pids))
 	}
-
-	// Check for respawned idle-monitors
 	if pids := doltserver.FindIdleMonitorProcesses(townRoot); len(pids) > 0 {
 		respawned = append(respawned, fmt.Sprintf("bd dolt idle-monitor processes (PIDs: %v)", pids))
 	}
-
-	// Check for orphan Dolt servers from .beads/dolt directories
 	if pids := findOrphanDoltServers(townRoot); len(pids) > 0 {
 		respawned = append(respawned, fmt.Sprintf("orphan Dolt servers (PIDs: %v)", pids))
 	}
-
 	if running, pid, err := doltserver.IsRunning(townRoot); err == nil && running {
 		respawned = append(respawned, fmt.Sprintf("town Dolt server (PID %d)", pid))
 	}
 	if pids := worker.FindServePIDs(townRoot); len(pids) > 0 {
 		respawned = append(respawned, fmt.Sprintf("gt worker serve (PIDs: %v)", pids))
 	}
-
 	return respawned
 }
 
@@ -860,34 +449,38 @@ func findOrphanDoltServers(townRoot string) []int {
 
 	var pids []int
 	for _, p := range table.All() {
-		line := p.Args
-		if !strings.Contains(line, "dolt") || !strings.Contains(line, "sql-server") {
-			continue
-		}
-
-		cwdOut, err := exec.Command("lsof", "-p", strconv.Itoa(p.PID), "-Fn", "-d", "cwd").Output()
-		if err != nil {
-			continue
-		}
-		cwd := ""
-		for _, cwdLine := range strings.Split(string(cwdOut), "\n") {
-			if strings.HasPrefix(cwdLine, "n") {
-				cwd = cwdLine[1:]
-				break
-			}
-		}
-		if cwd == "" {
-			continue
-		}
-
-		cwdAbs, _ := filepath.Abs(cwd)
-		inTown := cwdAbs == townAbs || strings.HasPrefix(cwdAbs, townAbs+string(filepath.Separator))
-		notCanonical := !strings.HasPrefix(cwdAbs, canonicalDir)
-		if inTown && notCanonical {
+		if isOrphanDoltServer(p, townAbs, canonicalDir) {
 			pids = append(pids, p.PID)
 		}
 	}
 	return pids
+}
+
+func isOrphanDoltServer(p process.Proc, townAbs, canonicalDir string) bool {
+	line := p.Args
+	if !strings.Contains(line, "dolt") || !strings.Contains(line, "sql-server") {
+		return false
+	}
+	cwd := processCWD(p.PID)
+	if cwd == "" {
+		return false
+	}
+	cwdAbs, _ := filepath.Abs(cwd)
+	inTown := cwdAbs == townAbs || strings.HasPrefix(cwdAbs, townAbs+string(filepath.Separator))
+	return inTown && !strings.HasPrefix(cwdAbs, canonicalDir)
+}
+
+func processCWD(pid int) string {
+	cwdOut, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-Fn", "-d", "cwd").Output()
+	if err != nil {
+		return ""
+	}
+	for _, cwdLine := range strings.Split(string(cwdOut), "\n") {
+		if strings.HasPrefix(cwdLine, "n") {
+			return cwdLine[1:]
+		}
+	}
+	return ""
 }
 
 // stopOrphanDoltServers terminates orphan Dolt servers.
@@ -925,34 +518,41 @@ func findBeadsDoltDirs(townRoot string) []string {
 	townAbs, _ := filepath.Abs(townRoot)
 
 	_ = filepath.WalkDir(townAbs, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return filepath.SkipDir
-		}
-		if !d.IsDir() {
-			return nil
-		}
-
-		// Skip .dolt-data (canonical data), .git, node_modules, etc.
-		name := d.Name()
-		if name == ".dolt-data" || name == ".git" || name == "node_modules" || name == ".repo.git" {
-			return filepath.SkipDir
-		}
-
-		// Limit depth to avoid deep traversal
-		rel, _ := filepath.Rel(townAbs, path)
-		if strings.Count(rel, string(filepath.Separator)) > 5 {
-			return filepath.SkipDir
-		}
-
-		// Match .beads/dolt directories
-		if name == "dolt" && strings.HasSuffix(filepath.Dir(path), ".beads") {
+		skip, match := beadsDoltWalkDecision(townAbs, path, d, err)
+		if match {
 			dirs = append(dirs, path)
+		}
+		if skip {
 			return filepath.SkipDir
 		}
-
 		return nil
 	})
 	return dirs
+}
+
+func beadsDoltWalkDecision(townAbs, path string, d os.DirEntry, err error) (skip, match bool) {
+	if err != nil || skipBeadsWalkDir(townAbs, path, d) {
+		return true, false
+	}
+	if !d.IsDir() {
+		return false, false
+	}
+	if d.Name() == "dolt" && strings.HasSuffix(filepath.Dir(path), ".beads") {
+		return true, true
+	}
+	return false, false
+}
+
+func skipBeadsWalkDir(townAbs, path string, d os.DirEntry) bool {
+	if !d.IsDir() {
+		return false
+	}
+	switch d.Name() {
+	case ".dolt-data", ".git", "node_modules", ".repo.git":
+		return true
+	}
+	rel, _ := filepath.Rel(townAbs, path)
+	return strings.Count(rel, string(filepath.Separator)) > 5
 }
 
 // removeBeadsDoltDirs removes legacy .beads/dolt directories that are safe to
