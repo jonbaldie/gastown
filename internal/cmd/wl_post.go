@@ -11,16 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	wlPostTitle       string
-	wlPostDescription string
-	wlPostProject     string
-	wlPostType        string
-	wlPostPriority    int
-	wlPostEffort      string
-	wlPostTags        string
-)
-
 var wlPostCmd = &cobra.Command{
 	Use:   "post",
 	Short: "Post a new wanted item to the commons",
@@ -40,28 +30,35 @@ Examples:
 }
 
 func init() {
-	wlPostCmd.Flags().StringVar(&wlPostTitle, "title", "", "Title of the wanted item (required)")
-	wlPostCmd.Flags().StringVarP(&wlPostDescription, "description", "d", "", "Detailed description")
-	wlPostCmd.Flags().StringVar(&wlPostProject, "project", "", "Project name (e.g., gastown, beads)")
-	wlPostCmd.Flags().StringVar(&wlPostType, "type", "", "Item type: feature, bug, design, rfc, docs")
-	wlPostCmd.Flags().IntVar(&wlPostPriority, "priority", 2, "Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog")
-	wlPostCmd.Flags().StringVar(&wlPostEffort, "effort", "medium", "Effort level: trivial, small, medium, large, epic")
-	wlPostCmd.Flags().StringVar(&wlPostTags, "tags", "", "Comma-separated tags (e.g., 'go,auth,federation')")
+	wlPostCmd.Flags().String("title", "", "Title of the wanted item (required)")
+	wlPostCmd.Flags().StringP("description", "d", "", "Detailed description")
+	wlPostCmd.Flags().String("project", "", "Project name (e.g., gastown, beads)")
+	wlPostCmd.Flags().String("type", "", "Item type: feature, bug, design, rfc, docs")
+	wlPostCmd.Flags().Int("priority", 2, "Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog")
+	wlPostCmd.Flags().String("effort", "medium", "Effort level: trivial, small, medium, large, epic")
+	wlPostCmd.Flags().String("tags", "", "Comma-separated tags (e.g., 'go,auth,federation')")
 
 	_ = wlPostCmd.MarkFlagRequired("title")
 
 	wlCmd.AddCommand(wlPostCmd)
 }
 
-func runWlPost(_ *cobra.Command, _ []string) error {
+func runWlPost(cmd *cobra.Command, _ []string) error {
+	title := commandStringFlag(cmd, "title")
+	description := commandStringFlag(cmd, "description")
+	project := commandStringFlag(cmd, "project")
+	itemType := commandStringFlag(cmd, "type")
+	priority := commandIntFlag(cmd, "priority")
+	effort := commandStringFlag(cmd, "effort")
+	tagsText := commandStringFlag(cmd, "tags")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	var tags []string
-	if wlPostTags != "" {
-		for _, t := range strings.Split(wlPostTags, ",") {
+	if tagsText != "" {
+		for _, t := range strings.Split(tagsText, ",") {
 			t = strings.TrimSpace(t)
 			if t != "" {
 				tags = append(tags, t)
@@ -69,7 +66,7 @@ func runWlPost(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	if err := validatePostInputs(wlPostType, wlPostEffort, wlPostPriority); err != nil {
+	if err := validatePostInputs(itemType, effort, priority); err != nil {
 		return err
 	}
 
@@ -81,15 +78,15 @@ func runWlPost(_ *cobra.Command, _ []string) error {
 	}
 
 	item := &doltserver.WantedItem{
-		ID:          doltserver.GenerateWantedID(wlPostTitle),
-		Title:       wlPostTitle,
-		Description: wlPostDescription,
-		Project:     wlPostProject,
-		Type:        wlPostType,
-		Priority:    wlPostPriority,
+		ID:          doltserver.GenerateWantedID(title),
+		Title:       title,
+		Description: description,
+		Project:     project,
+		Type:        itemType,
+		Priority:    priority,
 		Tags:        tags,
 		PostedBy:    wlCfg.RigHandle,
-		EffortLevel: wlPostEffort,
+		EffortLevel: effort,
 	}
 
 	if err := postWanted(store, item); err != nil {
