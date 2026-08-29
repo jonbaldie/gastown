@@ -2111,7 +2111,7 @@ func runRigStatus(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func stopRigByName(townRoot string, rigMgr *rig.Manager, rigName string, force, nuclear bool) (succeeded, failed bool) {
+func stopRigByName(rigMgr *rig.Manager, rigName string, force, nuclear bool) (succeeded, failed bool) {
 	r, err := rigMgr.GetRig(rigName)
 	if err != nil {
 		fmt.Printf("%s Rig '%s' not found\n", style.Warning.Render("⚠"), rigName)
@@ -2149,14 +2149,14 @@ func reportRigStopSummary(args []string, succeeded, failed []string) error {
 }
 
 func runRigStop(_ *cobra.Command, args []string) error {
-	townRoot, rigMgr, err := loadRigManagerForStart()
+	_, rigMgr, err := loadRigManagerForStart()
 	if err != nil {
 		return err
 	}
 	var succeeded []string
 	var failed []string
 	for _, rigName := range args {
-		stopped, stopFailed := stopRigByName(townRoot, rigMgr, rigName, rigStopForce, rigStopNuclear)
+		stopped, stopFailed := stopRigByName(rigMgr, rigName, rigStopForce, rigStopNuclear)
 		if stopFailed {
 			failed = append(failed, rigName)
 		} else if stopped {
