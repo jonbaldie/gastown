@@ -174,32 +174,7 @@ func HandlePolecatDone(bd *BdCli, workDir, rigName string, msg *mail.Message, _ 
 		return result
 	}
 
-	hasPendingMR := completionPayloadHasPendingMR(bd, workDir, rigName, payload)
-
-	// When Exit==COMPLETED but MRID is empty and MR creation didn't explicitly
-	// fail, query beads to check if an MR bead exists for this branch.
-	// This handles the case where the MR was created but the ID wasn't included
-	// in the POLECAT_DONE message (e.g., message truncation, race condition).
-	if !hasPendingMR && payload.Exit == "COMPLETED" && !payload.MRFailed && payload.Branch != "" {
-		if mrID := findMRBeadForBranch(bd, workDir, payload.Branch); mrID != "" {
-			payload.MRID = mrID
-			hasPendingMR = completionPayloadHasPendingMR(bd, workDir, rigName, payload)
-		}
-	}
-
-	if hasPendingMR {
-		result = handlePolecatDonePendingMR(bd, workDir, rigName, payload, result)
-	} else {
-		result = handlePolecatDoneNoMR(workDir, rigName, payload, result)
-	}
-
-	// Notify Mayor that a slot is open regardless of MR status.
-	// The polecat is idle either way — Mayor should consider slinging next bead. (GH#2727)
-	if result.Handled {
-		notifyMayorSlotOpen(workDir, rigName, payload.PolecatName, payload.Exit)
-	}
-
-	return result
+	return handlePolecatDonePayload(bd, workDir, rigName, payload, result)
 }
 
 // HandlePolecatDoneFromBead processes polecat completion detected from agent bead
@@ -223,13 +198,27 @@ func HandlePolecatDoneFromBead(bd *BdCli, workDir, rigName, polecatName string, 
 		result.Error = fmt.Errorf("nil agent fields for polecat %s", polecatName)
 		return result
 	}
+	payload := polecatDonePayloadFromAgentFields(polecatName, fields)
+
+	if payload.Exit == "PHASE_COMPLETE" {
+		result.Handled = true
+		result.Action = fmt.Sprintf("phase-complete for %s - session recycled, awaiting gate", polecatName)
+		return result
+	}
+
+	if handlePolecatPushFailure(workDir, polecatName, payload, result) {
+		return result
+	}
+
+	return handlePolecatDonePayload(bd, workDir, rigName, payload, result)
+}
+
+func polecatDonePayloadFromAgentFields(polecatName string, fields *beads.AgentFields) *PolecatDonePayload {
 	sourceIssue := fields.LastSourceIssue
 	if sourceIssue == "" {
 		sourceIssue = fields.HookBead
 	}
-
-	// Map agent bead fields to the existing PolecatDonePayload for reuse
-	payload := &PolecatDonePayload{
+	return &PolecatDonePayload{
 		PolecatName: polecatName,
 		Exit:        fields.ExitType,
 		IssueID:     sourceIssue,
@@ -238,54 +227,51 @@ func HandlePolecatDoneFromBead(bd *BdCli, workDir, rigName, polecatName string, 
 		MRFailed:    fields.MRFailed,
 		PushFailed:  fields.PushFailed,
 	}
+}
 
-	if payload.Exit == "PHASE_COMPLETE" {
-		result.Handled = true
-		result.Action = fmt.Sprintf("phase-complete for %s - session recycled, awaiting gate", polecatName)
-		return result
+func handlePolecatPushFailure(workDir, polecatName string, payload *PolecatDonePayload, result *HandlerResult) bool {
+	if !payload.PushFailed {
+		return false
 	}
-
-	// Push failed: branch never reached origin (gas-556). Report recovery needed.
-	if payload.PushFailed {
-		result.Handled = true
-		result.Action = fmt.Sprintf("push-failed-recovery-needed for %s (branch=%s issue=%s) — branch not on origin, worktree may be at risk",
-			polecatName, payload.Branch, payload.IssueID)
-		townRoot, _ := workspace.Find(workDir)
-		if townRoot != "" {
-			mayorMsg := fmt.Sprintf("PUSH_FAILED: polecat=%s branch=%s issue=%s — branch not on origin, possible work loss",
-				polecatName, payload.Branch, payload.IssueID)
-			mayorSession := session.MayorSessionName()
-			t := tmux.NewTmux()
-			if running, err := t.HasSession(mayorSession); err == nil && running {
-				_ = t.NudgeSession(mayorSession, mayorMsg)
-			}
-		}
-		return result
+	result.Handled = true
+	result.Action = fmt.Sprintf("push-failed-recovery-needed for %s (branch=%s issue=%s) — branch not on origin, worktree may be at risk",
+		polecatName, payload.Branch, payload.IssueID)
+	townRoot, _ := workspace.Find(workDir)
+	if townRoot == "" {
+		return true
 	}
-
-	hasPendingMR := completionPayloadHasPendingMR(bd, workDir, rigName, payload)
-
-	// Same MR-discovery fallback as HandlePolecatDone
-	if !hasPendingMR && payload.Exit == "COMPLETED" && !payload.MRFailed && payload.Branch != "" {
-		if mrID := findMRBeadForBranch(bd, workDir, payload.Branch); mrID != "" {
-			payload.MRID = mrID
-			hasPendingMR = completionPayloadHasPendingMR(bd, workDir, rigName, payload)
-		}
+	mayorMsg := fmt.Sprintf("PUSH_FAILED: polecat=%s branch=%s issue=%s — branch not on origin, possible work loss",
+		polecatName, payload.Branch, payload.IssueID)
+	mayorSession := session.MayorSessionName()
+	t := tmux.NewTmux()
+	if running, err := t.HasSession(mayorSession); err == nil && running {
+		_ = t.NudgeSession(mayorSession, mayorMsg)
 	}
+	return true
+}
 
-	if hasPendingMR {
+func handlePolecatDonePayload(bd *BdCli, workDir, rigName string, payload *PolecatDonePayload, result *HandlerResult) *HandlerResult {
+	if completionPayloadHasPendingMRWithFallback(bd, workDir, rigName, payload) {
 		result = handlePolecatDonePendingMR(bd, workDir, rigName, payload, result)
 	} else {
 		result = handlePolecatDoneNoMR(workDir, rigName, payload, result)
 	}
-
-	// Notify Mayor that a slot is open regardless of MR status.
-	// Mirror HandlePolecatDone behavior — polecat is idle, Mayor should sling next bead. (GH#2727)
 	if result.Handled {
-		notifyMayorSlotOpen(workDir, rigName, polecatName, payload.Exit)
+		notifyMayorSlotOpen(workDir, rigName, payload.PolecatName, payload.Exit)
 	}
-
 	return result
+}
+
+func completionPayloadHasPendingMRWithFallback(bd *BdCli, workDir, rigName string, payload *PolecatDonePayload) bool {
+	hasPendingMR := completionPayloadHasPendingMR(bd, workDir, rigName, payload)
+	if hasPendingMR || payload.Exit != "COMPLETED" || payload.MRFailed || payload.Branch == "" {
+		return hasPendingMR
+	}
+	if mrID := findMRBeadForBranch(bd, workDir, payload.Branch); mrID != "" {
+		payload.MRID = mrID
+		return completionPayloadHasPendingMR(bd, workDir, rigName, payload)
+	}
+	return false
 }
 
 // TransitionPolecatToIdle sets a polecat's agent_state to idle after the witness
