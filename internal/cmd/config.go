@@ -1329,124 +1329,9 @@ func maintenanceThresholdValue(mc *daemon.ScheduledMaintenanceConfig) string {
 
 // setLifecycleConfig sets a lifecycle.* key in daemon.json.
 func setLifecycleConfig(townRoot, key, value string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-	if patrolConfig == nil {
-		patrolConfig = daemon.DefaultLifecycleConfig()
-	}
-	if patrolConfig.Patrols == nil {
-		patrolConfig.Patrols = &daemon.PatrolsConfig{}
-	}
-
-	switch key {
-	// Reaper
-	case "lifecycle.reaper.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{}
-		}
-		patrolConfig.Patrols.WispReaper.Enabled = b
-
-	case "lifecycle.reaper.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.WispReaper.IntervalStr = value
-
-	case "lifecycle.reaper.delete_age":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.WispReaper.DeleteAgeStr = value
-
-	// Compactor
-	case "lifecycle.compactor.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{}
-		}
-		patrolConfig.Patrols.CompactorDog.Enabled = b
-
-	case "lifecycle.compactor.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.CompactorDog.IntervalStr = value
-
-	case "lifecycle.compactor.threshold":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid threshold for %s: expected positive integer", key)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.CompactorDog.Threshold = n
-
-	// Doctor
-	case "lifecycle.doctor.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.DoctorDog == nil {
-			patrolConfig.Patrols.DoctorDog = &daemon.DoctorDogConfig{}
-		}
-		patrolConfig.Patrols.DoctorDog.Enabled = b
-
-	case "lifecycle.doctor.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.DoctorDog == nil {
-			patrolConfig.Patrols.DoctorDog = &daemon.DoctorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.DoctorDog.IntervalStr = value
-
-	// Backup (controls both JSONL and Dolt backup)
-	case "lifecycle.backup.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.JsonlGitBackup == nil {
-			patrolConfig.Patrols.JsonlGitBackup = &daemon.JsonlGitBackupConfig{}
-		}
-		patrolConfig.Patrols.JsonlGitBackup.Enabled = b
-		if patrolConfig.Patrols.DoltBackup == nil {
-			patrolConfig.Patrols.DoltBackup = &daemon.DoltBackupConfig{}
-		}
-		patrolConfig.Patrols.DoltBackup.Enabled = b
-
-	case "lifecycle.backup.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.JsonlGitBackup == nil {
-			patrolConfig.Patrols.JsonlGitBackup = &daemon.JsonlGitBackupConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.JsonlGitBackup.IntervalStr = value
-		if patrolConfig.Patrols.DoltBackup == nil {
-			patrolConfig.Patrols.DoltBackup = &daemon.DoltBackupConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.DoltBackup.IntervalStr = value
-
-	default:
-		return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
+	patrolConfig := ensureLifecyclePatrolConfig(townRoot)
+	if err := applyLifecycleValue(patrolConfig.Patrols, key, value); err != nil {
+		return err
 	}
 
 	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
@@ -1457,94 +1342,331 @@ func setLifecycleConfig(townRoot, key, value string) error {
 	return nil
 }
 
+func ensureLifecyclePatrolConfig(townRoot string) *daemon.DaemonPatrolConfig {
+	patrolConfig := daemon.LoadPatrolConfig(townRoot)
+	if patrolConfig == nil {
+		patrolConfig = daemon.DefaultLifecycleConfig()
+	}
+	if patrolConfig.Patrols == nil {
+		patrolConfig.Patrols = &daemon.PatrolsConfig{}
+	}
+	return patrolConfig
+}
+
+func applyLifecycleValue(p *daemon.PatrolsConfig, key, value string) error {
+	setters := map[string]func(*daemon.PatrolsConfig, string) error{
+		"lifecycle.reaper.enabled":      setLifecycleReaperEnabled,
+		"lifecycle.reaper.interval":     setLifecycleReaperInterval,
+		"lifecycle.reaper.delete_age":   setLifecycleReaperDeleteAge,
+		"lifecycle.compactor.enabled":   setLifecycleCompactorEnabled,
+		"lifecycle.compactor.interval":  setLifecycleCompactorInterval,
+		"lifecycle.compactor.threshold": setLifecycleCompactorThreshold,
+		"lifecycle.doctor.enabled":      setLifecycleDoctorEnabled,
+		"lifecycle.doctor.interval":     setLifecycleDoctorInterval,
+		"lifecycle.backup.enabled":      setLifecycleBackupEnabled,
+		"lifecycle.backup.interval":     setLifecycleBackupInterval,
+	}
+	setter, ok := setters[key]
+	if !ok {
+		return unknownLifecycleKeyError(key)
+	}
+	return setter(p, value)
+}
+
+func parseLifecycleBool(key, value string) (bool, error) {
+	b, err := parseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
+	}
+	return b, nil
+}
+
+func validateLifecycleDuration(key, value string) error {
+	if _, err := time.ParseDuration(value); err != nil {
+		return fmt.Errorf("invalid duration for %s: %w", key, err)
+	}
+	return nil
+}
+
+func ensureLifecycleReaper(p *daemon.PatrolsConfig, enabled bool) *daemon.WispReaperConfig {
+	if p.WispReaper == nil {
+		p.WispReaper = &daemon.WispReaperConfig{Enabled: enabled}
+	}
+	return p.WispReaper
+}
+
+func ensureLifecycleCompactor(p *daemon.PatrolsConfig, enabled bool) *daemon.CompactorDogConfig {
+	if p.CompactorDog == nil {
+		p.CompactorDog = &daemon.CompactorDogConfig{Enabled: enabled}
+	}
+	return p.CompactorDog
+}
+
+func ensureLifecycleDoctor(p *daemon.PatrolsConfig, enabled bool) *daemon.DoctorDogConfig {
+	if p.DoctorDog == nil {
+		p.DoctorDog = &daemon.DoctorDogConfig{Enabled: enabled}
+	}
+	return p.DoctorDog
+}
+
+func ensureLifecycleJSONLBackup(p *daemon.PatrolsConfig, enabled bool) *daemon.JsonlGitBackupConfig {
+	if p.JsonlGitBackup == nil {
+		p.JsonlGitBackup = &daemon.JsonlGitBackupConfig{Enabled: enabled}
+	}
+	return p.JsonlGitBackup
+}
+
+func ensureLifecycleDoltBackup(p *daemon.PatrolsConfig, enabled bool) *daemon.DoltBackupConfig {
+	if p.DoltBackup == nil {
+		p.DoltBackup = &daemon.DoltBackupConfig{Enabled: enabled}
+	}
+	return p.DoltBackup
+}
+
+func setLifecycleReaperEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.reaper.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleReaper(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleReaperInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.reaper.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleReaper(p, true).IntervalStr = value
+	return nil
+}
+
+func setLifecycleReaperDeleteAge(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.reaper.delete_age", value); err != nil {
+		return err
+	}
+	ensureLifecycleReaper(p, true).DeleteAgeStr = value
+	return nil
+}
+
+func setLifecycleCompactorEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.compactor.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleCompactor(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleCompactorInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.compactor.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleCompactor(p, true).IntervalStr = value
+	return nil
+}
+
+func setLifecycleCompactorThreshold(p *daemon.PatrolsConfig, value string) error {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		return fmt.Errorf("invalid threshold for lifecycle.compactor.threshold: expected positive integer")
+	}
+	ensureLifecycleCompactor(p, true).Threshold = n
+	return nil
+}
+
+func setLifecycleDoctorEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.doctor.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleDoctor(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleDoctorInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.doctor.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleDoctor(p, true).IntervalStr = value
+	return nil
+}
+
+func setLifecycleBackupEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.backup.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleJSONLBackup(p, false).Enabled = b
+	ensureLifecycleDoltBackup(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleBackupInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.backup.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleJSONLBackup(p, true).IntervalStr = value
+	ensureLifecycleDoltBackup(p, true).IntervalStr = value
+	return nil
+}
+
 // getLifecycleConfig gets a lifecycle.* key from daemon.json.
 func getLifecycleConfig(townRoot, key string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-
-	var value string
-	switch key {
-	// Reaper
-	case "lifecycle.reaper.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.WispReaper.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.reaper.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil && patrolConfig.Patrols.WispReaper.IntervalStr != "" {
-			value = patrolConfig.Patrols.WispReaper.IntervalStr
-		} else {
-			value = "30m (default)"
-		}
-
-	case "lifecycle.reaper.delete_age":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil && patrolConfig.Patrols.WispReaper.DeleteAgeStr != "" {
-			value = patrolConfig.Patrols.WispReaper.DeleteAgeStr
-		} else {
-			value = "168h (default, 7 days)"
-		}
-
-	// Compactor
-	case "lifecycle.compactor.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.CompactorDog.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.compactor.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil && patrolConfig.Patrols.CompactorDog.IntervalStr != "" {
-			value = patrolConfig.Patrols.CompactorDog.IntervalStr
-		} else {
-			value = "24h (default)"
-		}
-
-	case "lifecycle.compactor.threshold":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil && patrolConfig.Patrols.CompactorDog.Threshold > 0 {
-			value = strconv.Itoa(patrolConfig.Patrols.CompactorDog.Threshold)
-		} else {
-			value = "500 (default)"
-		}
-
-	// Doctor
-	case "lifecycle.doctor.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoctorDog != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.DoctorDog.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.doctor.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoctorDog != nil && patrolConfig.Patrols.DoctorDog.IntervalStr != "" {
-			value = patrolConfig.Patrols.DoctorDog.IntervalStr
-		} else {
-			value = "5m (default)"
-		}
-
-	// Backup
-	case "lifecycle.backup.enabled":
-		jsonlEnabled := patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.JsonlGitBackup != nil && patrolConfig.Patrols.JsonlGitBackup.Enabled
-		doltEnabled := patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoltBackup != nil && patrolConfig.Patrols.DoltBackup.Enabled
-		if jsonlEnabled || doltEnabled {
-			value = fmt.Sprintf("jsonl=%v dolt=%v", jsonlEnabled, doltEnabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.backup.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.JsonlGitBackup != nil && patrolConfig.Patrols.JsonlGitBackup.IntervalStr != "" {
-			value = patrolConfig.Patrols.JsonlGitBackup.IntervalStr
-		} else {
-			value = "15m (default)"
-		}
-
-	default:
-		return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
+	value, ok := lifecycleConfigValue(daemon.LoadPatrolConfig(townRoot), key)
+	if !ok {
+		return unknownLifecycleKeyError(key)
 	}
-
 	fmt.Println(value)
 	return nil
+}
+
+func lifecycleConfigValue(config *daemon.DaemonPatrolConfig, key string) (string, bool) {
+	getters := map[string]func(*daemon.PatrolsConfig) string{
+		"lifecycle.reaper.enabled":      lifecycleReaperEnabledValue,
+		"lifecycle.reaper.interval":     lifecycleReaperIntervalValue,
+		"lifecycle.reaper.delete_age":   lifecycleReaperDeleteAgeValue,
+		"lifecycle.compactor.enabled":   lifecycleCompactorEnabledValue,
+		"lifecycle.compactor.interval":  lifecycleCompactorIntervalValue,
+		"lifecycle.compactor.threshold": lifecycleCompactorThresholdValue,
+		"lifecycle.doctor.enabled":      lifecycleDoctorEnabledValue,
+		"lifecycle.doctor.interval":     lifecycleDoctorIntervalValue,
+		"lifecycle.backup.enabled":      lifecycleBackupEnabledValue,
+		"lifecycle.backup.interval":     lifecycleBackupIntervalValue,
+	}
+	getter, ok := getters[key]
+	if !ok {
+		return "", false
+	}
+	return getter(lifecyclePatrols(config)), true
+}
+
+func lifecyclePatrols(config *daemon.DaemonPatrolConfig) *daemon.PatrolsConfig {
+	if config == nil {
+		return nil
+	}
+	return config.Patrols
+}
+
+func lifecycleReaper(p *daemon.PatrolsConfig) *daemon.WispReaperConfig {
+	if p == nil {
+		return nil
+	}
+	return p.WispReaper
+}
+
+func lifecycleCompactor(p *daemon.PatrolsConfig) *daemon.CompactorDogConfig {
+	if p == nil {
+		return nil
+	}
+	return p.CompactorDog
+}
+
+func lifecycleDoctor(p *daemon.PatrolsConfig) *daemon.DoctorDogConfig {
+	if p == nil {
+		return nil
+	}
+	return p.DoctorDog
+}
+
+func lifecycleJSONLBackup(p *daemon.PatrolsConfig) *daemon.JsonlGitBackupConfig {
+	if p == nil {
+		return nil
+	}
+	return p.JsonlGitBackup
+}
+
+func lifecycleDoltBackup(p *daemon.PatrolsConfig) *daemon.DoltBackupConfig {
+	if p == nil {
+		return nil
+	}
+	return p.DoltBackup
+}
+
+func lifecycleReaperEnabledValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleReaper(p)
+	if config == nil {
+		return "false (not configured)"
+	}
+	return strconv.FormatBool(config.Enabled)
+}
+
+func lifecycleReaperIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleReaper(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "30m (default)"
+}
+
+func lifecycleReaperDeleteAgeValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleReaper(p)
+	if config != nil && config.DeleteAgeStr != "" {
+		return config.DeleteAgeStr
+	}
+	return "168h (default, 7 days)"
+}
+
+func lifecycleCompactorEnabledValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleCompactor(p)
+	if config == nil {
+		return "false (not configured)"
+	}
+	return strconv.FormatBool(config.Enabled)
+}
+
+func lifecycleCompactorIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleCompactor(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "24h (default)"
+}
+
+func lifecycleCompactorThresholdValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleCompactor(p)
+	if config != nil && config.Threshold > 0 {
+		return strconv.Itoa(config.Threshold)
+	}
+	return "500 (default)"
+}
+
+func lifecycleDoctorEnabledValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleDoctor(p)
+	if config == nil {
+		return "false (not configured)"
+	}
+	return strconv.FormatBool(config.Enabled)
+}
+
+func lifecycleDoctorIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleDoctor(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "5m (default)"
+}
+
+func lifecycleBackupEnabledValue(p *daemon.PatrolsConfig) string {
+	jsonl := lifecycleJSONLBackup(p)
+	dolt := lifecycleDoltBackup(p)
+	jsonlEnabled := jsonl != nil && jsonl.Enabled
+	doltEnabled := dolt != nil && dolt.Enabled
+	if !jsonlEnabled && !doltEnabled {
+		return "false (not configured)"
+	}
+	return fmt.Sprintf("jsonl=%v dolt=%v", jsonlEnabled, doltEnabled)
+}
+
+func lifecycleBackupIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleJSONLBackup(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "15m (default)"
+}
+
+func unknownLifecycleKeyError(key string) error {
+	return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
 }
 
 // parseBool parses a boolean string (true/false, yes/no, 1/0).
