@@ -943,6 +943,107 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	return m.removeWithOptionsLocked(name, force, nuclear, selfNuke)
 }
 
+func (m *Manager) checkPolecatWorkStatus(name, clonePath string, force bool) error {
+	cleanupStatus := m.getCleanupStatusFromBead(name)
+	if cleanupStatus != CleanupUnknown {
+		return m.checkCleanupStatus(name, cleanupStatus, force)
+	}
+	polecatGit := git.NewGit(clonePath)
+	status, err := polecatGit.CheckUncommittedWork()
+	if err != nil || status.Clean() {
+		return nil
+	}
+	if !force || status.StashCount > 0 {
+		return &UncommittedWorkError{PolecatName: name, Status: status}
+	}
+	return nil
+}
+
+func (m *Manager) checkPolecatRemovalSafety(name, clonePath string, force, nuclear bool) error {
+	if !nuclear {
+		if err := m.checkPolecatWorkStatus(name, clonePath, force); err != nil {
+			return err
+		}
+	}
+	if !force {
+		if activeMR, blocker := m.ActiveMRRemovalBlocker(name); blocker != "" {
+			return fmt.Errorf("cannot remove polecat %s: MR %s is still pending in merge queue (%s)\nRefinery will process the MR and clean up after merge\nUse --force to override (risks data loss)", name, activeMR, blocker)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) resetRemovedPolecatAgent(name string) {
+	agentID := m.agentBeadID(name)
+	if err := m.resetAgentBeadForReuse(agentID, "polecat removed"); err != nil && !errors.Is(err, beads.ErrNotFound) {
+		style.PrintWarning("could not reset agent bead %s: %v", agentID, err)
+	}
+}
+
+func (m *Manager) ensureShellSafeForRemoval(name, clonePath, polecatDir string, selfNuke bool) error {
+	if selfNuke {
+		return nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	cwdAbs, cwdErr := filepath.Abs(cwd)
+	cloneAbs, cloneErr := filepath.Abs(clonePath)
+	polecatAbs, polecatErr := filepath.Abs(polecatDir)
+	if cwdErr != nil || cloneErr != nil || polecatErr != nil {
+		return fmt.Errorf("cannot verify shell safety: failed to resolve paths")
+	}
+	if strings.HasPrefix(cwdAbs, cloneAbs) || strings.HasPrefix(cwdAbs, polecatAbs) {
+		return fmt.Errorf("%w: your shell is in %s\n\nPlease cd elsewhere first, then retry:\n  cd ~/gt\n  gt polecat nuke %s/%s --force",
+			ErrShellInWorktree, cwd, m.rig.Name, name)
+	}
+	return nil
+}
+
+func prunePolecatRepoBases(rigPath string) {
+	bareRepoPath := filepath.Join(rigPath, ".repo.git")
+	if info, err := os.Stat(bareRepoPath); err == nil && info.IsDir() {
+		_ = git.NewGitWithDir(bareRepoPath, "").WorktreePrune()
+	}
+	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
+	if info, err := os.Stat(mayorRigPath); err == nil && info.IsDir() {
+		_ = git.NewGit(mayorRigPath).WorktreePrune()
+	}
+}
+
+func (m *Manager) removePolecatWorktree(repoGit *git.Git, clonePath, polecatDir string, force bool) error {
+	if err := repoGit.WorktreeRemove(clonePath, force); err != nil {
+		if removeErr := os.RemoveAll(clonePath); removeErr != nil {
+			return fmt.Errorf("removing clone path: %w", removeErr)
+		}
+	} else {
+		_ = os.RemoveAll(clonePath)
+	}
+	if polecatDir != clonePath {
+		_ = os.RemoveAll(polecatDir)
+	}
+	_ = repoGit.WorktreePrune()
+	return nil
+}
+
+func (m *Manager) removePolecatFiles(name, clonePath, polecatDir string, force bool) error {
+	repoGit, err := m.repoBase()
+	if err != nil {
+		prunePolecatRepoBases(m.rig.Path)
+		return os.RemoveAll(polecatDir)
+	}
+	if err := m.removePolecatWorktree(repoGit, clonePath, polecatDir, force); err != nil {
+		return err
+	}
+	if err := verifyRemovalComplete(polecatDir, clonePath); err != nil {
+		style.PrintWarning("incomplete removal for %s: %v", name, err)
+	}
+	m.namePool.Release(name)
+	_ = m.namePool.Save()
+	return nil
+}
+
 func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke bool) error {
 	if !m.exists(name) {
 		return ErrPolecatNotFound
@@ -953,42 +1054,8 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 	// Polecat dir is the parent directory (polecats/<name>/)
 	polecatDir := m.polecatDir(name)
 
-	// Check for uncommitted work unless bypassed
-	if !nuclear {
-		// ZFC #10: First try to read cleanup_status from agent bead
-		// This is the ZFC-compliant path - trust what the polecat reported
-		cleanupStatus := m.getCleanupStatusFromBead(name)
-
-		if cleanupStatus != CleanupUnknown {
-			// ZFC path: Use polecat's self-reported status
-			if err := m.checkCleanupStatus(name, cleanupStatus, force); err != nil {
-				return err
-			}
-		} else {
-			// Fallback path: Check git directly (for polecats that haven't reported yet)
-			polecatGit := git.NewGit(clonePath)
-			status, err := polecatGit.CheckUncommittedWork()
-			if err == nil && !status.Clean() {
-				if force {
-					// Force mode: bypass uncommitted changes and unpushed commits.
-					// Only block on stashes, which represent intentional work-in-progress.
-					if status.StashCount > 0 {
-						return &UncommittedWorkError{PolecatName: name, Status: status}
-					}
-				} else {
-					return &UncommittedWorkError{PolecatName: name, Status: status}
-				}
-			}
-		}
-	}
-
-	// Even nuclear mode must not delete worktrees with pending MRs unless
-	// --force explicitly accepts that risk. Use the shared classifier so removal
-	// fails closed the same way recovery/listing do.
-	if !force {
-		if activeMR, blocker := m.ActiveMRRemovalBlocker(name); blocker != "" {
-			return fmt.Errorf("cannot remove polecat %s: MR %s is still pending in merge queue (%s)\nRefinery will process the MR and clean up after merge\nUse --force to override (risks data loss)", name, activeMR, blocker)
-		}
+	if err := m.checkPolecatRemovalSafety(name, clonePath, force, nuclear); err != nil {
+		return err
 	}
 
 	// Reset agent bead FIRST, before any filesystem operations.
@@ -998,13 +1065,7 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 	// concurrent slings see a clean bead and CreateOrReopenAgentBead can
 	// simply update it without needing close/reopen (which fails on Dolt).
 	// See gt-14b8o: close/reopen cycle breaks on Dolt backend.
-	agentID := m.agentBeadID(name)
-	if err := m.resetAgentBeadForReuse(agentID, "polecat removed"); err != nil {
-		// Only log if not "not found" - it's ok if it doesn't exist
-		if !errors.Is(err, beads.ErrNotFound) {
-			style.PrintWarning("could not reset agent bead %s: %v", agentID, err)
-		}
-	}
+	m.resetRemovedPolecatAgent(name)
 
 	// Unassign any work beads still pointing at this polecat (gt-e4u1).
 	// Without this, beads remain assigned to a ghost polecat (status in_progress,
@@ -1016,24 +1077,8 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 	// When a polecat calls `gt done`, it's inside its worktree by design - the session
 	// will be killed immediately after, so breaking the shell is expected and harmless.
 	// See: https://github.com/steveyegge/gastown/issues/942
-	if !selfNuke {
-		cwd, cwdErr := os.Getwd()
-		if cwdErr == nil {
-			// Normalize paths for comparison
-			cwdAbs, absErr1 := filepath.Abs(cwd)
-			cloneAbs, absErr2 := filepath.Abs(clonePath)
-			polecatAbs, absErr3 := filepath.Abs(polecatDir)
-
-			if absErr1 != nil || absErr2 != nil || absErr3 != nil {
-				// If we can't resolve paths, refuse to nuke for safety
-				return fmt.Errorf("cannot verify shell safety: failed to resolve paths")
-			}
-
-			if strings.HasPrefix(cwdAbs, cloneAbs) || strings.HasPrefix(cwdAbs, polecatAbs) {
-				return fmt.Errorf("%w: your shell is in %s\n\nPlease cd elsewhere first, then retry:\n  cd ~/gt\n  gt polecat nuke %s/%s --force",
-					ErrShellInWorktree, cwd, m.rig.Name, name)
-			}
-		}
+	if err := m.ensureShellSafeForRemoval(name, clonePath, polecatDir, selfNuke); err != nil {
+		return err
 	}
 
 	// Best-effort: Push the polecat's branch to remote before removing the worktree.
@@ -1044,62 +1089,7 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 	// commits. Failures remain warnings so nuke still proceeds.
 	m.pushUnpushedBranchBeforeRemoval(name, clonePath)
 
-	// Get repo base to remove the worktree properly
-	repoGit, err := m.repoBase()
-	if err != nil {
-		// Best-effort: try to prune stale worktree entries from both possible repo locations.
-		// This handles edge cases where the repo base is corrupted but worktree entries exist.
-		bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
-		if info, statErr := os.Stat(bareRepoPath); statErr == nil && info.IsDir() {
-			bareGit := git.NewGitWithDir(bareRepoPath, "")
-			_ = bareGit.WorktreePrune()
-		}
-		mayorRigPath := filepath.Join(m.rig.Path, "mayor", "rig")
-		if info, statErr := os.Stat(mayorRigPath); statErr == nil && info.IsDir() {
-			mayorGit := git.NewGit(mayorRigPath)
-			_ = mayorGit.WorktreePrune()
-		}
-		// Fall back to direct removal if repo base not found
-		return os.RemoveAll(polecatDir)
-	}
-
-	// Try to remove as a worktree first (use force flag for worktree removal too)
-	if err := repoGit.WorktreeRemove(clonePath, force); err != nil {
-		// Fall back to direct removal if worktree removal fails
-		// (e.g., if this is an old-style clone, not a worktree)
-		if removeErr := os.RemoveAll(clonePath); removeErr != nil {
-			return fmt.Errorf("removing clone path: %w", removeErr)
-		}
-	} else {
-		// GT-1L3MY9: git worktree remove may leave untracked directories behind.
-		// Clean up any leftover files (overlay files, .beads/, setup hook outputs, etc.)
-		// Use RemoveAll to handle non-empty directories with untracked files.
-		_ = os.RemoveAll(clonePath)
-	}
-
-	// Also remove the parent polecat directory
-	// (for new structure: polecats/<name>/ contains only polecats/<name>/<rigname>/)
-	if polecatDir != clonePath {
-		// GT-1L3MY9: Clean up any orphaned files at polecat level.
-		// Use RemoveAll to handle non-empty directories with leftover files.
-		_ = os.RemoveAll(polecatDir)
-	}
-
-	// Prune any stale worktree entries (non-fatal: cleanup only)
-	_ = repoGit.WorktreePrune()
-
-	// Verify removal succeeded (fixes #618)
-	// The above removal attempts may fail silently on permissions, symlinks, or busy files
-	if err := verifyRemovalComplete(polecatDir, clonePath); err != nil {
-		// Log warning but don't fail - the polecat is effectively "removed" from Gas Town's perspective
-		style.PrintWarning("incomplete removal for %s: %v", name, err)
-	}
-
-	// Release name back to pool if it's a pooled name (non-fatal: state file update)
-	m.namePool.Release(name)
-	_ = m.namePool.Save()
-
-	return nil
+	return m.removePolecatFiles(name, clonePath, polecatDir, force)
 }
 
 // removalPushDecision is the input for whether nuclear/force remove may push.
