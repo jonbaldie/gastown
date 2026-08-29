@@ -1554,61 +1554,67 @@ func collectHandoffState() string {
 		parts = append(parts, gitState)
 	}
 
-	// Get hooked work
-	hookOutput, err := exec.Command("gt", "hook").Output()
-	if err == nil {
-		hookStr := strings.TrimSpace(string(hookOutput))
-		if hookStr != "" && !strings.Contains(hookStr, "Nothing on hook") {
-			parts = append(parts, "## Hooked Work\n"+hookStr)
-		}
-	}
-
-	// Get inbox summary (first few messages)
-	inboxOutput, err := exec.Command("gt", "mail", "inbox").Output()
-	if err == nil {
-		inboxStr := strings.TrimSpace(string(inboxOutput))
-		if inboxStr != "" && !strings.Contains(inboxStr, "Inbox empty") {
-			// Limit to first 10 lines for brevity
-			lines := strings.Split(inboxStr, "\n")
-			if len(lines) > 10 {
-				lines = append(lines[:10], "... (more messages)")
-			}
-			parts = append(parts, "## Inbox\n"+strings.Join(lines, "\n"))
-		}
-	}
-
-	// Get ready beads
-	readyOutput, err := beads.Spawn("ready").Output()
-	if err == nil {
-		readyStr := strings.TrimSpace(string(readyOutput))
-		if readyStr != "" && !strings.Contains(readyStr, "No issues ready") {
-			// Limit to first 10 lines
-			lines := strings.Split(readyStr, "\n")
-			if len(lines) > 10 {
-				lines = append(lines[:10], "... (more issues)")
-			}
-			parts = append(parts, "## Ready Work\n"+strings.Join(lines, "\n"))
-		}
-	}
-
-	// Get in-progress beads
-	inProgressOutput, err := beads.Spawn("list", "--status=in_progress").Output()
-	if err == nil {
-		ipStr := strings.TrimSpace(string(inProgressOutput))
-		if ipStr != "" && !strings.Contains(ipStr, "No issues") {
-			lines := strings.Split(ipStr, "\n")
-			if len(lines) > 5 {
-				lines = append(lines[:5], "... (more)")
-			}
-			parts = append(parts, "## In Progress\n"+strings.Join(lines, "\n"))
-		}
-	}
+	parts = appendHandoffSection(parts, collectHookedWork())
+	parts = appendHandoffSection(parts, collectHandoffInbox())
+	parts = appendHandoffSection(parts, collectReadyWork())
+	parts = appendHandoffSection(parts, collectInProgressWork())
 
 	if len(parts) == 0 {
 		return "No active state to report."
 	}
 
 	return strings.Join(parts, "\n\n")
+}
+
+func appendHandoffSection(parts []string, section string) []string {
+	if section != "" {
+		return append(parts, section)
+	}
+	return parts
+}
+
+func collectHookedWork() string {
+	output, err := exec.Command("gt", "hook").Output()
+	if err != nil {
+		return ""
+	}
+	return formatHandoffSection(output, "## Hooked Work", "Nothing on hook", 0, "")
+}
+
+func collectHandoffInbox() string {
+	output, err := exec.Command("gt", "mail", "inbox").Output()
+	if err != nil {
+		return ""
+	}
+	return formatHandoffSection(output, "## Inbox", "Inbox empty", 10, "... (more messages)")
+}
+
+func collectReadyWork() string {
+	output, err := beads.Spawn("ready").Output()
+	if err != nil {
+		return ""
+	}
+	return formatHandoffSection(output, "## Ready Work", "No issues ready", 10, "... (more issues)")
+}
+
+func collectInProgressWork() string {
+	output, err := beads.Spawn("list", "--status=in_progress").Output()
+	if err != nil {
+		return ""
+	}
+	return formatHandoffSection(output, "## In Progress", "No issues", 5, "... (more)")
+}
+
+func formatHandoffSection(output []byte, heading, emptyMarker string, limit int, overflow string) string {
+	content := strings.TrimSpace(string(output))
+	if content == "" || strings.Contains(content, emptyMarker) {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if limit > 0 && len(lines) > limit {
+		lines = append(lines[:limit], overflow)
+	}
+	return heading + "\n" + strings.Join(lines, "\n")
 }
 
 // collectGitState captures deterministic workspace state using the Go git library.
