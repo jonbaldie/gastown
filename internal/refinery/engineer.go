@@ -2482,46 +2482,73 @@ func detectQueueAnomalies(
 	var anomalies []*MRAnomaly
 
 	for _, issue := range issues {
-		if issue == nil || issue.Status != "open" {
-			continue
-		}
-		fields := beads.ParseMRFields(issue)
-		if fields == nil || fields.Branch == "" {
-			continue
-		}
-
-		// 1) Stale claim detection.
-		if issue.Assignee != "" {
-			updatedAt, err := time.Parse(time.RFC3339, issue.UpdatedAt)
-			if err == nil {
-				age := now.Sub(updatedAt)
-				if age >= warningAfter {
-					anomalies = append(anomalies, &MRAnomaly{
-						ID:       issue.ID,
-						Branch:   fields.Branch,
-						Type:     "stale-claim",
-						Assignee: issue.Assignee,
-						Age:      age,
-						Detail:   "MR is claimed but not progressing",
-					})
-				}
-			}
-		}
-
-		// 2) Orphaned branch detection.
-		// ZFC: report raw anomaly data. Agent decides severity.
-		localExists, remoteTrackingExists, err := branchExistsFn(fields.Branch)
-		if err == nil && !localExists && !remoteTrackingExists {
-			anomalies = append(anomalies, &MRAnomaly{
-				ID:     issue.ID,
-				Branch: fields.Branch,
-				Type:   "orphaned-branch",
-				Detail: "MR branch is missing locally and in origin/* tracking refs",
-			})
-		}
+		anomalies = append(anomalies, queueAnomaliesForIssue(issue, now, warningAfter, branchExistsFn)...)
 	}
 
 	return anomalies
+}
+
+func queueAnomaliesForIssue(
+	issue *beads.Issue,
+	now time.Time,
+	warningAfter time.Duration,
+	branchExistsFn func(branch string) (localExists bool, remoteTrackingExists bool, err error),
+) []*MRAnomaly {
+	if issue == nil || issue.Status != "open" {
+		return nil
+	}
+	fields := beads.ParseMRFields(issue)
+	if fields == nil || fields.Branch == "" {
+		return nil
+	}
+
+	var anomalies []*MRAnomaly
+	if anomaly := staleClaimAnomaly(issue, fields.Branch, now, warningAfter); anomaly != nil {
+		anomalies = append(anomalies, anomaly)
+	}
+	if anomaly := orphanedBranchAnomaly(issue, fields.Branch, branchExistsFn); anomaly != nil {
+		anomalies = append(anomalies, anomaly)
+	}
+	return anomalies
+}
+
+func staleClaimAnomaly(issue *beads.Issue, branch string, now time.Time, warningAfter time.Duration) *MRAnomaly {
+	if issue.Assignee == "" {
+		return nil
+	}
+	updatedAt, err := time.Parse(time.RFC3339, issue.UpdatedAt)
+	if err != nil {
+		return nil
+	}
+	age := now.Sub(updatedAt)
+	if age < warningAfter {
+		return nil
+	}
+	return &MRAnomaly{
+		ID:       issue.ID,
+		Branch:   branch,
+		Type:     "stale-claim",
+		Assignee: issue.Assignee,
+		Age:      age,
+		Detail:   "MR is claimed but not progressing",
+	}
+}
+
+func orphanedBranchAnomaly(
+	issue *beads.Issue,
+	branch string,
+	branchExistsFn func(branch string) (localExists bool, remoteTrackingExists bool, err error),
+) *MRAnomaly {
+	localExists, remoteTrackingExists, err := branchExistsFn(branch)
+	if err != nil || localExists || remoteTrackingExists {
+		return nil
+	}
+	return &MRAnomaly{
+		ID:     issue.ID,
+		Branch: branch,
+		Type:   "orphaned-branch",
+		Detail: "MR branch is missing locally and in origin/* tracking refs",
+	}
 }
 
 // ClaimMR claims an MR for processing by setting the assignee field.
