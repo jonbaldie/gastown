@@ -1401,8 +1401,13 @@ func runDeaconCleanupOrphans(_ *cobra.Command, _ []string) error {
 		style.PrintWarning("cleanup had errors: %v", err)
 	}
 
-	// Report results
-	var terminated, escalated, unkillable int
+	reportDeaconOrphanCleanup(results)
+
+	return nil
+}
+
+func reportDeaconOrphanCleanup(results []util.CleanupResult) {
+	var escalated, unkillable int
 	for _, r := range results {
 		town := r.Process.TownRoot
 		if town == "" {
@@ -1411,7 +1416,6 @@ func runDeaconCleanupOrphans(_ *cobra.Command, _ []string) error {
 		switch r.Signal {
 		case "SIGTERM":
 			fmt.Printf("  %s Sent SIGTERM to PID %d (%s) town=%s\n", style.Bold.Render("→"), r.Process.PID, r.Process.Cmd, town)
-			terminated++
 		case "SIGKILL":
 			fmt.Printf("  %s Escalated to SIGKILL for PID %d (%s) town=%s\n", style.Bold.Render("!"), r.Process.PID, r.Process.Cmd, town)
 			escalated++
@@ -1421,18 +1425,18 @@ func runDeaconCleanupOrphans(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	if len(results) > 0 {
-		summary := fmt.Sprintf("Processed %d orphan(s)", len(results))
-		if escalated > 0 {
-			summary += fmt.Sprintf(" (%d escalated to SIGKILL)", escalated)
-		}
-		if unkillable > 0 {
-			summary += fmt.Sprintf(" (%d unkillable)", unkillable)
-		}
-		fmt.Printf("%s %s\n", style.Bold.Render("✓"), summary)
+	if len(results) == 0 {
+		return
 	}
 
-	return nil
+	summary := fmt.Sprintf("Processed %d orphan(s)", len(results))
+	if escalated > 0 {
+		summary += fmt.Sprintf(" (%d escalated to SIGKILL)", escalated)
+	}
+	if unkillable > 0 {
+		summary += fmt.Sprintf(" (%d unkillable)", unkillable)
+	}
+	fmt.Printf("%s %s\n", style.Bold.Render("✓"), summary)
 }
 
 // runDeaconZombieScan finds and cleans zombie Claude processes not in active tmux sessions.
