@@ -1112,47 +1112,60 @@ func FindAllDoltListeners() []DoltListener {
 	if err != nil {
 		return nil
 	}
+	return parseDoltListeners(output)
+}
 
-	// Parse lsof -F output. Lines are field-prefixed:
-	//   p<PID>     — process ID
-	//   n<addr>    — network name (e.g., "*:3307" or "127.0.0.1:3307")
+// parseDoltListeners parses lsof -F output. Lines are field-prefixed:
+//
+//	p<PID>     — process ID
+//	n<addr>    — network name (e.g., "*:3307" or "127.0.0.1:3307")
+func parseDoltListeners(output []byte) []DoltListener {
 	var listeners []DoltListener
 	var currentPID int
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if len(line) == 0 {
-			continue
-		}
-		switch line[0] {
-		case 'p':
-			pid, err := strconv.Atoi(line[1:])
-			if err == nil {
-				currentPID = pid
-			}
-		case 'n':
-			if currentPID == 0 {
-				continue
-			}
-			// Extract port from address like "*:3307" or "127.0.0.1:3307"
-			addr := line[1:]
-			if idx := strings.LastIndex(addr, ":"); idx >= 0 {
-				port, err := strconv.Atoi(addr[idx+1:])
-				if err == nil {
-					// Deduplicate: same PID can have multiple FDs on same port
-					dup := false
-					for _, l := range listeners {
-						if l.PID == currentPID && l.Port == port {
-							dup = true
-							break
-						}
-					}
-					if !dup {
-						listeners = append(listeners, DoltListener{PID: currentPID, Port: port})
-					}
-				}
-			}
+		currentPID = updateDoltListenerPID(line, currentPID)
+		listener, ok := parseDoltListener(line, currentPID)
+		if ok && !containsDoltListener(listeners, listener) {
+			listeners = append(listeners, listener)
 		}
 	}
 	return listeners
+}
+
+func updateDoltListenerPID(line string, currentPID int) int {
+	if len(line) == 0 || line[0] != 'p' {
+		return currentPID
+	}
+	pid, err := strconv.Atoi(line[1:])
+	if err != nil {
+		return currentPID
+	}
+	return pid
+}
+
+func parseDoltListener(line string, currentPID int) (DoltListener, bool) {
+	if len(line) == 0 || line[0] != 'n' || currentPID == 0 {
+		return DoltListener{}, false
+	}
+	// Extract port from address like "*:3307" or "127.0.0.1:3307".
+	idx := strings.LastIndex(line[1:], ":")
+	if idx < 0 {
+		return DoltListener{}, false
+	}
+	port, err := strconv.Atoi(line[idx+2:])
+	if err != nil {
+		return DoltListener{}, false
+	}
+	return DoltListener{PID: currentPID, Port: port}, true
+}
+
+func containsDoltListener(listeners []DoltListener, want DoltListener) bool {
+	for _, listener := range listeners {
+		if listener == want {
+			return true
+		}
+	}
+	return false
 }
 
 // isDoltServerOnPort checks if a dolt server is accepting connections on the given port.
