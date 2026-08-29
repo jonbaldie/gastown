@@ -1537,16 +1537,7 @@ func runDeaconZombieScan(cmd *cobra.Command, _ []string) error {
 
 	// In dry-run mode, just list them
 	if dryRun {
-		for _, z := range zombies {
-			ageStr := fmt.Sprintf("%dm", z.Age/60)
-			town := z.TownRoot
-			if town == "" {
-				town = "unknown"
-			}
-			fmt.Printf("  %s PID %d (%s) TTY=%s age=%s town=%s\n",
-				style.Dim.Render("→"), z.PID, z.Cmd, z.TTY, ageStr, town)
-		}
-		fmt.Printf("%s Dry run - no processes killed\n", style.Dim.Render("○"))
+		reportDeaconZombieDryRun(zombies)
 		return nil
 	}
 
@@ -1556,8 +1547,26 @@ func runDeaconZombieScan(cmd *cobra.Command, _ []string) error {
 		style.PrintWarning("cleanup had errors: %v", err)
 	}
 
-	// Report results
-	var terminated, escalated, unkillable int
+	reportDeaconZombieCleanup(results)
+
+	return nil
+}
+
+func reportDeaconZombieDryRun(zombies []util.ZombieProcess) {
+	for _, z := range zombies {
+		ageStr := fmt.Sprintf("%dm", z.Age/60)
+		town := z.TownRoot
+		if town == "" {
+			town = "unknown"
+		}
+		fmt.Printf("  %s PID %d (%s) TTY=%s age=%s town=%s\n",
+			style.Dim.Render("→"), z.PID, z.Cmd, z.TTY, ageStr, town)
+	}
+	fmt.Printf("%s Dry run - no processes killed\n", style.Dim.Render("○"))
+}
+
+func reportDeaconZombieCleanup(results []util.ZombieCleanupResult) {
+	var escalated, unkillable int
 	for _, r := range results {
 		town := r.Process.TownRoot
 		if town == "" {
@@ -1567,7 +1576,6 @@ func runDeaconZombieScan(cmd *cobra.Command, _ []string) error {
 		case "SIGTERM":
 			fmt.Printf("  %s Sent SIGTERM to PID %d (%s) TTY=%s town=%s\n",
 				style.Bold.Render("→"), r.Process.PID, r.Process.Cmd, r.Process.TTY, town)
-			terminated++
 		case "SIGKILL":
 			fmt.Printf("  %s Escalated to SIGKILL for PID %d (%s) town=%s\n",
 				style.Bold.Render("!"), r.Process.PID, r.Process.Cmd, town)
@@ -1579,18 +1587,18 @@ func runDeaconZombieScan(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	if len(results) > 0 {
-		summary := fmt.Sprintf("Processed %d zombie(s)", len(results))
-		if escalated > 0 {
-			summary += fmt.Sprintf(" (%d escalated to SIGKILL)", escalated)
-		}
-		if unkillable > 0 {
-			summary += fmt.Sprintf(" (%d unkillable)", unkillable)
-		}
-		fmt.Printf("%s %s\n", style.Bold.Render("✓"), summary)
+	if len(results) == 0 {
+		return
 	}
 
-	return nil
+	summary := fmt.Sprintf("Processed %d zombie(s)", len(results))
+	if escalated > 0 {
+		summary += fmt.Sprintf(" (%d escalated to SIGKILL)", escalated)
+	}
+	if unkillable > 0 {
+		summary += fmt.Sprintf(" (%d unkillable)", unkillable)
+	}
+	fmt.Printf("%s %s\n", style.Bold.Render("✓"), summary)
 }
 
 // runDeaconRedispatch handles re-dispatching a recovered bead.
