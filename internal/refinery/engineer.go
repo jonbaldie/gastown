@@ -1979,62 +1979,92 @@ func normalizedMRCloseReason(closeReason string) string {
 // If the slot is already held, we skip creating the task and let the MR stay in queue.
 // When the current resolution completes and merges, the slot is released.
 func (e *Engineer) createConflictResolutionTaskForMR(mr *MRInfo, _ ProcessResult) (string, error) { // result unused but kept for future merge diagnostics
-	// === MERGE SLOT GATE: Serialize conflict resolution ===
-	// Ensure merge slot exists (idempotent)
+	_, slotHolder, deferred := e.acquireConflictResolutionSlot(mr)
+	if deferred {
+		return "", nil
+	}
+
+	mainSHA := e.conflictResolutionMainSHA(mr)
+	originalTitle := e.conflictResolutionOriginalTitle(mr)
+	retryCount := mr.RetryCount + 1
+	description := buildConflictResolutionDescription(mr, mainSHA, retryCount)
+	task, err := e.beads.Create(beads.CreateOptions{
+		Title:       fmt.Sprintf("Resolve merge conflicts: %s", originalTitle),
+		Labels:      []string{"gt:task"},
+		Priority:    mr.Priority,
+		Description: description,
+		Actor:       e.rig.Name + "/refinery",
+		Rig:         e.rig.Name, // Ensure task lands in the rig's database (gt-7y7)
+	})
+	if err != nil {
+		e.releaseConflictResolutionSlot(slotHolder)
+		return "", fmt.Errorf("creating conflict resolution task: %w", err)
+	}
+
+	// gt-gpy: Validate task bead landed in the rig's database (warning only).
+	townRoot := filepath.Dir(e.rig.Path)
+	if prefixErr := beads.ValidateRigPrefix(townRoot, e.rig.Name, task.ID); prefixErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] WARNING: conflict task prefix mismatch: %v\n", prefixErr)
+	}
+
+	// The conflict task's ID is returned so the MR can be blocked on it.
+	// When the task closes, the MR unblocks and re-enters the ready queue.
+
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Created conflict resolution task: %s (P%d)\n", task.ID, task.Priority)
+
+	return task.ID, nil
+}
+
+func (e *Engineer) acquireConflictResolutionSlot(mr *MRInfo) (string, string, bool) {
 	slotID, err := e.mergeSlotEnsureExists()
-	slotHolder := "" // tracks acquired slot for cleanup on error
 	if err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not ensure merge slot: %v\n", err)
-		// Continue anyway - slot is optional for now
-	} else {
-		// Try to acquire the merge slot
-		holder := e.rig.Name + "/refinery"
-		status, err := e.mergeSlotAcquire(holder, false)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not acquire merge slot: %v\n", err)
-			// Continue anyway - slot is optional
-		} else if status == nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: merge slot returned nil status\n")
-			// Continue anyway - slot is optional
-		} else if !status.Available && status.Holder != "" && status.Holder != holder {
-			// Slot is held by someone else - skip creating the task
-			// The MR stays in queue and will retry when slot is released
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by %s - deferring conflict resolution\n", status.Holder)
-			_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s will retry after current resolution completes\n", mr.ID)
-			return "", nil // Not an error - just deferred
-		} else {
-			slotHolder = holder
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Acquired merge slot: %s\n", slotID)
-		}
+		return "", "", false
 	}
-	// Release slot on error to prevent permanent blockage
-	releaseSlotOnError := func() {
-		if slotHolder != "" {
-			_ = e.mergeSlotRelease(slotHolder)
-		}
+	holder := e.rig.Name + "/refinery"
+	status, err := e.mergeSlotAcquire(holder, false)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not acquire merge slot: %v\n", err)
+		return slotID, "", false
 	}
+	if status == nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: merge slot returned nil status\n")
+		return slotID, "", false
+	}
+	if !status.Available && status.Holder != "" && status.Holder != holder {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by %s - deferring conflict resolution\n", status.Holder)
+		_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s will retry after current resolution completes\n", mr.ID)
+		return slotID, "", true
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Acquired merge slot: %s\n", slotID)
+	return slotID, holder, false
+}
 
-	// Get the current main SHA for conflict tracking
+func (e *Engineer) releaseConflictResolutionSlot(slotHolder string) {
+	if slotHolder != "" {
+		_ = e.mergeSlotRelease(slotHolder)
+	}
+}
+
+func (e *Engineer) conflictResolutionMainSHA(mr *MRInfo) string {
 	mainSHA, err := e.git.Rev("origin/" + mr.Target)
 	if err != nil {
-		mainSHA = "unknown-sha"
+		return "unknown-sha"
 	}
+	return mainSHA
+}
 
-	// Get the original issue title if we have a source issue
-	originalTitle := mr.SourceIssue
+func (e *Engineer) conflictResolutionOriginalTitle(mr *MRInfo) string {
 	if mr.SourceIssue != "" {
 		if sourceIssue, err := e.beads.Show(mr.SourceIssue); err == nil && sourceIssue != nil {
-			originalTitle = sourceIssue.Title
+			return sourceIssue.Title
 		}
 	}
+	return mr.SourceIssue
+}
 
-	// ZFC: pass raw priority. Agent decides boost strategy.
-
-	// Increment retry count for tracking
-	retryCount := mr.RetryCount + 1
-
-	// Build the task description with metadata
-	description := fmt.Sprintf(`Resolve merge conflicts for branch %s
+func buildConflictResolutionDescription(mr *MRInfo, mainSHA string, retryCount int) string {
+	return fmt.Sprintf(`Resolve merge conflicts for branch %s
 
 ## Metadata
 - Original MR: %s
@@ -2062,34 +2092,6 @@ The Refinery will automatically retry the merge after you push.`,
 		mr.Target,
 		mr.Branch,
 	)
-
-	// Create the conflict resolution task
-	taskTitle := fmt.Sprintf("Resolve merge conflicts: %s", originalTitle)
-	task, err := e.beads.Create(beads.CreateOptions{
-		Title:       taskTitle,
-		Labels:      []string{"gt:task"},
-		Priority:    mr.Priority,
-		Description: description,
-		Actor:       e.rig.Name + "/refinery",
-		Rig:         e.rig.Name, // Ensure task lands in the rig's database (gt-7y7)
-	})
-	if err != nil {
-		releaseSlotOnError()
-		return "", fmt.Errorf("creating conflict resolution task: %w", err)
-	}
-
-	// gt-gpy: Validate task bead landed in the rig's database (warning only).
-	townRoot := filepath.Dir(e.rig.Path)
-	if prefixErr := beads.ValidateRigPrefix(townRoot, e.rig.Name, task.ID); prefixErr != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] WARNING: conflict task prefix mismatch: %v\n", prefixErr)
-	}
-
-	// The conflict task's ID is returned so the MR can be blocked on it.
-	// When the task closes, the MR unblocks and re-enters the ready queue.
-
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Created conflict resolution task: %s (P%d)\n", task.ID, task.Priority)
-
-	return task.ID, nil
 }
 
 func (e *Engineer) recordConflictTaskOnMR(mr *MRInfo, taskID string, retryCount int, conflictSHA string) error {
