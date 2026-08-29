@@ -122,27 +122,33 @@ func skipPowerShellAssignment(fields []string, i int) int {
 	return i
 }
 
-// defaultSocket is the tmux socket name (-L flag) for multi-instance isolation.
-// When set, all tmux commands use this socket instead of the default server.
-// Access is protected by defaultSocketMu for concurrent test safety.
-var (
-	defaultSocket   string
-	defaultSocketMu sync.RWMutex
-)
+// socketState stores the tmux socket name (-L flag) for multi-instance
+// isolation. When set, all tmux commands use this socket instead of the
+// default server. Access is protected for concurrent test safety.
+type socketState struct {
+	mu   sync.RWMutex
+	name string
+}
+
+var defaultSocketState = sync.OnceValue(func() *socketState {
+	return &socketState{}
+})
 
 // SetDefaultSocket sets the package-level default tmux socket name.
 // Called during init to scope tmux to the current town.
 func SetDefaultSocket(name string) {
-	defaultSocketMu.Lock()
-	defaultSocket = name
-	defaultSocketMu.Unlock()
+	state := defaultSocketState()
+	state.mu.Lock()
+	state.name = name
+	state.mu.Unlock()
 }
 
 // GetDefaultSocket returns the current default tmux socket name.
 func GetDefaultSocket() string {
-	defaultSocketMu.RLock()
-	defer defaultSocketMu.RUnlock()
-	return defaultSocket
+	state := defaultSocketState()
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.name
 }
 
 // SocketDir returns the directory where tmux stores its socket files.
