@@ -41,19 +41,14 @@ Related commands:
 	RunE: runUnsling,
 }
 
-var (
-	unslingDryRun bool
-	unslingForce  bool
-)
-
 func init() {
-	unslingCmd.Flags().BoolVarP(&unslingDryRun, "dry-run", "n", false, "Show what would be done")
-	unslingCmd.Flags().BoolVarP(&unslingForce, "force", "f", false, "Unsling even if work is incomplete")
+	unslingCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
+	unslingCmd.Flags().BoolP("force", "f", false, "Unsling even if work is incomplete")
 	rootCmd.AddCommand(unslingCmd)
 }
 
 func runUnsling(cmd *cobra.Command, args []string) error {
-	return runUnslingWith(cmd, args, unslingDryRun, unslingForce)
+	return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 }
 
 func runUnslingWith(cmd *cobra.Command, args []string, dryRun, force bool) error {
