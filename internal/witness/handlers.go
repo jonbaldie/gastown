@@ -2923,35 +2923,13 @@ func DetectOrphanedMolecules(bd *BdCli, workDir, rigName string, router *mail.Ro
 	result := &DetectOrphanedMoleculesResult{}
 
 	// Find town root for path resolution and session naming
-	townRoot, err := workspace.Find(workDir)
-	if err != nil || townRoot == "" {
-		townRoot = workDir
-	}
+	townRoot := workDirToTownRoot(workDir)
 	initRegistryFromTownRoot(townRoot)
 
 	// Step 1: List beads that could have attached molecules.
 	// Slung beads start as status=hooked; polecats may change them to in_progress.
-	type beadSummary struct {
-		ID       string `json:"id"`
-		Assignee string `json:"assignee"`
-	}
-	var allBeads []beadSummary
-	for _, status := range []string{"hooked", "in_progress"} {
-		output, err := bd.Exec(workDir, "list", "--status="+status, "--json", "--limit=0")
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("listing %s beads: %w", status, err))
-			continue
-		}
-		if output == "" {
-			continue
-		}
-		var items []beadSummary
-		if err := json.Unmarshal([]byte(output), &items); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("parsing %s beads: %w", status, err))
-			continue
-		}
-		allBeads = append(allBeads, items...)
-	}
+	allBeads, listErrs := listOrphanScanBeads(bd, workDir, []string{"hooked", "in_progress"})
+	result.Errors = append(result.Errors, listErrs...)
 
 	if len(allBeads) == 0 {
 		return result
@@ -2960,87 +2938,52 @@ func DetectOrphanedMolecules(bd *BdCli, workDir, rigName string, router *mail.Ro
 	// Step 2: Check each polecat-assigned bead
 	polecatPrefix := rigName + "/polecats/"
 	t := tmux.NewTmux()
-	polecatsDir := filepath.Join(townRoot, rigName, "polecats")
 
-	for _, b := range allBeads {
-		if !strings.HasPrefix(b.Assignee, polecatPrefix) {
+	for _, bead := range allBeads {
+		if !strings.HasPrefix(bead.Assignee, polecatPrefix) {
 			continue
 		}
-
-		polecatName := strings.TrimPrefix(b.Assignee, polecatPrefix)
 		result.Checked++
-
-		// Check if polecat still has a tmux session
-		sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
-		hasSession, sessionErr := t.HasSession(sessionName)
-		if sessionErr != nil {
-			result.Errors = append(result.Errors,
-				fmt.Errorf("checking session %s for bead %s: %w", sessionName, b.ID, sessionErr))
-			continue
+		orphan, found, inspectErr := inspectOrphanedMolecule(bd, workDir, townRoot, rigName, bead, t, router)
+		if inspectErr != nil {
+			result.Errors = append(result.Errors, inspectErr)
 		}
-		if hasSession {
-			continue // Polecat is alive
+		if found {
+			result.Orphans = append(result.Orphans, orphan)
 		}
-
-		// Check if polecat directory still exists (might be mid-cleanup)
-		polecatDir := filepath.Join(polecatsDir, polecatName)
-		if _, statErr := os.Stat(polecatDir); statErr == nil {
-			continue // Directory exists; DetectZombiePolecats handles these
-		} else if !os.IsNotExist(statErr) {
-			// Transient error (permission denied, I/O error) — skip to avoid false positive
-			result.Errors = append(result.Errors,
-				fmt.Errorf("checking polecat dir %s for bead %s: %w", polecatDir, b.ID, statErr))
-			continue
-		}
-
-		// TOCTOU re-check: polecat could have been recreated between initial
-		// checks and now. Re-verify before destructive action.
-		if _, statErr := os.Stat(polecatDir); statErr == nil {
-			continue // Directory reappeared — skip
-		} else if !os.IsNotExist(statErr) {
-			result.Errors = append(result.Errors,
-				fmt.Errorf("re-checking polecat dir %s for bead %s: %w", polecatDir, b.ID, statErr))
-			continue
-		}
-		if alive, _ := t.HasSession(sessionName); alive {
-			continue // Session reappeared — polecat was respawned
-		}
-
-		// Polecat is dead and gone — read the full bead to check for attached molecule
-		attachedMol := getAttachedMoleculeID(bd, workDir, b.ID)
-		if attachedMol == "" {
-			continue // No molecule attached
-		}
-
-		// Check molecule status — skip if already closed or reaped.
-		// On lookup failure, skip (safe — don't close what we can't verify).
-		molStatus, molFound := getBeadStatus(bd, workDir, attachedMol)
-		if !molFound || molStatus == "closed" || molStatus == "" {
-			continue
-		}
-
-		// Close the orphaned molecule and its descendants
-		orphan := OrphanedMoleculeResult{
-			BeadID:      b.ID,
-			MoleculeID:  attachedMol,
-			Assignee:    b.Assignee,
-			PolecatName: polecatName,
-		}
-
-		closed, closeErr := closeMoleculeWithDescendants(bd, workDir, attachedMol)
-		if closeErr != nil {
-			orphan.Error = closeErr
-			result.Errors = append(result.Errors, closeErr)
-		}
-		orphan.Closed = closed
-
-		// Reset the parent bead so it can be re-dispatched
-		orphan.BeadRecovered = resetAbandonedBead(bd, workDir, rigName, b.ID, polecatName, router)
-
-		result.Orphans = append(result.Orphans, orphan)
 	}
 
 	return result
+}
+
+func inspectOrphanedMolecule(bd *BdCli, workDir, townRoot, rigName string, bead orphanScanBead, t *tmux.Tmux, router *mail.Router) (OrphanedMoleculeResult, bool, error) {
+	polecatName := strings.TrimPrefix(bead.Assignee, rigName+"/polecats/")
+	gone, err := orphanedPolecatGone(t, townRoot, rigName, polecatName, bead.ID)
+	if err != nil || !gone {
+		return OrphanedMoleculeResult{}, false, err
+	}
+
+	attachedMol := getAttachedMoleculeID(bd, workDir, bead.ID)
+	if attachedMol == "" {
+		return OrphanedMoleculeResult{}, false, nil
+	}
+	molStatus, molFound := getBeadStatus(bd, workDir, attachedMol)
+	if !molFound || molStatus == "closed" || molStatus == "" {
+		return OrphanedMoleculeResult{}, false, nil
+	}
+
+	orphan := OrphanedMoleculeResult{
+		BeadID:      bead.ID,
+		MoleculeID:  attachedMol,
+		Assignee:    bead.Assignee,
+		PolecatName: polecatName,
+	}
+	orphan.Closed, err = closeMoleculeWithDescendants(bd, workDir, attachedMol)
+	if err != nil {
+		orphan.Error = err
+	}
+	orphan.BeadRecovered = resetAbandonedBead(bd, workDir, rigName, bead.ID, polecatName, router)
+	return orphan, true, err
 }
 
 // getAttachedMoleculeID reads a bead and returns its attached_molecule ID, if any.
