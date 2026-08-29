@@ -703,14 +703,28 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	if optionType == "rigs" {
 		resp := &OptionsResponse{}
 		resp.Rigs = h.loadRigOptions(r.Context())
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		writeOptionsResponse(w, resp, "")
 		return
 	}
 
-	// Check cache first — serialize under RLock to a buffer so we don't
-	// hold the lock while writing to the ResponseWriter (which can block
-	// on slow clients).
+	if h.writeCachedOptions(w) {
+		return
+	}
+
+	resp := h.fetchOptions(r.Context())
+
+	// Update cache
+	h.optionsCacheMu.Lock()
+	h.optionsCache = resp
+	h.optionsCacheTime = time.Now()
+	h.optionsCacheMu.Unlock()
+
+	writeOptionsResponse(w, resp, "MISS")
+}
+
+func (h *APIHandler) writeCachedOptions(w http.ResponseWriter) bool {
+	// Serialize under RLock to a buffer so we don't hold the lock while
+	// writing to the ResponseWriter (which can block on slow clients).
 	h.optionsCacheMu.RLock()
 	if h.optionsCache != nil && time.Since(h.optionsCacheTime) < optionsCacheTTL {
 		data, err := json.Marshal(h.optionsCache)
@@ -720,14 +734,16 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Cache", "HIT")
 			_, _ = w.Write(data)
 			_, _ = w.Write([]byte("\n"))
-			return
+			return true
 		}
 		// Marshal failure is unexpected; fall through to refetch.
 	} else {
 		h.optionsCacheMu.RUnlock()
 	}
+	return false
+}
 
-	// Cache miss - fetch fresh data
+func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
 	resp := &OptionsResponse{}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -739,14 +755,14 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		mu.Lock()
-		resp.Rigs = h.loadRigOptions(r.Context())
+		resp.Rigs = h.loadRigOptions(ctx)
 		mu.Unlock()
 	}()
 
 	// Fetch polecats
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"polecat", "list", "--all", "--json"}); err == nil {
+		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"polecat", "list", "--all", "--json"}); err == nil {
 			mu.Lock()
 			resp.Polecats = parseJSONPaths(output)
 			mu.Unlock()
@@ -758,7 +774,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch convoys
 	go func() {
 		defer wg.Done()
-		if output, err := h.runBdCommand(r.Context(), 3*time.Second, []string{"list", "--json", "--limit=0"}); err == nil {
+		if output, err := h.runBdCommand(ctx, 3*time.Second, []string{"list", "--json", "--limit=0"}); err == nil {
 			mu.Lock()
 			resp.Convoys = parseConvoyListJSON(output)
 			mu.Unlock()
@@ -770,7 +786,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch hooks
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"hooks", "list"}); err == nil {
+		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
 			mu.Lock()
 			resp.Hooks = parseHooksListOutput(output)
 			mu.Unlock()
@@ -782,7 +798,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch mail messages
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"mail", "inbox"}); err == nil {
+		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
 			mu.Lock()
 			resp.Messages = parseMailInboxOutput(output)
 			mu.Unlock()
@@ -794,7 +810,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch crew members
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"crew", "list", "--all"}); err == nil {
+		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"crew", "list", "--all"}); err == nil {
 			mu.Lock()
 			resp.Crew = parseCrewListOutput(output)
 			mu.Unlock()
@@ -806,7 +822,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch agents - shorter timeout, skip if slow
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 5*time.Second, []string{"status", "--json"}); err == nil {
+		if output, err := h.runGtCommand(ctx, 5*time.Second, []string{"status", "--json"}); err == nil {
 			mu.Lock()
 			resp.Agents = parseAgentsFromStatus(output)
 			mu.Unlock()
@@ -816,15 +832,14 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	wg.Wait()
+	return resp
+}
 
-	// Update cache
-	h.optionsCacheMu.Lock()
-	h.optionsCache = resp
-	h.optionsCacheTime = time.Now()
-	h.optionsCacheMu.Unlock()
-
+func writeOptionsResponse(w http.ResponseWriter, resp *OptionsResponse, cacheStatus string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
+	if cacheStatus != "" {
+		w.Header().Set("X-Cache", cacheStatus)
+	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
