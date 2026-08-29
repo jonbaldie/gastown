@@ -3432,6 +3432,10 @@ func (s beadCLIShower) Show(issueID string) (*beads.Issue, error) {
 		}
 		return nil, err
 	}
+	return parseBeadShowOutput(output)
+}
+
+func parseBeadShowOutput(output string) (*beads.Issue, error) {
 	output = strings.TrimSpace(output)
 	if output == "" || output == "[]" || output == "null" {
 		return nil, beads.ErrNotFound
