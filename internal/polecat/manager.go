@@ -1247,35 +1247,18 @@ func activeMRRemovalBlocker(reader IssueReader, fields *beads.AgentFields) strin
 	return fmt.Sprintf("active_mr=%s status=pending", strings.TrimSpace(fields.ActiveMR))
 }
 
-// ReclaimBrokenIdlePolecat removes a structurally broken idle sandbox before any
-// new hook is attached. It deliberately uses the normal non-force removal path.
-func (m *Manager) ReclaimBrokenIdlePolecat(name string) (retErr error) {
-	defer func() { telemetry.RecordPolecatRemove(context.Background(), name, retErr) }()
-
-	fl, err := m.lockPolecat(name)
-	if err != nil {
-		return err
+func verifyBrokenIdleReclaimWorktree(clonePath string) error {
+	err := VerifyWorktreeExists(clonePath)
+	if err == nil {
+		return fmt.Errorf("worktree is healthy: %s", clonePath)
 	}
-	defer func() { _ = fl.Unlock() }()
-
-	if !m.exists(name) {
-		return ErrPolecatNotFound
-	}
-
-	current, err := m.loadFromBeads(name)
-	if err != nil {
-		return err
-	}
-	if current.State != StateIdle || current.Issue != "" {
-		return fmt.Errorf("not a clean idle polecat: state=%s issue=%s", current.State, current.Issue)
-	}
-
-	if err := VerifyWorktreeExists(current.ClonePath); err == nil {
-		return fmt.Errorf("worktree is healthy: %s", current.ClonePath)
-	} else if !IsStructuralWorktreeError(err) {
+	if !IsStructuralWorktreeError(err) {
 		return fmt.Errorf("worktree check did not prove structural damage: %w", err)
 	}
+	return nil
+}
 
+func (m *Manager) validateBrokenIdleReclaim(name string, current *Polecat) error {
 	agentID := m.agentBeadID(name)
 	agentIssue, fields, err := m.agentBeads().GetAgentBead(agentID)
 	if err != nil {
@@ -1300,9 +1283,44 @@ func (m *Manager) ReclaimBrokenIdlePolecat(name string) (retErr error) {
 	if blocker := brokenIdleReclaimDispositionBlocker(m.WorkstateDispositionForPolecat(name, current.State, current.Issue)); blocker != "" {
 		return fmt.Errorf("not safe to reclaim: %s", blocker)
 	}
+	return m.validateBrokenIdleReclaimMR(fields)
+}
+
+func (m *Manager) validateBrokenIdleReclaimMR(fields *beads.AgentFields) error {
 	mr, mrErr := m.beads.FindMRForBranch(fields.Branch)
 	if blocker := brokenIdleReclaimMRBlocker(fields.Branch, mr, mrErr); blocker != "" {
 		return fmt.Errorf("not safe to reclaim: %s", blocker)
+	}
+	return nil
+}
+
+// ReclaimBrokenIdlePolecat removes a structurally broken idle sandbox before any
+// new hook is attached. It deliberately uses the normal non-force removal path.
+func (m *Manager) ReclaimBrokenIdlePolecat(name string) (retErr error) {
+	defer func() { telemetry.RecordPolecatRemove(context.Background(), name, retErr) }()
+
+	fl, err := m.lockPolecat(name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fl.Unlock() }()
+
+	if !m.exists(name) {
+		return ErrPolecatNotFound
+	}
+
+	current, err := m.loadFromBeads(name)
+	if err != nil {
+		return err
+	}
+	if current.State != StateIdle || current.Issue != "" {
+		return fmt.Errorf("not a clean idle polecat: state=%s issue=%s", current.State, current.Issue)
+	}
+	if err := verifyBrokenIdleReclaimWorktree(current.ClonePath); err != nil {
+		return err
+	}
+	if err := m.validateBrokenIdleReclaim(name, current); err != nil {
+		return err
 	}
 
 	return m.removeWithOptionsLocked(name, false, false, false)
