@@ -1183,66 +1183,87 @@ func AutoNukeIfClean(_, _, _ string) *NukePolecatResult {
 // This is a package-level var so tests can override it.
 var verifyCommitOnMain = _verifyCommitOnMain
 
-func _verifyCommitOnMain(workDir, rigName, polecatName string) (bool, error) {
-	// Find town root from workDir
+type witnessPolecatGitContext struct {
+	townRoot      string
+	defaultBranch string
+	git           *git.Git
+}
+
+func loadWitnessPolecatGitContext(workDir, rigName, polecatName string) (witnessPolecatGitContext, error) {
 	townRoot, err := workspace.Find(workDir)
 	if err != nil || townRoot == "" {
-		return false, fmt.Errorf("finding town root: %v", err)
+		return witnessPolecatGitContext{}, fmt.Errorf("finding town root: %v", err)
 	}
+	return witnessPolecatGitContext{
+		townRoot:      townRoot,
+		defaultBranch: witnessDefaultBranch(townRoot, rigName),
+		git:           git.NewGit(witnessPolecatPath(townRoot, rigName, polecatName)),
+	}, nil
+}
 
-	// Get configured default branch for this rig
-	defaultBranch := "main" // fallback
+func witnessDefaultBranch(townRoot, rigName string) string {
 	if rigCfg, err := rig.LoadRigConfig(filepath.Join(townRoot, rigName)); err == nil && rigCfg.DefaultBranch != "" {
-		defaultBranch = rigCfg.DefaultBranch
+		return rigCfg.DefaultBranch
 	}
+	return "main"
+}
 
-	// Construct polecat path, handling both new and old structures
+func witnessPolecatPath(townRoot, rigName, polecatName string) string {
 	// New structure: polecats/<name>/<rigname>/
-	// Old structure: polecats/<name>/
-	polecatPath := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
-	if _, err := os.Stat(polecatPath); os.IsNotExist(err) {
-		// Fall back to old structure
-		polecatPath = filepath.Join(townRoot, rigName, "polecats", polecatName)
+	newPath := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		return newPath
 	}
+	// Fall back to old structure: polecats/<name>/.
+	return filepath.Join(townRoot, rigName, "polecats", polecatName)
+}
 
-	// Get git for the polecat worktree
-	g := git.NewGit(polecatPath)
+func _verifyCommitOnMain(workDir, rigName, polecatName string) (bool, error) {
+	ctx, err := loadWitnessPolecatGitContext(workDir, rigName, polecatName)
+	if err != nil {
+		return false, err
+	}
 
 	// Get the current HEAD commit SHA
-	commitSHA, err := g.Rev("HEAD")
+	commitSHA, err := ctx.git.Rev("HEAD")
 	if err != nil {
 		return false, fmt.Errorf("getting polecat HEAD: %w", err)
 	}
 
 	// Get all configured remotes and check each one for the commit
 	// This handles multi-remote setups where code may be on a remote other than "origin"
-	remotes, err := g.Remotes()
+	remotes, err := ctx.git.Remotes()
 	if err != nil {
-		// If we can't list remotes, fall back to checking just the local branch
-		isOnDefaultBranch, err := g.IsAncestor(commitSHA, defaultBranch)
-		if err != nil {
-			return false, fmt.Errorf("checking if commit is on %s: %w", defaultBranch, err)
-		}
-		return isOnDefaultBranch, nil
+		return verifyCommitOnDefaultBranch(ctx.git, commitSHA, ctx.defaultBranch)
 	}
 
 	// Try each remote/<defaultBranch> until we find one where commit is an ancestor
+	if verifyCommitOnRemoteDefaultBranch(ctx.git, commitSHA, ctx.defaultBranch, remotes) {
+		return true, nil
+	}
+
+	// Also try the local default branch (in case we're not tracking a remote).
+	isOnDefaultBranch, err := ctx.git.IsAncestor(commitSHA, ctx.defaultBranch)
+	return err == nil && isOnDefaultBranch, nil
+}
+
+func verifyCommitOnDefaultBranch(g *git.Git, commitSHA, defaultBranch string) (bool, error) {
+	isOnDefaultBranch, err := g.IsAncestor(commitSHA, defaultBranch)
+	if err != nil {
+		return false, fmt.Errorf("checking if commit is on %s: %w", defaultBranch, err)
+	}
+	return isOnDefaultBranch, nil
+}
+
+func verifyCommitOnRemoteDefaultBranch(g *git.Git, commitSHA, defaultBranch string, remotes []string) bool {
 	for _, remote := range remotes {
 		remoteBranch := remote + "/" + defaultBranch
 		isOnRemote, err := g.IsAncestor(commitSHA, remoteBranch)
 		if err == nil && isOnRemote {
-			return true, nil
+			return true
 		}
 	}
-
-	// Also try the local default branch (in case we're not tracking a remote)
-	isOnDefaultBranch, err := g.IsAncestor(commitSHA, defaultBranch)
-	if err == nil && isOnDefaultBranch {
-		return true, nil
-	}
-
-	// Commit is not on any remote's default branch
-	return false, nil
+	return false
 }
 
 // verifyBranchAlreadyMerged checks whether the polecat's current branch work has
@@ -1271,32 +1292,27 @@ func _verifyBranchAlreadyMerged(workDir, rigName, polecatName string) (bool, err
 		return true, nil
 	}
 
-	townRoot, err := workspace.Find(workDir)
-	if err != nil || townRoot == "" {
-		return false, fmt.Errorf("finding town root: %v", err)
+	ctx, err := loadWitnessPolecatGitContext(workDir, rigName, polecatName)
+	if err != nil {
+		return false, err
 	}
 
-	defaultBranch := "main"
-	if rigCfg, err := rig.LoadRigConfig(filepath.Join(townRoot, rigName)); err == nil && rigCfg.DefaultBranch != "" {
-		defaultBranch = rigCfg.DefaultBranch
-	}
-
-	polecatPath := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
-	if _, err := os.Stat(polecatPath); os.IsNotExist(err) {
-		polecatPath = filepath.Join(townRoot, rigName, "polecats", polecatName)
-	}
-
-	g := git.NewGit(polecatPath)
-
-	remotes, err := g.Remotes()
+	remotes, err := ctx.git.Remotes()
 	if err != nil || len(remotes) == 0 {
 		remotes = []string{"origin"}
 	}
 
-	branch, err := g.CurrentBranch()
+	branch, err := ctx.git.CurrentBranch()
 	if err != nil {
 		return false, err
 	}
+	if branchAlreadyMergedOnRemoteTargets(ctx.git, branch, ctx.defaultBranch, remotes) {
+		return true, nil
+	}
+	return false, nil
+}
+
+func branchAlreadyMergedOnRemoteTargets(g *git.Git, branch, defaultBranch string, remotes []string) bool {
 	for _, remote := range remotes {
 		upstream := remote + "/" + defaultBranch
 		status, err := g.BranchTargetStatus(branch, remote, []string{upstream})
@@ -1304,11 +1320,10 @@ func _verifyBranchAlreadyMerged(workDir, rigName, polecatName string) (bool, err
 			continue // try next remote
 		}
 		if status.Preserved {
-			return true, nil
+			return true
 		}
 	}
-
-	return false, nil
+	return false
 }
 
 // ZombieClassification categorizes why a polecat was classified as a zombie.
