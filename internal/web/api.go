@@ -2174,17 +2174,9 @@ func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Validate session name: must start with a known prefix and contain only safe characters
-	hasValidPrefix := session.HasKnownPrefix(sessionName)
-	if !hasValidPrefix {
-		h.sendError(w, "Invalid session name: must start with a known rig prefix", http.StatusBadRequest)
+	if errMessage := validateSessionPreviewName(sessionName); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
-	}
-	for _, c := range sessionName {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
-			h.sendError(w, "Invalid session name: contains invalid characters", http.StatusBadRequest)
-			return
-		}
 	}
 
 	// Run tmux capture-pane to get the last 30 lines
@@ -2212,6 +2204,24 @@ func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request
 		Content:   stdout.String(),
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
+}
+
+func validateSessionPreviewName(sessionName string) string {
+	// Session names must start with a known prefix and contain only safe characters.
+	if !session.HasKnownPrefix(sessionName) {
+		return "Invalid session name: must start with a known rig prefix"
+	}
+	for _, c := range sessionName {
+		if !isSessionNameCharacter(c) {
+			return "Invalid session name: contains invalid characters"
+		}
+	}
+	return ""
+}
+
+func isSessionNameCharacter(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '-' || c == '_'
 }
 
 // parseCommandArgs splits a command string into args, respecting quotes.
