@@ -1665,91 +1665,92 @@ func runRigBoot(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigStart(_ *cobra.Command, args []string) error {
-	// Find workspace once
+func loadRigManagerForStart() (string, *rig.Manager, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return "", nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Load rigs config
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
 		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
 	}
-
 	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
+	return townRoot, rig.NewManager(townRoot, rigsConfig, g), nil
+}
 
+func startRigServicesForStart(r *rig.Rig) ([]string, []string, bool) {
+	var started []string
+	var skipped []string
+	hasError := false
+	// Start() treats healthy sessions as already running and recreates zombie
+	// sessions whose tmux pane remains after the agent exits.
+	witMgr := witness.NewManager(r)
+	if err := witMgr.Start(false, "", nil); err != nil {
+		if err == witness.ErrAlreadyRunning {
+			skipped = append(skipped, "witness")
+		} else {
+			fmt.Printf("  %s Failed to start witness: %v\n", style.Warning.Render("⚠"), err)
+			hasError = true
+		}
+	} else {
+		started = append(started, "witness")
+	}
+
+	refMgr := refinery.NewManager(r)
+	if err := refMgr.Start(false, ""); err != nil {
+		if errors.Is(err, refinery.ErrAlreadyRunning) {
+			skipped = append(skipped, "refinery")
+		} else if errors.Is(err, refinery.ErrForkRig) {
+			skipped = append(skipped, "refinery (fork-backed rig; use PR workflow)")
+		} else {
+			fmt.Printf("  %s Failed to start refinery: %v\n", style.Warning.Render("⚠"), err)
+			hasError = true
+		}
+	} else {
+		started = append(started, "refinery")
+	}
+	return started, skipped, hasError
+}
+
+func startRigByName(townRoot string, rigMgr *rig.Manager, rigName string) (found, failed bool) {
+	r, err := rigMgr.GetRig(rigName)
+	if err != nil {
+		fmt.Printf("%s Rig '%s' not found\n", style.Warning.Render("⚠"), rigName)
+		return false, true
+	}
+	if blocked, reason := IsRigParkedOrDocked(townRoot, rigName); blocked {
+		fmt.Printf("%s Rig '%s' is %s - skipping (use 'gt rig unpark' or 'gt rig undock' first)\n",
+			style.Warning.Render("⚠"), rigName, reason)
+		return false, false
+	}
+
+	fmt.Printf("Starting rig %s...\n", style.Bold.Render(rigName))
+	started, skipped, hasError := startRigServicesForStart(r)
+	if len(started) > 0 {
+		fmt.Printf("  %s Started: %s\n", style.Success.Render("✓"), strings.Join(started, ", "))
+	}
+	if len(skipped) > 0 {
+		fmt.Printf("  %s Skipped: %s\n", style.Dim.Render("•"), strings.Join(skipped, ", "))
+	}
+	fmt.Println()
+	return true, hasError
+}
+
+func runRigStart(_ *cobra.Command, args []string) error {
+	townRoot, rigMgr, err := loadRigManagerForStart()
+	if err != nil {
+		return err
+	}
 	var successRigs []string
 	var failedRigs []string
-
 	for _, rigName := range args {
-		r, err := rigMgr.GetRig(rigName)
-		if err != nil {
-			fmt.Printf("%s Rig '%s' not found\n", style.Warning.Render("⚠"), rigName)
+		found, failed := startRigByName(townRoot, rigMgr, rigName)
+		if failed {
 			failedRigs = append(failedRigs, rigName)
-			continue
-		}
-
-		// Check if rig is parked or docked (uses bead labels + wisp state)
-		if blocked, reason := IsRigParkedOrDocked(townRoot, rigName); blocked {
-			fmt.Printf("%s Rig '%s' is %s - skipping (use 'gt rig unpark' or 'gt rig undock' first)\n",
-				style.Warning.Render("⚠"), rigName, reason)
-			continue
-		}
-
-		fmt.Printf("Starting rig %s...\n", style.Bold.Render(rigName))
-
-		var started []string
-		var skipped []string
-		hasError := false
-
-		// 1. Start the witness
-		// Start() treats healthy sessions as already running and recreates zombie
-		// sessions whose tmux pane remains after the agent exits.
-		witMgr := witness.NewManager(r)
-		if err := witMgr.Start(false, "", nil); err != nil {
-			if err == witness.ErrAlreadyRunning {
-				skipped = append(skipped, "witness")
-			} else {
-				fmt.Printf("  %s Failed to start witness: %v\n", style.Warning.Render("⚠"), err)
-				hasError = true
-			}
-		} else {
-			started = append(started, "witness")
-		}
-
-		// 2. Start the refinery
-		refMgr := refinery.NewManager(r)
-		if err := refMgr.Start(false, ""); err != nil {
-			if errors.Is(err, refinery.ErrAlreadyRunning) {
-				skipped = append(skipped, "refinery")
-			} else if errors.Is(err, refinery.ErrForkRig) {
-				skipped = append(skipped, "refinery (fork-backed rig; use PR workflow)")
-			} else {
-				fmt.Printf("  %s Failed to start refinery: %v\n", style.Warning.Render("⚠"), err)
-				hasError = true
-			}
-		} else {
-			started = append(started, "refinery")
-		}
-
-		// Report results for this rig
-		if len(started) > 0 {
-			fmt.Printf("  %s Started: %s\n", style.Success.Render("✓"), strings.Join(started, ", "))
-		}
-		if len(skipped) > 0 {
-			fmt.Printf("  %s Skipped: %s\n", style.Dim.Render("•"), strings.Join(skipped, ", "))
-		}
-
-		if hasError {
-			failedRigs = append(failedRigs, rigName)
-		} else {
+		} else if found {
 			successRigs = append(successRigs, rigName)
 		}
-		fmt.Println()
 	}
 
 	// Summary
