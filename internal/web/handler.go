@@ -383,49 +383,70 @@ func computeSummary(workers []WorkerRow, hooks []HookRow, issues []IssueRow,
 		EscalationCount: len(escalations),
 	}
 
-	// Count stuck workers (status = "stuck")
-	for _, w := range workers {
-		if w.WorkStatus == "stuck" {
-			summary.StuckPolecats++
-		}
-	}
-
-	// Count stale hooks (IsStale = true)
-	for _, h := range hooks {
-		if h.IsStale {
-			summary.StaleHooks++
-		}
-	}
-
-	// Count unacked escalations
-	for _, e := range escalations {
-		if !e.Acked {
-			summary.UnackedEscalations++
-		}
-	}
-
-	// Count high priority issues (P1 or P2)
-	for _, i := range issues {
-		if i.Priority == 1 || i.Priority == 2 {
-			summary.HighPriorityIssues++
-		}
-	}
-
-	// Count recent session deaths from activity
-	for _, a := range activity {
-		if a.Type == "session_death" || a.Type == "mass_death" {
-			summary.DeadSessions++
-		}
-	}
-
-	// Set HasAlerts flag
-	summary.HasAlerts = summary.StuckPolecats > 0 ||
-		summary.StaleHooks > 0 ||
-		summary.UnackedEscalations > 0 ||
-		summary.DeadSessions > 0 ||
-		summary.HighPriorityIssues > 0
+	summary.StuckPolecats = countStuckPolecats(workers)
+	summary.StaleHooks = countStaleHooks(hooks)
+	summary.UnackedEscalations = countUnackedEscalations(escalations)
+	summary.HighPriorityIssues = countHighPriorityIssues(issues)
+	summary.DeadSessions = countDeadSessions(activity)
+	summary.HasAlerts = dashboardHasAlerts(summary)
 
 	return summary
+}
+
+func countStuckPolecats(workers []WorkerRow) int {
+	count := 0
+	for _, worker := range workers {
+		if worker.WorkStatus == "stuck" {
+			count++
+		}
+	}
+	return count
+}
+
+func countStaleHooks(hooks []HookRow) int {
+	count := 0
+	for _, hook := range hooks {
+		if hook.IsStale {
+			count++
+		}
+	}
+	return count
+}
+
+func countUnackedEscalations(escalations []EscalationRow) int {
+	count := 0
+	for _, escalation := range escalations {
+		if !escalation.Acked {
+			count++
+		}
+	}
+	return count
+}
+
+func countHighPriorityIssues(issues []IssueRow) int {
+	count := 0
+	for _, issue := range issues {
+		if issue.Priority == 1 || issue.Priority == 2 {
+			count++
+		}
+	}
+	return count
+}
+
+func countDeadSessions(activity []ActivityRow) int {
+	count := 0
+	for _, event := range activity {
+		if event.Type == "session_death" || event.Type == "mass_death" {
+			count++
+		}
+	}
+	return count
+}
+
+func dashboardHasAlerts(summary *DashboardSummary) bool {
+	return summary.StuckPolecats > 0 || summary.StaleHooks > 0 ||
+		summary.UnackedEscalations > 0 || summary.DeadSessions > 0 ||
+		summary.HighPriorityIssues > 0
 }
 
 // enrichIssuesWithAssignees adds Assignee info to issues by cross-referencing hooks.
