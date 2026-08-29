@@ -913,15 +913,28 @@ func runDoltDump(_ *cobra.Command, _ []string) error {
 	}
 
 	config := doltserver.DefaultConfig(townRoot)
+	printDoltDumpHeader(townRoot, config, pid)
+	printDoltDumpSQLMetadata(townRoot)
+	printDoltDumpDaemonState(townRoot, pid)
+	printDoltDumpRecentLogs(config.LogFile)
 
+	fmt.Printf("\nNo signal was sent. Do not use kill -QUIT for routine diagnostics unless the Dolt version has been verified not to terminate on SIGQUIT.\n")
+
+	return nil
+}
+
+func printDoltDumpHeader(townRoot string, config *doltserver.Config, pid int) {
 	fmt.Printf("Dolt diagnostic snapshot (non-fatal)\n")
 	fmt.Printf("  Live PID:   %d\n", pid)
 	fmt.Printf("  Port:       %d\n", config.Port)
 	fmt.Printf("  Data dir:   %s\n", config.DataDir)
 	fmt.Printf("  Log file:   %s\n", config.LogFile)
 	fmt.Printf("  Connection: %s\n", doltserver.GetConnectionString(townRoot))
+}
 
-	if info, err := doltserver.ReadSQLServerInfo(townRoot); err == nil {
+func printDoltDumpSQLMetadata(townRoot string) {
+	info, err := doltserver.ReadSQLServerInfo(townRoot)
+	if err == nil {
 		fmt.Printf("  SQL metadata: %s\n", info.Path)
 		fmt.Printf("    PID:       %d\n", info.PID)
 		fmt.Printf("    Port:      %d\n", info.Port)
@@ -931,12 +944,15 @@ func runDoltDump(_ *cobra.Command, _ []string) error {
 	} else {
 		fmt.Printf("  SQL metadata: unavailable (%v)\n", err)
 	}
+}
 
-	if state, err := doltserver.LoadState(townRoot); err == nil && state.PID > 0 {
+func printDoltDumpDaemonState(townRoot string, livePID int) {
+	state, err := doltserver.LoadState(townRoot)
+	if err == nil && state.PID > 0 {
 		fmt.Printf("  Daemon state: %s\n", doltserver.StateFile(townRoot))
 		fmt.Printf("    PID:       %d", state.PID)
-		if state.PID != pid {
-			fmt.Printf(" (stale; live PID is %d)", pid)
+		if state.PID != livePID {
+			fmt.Printf(" (stale; live PID is %d)", livePID)
 		}
 		fmt.Println()
 		if !state.StartedAt.IsZero() {
@@ -946,18 +962,16 @@ func runDoltDump(_ *cobra.Command, _ []string) error {
 			fmt.Printf("    Data dir:  %s\n", state.DataDir)
 		}
 	}
+}
 
+func printDoltDumpRecentLogs(logFile string) {
 	fmt.Printf("\nRecent Dolt log lines:\n")
-	tailCmd := exec.Command("tail", "-n", "200", config.LogFile)
+	tailCmd := exec.Command("tail", "-n", "200", logFile)
 	tailCmd.Stdout = os.Stdout
 	tailCmd.Stderr = os.Stderr
 	if err := tailCmd.Run(); err != nil {
 		fmt.Printf("  (unable to read recent logs: %v)\n", err)
 	}
-
-	fmt.Printf("\nNo signal was sent. Do not use kill -QUIT for routine diagnostics unless the Dolt version has been verified not to terminate on SIGQUIT.\n")
-
-	return nil
 }
 
 func runDoltSQL(_ *cobra.Command, _ []string) error {
