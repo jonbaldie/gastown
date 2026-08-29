@@ -1116,37 +1116,42 @@ func sessionWorkDir(sessionName, townRoot string) (string, error) {
 		return townRoot + "/deacon", nil
 
 	case strings.Contains(sessionName, "-crew-"):
-		// gt-<rig>-crew-<name> -> <townRoot>/<rig>/crew/<name>
-		rig, name, _, ok := parseCrewSessionName(sessionName)
-		if !ok {
-			return "", fmt.Errorf("cannot parse crew session name: %s", sessionName)
-		}
-		return fmt.Sprintf("%s/%s/crew/%s", townRoot, rig, name), nil
+		return crewSessionWorkDir(sessionName, townRoot)
 
 	default:
-		// Parse session name to determine role and resolve paths
-		identity, err := session.ParseSessionName(sessionName)
-		if err != nil {
-			return "", fmt.Errorf("unknown session type: %s (%w)", sessionName, err)
-		}
-		switch identity.Role {
-		case session.RoleMayor:
-			return townRoot + "/mayor", nil
-		case session.RoleDeacon:
-			return townRoot + "/deacon", nil
-		case session.RoleOverseer:
-			return townRoot + "/deacon", nil
-		case session.RoleWitness:
-			return fmt.Sprintf("%s/%s/witness", townRoot, identity.Rig), nil
-		case session.RoleRefinery:
-			return fmt.Sprintf("%s/%s/refinery/rig", townRoot, identity.Rig), nil
-		case session.RolePolecat:
-			return fmt.Sprintf("%s/%s/polecats/%s", townRoot, identity.Rig, identity.Name), nil
-		case session.RoleDog:
-			return fmt.Sprintf("%s/deacon/dogs/%s", townRoot, identity.Name), nil
-		default:
-			return "", fmt.Errorf("unknown session type: %s (role %s, try specifying role explicitly)", sessionName, identity.Role)
-		}
+		return parsedSessionWorkDir(sessionName, townRoot)
+	}
+}
+
+func crewSessionWorkDir(sessionName, townRoot string) (string, error) {
+	// gt-<rig>-crew-<name> -> <townRoot>/<rig>/crew/<name>
+	rig, name, _, ok := parseCrewSessionName(sessionName)
+	if !ok {
+		return "", fmt.Errorf("cannot parse crew session name: %s", sessionName)
+	}
+	return fmt.Sprintf("%s/%s/crew/%s", townRoot, rig, name), nil
+}
+
+func parsedSessionWorkDir(sessionName, townRoot string) (string, error) {
+	identity, err := session.ParseSessionName(sessionName)
+	if err != nil {
+		return "", fmt.Errorf("unknown session type: %s (%w)", sessionName, err)
+	}
+	switch identity.Role {
+	case session.RoleMayor:
+		return townRoot + "/mayor", nil
+	case session.RoleDeacon, session.RoleOverseer:
+		return townRoot + "/deacon", nil
+	case session.RoleWitness:
+		return fmt.Sprintf("%s/%s/witness", townRoot, identity.Rig), nil
+	case session.RoleRefinery:
+		return fmt.Sprintf("%s/%s/refinery/rig", townRoot, identity.Rig), nil
+	case session.RolePolecat:
+		return fmt.Sprintf("%s/%s/polecats/%s", townRoot, identity.Rig, identity.Name), nil
+	case session.RoleDog:
+		return fmt.Sprintf("%s/deacon/dogs/%s", townRoot, identity.Name), nil
+	default:
+		return "", fmt.Errorf("unknown session type: %s (role %s, try specifying role explicitly)", sessionName, identity.Role)
 	}
 }
 
