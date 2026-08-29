@@ -855,29 +855,16 @@ var rigMenuCmd = &cobra.Command{
 	RunE:   runRigMenu,
 }
 
-func runRigMenu(_ *cobra.Command, _ []string) error {
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
+type rigMenuEntry struct {
+	name     string
+	led      string
+	running  bool
+	opState  string
+	sortPrio int
+}
 
-	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsPath)
-	if err != nil || len(rigsConfig.Rigs) == 0 {
-		return fmt.Errorf("no rigs configured")
-	}
-
-	t := tmux.NewTmux()
-
-	type menuRig struct {
-		name     string
-		led      string
-		running  bool
-		opState  string
-		sortPrio int
-	}
-
-	var rigs []menuRig
+func collectRigMenuEntries(townRoot string, rigsConfig *config.RigsConfig, t *tmux.Tmux) []rigMenuEntry {
+	var rigs []rigMenuEntry
 	for name := range rigsConfig.Rigs {
 		prefix := session.PrefixFor(name)
 		opState, _ := getRigOperationalState(townRoot, name)
@@ -888,7 +875,7 @@ func runRigMenu(_ *cobra.Command, _ []string) error {
 		hasRefinery, _ := t.HasSession(refinerySession)
 
 		led := GetRigLED(hasWitness, hasRefinery, opState)
-		rigs = append(rigs, menuRig{
+		rigs = append(rigs, rigMenuEntry{
 			name:     name,
 			led:      led,
 			running:  hasWitness || hasRefinery,
@@ -896,14 +883,57 @@ func runRigMenu(_ *cobra.Command, _ []string) error {
 			sortPrio: rigStatePriority(hasWitness, hasRefinery, opState),
 		})
 	}
+	return rigs
+}
 
+func sortRigMenuEntries(rigs []rigMenuEntry) {
 	sort.Slice(rigs, func(i, j int) bool {
 		if rigs[i].sortPrio != rigs[j].sortPrio {
 			return rigs[i].sortPrio < rigs[j].sortPrio
 		}
 		return rigs[i].name < rigs[j].name
 	})
+}
 
+func appendRigMenuEntry(menuArgs []string, r rigMenuEntry, keyIndex int) []string {
+	space := " "
+	if r.led == "🅿️" {
+		space = "  "
+	}
+	label := fmt.Sprintf("%s%s%s", r.led, space, r.name)
+	key := shortcutKey(keyIndex)
+	action := fmt.Sprintf("display-popup -E -w 80 -h 25 -T ' %s ' 'gt rig status %s; echo; echo \"Press any key to close\"; read -rsn1'", r.name, r.name)
+	menuArgs = append(menuArgs, label, key, action)
+
+	if r.running {
+		menuArgs = append(menuArgs,
+			"   Stop", "", fmt.Sprintf("run-shell 'gt rig stop %s'", r.name),
+			"   Reboot", "", fmt.Sprintf("run-shell 'gt rig reboot %s'", r.name),
+		)
+	} else if r.opState == "PARKED" {
+		menuArgs = append(menuArgs,
+			"   Unpark", "", fmt.Sprintf("run-shell 'gt rig unpark %s'", r.name),
+			"   Start", "", fmt.Sprintf("run-shell 'gt rig start %s'", r.name),
+		)
+	} else if r.opState == "DOCKED" {
+		menuArgs = append(menuArgs,
+			"   Undock", "", fmt.Sprintf("run-shell 'gt rig undock %s'", r.name),
+		)
+	} else {
+		menuArgs = append(menuArgs,
+			"   Start", "", fmt.Sprintf("run-shell 'gt rig start %s'", r.name),
+		)
+	}
+
+	if r.opState != "PARKED" && r.opState != "DOCKED" {
+		menuArgs = append(menuArgs,
+			"   Park", "", fmt.Sprintf("run-shell 'gt rig park %s'", r.name),
+		)
+	}
+	return append(menuArgs, "")
+}
+
+func buildRigMenuArgs(rigs []rigMenuEntry) []string {
 	menuArgs := []string{
 		"display-menu",
 		"-T", "#[align=centre,fg=cyan,bold]⛽ Rigs", //nolint:misspell // tmux uses British spelling
@@ -911,53 +941,27 @@ func runRigMenu(_ *cobra.Command, _ []string) error {
 		"-y", "C",
 		"--",
 	}
-
 	keyIndex := 0
 	for _, r := range rigs {
-		// Rig name entry — opens status popup
-		space := " "
-		if r.led == "🅿️" {
-			space = "  "
-		}
-		label := fmt.Sprintf("%s%s%s", r.led, space, r.name)
-		key := shortcutKey(keyIndex)
-		action := fmt.Sprintf("display-popup -E -w 80 -h 25 -T ' %s ' 'gt rig status %s; echo; echo \"Press any key to close\"; read -rsn1'", r.name, r.name)
-		menuArgs = append(menuArgs, label, key, action)
+		menuArgs = appendRigMenuEntry(menuArgs, r, keyIndex)
 		keyIndex++
-
-		// Contextual actions (no shortcut keys)
-		if r.running {
-			menuArgs = append(menuArgs,
-				"   Stop", "", fmt.Sprintf("run-shell 'gt rig stop %s'", r.name),
-				"   Reboot", "", fmt.Sprintf("run-shell 'gt rig reboot %s'", r.name),
-			)
-		} else if r.opState == "PARKED" {
-			menuArgs = append(menuArgs,
-				"   Unpark", "", fmt.Sprintf("run-shell 'gt rig unpark %s'", r.name),
-				"   Start", "", fmt.Sprintf("run-shell 'gt rig start %s'", r.name),
-			)
-		} else if r.opState == "DOCKED" {
-			menuArgs = append(menuArgs,
-				"   Undock", "", fmt.Sprintf("run-shell 'gt rig undock %s'", r.name),
-			)
-		} else {
-			// Stopped but not parked/docked
-			menuArgs = append(menuArgs,
-				"   Start", "", fmt.Sprintf("run-shell 'gt rig start %s'", r.name),
-			)
-		}
-
-		// Park/dock available for non-parked/docked rigs
-		if r.opState != "PARKED" && r.opState != "DOCKED" {
-			menuArgs = append(menuArgs,
-				"   Park", "", fmt.Sprintf("run-shell 'gt rig park %s'", r.name),
-			)
-		}
-
-		// Separator between rigs
-		menuArgs = append(menuArgs, "")
 	}
+	return menuArgs
+}
 
+func runRigMenu(_ *cobra.Command, _ []string) error {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	if err != nil || len(rigsConfig.Rigs) == 0 {
+		return fmt.Errorf("no rigs configured")
+	}
+	rigs := collectRigMenuEntries(townRoot, rigsConfig, tmux.NewTmux())
+	sortRigMenuEntries(rigs)
+	menuArgs := buildRigMenuArgs(rigs)
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		return fmt.Errorf("tmux not found: %w", err)
