@@ -1239,83 +1239,86 @@ func (h *APIHandler) handleIssueCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Title == "" {
-		h.sendError(w, "Title is required", http.StatusBadRequest)
+	if errMessage := validateIssueCreateRequest(req); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
-	// Enforce length limits to prevent oversized payloads
-	const maxTitleLen = 500
-	const maxDescriptionLen = 100_000 // 100KB
-	if len(req.Title) > maxTitleLen {
-		h.sendError(w, fmt.Sprintf("Title too long (max %d bytes)", maxTitleLen), http.StatusBadRequest)
-		return
-	}
-	if len(req.Description) > maxDescriptionLen {
-		h.sendError(w, fmt.Sprintf("Description too long (max %d bytes)", maxDescriptionLen), http.StatusBadRequest)
-		return
-	}
-
-	// Validate title doesn't contain control characters or newlines
-	if strings.ContainsAny(req.Title, "\n\r\x00") {
-		h.sendError(w, "Title cannot contain newlines or control characters", http.StatusBadRequest)
-		return
-	}
-
-	// Validate description if provided
-	if req.Description != "" && strings.Contains(req.Description, "\x00") {
-		h.sendError(w, "Description cannot contain null characters", http.StatusBadRequest)
-		return
-	}
-
-	// Build bd create command. Flags go first, then -- to end flag parsing,
-	// then the positional title (prevents titles like "--help" being parsed as flags).
-	// bd uses cobra/pflag which respects -- natively (verified: bd --help shows cobra format).
-	args := []string{"create"}
-
-	// Add priority if specified (default is P2)
-	if req.Priority >= 1 && req.Priority <= 4 {
-		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
-	}
-
-	// Add description if provided
-	if req.Description != "" {
-		args = append(args, "--body", req.Description)
-	}
-
-	args = append(args, "--", req.Title)
+	args := issueCreateArgs(req)
 
 	// Run bd create
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	output, err := h.runBdCommand(ctx, 12*time.Second, args)
-
-	resp := IssueCreateResponse{}
-	if err != nil {
-		resp.Success = false
-		resp.Error = "Failed to create issue: " + err.Error()
-		if output != "" {
-			resp.Message = output
-		}
-	} else {
-		resp.Success = true
-		resp.Message = output
-
-		// Try to extract issue ID from output (e.g., "Created issue: abc123")
-		if strings.Contains(output, "Created") {
-			parts := strings.Fields(output)
-			for i, p := range parts {
-				if strings.HasSuffix(p, ":") && i+1 < len(parts) {
-					resp.ID = strings.TrimSpace(parts[i+1])
-					break
-				}
-			}
-		}
-	}
+	resp := issueCreateResponse(output, err)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func validateIssueCreateRequest(req IssueCreateRequest) string {
+	if req.Title == "" {
+		return "Title is required"
+	}
+
+	const maxTitleLen = 500
+	const maxDescriptionLen = 100_000
+	if len(req.Title) > maxTitleLen {
+		return fmt.Sprintf("Title too long (max %d bytes)", maxTitleLen)
+	}
+	if len(req.Description) > maxDescriptionLen {
+		return fmt.Sprintf("Description too long (max %d bytes)", maxDescriptionLen)
+	}
+	if strings.ContainsAny(req.Title, "\n\r\x00") {
+		return "Title cannot contain newlines or control characters"
+	}
+	if req.Description != "" && strings.Contains(req.Description, "\x00") {
+		return "Description cannot contain null characters"
+	}
+	return ""
+}
+
+func issueCreateArgs(req IssueCreateRequest) []string {
+	// Flags go first, then -- to end flag parsing, then the positional title.
+	args := []string{"create"}
+	if req.Priority >= 1 && req.Priority <= 4 {
+		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
+	}
+	if req.Description != "" {
+		args = append(args, "--body", req.Description)
+	}
+	return append(args, "--", req.Title)
+}
+
+func issueCreateResponse(output string, err error) IssueCreateResponse {
+	if err != nil {
+		resp := IssueCreateResponse{
+			Error: "Failed to create issue: " + err.Error(),
+		}
+		if output != "" {
+			resp.Message = output
+		}
+		return resp
+	}
+	return IssueCreateResponse{
+		Success: true,
+		ID:      extractCreatedIssueID(output),
+		Message: output,
+	}
+}
+
+func extractCreatedIssueID(output string) string {
+	if !strings.Contains(output, "Created") {
+		return ""
+	}
+	parts := strings.Fields(output)
+	for i, part := range parts {
+		if strings.HasSuffix(part, ":") && i+1 < len(parts) {
+			return strings.TrimSpace(parts[i+1])
+		}
+	}
+	return ""
 }
 
 // IssueCloseRequest is the request body for closing an issue.
