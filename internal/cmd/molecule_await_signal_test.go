@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func TestCalculateEffectiveTimeout(t *testing.T) {
@@ -101,16 +103,17 @@ func TestCalculateEffectiveTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set package-level variables
-			awaitSignalTimeout = tt.timeout
-			awaitSignalBackoffBase = tt.backoffBase
-			awaitSignalBackoffMult = tt.backoffMult
-			if tt.backoffMult == 0 {
-				awaitSignalBackoffMult = 2 // default
+			opts := awaitSignalOptions{
+				timeout:     tt.timeout,
+				backoffBase: tt.backoffBase,
+				backoffMult: tt.backoffMult,
+				backoffMax:  tt.backoffMax,
 			}
-			awaitSignalBackoffMax = tt.backoffMax
+			if tt.backoffMult == 0 {
+				opts.backoffMult = 2 // default
+			}
 
-			got, err := calculateEffectiveTimeout(tt.idleCycles)
+			got, err := calculateEffectiveTimeout(opts, tt.idleCycles)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("calculateEffectiveTimeout() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -382,32 +385,16 @@ esac
 		t.Fatalf("chdir rig work dir: %v", err)
 	}
 
-	oldTimeout := awaitSignalTimeout
-	oldBackoffBase := awaitSignalBackoffBase
-	oldBackoffMult := awaitSignalBackoffMult
-	oldBackoffMax := awaitSignalBackoffMax
-	oldQuiet := awaitSignalQuiet
-	oldAgentBead := awaitSignalAgentBead
-	oldJSON := moleculeJSON
-	t.Cleanup(func() {
-		awaitSignalTimeout = oldTimeout
-		awaitSignalBackoffBase = oldBackoffBase
-		awaitSignalBackoffMult = oldBackoffMult
-		awaitSignalBackoffMax = oldBackoffMax
-		awaitSignalQuiet = oldQuiet
-		awaitSignalAgentBead = oldAgentBead
-		moleculeJSON = oldJSON
-	})
+	cmd := &cobra.Command{}
+	cmd.Flags().String("timeout", "1ms", "")
+	cmd.Flags().String("backoff-base", "", "")
+	cmd.Flags().Int("backoff-mult", 2, "")
+	cmd.Flags().String("backoff-max", "", "")
+	cmd.Flags().String("agent-bead", "gt-gastown-refinery", "")
+	cmd.Flags().Bool("quiet", true, "")
+	cmd.Flags().Bool("json", false, "")
 
-	awaitSignalTimeout = "1ms"
-	awaitSignalBackoffBase = ""
-	awaitSignalBackoffMult = 2
-	awaitSignalBackoffMax = ""
-	awaitSignalQuiet = true
-	awaitSignalAgentBead = "gt-gastown-refinery"
-	moleculeJSON = false
-
-	if err := runMoleculeAwaitSignal(nil, nil); err != nil {
+	if err := runMoleculeAwaitSignal(cmd, nil); err != nil {
 		t.Fatalf("runMoleculeAwaitSignal() error = %v", err)
 	}
 
