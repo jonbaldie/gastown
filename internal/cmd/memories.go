@@ -91,12 +91,8 @@ func collectMemories(kvs map[string]string, search, typeFilter string) []memoryE
 			continue
 		}
 
-		if search != "" {
-			if !strings.Contains(strings.ToLower(shortKey), search) &&
-				!strings.Contains(strings.ToLower(v), search) &&
-				!strings.Contains(strings.ToLower(memType), search) {
-				continue
-			}
+		if !memoryMatchesSearch(search, shortKey, v, memType) {
+			continue
 		}
 
 		memories = append(memories, memoryEntry{memType: memType, shortKey: shortKey, value: v})
@@ -109,6 +105,15 @@ func collectMemories(kvs map[string]string, search, typeFilter string) []memoryE
 		return memories[i].shortKey < memories[j].shortKey
 	})
 	return memories
+}
+
+func memoryMatchesSearch(search, shortKey, value, memType string) bool {
+	if search == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(shortKey), search) ||
+		strings.Contains(strings.ToLower(value), search) ||
+		strings.Contains(strings.ToLower(memType), search)
 }
 
 func printMemories(memories []memoryEntry, search, typeFilter string) {
