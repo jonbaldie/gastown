@@ -46,22 +46,6 @@ Examples:
 	RunE: runOrphans,
 }
 
-var (
-	orphansDays int
-	orphansAll  bool
-	orphansRig  string
-
-	// Kill commits command flags
-	orphansKillDryRun bool
-	orphansKillDays   int
-	orphansKillAll    bool
-	orphansKillForce  bool
-
-	// Process orphan flags
-	orphansProcsForce      bool
-	orphansProcsAggressive bool
-)
-
 // Commit orphan kill command
 var orphansKillCmd = &cobra.Command{
 	Use:   "kill",
@@ -155,21 +139,21 @@ Examples:
 }
 
 func init() {
-	orphansCmd.Flags().IntVar(&orphansDays, "days", 7, "Show orphans from last N days")
-	orphansCmd.Flags().BoolVar(&orphansAll, "all", false, "Show all orphans (no date filter)")
-	orphansCmd.PersistentFlags().StringVar(&orphansRig, "rig", "", "Target rig name (required when not in a rig directory)")
+	orphansCmd.Flags().Int("days", 7, "Show orphans from last N days")
+	orphansCmd.Flags().Bool("all", false, "Show all orphans (no date filter)")
+	orphansCmd.PersistentFlags().String("rig", "", "Target rig name (required when not in a rig directory)")
 
 	// Kill commits command flags
-	orphansKillCmd.Flags().BoolVar(&orphansKillDryRun, "dry-run", false, "Preview without deleting")
-	orphansKillCmd.Flags().IntVar(&orphansKillDays, "days", 7, "Kill orphans from last N days")
-	orphansKillCmd.Flags().BoolVar(&orphansKillAll, "all", false, "Kill all orphans (no date filter)")
-	orphansKillCmd.Flags().BoolVar(&orphansKillForce, "force", false, "Skip confirmation prompt")
+	orphansKillCmd.Flags().Bool("dry-run", false, "Preview without deleting")
+	orphansKillCmd.Flags().Int("days", 7, "Kill orphans from last N days")
+	orphansKillCmd.Flags().Bool("all", false, "Kill all orphans (no date filter)")
+	orphansKillCmd.Flags().Bool("force", false, "Skip confirmation prompt")
 
 	// Process orphan kill command flags
-	orphansProcsKillCmd.Flags().BoolVarP(&orphansProcsForce, "force", "f", false, "Kill without confirmation")
+	orphansProcsKillCmd.Flags().BoolP("force", "f", false, "Kill without confirmation")
 
 	// Aggressive flag for all procs commands (persistent so it applies to subcommands)
-	orphansProcsCmd.PersistentFlags().BoolVar(&orphansProcsAggressive, "aggressive", false, "Use tmux session verification to find ALL orphans (not just PPID=1)")
+	orphansProcsCmd.PersistentFlags().Bool("aggressive", false, "Use tmux session verification to find ALL orphans (not just PPID=1)")
 
 	// Wire up subcommands
 	orphansProcsCmd.AddCommand(orphansProcsListCmd)
@@ -181,6 +165,50 @@ func init() {
 	rootCmd.AddCommand(orphansCmd)
 }
 
+type orphansOptions struct {
+	days int
+	all  bool
+	rig  string
+}
+
+type orphansKillOptions struct {
+	days   int
+	all    bool
+	dryRun bool
+	force  bool
+	rig    string
+}
+
+type orphanProcessesOptions struct {
+	force      bool
+	aggressive bool
+}
+
+func orphansOptionsFromCommand(cmd *cobra.Command) orphansOptions {
+	return orphansOptions{
+		days: commandIntFlag(cmd, "days"),
+		all:  commandBoolFlag(cmd, "all"),
+		rig:  commandStringFlag(cmd, "rig"),
+	}
+}
+
+func orphansKillOptionsFromCommand(cmd *cobra.Command) orphansKillOptions {
+	return orphansKillOptions{
+		days:   commandIntFlag(cmd, "days"),
+		all:    commandBoolFlag(cmd, "all"),
+		dryRun: commandBoolFlag(cmd, "dry-run"),
+		force:  commandBoolFlag(cmd, "force"),
+		rig:    commandStringFlag(cmd, "rig"),
+	}
+}
+
+func orphanProcessesOptionsFromCommand(cmd *cobra.Command) orphanProcessesOptions {
+	return orphanProcessesOptions{
+		force:      commandBoolFlag(cmd, "force"),
+		aggressive: commandBoolFlag(cmd, "aggressive"),
+	}
+}
+
 // OrphanCommit represents an unreachable commit
 type OrphanCommit struct {
 	SHA     string
@@ -189,7 +217,8 @@ type OrphanCommit struct {
 	Subject string
 }
 
-func runOrphans(_ *cobra.Command, _ []string) error {
+func runOrphans(cmd *cobra.Command, _ []string) error {
+	opts := orphansOptionsFromCommand(cmd)
 	// Find workspace to determine rig root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -199,12 +228,12 @@ func runOrphans(_ *cobra.Command, _ []string) error {
 	// Find rig: use --rig flag if provided, otherwise infer from cwd
 	var rigName string
 	var r *rig.Rig
-	if orphansRig != "" {
-		_, r, err = getRig(orphansRig)
+	if opts.rig != "" {
+		_, r, err = getRig(opts.rig)
 		if err != nil {
 			return err
 		}
-		rigName = orphansRig
+		rigName = opts.rig
 	} else {
 		rigName, r, err = findCurrentRig(townRoot)
 		if err != nil {
@@ -225,10 +254,10 @@ func runOrphans(_ *cobra.Command, _ []string) error {
 	}
 
 	// Filter by date unless --all
-	cutoff := time.Now().AddDate(0, 0, -orphansDays)
+	cutoff := time.Now().AddDate(0, 0, -opts.days)
 	var filtered []OrphanCommit
 	for _, o := range orphans {
-		if orphansAll || o.Date.After(cutoff) {
+		if opts.all || o.Date.After(cutoff) {
 			filtered = append(filtered, o)
 		}
 	}
@@ -285,7 +314,7 @@ func runOrphans(_ *cobra.Command, _ []string) error {
 
 	if !foundAnything {
 		if len(orphans) > 0 && len(filtered) == 0 {
-			fmt.Printf("%s No orphaned commits in the last %d days\n", style.Bold.Render("✓"), orphansDays)
+			fmt.Printf("%s No orphaned commits in the last %d days\n", style.Bold.Render("✓"), opts.days)
 			fmt.Printf("%s Use --days=N or --all to see older orphans\n", style.Dim.Render("Hint:"))
 		} else {
 			fmt.Printf("%s No orphaned work found\n", style.Bold.Render("✓"))
@@ -547,7 +576,8 @@ func formatAge(t time.Time) string {
 }
 
 // runOrphansKill removes orphaned commits and kills orphaned processes
-func runOrphansKill(_ *cobra.Command, _ []string) error {
+func runOrphansKill(cmd *cobra.Command, _ []string) error {
+	opts := orphansKillOptionsFromCommand(cmd)
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -556,12 +586,12 @@ func runOrphansKill(_ *cobra.Command, _ []string) error {
 	// Find rig: use --rig flag if provided, otherwise infer from cwd
 	var rigName string
 	var r *rig.Rig
-	if orphansRig != "" {
-		_, r, err = getRig(orphansRig)
+	if opts.rig != "" {
+		_, r, err = getRig(opts.rig)
 		if err != nil {
 			return err
 		}
-		rigName = orphansRig
+		rigName = opts.rig
 	} else {
 		rigName, r, err = findCurrentRig(townRoot)
 		if err != nil {
@@ -579,10 +609,10 @@ func runOrphansKill(_ *cobra.Command, _ []string) error {
 	}
 
 	// Filter commits by date
-	cutoff := time.Now().AddDate(0, 0, -orphansKillDays)
+	cutoff := time.Now().AddDate(0, 0, -opts.days)
 	var filteredCommits []OrphanCommit
 	for _, o := range commitOrphans {
-		if orphansKillAll || o.Date.After(cutoff) {
+		if opts.all || o.Date.After(cutoff) {
 			filteredCommits = append(filteredCommits, o)
 		}
 	}
@@ -609,7 +639,7 @@ func runOrphansKill(_ *cobra.Command, _ []string) error {
 		}
 	} else if len(commitOrphans) > 0 {
 		fmt.Printf("%s No orphaned commits in the last %d days (use --days=N or --all)\n\n",
-			style.Dim.Render("ℹ"), orphansKillDays)
+			style.Dim.Render("ℹ"), opts.days)
 	}
 
 	// Show orphaned processes
@@ -625,13 +655,13 @@ func runOrphansKill(_ *cobra.Command, _ []string) error {
 		fmt.Println()
 	}
 
-	if orphansKillDryRun {
+	if opts.dryRun {
 		fmt.Printf("%s Dry run - no changes made\n", style.Dim.Render("ℹ"))
 		return nil
 	}
 
 	// Confirmation
-	if !orphansKillForce {
+	if !opts.force {
 		fmt.Printf("%s\n", style.Warning.Render("WARNING: This operation is irreversible!"))
 		total := len(filteredCommits) + len(procOrphans)
 		fmt.Printf("Remove %d orphan(s)? [y/N] ", total)
@@ -661,7 +691,7 @@ func runOrphansKill(_ *cobra.Command, _ []string) error {
 		fmt.Printf("\nKilling orphaned processes...\n")
 		// Use SIGKILL with --force for immediate termination, SIGTERM otherwise
 		signal := syscall.SIGTERM
-		if orphansKillForce {
+		if opts.force {
 			signal = syscall.SIGKILL
 		}
 
@@ -794,8 +824,9 @@ func isExcludedProcess(args string) bool {
 }
 
 // runOrphansListProcesses lists orphaned Claude processes
-func runOrphansListProcesses(_ *cobra.Command, _ []string) error {
-	if orphansProcsAggressive {
+func runOrphansListProcesses(cmd *cobra.Command, _ []string) error {
+	opts := orphanProcessesOptionsFromCommand(cmd)
+	if opts.aggressive {
 		return runOrphansListProcessesAggressive()
 	}
 
@@ -870,9 +901,10 @@ func formatProcessAge(seconds int) string {
 }
 
 // runOrphansKillProcesses kills orphaned Claude processes
-func runOrphansKillProcesses(_ *cobra.Command, _ []string) error {
-	if orphansProcsAggressive {
-		return runOrphansKillProcessesAggressive()
+func runOrphansKillProcesses(cmd *cobra.Command, _ []string) error {
+	opts := orphanProcessesOptionsFromCommand(cmd)
+	if opts.aggressive {
+		return runOrphansKillProcessesAggressive(opts.force)
 	}
 
 	orphans, err := findOrphanProcesses()
@@ -898,7 +930,7 @@ func runOrphansKillProcesses(_ *cobra.Command, _ []string) error {
 	fmt.Println()
 
 	// Confirm unless --force
-	if !orphansProcsForce {
+	if !opts.force {
 		fmt.Printf("Kill these %d process(es)? [y/N] ", len(orphans))
 		var response string
 		_, _ = fmt.Scanln(&response)
@@ -912,7 +944,7 @@ func runOrphansKillProcesses(_ *cobra.Command, _ []string) error {
 	// Kill the processes
 	// Use SIGKILL with --force for immediate termination, SIGTERM otherwise
 	signal := syscall.SIGTERM
-	if orphansProcsForce {
+	if opts.force {
 		signal = syscall.SIGKILL
 	}
 
@@ -951,7 +983,7 @@ func runOrphansKillProcesses(_ *cobra.Command, _ []string) error {
 
 // runOrphansKillProcessesAggressive kills orphans using tmux session verification.
 // This kills ALL Claude processes not in any gt-* or hq-* tmux session.
-func runOrphansKillProcessesAggressive() error {
+func runOrphansKillProcessesAggressive(force bool) error {
 	zombies, err := util.FindZombieClaudeProcesses()
 	if err != nil {
 		return fmt.Errorf("finding zombie processes: %w", err)
@@ -975,7 +1007,7 @@ func runOrphansKillProcessesAggressive() error {
 	fmt.Println()
 
 	// Confirm unless --force
-	if !orphansProcsForce {
+	if !force {
 		fmt.Printf("Kill these %d process(es)? [y/N] ", len(zombies))
 		var response string
 		_, _ = fmt.Scanln(&response)
@@ -989,7 +1021,7 @@ func runOrphansKillProcessesAggressive() error {
 	// Kill the processes
 	// Use SIGKILL with --force for immediate termination, SIGTERM otherwise
 	signal := syscall.SIGTERM
-	if orphansProcsForce {
+	if force {
 		signal = syscall.SIGKILL
 	}
 
