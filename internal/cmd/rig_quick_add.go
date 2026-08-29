@@ -41,8 +41,53 @@ func init() {
 }
 
 func runRigQuickAdd(cmd *cobra.Command, args []string) error {
-	quickAddUser := commandStringFlag(cmd, "user")
-	quickAddQuiet := commandBoolFlag(cmd, "quiet")
+	options := quickAddOptions{
+		user:  commandStringFlag(cmd, "user"),
+		quiet: commandBoolFlag(cmd, "quiet"),
+	}
+	target, err := resolveRigQuickAddTarget(args)
+	if err != nil {
+		return err
+	}
+
+	townRoot, err := findOrCreateTown()
+	if err != nil {
+		return fmt.Errorf("finding Gas Town: %w", err)
+	}
+
+	rigPath := filepath.Join(townRoot, target.rigName)
+	if _, err := os.Stat(rigPath); err == nil {
+		return fmt.Errorf("rig %q already exists in %s", target.rigName, townRoot)
+	}
+
+	printQuickAddPlan(target, townRoot, options.quiet)
+	if err := addQuickAddRig(target, townRoot); err != nil {
+		return err
+	}
+
+	user := resolveQuickAddUser(options.user)
+	if !options.quiet {
+		fmt.Printf("\nCreating crew workspace for %s...\n", user)
+	}
+
+	createQuickAddCrew(target, townRoot, user)
+	printQuickAddSuccess(target, townRoot, user, options.quiet)
+	return nil
+}
+
+type quickAddOptions struct {
+	user  string
+	quiet bool
+}
+
+type quickAddTarget struct {
+	gitRoot      string
+	gitURL       string
+	rigName      string
+	originalName string
+}
+
+func resolveRigQuickAddTarget(args []string) (quickAddTarget, error) {
 	targetPath := "."
 	if len(args) > 0 {
 		targetPath = args[0]
@@ -50,88 +95,85 @@ func runRigQuickAdd(cmd *cobra.Command, args []string) error {
 
 	absPath, err := filepath.Abs(targetPath)
 	if err != nil {
-		return fmt.Errorf("resolving path: %w", err)
+		return quickAddTarget{}, fmt.Errorf("resolving path: %w", err)
 	}
-
 	if townRoot, err := workspace.Find(absPath); err == nil && townRoot != "" {
-		return fmt.Errorf("already part of a Gas Town workspace: %s", townRoot)
+		return quickAddTarget{}, fmt.Errorf("already part of a Gas Town workspace: %s", townRoot)
 	}
 
 	gitRoot, err := findGitRoot(absPath)
 	if err != nil {
-		return fmt.Errorf("not a git repository: %w", err)
+		return quickAddTarget{}, fmt.Errorf("not a git repository: %w", err)
 	}
-
 	gitURL, err := findGitRemoteURL(gitRoot)
 	if err != nil {
-		return fmt.Errorf("no git remote found: %w", err)
-	}
-
-	rigName := rig.SanitizeName(filepath.Base(gitRoot))
-
-	townRoot, err := findOrCreateTown()
-	if err != nil {
-		return fmt.Errorf("finding Gas Town: %w", err)
-	}
-
-	rigPath := filepath.Join(townRoot, rigName)
-	if _, err := os.Stat(rigPath); err == nil {
-		return fmt.Errorf("rig %q already exists in %s", rigName, townRoot)
+		return quickAddTarget{}, fmt.Errorf("no git remote found: %w", err)
 	}
 
 	originalName := filepath.Base(gitRoot)
-	if rigName != originalName && !quickAddQuiet {
-		fmt.Printf("Note: Using %q as rig name (sanitized from %q)\n", rigName, originalName)
-	}
+	return quickAddTarget{
+		gitRoot:      gitRoot,
+		gitURL:       gitURL,
+		rigName:      rig.SanitizeName(originalName),
+		originalName: originalName,
+	}, nil
+}
 
-	if !quickAddQuiet {
-		fmt.Printf("Adding %s to Gas Town...\n", style.Bold.Render(rigName))
-		fmt.Printf("  Repository: %s\n", gitURL)
-		fmt.Printf("  Town: %s\n", townRoot)
+func printQuickAddPlan(target quickAddTarget, townRoot string, quiet bool) {
+	if target.rigName != target.originalName && !quiet {
+		fmt.Printf("Note: Using %q as rig name (sanitized from %q)\n", target.rigName, target.originalName)
 	}
+	if quiet {
+		return
+	}
+	fmt.Printf("Adding %s to Gas Town...\n", style.Bold.Render(target.rigName))
+	fmt.Printf("  Repository: %s\n", target.gitURL)
+	fmt.Printf("  Town: %s\n", townRoot)
+}
 
-	addArgs := []string{"rig", "add", rigName, gitURL}
-	addCmd := exec.Command("gt", addArgs...)
+func addQuickAddRig(target quickAddTarget, townRoot string) error {
+	addCmd := exec.Command("gt", "rig", "add", target.rigName, target.gitURL)
 	addCmd.Dir = townRoot
 	addCmd.Stdout = os.Stdout
 	addCmd.Stderr = os.Stderr
 	if err := addCmd.Run(); err != nil {
 		fmt.Printf("\n%s Failed to add rig. You can try manually:\n", style.Warning.Render("⚠"))
-		fmt.Printf("  cd %s && gt rig add %s %s\n", townRoot, rigName, gitURL)
+		fmt.Printf("  cd %s && gt rig add %s %s\n", townRoot, target.rigName, target.gitURL)
 		return fmt.Errorf("gt rig add failed: %w", err)
 	}
+	return nil
+}
 
-	user := quickAddUser
+func resolveQuickAddUser(user string) string {
+	if user != "" {
+		return user
+	}
+	user = os.Getenv("USER")
 	if user == "" {
-		user = os.Getenv("USER")
+		return "default"
 	}
-	if user == "" {
-		user = "default"
-	}
+	return user
+}
 
-	if !quickAddQuiet {
-		fmt.Printf("\nCreating crew workspace for %s...\n", user)
-	}
-
-	crewArgs := []string{"crew", "add", user, "--rig", rigName}
-	crewCmd := exec.Command("gt", crewArgs...)
-	crewCmd.Dir = filepath.Join(townRoot, rigName)
+func createQuickAddCrew(target quickAddTarget, townRoot, user string) {
+	rigPath := filepath.Join(townRoot, target.rigName)
+	crewCmd := exec.Command("gt", "crew", "add", user, "--rig", target.rigName)
+	crewCmd.Dir = rigPath
 	crewCmd.Stdout = os.Stdout
 	crewCmd.Stderr = os.Stderr
 	if err := crewCmd.Run(); err != nil {
 		fmt.Printf("  %s Could not create crew workspace: %v\n", style.Dim.Render("⚠"), err)
-		fmt.Printf("  Run manually: cd %s && gt crew add %s --rig %s\n", filepath.Join(townRoot, rigName), user, rigName)
+		fmt.Printf("  Run manually: cd %s && gt crew add %s --rig %s\n", rigPath, user, target.rigName)
 	}
+}
 
-	crewPath := filepath.Join(townRoot, rigName, "crew", user)
-	if !quickAddQuiet {
+func printQuickAddSuccess(target quickAddTarget, townRoot, user string, quiet bool) {
+	crewPath := filepath.Join(townRoot, target.rigName, "crew", user)
+	if !quiet {
 		fmt.Printf("\n%s Added to Gas Town!\n", style.Success.Render("✓"))
 		fmt.Printf("\nYour workspace: %s\n", style.Bold.Render(crewPath))
 	}
-
 	fmt.Printf("GT_CREW_PATH=%s\n", crewPath)
-
-	return nil
 }
 
 func findGitRoot(path string) (string, error) {
