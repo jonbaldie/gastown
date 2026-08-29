@@ -52,30 +52,11 @@ import (
 type Daemon struct {
 	daemonLifecycle
 	config        *Config
-	patrolConfig  *DaemonPatrolConfig
 	tmux          *tmux.Tmux
 	logger        *log.Logger
 	ctx           context.Context
 	curator       *feed.Curator
 	convoyManager *ConvoyManager
-	beadsStores   map[string]beadsdk.Storage
-	doltServer    *DoltServerManager
-	krcPruner     *KRCPruner
-
-	// disabledPatrols is loaded from town settings (disabled_patrols field).
-	// Provides a simple way to disable individual patrol dogs without editing
-	// mayor/daemon.json. Checked by isPatrolActive alongside patrolConfig.
-	disabledPatrols map[string]bool
-
-	// Mass death detection: track recent session deaths
-	deathsMu     sync.Mutex
-	recentDeaths []sessionDeath
-
-	// Deacon startup tracking: prevents race condition where newly started
-	// sessions are immediately killed by the heartbeat check.
-	// See: https://github.com/steveyegge/gastown/issues/567
-	// Note: Only accessed from heartbeat loop goroutine - no sync needed.
-	deaconLastStarted time.Time
 
 	// SyncFailures tracks consecutive git pull failures per workdir.
 	// Used to escalate logging from WARN to ERROR after repeated failures.
@@ -86,53 +67,44 @@ type Daemon struct {
 	gtPath string
 	bdPath string
 
-	// Boot spawn cooldown: prevents Boot from spawning on every heartbeat tick.
-	// Only accessed from heartbeat loop goroutine - no sync needed.
-	bootLastSpawned time.Time
+	daemonOperationalState
+}
 
-	// Restart tracking with exponential backoff to prevent crash loops
-	restartTracker *RestartTracker
+// daemonOperationalState groups patrol, recovery, and telemetry state whose
+// selectors remain promoted on Daemon for the heartbeat implementation.
+type daemonOperationalState struct {
+	daemonPatrolState
+	daemonRecoveryState
+	daemonTelemetryState
+}
 
-	// telemetry exports metrics and logs to VictoriaMetrics / VictoriaLogs.
-	// Nil when telemetry is disabled (GT_OTEL_METRICS_URL / GT_OTEL_LOGS_URL not set).
+type daemonPatrolState struct {
+	patrolConfig            *DaemonPatrolConfig
+	beadsStores             map[string]beadsdk.Storage
+	krcPruner               *KRCPruner
+	disabledPatrols         map[string]bool
+	deaconLastStarted       time.Time
+	bootLastSpawned         time.Time
+	mayorZombieCount        int
+	rigPool                 *RigWorkerPool
+	knownRigsCache          []string
+	knownRigsCacheValid     bool
+	legacySocketCleanupOnce sync.Once
+}
+
+type daemonRecoveryState struct {
+	doltServer         *DoltServerManager
+	deathsMu           sync.Mutex
+	recentDeaths       []sessionDeath
+	restartTracker     *RestartTracker
+	JSONLPushFailures  int
+	lastDoctorMolTime  time.Time
+	LastMaintenanceRun time.Time
+}
+
+type daemonTelemetryState struct {
 	otelProvider *telemetry.Provider
 	metrics      *daemonMetrics
-
-	// JSONLPushFailures tracks consecutive git push failures for JSONL backup.
-	// Only accessed from heartbeat loop goroutine - no sync needed.
-	JSONLPushFailures int
-
-	// lastDoctorMolTime tracks when the last mol-dog-doctor molecule was poured.
-	// Option B throttling: only pour when anomaly detected AND cooldown elapsed.
-	// Only accessed from heartbeat loop goroutine - no sync needed.
-	lastDoctorMolTime time.Time
-
-	// LastMaintenanceRun tracks when scheduled maintenance last ran.
-	// Only accessed from heartbeat loop goroutine - no sync needed.
-	LastMaintenanceRun time.Time
-
-	// mayorZombieCount tracks consecutive patrol cycles where the Mayor tmux
-	// session exists but the agent process is not detected. A count >= 3
-	// triggers a zombie restart, debouncing transient gaps during handoffs.
-	// Only accessed from heartbeat loop goroutine - no sync needed.
-	mayorZombieCount int
-
-	// rigPool runs per-rig heartbeat operations (witness checks, refinery checks,
-	// polecat health, idle reaping, branch pruning) with bounded concurrency and
-	// per-rig context timeouts so one slow rig cannot block all others.
-	rigPool *RigWorkerPool
-
-	// knownRigsCache memoizes the result of reading mayor/rigs.json for the
-	// duration of a single heartbeat tick. ~10 call sites per tick otherwise
-	// re-read and re-parse the same file. Invalidated at the start of each
-	// heartbeat so rigs.json changes between ticks are picked up.
-	// Only accessed from heartbeat loop goroutine - no sync needed.
-	knownRigsCache      []string
-	knownRigsCacheValid bool
-
-	// legacySocketCleanupOnce ensures upgrade cleanup only runs once per daemon
-	// lifetime, before any patrol agent can be started on the current socket.
-	legacySocketCleanupOnce sync.Once
 }
 
 type daemonLifecycle struct {
@@ -394,18 +366,26 @@ func New(config *Config) (*Daemon, error) {
 	d := &Daemon{
 		daemonLifecycle: daemonLifecycle{cancel: cancel},
 		config:          config,
-		patrolConfig:    patrolConfig,
-		disabledPatrols: disabledPatrols,
 		tmux:            tmux.NewTmux(),
 		logger:          logger,
 		ctx:             ctx,
-		doltServer:      doltServer,
 		gtPath:          gtPath,
 		bdPath:          bdPath,
-		restartTracker:  restartTracker,
-		otelProvider:    otelProvider,
-		metrics:         dm,
-		rigPool:         newRigWorkerPool(0, 0, logger), // defaults: 10 workers, 30s timeout
+		daemonOperationalState: daemonOperationalState{
+			daemonPatrolState: daemonPatrolState{
+				patrolConfig:    patrolConfig,
+				disabledPatrols: disabledPatrols,
+				rigPool:         newRigWorkerPool(0, 0, logger), // defaults: 10 workers, 30s timeout
+			},
+			daemonRecoveryState: daemonRecoveryState{
+				doltServer:     doltServer,
+				restartTracker: restartTracker,
+			},
+			daemonTelemetryState: daemonTelemetryState{
+				otelProvider: otelProvider,
+				metrics:      dm,
+			},
+		},
 	}
 	return d, nil
 }

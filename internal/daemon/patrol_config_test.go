@@ -170,8 +170,12 @@ func TestLoadDisabledPatrolsFromTownSettings(t *testing.T) {
 func TestIsPatrolActive(t *testing.T) {
 	// Patrol enabled in daemon config, not in disabled list → active
 	d := &Daemon{
-		patrolConfig:    nil, // nil config = all default-enabled patrols enabled
-		disabledPatrols: nil,
+		daemonOperationalState: daemonOperationalState{
+			daemonPatrolState: daemonPatrolState{
+				patrolConfig:    nil, // nil config = all default-enabled patrols enabled
+				disabledPatrols: nil,
+			},
+		},
 	}
 	if !d.isPatrolActive("witness") {
 		t.Error("expected witness to be active with nil configs")
