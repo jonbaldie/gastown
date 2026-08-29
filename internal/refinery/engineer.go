@@ -1413,67 +1413,24 @@ func (e *Engineer) runGates(ctx context.Context) ProcessResult {
 // Gates run in parallel if GatesParallel is true; otherwise sequentially.
 // Any single gate failure means overall failure.
 func (e *Engineer) runGatesForPhase(ctx context.Context, phase GatePhase) ProcessResult {
-	// Filter gates for this phase. Empty phase is treated as pre-merge (default).
-	gates := make(map[string]*GateConfig)
-	for name, gc := range e.config.Gates {
-		gatePhase := gc.Phase
-		if gatePhase == "" {
-			gatePhase = GatePhasePreMerge
-		}
-		if gatePhase == phase {
-			gates[name] = gc
-		}
-	}
+	gates := filterGatesForPhase(e.config.Gates, phase)
 	if len(gates) == 0 {
 		return ProcessResult{Success: true}
 	}
 
-	// Sort gate names for deterministic ordering
-	names := make([]string, 0, len(gates))
-	for name := range gates {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := sortedGateNames(gates)
 
 	parallel := e.config.GatesParallel && phase == GatePhasePreMerge // post-squash always sequential
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Running %d %s gate(s) (parallel=%v)\n", len(names), phase, parallel)
 
 	var results []GateResult
-
 	if parallel {
-		results = make([]GateResult, len(names))
-		var wg sync.WaitGroup
-		for i, name := range names {
-			wg.Add(1)
-			go func(idx int, gateName string) {
-				defer wg.Done()
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", gateName, gates[gateName].Cmd)
-				results[idx] = e.runGate(ctx, gateName, gates[gateName])
-			}(i, name)
-		}
-		wg.Wait()
+		results = e.runGatesParallel(ctx, names, gates)
 	} else {
-		for _, name := range names {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", name, gates[name].Cmd)
-			result := e.runGate(ctx, name, gates[name])
-			results = append(results, result)
-			if !result.Success {
-				// Sequential mode: stop on first failure
-				break
-			}
-		}
+		results = e.runGatesSequential(ctx, names, gates)
 	}
 
-	// Report results
-	var failures []string
-	for _, r := range results {
-		if r.Success {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: passed (%v)\n", r.Name, r.Elapsed.Truncate(time.Millisecond))
-		} else {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: FAILED (%v) - %s\n", r.Name, r.Elapsed.Truncate(time.Millisecond), r.Error)
-			failures = append(failures, fmt.Sprintf("%s: %s", r.Name, r.Error))
-		}
-	}
+	failures := e.reportGateResults(results)
 
 	if len(failures) > 0 {
 		return ProcessResult{
@@ -1485,6 +1442,71 @@ func (e *Engineer) runGatesForPhase(ctx context.Context, phase GatePhase) Proces
 
 	_, _ = fmt.Fprintln(e.output, "[Engineer] All quality gates passed")
 	return ProcessResult{Success: true}
+}
+
+func filterGatesForPhase(gates map[string]*GateConfig, phase GatePhase) map[string]*GateConfig {
+	filtered := make(map[string]*GateConfig)
+	for name, gate := range gates {
+		gatePhase := gate.Phase
+		if gatePhase == "" {
+			gatePhase = GatePhasePreMerge
+		}
+		if gatePhase == phase {
+			filtered[name] = gate
+		}
+	}
+	return filtered
+}
+
+func sortedGateNames(gates map[string]*GateConfig) []string {
+	names := make([]string, 0, len(gates))
+	for name := range gates {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (e *Engineer) runGatesParallel(ctx context.Context, names []string, gates map[string]*GateConfig) []GateResult {
+	results := make([]GateResult, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(idx int, gateName string) {
+			defer wg.Done()
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", gateName, gates[gateName].Cmd)
+			results[idx] = e.runGate(ctx, gateName, gates[gateName])
+		}(i, name)
+	}
+	wg.Wait()
+	return results
+}
+
+func (e *Engineer) runGatesSequential(ctx context.Context, names []string, gates map[string]*GateConfig) []GateResult {
+	var results []GateResult
+	for _, name := range names {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", name, gates[name].Cmd)
+		result := e.runGate(ctx, name, gates[name])
+		results = append(results, result)
+		if !result.Success {
+			// Sequential mode: stop on first failure
+			break
+		}
+	}
+	return results
+}
+
+func (e *Engineer) reportGateResults(results []GateResult) []string {
+	var failures []string
+	for _, result := range results {
+		if result.Success {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: passed (%v)\n", result.Name, result.Elapsed.Truncate(time.Millisecond))
+			continue
+		}
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: FAILED (%v) - %s\n", result.Name, result.Elapsed.Truncate(time.Millisecond), result.Error)
+		failures = append(failures, fmt.Sprintf("%s: %s", result.Name, result.Error))
+	}
+	return failures
 }
 
 // ProcessMRInfo processes a merge request from MRInfo.
