@@ -1316,17 +1316,8 @@ func getSessionPane(sessionName string) (string, error) {
 // sendHandoffMail sends a handoff mail to self and auto-hooks it.
 // Returns the created bead ID and any error.
 func sendHandoffMail(subject, message string) (string, error) {
-	// Build subject with handoff prefix if not already present
-	if subject == "" {
-		subject = "🤝 HANDOFF: Session cycling"
-	} else if !strings.Contains(subject, "HANDOFF") {
-		subject = "🤝 HANDOFF: " + subject
-	}
-
-	// Default message if not provided
-	if message == "" {
-		message = "Context cycling. Check bd ready for pending work."
-	}
+	subject = normalizeHandoffSubject(subject)
+	message = normalizeHandoffMessage(message)
 
 	// Detect agent identity for self-mail
 	agentID, _, _, err := resolveSelfTarget()
@@ -1348,17 +1339,45 @@ func sendHandoffMail(subject, message string) (string, error) {
 
 	// Close stale hooked mail beads from previous sessions before creating a new one.
 	// Without this, each handoff cycle accumulates beads in status=hooked. (GH#3859)
+	closeStaleHandoffMail(townRoot, agentID)
+	beadID, err := createHandoffMail(townRoot, agentID, subject, message, labels)
+	if err != nil {
+		return "", err
+	}
+	return hookHandoffMail(townRoot, agentID, beadID)
+}
+
+func normalizeHandoffSubject(subject string) string {
+	if subject == "" {
+		return "🤝 HANDOFF: Session cycling"
+	}
+	if strings.Contains(subject, "HANDOFF") {
+		return subject
+	}
+	return "🤝 HANDOFF: " + subject
+}
+
+func normalizeHandoffMessage(message string) string {
+	if message == "" {
+		return "Context cycling. Check bd ready for pending work."
+	}
+	return message
+}
+
+func closeStaleHandoffMail(townRoot, agentID string) {
 	townB := beads.New(filepath.Join(townRoot, ".beads"))
-	if n, closeErr := townB.CloseStaleHookedMailBeads(agentID); closeErr != nil {
-		style.PrintWarning("couldn't close previous hooked mail bead(s): %v", closeErr)
+	n, err := townB.CloseStaleHookedMailBeads(agentID)
+	if err != nil {
+		style.PrintWarning("couldn't close previous hooked mail bead(s): %v", err)
 	} else if n > 0 {
 		fmt.Printf("%s Closed %d stale hooked mail bead(s)\n", style.Dim.Render("🧹"), n)
 	}
+}
 
-	// Create mail bead directly using bd create with --silent to get the ID
-	// Mail goes to town-level beads (hq- prefix)
-	// Flags go first, then -- to end flag parsing, then the positional subject.
-	// This prevents subjects like "--help" from being parsed as flags.
+func createHandoffMail(townRoot, agentID, subject, message, labels string) (string, error) {
+	// Create mail bead directly using bd create with --silent to get the ID.
+	// Mail goes to town-level beads (hq- prefix). Flags go first, then -- to
+	// end flag parsing, then the positional subject.
 	args := []string{
 		"create",
 		"--assignee", agentID,
@@ -1367,48 +1386,45 @@ func sendHandoffMail(subject, message string) (string, error) {
 		"--labels", labels + ",gt:message",
 		"--actor", agentID,
 		// NOT ephemeral: handoff mail must be in issues table so gt hook can find it.
-		// Ephemeral wisps are invisible to hook queries and may be reaped before successor reads.
 		"--silent", // Output only the bead ID
 		"--", subject,
 	}
 
-	cmd := BdCmd(args...).
-		WithAutoCommit().
-		Dir(townRoot).
-		Build()
+	cmd := BdCmd(args...).WithAutoCommit().Dir(townRoot).Build()
 	cmd.Env = append(cmd.Env, "BEADS_DIR="+filepath.Join(townRoot, ".beads"))
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
 	if err := cmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return "", fmt.Errorf("creating handoff mail: %s", errMsg)
-		}
-		return "", fmt.Errorf("creating handoff mail: %w", err)
+		return "", handoffMailCreateError(stderr.String(), err)
 	}
 
 	beadID := strings.TrimSpace(stdout.String())
 	if beadID == "" {
 		return "", fmt.Errorf("bd create did not return bead ID")
 	}
+	return beadID, nil
+}
 
-	// Auto-hook the created mail bead
+func handoffMailCreateError(stderr string, cause error) error {
+	if errMsg := strings.TrimSpace(stderr); errMsg != "" {
+		return fmt.Errorf("creating handoff mail: %s", errMsg)
+	}
+	return fmt.Errorf("creating handoff mail: %w", cause)
+}
+
+func hookHandoffMail(townRoot, agentID, beadID string) (string, error) {
 	hookCmd := BdCmd("update", beadID, "--status=hooked", "--assignee="+agentID).
 		WithAutoCommit().
 		Dir(townRoot).
 		Build()
 	hookCmd.Env = append(hookCmd.Env, "BEADS_DIR="+filepath.Join(townRoot, ".beads"))
 	hookCmd.Stderr = os.Stderr
-
 	if err := hookCmd.Run(); err != nil {
-		// Non-fatal: mail was created, just couldn't hook
+		// Non-fatal: mail was created, just couldn't hook.
 		style.PrintWarning("created mail %s but failed to auto-hook: %v", beadID, err)
-		return beadID, nil
 	}
-
 	return beadID, nil
 }
 
