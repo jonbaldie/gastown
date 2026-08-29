@@ -1446,33 +1446,39 @@ func (f *LiveConvoyFetcher) FetchQueues() ([]QueueRow, error) {
 			Name:   q.Title,
 			Status: q.Status,
 		}
-
-		// Parse counts from description (key: value format)
-		// Best-effort parsing - ignore Sscanf errors as missing/malformed data is acceptable
-		for _, line := range strings.Split(q.Description, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "available_count:") {
-				_, _ = fmt.Sscanf(line, "available_count: %d", &row.Available)
-			} else if strings.HasPrefix(line, "processing_count:") {
-				_, _ = fmt.Sscanf(line, "processing_count: %d", &row.Processing)
-			} else if strings.HasPrefix(line, "completed_count:") {
-				_, _ = fmt.Sscanf(line, "completed_count: %d", &row.Completed)
-			} else if strings.HasPrefix(line, "failed_count:") {
-				_, _ = fmt.Sscanf(line, "failed_count: %d", &row.Failed)
-			} else if strings.HasPrefix(line, "status:") {
-				// Override with parsed status if present
-				var s string
-				_, _ = fmt.Sscanf(line, "status: %s", &s)
-				if s != "" {
-					row.Status = s
-				}
-			}
-		}
+		parseQueueDescription(q.Description, &row)
 
 		rows = append(rows, row)
 	}
 
 	return rows, nil
+}
+
+func parseQueueDescription(description string, row *QueueRow) {
+	// Parse counts from description (key: value format).
+	// Best-effort parsing - ignore Sscanf errors as missing/malformed data is acceptable.
+	for _, line := range strings.Split(description, "\n") {
+		parseQueueLine(strings.TrimSpace(line), row)
+	}
+}
+
+func parseQueueLine(line string, row *QueueRow) {
+	switch {
+	case strings.HasPrefix(line, "available_count:"):
+		_, _ = fmt.Sscanf(line, "available_count: %d", &row.Available)
+	case strings.HasPrefix(line, "processing_count:"):
+		_, _ = fmt.Sscanf(line, "processing_count: %d", &row.Processing)
+	case strings.HasPrefix(line, "completed_count:"):
+		_, _ = fmt.Sscanf(line, "completed_count: %d", &row.Completed)
+	case strings.HasPrefix(line, "failed_count:"):
+		_, _ = fmt.Sscanf(line, "failed_count: %d", &row.Failed)
+	case strings.HasPrefix(line, "status:"):
+		var status string
+		_, _ = fmt.Sscanf(line, "status: %s", &status)
+		if status != "" {
+			row.Status = status
+		}
+	}
 }
 
 // FetchSessions returns active tmux sessions with role detection.
