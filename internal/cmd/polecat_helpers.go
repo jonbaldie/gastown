@@ -25,14 +25,50 @@ type polecatTarget struct {
 // If useAll is true, the first arg is treated as a rig name and all polecats in it are returned.
 // Otherwise, args are parsed as rig/polecat addresses.
 func resolvePolecatTargets(args []string, useAll bool) ([]polecatTarget, error) {
-	var targets []polecatTarget
-
 	if useAll {
-		// --all flag: first arg is just the rig name
-		rigName := args[0]
-		// Check if it looks like rig/polecat format
-		if _, _, err := parseAddress(rigName); err == nil {
-			return nil, fmt.Errorf("with --all, provide just the rig name (e.g., 'gt polecat <cmd> %s --all')", strings.Split(rigName, "/")[0])
+		return resolveAllPolecatTargets(args)
+	}
+	return resolveExplicitPolecatTargets(args)
+}
+
+func resolveAllPolecatTargets(args []string) ([]polecatTarget, error) {
+	// --all flag: first arg is just the rig name.
+	rigName := args[0]
+	if _, _, err := parseAddress(rigName); err == nil {
+		return nil, fmt.Errorf("with --all, provide just the rig name (e.g., 'gt polecat <cmd> %s --all')", strings.Split(rigName, "/")[0])
+	}
+
+	mgr, r, err := getPolecatManager(rigName)
+	if err != nil {
+		return nil, err
+	}
+	polecats, err := mgr.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing polecats: %w", err)
+	}
+
+	targets := make([]polecatTarget, 0, len(polecats))
+	for _, p := range polecats {
+		targets = append(targets, polecatTarget{
+			rigName:     rigName,
+			polecatName: p.Name,
+			mgr:         mgr,
+			r:           r,
+		})
+	}
+	return targets, nil
+}
+
+func resolveExplicitPolecatTargets(args []string) ([]polecatTarget, error) {
+	var targets []polecatTarget
+	for _, arg := range args {
+		if !strings.Contains(arg, "/") {
+			return nil, fmt.Errorf("invalid address '%s': must be in 'rig/polecat' format (e.g., 'gastown/Toast')", arg)
+		}
+
+		rigName, polecatName, err := parseAddress(arg)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address '%s': %w", arg, err)
 		}
 
 		mgr, r, err := getPolecatManager(rigName)
@@ -40,44 +76,12 @@ func resolvePolecatTargets(args []string, useAll bool) ([]polecatTarget, error) 
 			return nil, err
 		}
 
-		polecats, err := mgr.List()
-		if err != nil {
-			return nil, fmt.Errorf("listing polecats: %w", err)
-		}
-
-		for _, p := range polecats {
-			targets = append(targets, polecatTarget{
-				rigName:     rigName,
-				polecatName: p.Name,
-				mgr:         mgr,
-				r:           r,
-			})
-		}
-	} else {
-		// Multiple rig/polecat arguments - require explicit rig/polecat format
-		for _, arg := range args {
-			// Validate format: must contain "/" to avoid misinterpreting rig names as polecat names
-			if !strings.Contains(arg, "/") {
-				return nil, fmt.Errorf("invalid address '%s': must be in 'rig/polecat' format (e.g., 'gastown/Toast')", arg)
-			}
-
-			rigName, polecatName, err := parseAddress(arg)
-			if err != nil {
-				return nil, fmt.Errorf("invalid address '%s': %w", arg, err)
-			}
-
-			mgr, r, err := getPolecatManager(rigName)
-			if err != nil {
-				return nil, err
-			}
-
-			targets = append(targets, polecatTarget{
-				rigName:     rigName,
-				polecatName: polecatName,
-				mgr:         mgr,
-				r:           r,
-			})
-		}
+		targets = append(targets, polecatTarget{
+			rigName:     rigName,
+			polecatName: polecatName,
+			mgr:         mgr,
+			r:           r,
+		})
 	}
 
 	return targets, nil
