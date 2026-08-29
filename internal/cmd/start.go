@@ -776,101 +776,82 @@ func runImmediateShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) er
 // Returns the count of sessions that were successfully stopped (verified by checking
 // if the session no longer exists after the kill attempt).
 func killSessionsInOrder(t *tmux.Tmux, sessions []string, mayorSession, deaconSession string) int {
-	stopped := 0
 	bootSession := session.BootSessionName()
+	sessionSet, polecats, refineries, witnesses := categorizeShutdownSessions(sessions, mayorSession, deaconSession, bootSession)
+	stopped := killShutdownGroup(t, polecats)
+	stopped += killShutdownGroup(t, refineries)
+	stopped += killShutdownGroup(t, witnesses)
+	stopped += killTownShutdownSessions(t, sessionSet, mayorSession, bootSession, deaconSession)
+	return stopped
+}
 
-	// Build a set for O(1) lookup of town-level sessions
+func categorizeShutdownSessions(sessions []string, mayorSession, deaconSession, bootSession string) (map[string]bool, []string, []string, []string) {
 	sessionSet := make(map[string]bool, len(sessions))
 	for _, s := range sessions {
 		sessionSet[s] = true
 	}
-
-	// Categorize sessions by type for ordered shutdown.
 	var polecats, refineries, witnesses []string
 	for _, sess := range sessions {
-		// Skip town-level sessions (handled explicitly below)
 		if sess == mayorSession || sess == deaconSession || sess == bootSession {
 			continue
 		}
-
-		// Categorize by role using proper session name parser
-		if identity, err := session.ParseSessionName(sess); err == nil {
-			switch identity.Role {
-			case session.RoleWitness:
-				witnesses = append(witnesses, sess)
-			case session.RoleRefinery:
-				refineries = append(refineries, sess)
-			default:
-				// Polecats, crew, and any other rig-level sessions
-				polecats = append(polecats, sess)
-			}
-		} else {
-			// Unknown pattern, treat as worker (stop early)
+		switch shutdownSessionGroup(sess) {
+		case session.RoleWitness:
+			witnesses = append(witnesses, sess)
+		case session.RoleRefinery:
+			refineries = append(refineries, sess)
+		default:
 			polecats = append(polecats, sess)
 		}
 	}
+	return sessionSet, polecats, refineries, witnesses
+}
 
-	// Helper to kill a session and verify it was stopped
-	killAndVerify := func(sess string) bool {
-		// Check if session exists before attempting to kill
-		exists, _ := t.HasSession(sess)
-		if !exists {
-			return false // Session already gone
+func shutdownSessionGroup(sess string) session.Role {
+	identity, err := session.ParseSessionName(sess)
+	if err != nil {
+		return session.RolePolecat
+	}
+	return identity.Role
+}
+
+func killShutdownGroup(t *tmux.Tmux, sessions []string) int {
+	stopped := 0
+	for _, sess := range sessions {
+		stopped += countStoppedShutdownSession(t, sess)
+	}
+	return stopped
+}
+
+func killTownShutdownSessions(t *tmux.Tmux, sessionSet map[string]bool, mayorSession, bootSession, deaconSession string) int {
+	stopped := 0
+	for _, sess := range []string{mayorSession, bootSession, deaconSession} {
+		if sessionSet[sess] {
+			stopped += countStoppedShutdownSession(t, sess)
 		}
+	}
+	return stopped
+}
 
-		// Attempt to kill the session and its processes
-		_ = t.KillSessionWithProcesses(sess)
+func countStoppedShutdownSession(t *tmux.Tmux, sess string) int {
+	if !killAndVerifyShutdownSession(t, sess) {
+		return 0
+	}
+	return 1
+}
 
-		// Verify the session is actually gone (ignore error, check existence)
-		// KillSessionWithProcesses might return an error even if it successfully
-		// killed the processes and the session auto-closed
-		stillExists, _ := t.HasSession(sess)
-		if !stillExists {
-			fmt.Printf("  %s %s stopped\n", style.Bold.Render("✓"), sess)
-			return true
-		}
+func killAndVerifyShutdownSession(t *tmux.Tmux, sess string) bool {
+	exists, _ := t.HasSession(sess)
+	if !exists {
 		return false
 	}
-
-	// 1. Stop polecats and crew first (workers)
-	for _, sess := range polecats {
-		if killAndVerify(sess) {
-			stopped++
-		}
+	_ = t.KillSessionWithProcesses(sess)
+	stillExists, _ := t.HasSession(sess)
+	if stillExists {
+		return false
 	}
-
-	// 2. Stop refineries (work processors)
-	for _, sess := range refineries {
-		if killAndVerify(sess) {
-			stopped++
-		}
-	}
-
-	// 3. Stop witnesses (monitors)
-	for _, sess := range witnesses {
-		if killAndVerify(sess) {
-			stopped++
-		}
-	}
-
-	// 4. Stop town sessions: Mayor, Boot, Deacon (matching TownSessions() order)
-	if sessionSet[mayorSession] {
-		if killAndVerify(mayorSession) {
-			stopped++
-		}
-	}
-	if sessionSet[bootSession] {
-		if killAndVerify(bootSession) {
-			stopped++
-		}
-	}
-	if sessionSet[deaconSession] {
-		if killAndVerify(deaconSession) {
-			stopped++
-		}
-	}
-
-	return stopped
+	fmt.Printf("  %s %s stopped\n", style.Bold.Render("✓"), sess)
+	return true
 }
 
 // killLateKnownSessions stops Gas Town sessions that appeared after the first
