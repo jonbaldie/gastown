@@ -49,7 +49,7 @@ This command is typically invoked via the C-b n keybinding when in a
 town-level session (Mayor or Deacon).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
-		return cycleTownSession(1, session)
+		return cycleTownSession(1, session, "")
 	},
 }
 
@@ -63,14 +63,14 @@ This command is typically invoked via the C-b p keybinding when in a
 town-level session (Mayor or Deacon).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
-		return cycleTownSession(-1, session)
+		return cycleTownSession(-1, session, "")
 	},
 }
 
 // cycleTownSession switches to the next or previous town-level session.
 // direction: 1 for next, -1 for previous
 // sessionOverride: if non-empty, use this instead of detecting current session
-func cycleTownSession(direction int, sessionOverride string) error {
+func cycleTownSession(direction int, sessionOverride, clientOverride string) error {
 	currentSession, err := resolveCurrentSession(sessionOverride)
 	if err != nil {
 		return fmt.Errorf("not in a tmux session: %w", err)
@@ -88,7 +88,7 @@ func cycleTownSession(direction int, sessionOverride string) error {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
 
-	return cycleInGroup(direction, currentSession, sessions)
+	return cycleInGroup(direction, currentSession, sessions, clientOverride)
 }
 
 // findRunningTownSessions returns a list of currently running town-level sessions.
