@@ -104,45 +104,86 @@ func init() {
 func runMountain(cmd *cobra.Command, args []string) error {
 	force := commandBoolFlag(cmd, "force")
 	epicID := args[0]
-
-	// Step 1: Validate the input is an epic.
-	result, err := bdShow(epicID)
+	plan, err := prepareMountain(epicID)
 	if err != nil {
-		return fmt.Errorf("cannot resolve %s: %w", epicID, err)
+		return err
 	}
-	if result.IssueType != "epic" {
-		return fmt.Errorf("%s is a %s, not an epic — mountains require an epic", epicID, result.IssueType)
+	if plan.status == convoyStatusStagedWarnings && !force {
+		return fmt.Errorf("staging has warnings, use --force to proceed")
 	}
 
+	convoyID, err := createMountainConvoy(plan)
+	if err != nil {
+		return err
+	}
+
+	results, err := launchMountainConvoy(convoyID, plan, force)
+	if err != nil {
+		return err
+	}
+	printMountainLaunch(convoyID, plan.dag, results)
+	return nil
+}
+
+type mountainPlan struct {
+	epic     *bdShowResult
+	dag      *ConvoyDAG
+	waves    []Wave
+	status   string
+	warnings []StagingFinding
+}
+
+func prepareMountain(epicID string) (*mountainPlan, error) {
+	result, err := resolveMountainEpic(epicID)
+	if err != nil {
+		return nil, err
+	}
 	fmt.Printf("Validating epic structure...\n")
 	fmt.Printf("  Epic: %s %q\n", epicID, result.Title)
 
-	// Step 2: Stage — collect beads, build DAG, compute waves.
 	input := &StageInput{Kind: StageInputEpic, IDs: []string{epicID}, RawArgs: []string{epicID}}
 	beadList, deps, err := collectBeads(input)
 	if err != nil {
-		return fmt.Errorf("collect beads: %w", err)
+		return nil, fmt.Errorf("collect beads: %w", err)
 	}
-
 	dag := buildConvoyDAG(beadList, deps)
-	errFindings := detectErrors(dag)
-	warnFindings := detectWarnings(dag, input)
-	allFindings := append(errFindings, warnFindings...)
-	errs, warns := categorizeFindings(allFindings)
-
+	errs, warns := mountainFindings(dag, input)
 	if len(errs) > 0 {
 		fmt.Fprint(os.Stderr, renderErrors(errs))
-		return fmt.Errorf("mountain staging failed: %d error(s) found", len(errs))
+		return nil, fmt.Errorf("mountain staging failed: %d error(s) found", len(errs))
 	}
 
 	waves, gated, err := computeWaves(dag)
 	if err != nil {
-		return fmt.Errorf("compute waves: %w", err)
+		return nil, fmt.Errorf("compute waves: %w", err)
 	}
+	warns = append(warns, mountainGatedWarnings(gated)...)
+	status := chooseStatus(errs, warns)
+	plan := &mountainPlan{epic: result, dag: dag, waves: waves, status: status, warnings: warns}
+	printMountainPlan(plan)
+	return plan, nil
+}
 
-	// Add gated task warnings.
+func resolveMountainEpic(epicID string) (*bdShowResult, error) {
+	result, err := bdShow(epicID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve %s: %w", epicID, err)
+	}
+	if result.IssueType != "epic" {
+		return nil, fmt.Errorf("%s is a %s, not an epic — mountains require an epic", epicID, result.IssueType)
+	}
+	return result, nil
+}
+
+func mountainFindings(dag *ConvoyDAG, input *StageInput) (errors, warnings []StagingFinding) {
+	findings := append(detectErrors(dag), detectWarnings(dag, input)...)
+	return categorizeFindings(findings)
+}
+
+func mountainGatedWarnings(gated []GatedTask) []StagingFinding {
+	warnings := make([]StagingFinding, 0, len(gated))
 	for _, g := range gated {
-		warns = append(warns, StagingFinding{
+		warnings = append(warnings, StagingFinding{
 			Severity:     "warning",
 			Category:     "gated",
 			BeadIDs:      []string{g.TaskID},
@@ -150,118 +191,107 @@ func runMountain(cmd *cobra.Command, args []string) error {
 			SuggestedFix: fmt.Sprintf("close or tombstone %s to include %s in waves", strings.Join(g.GatedBy, ", "), g.TaskID),
 		})
 	}
+	return warnings
+}
 
-	status := chooseStatus(errs, warns)
+func printMountainPlan(plan *mountainPlan) {
+	slingable, epics := countMountainTypes(plan.dag)
+	fmt.Printf("  Tasks: %d (%d slingable, %d epics)\n", len(plan.dag.Nodes), slingable, epics)
+	fmt.Printf("  Waves: %d (computed from blocking deps)\n", len(plan.waves))
+	fmt.Printf("  Max parallelism: %d\n", maxMountainParallelism(plan.waves))
+	if len(plan.warnings) > 0 {
+		fmt.Printf("\n  Warnings:\n")
+		for _, warning := range plan.warnings {
+			fmt.Printf("    %s\n", warning.Message)
+		}
+	}
+	fmt.Printf("\n  Errors: none\n")
+}
 
-	// Count slingable tasks and epics.
-	slingable := 0
-	epicCount := 0
+func countMountainTypes(dag *ConvoyDAG) (slingable, epics int) {
 	for _, node := range dag.Nodes {
 		if isSlingableType(node.Type) {
 			slingable++
 		}
 		if node.Type == "epic" {
-			epicCount++
+			epics++
 		}
 	}
+	return slingable, epics
+}
 
-	fmt.Printf("  Tasks: %d (%d slingable, %d epics)\n", len(dag.Nodes), slingable, epicCount)
-	fmt.Printf("  Waves: %d (computed from blocking deps)\n", len(waves))
-
-	// Max parallelism = largest wave.
+func maxMountainParallelism(waves []Wave) int {
 	maxParallel := 0
-	for _, w := range waves {
-		if len(w.Tasks) > maxParallel {
-			maxParallel = len(w.Tasks)
+	for _, wave := range waves {
+		if len(wave.Tasks) > maxParallel {
+			maxParallel = len(wave.Tasks)
 		}
 	}
-	fmt.Printf("  Max parallelism: %d\n", maxParallel)
+	return maxParallel
+}
 
-	// Show warnings.
-	if len(warns) > 0 {
-		fmt.Printf("\n  Warnings:\n")
-		for _, w := range warns {
-			fmt.Printf("    %s\n", w.Message)
-		}
-	}
-
-	if len(errs) == 0 {
-		fmt.Printf("\n  Errors: none\n")
-	}
-
-	// Check status with warnings — refuse unless --force.
-	if status == convoyStatusStagedWarnings && !force {
-		return fmt.Errorf("staging has warnings, use --force to proceed")
-	}
-
-	// Step 3: Create the staged convoy.
-	title := "Mountain: " + result.Title
-	convoyID, err := createStagedConvoy(dag, waves, status, title)
+func createMountainConvoy(plan *mountainPlan) (string, error) {
+	title := "Mountain: " + plan.epic.Title
+	convoyID, err := createStagedConvoy(plan.dag, plan.waves, plan.status, title)
 	if err != nil {
-		return fmt.Errorf("create convoy: %w", err)
+		return "", fmt.Errorf("create convoy: %w", err)
 	}
-
 	fmt.Printf("\nCreating convoy...\n")
 	fmt.Printf("  Convoy: %s %q\n", convoyID, title)
 	fmt.Printf("  Label: mountain\n")
-
-	// Step 4: Add the mountain label.
 	if err := bdAddLabelTown(convoyID, "mountain"); err != nil {
-		return fmt.Errorf("add mountain label: %w", err)
+		return "", fmt.Errorf("add mountain label: %w", err)
 	}
-
-	// Step 5: Launch — transition to open + dispatch Wave 1.
 	if err := transitionConvoyToOpen(convoyID, true); err != nil {
-		return fmt.Errorf("launch convoy: %w", err)
+		return "", fmt.Errorf("launch convoy: %w", err)
 	}
+	return convoyID, nil
+}
 
+func launchMountainConvoy(convoyID string, plan *mountainPlan, force bool) ([]DispatchResult, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("resolve town root: %w", err)
+		return nil, fmt.Errorf("resolve town root: %w", err)
 	}
-
-	if err := checkBlockedRigsForLaunch(dag, townRoot, force); err != nil {
-		return err
+	if err := checkBlockedRigsForLaunch(plan.dag, townRoot, force); err != nil {
+		return nil, err
 	}
-
-	results, err := dispatchWave1(convoyID, dag, waves, townRoot)
+	results, err := dispatchWave1(convoyID, plan.dag, plan.waves, townRoot)
 	if err != nil {
-		return fmt.Errorf("dispatch wave 1: %w", err)
+		return nil, fmt.Errorf("dispatch wave 1: %w", err)
 	}
+	return results, nil
+}
 
-	// Render launch output.
+func printMountainLaunch(convoyID string, dag *ConvoyDAG, results []DispatchResult) {
 	fmt.Printf("\nLaunching Wave 1 (%d tasks)...\n", len(results))
-
-	// Sort for deterministic output.
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].BeadID < results[j].BeadID
-	})
-
-	for _, r := range results {
-		nodeTitle := ""
-		if node := dag.Nodes[r.BeadID]; node != nil {
-			nodeTitle = node.Title
-		}
-		rig := r.Rig
-		if rig == "" {
-			rig = "auto"
-		}
-		if r.Success {
-			fmt.Printf("  Slung %s → %s", r.BeadID, rig)
-			if nodeTitle != "" {
-				fmt.Printf("  (%s)", nodeTitle)
-			}
-			fmt.Println()
-		} else {
-			fmt.Printf("  Failed %s → %s: %v\n", r.BeadID, rig, r.Error)
-		}
+	sort.Slice(results, func(i, j int) bool { return results[i].BeadID < results[j].BeadID })
+	for _, result := range results {
+		printMountainDispatch(dag, result)
 	}
-
 	fmt.Printf("\nMountain active. ConvoyManager will feed subsequent waves.\n")
 	fmt.Printf("Deacon will audit progress every ~10 minutes.\n")
 	fmt.Printf("Check status: gt mountain status %s\n", convoyID)
+}
 
-	return nil
+func printMountainDispatch(dag *ConvoyDAG, result DispatchResult) {
+	nodeTitle := ""
+	if node := dag.Nodes[result.BeadID]; node != nil {
+		nodeTitle = node.Title
+	}
+	rigName := result.Rig
+	if rigName == "" {
+		rigName = "auto"
+	}
+	if result.Success {
+		fmt.Printf("  Slung %s → %s", result.BeadID, rigName)
+		if nodeTitle != "" {
+			fmt.Printf("  (%s)", nodeTitle)
+		}
+		fmt.Println()
+		return
+	}
+	fmt.Printf("  Failed %s → %s: %v\n", result.BeadID, rigName, result.Error)
 }
 
 // bdAddLabelTown adds a label to a bead in the town beads database.
@@ -335,226 +365,228 @@ func showAllMountainStatus(townBeads string, jsonOutput bool) error {
 	}
 
 	fmt.Println("Active Mountains:")
-	for _, c := range convoys {
-		// Get tracked beads for progress.
-		trackedBeads, _, err := collectConvoyBeads(c.ID)
-		if err != nil {
-			fmt.Printf("  %s %q (error reading beads: %v)\n", c.ID, c.Title, err)
-			continue
-		}
-
-		total := 0
-		closed := 0
-		for _, b := range trackedBeads {
-			if isSlingableType(b.Type) {
-				total++
-				if b.Status == "closed" {
-					closed++
-				}
-			}
-		}
-
-		pct := 0
-		if total > 0 {
-			pct = (closed * 100) / total
-		}
-
-		bar := renderProgressBar(pct, 20)
-		fmt.Printf("  %s %q\n", c.ID, c.Title)
-		fmt.Printf("    Progress: %s %d/%d (%d%%)\n", bar, closed, total, pct)
+	for _, convoy := range convoys {
+		printMountainSummary(convoy)
 	}
 
 	return nil
 }
 
+func printMountainSummary(convoy mountainConvoyInfo) {
+	trackedBeads, _, err := collectConvoyBeads(convoy.ID)
+	if err != nil {
+		fmt.Printf("  %s %q (error reading beads: %v)\n", convoy.ID, convoy.Title, err)
+		return
+	}
+	total, closed := countMountainProgress(trackedBeads)
+	pct := 0
+	if total > 0 {
+		pct = (closed * 100) / total
+	}
+	fmt.Printf("  %s %q\n", convoy.ID, convoy.Title)
+	fmt.Printf("    Progress: %s %d/%d (%d%%)\n", renderProgressBar(pct, 20), closed, total, pct)
+}
+
+func countMountainProgress(beads []BeadInfo) (total, closed int) {
+	for _, bead := range beads {
+		if !isSlingableType(bead.Type) {
+			continue
+		}
+		total++
+		if bead.Status == "closed" {
+			closed++
+		}
+	}
+	return total, closed
+}
+
 // showMountainDetail shows detailed status for a single mountain.
 func showMountainDetail(townBeads, inputID string, jsonOutput bool) error {
-	// Resolve: inputID could be an epic or convoy.
-	convoyID, err := resolveMountainID(townBeads, inputID)
+	detail, err := loadMountainDetail(townBeads, inputID)
 	if err != nil {
 		return err
 	}
+	if jsonOutput {
+		return outputMountainDetailJSON(detail)
+	}
+	printMountainDetailText(detail)
+	return nil
+}
 
-	// Get convoy info.
-	showOut, err := runBdJSON(townBeads, "show", convoyID, "--json")
+type mountainDetail struct {
+	convoy  mountainConvoyInfo
+	dag     *ConvoyDAG
+	waves   []Wave
+	buckets mountainBuckets
+}
+
+type mountainBuckets struct {
+	completed []string
+	active    []string
+	ready     []string
+	skipped   []string
+	blocked   []string
+}
+
+func loadMountainDetail(townBeads, inputID string) (*mountainDetail, error) {
+	convoyID, err := resolveMountainID(townBeads, inputID)
 	if err != nil {
-		return fmt.Errorf("convoy %q not found", convoyID)
+		return nil, err
 	}
-
-	var convoys []struct {
-		ID     string   `json:"id"`
-		Title  string   `json:"title"`
-		Status string   `json:"status"`
-		Labels []string `json:"labels"`
+	convoy, err := loadMountainConvoy(townBeads, convoyID)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(showOut, &convoys); err != nil {
-		return fmt.Errorf("parsing convoy data: %w", err)
-	}
-	if len(convoys) == 0 {
-		return fmt.Errorf("convoy %q not found", convoyID)
-	}
-
-	cv := convoys[0]
-	if !hasLabel(cv.Labels, "mountain") {
-		return fmt.Errorf("%s is not a mountain (no mountain label)", convoyID)
-	}
-
-	// Collect tracked beads.
 	trackedBeads, deps, err := collectConvoyBeads(convoyID)
 	if err != nil {
-		return fmt.Errorf("reading tracked beads: %w", err)
+		return nil, fmt.Errorf("reading tracked beads: %w", err)
 	}
-
 	dag := buildConvoyDAG(trackedBeads, deps)
 	waves, _, err := computeWaves(dag)
 	if err != nil {
-		return fmt.Errorf("computing waves: %w", err)
+		return nil, fmt.Errorf("computing waves: %w", err)
 	}
+	return &mountainDetail{
+		convoy:  convoy,
+		dag:     dag,
+		waves:   waves,
+		buckets: categorizeMountainBeads(townBeads, trackedBeads, dag),
+	}, nil
+}
 
-	// Categorize beads.
-	var completed []string
-	var active []string
-	var ready []string
-	var skipped []string
-	var blocked []string
+func loadMountainConvoy(townBeads, convoyID string) (mountainConvoyInfo, error) {
+	showOut, err := runBdJSON(townBeads, "show", convoyID, "--json")
+	if err != nil {
+		return mountainConvoyInfo{}, fmt.Errorf("convoy %q not found", convoyID)
+	}
+	var convoys []mountainConvoyInfo
+	if err := json.Unmarshal(showOut, &convoys); err != nil {
+		return mountainConvoyInfo{}, fmt.Errorf("parsing convoy data: %w", err)
+	}
+	if len(convoys) == 0 {
+		return mountainConvoyInfo{}, fmt.Errorf("convoy %q not found", convoyID)
+	}
+	if !hasLabel(convoys[0].Labels, "mountain") {
+		return mountainConvoyInfo{}, fmt.Errorf("%s is not a mountain (no mountain label)", convoyID)
+	}
+	return convoys[0], nil
+}
 
-	for _, b := range trackedBeads {
-		if !isSlingableType(b.Type) {
+func categorizeMountainBeads(townBeads string, trackedBeads []BeadInfo, dag *ConvoyDAG) mountainBuckets {
+	var buckets mountainBuckets
+	for _, bead := range trackedBeads {
+		if !isSlingableType(bead.Type) {
 			continue
 		}
 		switch {
-		case b.Status == "closed":
-			completed = append(completed, b.ID)
-		case b.Status == "in_progress" || b.Status == "hooked":
-			active = append(active, b.ID)
-		case hasBeadLabel(townBeads, b.ID, "mountain:skipped"):
-			skipped = append(skipped, b.ID)
+		case bead.Status == "closed":
+			buckets.completed = append(buckets.completed, bead.ID)
+		case bead.Status == "in_progress" || bead.Status == "hooked":
+			buckets.active = append(buckets.active, bead.ID)
+		case hasBeadLabel(townBeads, bead.ID, "mountain:skipped"):
+			buckets.skipped = append(buckets.skipped, bead.ID)
+		case mountainBeadBlocked(dag, bead.ID):
+			buckets.blocked = append(buckets.blocked, bead.ID)
 		default:
-			// Check if blocked by deps.
-			node := dag.Nodes[b.ID]
-			if node != nil && len(node.BlockedBy) > 0 {
-				hasOpenBlocker := false
-				for _, dep := range node.BlockedBy {
-					depNode := dag.Nodes[dep]
-					if depNode != nil && depNode.Status != "closed" {
-						hasOpenBlocker = true
-						break
-					}
-				}
-				if hasOpenBlocker {
-					blocked = append(blocked, b.ID)
-				} else {
-					ready = append(ready, b.ID)
-				}
-			} else {
-				ready = append(ready, b.ID)
-			}
+			buckets.ready = append(buckets.ready, bead.ID)
 		}
 	}
+	return buckets
+}
 
-	total := len(completed) + len(active) + len(ready) + len(skipped) + len(blocked)
-
-	if jsonOutput {
-		jsonOut := map[string]interface{}{
-			"convoy_id": convoyID,
-			"title":     cv.Title,
-			"status":    cv.Status,
-			"total":     total,
-			"completed": len(completed),
-			"active":    len(active),
-			"ready":     len(ready),
-			"skipped":   len(skipped),
-			"blocked":   len(blocked),
-			"waves":     len(waves),
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(jsonOut)
+func mountainBeadBlocked(dag *ConvoyDAG, beadID string) bool {
+	node := dag.Nodes[beadID]
+	if node == nil {
+		return false
 	}
+	for _, dep := range node.BlockedBy {
+		depNode := dag.Nodes[dep]
+		if depNode != nil && depNode.Status != "closed" {
+			return true
+		}
+	}
+	return false
+}
 
-	// Render output matching design spec.
+func outputMountainDetailJSON(detail *mountainDetail) error {
+	b := detail.buckets
+	total := len(b.completed) + len(b.active) + len(b.ready) + len(b.skipped) + len(b.blocked)
+	jsonOut := map[string]interface{}{
+		"convoy_id": detail.convoy.ID,
+		"title":     detail.convoy.Title,
+		"status":    detail.convoy.Status,
+		"total":     total,
+		"completed": len(b.completed),
+		"active":    len(b.active),
+		"ready":     len(b.ready),
+		"skipped":   len(b.skipped),
+		"blocked":   len(b.blocked),
+		"waves":     len(detail.waves),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(jsonOut)
+}
+
+func printMountainDetailText(detail *mountainDetail) {
+	b := detail.buckets
+	total := len(b.completed) + len(b.active) + len(b.ready) + len(b.skipped) + len(b.blocked)
 	pct := 0
 	if total > 0 {
-		pct = (len(completed) * 100) / total
+		pct = (len(b.completed) * 100) / total
 	}
+	fmt.Printf("Mountain: %s %q\n", detail.convoy.ID, detail.convoy.Title)
+	fmt.Printf("\nProgress: %d/%d closed (%d%%)\n", len(b.completed), total, pct)
+	fmt.Printf("Wave: %d total\n", len(detail.waves))
+	printMountainDetailSection("Completed", "✓", b.completed, detail.dag)
+	printMountainDetailSection("Active", "⟳", b.active, detail.dag)
+	printMountainDetailSection("Ready", "○", b.ready, detail.dag)
+	printMountainDetailSection("Skipped", "⊘", b.skipped, detail.dag)
+	printMountainBlockedSection(b.blocked, detail.dag)
+}
 
-	fmt.Printf("Mountain: %s %q\n", convoyID, cv.Title)
-	fmt.Printf("\nProgress: %d/%d closed (%d%%)\n", len(completed), total, pct)
-	fmt.Printf("Wave: %d total\n", len(waves))
-
-	if len(completed) > 0 {
-		sort.Strings(completed)
-		fmt.Printf("\nCompleted (%d):\n", len(completed))
-		for _, id := range completed {
-			title := ""
-			if node := dag.Nodes[id]; node != nil {
-				title = node.Title
-			}
-			fmt.Printf("  ✓ %s  %s\n", id, title)
-		}
+func printMountainDetailSection(label, icon string, ids []string, dag *ConvoyDAG) {
+	if len(ids) == 0 {
+		return
 	}
-
-	if len(active) > 0 {
-		sort.Strings(active)
-		fmt.Printf("\nActive (%d):\n", len(active))
-		for _, id := range active {
-			title := ""
-			if node := dag.Nodes[id]; node != nil {
-				title = node.Title
-			}
-			fmt.Printf("  ⟳ %s  %s\n", id, title)
-		}
+	sort.Strings(ids)
+	fmt.Printf("\n%s (%d):\n", label, len(ids))
+	for _, id := range ids {
+		fmt.Printf("  %s %s  %s\n", icon, id, mountainNodeTitle(dag, id))
 	}
+}
 
-	if len(ready) > 0 {
-		sort.Strings(ready)
-		fmt.Printf("\nReady (%d):\n", len(ready))
-		for _, id := range ready {
-			title := ""
-			if node := dag.Nodes[id]; node != nil {
-				title = node.Title
-			}
-			fmt.Printf("  ○ %s  %s\n", id, title)
-		}
+func printMountainBlockedSection(ids []string, dag *ConvoyDAG) {
+	if len(ids) == 0 {
+		return
 	}
-
-	if len(skipped) > 0 {
-		sort.Strings(skipped)
-		fmt.Printf("\nSkipped (%d):\n", len(skipped))
-		for _, id := range skipped {
-			title := ""
-			if node := dag.Nodes[id]; node != nil {
-				title = node.Title
-			}
-			fmt.Printf("  ⊘ %s  %s\n", id, title)
-		}
-	}
-
-	if len(blocked) > 0 {
-		sort.Strings(blocked)
-		fmt.Printf("\nBlocked (%d):\n", len(blocked))
-		for _, id := range blocked {
-			node := dag.Nodes[id]
-			title := ""
-			blockers := ""
-			if node != nil {
-				title = node.Title
-				var openBlockers []string
-				for _, dep := range node.BlockedBy {
-					depNode := dag.Nodes[dep]
-					if depNode != nil && depNode.Status != "closed" {
-						openBlockers = append(openBlockers, dep)
-					}
-				}
-				if len(openBlockers) > 0 {
-					blockers = " (needs: " + strings.Join(openBlockers, ", ") + ")"
+	sort.Strings(ids)
+	fmt.Printf("\nBlocked (%d):\n", len(ids))
+	for _, id := range ids {
+		node := dag.Nodes[id]
+		title := mountainNodeTitle(dag, id)
+		blockers := ""
+		if node != nil {
+			var openBlockers []string
+			for _, dep := range node.BlockedBy {
+				depNode := dag.Nodes[dep]
+				if depNode != nil && depNode.Status != "closed" {
+					openBlockers = append(openBlockers, dep)
 				}
 			}
-			fmt.Printf("  ◌ %s  %s%s\n", id, title, blockers)
+			if len(openBlockers) > 0 {
+				blockers = " (needs: " + strings.Join(openBlockers, ", ") + ")"
+			}
 		}
+		fmt.Printf("  ◌ %s  %s%s\n", id, title, blockers)
 	}
+}
 
-	return nil
+func mountainNodeTitle(dag *ConvoyDAG, id string) string {
+	if node := dag.Nodes[id]; node != nil {
+		return node.Title
+	}
+	return ""
 }
 
 // findMountainConvoys lists all open convoys with the mountain label.
