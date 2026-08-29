@@ -91,24 +91,38 @@ func runWLShow(cmd *cobra.Command, args []string) error {
 // Returns (cloneDir, tmpDir, err). If tmpDir is non-empty, caller must
 // defer os.RemoveAll(tmpDir) — a temporary clone was created.
 func resolveWLCommonsClone(townRoot, doltPath string) (cloneDir, tmpDir string, err error) {
-	// Try wasteland config (set by gt wl join).
-	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.LocalDir != "" {
-		if _, statErr := os.Stat(filepath.Join(cfg.LocalDir, ".dolt")); statErr == nil {
-			return cfg.LocalDir, "", nil
-		}
+	if cloneDir := configuredWLCommonsClone(townRoot); cloneDir != "" {
+		return cloneDir, "", nil
 	}
-
-	// Try standard location: .wasteland/hop/wl-commons.
-	stdPath := wasteland.LocalCloneDir(townRoot, "hop", "wl-commons")
-	if _, statErr := os.Stat(filepath.Join(stdPath, ".dolt")); statErr == nil {
-		return stdPath, "", nil
+	if cloneDir := standardWLCommonsClone(townRoot); cloneDir != "" {
+		return cloneDir, "", nil
 	}
-
-	// Try common fallback locations.
 	if forkDir := findWLCommonsFork(townRoot); forkDir != "" {
 		return forkDir, "", nil
 	}
+	return cloneWLCommonsTemporarily(townRoot, doltPath)
+}
 
+func configuredWLCommonsClone(townRoot string) string {
+	cfg, err := wasteland.LoadConfig(townRoot)
+	if err != nil || cfg.LocalDir == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(cfg.LocalDir, ".dolt")); err != nil {
+		return ""
+	}
+	return cfg.LocalDir
+}
+
+func standardWLCommonsClone(townRoot string) string {
+	stdPath := wasteland.LocalCloneDir(townRoot, "hop", "wl-commons")
+	if _, err := os.Stat(filepath.Join(stdPath, ".dolt")); err != nil {
+		return ""
+	}
+	return stdPath
+}
+
+func cloneWLCommonsTemporarily(townRoot, doltPath string) (cloneDir, tmpDir string, err error) {
 	// No local clone — do a one-time clone-then-discard, like browse.
 	// Read upstream from config, or default to hop/wl-commons.
 	remote := "hop/wl-commons"
@@ -130,7 +144,7 @@ func resolveWLCommonsClone(townRoot, doltPath string) (cloneDir, tmpDir string, 
 	cloneCmd := exec.Command(doltPath, "clone", remote, cloneDir)
 	cloneCmd.Stderr = os.Stderr
 	if cloneErr := cloneCmd.Run(); cloneErr != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		return "", "", fmt.Errorf("cloning %s: %w\nEnsure the database exists on DoltHub: https://www.dolthub.com/%s", remote, cloneErr, remote)
 	}
 	return cloneDir, tmpDir, nil
@@ -191,7 +205,10 @@ func queryWantedFromClone(doltPath, cloneDir, wantedID string) (*doltserver.Want
 		return nil, fmt.Errorf("running query: %w", err)
 	}
 
-	rows := wlParseCSV(string(output))
+	return wantedItemFromRows(wlParseCSV(string(output)), wantedID)
+}
+
+func wantedItemFromRows(rows [][]string, wantedID string) (*doltserver.WantedItem, error) {
 	if len(rows) < 2 {
 		return nil, fmt.Errorf("wanted item %q not found", wantedID)
 	}
