@@ -1942,99 +1942,102 @@ func runPolecatStale(_ *cobra.Command, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(staleInfos)
 	}
 
-	// Summary counts
-	var staleCount, safeCount int
+	staleCount, safeCount := summarizePolecatStaleness(staleInfos)
+	printPolecatStaleness(staleInfos, polecatStaleThreshold)
+	fmt.Printf("Summary: %d stale, %d active\n", staleCount, safeCount)
+	cleanupStalePolecats(staleInfos, staleCount, rigName, mgr, r)
+
+	return nil
+}
+
+func summarizePolecatStaleness(staleInfos []*polecat.StalenessInfo) (staleCount, safeCount int) {
 	for _, info := range staleInfos {
 		if info.IsStale {
 			staleCount++
-		} else {
-			safeCount++
+			continue
 		}
+		safeCount++
 	}
+	return staleCount, safeCount
+}
 
-	// Display results
+func printPolecatStaleness(staleInfos []*polecat.StalenessInfo, threshold int) {
 	for _, info := range staleInfos {
-		statusIcon := style.Success.Render("●")
-		statusText := "active"
-		if info.IsStale {
-			statusIcon = style.Warning.Render("○")
-			statusText = "stale"
+		printPolecatStalenessEntry(info, threshold)
+	}
+}
+
+func printPolecatStalenessEntry(info *polecat.StalenessInfo, threshold int) {
+	statusIcon := style.Success.Render("●")
+	statusText := "active"
+	if info.IsStale {
+		statusIcon = style.Warning.Render("○")
+		statusText = "stale"
+	}
+	fmt.Printf("%s %s (%s)\n", statusIcon, style.Bold.Render(info.Name), statusText)
+	if info.HasActiveSession {
+		fmt.Printf("    Session: %s\n", style.Success.Render("running"))
+	} else {
+		fmt.Printf("    Session: %s\n", style.Dim.Render("stopped"))
+	}
+	if info.CommitsBehind > 0 {
+		behindStyle := style.Dim
+		if info.CommitsBehind >= threshold {
+			behindStyle = style.Warning
 		}
+		fmt.Printf("    Behind main: %s\n", behindStyle.Render(fmt.Sprintf("%d commits", info.CommitsBehind)))
+	}
+	if info.AgentState != "" {
+		fmt.Printf("    Agent state: %s\n", info.AgentState)
+	} else {
+		fmt.Printf("    Agent state: %s\n", style.Dim.Render("no bead"))
+	}
+	if info.HasUncommittedWork {
+		fmt.Printf("    Uncommitted: %s\n", style.Error.Render("yes"))
+	}
+	fmt.Printf("    Reason: %s\n", info.Reason)
+	fmt.Println()
+}
 
-		fmt.Printf("%s %s (%s)\n", statusIcon, style.Bold.Render(info.Name), statusText)
-
-		// Session status
-		if info.HasActiveSession {
-			fmt.Printf("    Session: %s\n", style.Success.Render("running"))
-		} else {
-			fmt.Printf("    Session: %s\n", style.Dim.Render("stopped"))
-		}
-
-		// Commits behind
-		if info.CommitsBehind > 0 {
-			behindStyle := style.Dim
-			if info.CommitsBehind >= polecatStaleThreshold {
-				behindStyle = style.Warning
+func cleanupStalePolecats(staleInfos []*polecat.StalenessInfo, staleCount int, rigName string, mgr *polecat.Manager, r *rig.Rig) {
+	if !polecatStaleCleanup || staleCount == 0 {
+		return
+	}
+	fmt.Println()
+	if polecatStaleDryRun {
+		fmt.Printf("Would clean up %d stale polecat(s):\n", staleCount)
+		for _, info := range staleInfos {
+			if info.IsStale {
+				fmt.Printf("  - %s: %s\n", info.Name, info.Reason)
 			}
-			fmt.Printf("    Behind main: %s\n", behindStyle.Render(fmt.Sprintf("%d commits", info.CommitsBehind)))
 		}
-
-		// Agent state
-		if info.AgentState != "" {
-			fmt.Printf("    Agent state: %s\n", info.AgentState)
-		} else {
-			fmt.Printf("    Agent state: %s\n", style.Dim.Render("no bead"))
-		}
-
-		// Uncommitted work
-		if info.HasUncommittedWork {
-			fmt.Printf("    Uncommitted: %s\n", style.Error.Render("yes"))
-		}
-
-		// Reason
-		fmt.Printf("    Reason: %s\n", info.Reason)
-		fmt.Println()
+		return
 	}
 
-	// Summary
-	fmt.Printf("Summary: %d stale, %d active\n", staleCount, safeCount)
+	fmt.Printf("Cleaning up %d stale polecat(s)...\n", staleCount)
+	nuked := nukeStalePolecats(staleInfos, staleCount, rigName, mgr, r)
+	fmt.Printf("\n%s Nuked %d stale polecat(s).\n", style.SuccessPrefix, nuked)
+	cleanupOrphanedProcesses()
+}
 
-	// Cleanup if requested
-	if polecatStaleCleanup && staleCount > 0 {
-		fmt.Println()
-		if polecatStaleDryRun {
-			fmt.Printf("Would clean up %d stale polecat(s):\n", staleCount)
-			for _, info := range staleInfos {
-				if info.IsStale {
-					fmt.Printf("  - %s: %s\n", info.Name, info.Reason)
-				}
-			}
-		} else {
-			fmt.Printf("Cleaning up %d stale polecat(s)...\n", staleCount)
-			nuked := 0
-			batchPurge := staleCount > 1
-			for _, info := range staleInfos {
-				if !info.IsStale {
-					continue
-				}
-				fmt.Printf("Nuking %s...\n", info.Name)
-				if err := nukePolecatFullWithOptions(info.Name, rigName, mgr, r, nukePolecatOptions{PurgeClosedEphemerals: !batchPurge}); err != nil {
-					fmt.Printf("  %s (%v)\n", style.Error.Render("failed"), err)
-				} else {
-					nuked++
-				}
-			}
-			if batchPurge && nuked > 0 {
-				purgeClosedEphemeralBeads(beads.New(r.Path))
-			}
-			fmt.Printf("\n%s Nuked %d stale polecat(s).\n", style.SuccessPrefix, nuked)
-
-			// Clean up any orphaned processes that survived session termination
-			cleanupOrphanedProcesses()
+func nukeStalePolecats(staleInfos []*polecat.StalenessInfo, staleCount int, rigName string, mgr *polecat.Manager, r *rig.Rig) int {
+	nuked := 0
+	batchPurge := staleCount > 1
+	for _, info := range staleInfos {
+		if !info.IsStale {
+			continue
 		}
+		fmt.Printf("Nuking %s...\n", info.Name)
+		if err := nukePolecatFullWithOptions(info.Name, rigName, mgr, r, nukePolecatOptions{PurgeClosedEphemerals: !batchPurge}); err != nil {
+			fmt.Printf("  %s (%v)\n", style.Error.Render("failed"), err)
+			continue
+		}
+		nuked++
 	}
-
-	return nil
+	if batchPurge && nuked > 0 {
+		purgeClosedEphemeralBeads(beads.New(r.Path))
+	}
+	return nuked
 }
 
 func runPolecatPrune(_ *cobra.Command, args []string) error {
