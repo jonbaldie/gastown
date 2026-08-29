@@ -624,28 +624,26 @@ func sessionShutdownRoles(sess string) (isPolecat, isCrew bool) {
 
 func runGracefulShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) error {
 	fmt.Printf("Graceful shutdown of Gas Town (waiting up to %ds)...\n\n", shutdownWait)
+	prepareGracefulShutdown(t, gtSessions)
+	return completeGracefulShutdown(t, gtSessions, townRoot)
+}
 
-	// Phase 1: Send ESC to all agents to interrupt them
+func prepareGracefulShutdown(t *tmux.Tmux, gtSessions []string) {
 	fmt.Printf("Phase 1: Sending ESC to %d agent(s)...\n", len(gtSessions))
 	for _, sess := range gtSessions {
 		fmt.Printf("  %s Interrupting %s\n", style.Bold.Render("→"), sess)
-		_ = t.SendKeysRaw(sess, "Escape") // best-effort interrupt
+		_ = t.SendKeysRaw(sess, "Escape")
 	}
 
-	// Phase 2: Send shutdown message asking agents to handoff
 	fmt.Printf("\nPhase 2: Requesting handoff from agents...\n")
 	shutdownMsg := "[SHUTDOWN] Gas Town is shutting down. Please save your state and update your handoff bead, then type /exit or wait to be terminated."
 	for _, sess := range gtSessions {
-		// Small delay then send the message
 		time.Sleep(constants.ShutdownNotifyDelay)
-		_ = t.SendKeys(sess, shutdownMsg) // best-effort notification
+		_ = t.SendKeys(sess, shutdownMsg)
 	}
 
-	// Phase 3: Wait for agents to complete handoff
 	fmt.Printf("\nPhase 3: Waiting %ds for agents to complete handoff...\n", shutdownWait)
 	fmt.Printf("  %s\n", style.Dim.Render("(Press Ctrl-C to force immediate shutdown)"))
-
-	// Wait with countdown
 	for remaining := shutdownWait; remaining > 0; remaining -= 5 {
 		if remaining < shutdownWait {
 			fmt.Printf("  %s %ds remaining...\n", style.Dim.Render("⏳"), remaining)
@@ -656,45 +654,41 @@ func runGracefulShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) err
 		}
 		time.Sleep(time.Duration(sleepTime) * time.Second)
 	}
+}
 
-	// Phase 4: Kill sessions in correct order
+func shutdownOrphanGraceSecs() int {
+	if shutdownCleanupOrphans {
+		return shutdownCleanupOrphansGrace
+	}
+	return defaultOrphanGraceSecs
+}
+
+func completeGracefulShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) error {
 	fmt.Printf("\nPhase 4: Terminating sessions...\n")
 	mayorSession := getMayorSessionName()
 	deaconSession := getDeaconSessionName()
 	stopped := killSessionsInOrder(t, gtSessions, mayorSession, deaconSession)
 	stopped += killLateKnownSessions(t)
 
-	// Phase 5: Always clean up orphaned Claude processes after killing sessions.
-	// Processes can survive session kills if they caught/ignored SIGHUP or called setsid().
-	// Use the user-specified grace period if --cleanup-orphans was explicitly set,
-	// otherwise use a short default (5s) for the automatic sweep.
-	graceSecs := defaultOrphanGraceSecs
-	if shutdownCleanupOrphans {
-		graceSecs = shutdownCleanupOrphansGrace
-	}
 	fmt.Printf("\nPhase 5: Cleaning up orphaned Claude processes...\n")
-	cleanupOrphanedClaude(graceSecs)
+	cleanupOrphanedClaude(shutdownOrphanGraceSecs())
 
-	// Phase 6: Cleanup polecat worktrees and branches
 	fmt.Printf("\nPhase 6: Cleaning up polecats...\n")
 	if townRoot != "" {
 		cleanupPolecats(townRoot)
 	}
 
-	// Phase 7: Stop the daemon
 	fmt.Printf("\nPhase 7: Stopping daemon...\n")
 	if townRoot != "" {
 		stopDaemonIfRunning(townRoot)
 	}
 
-	// Phase 8: Stop this town's Dolt SQL server and worker serve process.
 	var infraErr error
 	if townRoot != "" && !shutdownPolecatsOnly {
 		fmt.Printf("\nPhase 8: Stopping town Dolt and worker serve...\n")
 		infraErr = stopTownDoltAndWorker(townRoot)
 	}
 
-	// Phase 9: Verify no Claude processes survived
 	fmt.Printf("\nPhase 9: Verifying shutdown...\n")
 	stopped += killLateKnownSessions(t)
 	verifyNoOrphans()
