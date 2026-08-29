@@ -367,13 +367,6 @@ const (
 )
 
 var (
-	// Status flags
-	deaconStatusJSON bool
-
-	// Force kill flags
-	forceKillReason     string
-	forceKillSkipNotify bool
-
 	// Stale hooks flags
 	staleHooksMaxAge time.Duration
 	staleHooksDryRun bool
@@ -416,7 +409,7 @@ func init() {
 	deaconCmd.AddCommand(deaconFeedStrandedStateCmd)
 
 	// Flags for status
-	deaconStatusCmd.Flags().BoolVar(&deaconStatusJSON, "json", false, "Output as JSON")
+	deaconStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Flags for health-check
 	deaconHealthCheckCmd.Flags().Duration("timeout", defaultHealthCheckTimeout,
@@ -427,9 +420,9 @@ func init() {
 		"Minimum time between force-kills of same agent")
 
 	// Flags for force-kill
-	deaconForceKillCmd.Flags().StringVar(&forceKillReason, "reason", "",
+	deaconForceKillCmd.Flags().String("reason", "",
 		"Reason for force-kill (included in notifications)")
-	deaconForceKillCmd.Flags().BoolVar(&forceKillSkipNotify, "skip-notify", false,
+	deaconForceKillCmd.Flags().Bool("skip-notify", false,
 		"Skip sending notification mail to mayor")
 
 	// Flags for stale-hooks
@@ -680,7 +673,7 @@ type HeartbeatStatus struct {
 	VeryStale  bool      `json:"very_stale"`
 }
 
-func runDeaconStatus(_ *cobra.Command, _ []string) error {
+func runDeaconStatus(cmd *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
 
 	sessionName := getDeaconSessionName()
@@ -719,7 +712,7 @@ func runDeaconStatus(_ *cobra.Command, _ []string) error {
 	}
 
 	// JSON output
-	if deaconStatusJSON {
+	if commandBoolFlag(cmd, "json") {
 		out := DeaconStatusOutput{
 			Running:   running,
 			Paused:    paused,
@@ -1010,7 +1003,7 @@ waitLoop:
 
 // runDeaconForceKill implements the force-kill command.
 // It kills a stuck agent session and updates its bead state.
-func runDeaconForceKill(_ *cobra.Command, args []string) error {
+func runDeaconForceKill(cmd *cobra.Command, args []string) error {
 	agent := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -1051,7 +1044,7 @@ func runDeaconForceKill(_ *cobra.Command, args []string) error {
 	}
 
 	// Build reason
-	reason := forceKillReason
+	reason := commandStringFlag(cmd, "reason")
 	if reason == "" {
 		reason = fmt.Sprintf("unresponsive after %d consecutive health check failures",
 			agentState.ConsecutiveFailures)
@@ -1074,7 +1067,7 @@ func runDeaconForceKill(_ *cobra.Command, args []string) error {
 	updateAgentBeadState(townRoot, agent, "killed", reason)
 
 	// Step 4: Notify mayor (optional)
-	if !forceKillSkipNotify {
+	if !commandBoolFlag(cmd, "skip-notify") {
 		fmt.Printf("%s Notifying mayor...\n", style.Dim.Render("4."))
 		notifyBody := fmt.Sprintf("Agent %s was force-killed by Deacon.\nReason: %s", agent, reason)
 		sendMail(townRoot, "mayor/", "Agent killed: "+agent, notifyBody)
