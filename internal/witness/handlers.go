@@ -1513,7 +1513,20 @@ func detectZombiePolecatEntry(bd *BdCli, workDir, townRoot, rigName, polecatName
 		return zombie, found, nil
 	}
 
-	zombie, found := detectZombieDeadSession(bd, workDir, townRoot, rigName, polecatName, sessionName, t, doneIntent, detectedAt, witCfg, snap)
+	ctx := zombieSessionContext{
+		bd:          bd,
+		workDir:     workDir,
+		townRoot:    townRoot,
+		rigName:     rigName,
+		polecatName: polecatName,
+		sessionName: sessionName,
+		t:           t,
+		doneIntent:  doneIntent,
+		detectedAt:  detectedAt,
+		witCfg:      witCfg,
+		snap:        snap,
+	}
+	zombie, found := detectZombieDeadSession(ctx)
 	return zombie, found, nil
 }
 
@@ -1548,6 +1561,7 @@ type zombieSessionContext struct {
 	sessionName string
 	t           *tmux.Tmux
 	doneIntent  *DoneIntent
+	detectedAt  time.Time
 	witCfg      *config.WitnessThresholds
 	snap        *agentBeadSnapshot
 }
@@ -1778,121 +1792,33 @@ func hasSuccessfulSubmissionEvidence(snap *agentBeadSnapshot) bool {
 //
 // gt-dsgp: Uses restart-first policy. Instead of nuking polecats with dead sessions,
 // restarts them to preserve worktrees and branches.
-func detectZombieDeadSession(bd *BdCli, workDir, townRoot, rigName, polecatName, sessionName string, t *tmux.Tmux, doneIntent *DoneIntent, detectedAt time.Time, witCfg *config.WitnessThresholds, snap *agentBeadSnapshot) (ZombieResult, bool) {
-	// gt-2gra: Agent state and hook bead are read from the pre-fetched snapshot.
-	snapState, snapHook := "", ""
-	if snap != nil {
-		snapState, snapHook = snap.AgentState, snap.HookBead
+func detectZombieDeadSession(ctx zombieSessionContext) (ZombieResult, bool) {
+	snapState, snapHook := zombieSnapshotState(ctx.snap)
+	if deadSessionHasFreshHeartbeat(ctx.townRoot, ctx.sessionName) {
+		return ZombieResult{}, false
 	}
-
-	// Heartbeat v2 check (gt-3vr5): for dead sessions, a fresh heartbeat means
-	// the session isn't actually dead (race condition). A stale heartbeat confirms death.
-	// This check is supplementary — dead session detection proceeds normally after.
-	if hb := polecat.ReadSessionHeartbeat(townRoot, sessionName); hb != nil && hb.IsV2() {
-		stale := time.Since(hb.Timestamp) >= polecat.SessionHeartbeatStaleThreshold
-		if !stale {
-			// Fresh heartbeat but session appears dead — possible race.
-			// Skip zombie detection; the session may have just restarted.
-			return ZombieResult{}, false
-		}
-	}
-
-	// Done-intent: polecat was trying to exit.
-	if doneIntent != nil {
-		age := time.Since(doneIntent.Timestamp)
-		if age < witCfg.DoneIntentRecentGraceD() {
-			return ZombieResult{}, false // Recent — still working through gt done
-		}
-
-		// If bead is already closed, the polecat completed successfully.
-		// The dead session is expected (gt done kills it). Leave it alone. (gt-sy8)
-		hookSt, hookFound := getBeadStatus(bd, workDir, snapHook)
-		beadAlreadyClosed := snapHook != "" && hookFound && (hookSt == "closed" || hookSt == "")
-		if beadAlreadyClosed {
-			// gt-dsgp: Polecat completed its work. Don't nuke, don't restart.
-			// The sandbox is preserved for reuse by future slings.
-			return ZombieResult{}, false
-		}
-
-		// Persistent polecat model (gt-6a9d): Do NOT touch if there's a pending MR.
-		// The polecat completed normally (gt done → session exit). Its MR is in the
-		// refinery queue. Nuking would delete the remote branch before the refinery
-		// can merge it. The dead session is expected, not a zombie.
-		// gt-2gra: Use snapshot's ActiveMR instead of calling getAgentActiveMR.
-		if hasPendingMRFromSnapshot(bd, workDir, rigName, polecatName, snap) {
-			return ZombieResult{}, false
-		}
-		if terminalSafeDoneSnapshot(bd, workDir, rigName, polecatName, snap) {
-			return ZombieResult{}, false
-		}
-
-		// gt-dsgp: Restart instead of nuke — the session died during gt done,
-		// restart it so it can retry the exit sequence or pick up new work.
-		zombie := ZombieResult{
-			PolecatName:    polecatName,
-			AgentState:     snapState,
-			Classification: ZombieDoneIntentDead,
-			HookBead:       snapHook,
-			WasActive:      true,
-			Action:         fmt.Sprintf("restarted (done-intent age=%v, type=%s)", age.Round(time.Second), doneIntent.ExitType),
-		}
-		if err := RestartPolecatSession(workDir, rigName, polecatName); err != nil {
-			zombie.Error = err
-			zombie.Action = fmt.Sprintf("restart-failed (done-intent): %v", err)
-		}
-		return zombie, true
+	if zombie, found, handled := detectDeadDoneIntent(ctx, snapState, snapHook); handled {
+		return zombie, found
 	}
 
 	// Standard zombie detection: active state or hooked bead with dead session.
-	typedState := beads.AgentState(snapState)
-	if !isZombieState(typedState, snapHook) {
+	typedState, eligible := deadSessionStateEligible(ctx.snap, snapState, snapHook)
+	if !eligible {
 		return ZombieResult{}, false
 	}
 
-	// GH#2795: A "done" or "nuked" polecat with a dead session has completed
-	// or been intentionally stopped. The dead session is expected — the hook
-	// bead may not be "closed" yet (refinery queue, manual cleanup), but the
-	// polecat is not a zombie. Without this check, isZombieState returns true
-	// on every patrol cycle (hookBead != ""), flooding the mayor inbox.
-	if typedState == beads.AgentStateDone || typedState == beads.AgentStateNuked {
+	// A closed or reaped hook means the polecat completed successfully.
+	if deadSessionHookClosed(ctx, snapHook) {
 		return ZombieResult{}, false
-	}
-
-	// GH#2036: Spawning polecats have hook_bead assigned but no tmux session yet.
-	// This is expected during worktree creation and session startup. Skip zombie
-	// detection if the polecat has been spawning for less than SpawnGracePeriod.
-	if typedState == beads.AgentStateSpawning {
-		// gt-2gra: Use snapshot's age instead of calling getAgentBeadAge.
-		spawnAge := agentBeadSnapshotAge(snap)
-		if spawnAge < SpawnGracePeriod {
-			return ZombieResult{}, false
-		}
-		// Spawning for too long — fall through to zombie handling
-	}
-
-	// A polecat whose hook bead is already CLOSED (or reaped) completed its
-	// work successfully. The dead session is expected (gt done kills it).
-	// Don't flag as zombie or trigger re-dispatch. (gt-sy8)
-	// gt-dsgp: Don't nuke — sandbox preserved for reuse.
-	// gt-qbh: Treat missing beads (empty status from successful lookup) as closed.
-	// Wisp beads get reaped after completion, so getBeadStatus returns ("", true)
-	// for reaped wisps. A missing bead is not evidence of a crash.
-	// But a FAILED lookup ("", false) — e.g., cross-rig routing error — must
-	// NOT be treated as closed. Default to restart (safe). (hq-wisp-n530)
-	if snapHook != "" {
-		hookStatus, hookFound := getBeadStatus(bd, workDir, snapHook)
-		if hookFound && (hookStatus == "closed" || hookStatus == "") {
-			return ZombieResult{}, false
-		}
 	}
 
 	// TOCTOU guard: verify session wasn't recreated since detection.
-	if sessionRecreated(t, sessionName, detectedAt) {
+	if sessionRecreated(ctx.t, ctx.sessionName, ctx.detectedAt) {
 		return ZombieResult{}, false
 	}
 
 	zombie := ZombieResult{
-		PolecatName:    polecatName,
+		PolecatName:    ctx.polecatName,
 		AgentState:     snapState,
 		Classification: ZombieSessionDeadActive,
 		HookBead:       snapHook,
@@ -1901,9 +1827,67 @@ func detectZombieDeadSession(bd *BdCli, workDir, townRoot, rigName, polecatName,
 
 	// gt-dsgp: Restart instead of nuking. For dirty state, escalate AND restart.
 	// gt-2gra: Use snapshot's cleanup status instead of calling getCleanupStatus.
-	cleanupStatus := agentBeadSnapshotCleanupStatus(snap)
-	handleZombieRestart(bd, workDir, rigName, polecatName, snapHook, cleanupStatus, &zombie)
+	cleanupStatus := agentBeadSnapshotCleanupStatus(ctx.snap)
+	handleZombieRestart(ctx.bd, ctx.workDir, ctx.rigName, ctx.polecatName, snapHook, cleanupStatus, &zombie)
 	return zombie, true
+}
+
+func deadSessionHasFreshHeartbeat(townRoot, sessionName string) bool {
+	hb := polecat.ReadSessionHeartbeat(townRoot, sessionName)
+	return hb != nil && hb.IsV2() && time.Since(hb.Timestamp) < polecat.SessionHeartbeatStaleThreshold
+}
+
+func detectDeadDoneIntent(ctx zombieSessionContext, snapState, snapHook string) (ZombieResult, bool, bool) {
+	if ctx.doneIntent == nil {
+		return ZombieResult{}, false, false
+	}
+	age := time.Since(ctx.doneIntent.Timestamp)
+	if age < ctx.witCfg.DoneIntentRecentGraceD() || deadDoneIntentCompleted(ctx, snapHook) {
+		return ZombieResult{}, false, true
+	}
+	zombie := ZombieResult{
+		PolecatName:    ctx.polecatName,
+		AgentState:     snapState,
+		Classification: ZombieDoneIntentDead,
+		HookBead:       snapHook,
+		WasActive:      true,
+		Action:         fmt.Sprintf("restarted (done-intent age=%v, type=%s)", age.Round(time.Second), ctx.doneIntent.ExitType),
+	}
+	if err := RestartPolecatSession(ctx.workDir, ctx.rigName, ctx.polecatName); err != nil {
+		zombie.Error = err
+		zombie.Action = fmt.Sprintf("restart-failed (done-intent): %v", err)
+	}
+	return zombie, true, true
+}
+
+func deadDoneIntentCompleted(ctx zombieSessionContext, snapHook string) bool {
+	hookStatus, hookFound := getBeadStatus(ctx.bd, ctx.workDir, snapHook)
+	if snapHook != "" && hookFound && (hookStatus == "closed" || hookStatus == "") {
+		return true
+	}
+	return hasPendingMRFromSnapshot(ctx.bd, ctx.workDir, ctx.rigName, ctx.polecatName, ctx.snap) || terminalSafeDoneSnapshot(ctx.bd, ctx.workDir, ctx.rigName, ctx.polecatName, ctx.snap)
+}
+
+func deadSessionStateEligible(snap *agentBeadSnapshot, snapState, snapHook string) (beads.AgentState, bool) {
+	typedState := beads.AgentState(snapState)
+	if !isZombieState(typedState, snapHook) {
+		return typedState, false
+	}
+	if typedState == beads.AgentStateDone || typedState == beads.AgentStateNuked {
+		return typedState, false
+	}
+	if typedState == beads.AgentStateSpawning && agentBeadSnapshotAge(snap) < SpawnGracePeriod {
+		return typedState, false
+	}
+	return typedState, true
+}
+
+func deadSessionHookClosed(ctx zombieSessionContext, snapHook string) bool {
+	if snapHook == "" {
+		return false
+	}
+	hookStatus, hookFound := getBeadStatus(ctx.bd, ctx.workDir, snapHook)
+	return hookFound && (hookStatus == "closed" || hookStatus == "")
 }
 
 // isZombieState returns true if the agent state or hook bead indicates a zombie.
