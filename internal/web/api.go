@@ -537,46 +537,12 @@ func (h *APIHandler) handleMailSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.To == "" || req.Subject == "" {
-		h.sendError(w, "Missing required fields (to, subject)", http.StatusBadRequest)
-		return
-	}
-	if !isValidMailAddress(req.To) {
-		h.sendError(w, "Invalid recipient format", http.StatusBadRequest)
-		return
-	}
-	if req.ReplyTo != "" && !isValidID(req.ReplyTo) {
-		h.sendError(w, "Invalid reply-to ID format", http.StatusBadRequest)
+	if errMessage := validateMailSendRequest(req); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
-	// Enforce length limits (consistent with handleIssueCreate)
-	const maxSubjectLen = 500
-	const maxBodyLen = 100_000
-	if len(req.Subject) > maxSubjectLen {
-		h.sendError(w, fmt.Sprintf("Subject too long (max %d bytes)", maxSubjectLen), http.StatusBadRequest)
-		return
-	}
-	if len(req.Body) > maxBodyLen {
-		h.sendError(w, fmt.Sprintf("Body too long (max %d bytes)", maxBodyLen), http.StatusBadRequest)
-		return
-	}
-	if strings.Contains(req.Subject, "\x00") || strings.Contains(req.Body, "\x00") {
-		h.sendError(w, "Subject and body cannot contain null bytes", http.StatusBadRequest)
-		return
-	}
-
-	// Build mail send command. Flags go first, then -- to end flag parsing,
-	// then the positional recipient (consistent with handleIssueCreate/handleInstall).
-	args := []string{"mail", "send"}
-	args = append(args, "-s", req.Subject)
-	if req.Body != "" {
-		args = append(args, "-m", req.Body)
-	}
-	if req.ReplyTo != "" {
-		args = append(args, "--reply-to", req.ReplyTo)
-	}
-	args = append(args, "--", req.To)
+	args := mailSendArgs(req)
 
 	output, err := h.runGtCommand(r.Context(), 30*time.Second, args)
 	if err != nil {
@@ -590,6 +556,55 @@ func (h *APIHandler) handleMailSend(w http.ResponseWriter, r *http.Request) {
 		"message": "Message sent",
 		"output":  output,
 	})
+}
+
+func validateMailSendRequest(req MailSendRequest) string {
+	if errMessage := validateMailRecipients(req); errMessage != "" {
+		return errMessage
+	}
+	return validateMailContent(req)
+}
+
+func validateMailRecipients(req MailSendRequest) string {
+	if req.To == "" || req.Subject == "" {
+		return "Missing required fields (to, subject)"
+	}
+	if !isValidMailAddress(req.To) {
+		return "Invalid recipient format"
+	}
+	if req.ReplyTo != "" && !isValidID(req.ReplyTo) {
+		return "Invalid reply-to ID format"
+	}
+	return ""
+}
+
+func validateMailContent(req MailSendRequest) string {
+	// Enforce length limits (consistent with handleIssueCreate).
+	const maxSubjectLen = 500
+	const maxBodyLen = 100_000
+	if len(req.Subject) > maxSubjectLen {
+		return fmt.Sprintf("Subject too long (max %d bytes)", maxSubjectLen)
+	}
+	if len(req.Body) > maxBodyLen {
+		return fmt.Sprintf("Body too long (max %d bytes)", maxBodyLen)
+	}
+	if strings.Contains(req.Subject, "\x00") || strings.Contains(req.Body, "\x00") {
+		return "Subject and body cannot contain null bytes"
+	}
+	return ""
+}
+
+func mailSendArgs(req MailSendRequest) []string {
+	// Flags go first, then -- to end flag parsing, then the positional
+	// recipient (consistent with handleIssueCreate/handleInstall).
+	args := []string{"mail", "send", "-s", req.Subject}
+	if req.Body != "" {
+		args = append(args, "-m", req.Body)
+	}
+	if req.ReplyTo != "" {
+		args = append(args, "--reply-to", req.ReplyTo)
+	}
+	return append(args, "--", req.To)
 }
 
 // parseMailInboxText parses text output from "gt mail inbox".
