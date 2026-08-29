@@ -21,13 +21,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Polecat identity command flags
-var (
-	polecatIdentityListJSON    bool
-	polecatIdentityShowJSON    bool
-	polecatIdentityRemoveForce bool
-)
-
 var polecatIdentityCmd = &cobra.Command{
 	Use:     "identity",
 	Aliases: []string{"id"},
@@ -140,13 +133,13 @@ Example:
 
 func init() {
 	// List flags
-	polecatIdentityListCmd.Flags().BoolVar(&polecatIdentityListJSON, "json", false, "Output as JSON")
+	polecatIdentityListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Show flags
-	polecatIdentityShowCmd.Flags().BoolVar(&polecatIdentityShowJSON, "json", false, "Output as JSON")
+	polecatIdentityShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Remove flags
-	polecatIdentityRemoveCmd.Flags().BoolVarP(&polecatIdentityRemoveForce, "force", "f", false, "Force removal, bypassing safety checks")
+	polecatIdentityRemoveCmd.Flags().BoolP("force", "f", false, "Force removal, bypassing safety checks")
 
 	// Add subcommands to identity
 	polecatIdentityCmd.AddCommand(polecatIdentityAddCmd)
@@ -262,7 +255,8 @@ func runPolecatIdentityAdd(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatIdentityList(_ *cobra.Command, args []string) error {
+func runPolecatIdentityList(cmd *cobra.Command, args []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
 	rigName := args[0]
 
 	// Get rig
@@ -324,7 +318,7 @@ func runPolecatIdentityList(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if polecatIdentityListJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(identities)
@@ -377,7 +371,8 @@ func runPolecatIdentityList(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatIdentityShow(_ *cobra.Command, args []string) error {
+func runPolecatIdentityShow(cmd *cobra.Command, args []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
 	rigName := args[0]
 	polecatName := args[1]
 
@@ -415,7 +410,7 @@ func runPolecatIdentityShow(_ *cobra.Command, args []string) error {
 	cv := buildCVSummary(r.Path, rigName, polecatName, beadID, clonePath)
 
 	// JSON output - include both identity details and CV
-	if polecatIdentityShowJSON {
+	if jsonOutput {
 		output := struct {
 			IdentityInfo
 			Title     string     `json:"title"`
@@ -630,7 +625,8 @@ func runPolecatIdentityRename(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatIdentityRemove(_ *cobra.Command, args []string) error {
+func runPolecatIdentityRemove(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	rigName := args[0]
 	polecatName := args[1]
 
@@ -656,7 +652,7 @@ func runPolecatIdentityRemove(_ *cobra.Command, args []string) error {
 	}
 
 	// Safety checks (unless --force)
-	if !polecatIdentityRemoveForce {
+	if !force {
 		var reasons []string
 
 		// Check for active session
