@@ -43,9 +43,11 @@ func DefaultLifecycleConfig() *DaemonPatrolConfig {
 				IntervalStr: "15m",
 				Scrub:       &scrub,
 			},
-			DoltBackup: &DoltBackupConfig{
-				Enabled:     true,
-				IntervalStr: "15m",
+			DoltPatrols: DoltPatrols{
+				DoltBackup: &DoltBackupConfig{
+					Enabled:     true,
+					IntervalStr: "15m",
+				},
 			},
 			ScheduledMaintenance: &ScheduledMaintenanceConfig{
 				Enabled:   true,
@@ -58,8 +60,10 @@ func DefaultLifecycleConfig() *DaemonPatrolConfig {
 				IntervalStr: "30m",
 				TimeoutStr:  "10m",
 			},
-			Handler: &PatrolConfig{
-				Enabled: true,
+			CorePatrols: CorePatrols{
+				Handler: &PatrolConfig{
+					Enabled: true,
+				},
 			},
 		},
 	}

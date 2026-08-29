@@ -187,7 +187,7 @@ func TestIsPatrolActive(t *testing.T) {
 	d.disabledPatrols = nil
 	d.patrolConfig = &DaemonPatrolConfig{
 		Patrols: &PatrolsConfig{
-			Witness: &PatrolConfig{Enabled: false},
+			CorePatrols: CorePatrols{Witness: &PatrolConfig{Enabled: false}},
 		},
 	}
 	if d.isPatrolActive("witness") {
@@ -222,9 +222,11 @@ func TestDoltRemotesInterval(t *testing.T) {
 	// Custom interval
 	config := &DaemonPatrolConfig{
 		Patrols: &PatrolsConfig{
-			DoltRemotes: &DoltRemotesConfig{
-				Enabled:  true,
-				Interval: 5 * 60 * 1000000000, // 5 minutes in nanoseconds
+			DoltPatrols: DoltPatrols{
+				DoltRemotes: &DoltRemotesConfig{
+					Enabled:  true,
+					Interval: 5 * 60 * 1000000000, // 5 minutes in nanoseconds
+				},
 			},
 		},
 	}

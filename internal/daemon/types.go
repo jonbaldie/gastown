@@ -115,13 +115,8 @@ type PatrolConfig struct {
 
 // PatrolsConfig holds configuration for all patrols.
 type PatrolsConfig struct {
-	Refinery             *PatrolConfig               `json:"refinery,omitempty"`
-	Witness              *PatrolConfig               `json:"witness,omitempty"`
-	Deacon               *PatrolConfig               `json:"deacon,omitempty"`
-	Handler              *PatrolConfig               `json:"handler,omitempty"`
-	DoltServer           *DoltServerConfig           `json:"dolt_server,omitempty"`
-	DoltRemotes          *DoltRemotesConfig          `json:"dolt_remotes,omitempty"`
-	DoltBackup           *DoltBackupConfig           `json:"dolt_backup,omitempty"`
+	CorePatrols
+	DoltPatrols
 	JsonlGitBackup       *JsonlGitBackupConfig       `json:"jsonl_git_backup,omitempty"`
 	WispReaper           *WispReaperConfig           `json:"wisp_reaper,omitempty"`
 	DoctorDog            *DoctorDogConfig            `json:"doctor_dog,omitempty"`
@@ -131,6 +126,25 @@ type PatrolsConfig struct {
 	MainBranchTest       *MainBranchTestConfig       `json:"main_branch_test,omitempty"`
 	QuotaDog             *QuotaDogConfig             `json:"quota_dog,omitempty"`
 	RestartTracker       *RestartTrackerConfig       `json:"restart_tracker,omitempty"`
+}
+
+// CorePatrols contains the long-running agent patrols that make up the town's
+// normal heartbeat. It is embedded to preserve the patrol configuration's
+// existing selectors and JSON object shape.
+type CorePatrols struct {
+	Refinery *PatrolConfig `json:"refinery,omitempty"`
+	Witness  *PatrolConfig `json:"witness,omitempty"`
+	Deacon   *PatrolConfig `json:"deacon,omitempty"`
+	Handler  *PatrolConfig `json:"handler,omitempty"`
+}
+
+// DoltPatrols contains patrols that maintain the town's Dolt databases.
+// It is embedded to preserve the patrol configuration's existing selectors
+// and JSON object shape.
+type DoltPatrols struct {
+	DoltServer  *DoltServerConfig  `json:"dolt_server,omitempty"`
+	DoltRemotes *DoltRemotesConfig `json:"dolt_remotes,omitempty"`
+	DoltBackup  *DoltBackupConfig  `json:"dolt_backup,omitempty"`
 }
 
 // DoltRemotesConfig holds configuration for the dolt_remotes patrol.
