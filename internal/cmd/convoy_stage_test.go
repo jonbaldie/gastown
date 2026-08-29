@@ -2489,12 +2489,8 @@ func TestJSONOutput_FlagParseErrorReturnsEnvelope(t *testing.T) {
 
 func newJSONStageTestCommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	oldJSON := convoyStageJSON
-	convoyStageJSON = false
-	t.Cleanup(func() { convoyStageJSON = oldJSON })
-
 	cmd := &cobra.Command{Use: "stage", RunE: runConvoyStage}
-	cmd.Flags().BoolVar(&convoyStageJSON, "json", false, "Output machine-readable JSON")
+	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
 	cmd.SetFlagErrorFunc(convoyStageFlagError)
 	return cmd
 }
@@ -2537,7 +2533,11 @@ func TestJSONOutput_NoHumanReadableText(t *testing.T) {
 
 	testDAG.Setup(t)
 
-	// Capture stdout by setting convoyStageJSON and running the pipeline.
+	// Capture stdout while running the pipeline in JSON mode.
+	cmd := newJSONStageTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -2547,11 +2547,7 @@ func TestJSONOutput_NoHumanReadableText(t *testing.T) {
 	rErr, wErr, _ := os.Pipe()
 	os.Stderr = wErr
 
-	// Enable JSON mode.
-	convoyStageJSON = true
-	defer func() { convoyStageJSON = false }()
-
-	_ = runConvoyStage(nil, []string{"gt-j1", "gt-j2"})
+	_ = runConvoyStage(cmd, []string{"gt-j1", "gt-j2"})
 	w.Close()
 	wErr.Close()
 	os.Stdout = oldStdout
@@ -2604,10 +2600,12 @@ func TestJSONOutput_ErrorsReturnNonZeroExit(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	convoyStageJSON = true
-	defer func() { convoyStageJSON = false }()
+	cmd := newJSONStageTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
 
-	err := runConvoyStage(nil, []string{"zz-norig"})
+	err := runConvoyStage(cmd, []string{"zz-norig"})
 	w.Close()
 	os.Stdout = old
 

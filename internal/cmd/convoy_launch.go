@@ -333,10 +333,7 @@ func launchStagedConvoy(convoyID string, force bool) error {
 }
 
 func delegateConvoyLaunch(cmd *cobra.Command, args []string, force bool) error {
-
-	convoyStageLaunch = true
-	defer func() { convoyStageLaunch = false }()
-	return runConvoyStageWithForce(cmd, args, force)
+	return runConvoyStageWithForce(cmd, args, force, true)
 }
 
 // runConvoyLaunch is the handler for `gt convoy launch`.
