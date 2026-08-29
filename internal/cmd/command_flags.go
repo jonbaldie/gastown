@@ -1,6 +1,10 @@
 package cmd
 
-import "github.com/spf13/cobra"
+import (
+	"time"
+
+	"github.com/spf13/cobra"
+)
 
 func commandStringFlag(cmd *cobra.Command, name string) string {
 	if cmd == nil {
@@ -33,6 +37,14 @@ func commandIntFlag(cmd *cobra.Command, name string) int {
 		return 0
 	}
 	value, _ := cmd.Flags().GetInt(name)
+	return value
+}
+
+func commandDurationFlag(cmd *cobra.Command, name string) time.Duration {
+	if cmd == nil {
+		return 0
+	}
+	value, _ := cmd.Flags().GetDuration(name)
 	return value
 }
 

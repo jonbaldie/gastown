@@ -360,14 +360,15 @@ This helps the Deacon understand which convoys have been recently fed.`,
 	RunE: runDeaconFeedStrandedState,
 }
 
+const (
+	defaultHealthCheckTimeout  = 30 * time.Second
+	defaultHealthCheckFailures = 3
+	defaultHealthCheckCooldown = 5 * time.Minute
+)
+
 var (
 	// Status flags
 	deaconStatusJSON bool
-
-	// Health check flags
-	healthCheckTimeout  time.Duration
-	healthCheckFailures int
-	healthCheckCooldown time.Duration
 
 	// Force kill flags
 	forceKillReason     string
@@ -418,11 +419,11 @@ func init() {
 	deaconStatusCmd.Flags().BoolVar(&deaconStatusJSON, "json", false, "Output as JSON")
 
 	// Flags for health-check
-	deaconHealthCheckCmd.Flags().DurationVar(&healthCheckTimeout, "timeout", 30*time.Second,
+	deaconHealthCheckCmd.Flags().Duration("timeout", defaultHealthCheckTimeout,
 		"How long to wait for agent response")
-	deaconHealthCheckCmd.Flags().IntVar(&healthCheckFailures, "failures", 3,
+	deaconHealthCheckCmd.Flags().Int("failures", defaultHealthCheckFailures,
 		"Number of consecutive failures before recommending force-kill")
-	deaconHealthCheckCmd.Flags().DurationVar(&healthCheckCooldown, "cooldown", 5*time.Minute,
+	deaconHealthCheckCmd.Flags().Duration("cooldown", defaultHealthCheckCooldown,
 		"Minimum time between force-kills of same agent")
 
 	// Flags for force-kill
@@ -866,8 +867,11 @@ func runDeaconHeartbeat(_ *cobra.Command, args []string) error {
 
 // runDeaconHealthCheck implements the health-check command.
 // It sends a HEALTH_CHECK nudge to an agent, waits for response, and tracks state.
-func runDeaconHealthCheck(_ *cobra.Command, args []string) error {
+func runDeaconHealthCheck(cmd *cobra.Command, args []string) error {
 	agent := args[0]
+	timeout := commandDurationFlag(cmd, "timeout")
+	failures := commandIntFlag(cmd, "failures")
+	cooldown := commandDurationFlag(cmd, "cooldown")
 
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -882,8 +886,8 @@ func runDeaconHealthCheck(_ *cobra.Command, args []string) error {
 	agentState := state.GetAgentState(agent)
 
 	// Check if agent is in cooldown
-	if agentState.IsInCooldown(healthCheckCooldown) {
-		remaining := agentState.CooldownRemaining(healthCheckCooldown)
+	if agentState.IsInCooldown(cooldown) {
+		remaining := agentState.CooldownRemaining(cooldown)
 		fmt.Printf("%s Agent %s is in cooldown (remaining: %s)\n",
 			style.Dim.Render("○"), agent, remaining.Round(time.Second))
 		return nil
@@ -936,11 +940,11 @@ func runDeaconHealthCheck(_ *cobra.Command, args []string) error {
 	baselineActivity, activityErr := t.GetSessionActivity(sessionName)
 
 	fmt.Printf("%s Sent HEALTH_CHECK to %s, waiting %s...\n",
-		style.Bold.Render("→"), agent, healthCheckTimeout)
+		style.Bold.Render("→"), agent, timeout)
 
 	// Wait for response using context and ticker for reliability
 	// This prevents loop hangs if system clock changes
-	ctx, cancel := context.WithTimeout(context.Background(), healthCheckTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -993,10 +997,10 @@ waitLoop:
 	}
 
 	fmt.Printf("%s Agent %s did not respond (consecutive failures: %d/%d)\n",
-		style.Dim.Render("⚠"), agent, agentState.ConsecutiveFailures, healthCheckFailures)
+		style.Dim.Render("⚠"), agent, agentState.ConsecutiveFailures, failures)
 
 	// Check if force-kill threshold reached
-	if agentState.ShouldForceKill(healthCheckFailures) {
+	if agentState.ShouldForceKill(failures) {
 		fmt.Printf("%s Agent %s should be force-killed\n", style.Bold.Render("✗"), agent)
 		return NewSilentExit(2) // Exit code 2 = should force-kill
 	}
@@ -1022,8 +1026,8 @@ func runDeaconForceKill(_ *cobra.Command, args []string) error {
 	agentState := state.GetAgentState(agent)
 
 	// Check cooldown (unless bypassed)
-	if agentState.IsInCooldown(healthCheckCooldown) {
-		remaining := agentState.CooldownRemaining(healthCheckCooldown)
+	if agentState.IsInCooldown(defaultHealthCheckCooldown) {
+		remaining := agentState.CooldownRemaining(defaultHealthCheckCooldown)
 		return fmt.Errorf("agent %s is in cooldown (remaining: %s) - cannot force-kill yet",
 			agent, remaining.Round(time.Second))
 	}
@@ -1125,8 +1129,8 @@ func runDeaconHealthState(_ *cobra.Command, _ []string) error {
 
 		if !agentState.LastForceKillTime.IsZero() {
 			fmt.Printf("  Last force-kill: %s ago\n", time.Since(agentState.LastForceKillTime).Round(time.Second))
-			if agentState.IsInCooldown(healthCheckCooldown) {
-				remaining := agentState.CooldownRemaining(healthCheckCooldown)
+			if agentState.IsInCooldown(defaultHealthCheckCooldown) {
+				remaining := agentState.CooldownRemaining(defaultHealthCheckCooldown)
 				fmt.Printf("  Cooldown: %s remaining\n", remaining.Round(time.Second))
 			}
 		}
