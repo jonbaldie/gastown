@@ -14,6 +14,68 @@ import (
 	"github.com/jonbaldie/gastown/internal/style"
 )
 
+func validateDoneRequest() (string, error) {
+	actor := os.Getenv("BD_ACTOR")
+	if actor != "" && !isPolecatActor(actor) {
+		return "", fmt.Errorf("gt done is for polecats only (you are %s)\nPolecat sessions end with gt done — the session is cleaned up, but identity persists.\nOther roles persist across tasks and don't use gt done.", actor)
+	}
+	exitType := strings.ToUpper(doneState().status)
+	if exitType != ExitCompleted && exitType != ExitEscalated && exitType != ExitDeferred {
+		return "", fmt.Errorf("invalid exit status '%s': must be COMPLETED, ESCALATED, or DEFERRED", doneState().status)
+	}
+	return exitType, nil
+}
+
+func setupDoneFlow(exitType string) (*doneFlow, error) {
+	worktree, err := resolveDonePolecatWorktree()
+	if err != nil {
+		return nil, err
+	}
+	g := git.NewGit(worktree.cwd)
+	branch, err := g.CurrentBranch()
+	if err != nil {
+		return nil, fmt.Errorf("getting current branch: %w", err)
+	}
+	autoDetectDoneCleanupStatus(g, worktree.cwd, branch)
+	autoPopDoneStashes(g)
+	if err := autoCommitDoneUncommittedWork(g, worktree.cwd, branch); err != nil {
+		return nil, err
+	}
+	issueCtx, err := resolveDoneIssueContext(worktree.cwd, worktree.townRoot, branch, worktree.actor)
+	if err != nil {
+		return nil, err
+	}
+	touchDoneExitingHeartbeat(worktree.townRoot, issueCtx.issueID)
+	defaultBranch := doneDefaultBranch(worktree.townRoot, worktree.rigName)
+	baseRef := g.CleanBaseRef("origin", defaultBranch, doneState().target)
+	return newDoneFlow(exitType, worktree, g, branch, defaultBranch, baseRef, issueCtx), nil
+}
+
+func newDoneFlow(exitType string, worktree donePolecatWorktree, g *git.Git, branch, defaultBranch, baseRef string, issueCtx doneIssueContext) *doneFlow {
+	return &doneFlow{
+		session: doneSession{
+			exitType:    exitType,
+			townRoot:    worktree.townRoot,
+			cwd:         worktree.cwd,
+			rigName:     worktree.rigName,
+			polecatName: worktree.polecatName,
+			sender:      issueCtx.sender,
+			worker:      issueCtx.worker,
+			agentBeadID: issueCtx.agentBeadID,
+		},
+		repo: doneGitState{
+			g:             g,
+			branch:        branch,
+			defaultBranch: defaultBranch,
+			baseRef:       baseRef,
+		},
+		work: doneWorkState{
+			issueID:     issueCtx.issueID,
+			checkpoints: issueCtx.checkpoints,
+		},
+	}
+}
+
 func autoDetectDoneCleanupStatus(g *git.Git, cwd, branch string) {
 	if doneState().cleanupStatus != "" {
 		return
