@@ -1889,36 +1889,45 @@ func runRigReboot(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigStatus(_ *cobra.Command, args []string) error {
-	var rigName string
+type rigStatusData struct {
+	witnessRunning  bool
+	refineryRunning bool
+	refineryQueue   []refinery.QueueItem
+	polecats        []*polecat.Polecat
+	polecatsErr     error
+	crewWorkers     []*crew.CrewWorker
+	crewErr         error
+}
 
+type rigStatusPolecatInfo struct {
+	name       string
+	state      polecat.State
+	issue      string
+	hasSession bool
+}
+
+type rigStatusCrewInfo struct {
+	name       string
+	hasSession bool
+	branch     string
+	dirty      bool
+}
+
+func resolveRigStatusName(args []string) (string, error) {
 	if len(args) > 0 {
-		rigName = args[0]
-	} else {
-		// Infer rig from current directory
-		roleInfo, err := GetRole()
-		if err != nil {
-			return fmt.Errorf("detecting rig from current directory: %w", err)
-		}
-		if roleInfo.Rig == "" {
-			return fmt.Errorf("could not detect rig from current directory; please specify rig name")
-		}
-		rigName = roleInfo.Rig
+		return args[0], nil
 	}
-
-	// Get rig
-	townRoot, r, err := getRig(rigName)
+	roleInfo, err := GetRole()
 	if err != nil {
-		return err
+		return "", fmt.Errorf("detecting rig from current directory: %w", err)
 	}
+	if roleInfo.Rig == "" {
+		return "", fmt.Errorf("could not detect rig from current directory; please specify rig name")
+	}
+	return roleInfo.Rig, nil
+}
 
-	t := tmux.NewTmux()
-
-	// Header
-	fmt.Printf("%s\n", style.Bold.Render(rigName))
-
-	// Operational state
-	opState, opSource := getRigOperationalState(townRoot, rigName)
+func renderRigOperationalStatus(opState, opSource string) {
 	if opState == "OPERATIONAL" {
 		fmt.Printf("  Status: %s\n", style.Success.Render(opState))
 	} else if opState == "PARKED" {
@@ -1926,101 +1935,76 @@ func runRigStatus(_ *cobra.Command, args []string) error {
 	} else if opState == "DOCKED" {
 		fmt.Printf("  Status: %s (%s)\n", style.Dim.Render(opState), opSource)
 	}
+}
 
+func renderRigStatusHeader(townRoot, rigName string, r *rig.Rig) {
+	fmt.Printf("%s\n", style.Bold.Render(rigName))
+	opState, opSource := getRigOperationalState(townRoot, rigName)
+	renderRigOperationalStatus(opState, opSource)
 	fmt.Printf("  Path: %s\n", r.Path)
 	if r.Config != nil && r.Config.Prefix != "" {
 		fmt.Printf("  Beads prefix: %s-\n", r.Config.Prefix)
 	}
 	fmt.Println()
+}
 
-	// --- Parallel data gathering phase ---
-	// All expensive operations (tmux health checks, beads queries, git status)
-	// run concurrently. Display phase follows with pre-fetched data.
-	var dataWg sync.WaitGroup
-
-	// Witness status
+func gatherRigStatusData(townRoot string, r *rig.Rig, t *tmux.Tmux) rigStatusData {
+	var data rigStatusData
+	var wg sync.WaitGroup
 	witMgr := witness.NewManager(r)
-	var witnessRunning bool
-	dataWg.Add(1)
+	wg.Add(1)
 	go func() {
-		defer dataWg.Done()
-		witnessRunning, _ = witMgr.IsRunning()
+		defer wg.Done()
+		data.witnessRunning, _ = witMgr.IsRunning()
 	}()
-
-	// Refinery status + queue
 	refMgr := refinery.NewManager(r)
-	var refineryRunning bool
-	var refineryQueue []refinery.QueueItem
-	dataWg.Add(1)
+	wg.Add(1)
 	go func() {
-		defer dataWg.Done()
-		refineryRunning, _ = refMgr.IsRunning()
-		if refineryRunning {
-			refineryQueue, _ = refMgr.Queue()
+		defer wg.Done()
+		data.refineryRunning, _ = refMgr.IsRunning()
+		if data.refineryRunning {
+			data.refineryQueue, _ = refMgr.Queue()
 		}
 	}()
-
-	// Polecats list (involves per-polecat beads + git queries)
-	polecatGit := git.NewGit(r.Path)
-	polecatMgr := polecat.NewManager(r, polecatGit, t)
-	var polecats []*polecat.Polecat
-	var polecatsErr error
-	dataWg.Add(1)
+	polecatMgr := polecat.NewManager(r, git.NewGit(r.Path), t)
+	wg.Add(1)
 	go func() {
-		defer dataWg.Done()
-		polecats, polecatsErr = polecatMgr.List()
+		defer wg.Done()
+		data.polecats, data.polecatsErr = polecatMgr.List()
 	}()
-
-	// Crew list
 	crewMgr := crew.NewManager(r, git.NewGit(townRoot))
-	var crewWorkers []*crew.CrewWorker
-	var crewErr error
-	dataWg.Add(1)
+	wg.Add(1)
 	go func() {
-		defer dataWg.Done()
-		crewWorkers, crewErr = crewMgr.List()
+		defer wg.Done()
+		data.crewWorkers, data.crewErr = crewMgr.List()
 	}()
+	wg.Wait()
+	return data
+}
 
-	dataWg.Wait()
-
-	// --- Polecat + Crew session checks (parallel, after List completes) ---
-	type polecatInfo struct {
-		name       string
-		state      polecat.State
-		issue      string
-		hasSession bool
-	}
-	var pInfos []polecatInfo
-	type crewInfo struct {
-		name       string
-		hasSession bool
-		branch     string
-		dirty      bool
-	}
-	var cInfos []crewInfo
-
-	var sessionWg sync.WaitGroup
-
-	if polecatsErr == nil && len(polecats) > 0 {
-		pInfos = make([]polecatInfo, len(polecats))
-		for i, p := range polecats {
-			pInfos[i] = polecatInfo{name: p.Name, state: p.State, issue: p.Issue}
-			sessionWg.Add(1)
+func collectRigStatusSessions(rigName string, t *tmux.Tmux, data rigStatusData) ([]rigStatusPolecatInfo, []rigStatusCrewInfo) {
+	var pInfos []rigStatusPolecatInfo
+	var cInfos []rigStatusCrewInfo
+	var wg sync.WaitGroup
+	if data.polecatsErr == nil && len(data.polecats) > 0 {
+		pInfos = make([]rigStatusPolecatInfo, len(data.polecats))
+		for i, p := range data.polecats {
+			pInfos[i] = rigStatusPolecatInfo{name: p.Name, state: p.State, issue: p.Issue}
+			wg.Add(1)
 			go func(idx int, p *polecat.Polecat) {
-				defer sessionWg.Done()
+				defer wg.Done()
 				sessionName := session.PolecatSessionName(session.PrefixFor(rigName), p.Name)
 				pInfos[idx].hasSession = isAgentSessionHealthy(t, sessionName)
 			}(i, p)
 		}
 	}
-
-	if crewErr == nil && len(crewWorkers) > 0 {
-		cInfos = make([]crewInfo, len(crewWorkers))
-		for i, w := range crewWorkers {
-			cInfos[i] = crewInfo{name: w.Name}
-			sessionWg.Add(1)
+	if data.crewErr == nil && len(data.crewWorkers) > 0 {
+		cInfos = make([]rigStatusCrewInfo, len(data.crewWorkers))
+		for i, w := range data.crewWorkers {
+			cInfos[i] = rigStatusCrewInfo{name: w.Name}
+			wg.Add(1)
 			go func(idx int, w *crew.CrewWorker) {
-				defer sessionWg.Done()
+				defer wg.Done()
 				sessionName := crewSessionName(rigName, w.Name)
 				cInfos[idx].hasSession = isAgentSessionHealthy(t, sessionName)
 				crewGit := git.NewGit(w.ClonePath)
@@ -2032,89 +2016,98 @@ func runRigStatus(_ *cobra.Command, args []string) error {
 			}(i, w)
 		}
 	}
+	wg.Wait()
+	return pInfos, cInfos
+}
 
-	sessionWg.Wait()
-
-	// --- Display phase (all data pre-fetched) ---
-
-	// Witness
+func renderRigStatusServices(data rigStatusData) {
 	fmt.Printf("%s\n", style.Bold.Render("Witness"))
-	if witnessRunning {
+	if data.witnessRunning {
 		fmt.Printf("  %s running\n", style.Success.Render("●"))
 	} else {
 		fmt.Printf("  %s stopped\n", style.Dim.Render("○"))
 	}
 	fmt.Println()
-
-	// Refinery
 	fmt.Printf("%s\n", style.Bold.Render("Refinery"))
-	if refineryRunning {
+	if data.refineryRunning {
 		fmt.Printf("  %s running\n", style.Success.Render("●"))
-		if len(refineryQueue) > 0 {
-			fmt.Printf("  Queue: %d items\n", len(refineryQueue))
+		if len(data.refineryQueue) > 0 {
+			fmt.Printf("  Queue: %d items\n", len(data.refineryQueue))
 		}
 	} else {
 		fmt.Printf("  %s stopped\n", style.Dim.Render("○"))
 	}
 	fmt.Println()
+}
 
-	// Polecats
+func rigStatusPolecatDisplay(pi rigStatusPolecatInfo) (string, string) {
+	sessionIcon := style.Dim.Render("○")
+	if pi.hasSession {
+		sessionIcon = style.Success.Render("●")
+	}
+	displayState := pi.state
+	if pi.hasSession && displayState == polecat.StateDone {
+		displayState = polecat.StateWorking
+	} else if !pi.hasSession && displayState == polecat.StateWorking {
+		displayState = polecat.StateStalled
+	}
+	stateStr := string(displayState)
+	if pi.issue != "" {
+		stateStr = fmt.Sprintf("%s → %s", displayState, pi.issue)
+	}
+	return sessionIcon, stateStr
+}
+
+func renderRigStatusPolecats(data rigStatusData, pInfos []rigStatusPolecatInfo) {
 	fmt.Printf("%s", style.Bold.Render("Polecats"))
-	if polecatsErr != nil || len(polecats) == 0 {
+	if data.polecatsErr != nil || len(data.polecats) == 0 {
 		fmt.Printf(" (none)\n")
 	} else {
-		fmt.Printf(" (%d)\n", len(polecats))
+		fmt.Printf(" (%d)\n", len(data.polecats))
 		for _, pi := range pInfos {
-			sessionIcon := style.Dim.Render("○")
-			if pi.hasSession {
-				sessionIcon = style.Success.Render("●")
-			}
-
-			// Reconcile display state with tmux session liveness.
-			// Per gt-zecmc design: tmux is ground truth for observable states.
-			// If session is running but beads says done, the polecat is still alive.
-			// If session is dead but beads says working, show "stalled" so the
-			// witness can detect unsubmitted work (gt-3071b). Previously this
-			// showed "done" which masked failures where polecats died before
-			// running gt done, leaving work stranded in worktrees.
-			displayState := pi.state
-			if pi.hasSession && displayState == polecat.StateDone {
-				displayState = polecat.StateWorking
-			} else if !pi.hasSession && displayState == polecat.StateWorking {
-				displayState = polecat.StateStalled
-			}
-
-			stateStr := string(displayState)
-			if pi.issue != "" {
-				stateStr = fmt.Sprintf("%s → %s", displayState, pi.issue)
-			}
-
+			sessionIcon, stateStr := rigStatusPolecatDisplay(pi)
 			fmt.Printf("  %s %s: %s\n", sessionIcon, pi.name, stateStr)
 		}
 	}
 	fmt.Println()
+}
 
-	// Crew
+func renderRigStatusCrew(data rigStatusData, cInfos []rigStatusCrewInfo) {
 	fmt.Printf("%s", style.Bold.Render("Crew"))
-	if crewErr != nil || len(crewWorkers) == 0 {
+	if data.crewErr != nil || len(data.crewWorkers) == 0 {
 		fmt.Printf(" (none)\n")
-	} else {
-		fmt.Printf(" (%d)\n", len(crewWorkers))
-		for _, ci := range cInfos {
-			sessionIcon := style.Dim.Render("○")
-			if ci.hasSession {
-				sessionIcon = style.Success.Render("●")
-			}
-
-			gitInfo := ""
-			if ci.dirty {
-				gitInfo = style.Warning.Render(" (dirty)")
-			}
-
-			fmt.Printf("  %s %s: %s%s\n", sessionIcon, ci.name, ci.branch, gitInfo)
-		}
+		return
 	}
+	fmt.Printf(" (%d)\n", len(data.crewWorkers))
+	for _, ci := range cInfos {
+		sessionIcon := style.Dim.Render("○")
+		if ci.hasSession {
+			sessionIcon = style.Success.Render("●")
+		}
+		gitInfo := ""
+		if ci.dirty {
+			gitInfo = style.Warning.Render(" (dirty)")
+		}
+		fmt.Printf("  %s %s: %s%s\n", sessionIcon, ci.name, ci.branch, gitInfo)
+	}
+}
 
+func runRigStatus(_ *cobra.Command, args []string) error {
+	rigName, err := resolveRigStatusName(args)
+	if err != nil {
+		return err
+	}
+	townRoot, r, err := getRig(rigName)
+	if err != nil {
+		return err
+	}
+	t := tmux.NewTmux()
+	renderRigStatusHeader(townRoot, rigName, r)
+	data := gatherRigStatusData(townRoot, r, t)
+	pInfos, cInfos := collectRigStatusSessions(rigName, t, data)
+	renderRigStatusServices(data)
+	renderRigStatusPolecats(data, pInfos)
+	renderRigStatusCrew(data, cInfos)
 	return nil
 }
 
