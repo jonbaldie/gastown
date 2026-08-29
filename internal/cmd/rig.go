@@ -974,117 +974,135 @@ func runRigMenu(_ *cobra.Command, _ []string) error {
 	return execCmd.Run()
 }
 
-func runRigRemove(_ *cobra.Command, args []string) error {
-	name := args[0]
+type rigRemovalContext struct {
+	townRoot    string
+	rigsPath    string
+	rigsConfig  *config.RigsConfig
+	beadsPrefix string
+	mgr         *rig.Manager
+}
 
-	// Find workspace
+func loadRigRemovalContext(name string) (rigRemovalContext, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return rigRemovalContext{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Load rigs config
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
-		return fmt.Errorf("loading rigs config: %w", err)
+		return rigRemovalContext{}, fmt.Errorf("loading rigs config: %w", err)
 	}
-
-	// Get the rig's beads prefix before removing (needed for route cleanup)
 	var beadsPrefix string
 	if entry, ok := rigsConfig.Rigs[name]; ok && entry.BeadsConfig != nil {
 		beadsPrefix = entry.BeadsConfig.Prefix
 	}
+	return rigRemovalContext{
+		townRoot:    townRoot,
+		rigsPath:    rigsPath,
+		rigsConfig:  rigsConfig,
+		beadsPrefix: beadsPrefix,
+		mgr:         rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot)),
+	}, nil
+}
 
-	// Create rig manager
-	g := git.NewGit(townRoot)
-	mgr := rig.NewManager(townRoot, rigsConfig, g)
-
-	// Check for running tmux sessions before removing
-	t := tmux.NewTmux()
+func checkRigRemovalSessions(name string, t *tmux.Tmux, force bool) ([]string, error) {
 	sessions, sessErr := findRigSessions(t, name)
 	if sessErr != nil {
-		if !rigRemoveForce {
-			return fmt.Errorf("could not verify session state for rig %s: %w (use --force to skip check)", name, sessErr)
+		if !force {
+			return nil, fmt.Errorf("could not verify session state for rig %s: %w (use --force to skip check)", name, sessErr)
 		}
 		fmt.Printf("  %s Could not check tmux sessions: %v (proceeding due to --force)\n", style.Warning.Render("!"), sessErr)
 	}
-	if len(sessions) > 0 {
-		if !rigRemoveForce {
-			fmt.Printf("%s Rig %s has %d running tmux session(s):\n",
-				style.Warning.Render("⚠"), name, len(sessions))
-			for _, s := range sessions {
-				fmt.Printf("  - %s\n", s)
-			}
-			fmt.Printf("\nShut them down first:\n")
-			fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("gt rig shutdown %s", name)))
-			fmt.Printf("Or force removal:\n")
-			fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("gt rig remove %s --force", name)))
-			return fmt.Errorf("refusing to remove rig with running sessions")
-		}
+	if len(sessions) == 0 || force {
+		return sessions, nil
+	}
+	fmt.Printf("%s Rig %s has %d running tmux session(s):\n", style.Warning.Render("⚠"), name, len(sessions))
+	for _, s := range sessions {
+		fmt.Printf("  - %s\n", s)
+	}
+	fmt.Printf("\nShut them down first:\n")
+	fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("gt rig shutdown %s", name)))
+	fmt.Printf("Or force removal:\n")
+	fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("gt rig remove %s --force", name)))
+	return nil, fmt.Errorf("refusing to remove rig with running sessions")
+}
 
-		// --force: kill all rig sessions (WARNING: may lose uncommitted work)
-		fmt.Printf("Killing %d tmux session(s) for rig %s...\n", len(sessions), name)
-		var killErrors []string
-		for _, s := range sessions {
-			if err := t.KillSessionWithProcesses(s); err != nil {
-				fmt.Printf("  %s Failed to kill session %s: %v\n", style.Warning.Render("!"), s, err)
-				killErrors = append(killErrors, s)
-			} else {
-				fmt.Printf("  Killed %s\n", s)
-			}
-		}
-		if len(killErrors) > 0 {
-			return fmt.Errorf("aborting remove: failed to kill %d session(s) (%s); rig left registered to avoid orphaned sessions",
-				len(killErrors), strings.Join(killErrors, ", "))
+func killRigRemovalSessions(name string, t *tmux.Tmux, sessions []string) error {
+	// --force: kill all rig sessions (WARNING: may lose uncommitted work)
+	fmt.Printf("Killing %d tmux session(s) for rig %s...\n", len(sessions), name)
+	var killErrors []string
+	for _, s := range sessions {
+		if err := t.KillSessionWithProcesses(s); err != nil {
+			fmt.Printf("  %s Failed to kill session %s: %v\n", style.Warning.Render("!"), s, err)
+			killErrors = append(killErrors, s)
+		} else {
+			fmt.Printf("  Killed %s\n", s)
 		}
 	}
+	if len(killErrors) > 0 {
+		return fmt.Errorf("aborting remove: failed to kill %d session(s) (%s); rig left registered to avoid orphaned sessions",
+			len(killErrors), strings.Join(killErrors, ", "))
+	}
+	return nil
+}
 
-	if err := mgr.RemoveRig(name); err != nil {
-		if errors.Is(err, rig.ErrRigNotFound) {
-			rigPath := filepath.Join(townRoot, name)
-			if info, statErr := os.Stat(rigPath); statErr == nil && info.IsDir() {
-				fmt.Printf("%s Rig %q is not registered but directory exists at %s\n\n",
-					style.Warning.Render("!"), name, rigPath)
-				fmt.Printf("This is an inconsistent state. To fix it, either:\n")
-				fmt.Printf("  Adopt the directory:  %s\n",
-					style.Dim.Render(fmt.Sprintf("gt rig add %s --adopt", name)))
-				fmt.Printf("  Delete the directory: %s\n",
-					style.Dim.Render(fmt.Sprintf("rm -rf %s", rigPath)))
-				return fmt.Errorf("rig %q not in registry but directory exists", name)
-			}
-			// Directory doesn't exist either — suggest similar rig names
-			suggestions := suggest.FindSimilar(name, mgr.ListRigNames(), 3)
-			return fmt.Errorf("removing rig: %s",
-				suggest.FormatSuggestion("rig", name, suggestions, ""))
-		}
+func removeRigRegistration(ctx rigRemovalContext, name string) error {
+	if err := ctx.mgr.RemoveRig(name); err == nil {
+		return nil
+	} else if !errors.Is(err, rig.ErrRigNotFound) {
 		return fmt.Errorf("removing rig: %w", err)
 	}
+	rigPath := filepath.Join(ctx.townRoot, name)
+	if info, statErr := os.Stat(rigPath); statErr == nil && info.IsDir() {
+		fmt.Printf("%s Rig %q is not registered but directory exists at %s\n\n", style.Warning.Render("!"), name, rigPath)
+		fmt.Printf("This is an inconsistent state. To fix it, either:\n")
+		fmt.Printf("  Adopt the directory:  %s\n", style.Dim.Render(fmt.Sprintf("gt rig add %s --adopt", name)))
+		fmt.Printf("  Delete the directory: %s\n", style.Dim.Render(fmt.Sprintf("rm -rf %s", rigPath)))
+		return fmt.Errorf("rig %q not in registry but directory exists", name)
+	}
+	suggestions := suggest.FindSimilar(name, ctx.mgr.ListRigNames(), 3)
+	return fmt.Errorf("removing rig: %s", suggest.FormatSuggestion("rig", name, suggestions, ""))
+}
 
-	// Save updated config
-	if err := config.SaveRigsConfig(rigsPath, rigsConfig); err != nil {
+func finishRigRemoval(ctx rigRemovalContext, name string) error {
+	if err := config.SaveRigsConfig(ctx.rigsPath, ctx.rigsConfig); err != nil {
 		return fmt.Errorf("saving rigs config: %w", err)
 	}
-
-	// Remove rig from daemon.json patrol config (witness + refinery rigs arrays)
-	if err := config.RemoveRigFromDaemonPatrols(townRoot, name); err != nil {
-		// Non-fatal: daemon will stop spawning for this rig anyway since it's unregistered
+	if err := config.RemoveRigFromDaemonPatrols(ctx.townRoot, name); err != nil {
 		fmt.Printf("  %s Could not update daemon.json patrols: %v\n", style.Warning.Render("!"), err)
 	}
-
-	// Remove route from routes.jsonl (issue #899)
-	if beadsPrefix != "" {
-		if err := beads.RemoveRoute(townRoot, beadsPrefix+"-"); err != nil {
-			// Non-fatal: log warning but continue
+	if ctx.beadsPrefix != "" {
+		if err := beads.RemoveRoute(ctx.townRoot, ctx.beadsPrefix+"-"); err != nil {
 			fmt.Printf("  %s Could not remove route from routes.jsonl: %v\n", style.Warning.Render("!"), err)
 		}
 	}
-
 	fmt.Printf("%s Rig %s removed from registry\n", style.Success.Render("✓"), name)
-	fmt.Printf("\nNote: Files at %s were NOT deleted.\n", filepath.Join(townRoot, name))
-	fmt.Printf("To delete: %s\n", style.Dim.Render(fmt.Sprintf("rm -rf %s", filepath.Join(townRoot, name))))
-
+	rigPath := filepath.Join(ctx.townRoot, name)
+	fmt.Printf("\nNote: Files at %s were NOT deleted.\n", rigPath)
+	fmt.Printf("To delete: %s\n", style.Dim.Render(fmt.Sprintf("rm -rf %s", rigPath)))
 	return nil
+}
+
+func runRigRemove(_ *cobra.Command, args []string) error {
+	name := args[0]
+	ctx, err := loadRigRemovalContext(name)
+	if err != nil {
+		return err
+	}
+	t := tmux.NewTmux()
+	sessions, err := checkRigRemovalSessions(name, t, rigRemoveForce)
+	if err != nil {
+		return err
+	}
+	if len(sessions) > 0 {
+		if err := killRigRemovalSessions(name, t, sessions); err != nil {
+			return err
+		}
+	}
+	if err := removeRigRegistration(ctx, name); err != nil {
+		return err
+	}
+	return finishRigRemoval(ctx, name)
 }
 
 // refreshCycleBindingsOnExistingSessions forces a refresh of the tmux C-b n/p
