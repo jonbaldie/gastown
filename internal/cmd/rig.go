@@ -424,6 +424,36 @@ func confirmUnsafeProceed(force bool) bool {
 // When force is true and stdin is a TTY, prompts the user to confirm.
 // When force is true but stdin is NOT a TTY, blocks (same as no --force).
 // All user-facing messages are printed internally.
+type polecatWorkProblem struct {
+	name   string
+	status *git.UncommittedWorkStatus
+}
+
+type polecatWorkCheckError struct {
+	name string
+	err  error
+}
+
+func collectPolecatWork(polecats []*polecat.Polecat) ([]polecatWorkProblem, []polecatWorkCheckError) {
+	var problemPolecats []polecatWorkProblem
+	var checkErrors []polecatWorkCheckError
+	for _, p := range polecats {
+		status, err := checkPolecatWorkStatus(p.ClonePath)
+		if err != nil {
+			checkErrors = append(checkErrors, polecatWorkCheckError{name: p.Name, err: err})
+			continue
+		}
+		if status == nil {
+			checkErrors = append(checkErrors, polecatWorkCheckError{name: p.Name, err: fmt.Errorf("no status returned")})
+			continue
+		}
+		if !status.Clean() {
+			problemPolecats = append(problemPolecats, polecatWorkProblem{name: p.Name, status: status})
+		}
+	}
+	return problemPolecats, checkErrors
+}
+
 func checkUncommittedWork(r *rig.Rig, rigName, operation string, force bool) (proceed bool) {
 	polecats, err := listPolecatsForWorkCheck(r)
 	if err != nil {
@@ -435,37 +465,7 @@ func checkUncommittedWork(r *rig.Rig, rigName, operation string, force bool) (pr
 		return true
 	}
 
-	var problemPolecats []struct {
-		name   string
-		status *git.UncommittedWorkStatus
-	}
-	var checkErrors []struct {
-		name string
-		err  error
-	}
-	for _, p := range polecats {
-		status, err := checkPolecatWorkStatus(p.ClonePath)
-		if err != nil {
-			checkErrors = append(checkErrors, struct {
-				name string
-				err  error
-			}{p.Name, err})
-			continue
-		}
-		if status == nil {
-			checkErrors = append(checkErrors, struct {
-				name string
-				err  error
-			}{p.Name, fmt.Errorf("no status returned")})
-			continue
-		}
-		if !status.Clean() {
-			problemPolecats = append(problemPolecats, struct {
-				name   string
-				status *git.UncommittedWorkStatus
-			}{p.Name, status})
-		}
-	}
+	problemPolecats, checkErrors := collectPolecatWork(polecats)
 	if len(problemPolecats) == 0 && len(checkErrors) == 0 {
 		return true
 	}
