@@ -445,18 +445,8 @@ func legacyAddressAtMarker(parts []string, index int) string {
 //   - ppf-pyspark_pipeline_framework-polecat-Toast → pyspark_pipeline_framework/Toast
 //   - bd-beads-crew-beavis → beads/beavis
 func parseRigAgentAddress(bead *agentBead) string {
-	// Parse rig and role_type from description
-	var roleType, rig string
-	for _, line := range strings.Split(bead.Description, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "role_type:") {
-			roleType = strings.TrimSpace(strings.TrimPrefix(line, "role_type:"))
-		} else if strings.HasPrefix(line, "rig:") {
-			rig = strings.TrimSpace(strings.TrimPrefix(line, "rig:"))
-		}
-	}
-
-	if rig == "" || rig == "null" || roleType == "" || roleType == "null" {
+	metadata := parseAgentAddressMetadata(bead.Description)
+	if !metadata.hasRigAndRole() {
 		// Fallback: parse from bead ID by scanning for known role markers.
 		// ID format: <prefix>-<rig>-<role>[-<name>]
 		// Known rig-level roles: crew, polecat, witness, refinery
@@ -464,24 +454,58 @@ func parseRigAgentAddress(bead *agentBead) string {
 	}
 
 	// For singleton roles (witness, refinery), address is rig/role
-	if roleType == constants.RoleWitness || roleType == constants.RoleRefinery {
-		return rig + "/" + roleType
+	if isSingletonRole(metadata.roleType) {
+		return metadata.rig + "/" + metadata.roleType
 	}
 
 	// For named roles (crew, polecat), extract name from ID
 	// ID pattern: <prefix>-<rig>-<role>-<name>
 	// Find the role in the ID and take everything after it as the name
-	id := bead.ID
-	roleMarker := "-" + roleType + "-"
-	if idx := strings.Index(id, roleMarker); idx >= 0 {
-		name := id[idx+len(roleMarker):]
-		if name != "" {
-			return rig + "/" + name
-		}
+	if name := namedAgentName(bead.ID, metadata.roleType); name != "" {
+		return metadata.rig + "/" + name
 	}
 
 	// Fallback: return rig/roleType (may not be correct for all cases)
-	return rig + "/" + roleType
+	return metadata.rig + "/" + metadata.roleType
+}
+
+type agentAddressMetadata struct {
+	location string
+	roleType string
+	rig      string
+}
+
+func parseAgentAddressMetadata(desc string) agentAddressMetadata {
+	var metadata agentAddressMetadata
+	for _, line := range strings.Split(desc, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "location:"):
+			metadata.location = strings.TrimSpace(strings.TrimPrefix(line, "location:"))
+		case strings.HasPrefix(line, "role_type:"):
+			metadata.roleType = strings.TrimSpace(strings.TrimPrefix(line, "role_type:"))
+		case strings.HasPrefix(line, "rig:"):
+			metadata.rig = strings.TrimSpace(strings.TrimPrefix(line, "rig:"))
+		}
+	}
+	return metadata
+}
+
+func (m agentAddressMetadata) hasRigAndRole() bool {
+	return m.rig != "" && m.rig != "null" && m.roleType != "" && m.roleType != "null"
+}
+
+func isSingletonRole(roleType string) bool {
+	return roleType == constants.RoleWitness || roleType == constants.RoleRefinery
+}
+
+func namedAgentName(id, roleType string) string {
+	roleMarker := "-" + roleType + "-"
+	idx := strings.Index(id, roleMarker)
+	if idx < 0 {
+		return ""
+	}
+	return id[idx+len(roleMarker):]
 }
 
 // parseRigAgentAddressFromID extracts a mail address from a rig-prefixed bead ID
@@ -501,88 +525,92 @@ func parseRigAgentAddressFromID(id string) string {
 	namedRoles := []string{constants.RoleCrew, constants.RolePolecat}
 
 	for _, role := range namedRoles {
-		marker := "-" + role + "-"
-		if idx := strings.Index(id, marker); idx >= 0 {
-			// Everything between prefix- and -role- is the rig name.
-			// The prefix ends at the first hyphen: <prefix>-<rig>-...
-			// But prefix could be multi-char (bd, gt, ppf), so we find
-			// the rig as the substring between the first hyphen and the role marker.
-			firstHyphen := strings.Index(id, "-")
-			if firstHyphen < 0 || firstHyphen >= idx {
-				continue
-			}
-			rig := id[firstHyphen+1 : idx]
-			if rig == "" {
-				continue
-			}
-			name := id[idx+len(marker):]
-			if name != "" {
-				// Named role (crew, polecat): address is rig/name
-				return rig + "/" + name
-			}
-			// crew/polecat without a name — malformed, skip
-			continue
+		if address := namedRigAgentAddress(id, role); address != "" {
+			return address
 		}
 	}
 
 	for _, role := range singletonRoles {
-		// Singleton roles match only at end of ID: <prefix>-<rig>-<role>
-		// Reject if a name segment follows (e.g. -witness-extra is malformed).
-		marker := "-" + role + "-"
-		if strings.Contains(id, marker) {
-			// Has a name segment after the role — malformed singleton
-			continue
-		}
-
-		suffix := "-" + role
-		if strings.HasSuffix(id, suffix) {
-			// Find rig between first hyphen and the suffix
-			firstHyphen := strings.Index(id, "-")
-			if firstHyphen < 0 {
-				continue
-			}
-			suffixStart := len(id) - len(suffix)
-			if firstHyphen >= suffixStart {
-				continue
-			}
-			rig := id[firstHyphen+1 : suffixStart]
-			if rig == "" {
-				continue
-			}
-			return rig + "/" + role
+		if address := singletonRigAgentAddress(id, role); address != "" {
+			return address
 		}
 	}
 
 	return ""
 }
 
+func namedRigAgentAddress(id, role string) string {
+	marker := "-" + role + "-"
+	idx := strings.Index(id, marker)
+	if idx < 0 {
+		return ""
+	}
+	// Everything between prefix- and -role- is the rig name.
+	// The prefix ends at the first hyphen: <prefix>-<rig>-...
+	// But prefix could be multi-char (bd, gt, ppf), so we find
+	// the rig as the substring between the first hyphen and the role marker.
+	firstHyphen := strings.Index(id, "-")
+	if firstHyphen < 0 || firstHyphen >= idx {
+		return ""
+	}
+	rig := id[firstHyphen+1 : idx]
+	if rig == "" {
+		return ""
+	}
+	name := id[idx+len(marker):]
+	if name == "" {
+		return ""
+	}
+	// Named role (crew, polecat): address is rig/name
+	return rig + "/" + name
+}
+
+func singletonRigAgentAddress(id, role string) string {
+	// Singleton roles match only at end of ID: <prefix>-<rig>-<role>
+	// Reject if a name segment follows (e.g. -witness-extra is malformed).
+	marker := "-" + role + "-"
+	if strings.Contains(id, marker) {
+		return ""
+	}
+
+	suffix := "-" + role
+	if !strings.HasSuffix(id, suffix) {
+		return ""
+	}
+	// Find rig between first hyphen and the suffix
+	firstHyphen := strings.Index(id, "-")
+	if firstHyphen < 0 {
+		return ""
+	}
+	suffixStart := len(id) - len(suffix)
+	if firstHyphen >= suffixStart {
+		return ""
+	}
+	rig := id[firstHyphen+1 : suffixStart]
+	if rig == "" {
+		return ""
+	}
+	return rig + "/" + role
+}
+
 // parseAgentAddressFromDescription extracts agent address from description metadata.
 // Looks for "location: X" first (explicit address), then falls back to
 // "role_type: X" and "rig: Y" patterns in the description.
 func parseAgentAddressFromDescription(desc string) string {
-	var roleType, rig, location string
-
-	for _, line := range strings.Split(desc, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "location:") {
-			location = strings.TrimSpace(strings.TrimPrefix(line, "location:"))
-		} else if strings.HasPrefix(line, "role_type:") {
-			roleType = strings.TrimSpace(strings.TrimPrefix(line, "role_type:"))
-		} else if strings.HasPrefix(line, "rig:") {
-			rig = strings.TrimSpace(strings.TrimPrefix(line, "rig:"))
-		}
-	}
+	metadata := parseAgentAddressMetadata(desc)
 
 	// Explicit location takes priority (used by dogs and other agents
 	// whose address can't be derived from role_type + rig alone)
-	if location != "" && location != "null" {
-		return location
+	if metadata.location != "" && metadata.location != "null" {
+		return metadata.location
 	}
 
 	// Handle null values from description
+	rig := metadata.rig
 	if rig == "null" || rig == "" {
 		rig = ""
 	}
+	roleType := metadata.roleType
 	if roleType == "null" || roleType == "" {
 		return ""
 	}
