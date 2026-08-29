@@ -13,12 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Group command flags
-var (
-	groupJSON    bool
-	groupMembers []string
-)
-
 var mailGroupCmd = &cobra.Command{
 	Use:   "group",
 	Short: "Manage mail groups",
@@ -96,13 +90,13 @@ var groupDeleteCmd = &cobra.Command{
 
 func init() {
 	// List flags
-	groupListCmd.Flags().BoolVar(&groupJSON, "json", false, "Output as JSON")
+	groupListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Show flags
-	groupShowCmd.Flags().BoolVar(&groupJSON, "json", false, "Output as JSON")
+	groupShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Create flags
-	groupCreateCmd.Flags().StringArrayVar(&groupMembers, "member", nil, "Member to add (repeatable)")
+	groupCreateCmd.Flags().StringArray("member", nil, "Member to add (repeatable)")
 
 	// Add subcommands
 	mailGroupCmd.AddCommand(groupListCmd)
@@ -115,7 +109,7 @@ func init() {
 	mailCmd.AddCommand(mailGroupCmd)
 }
 
-func runGroupList(_ *cobra.Command, _ []string) error {
+func runGroupList(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -127,7 +121,7 @@ func runGroupList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("listing groups: %w", err)
 	}
 
-	if groupJSON {
+	if mailBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(groups)
@@ -151,7 +145,7 @@ func runGroupList(_ *cobra.Command, _ []string) error {
 	return w.Flush()
 }
 
-func runGroupShow(_ *cobra.Command, args []string) error {
+func runGroupShow(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -168,7 +162,7 @@ func runGroupShow(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("getting group: %w", err)
 	}
 
-	if groupJSON {
+	if mailBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(fields)
@@ -191,12 +185,13 @@ func runGroupShow(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runGroupCreate(_ *cobra.Command, args []string) error {
+func runGroupCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	members := args[1:] // Positional members
 
 	// Add --member flag values
-	members = append(members, groupMembers...)
+	flagMembers, _ := cmd.Flags().GetStringArray("member")
+	members = append(members, flagMembers...)
 
 	if !isValidGroupName(name) {
 		return fmt.Errorf("invalid group name %q: must be alphanumeric with dashes/underscores", name)

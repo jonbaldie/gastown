@@ -17,13 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Channel command flags
-var (
-	channelJSON        bool
-	channelRetainCount int
-	channelRetainHours int
-)
-
 var mailChannelCmd = &cobra.Command{
 	Use:   "channel [name]",
 	Short: "Manage and view beads-native channels",
@@ -121,20 +114,20 @@ var channelSubscribersCmd = &cobra.Command{
 
 func init() {
 	// List flags
-	channelListCmd.Flags().BoolVar(&channelJSON, "json", false, "Output as JSON")
+	channelListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Show flags
-	channelShowCmd.Flags().BoolVar(&channelJSON, "json", false, "Output as JSON")
+	channelShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Create flags
-	channelCreateCmd.Flags().IntVar(&channelRetainCount, "retain-count", 0, "Number of messages to retain (0 = unlimited)")
-	channelCreateCmd.Flags().IntVar(&channelRetainHours, "retain-hours", 0, "Hours to retain messages (0 = forever)")
+	channelCreateCmd.Flags().Int("retain-count", 0, "Number of messages to retain (0 = unlimited)")
+	channelCreateCmd.Flags().Int("retain-hours", 0, "Hours to retain messages (0 = forever)")
 
 	// Subscribers flags
-	channelSubscribersCmd.Flags().BoolVar(&channelJSON, "json", false, "Output as JSON")
+	channelSubscribersCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Main channel command flags
-	mailChannelCmd.Flags().BoolVar(&channelJSON, "json", false, "Output as JSON")
+	mailChannelCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Add subcommands
 	mailChannelCmd.AddCommand(channelListCmd)
@@ -156,7 +149,7 @@ func runMailChannel(cmd *cobra.Command, args []string) error {
 	return runChannelShow(cmd, args)
 }
 
-func runChannelList(_ *cobra.Command, _ []string) error {
+func runChannelList(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -168,7 +161,7 @@ func runChannelList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("listing channels: %w", err)
 	}
 
-	if channelJSON {
+	if mailBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(channels)
@@ -198,7 +191,7 @@ func runChannelList(_ *cobra.Command, _ []string) error {
 	return w.Flush()
 }
 
-func runChannelShow(_ *cobra.Command, args []string) error {
+func runChannelShow(cmd *cobra.Command, args []string) error {
 	channelName := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -223,7 +216,7 @@ func runChannelShow(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("listing channel messages: %w", err)
 	}
 
-	if channelJSON {
+	if mailBoolFlag(cmd, "json") {
 		if messages == nil {
 			messages = []channelMessage{}
 		}
@@ -272,8 +265,10 @@ func runChannelShow(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runChannelCreate(_ *cobra.Command, args []string) error {
+func runChannelCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	retainCount := mailIntFlag(cmd, "retain-count")
+	retainHours := mailIntFlag(cmd, "retain-hours")
 
 	if !isValidGroupName(name) { // Reuse group name validation
 		return fmt.Errorf("invalid channel name %q: must be alphanumeric with dashes/underscores", name)
@@ -306,18 +301,18 @@ func runChannelCreate(_ *cobra.Command, args []string) error {
 	}
 
 	// Update retention settings if specified
-	if channelRetainCount > 0 || channelRetainHours > 0 {
-		if err := b.UpdateChannelRetention(name, channelRetainCount, channelRetainHours); err != nil {
+	if retainCount > 0 || retainHours > 0 {
+		if err := b.UpdateChannelRetention(name, retainCount, retainHours); err != nil {
 			// Non-fatal: channel created but retention not set
 			style.PrintWarning("could not set retention: %v", err)
 		}
 	}
 
 	fmt.Printf("Created channel %q", name)
-	if channelRetainCount > 0 {
-		fmt.Printf(" (retain %d messages)", channelRetainCount)
-	} else if channelRetainHours > 0 {
-		fmt.Printf(" (retain %d hours)", channelRetainHours)
+	if retainCount > 0 {
+		fmt.Printf(" (retain %d messages)", retainCount)
+	} else if retainHours > 0 {
+		fmt.Printf(" (retain %d hours)", retainHours)
 	}
 	fmt.Println()
 	return nil
@@ -435,7 +430,7 @@ func runChannelUnsubscribe(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runChannelSubscribers(_ *cobra.Command, args []string) error {
+func runChannelSubscribers(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -453,7 +448,7 @@ func runChannelSubscribers(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("channel not found: %s", name)
 	}
 
-	if channelJSON {
+	if mailBoolFlag(cmd, "json") {
 		subs := fields.Subscribers
 		if subs == nil {
 			subs = []string{}

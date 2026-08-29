@@ -10,13 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	mailDrainMaxAge   string
-	mailDrainDryRun   bool
-	mailDrainIdentity string
-	mailDrainAll      bool // Archive all protocol messages regardless of age
-)
-
 var mailDrainCmd = &cobra.Command{
 	Use:   "drain",
 	Short: "Bulk-archive stale protocol messages",
@@ -52,10 +45,10 @@ Examples:
 }
 
 func init() {
-	mailDrainCmd.Flags().StringVar(&mailDrainMaxAge, "max-age", "30m", "Only drain messages older than this duration (e.g., 30m, 1h, 2h)")
-	mailDrainCmd.Flags().BoolVarP(&mailDrainDryRun, "dry-run", "n", false, "Show what would be drained without archiving")
-	mailDrainCmd.Flags().StringVar(&mailDrainIdentity, "identity", "", "Target inbox identity (e.g., gastown/witness)")
-	mailDrainCmd.Flags().BoolVar(&mailDrainAll, "all", false, "Drain all protocol messages regardless of age")
+	mailDrainCmd.Flags().String("max-age", "30m", "Only drain messages older than this duration (e.g., 30m, 1h, 2h)")
+	mailDrainCmd.Flags().BoolP("dry-run", "n", false, "Show what would be drained without archiving")
+	mailDrainCmd.Flags().String("identity", "", "Target inbox identity (e.g., gastown/witness)")
+	mailDrainCmd.Flags().Bool("all", false, "Drain all protocol messages regardless of age")
 }
 
 // drainableSubjects are protocol message subject prefixes that are safe to
@@ -82,15 +75,16 @@ func isDrainableMessage(subject string) bool {
 	return false
 }
 
-func runMailDrain(_ *cobra.Command, _ []string) error {
+func runMailDrain(cmd *cobra.Command, _ []string) error {
+	maxAgeText := mailStringFlag(cmd, "max-age")
 	// Parse max-age duration
-	maxAge, err := time.ParseDuration(mailDrainMaxAge)
+	maxAge, err := time.ParseDuration(maxAgeText)
 	if err != nil {
-		return fmt.Errorf("invalid --max-age %q: %w", mailDrainMaxAge, err)
+		return fmt.Errorf("invalid --max-age %q: %w", maxAgeText, err)
 	}
 
 	// Determine which inbox
-	address := mailDrainIdentity
+	address := mailStringFlag(cmd, "identity")
 	if address == "" {
 		address = detectSender()
 	}
@@ -125,7 +119,7 @@ func runMailDrain(_ *cobra.Command, _ []string) error {
 		}
 
 		// Check age unless --all
-		if !mailDrainAll && msg.Timestamp.After(cutoff) {
+		if !mailBoolFlag(cmd, "all") && msg.Timestamp.After(cutoff) {
 			continue
 		}
 
@@ -141,7 +135,7 @@ func runMailDrain(_ *cobra.Command, _ []string) error {
 		if isDrainableMessage(msg.Subject) {
 			continue // already handled above
 		}
-		if msg.Wisp && msg.Read && (mailDrainAll || msg.Timestamp.Before(cutoff)) {
+		if msg.Wisp && msg.Read && (mailBoolFlag(cmd, "all") || msg.Timestamp.Before(cutoff)) {
 			candidates = append(candidates, drainCandidate{Message: msg, Reason: "read-wisp"})
 		}
 	}
@@ -153,7 +147,7 @@ func runMailDrain(_ *cobra.Command, _ []string) error {
 	}
 
 	// Dry run mode
-	if mailDrainDryRun {
+	if mailBoolFlag(cmd, "dry-run") {
 		fmt.Printf("%s Would drain %d/%d messages from %s:\n",
 			style.Dim.Render("(dry-run)"), len(candidates), len(messages), address)
 		for _, c := range candidates {

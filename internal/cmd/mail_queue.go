@@ -445,11 +445,6 @@ func releaseQueueMessage(beadsDir, messageID, actor string) error {
 
 // Queue management commands (beads-native)
 
-var (
-	mailQueueClaimers string
-	mailQueueJSON     bool
-)
-
 var mailQueueCmd = &cobra.Command{
 	Use:   "queue",
 	Short: "Manage mail queues",
@@ -530,12 +525,12 @@ Examples:
 
 func init() {
 	// Queue create flags
-	mailQueueCreateCmd.Flags().StringVar(&mailQueueClaimers, "claimers", "", "Pattern for who can claim from this queue (required)")
+	mailQueueCreateCmd.Flags().String("claimers", "", "Pattern for who can claim from this queue (required)")
 	_ = mailQueueCreateCmd.MarkFlagRequired("claimers")
 
 	// Queue show/list flags
-	mailQueueShowCmd.Flags().BoolVar(&mailQueueJSON, "json", false, "Output as JSON")
-	mailQueueListCmd.Flags().BoolVar(&mailQueueJSON, "json", false, "Output as JSON")
+	mailQueueShowCmd.Flags().Bool("json", false, "Output as JSON")
+	mailQueueListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Add queue subcommands
 	mailQueueCmd.AddCommand(mailQueueCreateCmd)
@@ -548,8 +543,9 @@ func init() {
 }
 
 // runMailQueueCreate creates a new beads-native queue.
-func runMailQueueCreate(_ *cobra.Command, args []string) error {
+func runMailQueueCreate(cmd *cobra.Command, args []string) error {
 	queueName := args[0]
+	claimers := mailStringFlag(cmd, "claimers")
 
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -578,7 +574,7 @@ func runMailQueueCreate(_ *cobra.Command, args []string) error {
 	// Create queue fields
 	fields := &beads.QueueFields{
 		Name:         queueName,
-		ClaimPattern: mailQueueClaimers,
+		ClaimPattern: claimers,
 		Status:       beads.QueueStatusActive,
 		CreatedBy:    caller,
 		CreatedAt:    time.Now().Format(time.RFC3339),
@@ -592,13 +588,13 @@ func runMailQueueCreate(_ *cobra.Command, args []string) error {
 
 	fmt.Printf("%s Created queue %s\n", style.Bold.Render("✓"), queueName)
 	fmt.Printf("  ID: %s\n", queueID)
-	fmt.Printf("  Claimers: %s\n", mailQueueClaimers)
+	fmt.Printf("  Claimers: %s\n", claimers)
 
 	return nil
 }
 
 // runMailQueueShow shows details about a queue.
-func runMailQueueShow(_ *cobra.Command, args []string) error {
+func runMailQueueShow(cmd *cobra.Command, args []string) error {
 	queueName := args[0]
 
 	// Find workspace
@@ -619,7 +615,7 @@ func runMailQueueShow(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("queue %q not found", queueName)
 	}
 
-	if mailQueueJSON {
+	if mailBoolFlag(cmd, "json") {
 		output := map[string]interface{}{
 			"id":               issue.ID,
 			"name":             fields.Name,
@@ -662,7 +658,7 @@ func runMailQueueShow(_ *cobra.Command, args []string) error {
 }
 
 // runMailQueueList lists all queues.
-func runMailQueueList(_ *cobra.Command, _ []string) error {
+func runMailQueueList(cmd *cobra.Command, _ []string) error {
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -682,7 +678,7 @@ func runMailQueueList(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	if mailQueueJSON {
+	if mailBoolFlag(cmd, "json") {
 		var output []map[string]interface{}
 		for _, issue := range queues {
 			fields := beads.ParseQueueFields(issue.Description)

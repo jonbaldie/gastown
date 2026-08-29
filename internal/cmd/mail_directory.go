@@ -13,8 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var mailDirJSON bool
-
 var mailDirectoryCmd = &cobra.Command{
 	Use:     "directory",
 	Aliases: []string{"dir", "addresses"},
@@ -38,11 +36,11 @@ type DirectoryEntry struct {
 }
 
 func init() {
-	mailDirectoryCmd.Flags().BoolVar(&mailDirJSON, "json", false, "Output as JSON")
+	mailDirectoryCmd.Flags().Bool("json", false, "Output as JSON")
 	mailCmd.AddCommand(mailDirectoryCmd)
 }
 
-func runMailDirectory(_ *cobra.Command, _ []string) error {
+func runMailDirectory(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -50,7 +48,7 @@ func runMailDirectory(_ *cobra.Command, _ []string) error {
 
 	entries, warnings := collectMailDirectoryEntries(beads.New(townRoot))
 
-	if mailDirJSON {
+	if mailBoolFlag(cmd, "json") {
 		return writeMailDirectoryJSON(entries)
 	}
 	return writeMailDirectoryText(entries, warnings)
