@@ -240,19 +240,10 @@ func donePolecatEnvIdentity(gtRole, gtRig, gtPolecat string) (string, string, er
 	gtRole = strings.TrimSpace(gtRole)
 	gtRig = strings.TrimSpace(gtRig)
 	gtPolecat = strings.TrimSpace(gtPolecat)
-	if gtRole == "" {
-		return "", "", fmt.Errorf("gt done requires GT_ROLE to identify the assigned polecat")
-	}
-	if gtRig == "" {
-		return "", "", fmt.Errorf("gt done requires GT_RIG to identify the assigned polecat")
-	}
-	if gtPolecat == "" {
-		return "", "", fmt.Errorf("gt done requires GT_POLECAT to identify the assigned polecat")
-	}
-	if err := doneValidateIdentitySegment("GT_RIG", gtRig); err != nil {
+	if err := doneRequirePolecatEnv(gtRole, gtRig, gtPolecat); err != nil {
 		return "", "", err
 	}
-	if err := doneValidateIdentitySegment("GT_POLECAT", gtPolecat); err != nil {
+	if err := doneValidatePolecatEnvSegments(gtRig, gtPolecat); err != nil {
 		return "", "", err
 	}
 
@@ -260,14 +251,41 @@ func donePolecatEnvIdentity(gtRole, gtRig, gtPolecat string) (string, string, er
 	if err != nil {
 		return "", "", err
 	}
-	if roleRig != "" && roleRig != gtRig {
-		return "", "", fmt.Errorf("gt done identity mismatch: GT_ROLE rig %s != GT_RIG %s", roleRig, gtRig)
-	}
-	if rolePolecat != "" && rolePolecat != gtPolecat {
-		return "", "", fmt.Errorf("gt done identity mismatch: GT_ROLE polecat %s != GT_POLECAT %s", rolePolecat, gtPolecat)
+	if err := doneCheckPolecatRoleIdentity(roleRig, rolePolecat, gtRig, gtPolecat); err != nil {
+		return "", "", err
 	}
 
 	return gtRig, gtPolecat, nil
+}
+
+func doneRequirePolecatEnv(gtRole, gtRig, gtPolecat string) error {
+	if gtRole == "" {
+		return fmt.Errorf("gt done requires GT_ROLE to identify the assigned polecat")
+	}
+	if gtRig == "" {
+		return fmt.Errorf("gt done requires GT_RIG to identify the assigned polecat")
+	}
+	if gtPolecat == "" {
+		return fmt.Errorf("gt done requires GT_POLECAT to identify the assigned polecat")
+	}
+	return nil
+}
+
+func doneValidatePolecatEnvSegments(gtRig, gtPolecat string) error {
+	if err := doneValidateIdentitySegment("GT_RIG", gtRig); err != nil {
+		return err
+	}
+	return doneValidateIdentitySegment("GT_POLECAT", gtPolecat)
+}
+
+func doneCheckPolecatRoleIdentity(roleRig, rolePolecat, gtRig, gtPolecat string) error {
+	if roleRig != "" && roleRig != gtRig {
+		return fmt.Errorf("gt done identity mismatch: GT_ROLE rig %s != GT_RIG %s", roleRig, gtRig)
+	}
+	if rolePolecat != "" && rolePolecat != gtPolecat {
+		return fmt.Errorf("gt done identity mismatch: GT_ROLE polecat %s != GT_POLECAT %s", rolePolecat, gtPolecat)
+	}
+	return nil
 }
 
 func donePolecatRoleIdentity(gtRole string) (string, string, error) {
@@ -277,31 +295,39 @@ func donePolecatRoleIdentity(gtRole string) (string, string, error) {
 	parts := strings.Split(gtRole, "/")
 	switch len(parts) {
 	case 2:
-		role, roleRig, rolePolecat := parseRoleString(gtRole)
-		if role != RolePolecat || roleRig == "" || rolePolecat == "" {
-			return "", "", fmt.Errorf("gt done is for polecats only (GT_ROLE=%s)", gtRole)
-		}
-		if err := doneValidateIdentitySegment("GT_ROLE rig", roleRig); err != nil {
-			return "", "", err
-		}
-		if err := doneValidateIdentitySegment("GT_ROLE polecat", rolePolecat); err != nil {
-			return "", "", err
-		}
-		return roleRig, rolePolecat, nil
+		return donePolecatRoleIdentityScoped(gtRole)
 	case 3:
-		if parts[1] != "polecats" || parts[0] == "" || parts[2] == "" {
-			return "", "", fmt.Errorf("gt done is for polecats only (GT_ROLE=%s)", gtRole)
-		}
-		if err := doneValidateIdentitySegment("GT_ROLE rig", parts[0]); err != nil {
-			return "", "", err
-		}
-		if err := doneValidateIdentitySegment("GT_ROLE polecat", parts[2]); err != nil {
-			return "", "", err
-		}
-		return parts[0], parts[2], nil
+		return donePolecatRoleIdentityPath(gtRole, parts)
 	default:
 		return "", "", fmt.Errorf("gt done is for polecats only (GT_ROLE=%s)", gtRole)
 	}
+}
+
+func donePolecatRoleIdentityScoped(gtRole string) (string, string, error) {
+	role, roleRig, rolePolecat := parseRoleString(gtRole)
+	if role != RolePolecat || roleRig == "" || rolePolecat == "" {
+		return "", "", fmt.Errorf("gt done is for polecats only (GT_ROLE=%s)", gtRole)
+	}
+	if err := doneValidateIdentitySegment("GT_ROLE rig", roleRig); err != nil {
+		return "", "", err
+	}
+	if err := doneValidateIdentitySegment("GT_ROLE polecat", rolePolecat); err != nil {
+		return "", "", err
+	}
+	return roleRig, rolePolecat, nil
+}
+
+func donePolecatRoleIdentityPath(gtRole string, parts []string) (string, string, error) {
+	if parts[1] != "polecats" || parts[0] == "" || parts[2] == "" {
+		return "", "", fmt.Errorf("gt done is for polecats only (GT_ROLE=%s)", gtRole)
+	}
+	if err := doneValidateIdentitySegment("GT_ROLE rig", parts[0]); err != nil {
+		return "", "", err
+	}
+	if err := doneValidateIdentitySegment("GT_ROLE polecat", parts[2]); err != nil {
+		return "", "", err
+	}
+	return parts[0], parts[2], nil
 }
 
 func doneValidateIdentitySegment(name, value string) error {
