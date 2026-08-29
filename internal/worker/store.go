@@ -28,15 +28,32 @@ const (
 
 // Store persists runs, lifecycle events, and costs under the town runtime dir.
 type Store struct {
+	*storeBase
+	*runStore
+	*eventStore
+	*queueStore
+}
+
+type storeBase struct {
 	townRoot string
 	mu       sync.Mutex
 }
 
+type runStore struct{ *storeBase }
+type eventStore struct{ *storeBase }
+type queueStore struct{ *storeBase }
+
 func newStore(townRoot string) *Store {
-	return &Store{townRoot: townRoot}
+	base := &storeBase{townRoot: townRoot}
+	return &Store{
+		storeBase:  base,
+		runStore:   &runStore{storeBase: base},
+		eventStore: &eventStore{storeBase: base},
+		queueStore: &queueStore{storeBase: base},
+	}
 }
 
-func (s *Store) root() string {
+func (s *storeBase) root() string {
 	return filepath.Join(s.townRoot, constants.DirRuntime, dirWorker)
 }
 
@@ -53,12 +70,12 @@ func SessionPortPath(townRoot, sessionID string) string {
 	return filepath.Join(townRoot, constants.DirRuntime, dirWorker, dirSessions, safe+".port")
 }
 
-func (s *Store) eventsPath() string { return filepath.Join(s.root(), fileEvents) }
-func (s *Store) costsPath() string  { return filepath.Join(s.root(), fileCosts) }
-func (s *Store) runsPath() string   { return filepath.Join(s.root(), fileRuns) }
-func (s *Store) queuePath() string  { return filepath.Join(s.root(), fileQueue) }
+func (s *storeBase) eventsPath() string { return filepath.Join(s.root(), fileEvents) }
+func (s *storeBase) costsPath() string  { return filepath.Join(s.root(), fileCosts) }
+func (s *storeBase) runsPath() string   { return filepath.Join(s.root(), fileRuns) }
+func (s *storeBase) queuePath() string  { return filepath.Join(s.root(), fileQueue) }
 
-func (s *Store) ensure() error {
+func (s *storeBase) ensure() error {
 	if err := os.MkdirAll(filepath.Join(s.root(), dirSessions), runtimeMode); err != nil {
 		return fmt.Errorf("creating worker runtime dir: %w", err)
 	}
@@ -69,7 +86,7 @@ type runIndex struct {
 	Runs map[string]*Run `json:"runs"`
 }
 
-func (s *Store) loadIndex() (*runIndex, error) {
+func (s *runStore) loadIndex() (*runIndex, error) {
 	idx := &runIndex{Runs: map[string]*Run{}}
 	data, err := os.ReadFile(s.runsPath())
 	if err != nil {
@@ -90,7 +107,7 @@ func (s *Store) loadIndex() (*runIndex, error) {
 	return idx, nil
 }
 
-func (s *Store) saveIndex(idx *runIndex) error {
+func (s *runStore) saveIndex(idx *runIndex) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
@@ -131,13 +148,13 @@ func writeFileAtomic(path string, data []byte) error {
 	return os.Rename(name, path)
 }
 
-func (s *Store) PutRun(run *Run) error {
+func (s *runStore) PutRun(run *Run) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putRunLocked(run)
 }
 
-func (s *Store) putRunLocked(run *Run) error {
+func (s *runStore) putRunLocked(run *Run) error {
 	idx, err := s.loadIndex()
 	if err != nil {
 		return err
@@ -147,7 +164,7 @@ func (s *Store) putRunLocked(run *Run) error {
 	return s.saveIndex(idx)
 }
 
-func (s *Store) GetRun(runID string) (*Run, error) {
+func (s *runStore) GetRun(runID string) (*Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx, err := s.loadIndex()
@@ -162,7 +179,7 @@ func (s *Store) GetRun(runID string) (*Run, error) {
 	return &cp, nil
 }
 
-func (s *Store) GetRunBySession(sessionID string) (*Run, error) {
+func (s *runStore) GetRunBySession(sessionID string) (*Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx, err := s.loadIndex()
@@ -183,7 +200,7 @@ func (s *Store) GetRunBySession(sessionID string) (*Run, error) {
 	return found, nil
 }
 
-func (s *Store) LatestRunForBead(beadID string) (*Run, error) {
+func (s *runStore) LatestRunForBead(beadID string) (*Run, error) {
 	if beadID == "" {
 		return nil, nil
 	}
@@ -206,7 +223,7 @@ func (s *Store) LatestRunForBead(beadID string) (*Run, error) {
 	return found, nil
 }
 
-func (s *Store) LatestRunForSession(sessionID string) (*Run, error) {
+func (s *runStore) LatestRunForSession(sessionID string) (*Run, error) {
 	if sessionID == "" {
 		return nil, ErrRunNotFound
 	}
@@ -232,7 +249,7 @@ func (s *Store) LatestRunForSession(sessionID string) (*Run, error) {
 	return found, nil
 }
 
-func (s *Store) LiveRunForBead(beadID string) (*Run, error) {
+func (s *runStore) LiveRunForBead(beadID string) (*Run, error) {
 	if beadID == "" {
 		return nil, nil
 	}
@@ -251,7 +268,7 @@ func (s *Store) LiveRunForBead(beadID string) (*Run, error) {
 	return nil, nil
 }
 
-func (s *Store) ListRuns() ([]*Run, error) {
+func (s *runStore) ListRuns() ([]*Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx, err := s.loadIndex()
@@ -266,7 +283,7 @@ func (s *Store) ListRuns() ([]*Run, error) {
 	return out, nil
 }
 
-func (s *Store) AppendEvent(ev Event) error {
+func (s *eventStore) AppendEvent(ev Event) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
@@ -290,7 +307,7 @@ func (s *Store) AppendEvent(ev Event) error {
 	return nil
 }
 
-func (s *Store) ReadEvents() ([]Event, error) {
+func (s *eventStore) ReadEvents() ([]Event, error) {
 	data, err := os.ReadFile(s.eventsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -313,7 +330,7 @@ func (s *Store) ReadEvents() ([]Event, error) {
 	return out, nil
 }
 
-func (s *Store) AppendCost(rec CostRecord) error {
+func (s *eventStore) AppendCost(rec CostRecord) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
@@ -337,7 +354,7 @@ func (s *Store) AppendCost(rec CostRecord) error {
 	return nil
 }
 
-func (s *Store) ReadCosts() ([]CostRecord, error) {
+func (s *eventStore) ReadCosts() ([]CostRecord, error) {
 	data, err := os.ReadFile(s.costsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -364,7 +381,7 @@ type queueFile struct {
 	Items []QueuedPrompt `json:"items"`
 }
 
-func (s *Store) loadQueue() (*queueFile, error) {
+func (s *queueStore) loadQueue() (*queueFile, error) {
 	q := &queueFile{}
 	data, err := os.ReadFile(s.queuePath())
 	if err != nil {
@@ -382,7 +399,7 @@ func (s *Store) loadQueue() (*queueFile, error) {
 	return q, nil
 }
 
-func (s *Store) saveQueue(q *queueFile) error {
+func (s *queueStore) saveQueue(q *queueFile) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
@@ -396,7 +413,7 @@ func (s *Store) saveQueue(q *queueFile) error {
 	return nil
 }
 
-func (s *Store) Enqueue(item QueuedPrompt) (int, error) {
+func (s *queueStore) Enqueue(item QueuedPrompt) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()
@@ -410,7 +427,7 @@ func (s *Store) Enqueue(item QueuedPrompt) (int, error) {
 	return len(q.Items), nil
 }
 
-func (s *Store) PendingFor(runID string) []QueuedPrompt {
+func (s *queueStore) PendingFor(runID string) []QueuedPrompt {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()
@@ -431,7 +448,7 @@ func (s *Store) PendingFor(runID string) []QueuedPrompt {
 	return out
 }
 
-func (s *Store) DrainDue(runID string) ([]QueuedPrompt, error) {
+func (s *queueStore) DrainDue(runID string) ([]QueuedPrompt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()
@@ -457,7 +474,7 @@ func (s *Store) DrainDue(runID string) ([]QueuedPrompt, error) {
 	return due, nil
 }
 
-func (s *Store) ExpireStale(now time.Time) ([]QueuedPrompt, error) {
+func (s *queueStore) ExpireStale(now time.Time) ([]QueuedPrompt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q, err := s.loadQueue()
