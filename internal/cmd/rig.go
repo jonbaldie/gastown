@@ -1588,16 +1588,11 @@ func isAgentSessionHealthy(t *tmux.Tmux, sessionName string) bool {
 	return t.CheckSessionHealth(sessionName, 0) == tmux.SessionHealthy
 }
 
-func runRigBoot(_ *cobra.Command, args []string) error {
-	rigName := args[0]
-
-	// Find workspace
+func resolveRigForBoot(rigName string) (string, *rig.Rig, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return "", nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Load rigs config and get rig
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
@@ -1608,20 +1603,14 @@ func runRigBoot(_ *cobra.Command, args []string) error {
 	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
 	r, err := rigMgr.GetRig(rigName)
 	if err != nil {
-		return fmt.Errorf("rig '%s' not found", rigName)
+		return "", nil, fmt.Errorf("rig '%s' not found", rigName)
 	}
+	return townRoot, r, nil
+}
 
-	// Check if rig is parked or docked (uses bead labels + wisp state)
-	if blocked, reason := IsRigParkedOrDocked(townRoot, rigName); blocked {
-		return fmt.Errorf("rig '%s' is %s - use 'gt rig unpark' or 'gt rig undock' first", rigName, reason)
-	}
-
-	fmt.Printf("Booting rig %s...\n", style.Bold.Render(rigName))
-
+func startRigBootServices(r *rig.Rig) ([]string, []string, error) {
 	var started []string
 	var skipped []string
-
-	// 1. Start the witness
 	// Start() treats healthy sessions as already running and recreates zombie
 	// sessions whose tmux pane remains after the agent exits.
 	witMgr := witness.NewManager(r)
@@ -1629,13 +1618,12 @@ func runRigBoot(_ *cobra.Command, args []string) error {
 		if err == witness.ErrAlreadyRunning {
 			skipped = append(skipped, "witness (already running)")
 		} else {
-			return fmt.Errorf("starting witness: %w", err)
+			return nil, nil, fmt.Errorf("starting witness: %w", err)
 		}
 	} else {
 		started = append(started, "witness")
 	}
 
-	// 2. Start the refinery
 	refMgr := refinery.NewManager(r)
 	if err := refMgr.Start(false, ""); err != nil { // false = background mode
 		if errors.Is(err, refinery.ErrAlreadyRunning) {
@@ -1643,13 +1631,30 @@ func runRigBoot(_ *cobra.Command, args []string) error {
 		} else if errors.Is(err, refinery.ErrForkRig) {
 			skipped = append(skipped, "refinery (fork-backed rig; use PR workflow)")
 		} else {
-			return fmt.Errorf("starting refinery: %w", err)
+			return nil, nil, fmt.Errorf("starting refinery: %w", err)
 		}
 	} else {
 		started = append(started, "refinery")
 	}
+	return started, skipped, nil
+}
 
-	// Report results
+func runRigBoot(_ *cobra.Command, args []string) error {
+	rigName := args[0]
+	townRoot, r, err := resolveRigForBoot(rigName)
+	if err != nil {
+		return err
+	}
+	if blocked, reason := IsRigParkedOrDocked(townRoot, rigName); blocked {
+		return fmt.Errorf("rig '%s' is %s - use 'gt rig unpark' or 'gt rig undock' first", rigName, reason)
+	}
+
+	fmt.Printf("Booting rig %s...\n", style.Bold.Render(rigName))
+	started, skipped, err := startRigBootServices(r)
+	if err != nil {
+		return err
+	}
+
 	if len(started) > 0 {
 		fmt.Printf("%s Started: %s\n", style.Success.Render("✓"), strings.Join(started, ", "))
 	}
