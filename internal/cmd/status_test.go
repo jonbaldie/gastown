@@ -209,7 +209,7 @@ func TestOutputStatusText_IncludesDNDSection(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := outputStatusText(&buf, status); err != nil {
+	if err := outputStatusText(&buf, status, false); err != nil {
 		t.Fatalf("outputStatusText error: %v", err)
 	}
 	out := buf.String()
@@ -222,17 +222,7 @@ func TestOutputStatusText_IncludesDNDSection(t *testing.T) {
 }
 
 func TestRunStatusWatch_RejectsZeroInterval(t *testing.T) {
-	oldInterval := statusInterval
-	oldWatch := statusWatch
-	defer func() {
-		statusInterval = oldInterval
-		statusWatch = oldWatch
-	}()
-
-	statusInterval = 0
-	statusWatch = true
-
-	err := runStatusWatch(nil, nil)
+	err := runStatusWatch(statusOptions{watch: true, interval: 0})
 	if err == nil {
 		t.Fatal("expected error for zero interval, got nil")
 	}
@@ -242,17 +232,7 @@ func TestRunStatusWatch_RejectsZeroInterval(t *testing.T) {
 }
 
 func TestRunStatusWatch_RejectsNegativeInterval(t *testing.T) {
-	oldInterval := statusInterval
-	oldWatch := statusWatch
-	defer func() {
-		statusInterval = oldInterval
-		statusWatch = oldWatch
-	}()
-
-	statusInterval = -5
-	statusWatch = true
-
-	err := runStatusWatch(nil, nil)
+	err := runStatusWatch(statusOptions{watch: true, interval: -5})
 	if err == nil {
 		t.Fatal("expected error for negative interval, got nil")
 	}
@@ -262,20 +242,7 @@ func TestRunStatusWatch_RejectsNegativeInterval(t *testing.T) {
 }
 
 func TestRunStatusWatch_RejectsJSONCombo(t *testing.T) {
-	oldJSON := statusJSON
-	oldWatch := statusWatch
-	oldInterval := statusInterval
-	defer func() {
-		statusJSON = oldJSON
-		statusWatch = oldWatch
-		statusInterval = oldInterval
-	}()
-
-	statusJSON = true
-	statusWatch = true
-	statusInterval = 2
-
-	err := runStatusWatch(nil, nil)
+	err := runStatusWatch(statusOptions{json: true, watch: true, interval: 2})
 	if err == nil {
 		t.Fatal("expected error for --json + --watch, got nil")
 	}

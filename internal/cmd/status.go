@@ -32,12 +32,6 @@ import (
 	"golang.org/x/term"
 )
 
-var statusJSON bool
-var statusFast bool
-var statusWatch bool
-var statusInterval int
-var statusVerbose bool
-
 var statusCmd = &cobra.Command{
 	Use:         "status",
 	Aliases:     []string{"stat"},
@@ -54,11 +48,11 @@ Use --watch to continuously refresh status at regular intervals.`,
 }
 
 func init() {
-	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Output as JSON")
-	statusCmd.Flags().BoolVar(&statusFast, "fast", false, "Skip mail lookups for faster execution")
-	statusCmd.Flags().BoolVarP(&statusWatch, "watch", "w", false, "Watch mode: refresh status continuously")
-	statusCmd.Flags().IntVarP(&statusInterval, "interval", "n", 2, "Refresh interval in seconds")
-	statusCmd.Flags().BoolVarP(&statusVerbose, "verbose", "v", false, "Show detailed multi-line output per agent")
+	statusCmd.Flags().Bool("json", false, "Output as JSON")
+	statusCmd.Flags().Bool("fast", false, "Skip mail lookups for faster execution")
+	statusCmd.Flags().BoolP("watch", "w", false, "Watch mode: refresh status continuously")
+	statusCmd.Flags().IntP("interval", "n", 2, "Refresh interval in seconds")
+	statusCmd.Flags().BoolP("verbose", "v", false, "Show detailed multi-line output per agent")
 	rootCmd.AddCommand(statusCmd)
 }
 
@@ -524,26 +518,41 @@ func buildInfoFromConfig(rc *config.RuntimeConfig) string {
 	return cmd
 }
 
-func runStatus(cmd *cobra.Command, args []string) error {
-	if statusWatch {
-		return runStatusWatch(cmd, args)
-	}
-	return runStatusOnce(cmd, args)
+type statusOptions struct {
+	json     bool
+	fast     bool
+	watch    bool
+	interval int
+	verbose  bool
 }
 
-func runStatusWatch(_ *cobra.Command, _ []string) error {
-	if statusJSON {
+func runStatus(cmd *cobra.Command, args []string) error {
+	opts := statusOptions{
+		json:     commandBoolFlag(cmd, "json"),
+		fast:     commandBoolFlag(cmd, "fast"),
+		watch:    commandBoolFlag(cmd, "watch"),
+		interval: commandIntFlag(cmd, "interval"),
+		verbose:  commandBoolFlag(cmd, "verbose"),
+	}
+	if opts.watch {
+		return runStatusWatch(opts)
+	}
+	return runStatusOnce(opts)
+}
+
+func runStatusWatch(opts statusOptions) error {
+	if opts.json {
 		return fmt.Errorf("--json and --watch cannot be used together")
 	}
-	if statusInterval <= 0 {
-		return fmt.Errorf("interval must be positive, got %d", statusInterval)
+	if opts.interval <= 0 {
+		return fmt.Errorf("interval must be positive, got %d", opts.interval)
 	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 
-	ticker := time.NewTicker(time.Duration(statusInterval) * time.Second)
+	ticker := time.NewTicker(time.Duration(opts.interval) * time.Second)
 	defer ticker.Stop()
 
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
@@ -554,7 +563,7 @@ func runStatusWatch(_ *cobra.Command, _ []string) error {
 	// agents to appear as not running (empty bubbles).
 	var cachedStatus *TownStatus
 	var cachedAt time.Time
-	maxStale := time.Duration(statusInterval) * time.Second * 5
+	maxStale := time.Duration(opts.interval) * time.Second * 5
 
 	for {
 		var buf bytes.Buffer
@@ -564,19 +573,19 @@ func runStatusWatch(_ *cobra.Command, _ []string) error {
 		}
 
 		timestamp := time.Now().Format("15:04:05")
-		header := fmt.Sprintf("[%s] gt status --watch (every %ds, Ctrl+C to stop)", timestamp, statusInterval)
+		header := fmt.Sprintf("[%s] gt status --watch (every %ds, Ctrl+C to stop)", timestamp, opts.interval)
 		if isTTY {
 			fmt.Fprintf(&buf, "%s\n\n", style.Dim.Render(header))
 		} else {
 			fmt.Fprintf(&buf, "%s\n\n", header)
 		}
 
-		status, err := gatherStatus()
+		status, err := gatherStatus(opts)
 		usedCache := false
 
 		// On error, retry once before giving up.
 		if err != nil {
-			status, err = gatherStatus()
+			status, err = gatherStatus(opts)
 		}
 
 		if err == nil {
@@ -587,7 +596,7 @@ func runStatusWatch(_ *cobra.Command, _ []string) error {
 			if running == 0 && cachedStatus != nil &&
 				countRunningAgents(*cachedStatus) > 0 {
 				// Retry once to confirm.
-				retry, retryErr := gatherStatus()
+				retry, retryErr := gatherStatus(opts)
 				if retryErr == nil &&
 					countRunningAgents(retry) > 0 {
 					status = retry
@@ -624,7 +633,7 @@ func runStatusWatch(_ *cobra.Command, _ []string) error {
 					fmt.Fprintf(&buf, "%s\n", staleNote)
 				}
 			}
-			if err := outputStatusText(&buf, status); err != nil {
+			if err := outputStatusText(&buf, status, opts.verbose); err != nil {
 				fmt.Fprintf(&buf, "Error: %v\n", err)
 			}
 		}
@@ -663,25 +672,25 @@ func countRunningAgents(s TownStatus) int {
 	return count
 }
 
-func runStatusOnce(_ *cobra.Command, _ []string) error {
-	status, err := gatherStatus()
+func runStatusOnce(opts statusOptions) error {
+	status, err := gatherStatus(opts)
 	if err != nil {
 		return err
 	}
-	if statusJSON {
+	if opts.json {
 		return outputStatusJSON(status)
 	}
-	return outputStatusText(os.Stdout, status)
+	return outputStatusText(os.Stdout, status, opts.verbose)
 }
 
-func gatherStatus() (TownStatus, error) {
+func gatherStatus(opts statusOptions) (TownStatus, error) {
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return TownStatus{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	fast := statusFast
+	fast := opts.fast
 	skipBeadsPrefetch := false
 	if !fast {
 		if release, ok := tryStatusDetailLock(townRoot); ok {
@@ -1058,7 +1067,7 @@ func outputStatusJSON(status TownStatus) error {
 	return enc.Encode(status)
 }
 
-func outputStatusText(w io.Writer, status TownStatus) error {
+func outputStatusText(w io.Writer, status TownStatus, verbose bool) error {
 	// Header
 	fmt.Fprintf(w, "%s %s\n", style.Bold.Render("Town:"), status.Name)
 	fmt.Fprintf(w, "%s\n\n", style.Dim.Render(status.Location))
@@ -1161,7 +1170,7 @@ func outputStatusText(w io.Writer, status TownStatus) error {
 		if icon == "" {
 			icon = roleIcons[agent.Name]
 		}
-		if statusVerbose {
+		if verbose {
 			fmt.Fprintf(w, "%s %s\n", icon, style.Bold.Render(capitalizeFirst(agent.Name)))
 			renderAgentDetails(w, agent, "   ", nil, status.Location)
 			fmt.Fprintln(w)
@@ -1170,7 +1179,7 @@ func outputStatusText(w io.Writer, status TownStatus) error {
 			renderAgentCompact(w, agent, icon+" ", nil, status.Location)
 		}
 	}
-	if !statusVerbose && len(status.Agents) > 0 {
+	if !verbose && len(status.Agents) > 0 {
 		fmt.Fprintln(w)
 	}
 
@@ -1201,7 +1210,7 @@ func outputStatusText(w io.Writer, status TownStatus) error {
 
 		// Witness
 		if len(witnesses) > 0 {
-			if statusVerbose {
+			if verbose {
 				fmt.Fprintf(w, "%s %s\n", roleIcons[constants.RoleWitness], style.Bold.Render("Witness"))
 				for _, agent := range witnesses {
 					renderAgentDetails(w, agent, "   ", r.Hooks, status.Location)
@@ -1216,7 +1225,7 @@ func outputStatusText(w io.Writer, status TownStatus) error {
 
 		// Refinery
 		if len(refineries) > 0 {
-			if statusVerbose {
+			if verbose {
 				fmt.Fprintf(w, "%s %s\n", roleIcons[constants.RoleRefinery], style.Bold.Render("Refinery"))
 				for _, agent := range refineries {
 					renderAgentDetails(w, agent, "   ", r.Hooks, status.Location)
@@ -1246,7 +1255,7 @@ func outputStatusText(w io.Writer, status TownStatus) error {
 
 		// Crew
 		if len(crews) > 0 {
-			if statusVerbose {
+			if verbose {
 				fmt.Fprintf(w, "%s %s (%d)\n", roleIcons[constants.RoleCrew], style.Bold.Render("Crew"), len(crews))
 				for _, agent := range crews {
 					renderAgentDetails(w, agent, "   ", r.Hooks, status.Location)
@@ -1262,7 +1271,7 @@ func outputStatusText(w io.Writer, status TownStatus) error {
 
 		// Polecats
 		if len(polecats) > 0 {
-			if statusVerbose {
+			if verbose {
 				fmt.Fprintf(w, "%s %s (%d)\n", roleIcons[constants.RolePolecat], style.Bold.Render("Polecats"), len(polecats))
 				for _, agent := range polecats {
 					renderAgentDetails(w, agent, "   ", r.Hooks, status.Location)
