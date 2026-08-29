@@ -1620,15 +1620,21 @@ func runDoltRollback(_ *cobra.Command, args []string) error {
 
 // printBackupContents shows what's in a backup directory for dry-run output.
 func printBackupContents(backupPath, townRoot string) {
-	// Check town-level backup
+	printTownBackupContents(backupPath, townRoot)
+	printFormulaRigBackups(backupPath, townRoot)
+	printRigsDirBackups(backupPath, townRoot)
+}
+
+func printTownBackupContents(backupPath, townRoot string) {
 	townBackup := fmt.Sprintf("%s/town-beads", backupPath)
 	if _, err := os.Stat(townBackup); err == nil {
 		dst := fmt.Sprintf("%s/.beads", townRoot)
 		fmt.Printf("  Would restore: %s\n", style.Dim.Render(dst))
 		fmt.Printf("    From: %s\n", style.Dim.Render(townBackup))
 	}
+}
 
-	// Check formula-style rig backups
+func printFormulaRigBackups(backupPath, townRoot string) {
 	entries, err := os.ReadDir(backupPath)
 	if err != nil {
 		return
@@ -1650,8 +1656,9 @@ func printBackupContents(backupPath, townRoot string) {
 			fmt.Printf("    From: %s\n", style.Dim.Render(src))
 		}
 	}
+}
 
-	// Check test-backup-style rig backups
+func printRigsDirBackups(backupPath, townRoot string) {
 	rigsDir := fmt.Sprintf("%s/rigs", backupPath)
 	if rigEntries, err := os.ReadDir(rigsDir); err == nil {
 		for _, entry := range rigEntries {
