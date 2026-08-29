@@ -52,17 +52,10 @@ func runWLSync(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("dolt not found in PATH — install from https://docs.dolthub.com/introduction/installation")
 	}
 
-	// Try loading wasteland config first (set by gt wl join)
-	forkDir := ""
-	if cfg, err := wasteland.LoadConfig(townRoot); err == nil {
-		forkDir = cfg.LocalDir
+	forkDir, err := resolveWLSyncFork(townRoot)
+	if err != nil {
+		return err
 	}
-
-	// Fall back to standard locations
-	if forkDir == "" {
-		forkDir = findWLCommonsFork(townRoot)
-	}
-
 	if forkDir == "" {
 		return fmt.Errorf("no local wl-commons fork found\n\nJoin a wasteland first: gt wl join <org/db>")
 	}
@@ -70,44 +63,54 @@ func runWLSync(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("Local fork: %s\n", style.Dim.Render(forkDir))
 
 	if dryRun {
-		fmt.Printf("\n%s Dry run — checking upstream for changes...\n", style.Bold.Render("~"))
-
-		fetchCmd := exec.Command(doltPath, "fetch", "upstream")
-		fetchCmd.Dir = forkDir
-		fetchCmd.Stderr = os.Stderr
-		if err := fetchCmd.Run(); err != nil {
-			return fmt.Errorf("fetching upstream: %w", err)
-		}
-
-		if err := checkSchemaEvolution(doltPath, forkDir, allowUpgrade); err != nil {
-			return err
-		}
-
-		diffCmd := exec.Command(doltPath, "diff", "--stat", "HEAD", "upstream/main")
-		diffCmd.Dir = forkDir
-		diffCmd.Stdout = os.Stdout
-		diffCmd.Stderr = os.Stderr
-		if err := diffCmd.Run(); err != nil {
-			fmt.Printf("%s Already up to date.\n", style.Bold.Render("✓"))
-		}
-		return nil
+		return runWLSyncDryRun(doltPath, forkDir, allowUpgrade)
 	}
 
+	return runWLSyncLive(doltPath, forkDir, allowUpgrade)
+}
+
+func resolveWLSyncFork(townRoot string) (string, error) {
+	// Try loading wasteland config first (set by gt wl join).
+	if cfg, err := wasteland.LoadConfig(townRoot); err == nil && cfg.LocalDir != "" {
+		return cfg.LocalDir, nil
+	}
+
+	// Fall back to standard locations.
+	if forkDir := findWLCommonsFork(townRoot); forkDir != "" {
+		return forkDir, nil
+	}
+	return "", fmt.Errorf("no local wl-commons fork found\n\nJoin a wasteland first: gt wl join <org/db>")
+}
+
+func runWLSyncDryRun(doltPath, forkDir string, allowUpgrade bool) error {
+	fmt.Printf("\n%s Dry run — checking upstream for changes...\n", style.Bold.Render("~"))
+	if err := runWLSyncFetch(doltPath, forkDir); err != nil {
+		return err
+	}
+	if err := checkSchemaEvolution(doltPath, forkDir, allowUpgrade); err != nil {
+		return err
+	}
+
+	diffCmd := exec.Command(doltPath, "diff", "--stat", "HEAD", "upstream/main")
+	diffCmd.Dir = forkDir
+	diffCmd.Stdout = os.Stdout
+	diffCmd.Stderr = os.Stderr
+	if err := diffCmd.Run(); err != nil {
+		fmt.Printf("%s Already up to date.\n", style.Bold.Render("✓"))
+	}
+	return nil
+}
+
+func runWLSyncLive(doltPath, forkDir string, allowUpgrade bool) error {
 	fmt.Printf("\nFetching from upstream...\n")
-
-	fetchCmd := exec.Command(doltPath, "fetch", "upstream")
-	fetchCmd.Dir = forkDir
-	fetchCmd.Stderr = os.Stderr
-	if err := fetchCmd.Run(); err != nil {
-		return fmt.Errorf("fetching upstream: %w", err)
+	if err := runWLSyncFetch(doltPath, forkDir); err != nil {
+		return err
 	}
-
 	if err := checkSchemaEvolution(doltPath, forkDir, allowUpgrade); err != nil {
 		return err
 	}
 
 	fmt.Printf("Merging upstream changes...\n")
-
 	pullCmd := exec.Command(doltPath, "merge", "upstream/main")
 	pullCmd.Dir = forkDir
 	pullCmd.Stdout = os.Stdout
@@ -117,8 +120,21 @@ func runWLSync(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("\n%s Synced with upstream\n", style.Bold.Render("✓"))
+	printWLSyncSummary(doltPath, forkDir)
+	return nil
+}
 
-	// Show summary
+func runWLSyncFetch(doltPath, forkDir string) error {
+	fetchCmd := exec.Command(doltPath, "fetch", "upstream")
+	fetchCmd.Dir = forkDir
+	fetchCmd.Stderr = os.Stderr
+	if err := fetchCmd.Run(); err != nil {
+		return fmt.Errorf("fetching upstream: %w", err)
+	}
+	return nil
+}
+
+func printWLSyncSummary(doltPath, forkDir string) {
 	summaryQuery := `SELECT
 		(SELECT COUNT(*) FROM wanted WHERE status = 'open') AS open_wanted,
 		(SELECT COUNT(*) FROM wanted) AS total_wanted,
@@ -139,7 +155,6 @@ func runWLSync(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	return nil
 }
 
 func findWLCommonsFork(townRoot string) string {
