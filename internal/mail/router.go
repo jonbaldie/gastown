@@ -1925,39 +1925,70 @@ func (r *Router) enqueueReplyReminder(msg *Message, sessionID string) {
 }
 
 func senderCanReceiveReply(from string) bool {
-	if from == "" || strings.TrimSpace(from) != from || strings.ContainsAny(from, " \t\r\n") {
+	if !isReplySenderInput(from) {
 		return false
 	}
 
 	identity := AddressToIdentity(from)
-	switch identity {
-	case "overseer", "mayor/", "deacon/":
+	if isDirectReplyIdentity(identity) {
 		return true
 	}
-	if identity == "" || strings.HasPrefix(identity, "@") || strings.ContainsAny(identity, ":@") {
+	if !isRoutableReplyIdentity(identity) {
 		return false
 	}
 
-	parts := strings.Split(identity, "/")
-	switch len(parts) {
-	case 2:
-		if !validReplyAddressPart(parts[0]) || !validReplyAddressPart(parts[1]) {
-			return false
-		}
-		if parts[0] == constants.RoleMayor || parts[0] == constants.RoleDeacon {
-			return false
-		}
-		switch parts[1] {
-		case constants.RoleCrew, "polecat", "polecats", "dogs":
-			return false
-		default:
-			return true
-		}
-	case 3:
-		return parts[0] == constants.RoleDeacon && parts[1] == "dogs" && validReplyAddressPart(parts[2])
+	return replyAddressParts(strings.Split(identity, "/"))
+}
+
+func isReplySenderInput(from string) bool {
+	return from != "" && strings.TrimSpace(from) == from && !strings.ContainsAny(from, " \t\r\n")
+}
+
+func isDirectReplyIdentity(identity string) bool {
+	switch identity {
+	case "overseer", "mayor/", "deacon/":
+		return true
 	default:
 		return false
 	}
+}
+
+func isRoutableReplyIdentity(identity string) bool {
+	return identity != "" && !strings.HasPrefix(identity, "@") && !strings.ContainsAny(identity, ":@")
+}
+
+func replyAddressParts(parts []string) bool {
+	switch len(parts) {
+	case 2:
+		return twoPartReplyAddress(parts)
+	case 3:
+		return deaconDogReplyAddress(parts)
+	default:
+		return false
+	}
+}
+
+func twoPartReplyAddress(parts []string) bool {
+	if !validReplyAddressPart(parts[0]) || !validReplyAddressPart(parts[1]) {
+		return false
+	}
+	if parts[0] == constants.RoleMayor || parts[0] == constants.RoleDeacon {
+		return false
+	}
+	return !isNonReplyAddressRole(parts[1])
+}
+
+func isNonReplyAddressRole(role string) bool {
+	switch role {
+	case constants.RoleCrew, "polecat", "polecats", "dogs":
+		return true
+	default:
+		return false
+	}
+}
+
+func deaconDogReplyAddress(parts []string) bool {
+	return parts[0] == constants.RoleDeacon && parts[1] == "dogs" && validReplyAddressPart(parts[2])
 }
 
 func validReplyAddressPart(part string) bool {
@@ -2012,17 +2043,8 @@ func (r *Router) isRecipientMuted(address string) bool {
 // addressToAgentBeadID converts a mail address to an agent bead ID for DND lookup.
 // Returns empty string if the address cannot be converted.
 func addressToAgentBeadID(address string) string {
-	if address == "overseer" {
-		return "" // Overseer is a human, no agent bead
-	}
-	if dogName, ok := DogAddressName(address); ok {
-		return session.DogSessionName(dogName)
-	}
-	switch address {
-	case constants.RoleMayor, constants.RoleMayor + "/":
-		return session.MayorSessionName()
-	case constants.RoleDeacon, constants.RoleDeacon + "/":
-		return session.DeaconSessionName()
+	if agentBeadID, ok := townAddressToAgentBeadID(address); ok {
+		return agentBeadID
 	}
 	if isReservedTownSubpath(address) {
 		return ""
@@ -2033,25 +2055,39 @@ func addressToAgentBeadID(address string) string {
 		return ""
 	}
 
-	rig := parts[0]
-	target := parts[1]
+	return agentBeadIDForTarget(parts[0], parts[1])
+}
 
+func townAddressToAgentBeadID(address string) (string, bool) {
+	if address == "overseer" {
+		return "", true // Overseer is a human, no agent bead.
+	}
+	if dogName, ok := DogAddressName(address); ok {
+		return session.DogSessionName(dogName), true
+	}
+	switch address {
+	case constants.RoleMayor, constants.RoleMayor + "/":
+		return session.MayorSessionName(), true
+	case constants.RoleDeacon, constants.RoleDeacon + "/":
+		return session.DeaconSessionName(), true
+	default:
+		return "", false
+	}
+}
+
+func agentBeadIDForTarget(rig, target string) string {
 	rigPrefix := session.PrefixFor(rig)
-
 	switch {
 	case target == constants.RoleWitness:
 		return session.WitnessSessionName(rigPrefix)
 	case target == constants.RoleRefinery:
 		return session.RefinerySessionName(rigPrefix)
 	case strings.HasPrefix(target, "crew/"):
-		crewName := strings.TrimPrefix(target, "crew/")
-		return session.CrewSessionName(rigPrefix, crewName)
+		return session.CrewSessionName(rigPrefix, strings.TrimPrefix(target, "crew/"))
 	case strings.HasPrefix(target, "polecat/"):
-		pcName := strings.TrimPrefix(target, "polecat/")
-		return session.PolecatSessionName(rigPrefix, pcName)
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecat/"))
 	case strings.HasPrefix(target, "polecats/"):
-		pcName := strings.TrimPrefix(target, "polecats/")
-		return session.PolecatSessionName(rigPrefix, pcName)
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecats/"))
 	default:
 		return session.PolecatSessionName(rigPrefix, target)
 	}
@@ -2065,22 +2101,8 @@ func addressToAgentBeadID(address string) string {
 // This supersedes the approach in PR #896 which only handled slash-to-dash
 // conversion but didn't address the crew/polecat ambiguity.
 func AddressToSessionIDs(address string) []string {
-	// Overseer address: "overseer" (human operator)
-	if address == "overseer" {
-		return []string{session.OverseerSessionName()}
-	}
-	if dogName, ok := DogAddressName(address); ok {
-		return []string{session.DogSessionName(dogName)}
-	}
-
-	// Mayor address: "mayor/" or "mayor"
-	if address == constants.RoleMayor || address == constants.RoleMayor+"/" {
-		return []string{session.MayorSessionName()}
-	}
-
-	// Deacon address: "deacon/" or "deacon"
-	if address == constants.RoleDeacon || address == constants.RoleDeacon+"/" {
-		return []string{session.DeaconSessionName()}
+	if ids, ok := townAddressToSessionIDs(address); ok {
+		return ids
 	}
 	if isReservedTownSubpath(address) {
 		return nil
@@ -2092,31 +2114,29 @@ func AddressToSessionIDs(address string) []string {
 		return nil
 	}
 
-	rig := parts[0]
-	target := parts[1]
+	return rigAddressSessionIDs(parts[0], parts[1])
+}
+
+func townAddressToSessionIDs(address string) ([]string, bool) {
+	if address == "overseer" {
+		return []string{session.OverseerSessionName()}, true
+	}
+	if dogName, ok := DogAddressName(address); ok {
+		return []string{session.DogSessionName(dogName)}, true
+	}
+	if address == constants.RoleMayor || address == constants.RoleMayor+"/" {
+		return []string{session.MayorSessionName()}, true
+	}
+	if address == constants.RoleDeacon || address == constants.RoleDeacon+"/" {
+		return []string{session.DeaconSessionName()}, true
+	}
+	return nil, false
+}
+
+func rigAddressSessionIDs(rig, target string) []string {
 	rigPrefix := session.PrefixFor(rig)
-
-	// If target already has crew/, polecat/, or polecats/ prefix, use it directly
-	// e.g., "gastown/crew/holden" → "gt-crew-holden"
-	if strings.HasPrefix(target, "crew/") {
-		crewName := strings.TrimPrefix(target, "crew/")
-		return []string{session.CrewSessionName(rigPrefix, crewName)}
-	}
-	if strings.HasPrefix(target, "polecat/") {
-		polecatName := strings.TrimPrefix(target, "polecat/")
-		return []string{session.PolecatSessionName(rigPrefix, polecatName)}
-	}
-	if strings.HasPrefix(target, "polecats/") {
-		polecatName := strings.TrimPrefix(target, "polecats/")
-		return []string{session.PolecatSessionName(rigPrefix, polecatName)}
-	}
-
-	// Special cases that don't need crew variant
-	if target == constants.RoleWitness {
-		return []string{session.WitnessSessionName(rigPrefix)}
-	}
-	if target == constants.RoleRefinery {
-		return []string{session.RefinerySessionName(rigPrefix)}
+	if id, ok := explicitRigSessionID(rigPrefix, target); ok {
+		return []string{id}
 	}
 
 	// For normalized addresses like "gastown/holden", try both:
@@ -2126,5 +2146,22 @@ func AddressToSessionIDs(address string) []string {
 	return []string{
 		session.CrewSessionName(rigPrefix, target),    // <prefix>-crew-name
 		session.PolecatSessionName(rigPrefix, target), // <prefix>-name
+	}
+}
+
+func explicitRigSessionID(rigPrefix, target string) (string, bool) {
+	switch {
+	case strings.HasPrefix(target, "crew/"):
+		return session.CrewSessionName(rigPrefix, strings.TrimPrefix(target, "crew/")), true
+	case strings.HasPrefix(target, "polecat/"):
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecat/")), true
+	case strings.HasPrefix(target, "polecats/"):
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecats/")), true
+	case target == constants.RoleWitness:
+		return session.WitnessSessionName(rigPrefix), true
+	case target == constants.RoleRefinery:
+		return session.RefinerySessionName(rigPrefix), true
+	default:
+		return "", false
 	}
 }
