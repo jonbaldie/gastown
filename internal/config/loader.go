@@ -1177,11 +1177,7 @@ func ResolveAgentConfigWithOverride(townRoot, rigPath, agentOverride string) (*R
 // resolveAgentConfigWithOverrideInternal is the lock-free version.
 // Caller must hold resolveConfigMu.
 func resolveAgentConfigWithOverrideInternal(townRoot, rigPath, agentOverride string) (*RuntimeConfig, string, error) {
-	// Load rig settings
-	rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath))
-	if err != nil {
-		rigSettings = nil
-	}
+	rigSettings := loadRigSettingsOrNil(rigPath)
 
 	// Backwards compatibility: if Runtime is set directly, use it (but still report agentOverride if present)
 	if rigSettings != nil && rigSettings.Runtime != nil && agentOverride == "" {
@@ -1192,69 +1188,13 @@ func resolveAgentConfigWithOverrideInternal(townRoot, rigPath, agentOverride str
 		return rc, "", nil
 	}
 
-	// Load town settings for agent lookup
-	townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
-	if err != nil {
-		townSettings = NewTownSettings()
-	}
-
-	// Load custom agent registry if it exists
-	_ = LoadAgentRegistry(DefaultAgentRegistryPath(townRoot))
-
-	// Load rig-level custom agent registry if it exists (for per-rig custom agents)
-	_ = LoadRigAgentRegistry(RigAgentRegistryPath(rigPath))
-
-	// Determine which agent name to use
-	agentName := ""
-	var extraArgs []string
-	if agentOverride != "" {
-		// Handle agent overrides with subcommands (e.g., "opencode acp")
-		parts := strings.Fields(agentOverride)
-		if len(parts) > 0 {
-			agentName = parts[0]
-			if len(parts) > 1 {
-				extraArgs = parts[1:]
-			}
-		}
-	} else if rigSettings != nil && rigSettings.Agent != "" {
-		agentName = rigSettings.Agent
-	} else if townSettings.DefaultAgent != "" {
-		agentName = townSettings.DefaultAgent
-	} else {
-		agentName = "claude" // ultimate fallback
-	}
+	townSettings := loadTownSettingsOrDefault(townRoot)
+	loadAgentRegistries(townRoot, rigPath)
+	agentName, extraArgs := resolveAgentName(agentOverride, rigSettings, townSettings)
 
 	// If an override is requested, validate it exists
 	if agentOverride != "" {
-		var rc *RuntimeConfig
-		// For subcommand-style overrides (e.g. "opencode acp"), prefer the built-in
-		// preset when one exists. Town agent registry overrides often point at wrappers
-		// like gt-opencode, but ACP/subcommand invocations need the underlying runtime
-		// binary and built-in capability metadata.
-		if len(extraArgs) > 0 {
-			if preset, ok := builtinPresets[AgentPreset(agentName)]; ok {
-				rc = runtimeConfigFromAgentInfo(AgentPreset(agentName), preset)
-			}
-		}
-		// Check rig-level custom agents first
-		if rc == nil && rigSettings != nil && rigSettings.Agents != nil {
-			if custom, ok := rigSettings.Agents[agentName]; ok && custom != nil {
-				rc = fillRuntimeDefaults(custom)
-			}
-		}
-		// Then check town-level custom agents
-		if rc == nil && townSettings.Agents != nil {
-			if custom, ok := townSettings.Agents[agentName]; ok && custom != nil {
-				rc = fillRuntimeDefaults(custom)
-			}
-		}
-		// Then check built-in presets
-		if rc == nil {
-			if preset := GetAgentPresetByName(agentName); preset != nil {
-				rc = RuntimeConfigFromPreset(AgentPreset(agentName))
-			}
-		}
-
+		rc := resolveAgentOverride(agentName, extraArgs, townSettings, rigSettings)
 		if rc == nil {
 			return nil, "", fmt.Errorf("agent '%s' not found", agentName)
 		}
@@ -1280,6 +1220,68 @@ func resolveAgentConfigWithOverrideInternal(townRoot, rigPath, agentOverride str
 	return rc, agentName, nil
 }
 
+func loadRigSettingsOrNil(rigPath string) *RigSettings {
+	if rigPath == "" {
+		return nil
+	}
+	rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath))
+	if err != nil {
+		return nil
+	}
+	return rigSettings
+}
+
+func loadTownSettingsOrDefault(townRoot string) *TownSettings {
+	townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
+	if err != nil {
+		return NewTownSettings()
+	}
+	return townSettings
+}
+
+func loadAgentRegistries(townRoot, rigPath string) {
+	_ = LoadAgentRegistry(DefaultAgentRegistryPath(townRoot))
+	if rigPath != "" {
+		_ = LoadRigAgentRegistry(RigAgentRegistryPath(rigPath))
+	}
+}
+
+func resolveAgentName(agentOverride string, rigSettings *RigSettings, townSettings *TownSettings) (string, []string) {
+	if agentOverride != "" {
+		return parseAgentOverride(agentOverride)
+	}
+	if rigSettings != nil && rigSettings.Agent != "" {
+		return rigSettings.Agent, nil
+	}
+	if townSettings.DefaultAgent != "" {
+		return townSettings.DefaultAgent, nil
+	}
+	return "claude", nil
+}
+
+func parseAgentOverride(agentOverride string) (string, []string) {
+	parts := strings.Fields(agentOverride)
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return parts[0], parts[1:]
+}
+
+func resolveAgentOverride(agentName string, extraArgs []string, townSettings *TownSettings, rigSettings *RigSettings) *RuntimeConfig {
+	if len(extraArgs) > 0 {
+		if preset, ok := builtinPresets[AgentPreset(agentName)]; ok {
+			return runtimeConfigFromAgentInfo(AgentPreset(agentName), preset)
+		}
+	}
+	if rc := lookupCustomAgentConfig(agentName, townSettings, rigSettings); rc != nil {
+		return rc
+	}
+	if GetAgentPresetByName(agentName) != nil {
+		return RuntimeConfigFromPreset(AgentPreset(agentName))
+	}
+	return nil
+}
+
 // ValidateAgentConfig checks if an agent configuration is valid and the binary exists.
 // Returns an error describing the issue, or nil if valid.
 func ValidateAgentConfig(agentName string, townSettings *TownSettings, rigSettings *RigSettings) error {
@@ -1300,25 +1302,27 @@ func ValidateAgentConfig(agentName string, townSettings *TownSettings, rigSettin
 // lookupAgentConfigIfExists looks up an agent by name but returns nil if not found
 // (instead of falling back to default). Used for validation.
 func lookupAgentConfigIfExists(name string, townSettings *TownSettings, rigSettings *RigSettings) *RuntimeConfig {
-	// Check rig's custom agents
-	if rigSettings != nil && rigSettings.Agents != nil {
-		if custom, ok := rigSettings.Agents[name]; ok && custom != nil {
-			return fillRuntimeDefaults(custom)
+	if rigSettings != nil {
+		if rc := lookupCustomAgentInSettings(name, rigSettings.Agents); rc != nil {
+			return rc
 		}
 	}
-
-	// Check town's custom agents
-	if townSettings != nil && townSettings.Agents != nil {
-		if custom, ok := townSettings.Agents[name]; ok && custom != nil {
-			return fillRuntimeDefaults(custom)
+	if townSettings != nil {
+		if rc := lookupCustomAgentInSettings(name, townSettings.Agents); rc != nil {
+			return rc
 		}
 	}
-
-	// Check built-in presets
 	if preset := GetAgentPresetByName(name); preset != nil {
 		return RuntimeConfigFromPreset(AgentPreset(name))
 	}
 
+	return nil
+}
+
+func lookupCustomAgentInSettings(name string, agents map[string]*RuntimeConfig) *RuntimeConfig {
+	if custom, ok := agents[name]; ok && custom != nil {
+		return fillRuntimeDefaults(custom)
+	}
 	return nil
 }
 
@@ -1372,45 +1376,57 @@ func ResolveWorkerAgentConfig(workerName, townRoot, rigPath string) *RuntimeConf
 	resolveConfigMu.Lock()
 	defer resolveConfigMu.Unlock()
 
-	// Tier 1: rig's per-worker override
-	if workerName != "" && rigPath != "" {
-		if rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath)); err == nil && rigSettings != nil {
-			if agentName, ok := rigSettings.WorkerAgents[workerName]; ok && agentName != "" {
-				townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
-				if err != nil {
-					townSettings = NewTownSettings()
-				}
-				_ = LoadAgentRegistry(DefaultAgentRegistryPath(townRoot))
-				_ = LoadRigAgentRegistry(RigAgentRegistryPath(rigPath))
-				if rc := tryResolveNamedAgent(agentName, fmt.Sprintf("worker_agents[%s]", workerName), townSettings, rigSettings); rc != nil {
-					return withRoleSettingsFlag(rc, "crew", rigPath)
-				}
-			}
-		}
+	if rc := resolveRigWorkerAgent(workerName, townRoot, rigPath); rc != nil {
+		return rc
 	}
 
-	// Tier 2: town's per-crew override
-	if workerName != "" && townRoot != "" {
-		townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
-		if err == nil && townSettings != nil {
-			if agentName, ok := townSettings.CrewAgents[workerName]; ok && agentName != "" {
-				var rigSettings *RigSettings
-				if rigPath != "" {
-					rigSettings, _ = LoadRigSettings(RigSettingsPath(rigPath))
-				}
-				_ = LoadAgentRegistry(DefaultAgentRegistryPath(townRoot))
-				if rigPath != "" {
-					_ = LoadRigAgentRegistry(RigAgentRegistryPath(rigPath))
-				}
-				if rc := tryResolveNamedAgent(agentName, fmt.Sprintf("crew_agents[%s]", workerName), townSettings, rigSettings); rc != nil {
-					return withRoleSettingsFlag(rc, "crew", rigPath)
-				}
-			}
-		}
+	if rc := resolveTownWorkerAgent(workerName, townRoot, rigPath); rc != nil {
+		return rc
 	}
 
-	// Tier 3: fall back to crew role resolution (already holds lock; use core function)
 	rc := resolveRoleAgentConfigCore("crew", townRoot, rigPath)
+	return withRoleSettingsFlag(rc, "crew", rigPath)
+}
+
+func resolveRigWorkerAgent(workerName, townRoot, rigPath string) *RuntimeConfig {
+	if workerName == "" || rigPath == "" {
+		return nil
+	}
+	rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath))
+	if err != nil || rigSettings == nil {
+		return nil
+	}
+	agentName := rigSettings.WorkerAgents[workerName]
+	if agentName == "" {
+		return nil
+	}
+	townSettings := loadTownSettingsOrDefault(townRoot)
+	loadAgentRegistries(townRoot, rigPath)
+	rc := tryResolveNamedAgent(agentName, fmt.Sprintf("worker_agents[%s]", workerName), townSettings, rigSettings)
+	if rc == nil {
+		return nil
+	}
+	return withRoleSettingsFlag(rc, "crew", rigPath)
+}
+
+func resolveTownWorkerAgent(workerName, townRoot, rigPath string) *RuntimeConfig {
+	if workerName == "" || townRoot == "" {
+		return nil
+	}
+	townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
+	if err != nil || townSettings == nil {
+		return nil
+	}
+	agentName := townSettings.CrewAgents[workerName]
+	if agentName == "" {
+		return nil
+	}
+	rigSettings := loadRigSettingsOrNil(rigPath)
+	loadAgentRegistries(townRoot, rigPath)
+	rc := tryResolveNamedAgent(agentName, fmt.Sprintf("crew_agents[%s]", workerName), townSettings, rigSettings)
+	if rc == nil {
+		return nil
+	}
 	return withRoleSettingsFlag(rc, "crew", rigPath)
 }
 
@@ -1422,42 +1438,70 @@ func ResolveWorkerAgentConfig(workerName, townRoot, rigPath string) *RuntimeConf
 //
 // Invalid effort levels are warned about and skipped.
 func ResolveRoleEffort(role, townRoot, rigPath string) string {
-	// Tier 1: ephemeral cost tier override (mirrors agent resolution)
-	if tierName := os.Getenv("GT_COST_TIER"); tierName != "" && IsValidTier(tierName) {
-		if roleEffort := CostTierRoleEffort(CostTier(tierName)); roleEffort != nil {
-			if effort, ok := roleEffort[role]; ok {
-				return effort
-			}
-		}
+	if effort, ok := resolveEphemeralRoleEffort(role); ok {
+		return effort
 	}
+	return resolvePersistedRoleEffort(role, townRoot, rigPath)
+}
 
-	// Tier 2: rig-level override
-	if rigPath != "" {
-		if rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath)); err == nil && rigSettings != nil {
-			if effort, ok := rigSettings.RoleEffort[role]; ok && effort != "" {
-				if !IsValidEffortLevel(effort) {
-					fmt.Fprintf(os.Stderr, "warning: rig role_effort[%s]=%q is not a valid effort level, ignoring\n", role, effort)
-				} else {
-					return effort
-				}
-			}
-		}
+func resolveEphemeralRoleEffort(role string) (string, bool) {
+	tierName := os.Getenv("GT_COST_TIER")
+	if tierName == "" || !IsValidTier(tierName) {
+		return "", false
 	}
-
-	// Tier 3: town-level setting
-	if townRoot != "" {
-		if townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot)); err == nil && townSettings != nil {
-			if effort, ok := townSettings.RoleEffort[role]; ok && effort != "" {
-				if !IsValidEffortLevel(effort) {
-					fmt.Fprintf(os.Stderr, "warning: town role_effort[%s]=%q is not a valid effort level, ignoring\n", role, effort)
-				} else {
-					return effort
-				}
-			}
-		}
+	roleEffort := CostTierRoleEffort(CostTier(tierName))
+	if effort, ok := roleEffort[role]; ok {
+		return effort, true
 	}
+	return "", false
+}
 
-	return "" // Caller uses env var fallback, then "high" default
+func resolvePersistedRoleEffort(role, townRoot, rigPath string) string {
+	if effort := resolveRigRoleEffort(role, rigPath); effort != "" {
+		return effort
+	}
+	if effort := resolveTownRoleEffort(role, townRoot); effort != "" {
+		return effort
+	}
+	return ""
+}
+
+func resolveRigRoleEffort(role, rigPath string) string {
+	if rigPath == "" {
+		return ""
+	}
+	rigSettings, err := LoadRigSettings(RigSettingsPath(rigPath))
+	if err != nil || rigSettings == nil {
+		return ""
+	}
+	effort := rigSettings.RoleEffort[role]
+	if effort == "" {
+		return ""
+	}
+	if !IsValidEffortLevel(effort) {
+		fmt.Fprintf(os.Stderr, "warning: rig role_effort[%s]=%q is not a valid effort level, ignoring\n", role, effort)
+		return ""
+	}
+	return effort
+}
+
+func resolveTownRoleEffort(role, townRoot string) string {
+	if townRoot == "" {
+		return ""
+	}
+	townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
+	if err != nil || townSettings == nil {
+		return ""
+	}
+	effort := townSettings.RoleEffort[role]
+	if effort == "" {
+		return ""
+	}
+	if !IsValidEffortLevel(effort) {
+		fmt.Fprintf(os.Stderr, "warning: town role_effort[%s]=%q is not a valid effort level, ignoring\n", role, effort)
+		return ""
+	}
+	return effort
 }
 
 // IsResolvedAgentClaude returns true if the RuntimeConfig represents a Claude agent.
@@ -1535,11 +1579,8 @@ func withRoleSettingsFlag(rc *RuntimeConfig, role, rigPath string) *RuntimeConfi
 		return rc
 	}
 
-	// Guard against double-adding (ResolveRoleAgentConfig already calls this)
-	for _, arg := range rc.Args {
-		if arg == "--settings" {
-			return rc
-		}
+	if hasSettingsArgument(rc.Args) {
+		return rc
 	}
 
 	settingsDir := RoleSettingsDir(role, rigPath)
@@ -1547,19 +1588,33 @@ func withRoleSettingsFlag(rc *RuntimeConfig, role, rigPath string) *RuntimeConfi
 		return rc
 	}
 
-	hooksDir := ".claude"
-	settingsFile := "settings.json"
-	if rc.Hooks != nil {
-		if rc.Hooks.Dir != "" {
-			hooksDir = rc.Hooks.Dir
-		}
-		if rc.Hooks.SettingsFile != "" {
-			settingsFile = rc.Hooks.SettingsFile
-		}
-	}
-
+	hooksDir, settingsFile := roleSettingsComponents(rc)
 	rc.Args = append(rc.Args, "--settings", filepath.Join(settingsDir, hooksDir, settingsFile))
 	return rc
+}
+
+func hasSettingsArgument(args []string) bool {
+	for _, arg := range args {
+		if arg == "--settings" {
+			return true
+		}
+	}
+	return false
+}
+
+func roleSettingsComponents(rc *RuntimeConfig) (string, string) {
+	hooksDir := ".claude"
+	settingsFile := "settings.json"
+	if rc.Hooks == nil {
+		return hooksDir, settingsFile
+	}
+	if rc.Hooks.Dir != "" {
+		hooksDir = rc.Hooks.Dir
+	}
+	if rc.Hooks.SettingsFile != "" {
+		settingsFile = rc.Hooks.SettingsFile
+	}
+	return hooksDir, settingsFile
 }
 
 // RoleSettingsDir returns the shared settings directory for roles whose session
@@ -1628,133 +1683,90 @@ func tryResolveFromEphemeralTier(role string) (*RuntimeConfig, bool) {
 // globally (via rig Agent or town DefaultAgent). This prevents fallback logic
 // and cost tiers from silently replacing intentional non-Claude agent selections.
 func hasExplicitNonClaudeOverride(role string, townSettings *TownSettings, rigSettings *RigSettings) bool {
-	// Check rig's RoleAgents
-	if rigSettings != nil && rigSettings.RoleAgents != nil {
-		if agentName, ok := rigSettings.RoleAgents[role]; ok && agentName != "" {
-			if rc := lookupAgentConfigIfExists(agentName, townSettings, rigSettings); rc != nil && !isClaudeAgent(rc) {
-				return true
-			}
-		}
+	if rigSettings != nil && hasNonClaudeRoleAgent(role, rigSettings.RoleAgents, townSettings, rigSettings) {
+		return true
 	}
-	// Check town's RoleAgents
-	if townSettings != nil && townSettings.RoleAgents != nil {
-		if agentName, ok := townSettings.RoleAgents[role]; ok && agentName != "" {
-			if rc := lookupAgentConfigIfExists(agentName, townSettings, rigSettings); rc != nil && !isClaudeAgent(rc) {
-				return true
-			}
-		}
+	if townSettings != nil && hasNonClaudeRoleAgent(role, townSettings.RoleAgents, townSettings, rigSettings) {
+		return true
 	}
-	// Check rig's global Agent
-	if rigSettings != nil && rigSettings.Agent != "" {
-		if rc := lookupAgentConfigIfExists(rigSettings.Agent, townSettings, rigSettings); rc != nil && !isClaudeAgent(rc) {
-			return true
-		}
+	if rigSettings != nil && hasNonClaudeAgent(rigSettings.Agent, townSettings, rigSettings) {
+		return true
 	}
-	// Check town's DefaultAgent
-	if townSettings != nil && townSettings.DefaultAgent != "" {
-		if rc := lookupAgentConfigIfExists(townSettings.DefaultAgent, townSettings, rigSettings); rc != nil && !isClaudeAgent(rc) {
-			return true
-		}
+	if townSettings != nil && hasNonClaudeAgent(townSettings.DefaultAgent, townSettings, rigSettings) {
+		return true
 	}
 	return false
 }
 
+func hasNonClaudeRoleAgent(role string, roleAgents map[string]string, townSettings *TownSettings, rigSettings *RigSettings) bool {
+	agentName := roleAgents[role]
+	return hasNonClaudeAgent(agentName, townSettings, rigSettings)
+}
+
+func hasNonClaudeAgent(agentName string, townSettings *TownSettings, rigSettings *RigSettings) bool {
+	if agentName == "" {
+		return false
+	}
+	rc := lookupAgentConfigIfExists(agentName, townSettings, rigSettings)
+	return rc != nil && !isClaudeAgent(rc)
+}
+
 func resolveRoleAgentConfigCore(role, townRoot, rigPath string) *RuntimeConfig {
-	// Load rig settings (may be nil for town-level roles like mayor/deacon)
-	var rigSettings *RigSettings
-	if rigPath != "" {
-		var err error
-		rigSettings, err = LoadRigSettings(RigSettingsPath(rigPath))
-		if err != nil {
-			rigSettings = nil
-		}
-	}
-
-	// Load town settings
-	townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
-	if err != nil {
-		townSettings = NewTownSettings()
-	}
-
-	// Load custom agent registries
-	_ = LoadAgentRegistry(DefaultAgentRegistryPath(townRoot))
-	if rigPath != "" {
-		_ = LoadRigAgentRegistry(RigAgentRegistryPath(rigPath))
-	}
+	rigSettings := loadRigSettingsOrNil(rigPath)
+	townSettings := loadTownSettingsOrDefault(townRoot)
+	loadAgentRegistries(townRoot, rigPath)
 
 	// Dogs default to Haiku (cheap infrastructure workers), but respect
 	// explicit non-Claude overrides (e.g., RoleAgents["dog"] = "opencode").
-	if role == "dog" {
-		if hasExplicitNonClaudeOverride(role, townSettings, rigSettings) {
-			// Fall through to normal resolution below
-		} else {
-			return claudeHaikuPreset()
-		}
+	if role == "dog" && !hasExplicitNonClaudeOverride(role, townSettings, rigSettings) {
+		return claudeHaikuPreset()
 	}
 
-	// Check ephemeral cost tier (GT_COST_TIER env var)
 	tierRC, tierHandled := tryResolveFromEphemeralTier(role)
-	if tierHandled {
+	if tierHandled && !hasExplicitNonClaudeOverride(role, townSettings, rigSettings) {
 		if tierRC != nil {
-			// Tier wants a specific Claude model for this role.
-			// But if there's an explicit non-Claude rig/town override, respect it —
-			// cost tiers only manage Claude model selection, not agent platform choice.
-			if hasExplicitNonClaudeOverride(role, townSettings, rigSettings) {
-				// Fall through to normal resolution below
-			} else {
-				return tierRC
-			}
-		} else {
-			// Tier says "use default" for this role — but if there's an explicit
-			// non-Claude override, respect it (cost tiers only manage Claude models).
-			if hasExplicitNonClaudeOverride(role, townSettings, rigSettings) {
-				// Fall through to normal resolution below
-			} else {
-				// Skip persisted RoleAgents to prevent stale config from leaking
-				// through, go straight to default resolution
-				// (rig's Agent → town's DefaultAgent → "claude").
-				return resolveAgentConfigInternal(townRoot, rigPath)
-			}
+			return tierRC
 		}
+		return resolveAgentConfigInternal(townRoot, rigPath)
 	}
 
-	// Check rig's RoleAgents first
-	if rigSettings != nil && rigSettings.RoleAgents != nil {
-		if agentName, ok := rigSettings.RoleAgents[role]; ok && agentName != "" {
-			if rc := lookupCustomAgentConfig(agentName, townSettings, rigSettings); rc != nil {
-				rc.ResolvedAgent = agentName
-				return rc
-			}
-			if err := ValidateAgentConfig(agentName, townSettings, rigSettings); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: role_agents[%s]=%s - %v, falling back to default\n", role, agentName, err)
-			} else {
-				rc := lookupAgentConfig(agentName, townSettings, rigSettings)
-				rc.ResolvedAgent = agentName
-				return rc
-			}
-		}
+	if rc := resolveRoleAgentFromSettings(role, townSettings, rigSettings); rc != nil {
+		return rc
 	}
 
-	// Check town's RoleAgents
-	if townSettings.RoleAgents != nil {
-		if agentName, ok := townSettings.RoleAgents[role]; ok && agentName != "" {
-			if rc := lookupCustomAgentConfig(agentName, townSettings, rigSettings); rc != nil {
-				rc.ResolvedAgent = agentName
-				return rc
-			}
-			if err := ValidateAgentConfig(agentName, townSettings, rigSettings); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: role_agents[%s]=%s - %v, falling back to default\n", role, agentName, err)
-			} else {
-				rc := lookupAgentConfig(agentName, townSettings, rigSettings)
-				rc.ResolvedAgent = agentName
-				return rc
-			}
-		}
-	}
-
-	// Fall back to existing resolution (rig's Agent → town's DefaultAgent → "claude")
-	// Use internal version — caller already holds resolveConfigMu.
 	return resolveAgentConfigInternal(townRoot, rigPath)
+}
+
+func resolveRoleAgentFromSettings(role string, townSettings *TownSettings, rigSettings *RigSettings) *RuntimeConfig {
+	if rigSettings != nil {
+		if rc := resolveRoleAgentFromMap(role, rigSettings.RoleAgents, townSettings, rigSettings); rc != nil {
+			return rc
+		}
+	}
+	if townSettings != nil {
+		if rc := resolveRoleAgentFromMap(role, townSettings.RoleAgents, townSettings, rigSettings); rc != nil {
+			return rc
+		}
+	}
+	return nil
+}
+
+func resolveRoleAgentFromMap(role string, roleAgents map[string]string, townSettings *TownSettings, rigSettings *RigSettings) *RuntimeConfig {
+	agentName := roleAgents[role]
+	if agentName == "" {
+		return nil
+	}
+	if rc := lookupCustomAgentConfig(agentName, townSettings, rigSettings); rc != nil {
+		rc.ResolvedAgent = agentName
+		return rc
+	}
+	if err := ValidateAgentConfig(agentName, townSettings, rigSettings); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: role_agents[%s]=%s - %v, falling back to default\n", role, agentName, err)
+		return nil
+	}
+	rc := lookupAgentConfig(agentName, townSettings, rigSettings)
+	rc.ResolvedAgent = agentName
+	return rc
 }
 
 // ResolveRoleAgentName returns the agent name that would be used for a specific role.
@@ -1765,44 +1777,36 @@ func resolveRoleAgentConfigCore(role, townRoot, rigPath string) *RuntimeConfig {
 // (GT_COST_TIER env var). It reflects persisted config only. For the actual
 // runtime agent config, use ResolveRoleAgentConfig.
 func ResolveRoleAgentName(role, townRoot, rigPath string) (agentName string, isRoleSpecific bool) {
-	// Load rig settings
-	var rigSettings *RigSettings
-	if rigPath != "" {
-		var err error
-		rigSettings, err = LoadRigSettings(RigSettingsPath(rigPath))
-		if err != nil {
-			rigSettings = nil
-		}
+	rigSettings := loadRigSettingsOrNil(rigPath)
+	townSettings := loadTownSettingsOrDefault(townRoot)
+	if name, ok := roleSpecificAgentName(role, rigSettings, townSettings); ok {
+		return name, true
 	}
+	return defaultAgentName(rigSettings, townSettings), false
+}
 
-	// Load town settings
-	townSettings, err := LoadOrCreateTownSettings(TownSettingsPath(townRoot))
-	if err != nil {
-		townSettings = NewTownSettings()
-	}
-
-	// Check rig's RoleAgents first
-	if rigSettings != nil && rigSettings.RoleAgents != nil {
-		if name, ok := rigSettings.RoleAgents[role]; ok && name != "" {
+func roleSpecificAgentName(role string, rigSettings *RigSettings, townSettings *TownSettings) (string, bool) {
+	if rigSettings != nil {
+		if name := rigSettings.RoleAgents[role]; name != "" {
 			return name, true
 		}
 	}
-
-	// Check town's RoleAgents
-	if townSettings.RoleAgents != nil {
-		if name, ok := townSettings.RoleAgents[role]; ok && name != "" {
+	if townSettings != nil {
+		if name := townSettings.RoleAgents[role]; name != "" {
 			return name, true
 		}
 	}
+	return "", false
+}
 
-	// Fall back to existing resolution
+func defaultAgentName(rigSettings *RigSettings, townSettings *TownSettings) string {
 	if rigSettings != nil && rigSettings.Agent != "" {
-		return rigSettings.Agent, false
+		return rigSettings.Agent
 	}
-	if townSettings.DefaultAgent != "" {
-		return townSettings.DefaultAgent, false
+	if townSettings != nil && townSettings.DefaultAgent != "" {
+		return townSettings.DefaultAgent
 	}
-	return "claude", false
+	return "claude"
 }
 
 // ResolveAgentConfigByName looks up an agent's RuntimeConfig by name without requiring
