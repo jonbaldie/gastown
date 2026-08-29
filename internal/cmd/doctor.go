@@ -10,15 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	doctorFix             bool
-	doctorVerbose         bool
-	doctorRig             string
-	doctorRestartSessions bool
-	doctorNoStart         bool
-	doctorSlow            string
-)
-
 var doctorCmd = &cobra.Command{
 	Use:     "doctor",
 	GroupID: GroupDiag,
@@ -124,18 +115,25 @@ Use --slow to highlight slow checks (default threshold: 1s, e.g. --slow=500ms).`
 }
 
 func init() {
-	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false, "Attempt to automatically fix issues")
-	doctorCmd.Flags().BoolVarP(&doctorVerbose, "verbose", "v", false, "Show detailed output")
-	doctorCmd.Flags().StringVar(&doctorRig, "rig", "", "Check specific rig only")
-	doctorCmd.Flags().BoolVar(&doctorRestartSessions, "restart-sessions", false, "Restart patrol sessions when fixing stale settings (use with --fix)")
-	doctorCmd.Flags().BoolVar(&doctorNoStart, "no-start", false, "Suppress starting daemon/agents during --fix")
-	doctorCmd.Flags().StringVar(&doctorSlow, "slow", "", "Highlight slow checks (optional threshold, default 1s)")
+	doctorCmd.Flags().Bool("fix", false, "Attempt to automatically fix issues")
+	doctorCmd.Flags().BoolP("verbose", "v", false, "Show detailed output")
+	doctorCmd.Flags().String("rig", "", "Check specific rig only")
+	doctorCmd.Flags().Bool("restart-sessions", false, "Restart patrol sessions when fixing stale settings (use with --fix)")
+	doctorCmd.Flags().Bool("no-start", false, "Suppress starting daemon/agents during --fix")
+	doctorCmd.Flags().String("slow", "", "Highlight slow checks (optional threshold, default 1s)")
 	// Allow --slow without a value (uses default 1s)
 	doctorCmd.Flags().Lookup("slow").NoOptDefVal = "1s"
 	rootCmd.AddCommand(doctorCmd)
 }
 
-func runDoctor(_ *cobra.Command, _ []string) error {
+func runDoctor(cmd *cobra.Command, _ []string) error {
+	fix := commandBoolFlag(cmd, "fix")
+	verbose := commandBoolFlag(cmd, "verbose")
+	rig := commandStringFlag(cmd, "rig")
+	restartSessions := commandBoolFlag(cmd, "restart-sessions")
+	noStart := commandBoolFlag(cmd, "no-start")
+	slow := commandStringFlag(cmd, "slow")
+
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -145,35 +143,35 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	// Create check context
 	ctx := &doctor.CheckContext{
 		TownRoot:        townRoot,
-		RigName:         doctorRig,
-		Verbose:         doctorVerbose,
-		RestartSessions: doctorRestartSessions,
-		NoStart:         doctorNoStart,
+		RigName:         rig,
+		Verbose:         verbose,
+		RestartSessions: restartSessions,
+		NoStart:         noStart,
 	}
 
-	d := newDoctorForCommand(doctorRig)
+	d := newDoctorForCommand(rig)
 
 	// Parse slow threshold (0 = disabled)
 	var slowThreshold time.Duration
-	if doctorSlow != "" {
+	if slow != "" {
 		var err error
-		slowThreshold, err = time.ParseDuration(doctorSlow)
+		slowThreshold, err = time.ParseDuration(slow)
 		if err != nil {
-			return fmt.Errorf("invalid --slow duration %q: %w", doctorSlow, err)
+			return fmt.Errorf("invalid --slow duration %q: %w", slow, err)
 		}
 	}
 
 	// Run checks with streaming output
 	fmt.Println() // Initial blank line
 	var report *doctor.Report
-	if doctorFix {
+	if fix {
 		report = d.FixStreaming(ctx, os.Stdout, slowThreshold)
 	} else {
 		report = d.RunStreaming(ctx, os.Stdout, slowThreshold)
 	}
 
 	// Print summary (checks were already printed during streaming)
-	report.PrintSummaryOnly(os.Stdout, doctorVerbose, slowThreshold)
+	report.PrintSummaryOnly(os.Stdout, verbose, slowThreshold)
 
 	// Exit with error code if there are errors
 	if report.HasErrors() {
