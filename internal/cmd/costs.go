@@ -309,39 +309,9 @@ func runLiveCosts(opts costsOptions) error {
 }
 
 func runCostsFromLedger(opts costsOptions) error {
-	now := time.Now()
-	var entries []CostEntry
-	var err error
-
-	if opts.today {
-		// For today: query ephemeral wisps (not yet digested)
-		// This gives real-time view of today's costs
-		entries, err = querySessionCostEntries(now, opts.verbose)
-		if err != nil {
-			return fmt.Errorf("querying session cost wisps: %w", err)
-		}
-	} else if opts.week {
-		// For week: query digest beads (costs.digest events)
-		// These are the aggregated daily reports
-		entries, err = queryDigestBeads(7)
-		if err != nil {
-			return fmt.Errorf("querying digest beads: %w", err)
-		}
-
-		// Also include today's wisps (not yet digested)
-		todayEntries, _ := querySessionCostEntries(now, opts.verbose)
-		entries = append(entries, todayEntries...)
-	} else if opts.byRole || opts.byRig {
-		// When using --by-role or --by-rig without time filter, default to today
-		// (querying all historical events would be expensive and likely empty)
-		entries, err = querySessionCostEntries(now, opts.verbose)
-		if err != nil {
-			return fmt.Errorf("querying session cost entries: %w", err)
-		}
-	} else {
-		// No time filter and no breakdown flags: query both digests and legacy session.ended events
-		// (for backwards compatibility during migration)
-		entries = querySessionEvents(opts.verbose)
+	entries, err := loadLedgerEntries(opts, time.Now())
+	if err != nil {
+		return err
 	}
 
 	if len(entries) == 0 {
@@ -349,51 +319,85 @@ func runCostsFromLedger(opts costsOptions) error {
 		return nil
 	}
 
-	// Calculate totals
-	var total float64
-	byRole := make(map[string]float64)
-	byRig := make(map[string]float64)
-	byAgent := make(map[string]float64)
-
-	for _, entry := range entries {
-		total += entry.CostUSD
-		byRole[entry.Role] += entry.CostUSD
-		if entry.Rig != "" {
-			byRig[entry.Rig] += entry.CostUSD
-		}
-		if entry.AgentType != "" {
-			byAgent[entry.AgentType] += entry.CostUSD
-		}
-	}
-
-	// Build output
-	output := CostsOutput{
-		Total: total,
-	}
-
-	if opts.byRole {
-		output.ByRole = byRole
-		output.Entries = entries
-		if len(byAgent) > 0 {
-			output.ByAgentType = byAgent
-		}
-	}
-	if opts.byRig {
-		output.ByRig = byRig
-	}
-
-	// Set period label
-	if opts.today {
-		output.Period = "today"
-	} else if opts.week {
-		output.Period = "this week"
-	}
+	output := buildLedgerOutput(opts, entries, aggregateLedgerCosts(entries))
 
 	if opts.json {
 		return outputCostsJSON(output)
 	}
 
 	return outputLedgerHuman(output, entries)
+}
+
+func loadLedgerEntries(opts costsOptions, now time.Time) ([]CostEntry, error) {
+	switch {
+	case opts.today:
+		entries, err := querySessionCostEntries(now, opts.verbose)
+		if err != nil {
+			return nil, fmt.Errorf("querying session cost wisps: %w", err)
+		}
+		return entries, nil
+	case opts.week:
+		entries, err := queryDigestBeads(7)
+		if err != nil {
+			return nil, fmt.Errorf("querying digest beads: %w", err)
+		}
+		todayEntries, _ := querySessionCostEntries(now, opts.verbose)
+		return append(entries, todayEntries...), nil
+	case opts.byRole || opts.byRig:
+		entries, err := querySessionCostEntries(now, opts.verbose)
+		if err != nil {
+			return nil, fmt.Errorf("querying session cost entries: %w", err)
+		}
+		return entries, nil
+	default:
+		return querySessionEvents(opts.verbose), nil
+	}
+}
+
+type ledgerCostTotals struct {
+	total   float64
+	byRole  map[string]float64
+	byRig   map[string]float64
+	byAgent map[string]float64
+}
+
+func aggregateLedgerCosts(entries []CostEntry) ledgerCostTotals {
+	totals := ledgerCostTotals{
+		byRole:  make(map[string]float64),
+		byRig:   make(map[string]float64),
+		byAgent: make(map[string]float64),
+	}
+	for _, entry := range entries {
+		totals.total += entry.CostUSD
+		totals.byRole[entry.Role] += entry.CostUSD
+		if entry.Rig != "" {
+			totals.byRig[entry.Rig] += entry.CostUSD
+		}
+		if entry.AgentType != "" {
+			totals.byAgent[entry.AgentType] += entry.CostUSD
+		}
+	}
+	return totals
+}
+
+func buildLedgerOutput(opts costsOptions, entries []CostEntry, totals ledgerCostTotals) CostsOutput {
+	output := CostsOutput{Total: totals.total}
+	if opts.byRole {
+		output.ByRole = totals.byRole
+		output.Entries = entries
+		if len(totals.byAgent) > 0 {
+			output.ByAgentType = totals.byAgent
+		}
+	}
+	if opts.byRig {
+		output.ByRig = totals.byRig
+	}
+	if opts.today {
+		output.Period = "today"
+	} else if opts.week {
+		output.Period = "this week"
+	}
+	return output
 }
 
 // SessionEvent represents a session.ended event from beads.
