@@ -1495,48 +1495,54 @@ func findIdleMonitorProcessesFromPS(output, townRoot, absRoot string, port int) 
 	var pids []int
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "idle-monitor") {
-			continue
-		}
-		if !strings.Contains(line, "dolt") {
-			continue
-		}
-		// Scope to this town: match by path in args using path-boundary check
-		// to avoid false matches on sibling paths (e.g., /tmp/gt matching /tmp/gt-old)
-		matchesTown := containsPathBoundary(line, absRoot) || containsPathBoundary(line, townRoot)
-		if !matchesTown {
-			// Check for --port <portStr> as a discrete argument to avoid
-			// false matches on PIDs or other numeric substrings
-			args := strings.Fields(line)
-			for i, arg := range args {
-				if (arg == "--port" || arg == "-p") && i+1 < len(args) && args[i+1] == portStr {
-					matchesTown = true
-					break
-				}
-				if arg == "--port="+portStr {
-					matchesTown = true
-					break
-				}
-			}
-		}
-		if !matchesTown {
+		if !isIdleMonitorProcessLine(line) || !idleMonitorMatchesTown(line, townRoot, absRoot, portStr) {
 			continue
 		}
 
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
+		if pid := idleMonitorPID(line); pid > 0 {
+			pids = append(pids, pid)
 		}
-		if filepath.Base(fields[1]) == "grep" {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil || pid <= 0 {
-			continue
-		}
-		pids = append(pids, pid)
 	}
 	return pids
+}
+
+func isIdleMonitorProcessLine(line string) bool {
+	return strings.Contains(line, "idle-monitor") && strings.Contains(line, "dolt")
+}
+
+func idleMonitorMatchesTown(line, townRoot, absRoot, port string) bool {
+	// Scope to this town: match by path in args using path-boundary check
+	// to avoid false matches on sibling paths (e.g., /tmp/gt matching /tmp/gt-old).
+	if containsPathBoundary(line, absRoot) || containsPathBoundary(line, townRoot) {
+		return true
+	}
+	// Check for --port <port> as a discrete argument to avoid false matches
+	// on PIDs or other numeric substrings.
+	return idleMonitorPortMatches(strings.Fields(line), port)
+}
+
+func idleMonitorPortMatches(args []string, port string) bool {
+	for i, arg := range args {
+		if (arg == "--port" || arg == "-p") && i+1 < len(args) && args[i+1] == port {
+			return true
+		}
+		if arg == "--port="+port {
+			return true
+		}
+	}
+	return false
+}
+
+func idleMonitorPID(line string) int {
+	fields := strings.Fields(line)
+	if len(fields) < 2 || filepath.Base(fields[1]) == "grep" {
+		return 0
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
 }
 
 // StopIdleMonitors finds and terminates "bd dolt idle-monitor" processes
