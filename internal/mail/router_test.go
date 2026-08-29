@@ -275,7 +275,7 @@ func TestShouldBeWisp(t *testing.T) {
 	}{
 		{
 			name: "explicit wisp flag",
-			msg:  &Message{Subject: "Regular message", Wisp: true},
+			msg:  &Message{Subject: "Regular message", MessageFlags: MessageFlags{Wisp: true}},
 			want: true,
 		},
 		{
@@ -453,12 +453,14 @@ exit 1
 
 	r := NewRouter(senderDir)
 	msg := &Message{
-		From:           "barnaby/crew/tom",
-		To:             "barnaby/troy",
-		Subject:        "Test message",
-		Body:           "Hello",
-		Wisp:           true,
-		SuppressNotify: true,
+		From:    "barnaby/crew/tom",
+		To:      "barnaby/troy",
+		Subject: "Test message",
+		Body:    "Hello",
+		MessageFlags: MessageFlags{
+			Wisp:           true,
+			SuppressNotify: true,
+		},
 	}
 
 	if err := r.Send(msg); err != nil {
@@ -2051,10 +2053,10 @@ func TestNotifyRecipient_CanonicalAliasFansOutToBusyCandidates(t *testing.T) {
 	}
 
 	msg := &Message{
-		From:     "gastown/witness",
-		To:       "gastown/aliasfanout",
-		Subject:  "fanout delivery",
-		ThreadID: "thread-fanout",
+		From:                "gastown/witness",
+		To:                  "gastown/aliasfanout",
+		Subject:             "fanout delivery",
+		MessageConversation: MessageConversation{ThreadID: "thread-fanout"},
 	}
 
 	if err := r.notifyRecipient(msg); err != nil {
@@ -2092,10 +2094,10 @@ func TestNotifyRecipient_CanonicalAliasQueuesAllHeadlessCandidates(t *testing.T)
 	}
 
 	msg := &Message{
-		From:     "mayor/",
-		To:       "gastown/headless",
-		Subject:  "headless fanout",
-		ThreadID: "thread-headless",
+		From:                "mayor/",
+		To:                  "gastown/headless",
+		Subject:             "headless fanout",
+		MessageConversation: MessageConversation{ThreadID: "thread-headless"},
 	}
 
 	if err := r.notifyRecipient(msg); err != nil {
@@ -2125,10 +2127,10 @@ func TestNotifyRecipient_DogQueuesDogSessionNotDeacon(t *testing.T) {
 	}
 
 	msg := &Message{
-		From:     "mayor/",
-		To:       "deacon/dogs/fido",
-		Subject:  "dog delivery",
-		ThreadID: "thread-dog-delivery",
+		From:                "mayor/",
+		To:                  "deacon/dogs/fido",
+		Subject:             "dog delivery",
+		MessageConversation: MessageConversation{ThreadID: "thread-dog-delivery"},
 	}
 
 	if err := r.notifyRecipient(msg); err != nil {
@@ -2168,12 +2170,12 @@ func TestNotifyRecipient_BusyAgentEscalationUsesUrgentQueuedNudge(t *testing.T) 
 	}
 
 	msg := &Message{
-		From:     "gastown/witness",
-		To:       "gastown/crew/busy-escalation",
-		Subject:  "[CRITICAL] Database identity mismatch",
-		Type:     TypeEscalation,
-		Priority: PriorityUrgent,
-		ThreadID: "hq-esc123",
+		From:                "gastown/witness",
+		To:                  "gastown/crew/busy-escalation",
+		Subject:             "[CRITICAL] Database identity mismatch",
+		Type:                TypeEscalation,
+		Priority:            PriorityUrgent,
+		MessageConversation: MessageConversation{ThreadID: "hq-esc123"},
 	}
 
 	if err := r.notifyRecipient(msg); err != nil {
@@ -2204,11 +2206,11 @@ func TestNotifyRecipient_BusyAgentEscalationUsesUrgentQueuedNudge(t *testing.T) 
 
 func TestFormatNotificationMessageForEscalation(t *testing.T) {
 	msg := &Message{
-		From:     "gastown/witness",
-		Subject:  "[HIGH] Polecat stuck",
-		Type:     TypeEscalation,
-		Priority: PriorityHigh,
-		ThreadID: "hq-esc456",
+		From:                "gastown/witness",
+		Subject:             "[HIGH] Polecat stuck",
+		Type:                TypeEscalation,
+		Priority:            PriorityHigh,
+		MessageConversation: MessageConversation{ThreadID: "hq-esc456"},
 	}
 
 	notification := formatNotificationMessage(msg)
@@ -2221,7 +2223,11 @@ func TestFormatNotificationMessageForEscalation(t *testing.T) {
 
 func TestRouterSendEscalationAddsStructuredLabels(t *testing.T) {
 	r := &Router{}
-	msg := &Message{From: "deacon/", Type: TypeEscalation, ThreadID: "hq-abc123"}
+	msg := &Message{
+		From:                "deacon/",
+		Type:                TypeEscalation,
+		MessageConversation: MessageConversation{ThreadID: "hq-abc123"},
+	}
 	labels := r.buildLabels(msg)
 	for _, want := range []string{"gt:message", "gt:escalation", "msg-type:escalation", "from:deacon/", "thread:hq-abc123"} {
 		if !containsLabel(labels, want) {

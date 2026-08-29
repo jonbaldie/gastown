@@ -142,8 +142,10 @@ func buildMailReply(msgID, from string, original *mail.Message, messageBody, sub
 		Body:     messageBody,
 		Type:     mail.TypeReply,
 		Priority: mail.PriorityNormal,
-		ReplyTo:  msgID,
-		ThreadID: original.ThreadID,
+		MessageConversation: mail.MessageConversation{
+			ReplyTo:  msgID,
+			ThreadID: original.ThreadID,
+		},
 	}
 	if reply.ThreadID == "" {
 		reply.ThreadID = generateThreadID()

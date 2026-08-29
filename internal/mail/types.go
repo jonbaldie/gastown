@@ -89,26 +89,11 @@ type Message struct {
 	// Type indicates the message type (task, escalation, scavenge, notification, reply).
 	Type MessageType `json:"type"`
 
-	// Delivery specifies how the message is delivered (queue or interrupt).
-	// Queue: agent checks periodically. Interrupt: inject into session.
-	Delivery Delivery `json:"delivery,omitempty"`
+	MessageDelivery
 
-	// ThreadID groups related messages into a conversation thread.
-	ThreadID string `json:"thread_id,omitempty"`
+	MessageConversation
 
-	// ReplyTo is the ID of the message this is replying to.
-	ReplyTo string `json:"reply_to,omitempty"`
-
-	// Pinned marks the message as pinned (won't be auto-archived).
-	Pinned bool `json:"pinned,omitempty"`
-
-	// Wisp marks this as a transient message (stored in same DB but not synced to git).
-	// Wisp messages auto-cleanup on patrol squash.
-	Wisp bool `json:"wisp,omitempty"`
-
-	// CC contains addresses that should receive a copy of this message.
-	// CC'd recipients see the message in their inbox but are not the primary recipient.
-	CC []string `json:"cc,omitempty"`
+	MessageFlags
 
 	// Queue is the queue name for queue-routed messages.
 	// Mutually exclusive with To and Channel - a message is either direct, queued, or broadcast.
@@ -117,6 +102,14 @@ type Message struct {
 	// Channel is the channel name for broadcast messages.
 	// Mutually exclusive with To and Queue - a message is either direct, queued, or broadcast.
 	Channel string `json:"channel,omitempty"`
+}
+
+// MessageDelivery contains delivery mode, queue-claim, and acknowledgement
+// state. It is embedded to keep Message's JSON representation flat.
+type MessageDelivery struct {
+	// Delivery specifies how the message is delivered (queue or interrupt).
+	// Queue: agent checks periodically. Interrupt: inject into session.
+	Delivery Delivery `json:"delivery,omitempty"`
 
 	// ClaimedBy is the agent that claimed this queue message.
 	// Only set for queue messages after claiming.
@@ -132,6 +125,31 @@ type Message struct {
 	DeliveryAckedBy string `json:"delivery_acked_by,omitempty"`
 	// DeliveryAckedAt is when receipt was acknowledged.
 	DeliveryAckedAt *time.Time `json:"delivery_acked_at,omitempty"`
+}
+
+// MessageConversation contains thread metadata and carbon-copy recipients. It
+// is embedded to keep Message's JSON representation flat.
+type MessageConversation struct {
+	// ThreadID groups related messages into a conversation thread.
+	ThreadID string `json:"thread_id,omitempty"`
+
+	// ReplyTo is the ID of the message this is replying to.
+	ReplyTo string `json:"reply_to,omitempty"`
+
+	// CC contains addresses that should receive a copy of this message.
+	// CC'd recipients see the message in their inbox but are not the primary recipient.
+	CC []string `json:"cc,omitempty"`
+}
+
+// MessageFlags contains mailbox retention and notification flags. It is
+// embedded to keep Message's JSON representation flat.
+type MessageFlags struct {
+	// Pinned marks the message as pinned (won't be auto-archived).
+	Pinned bool `json:"pinned,omitempty"`
+
+	// Wisp marks this as a transient message (stored in same DB but not synced to git).
+	// Wisp messages auto-cleanup on patrol squash.
+	Wisp bool `json:"wisp,omitempty"`
 
 	// SuppressNotify tells the router to skip all recipient notification
 	// (no nudge, no banner). Set by the CLI when --no-notify is passed.
@@ -151,7 +169,9 @@ func NewMessage(from, to, subject, body string) *Message {
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeNotification,
-		ThreadID:  generateThreadID(),
+		MessageConversation: MessageConversation{
+			ThreadID: generateThreadID(),
+		},
 	}
 }
 
@@ -167,8 +187,10 @@ func NewReplyMessage(from, to, subject, body string, original *Message) *Message
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeReply,
-		ThreadID:  original.ThreadID,
-		ReplyTo:   original.ID,
+		MessageConversation: MessageConversation{
+			ThreadID: original.ThreadID,
+			ReplyTo:  original.ID,
+		},
 	}
 }
 
@@ -185,7 +207,9 @@ func NewQueueMessage(from, queue, subject, body string) *Message {
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeTask, // Queue messages are typically tasks
-		ThreadID:  generateThreadID(),
+		MessageConversation: MessageConversation{
+			ThreadID: generateThreadID(),
+		},
 	}
 }
 
@@ -202,7 +226,9 @@ func NewChannelMessage(from, channel, subject, body string) *Message {
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeNotification,
-		ThreadID:  generateThreadID(),
+		MessageConversation: MessageConversation{
+			ThreadID: generateThreadID(),
+		},
 	}
 }
 
@@ -452,26 +478,32 @@ func (bm *BeadsMessage) ToMessage() *Message {
 	}
 
 	return &Message{
-		ID:              bm.ID,
-		From:            identityToAddress(bm.sender),
-		To:              identityToAddress(bm.Assignee),
-		Subject:         bm.Title,
-		Body:            bm.Description,
-		Timestamp:       bm.CreatedAt,
-		Read:            bm.Status == "closed" || bm.HasLabel("read"),
-		Priority:        priority,
-		Type:            msgType,
-		ThreadID:        bm.threadID,
-		ReplyTo:         bm.replyTo,
-		Wisp:            bm.Wisp,
-		CC:              ccAddrs,
-		Queue:           bm.queue,
-		Channel:         bm.channel,
-		ClaimedBy:       bm.claimedBy,
-		ClaimedAt:       bm.claimedAt,
-		DeliveryState:   bm.deliveryState,
-		DeliveryAckedBy: bm.deliveryAckedBy,
-		DeliveryAckedAt: bm.deliveryAckedAt,
+		ID:        bm.ID,
+		From:      identityToAddress(bm.sender),
+		To:        identityToAddress(bm.Assignee),
+		Subject:   bm.Title,
+		Body:      bm.Description,
+		Timestamp: bm.CreatedAt,
+		Read:      bm.Status == "closed" || bm.HasLabel("read"),
+		Priority:  priority,
+		Type:      msgType,
+		Queue:     bm.queue,
+		Channel:   bm.channel,
+		MessageDelivery: MessageDelivery{
+			ClaimedBy:       bm.claimedBy,
+			ClaimedAt:       bm.claimedAt,
+			DeliveryState:   bm.deliveryState,
+			DeliveryAckedBy: bm.deliveryAckedBy,
+			DeliveryAckedAt: bm.deliveryAckedAt,
+		},
+		MessageConversation: MessageConversation{
+			ThreadID: bm.threadID,
+			ReplyTo:  bm.replyTo,
+			CC:       ccAddrs,
+		},
+		MessageFlags: MessageFlags{
+			Wisp: bm.Wisp,
+		},
 	}
 }
 

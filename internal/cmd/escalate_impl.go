@@ -162,12 +162,14 @@ func runEscalate(cmd *cobra.Command, args []string) error {
 	for _, target := range targets {
 		status := deliveryStatus{Target: target, Channel: "mail", Severity: severity, NotificationRoute: "mail+nudge"}
 		msg := &mail.Message{
-			From:     agentID,
-			To:       target,
-			Subject:  fmt.Sprintf("[%s] %s", strings.ToUpper(severity), description),
-			Body:     formatEscalationMailBody(issue.ID, severity, opts.reason, agentID, opts.relatedBead),
-			Type:     mail.TypeEscalation,
-			ThreadID: issue.ID,
+			From:    agentID,
+			To:      target,
+			Subject: fmt.Sprintf("[%s] %s", strings.ToUpper(severity), description),
+			Body:    formatEscalationMailBody(issue.ID, severity, opts.reason, agentID, opts.relatedBead),
+			Type:    mail.TypeEscalation,
+			MessageConversation: mail.MessageConversation{
+				ThreadID: issue.ID,
+			},
 		}
 
 		// Set priority based on severity
