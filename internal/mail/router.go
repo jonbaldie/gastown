@@ -1256,7 +1256,30 @@ func (r *Router) sendToSingle(msg *Message) error {
 
 	// Build labels for type, from/thread/reply-to/cc
 	labels := r.buildLabels(msg)
+	args := singleMessageArgs(msg, toIdentity, labels, r.shouldBeWisp(msg))
+	if err := sendSingleMessage(r, msg, args); err != nil {
+		return err
+	}
 
+	// Notify recipient if they have an active session (best-effort notification).
+	// Skip when the caller explicitly suppressed notification (--no-notify)
+	// or for self-mail (handoffs to future-self don't need present-self notified).
+	// Notification is async: the durable write is complete, so the caller
+	// doesn't block on idle probing (up to 1s per recipient in fan-out).
+	// Callers that exit soon after Send should call WaitPendingNotifications.
+	if !msg.SuppressNotify && !isSelfMail(msg.From, msg.To) {
+		msgCopy := *msg // copy to avoid data race if caller mutates msg
+		r.notifyWg.Add(1)
+		go func() {
+			defer r.notifyWg.Done()
+			r.notifyRecipient(&msgCopy) //nolint:errcheck
+		}()
+	}
+
+	return nil
+}
+
+func singleMessageArgs(msg *Message, toIdentity string, labels []string, ephemeral bool) []string {
 	// Build command: bd create --assignee=<recipient> -d <body> --labels=gt:message,... -- <subject>
 	// Flags go first, then -- to end flag parsing, then the positional subject.
 	// This prevents subjects like "--help" from being parsed as flags (see web/api.go).
@@ -1264,34 +1287,22 @@ func (r *Router) sendToSingle(msg *Message) error {
 	args := []string{"create",
 		"--assignee", toIdentity,
 		"-d", msg.Body,
+		"--priority", fmt.Sprintf("%d", PriorityToBeads(msg.Priority)),
 	}
-
-	// Add priority flag
-	beadsPriority := PriorityToBeads(msg.Priority)
-	args = append(args, "--priority", fmt.Sprintf("%d", beadsPriority))
-
-	// Add labels
 	if len(labels) > 0 {
 		args = append(args, "--labels", strings.Join(labels, ","))
 	}
-
-	// Add actor for attribution (sender identity)
 	args = append(args, "--actor", msg.From)
-
 	// Do NOT pass --id to bd create. The msg.ID (msg-xxx prefix) is for
 	// in-memory tracking only. bd auto-generates IDs with the correct
-	// database prefix (e.g., hq-wisp-xxx). Passing --id causes prefix
-	// mismatch errors when the msg- prefix does not match the database.
-
-	// Add --ephemeral flag for ephemeral messages (wisps, not synced to git)
-	if r.shouldBeWisp(msg) {
+	// database prefix (e.g., hq-wisp-xxx).
+	if ephemeral {
 		args = append(args, "--ephemeral")
 	}
+	return append(args, "--", msg.Subject)
+}
 
-	// End flag parsing with --, then add subject as positional argument.
-	// This prevents subjects like "--help" or "--json" from being parsed as flags.
-	args = append(args, "--", msg.Subject)
-
+func sendSingleMessage(r *Router, msg *Message, args []string) error {
 	beadsDir := r.resolveBeadsDir()
 	if err := r.ensureCustomTypes(beadsDir); err != nil {
 		return err
@@ -1312,22 +1323,6 @@ func (r *Router) sendToSingle(msg *Message) error {
 	if err != nil {
 		return fmt.Errorf("sending message: %w", err)
 	}
-
-	// Notify recipient if they have an active session (best-effort notification).
-	// Skip when the caller explicitly suppressed notification (--no-notify)
-	// or for self-mail (handoffs to future-self don't need present-self notified).
-	// Notification is async: the durable write is complete, so the caller
-	// doesn't block on idle probing (up to 1s per recipient in fan-out).
-	// Callers that exit soon after Send should call WaitPendingNotifications.
-	if !msg.SuppressNotify && !isSelfMail(msg.From, msg.To) {
-		msgCopy := *msg // copy to avoid data race if caller mutates msg
-		r.notifyWg.Add(1)
-		go func() {
-			defer r.notifyWg.Done()
-			r.notifyRecipient(&msgCopy) //nolint:errcheck
-		}()
-	}
-
 	return nil
 }
 
