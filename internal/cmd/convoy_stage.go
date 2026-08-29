@@ -929,80 +929,79 @@ type ConvoyDAGNode struct {
 //   - gray  (1): on the current recursion stack
 //   - black (2): fully explored
 func detectCycles(dag *ConvoyDAG) []string {
-	const (
-		white = 0
-		gray  = 1
-		black = 2
-	)
+	detector := cycleDetector{
+		dag:    dag,
+		color:  make(map[string]int),
+		parent: make(map[string]string),
+	}
+	for _, id := range sortedDAGNodeIDs(dag) {
+		if detector.color[id] == cycleWhite {
+			if cycle := detector.dfs(id); cycle != nil {
+				return cycle
+			}
+		}
+	}
+	return nil
+}
 
-	color := make(map[string]int)     // default zero = white
-	parent := make(map[string]string) // tracks DFS parent for cycle extraction
+const (
+	cycleWhite = 0
+	cycleGray  = 1
+	cycleBlack = 2
+)
 
-	// Sort node IDs for deterministic traversal order.
+type cycleDetector struct {
+	dag    *ConvoyDAG
+	color  map[string]int
+	parent map[string]string
+}
+
+func sortedDAGNodeIDs(dag *ConvoyDAG) []string {
 	ids := make([]string, 0, len(dag.Nodes))
 	for id := range dag.Nodes {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	return ids
+}
 
-	// extractCycle walks back from the back-edge target through the DFS
-	// parent chain to reconstruct the cycle path.
-	extractCycle := func(from, to string) []string {
-		// from -> to is the back-edge. The cycle is: to -> ... -> from -> to.
-		path := []string{to}
-		cur := from
-		for cur != to {
-			path = append(path, cur)
-			cur = parent[cur]
-		}
-		// Reverse so the cycle reads in traversal order.
-		for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
-			path[i], path[j] = path[j], path[i]
-		}
-		return path
-	}
-
-	var dfs func(id string) []string
-	dfs = func(id string) []string {
-		color[id] = gray
-		node := dag.Nodes[id]
-		if node == nil {
-			color[id] = black
-			return nil
-		}
-
-		// Sort neighbors for deterministic traversal.
-		neighbors := make([]string, len(node.Blocks))
-		copy(neighbors, node.Blocks)
-		sort.Strings(neighbors)
-
-		for _, next := range neighbors {
-			switch color[next] {
-			case white:
-				parent[next] = id
-				if cycle := dfs(next); cycle != nil {
-					return cycle
-				}
-			case gray:
-				// Back-edge found → cycle.
-				return extractCycle(id, next)
-			}
-			// black → already fully explored, skip.
-		}
-
-		color[id] = black
+func (d *cycleDetector) dfs(id string) []string {
+	d.color[id] = cycleGray
+	node := d.dag.Nodes[id]
+	if node == nil {
+		d.color[id] = cycleBlack
 		return nil
 	}
 
-	for _, id := range ids {
-		if color[id] == white {
-			if cycle := dfs(id); cycle != nil {
+	neighbors := append([]string(nil), node.Blocks...)
+	sort.Strings(neighbors)
+	for _, next := range neighbors {
+		switch d.color[next] {
+		case cycleWhite:
+			d.parent[next] = id
+			if cycle := d.dfs(next); cycle != nil {
 				return cycle
 			}
+		case cycleGray:
+			return d.extractCycle(id, next)
 		}
 	}
 
+	d.color[id] = cycleBlack
 	return nil
+}
+
+func (d *cycleDetector) extractCycle(from, to string) []string {
+	path := []string{to}
+	cur := from
+	for cur != to {
+		path = append(path, cur)
+		cur = d.parent[cur]
+	}
+	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+		path[i], path[j] = path[j], path[i]
+	}
+	return path
 }
 
 // Wave represents a group of tasks that can execute in parallel.
