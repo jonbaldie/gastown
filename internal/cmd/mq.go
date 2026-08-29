@@ -166,8 +166,6 @@ Examples:
 }
 
 // Post-merge flags
-var mqPostMergeSkipBranchDelete bool
-
 var mqPostMergeCmd = &cobra.Command{
 	Use:   "post-merge <rig> <mr-id>",
 	Short: "Run post-merge cleanup (close MR, delete branch)",
@@ -359,7 +357,7 @@ func init() {
 	mqStatusCmd.Flags().BoolVar(&mqStatusJSON, "json", false, "Output as JSON")
 
 	// Post-merge flags
-	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeSkipBranchDelete, "skip-branch-delete", false, "Skip remote branch deletion")
+	mqPostMergeCmd.Flags().Bool("skip-branch-delete", false, "Skip remote branch deletion")
 
 	// Add subcommands
 	mqCmd.AddCommand(mqSubmitCmd)
@@ -393,39 +391,14 @@ func init() {
 // findCurrentRig determines the current rig from the working directory.
 // Returns the rig name and rig object, or an error if not in a rig.
 func findCurrentRig(townRoot string) (string, *rig.Rig, error) {
-	cwd, err := os.Getwd()
+	rigName, err := currentRigName(townRoot)
 	if err != nil {
-		return "", nil, fmt.Errorf("getting current directory: %w", err)
-	}
-
-	// Get relative path from town root to cwd
-	relPath, err := filepath.Rel(townRoot, cwd)
-	if err != nil {
-		return "", nil, fmt.Errorf("computing relative path: %w", err)
-	}
-
-	// The first component of the relative path should be the rig name
-	parts := strings.Split(relPath, string(filepath.Separator))
-	rigName := ""
-	if len(parts) > 0 && parts[0] != "" && parts[0] != "." {
-		rigName = parts[0]
-	}
-
-	// When gt is invoked via shell alias (cd ~/gt && gt), cwd is the town
-	// root and relPath is ".". Fall back to GT_RIG env var.
-	if rigName == "" {
-		rigName = os.Getenv("GT_RIG")
-	}
-	if rigName == "" {
-		return "", nil, fmt.Errorf("not inside a rig directory (and GT_RIG not set)")
+		return "", nil, err
 	}
 
 	// Load rig manager and get the rig
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err != nil {
-		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
-	}
+	rigsConfig := loadRigsConfig(rigsConfigPath)
 
 	g := git.NewGit(townRoot)
 	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
@@ -435,6 +408,34 @@ func findCurrentRig(townRoot string) (string, *rig.Rig, error) {
 	}
 
 	return rigName, r, nil
+}
+
+func currentRigName(townRoot string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+	relPath, err := filepath.Rel(townRoot, cwd)
+	if err != nil {
+		return "", fmt.Errorf("computing relative path: %w", err)
+	}
+
+	parts := strings.Split(relPath, string(filepath.Separator))
+	if len(parts) > 0 && parts[0] != "" && parts[0] != "." {
+		return parts[0], nil
+	}
+	if rigName := os.Getenv("GT_RIG"); rigName != "" {
+		return rigName, nil
+	}
+	return "", fmt.Errorf("not inside a rig directory (and GT_RIG not set)")
+}
+
+func loadRigsConfig(path string) *config.RigsConfig {
+	rigsConfig, err := config.LoadRigsConfig(path)
+	if err != nil {
+		return &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
+	}
+	return rigsConfig
 }
 
 func runMQRetry(_ *cobra.Command, args []string) error {
@@ -527,7 +528,7 @@ func runMQReject(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMQPostMerge(_ *cobra.Command, args []string) error {
+func runMQPostMerge(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
 
@@ -540,11 +541,22 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("post-merge proof: %w", err)
 	}
 
-	result, branchCleanup, err := runVerifiedMQPostMerge(mgr, r.Path, rigGit, mrID, mqPostMergeSkipBranchDelete)
+	skipBranchDelete := false
+	if cmd != nil {
+		skipBranchDelete, err = cmd.Flags().GetBool("skip-branch-delete")
+		if err != nil {
+			return fmt.Errorf("reading --skip-branch-delete: %w", err)
+		}
+	}
+	result, branchCleanup, err := runVerifiedMQPostMerge(mgr, r.Path, rigGit, mrID, skipBranchDelete)
 	if err != nil {
 		return fmt.Errorf("post-merge cleanup: %w", err)
 	}
 
+	return printMQPostMergeResult(result, branchCleanup)
+}
+
+func printMQPostMergeResult(result *refinery.PostMergeResult, branchCleanup mqPostMergeBranchCleanup) error {
 	mr := result.MR
 	fmt.Printf("%s Post-merge: %s\n", style.Bold.Render("✓"), mr.ID)
 	fmt.Printf("  Branch: %s\n", mr.Branch)
@@ -559,6 +571,11 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 		fmt.Printf("  %s Source issue: %s %s\n", style.Dim.Render("○"), result.SourceIssueID, style.Dim.Render("(already closed or not found)"))
 	}
 
+	printMQPostMergeBranchCleanup(mr.Branch, branchCleanup)
+	return nil
+}
+
+func printMQPostMergeBranchCleanup(branch string, branchCleanup mqPostMergeBranchCleanup) {
 	if branchCleanup.NoBranch {
 		fmt.Printf("  %s No branch name in MR (skipping branch delete)\n", style.Dim.Render("○"))
 	} else if branchCleanup.Skipped {
@@ -566,18 +583,16 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 	} else if branchCleanup.Disabled {
 		fmt.Printf("  %s Branch delete disabled by config\n", style.Dim.Render("○"))
 	} else if branchCleanup.OpenPR {
-		fmt.Printf("  %s Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", style.Dim.Render("○"), mr.Branch)
+		fmt.Printf("  %s Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", style.Dim.Render("○"), branch)
 	} else if branchCleanup.AlreadyGone {
-		fmt.Printf("  %s Remote branch already absent: %s\n", style.Dim.Render("○"), mr.Branch)
+		fmt.Printf("  %s Remote branch already absent: %s\n", style.Dim.Render("○"), branch)
 	} else if branchCleanup.RemoteDeleted {
-		fmt.Printf("  %s Deleted remote branch: %s\n", style.Success.Render("✓"), mr.Branch)
+		fmt.Printf("  %s Deleted remote branch: %s\n", style.Success.Render("✓"), branch)
 	}
 
 	if branchCleanup.LocalDeleted {
-		fmt.Printf("  %s Deleted local branch: %s\n", style.Success.Render("✓"), mr.Branch)
+		fmt.Printf("  %s Deleted local branch: %s\n", style.Success.Render("✓"), branch)
 	}
-
-	return nil
 }
 
 func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPostMergeGit, mrID string, skipBranchDelete bool) (*refinery.PostMergeResult, mqPostMergeBranchCleanup, error) {
@@ -644,28 +659,37 @@ func cleanupMQPostMergeBranch(rigPath string, rigGit mqPostMergeGit, mr *refiner
 		return cleanup, fmt.Errorf("remote branch delete %s: missing submitted commit_sha", cleanup.Branch)
 	}
 
-	// Deleting a branch with an open PR causes GitHub to auto-close the PR as
-	// "closed" (not "merged"), destroying the PR audit trail. (gas-fk4)
-	if rigGit.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: cleanup.Branch, HeadSHA: expectedHead}) {
-		cleanup.OpenPR = true
-	} else {
-		remoteTip, err := rigGit.PushRemoteBranchTip("origin", cleanup.Branch)
-		if err != nil {
-			return cleanup, fmt.Errorf("remote branch delete %s: read remote branch tip: %w", cleanup.Branch, err)
-		}
-		if strings.TrimSpace(remoteTip) == "" {
-			cleanup.AlreadyGone = true
-		} else if err := rigGit.DeleteRemoteBranchIfAt("origin", cleanup.Branch, expectedHead); err != nil {
-			return cleanup, fmt.Errorf("remote branch delete %s at %s: %w", cleanup.Branch, expectedHead, err)
-		} else {
-			cleanup.RemoteDeleted = true
-		}
+	if err := applyMQPostMergeRemoteCleanup(rigGit, mr, &cleanup, expectedHead); err != nil {
+		return cleanup, err
 	}
 
 	if deleteMQPostMergeLocalBranchIfAt(rigGit, cleanup.Branch, expectedHead) {
 		cleanup.LocalDeleted = true
 	}
 	return cleanup, nil
+}
+
+func applyMQPostMergeRemoteCleanup(rigGit mqPostMergeGit, mr *refinery.MergeRequest, cleanup *mqPostMergeBranchCleanup, expectedHead string) error {
+	// Deleting a branch with an open PR causes GitHub to auto-close the PR as
+	// "closed" (not "merged"), destroying the PR audit trail. (gas-fk4)
+	if rigGit.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: cleanup.Branch, HeadSHA: expectedHead}) {
+		cleanup.OpenPR = true
+		return nil
+	}
+
+	remoteTip, err := rigGit.PushRemoteBranchTip("origin", cleanup.Branch)
+	if err != nil {
+		return fmt.Errorf("remote branch delete %s: read remote branch tip: %w", cleanup.Branch, err)
+	}
+	if strings.TrimSpace(remoteTip) == "" {
+		cleanup.AlreadyGone = true
+		return nil
+	}
+	if err := rigGit.DeleteRemoteBranchIfAt("origin", cleanup.Branch, expectedHead); err != nil {
+		return fmt.Errorf("remote branch delete %s at %s: %w", cleanup.Branch, expectedHead, err)
+	}
+	cleanup.RemoteDeleted = true
+	return nil
 }
 
 func deleteMQPostMergeLocalBranchIfAt(rigGit mqPostMergeGit, branch, expectedHead string) bool {
