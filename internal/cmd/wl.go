@@ -13,12 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// wl command flags
-var (
-	wlJoinHandle      string
-	wlJoinDisplayName string
-)
-
 var wlCmd = &cobra.Command{
 	Use:     "wl",
 	GroupID: GroupWork,
@@ -63,15 +57,17 @@ Examples:
 }
 
 func init() {
-	wlJoinCmd.Flags().StringVar(&wlJoinHandle, "handle", "", "Rig handle for registration (default: DoltHub org)")
-	wlJoinCmd.Flags().StringVar(&wlJoinDisplayName, "display-name", "", "Display name for the rig registry")
+	wlJoinCmd.Flags().String("handle", "", "Rig handle for registration (default: DoltHub org)")
+	wlJoinCmd.Flags().String("display-name", "", "Display name for the rig registry")
 
 	wlCmd.AddCommand(wlJoinCmd)
 	rootCmd.AddCommand(wlCmd)
 }
 
-func runWlJoin(_ *cobra.Command, args []string) error {
+func runWlJoin(cmd *cobra.Command, args []string) error {
 	upstream := args[0]
+	handleFlag := commandStringFlag(cmd, "handle")
+	displayNameFlag := commandStringFlag(cmd, "display-name")
 
 	token, forkOrg, err := validateWlJoin(upstream)
 	if err != nil {
@@ -89,7 +85,7 @@ func runWlJoin(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	townCfg, handle, displayName, err := resolveWlJoinIdentity(townRoot, forkOrg)
+	townCfg, handle, displayName, err := resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag)
 	if err != nil {
 		return err
 	}
@@ -151,7 +147,7 @@ func reportExistingWlJoin(townRoot, upstream string) (bool, error) {
 	return true, nil
 }
 
-func resolveWlJoinIdentity(townRoot, forkOrg string) (*config.TownConfig, string, string, error) {
+func resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag string) (*config.TownConfig, string, string, error) {
 	// Load town config for identity (only needed for a fresh join).
 	townConfigPath := filepath.Join(townRoot, workspace.PrimaryMarker)
 	townCfg, err := config.LoadTownConfig(townConfigPath)
@@ -159,11 +155,11 @@ func resolveWlJoinIdentity(townRoot, forkOrg string) (*config.TownConfig, string
 		return nil, "", "", fmt.Errorf("loading town config: %w", err)
 	}
 
-	handle := wlJoinHandle
+	handle := handleFlag
 	if handle == "" {
 		handle = forkOrg
 	}
-	displayName := wlJoinDisplayName
+	displayName := displayNameFlag
 	if displayName == "" {
 		displayName = townCfg.PublicName
 		if displayName == "" {
