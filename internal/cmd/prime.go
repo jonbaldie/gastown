@@ -129,7 +129,6 @@ func runPrime(cmd *cobra.Command, _ []string) (retErr error) {
 	if err := validatePrimeFlags(stateMode, stateJSON); err != nil {
 		return err
 	}
-
 	cwd, townRoot, err := resolvePrimeWorkspace()
 	if err != nil {
 		return err
@@ -138,38 +137,9 @@ func runPrime(cmd *cobra.Command, _ []string) (retErr error) {
 		return nil // Silent exit - not in workspace and not enabled
 	}
 
-	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	ctx, roleInfo, err := preparePrimeContext(cwd, townRoot)
 	if err != nil {
-		return fmt.Errorf("detecting role: %w", err)
-	}
-	if err := ensureRoleWorktreeIntegrity(cwd, townRoot, roleInfo.Role); err != nil {
 		return err
-	}
-
-	if primeHookMode {
-		handlePrimeHookMode(townRoot, cwd)
-	}
-
-	// Check for handoff marker (prevents handoff loop bug)
-	if primeDryRun {
-		checkHandoffMarkerDryRun(cwd)
-	} else {
-		checkHandoffMarker(cwd)
-	}
-
-	warnRoleMismatch(roleInfo, cwd)
-
-	ctx := RoleContext{
-		Role:     roleInfo.Role,
-		Rig:      roleInfo.Rig,
-		Polecat:  roleInfo.Polecat,
-		TownRoot: townRoot,
-		WorkDir:  cwd,
-	}
-	if !primeDryRun {
-		if err := ensurePrimeSkills(cwd, townRoot, os.Getenv("GT_AGENT")); err != nil {
-			explain(true, fmt.Sprintf("mattpocock skills: provision failed: %v", err))
-		}
 	}
 
 	// --state mode: output state only and exit
@@ -188,69 +158,90 @@ func runPrime(cmd *cobra.Command, _ []string) (retErr error) {
 		return nil
 	}
 
+	return runPrimeFull(ctx, roleInfo, cwd)
+}
+
+func preparePrimeContext(cwd, townRoot string) (RoleContext, RoleInfo, error) {
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return RoleContext{}, RoleInfo{}, fmt.Errorf("detecting role: %w", err)
+	}
+	if err := ensureRoleWorktreeIntegrity(cwd, townRoot, roleInfo.Role); err != nil {
+		return RoleContext{}, RoleInfo{}, err
+	}
+	if primeHookMode {
+		handlePrimeHookMode(townRoot, cwd)
+	}
+	if primeDryRun {
+		checkHandoffMarkerDryRun(cwd)
+	} else {
+		checkHandoffMarker(cwd)
+	}
+	warnRoleMismatch(roleInfo, cwd)
+	ctx := RoleContext{
+		Role:     roleInfo.Role,
+		Rig:      roleInfo.Rig,
+		Polecat:  roleInfo.Polecat,
+		TownRoot: townRoot,
+		WorkDir:  cwd,
+	}
+	if !primeDryRun {
+		if err := ensurePrimeSkills(cwd, townRoot, os.Getenv("GT_AGENT")); err != nil {
+			explain(true, fmt.Sprintf("mattpocock skills: provision failed: %v", err))
+		}
+	}
+	return ctx, roleInfo, nil
+}
+
+func runPrimeFull(ctx RoleContext, roleInfo RoleInfo, cwd string) error {
 	if err := setupPrimeSession(ctx, roleInfo); err != nil {
 		return err
 	}
-
-	// P0: Fetch work context once — used for both OTel attribution and output.
-	// injectWorkContext sets GT_WORK_RIG/BEAD/MOL in the current process env and
-	// in the tmux session env so all subsequent subprocesses (bd, mail, …) carry
-	// the correct work attribution until the next gt prime overwrites it.
 	hookedBead, hookErr := findAgentWork(ctx)
 	if hookErr != nil {
-		// Cross-rig / unresolvable hook bead (gt-el4): the agent bead names a
-		// hook bead that bd show cannot find. Don't sit idle "pontificating" —
-		// emit a clear message, fire a HIGH escalation so the witness sees the
-		// dead-with-active-work state, and exit non-zero so the dog can clear
-		// the hook on its next sweep.
-		if errors.Is(hookErr, ErrHookUnresolvable) {
-			agentID := getAgentIdentity(ctx)
-			fmt.Fprintf(os.Stderr,
-				"polecat prime: hooked bead not resolvable from %s; check rig DB / dispatch routing. err=%v\n",
-				ctx.WorkDir, hookErr)
-			firePolecatHookUnresolvableEscalation(agentID, hookErr.Error())
-			return fmt.Errorf("polecat prime: hook unresolvable: %w", hookErr)
+		if err := handlePrimeWorkLookupError(ctx, hookErr); err != nil {
+			return err
 		}
-		// Database error during hook query — NOT the same as "no work assigned".
-		// Emit a loud warning so the agent does NOT run gt done / close the bead.
-		// This prevents the destructive cycle: DB error → "no work" → gt done → bead lost. (GH#2638)
-		fmt.Fprintf(os.Stderr, "\n%s\n", style.Bold.Render("## ⚠️  DATABASE ERROR — DO NOT RUN gt done ⚠️"))
-		fmt.Fprintf(os.Stderr, "Hook query failed: %v\n", hookErr)
-		fmt.Fprintf(os.Stderr, "This is a database connectivity error, NOT an empty hook.\n")
-		fmt.Fprintf(os.Stderr, "Your work may still be assigned. Do NOT close any beads.\n")
-		fmt.Fprintf(os.Stderr, "Escalate to witness/mayor and wait for resolution.\n\n")
 	}
 	injectWorkContext(ctx, hookedBead)
 	pushPrimeToWorker(ctx, hookedBead)
-
 	formula, err := outputRoleContext(ctx)
 	if err != nil {
 		return err
 	}
-	// Log the rendered formula to OTEL so it's visible in VictoriaLogs alongside
-	// Claude's API calls, letting operators see exactly what context each agent
-	// started with. Only emitted when GT telemetry is active (GT_OTEL_LOGS_URL set).
 	telemetry.RecordPrimeContext(context.Background(), formula, os.Getenv("GT_ROLE"), primeHookMode)
-
 	hasSlungWork, err := checkSlungWork(ctx, hookedBead)
 	if err != nil {
 		return err
 	}
 	explain(hasSlungWork, "Autonomous mode: hooked/in-progress work detected")
-
 	outputMoleculeContext(ctx)
 	outputCheckpointContext(ctx)
 	runPrimeExternalTools(ctx, cwd)
-
 	if ctx.Role == RoleMayor {
 		checkPendingEscalations(ctx)
 	}
-
 	if !hasSlungWork {
 		explain(true, "Startup directive: normal mode (no hooked work)")
 		outputStartupDirective(ctx)
 	}
+	return nil
+}
 
+func handlePrimeWorkLookupError(ctx RoleContext, hookErr error) error {
+	if errors.Is(hookErr, ErrHookUnresolvable) {
+		agentID := getAgentIdentity(ctx)
+		fmt.Fprintf(os.Stderr,
+			"polecat prime: hooked bead not resolvable from %s; check rig DB / dispatch routing. err=%v\n",
+			ctx.WorkDir, hookErr)
+		firePolecatHookUnresolvableEscalation(agentID, hookErr.Error())
+		return fmt.Errorf("polecat prime: hook unresolvable: %w", hookErr)
+	}
+	fmt.Fprintf(os.Stderr, "\n%s\n", style.Bold.Render("## ⚠️  DATABASE ERROR — DO NOT RUN gt done ⚠️"))
+	fmt.Fprintf(os.Stderr, "Hook query failed: %v\n", hookErr)
+	fmt.Fprintf(os.Stderr, "This is a database connectivity error, NOT an empty hook.\n")
+	fmt.Fprintf(os.Stderr, "Your work may still be assigned. Do NOT close any beads.\n")
+	fmt.Fprintf(os.Stderr, "Escalate to witness/mayor and wait for resolution.\n\n")
 	return nil
 }
 
@@ -503,58 +494,61 @@ func repairSessionEnv(ctx RoleContext, roleInfo RoleInfo) {
 	if _, err := t.GetEnvironment(session, "GT_ROLE"); err == nil {
 		return
 	}
+	envVars := primeIdentityEnv(ctx, roleInfo, session)
+	identitySet := primeIdentityEnvNames()
+	repaired := repairMissingSessionEnv(t, session, envVars, identitySet)
 
-	// Map prime Role type to config.AgentEnv role constant.
-	var agentName string
-	switch ctx.Role {
-	case RoleCrew:
-		agentName = roleInfo.Polecat // RoleInfo.Polecat holds crew member name too
-	case RolePolecat:
-		agentName = roleInfo.Polecat
-	case RoleDog:
+	if repaired > 0 {
+		fmt.Printf("\n%s Injected %d missing identity vars into session %s\n",
+			style.Bold.Render("⚠️  SESSION ENV REPAIR:"), repaired, session)
+		setPrimeIdentityEnv(envVars, identitySet)
+	}
+}
+
+func primeIdentityEnv(ctx RoleContext, roleInfo RoleInfo, session string) map[string]string {
+	agentName := ""
+	if ctx.Role == RoleCrew || ctx.Role == RolePolecat || ctx.Role == RoleDog {
 		agentName = roleInfo.Polecat
 	}
-
-	envVars := config.AgentEnv(config.AgentEnvConfig{
+	return config.AgentEnv(config.AgentEnvConfig{
 		Role:        string(ctx.Role),
 		Rig:         ctx.Rig,
 		AgentName:   agentName,
 		TownRoot:    ctx.TownRoot,
 		SessionName: session,
 	})
+}
 
-	// Only inject identity-related vars that are missing, not the full AgentEnv
-	// output (which includes Dolt ports, OTEL config, etc. that may have been
-	// intentionally overridden per-session).
-	identitySet := make(map[string]bool, len(config.IdentityEnvVars))
-	for _, k := range config.IdentityEnvVars {
-		identitySet[k] = true
+func primeIdentityEnvNames() map[string]bool {
+	names := make(map[string]bool, len(config.IdentityEnvVars)+2)
+	for _, name := range config.IdentityEnvVars {
+		names[name] = true
 	}
-	// Also include GT_ROOT and GT_SESSION — core session identity.
-	identitySet["GT_ROOT"] = true
-	identitySet["GT_SESSION"] = true
+	names["GT_ROOT"] = true
+	names["GT_SESSION"] = true
+	return names
+}
 
-	var repaired int
-	for k, v := range envVars {
-		if !identitySet[k] {
+func repairMissingSessionEnv(t *tmux.Tmux, session string, envVars map[string]string, identitySet map[string]bool) int {
+	repaired := 0
+	for key, value := range envVars {
+		if !identitySet[key] {
 			continue
 		}
-		if _, err := t.GetEnvironment(session, k); err == nil {
-			continue // already set at session level
+		if _, err := t.GetEnvironment(session, key); err == nil {
+			continue
 		}
-		if err := t.SetEnvironment(session, k, v); err == nil {
+		if err := t.SetEnvironment(session, key, value); err == nil {
 			repaired++
 		}
 	}
+	return repaired
+}
 
-	if repaired > 0 {
-		fmt.Printf("\n%s Injected %d missing identity vars into session %s\n",
-			style.Bold.Render("⚠️  SESSION ENV REPAIR:"), repaired, session)
-		// Also set in the current process so this prime run uses the correct identity.
-		for k, v := range envVars {
-			if identitySet[k] {
-				os.Setenv(k, v)
-			}
+func setPrimeIdentityEnv(envVars map[string]string, identitySet map[string]bool) {
+	for key, value := range envVars {
+		if identitySet[key] {
+			_ = os.Setenv(key, value)
 		}
 	}
 }
@@ -642,6 +636,11 @@ var memoryTypeLabels = map[string]string{
 	"general":   "General",
 }
 
+type primeMemory struct {
+	shortKey string
+	value    string
+}
+
 // runMemoryInject loads memories from beads kv and outputs them during prime.
 // Memories are grouped by type and ordered by priority (feedback first).
 func runMemoryInject(workDir string) {
@@ -649,44 +648,46 @@ func runMemoryInject(workDir string) {
 	if err != nil {
 		return // Silently skip if kv list fails
 	}
-
-	// Group memories by type
-	type mem struct {
-		shortKey string
-		value    string
-	}
-	grouped := make(map[string][]mem)
-
-	for k, v := range kvs {
-		if !strings.HasPrefix(k, memoryKeyPrefix) {
-			continue
-		}
-		memType, shortKey := parseMemoryKey(k)
-		grouped[memType] = append(grouped[memType], mem{shortKey: shortKey, value: v})
-	}
-
+	grouped := groupPrimeMemories(kvs)
 	if len(grouped) == 0 {
 		return
 	}
+	sortPrimeMemoryGroups(grouped)
+	outputPrimeMemories(grouped)
+}
 
-	// Sort each group by key
-	for t := range grouped {
-		sort.Slice(grouped[t], func(i, j int) bool {
-			return grouped[t][i].shortKey < grouped[t][j].shortKey
+func groupPrimeMemories(kvs map[string]string) map[string][]primeMemory {
+	grouped := make(map[string][]primeMemory)
+	for key, value := range kvs {
+		if !strings.HasPrefix(key, memoryKeyPrefix) {
+			continue
+		}
+		memType, shortKey := parseMemoryKey(key)
+		grouped[memType] = append(grouped[memType], primeMemory{shortKey: shortKey, value: value})
+	}
+	return grouped
+}
+
+func sortPrimeMemoryGroups(grouped map[string][]primeMemory) {
+	for memType := range grouped {
+		sort.Slice(grouped[memType], func(i, j int) bool {
+			return grouped[memType][i].shortKey < grouped[memType][j].shortKey
 		})
 	}
+}
 
+func outputPrimeMemories(grouped map[string][]primeMemory) {
 	fmt.Println()
 	fmt.Println("# Agent Memories")
 
-	for _, t := range memoryTypeOrder {
-		mems, ok := grouped[t]
+	for _, memType := range memoryTypeOrder {
+		mems, ok := grouped[memType]
 		if !ok || len(mems) == 0 {
 			continue
 		}
-		label := memoryTypeLabels[t]
+		label := memoryTypeLabels[memType]
 		if label == "" {
-			label = t
+			label = memType
 		}
 		fmt.Printf("\n## %s\n\n", label)
 		for _, m := range mems {
@@ -786,22 +787,17 @@ func findAgentWork(ctx RoleContext) (*beads.Issue, error) {
 	if agentID == "" {
 		return nil, nil
 	}
+	return findAgentWorkWithRetries(ctx, agentID, primeWorkAttempts(ctx))
+}
 
-	// Polecats, crew, and dogs use a retry loop to handle the timing race
-	// where the hook write (status=hooked + assignee) hasn't propagated to
-	// new Dolt connections by the time gt prime runs on session startup.
-	// Dogs are especially affected since dispatch is fire-and-forget. (GH#2748)
-	// Uses exponential backoff: 500ms, 1s, 2s, 4s, 8s (total ~15.5s max).
-	// See: https://github.com/steveyegge/gastown/issues/2389
-	//
-	// On compact/resume, the agent already has work context in memory.
-	// A single attempt suffices — retries would add ~15s of latency to
-	// compaction hooks, causing non-Claude runtimes to report hook failure.
-	maxAttempts := 1
+func primeWorkAttempts(ctx RoleContext) int {
 	if (ctx.Role == RolePolecat || ctx.Role == RoleCrew || ctx.Role == RoleDog) && !isCompactResume() {
-		maxAttempts = 5
+		return 5
 	}
+	return 1
+}
 
+func findAgentWorkWithRetries(ctx RoleContext, agentID string, maxAttempts int) (*beads.Issue, error) {
 	var lastErr error
 	backoff := 500 * time.Millisecond
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -866,74 +862,63 @@ func findAgentWorkOnce(ctx RoleContext, agentID string) (*beads.Issue, error) {
 	// polecats to miss hooked work and exit immediately. The rig root directory
 	// always has the authoritative .beads/ database. (GH#2503)
 	b := beads.New(rigBeadsRoot(ctx))
-
-	// Dogs are town-level agents, but their source work can belong to any rig.
-	// Search every configured rig before consulting the legacy agent hook. The
-	// source bead's hooked status and assignee are authoritative; a stale agent
-	// hook must not hide a newer assignment in another database. (GH#4516)
 	if ctx.Role == RoleDog {
-		assigned, err := findAssignedDogWork(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		// Dog agent hooks are compatibility metadata, never assignment authority.
-		// Returning here prevents a stale hook from reviving unrelated work.
-		return assigned, nil
+		return findAssignedDogWork(ctx, agentID)
 	}
-
-	// Agent bead's hook_bead field. Dog dispatch writes this field so the
-	// agent hook agrees with the hooked source. Other roles still consult it
-	// for backward compatibility.
-	agentBeadID := buildAgentBeadID(agentID, ctx.Role, ctx.TownRoot)
-	var staleHookErr error
-	if agentBeadID != "" {
-		agentBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBeadID, ctx.WorkDir)
-		ab := beads.New(agentBeadDir)
-		if agentBead, err := ab.Show(agentBeadID); err == nil && agentBead != nil && agentBead.HookBead != "" {
-			hookBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBead.HookBead, ctx.WorkDir)
-			hb := beads.New(hookBeadDir)
-			hookBead, showErr := hb.Show(agentBead.HookBead)
-			if showErr == nil && hookBead != nil &&
-				(hookBead.Status == beads.StatusHooked || hookBead.Status == "in_progress") &&
-				hookBead.Assignee == agentID {
-				return hookBead, nil
-			}
-			// The agent bead names a hook bead but `bd show` cannot find it.
-			// This is the cross-rig dispatch failure mode (gt-el4): an `hq-`
-			// bead was handed to a polecat whose DB only resolves `gt-`. Fail
-			// fast — never pontificate, the witness will clear the hook on
-			// its next sweep and the dispatcher will (or won't) re-issue.
-			if hookBead == nil || isBeadNotFound(showErr) {
-				staleHookErr = fmt.Errorf("%w: agent=%s hook_bead=%s cwd=%s: %v",
-					ErrHookUnresolvable, agentID, agentBead.HookBead, ctx.WorkDir, showErr)
-			}
-		}
+	hookedBead, staleHookErr := findAgentHookBead(ctx, agentID)
+	if hookedBead != nil {
+		return hookedBead, nil
 	}
-
-	// Fallback: query by assignee.
 	hookedBeads, err := listAssignedActiveWork(b, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("querying active work: %w", err)
 	}
-
-	// Town-level fallback: rig-level agents (polecats, crew) may have hooked
-	// HQ beads (hq-* prefix) stored in townRoot/.beads, not the rig's database.
-	// Matches the fallback in molecule_status.go and unsling.go. (gt-dtq7)
-	if len(hookedBeads) == 0 && !isTownLevelRole(agentID) && ctx.TownRoot != "" {
-		townB := beads.New(filepath.Join(ctx.TownRoot, ".beads"))
-		if townWork, err := listAssignedActiveWork(townB, agentID); err == nil && len(townWork) > 0 {
-			hookedBeads = townWork
-		}
-		// Town-level fallback errors are non-fatal — rig-level query succeeded
+	hookedBeads = findTownAgentWork(ctx, agentID, hookedBeads)
+	if len(hookedBeads) > 0 {
+		return hookedBeads[0], nil
 	}
+	return nil, staleHookErr
+}
 
-	if len(hookedBeads) == 0 {
-		if staleHookErr != nil {
-			return nil, staleHookErr
-		}
+func findAgentHookBead(ctx RoleContext, agentID string) (*beads.Issue, error) {
+	agentBeadID := buildAgentBeadID(agentID, ctx.Role, ctx.TownRoot)
+	if agentBeadID == "" {
 		return nil, nil
 	}
-	return hookedBeads[0], nil
+	agentBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBeadID, ctx.WorkDir)
+	agentBead, err := beads.New(agentBeadDir).Show(agentBeadID)
+	if err != nil || agentBead == nil || agentBead.HookBead == "" {
+		return nil, nil
+	}
+	hookID := agentBead.HookBead
+	hookDir := beads.ResolveHookDir(ctx.TownRoot, hookID, ctx.WorkDir)
+	hookBead, showErr := beads.New(hookDir).Show(hookID)
+	if isActiveAssignedAgentHook(hookBead, agentID, showErr) {
+		return hookBead, nil
+	}
+	if hookBead == nil || isBeadNotFound(showErr) {
+		return nil, fmt.Errorf("%w: agent=%s hook_bead=%s cwd=%s: %v",
+			ErrHookUnresolvable, agentID, hookID, ctx.WorkDir, showErr)
+	}
+	return nil, nil
+}
+
+func isActiveAssignedAgentHook(hookBead *beads.Issue, agentID string, err error) bool {
+	if err != nil || hookBead == nil || hookBead.Assignee != agentID {
+		return false
+	}
+	return hookBead.Status == beads.StatusHooked || hookBead.Status == "in_progress"
+}
+
+func findTownAgentWork(ctx RoleContext, agentID string, hookedBeads []*beads.Issue) []*beads.Issue {
+	if len(hookedBeads) > 0 || isTownLevelRole(agentID) || ctx.TownRoot == "" {
+		return hookedBeads
+	}
+	townB := beads.New(filepath.Join(ctx.TownRoot, ".beads"))
+	if townWork, err := listAssignedActiveWork(townB, agentID); err == nil && len(townWork) > 0 {
+		return townWork
+	}
+	return hookedBeads
 }
 
 // findAssignedDogWork searches the town and every configured rig for active
@@ -962,8 +947,11 @@ func findAssignedDogWork(ctx RoleContext, agentID string) (*beads.Issue, error) 
 	if matched != nil {
 		return matched, nil
 	}
-	assigned = mergeBeadLists(assigned, nil)
+	return finalizeAssignedDogWork(ctx, current, assigned, queryErr)
+}
 
+func finalizeAssignedDogWork(ctx RoleContext, current *dog.Dog, assigned []*beads.Issue, queryErr error) (*beads.Issue, error) {
+	assigned = mergeBeadLists(assigned, nil)
 	if current == nil || current.State != dog.StateWorking || current.Work == "" {
 		if len(assigned) > 0 {
 			return nil, fmt.Errorf("dog %s has %d assigned active bead(s) but no matching working state", ctx.Polecat, len(assigned))
@@ -1020,27 +1008,30 @@ func matchWorkingDogIssue(current *dog.Dog, work []*beads.Issue) *beads.Issue {
 		return nil
 	}
 	for _, issue := range work {
-		fields := beads.ParseAttachmentFields(issue)
-		formulaMatches := fields != nil && fields.AttachedFormula == current.Work &&
-			(current.WorkStartedAt.IsZero() || dogWorksOnHook(current, current.Work, issue))
-		if issue.ID == current.Work || formulaMatches {
+		if workingDogIssueMatches(current, issue) {
 			return issue
 		}
 	}
 	return nil
 }
 
+func workingDogIssueMatches(current *dog.Dog, issue *beads.Issue) bool {
+	if issue.ID == current.Work {
+		return true
+	}
+	fields := beads.ParseAttachmentFields(issue)
+	return fields != nil && fields.AttachedFormula == current.Work &&
+		(current.WorkStartedAt.IsZero() || dogWorksOnHook(current, current.Work, issue))
+}
+
 func resolveDogWorkFromState(ctx RoleContext, agentID string, current *dog.Dog) (*beads.Issue, bool) {
 	if current == nil || current.State != dog.StateWorking || current.Work == "" {
 		return nil, false
 	}
-	if current.WorkKind == dog.WorkKindPlugin || (current.WorkKind == "" && strings.HasPrefix(current.Work, "plugin:")) {
+	if dogWorkIsPlugin(current) {
 		return nil, true
 	}
-	sourceID := current.WorkSourceID
-	if sourceID == "" && current.WorkKind != dog.WorkKindFormula {
-		sourceID = current.Work
-	}
+	sourceID := dogWorkSourceID(current)
 	if sourceID == "" {
 		return nil, false
 	}
@@ -1050,10 +1041,32 @@ func resolveDogWorkFromState(ctx RoleContext, agentID string, current *dog.Dog) 
 		// Source may live in another beads database; continue the full search.
 		return nil, false
 	}
-	if (issue.Status == beads.StatusHooked || issue.Status == string(beads.StatusInProgress)) && issue.Assignee == agentID {
+	if isAssignedActiveDogIssue(issue, agentID) {
 		return issue, true
 	}
 	return nil, false
+}
+
+func dogWorkIsPlugin(current *dog.Dog) bool {
+	return current.WorkKind == dog.WorkKindPlugin ||
+		(current.WorkKind == "" && strings.HasPrefix(current.Work, "plugin:"))
+}
+
+func dogWorkSourceID(current *dog.Dog) string {
+	if current.WorkSourceID != "" {
+		return current.WorkSourceID
+	}
+	if current.WorkKind != dog.WorkKindFormula {
+		return current.Work
+	}
+	return ""
+}
+
+func isAssignedActiveDogIssue(issue *beads.Issue, agentID string) bool {
+	if issue.Assignee != agentID {
+		return false
+	}
+	return issue.Status == beads.StatusHooked || issue.Status == string(beads.StatusInProgress)
 }
 
 // rigBeadsRoot returns the route-owned directory to use for beads queries.
@@ -1180,18 +1193,7 @@ func outputMoleculeWorkflow(ctx RoleContext, attachment *beads.AttachmentFields)
 
 	// Show inline formula steps from the embedded binary (root-only: no child wisps to query).
 	if attachment.AttachedFormula != "" {
-		if _, isForkRig, _ := roleRigContext(ctx); isForkRig && ctx.Role == RolePolecat {
-			fmt.Printf("%s\n", style.Bold.Render("FORK-BACKED RIG OVERRIDE"))
-			fmt.Printf("Formula %q is attached, but its embedded polecat checklist is not rendered because it contains local Refinery/MQ completion steps.\n", attachment.AttachedFormula)
-			fmt.Println("Use the hooked bead and assignment-specific GitHub PR/no-merge workflow as the source of truth for completion.")
-			return nil
-		}
-		showFormulaStepsFull(attachment.AttachedFormula, ctx.TownRoot, ctx.Rig, attachmentFormulaVars(attachment))
-		fmt.Println()
-		fmt.Printf("%s\n", style.Bold.Render("Work through ALL steps above, including submit and cleanup."))
-		fmt.Println("The base bead is your assignment. The formula steps define your workflow.")
-		fmt.Printf("\n%s\n", style.Bold.Render("REQUIRED: When all steps complete, run `"+cli.Name()+" done` to submit to the merge queue. Do NOT stop after implementation — the formula has submit steps you must follow."))
-		return nil
+		return outputFormulaWorkflow(ctx, attachment)
 	}
 
 	// Legacy path: no formula name stored, fall back to bd mol current
@@ -1199,6 +1201,21 @@ func outputMoleculeWorkflow(ctx RoleContext, attachment *beads.AttachmentFields)
 	fmt.Println()
 	fmt.Printf("%s\n", style.Bold.Render("Follow the molecule steps above, NOT the base bead."))
 	fmt.Println("The base bead is just a container. The molecule steps define your workflow.")
+	return nil
+}
+
+func outputFormulaWorkflow(ctx RoleContext, attachment *beads.AttachmentFields) error {
+	if _, isForkRig, _ := roleRigContext(ctx); isForkRig && ctx.Role == RolePolecat {
+		fmt.Printf("%s\n", style.Bold.Render("FORK-BACKED RIG OVERRIDE"))
+		fmt.Printf("Formula %q is attached, but its embedded polecat checklist is not rendered because it contains local Refinery/MQ completion steps.\n", attachment.AttachedFormula)
+		fmt.Println("Use the hooked bead and assignment-specific GitHub PR/no-merge workflow as the source of truth for completion.")
+		return nil
+	}
+	showFormulaStepsFull(attachment.AttachedFormula, ctx.TownRoot, ctx.Rig, attachmentFormulaVars(attachment))
+	fmt.Println()
+	fmt.Printf("%s\n", style.Bold.Render("Work through ALL steps above, including submit and cleanup."))
+	fmt.Println("The base bead is your assignment. The formula steps define your workflow.")
+	fmt.Printf("\n%s\n", style.Bold.Render("REQUIRED: When all steps complete, run `"+cli.Name()+" done` to submit to the merge queue. Do NOT stop after implementation — the formula has submit steps you must follow."))
 	return nil
 }
 
@@ -1435,30 +1452,33 @@ func getAgentBeadID(ctx RoleContext) string {
 	case RoleBoot:
 		// Boot uses deacon's bead since it's a deacon subprocess
 		return beads.DeaconBeadIDTown()
+	case RoleWitness, RoleRefinery, RolePolecat, RoleCrew:
+		return rigAgentBeadIDForPrime(ctx)
+	default:
+		return ""
+	}
+}
+
+func rigAgentBeadIDForPrime(ctx RoleContext) string {
+	if ctx.Rig == "" {
+		return ""
+	}
+	prefix := beads.GetPrefixForRig(ctx.TownRoot, ctx.Rig)
+	switch ctx.Role {
 	case RoleWitness:
-		if ctx.Rig != "" {
-			prefix := beads.GetPrefixForRig(ctx.TownRoot, ctx.Rig)
-			return beads.WitnessBeadIDWithPrefix(prefix, ctx.Rig)
-		}
-		return ""
+		return beads.WitnessBeadIDWithPrefix(prefix, ctx.Rig)
 	case RoleRefinery:
-		if ctx.Rig != "" {
-			prefix := beads.GetPrefixForRig(ctx.TownRoot, ctx.Rig)
-			return beads.RefineryBeadIDWithPrefix(prefix, ctx.Rig)
-		}
-		return ""
+		return beads.RefineryBeadIDWithPrefix(prefix, ctx.Rig)
 	case RolePolecat:
-		if ctx.Rig != "" && ctx.Polecat != "" {
-			prefix := beads.GetPrefixForRig(ctx.TownRoot, ctx.Rig)
-			return beads.PolecatBeadIDWithPrefix(prefix, ctx.Rig, ctx.Polecat)
+		if ctx.Polecat == "" {
+			return ""
 		}
-		return ""
+		return beads.PolecatBeadIDWithPrefix(prefix, ctx.Rig, ctx.Polecat)
 	case RoleCrew:
-		if ctx.Rig != "" && ctx.Polecat != "" {
-			prefix := beads.GetPrefixForRig(ctx.TownRoot, ctx.Rig)
-			return beads.CrewBeadIDWithPrefix(prefix, ctx.Rig, ctx.Polecat)
+		if ctx.Polecat == "" {
+			return ""
 		}
-		return ""
+		return beads.CrewBeadIDWithPrefix(prefix, ctx.Rig, ctx.Polecat)
 	default:
 		return ""
 	}
@@ -1468,25 +1488,36 @@ func getAgentBeadID(ctx RoleContext) string {
 // This handles cases where git clean or other operations delete the redirect file.
 // Uses the shared SetupRedirect helper which handles both tracked and local beads.
 func ensureBeadsRedirect(ctx RoleContext) {
-	// Only applies to worktree-based roles that use shared beads
-	if ctx.Role != RoleCrew && ctx.Role != RolePolecat && ctx.Role != RoleRefinery && ctx.Role != RoleWitness {
+	if !primeRoleUsesRedirect(ctx.Role) {
 		return
 	}
 
 	redirectPath := filepath.Join(ctx.WorkDir, ".beads", "redirect")
 	expected, err := beads.ComputeRedirectTarget(ctx.TownRoot, ctx.WorkDir)
 	if err != nil {
-		// Preserve the old best-effort behavior: if target computation fails but
-		// a redirect exists, do not disturb the worktree during prime.
-		if _, statErr := os.Stat(redirectPath); statErr == nil {
+		if primeRedirectExists(redirectPath) {
 			return
 		}
-	} else if data, readErr := os.ReadFile(redirectPath); readErr == nil && strings.TrimSpace(string(data)) == expected && !worktreeBeadsNeedsCleanup(ctx.WorkDir) {
+	} else if primeRedirectIsCurrent(redirectPath, expected, ctx.WorkDir) {
 		return
 	}
 
 	// Use shared helper - silently ignore errors during prime
 	_ = beads.SetupRedirect(ctx.TownRoot, ctx.WorkDir)
+}
+
+func primeRoleUsesRedirect(role Role) bool {
+	return role == RoleCrew || role == RolePolecat || role == RoleRefinery || role == RoleWitness
+}
+
+func primeRedirectExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func primeRedirectIsCurrent(path, expected, workDir string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.TrimSpace(string(data)) == expected && !worktreeBeadsNeedsCleanup(workDir)
 }
 
 func worktreeBeadsNeedsCleanup(workDir string) bool {
@@ -1547,36 +1578,53 @@ func pushPrimeToWorker(ctx RoleContext, hookedBead *beads.Issue) {
 	if primeDryRun || ctx.TownRoot == "" {
 		return
 	}
+	run := primeWorkerRun(ctx)
+	if run == nil {
+		return
+	}
+	w, err := worker.Open(ctx.TownRoot)
+	if err != nil {
+		return
+	}
+	_ = w.PushContext(context.Background(), worker.ContextPush{
+		RunID:    run.RunID,
+		Sections: primeWorkerContextSections(ctx, hookedBead),
+		Mode:     primeWorkerContextMode(),
+	})
+}
+
+func primeWorkerRun(ctx RoleContext) *worker.Run {
 	sessionID := os.Getenv("GT_SESSION")
 	if sessionID == "" {
 		sessionID = os.Getenv("GT_SESSION_ID")
 	}
 	run, err := worker.LatestRunForSession(ctx.TownRoot, sessionID)
 	if err != nil || run == nil {
-		if os.Getenv("GT_RUN") != "" {
-			run, err = worker.ReadRun(ctx.TownRoot, os.Getenv("GT_RUN"))
+		runID := os.Getenv("GT_RUN")
+		if runID == "" {
+			return nil
 		}
-		if err != nil || run == nil {
-			return
-		}
+		run, err = worker.ReadRun(ctx.TownRoot, runID)
 	}
-	w, err := worker.Open(ctx.TownRoot)
 	if err != nil {
-		return
+		return nil
 	}
-	mode := worker.ContextFull
-	if isCompactResume() {
-		mode = worker.ContextResume
-	}
+	return run
+}
+
+func primeWorkerContextSections(ctx RoleContext, hookedBead *beads.Issue) []worker.ContextSection {
 	sections := []worker.ContextSection{{Type: worker.SectionRole, Content: string(ctx.Role)}}
 	if hookedBead != nil {
 		sections = append(sections, worker.ContextSection{Type: worker.SectionWork, Content: hookedBead.ID})
 	}
-	_ = w.PushContext(context.Background(), worker.ContextPush{
-		RunID:    run.RunID,
-		Sections: sections,
-		Mode:     mode,
-	})
+	return sections
+}
+
+func primeWorkerContextMode() string {
+	if isCompactResume() {
+		return worker.ContextResume
+	}
+	return worker.ContextFull
 }
 
 // setTmuxWorkContext writes GT_WORK_RIG, GT_WORK_BEAD, GT_WORK_MOL into the current
@@ -1611,33 +1659,37 @@ func setTmuxWorkContext(workRig, workBead, workMol string) {
 // checkPendingEscalations queries for open escalation beads and displays them prominently.
 // This is called on Mayor startup to surface issues needing human attention.
 func checkPendingEscalations(ctx RoleContext) {
-	// Query for open escalations using bd list with tag filter
 	stdout, _, err := runPrimeExternalCommand(ctx.WorkDir, "bd", "list", "--status=open", "--tag=escalation", "--json")
 	if err != nil {
-		// Silently skip - escalation check is best-effort
 		return
 	}
-
-	// Parse JSON output
-	var escalations []struct {
-		ID          string `json:"id"`
-		Title       string `json:"title"`
-		Priority    int    `json:"priority"`
-		Description string `json:"description"`
-		Created     string `json:"created"`
-	}
-
-	if err := json.Unmarshal(stdout.Bytes(), &escalations); err != nil || len(escalations) == 0 {
-		// No escalations or parse error
+	escalations := parsePendingEscalations(stdout.Bytes())
+	if len(escalations) == 0 {
 		return
 	}
+	critical, high, medium := countPendingEscalationSeverity(escalations)
+	outputPendingEscalations(escalations, critical, high, medium)
+}
 
-	// Count by severity
-	critical := 0
-	high := 0
-	medium := 0
-	for _, e := range escalations {
-		switch e.Priority {
+type pendingPrimeEscalation struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Priority    int    `json:"priority"`
+	Description string `json:"description"`
+	Created     string `json:"created"`
+}
+
+func parsePendingEscalations(data []byte) []pendingPrimeEscalation {
+	var escalations []pendingPrimeEscalation
+	if err := json.Unmarshal(data, &escalations); err != nil {
+		return nil
+	}
+	return escalations
+}
+
+func countPendingEscalationSeverity(escalations []pendingPrimeEscalation) (critical, high, medium int) {
+	for _, escalation := range escalations {
+		switch escalation.Priority {
 		case 0:
 			critical++
 		case 1:
@@ -1646,8 +1698,10 @@ func checkPendingEscalations(ctx RoleContext) {
 			medium++
 		}
 	}
+	return critical, high, medium
+}
 
-	// Display prominently
+func outputPendingEscalations(escalations []pendingPrimeEscalation, critical, high, medium int) {
 	fmt.Println()
 	fmt.Printf("%s\n\n", style.Bold.Render("## 🚨 PENDING ESCALATIONS"))
 	fmt.Printf("There are %d escalation(s) awaiting human attention:\n\n", len(escalations))
@@ -1669,15 +1723,7 @@ func checkPendingEscalations(ctx RoleContext) {
 		maxShow = len(escalations)
 	}
 	for i := 0; i < maxShow; i++ {
-		e := escalations[i]
-		severity := "MEDIUM"
-		switch e.Priority {
-		case 0:
-			severity = "CRITICAL"
-		case 1:
-			severity = "HIGH"
-		}
-		fmt.Printf("  • [%s] %s (%s)\n", severity, e.Title, e.ID)
+		outputPendingEscalation(escalations[i])
 	}
 	if len(escalations) > maxShow {
 		fmt.Printf("  ... and %d more\n", len(escalations)-maxShow)
@@ -1687,4 +1733,15 @@ func checkPendingEscalations(ctx RoleContext) {
 	fmt.Println("**Action required:** Review escalations with `bd list --tag=escalation`")
 	fmt.Println("Close resolved ones with `bd close <id> --reason \"resolution\"`")
 	fmt.Println()
+}
+
+func outputPendingEscalation(escalation pendingPrimeEscalation) {
+	severity := "MEDIUM"
+	switch escalation.Priority {
+	case 0:
+		severity = "CRITICAL"
+	case 1:
+		severity = "HIGH"
+	}
+	fmt.Printf("  • [%s] %s (%s)\n", severity, escalation.Title, escalation.ID)
 }
