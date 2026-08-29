@@ -1914,94 +1914,114 @@ func isZombieState(agentState beads.AgentState, hookBead string) bool {
 // gt-qnp: If Mayor ACP session is active, vetoes automatic cleanup to allow Mayor review.
 func handleZombieRestart(bd *BdCli, workDir, rigName, polecatName, hookBead, cleanupStatus string, zombie *ZombieResult) {
 	zombie.CleanupStatus = cleanupStatus
-	skipRestart := false
 
 	// aa-apw: If this polecat's branch work is already merged into the default
 	// branch (including via squash merge, which rewrites SHAs and fools a plain
 	// ancestor check), do NOT restart. Restarting would let the polecat push its
 	// pre-squash HEAD and create a duplicate MR for work already in main.
 	// Instead archive the polecat — its work is done.
-	if merged, err := verifyBranchAlreadyMerged(workDir, rigName, polecatName); err == nil && merged {
-		zombie.Action = "archived-work-already-merged (aa-apw)"
-		if nukeErr := NukePolecat(bd, workDir, rigName, polecatName); nukeErr != nil {
-			zombie.Error = fmt.Errorf("archive: %w", nukeErr)
-			zombie.Action = fmt.Sprintf("archive-failed-work-already-merged: %v", nukeErr)
-		}
+	if archiveZombieIfMerged(bd, workDir, rigName, polecatName, zombie) {
 		return
 	}
 
 	// Persistence interlock (gt-qnp): check if Mayor ACP session is active before cleanup.
-	townRoot := workDirToTownRoot(workDir)
-	if mayor.IsACPActive(townRoot) {
-		existingWisp := findAnyCleanupWisp(bd, workDir, polecatName)
-		if existingWisp != "" {
-			zombie.Action = fmt.Sprintf("cleanup-deferred-acp (cleanup_status=%s, existing-wisp=%s)", cleanupStatus, existingWisp)
-			return
-		}
-		wispID, wispErr := createCleanupWisp(bd, workDir, polecatName, hookBead, "")
-		if wispErr != nil {
-			zombie.Error = wispErr
-		}
-		zombie.Action = fmt.Sprintf("cleanup-deferred-acp:%s (Mayor ACP session active)", wispID)
+	if deferZombieCleanupForACP(bd, workDir, polecatName, hookBead, cleanupStatus, zombie) {
 		return
 	}
 
-	switch cleanupStatus {
-	case "clean", "":
-		zombie.Action = "restarted"
-
-	case "has_uncommitted", "has_stash", "has_unpushed":
-		// Dirty state — create cleanup wisp for tracking if not already tracked.
-		// ZFC (gt-5rne): Report data, don't escalate. The witness agent decides policy.
-
-		// Fast path: if a cleanup wisp already exists from a previous patrol cycle,
-		// the polecat was already restarted and became zombie again. Just restart.
-		existingWisp := findAnyCleanupWisp(bd, workDir, polecatName)
-		if existingWisp != "" {
-			zombie.Action = fmt.Sprintf("already-tracked (cleanup_status=%s, existing-wisp=%s)", cleanupStatus, existingWisp)
-			break
-		}
-
-		// No existing wisp — create one as the atomic interlock (gt-7vs1).
-		// Previous code checked then created, allowing two concurrent patrols to
-		// both see "no wisp" and create duplicates. Now we create first, then dedup.
-		wispID, wispErr := createCleanupWisp(bd, workDir, polecatName, hookBead, "")
-		if wispErr != nil {
-			zombie.Error = fmt.Errorf("cleanup wisp: %w", wispErr)
-			zombie.Action = fmt.Sprintf("restarted-dirty (cleanup_status=%s, wisp-failed)", cleanupStatus)
-			break
-		}
-
-		// Dedup: re-check after creation to detect races with concurrent patrols.
-		// If another patrol also just created a wisp, there will be >1. Use
-		// deterministic winner selection (lowest wisp ID) so exactly one patrol
-		// proceeds with the restart and the other cleans up its duplicate.
-		allWisps := findAllCleanupWisps(bd, workDir, polecatName)
-		if len(allWisps) > 1 {
-			sort.Strings(allWisps)
-			if wispID != allWisps[0] {
-				// Lost the race — close our duplicate and skip restart to avoid
-				// disrupting the session the winning patrol is starting.
-				_, _ = bd.Exec(workDir, "close", wispID, "--reason=duplicate: concurrent patrol race (gt-7vs1)")
-				zombie.Action = fmt.Sprintf("already-tracked (cleanup_status=%s, existing-wisp=%s, closed-dup=%s)", cleanupStatus, allWisps[0], wispID)
-				skipRestart = true
-			} else {
-				// Won the race — clean up the other patrol's duplicate(s).
-				for _, w := range allWisps[1:] {
-					_, _ = bd.Exec(workDir, "close", w, "--reason=duplicate: concurrent patrol race (gt-7vs1)")
-				}
-				zombie.Action = fmt.Sprintf("restarted-dirty (cleanup_status=%s, wisp=%s)", cleanupStatus, wispID)
-			}
-		} else {
-			zombie.Action = fmt.Sprintf("restarted-dirty (cleanup_status=%s, wisp=%s)", cleanupStatus, wispID)
-		}
-	}
-
-	if skipRestart {
+	if prepareZombieRestartAction(bd, workDir, polecatName, hookBead, cleanupStatus, zombie) {
 		return
 	}
 
 	// Restart regardless of cleanup state — the worktree is preserved.
+	restartZombieSession(workDir, rigName, polecatName, zombie)
+}
+
+func archiveZombieIfMerged(bd *BdCli, workDir, rigName, polecatName string, zombie *ZombieResult) bool {
+	merged, err := verifyBranchAlreadyMerged(workDir, rigName, polecatName)
+	if err != nil || !merged {
+		return false
+	}
+	zombie.Action = "archived-work-already-merged (aa-apw)"
+	if nukeErr := NukePolecat(bd, workDir, rigName, polecatName); nukeErr != nil {
+		zombie.Error = fmt.Errorf("archive: %w", nukeErr)
+		zombie.Action = fmt.Sprintf("archive-failed-work-already-merged: %v", nukeErr)
+	}
+	return true
+}
+
+func deferZombieCleanupForACP(bd *BdCli, workDir, polecatName, hookBead, cleanupStatus string, zombie *ZombieResult) bool {
+	if !mayor.IsACPActive(workDirToTownRoot(workDir)) {
+		return false
+	}
+	existingWisp := findAnyCleanupWisp(bd, workDir, polecatName)
+	if existingWisp != "" {
+		zombie.Action = fmt.Sprintf("cleanup-deferred-acp (cleanup_status=%s, existing-wisp=%s)", cleanupStatus, existingWisp)
+		return true
+	}
+	wispID, wispErr := createCleanupWisp(bd, workDir, polecatName, hookBead, "")
+	if wispErr != nil {
+		zombie.Error = wispErr
+	}
+	zombie.Action = fmt.Sprintf("cleanup-deferred-acp:%s (Mayor ACP session active)", wispID)
+	return true
+}
+
+func prepareZombieRestartAction(bd *BdCli, workDir, polecatName, hookBead, cleanupStatus string, zombie *ZombieResult) bool {
+	switch cleanupStatus {
+	case "clean", "":
+		zombie.Action = "restarted"
+	case "has_uncommitted", "has_stash", "has_unpushed":
+		return prepareDirtyZombieRestart(bd, workDir, polecatName, hookBead, cleanupStatus, zombie)
+	}
+	return false
+}
+
+func prepareDirtyZombieRestart(bd *BdCli, workDir, polecatName, hookBead, cleanupStatus string, zombie *ZombieResult) bool {
+	// Dirty state — create cleanup wisp for tracking if not already tracked.
+	// ZFC (gt-5rne): Report data, don't escalate. The witness agent decides policy.
+	existingWisp := findAnyCleanupWisp(bd, workDir, polecatName)
+	if existingWisp != "" {
+		zombie.Action = fmt.Sprintf("already-tracked (cleanup_status=%s, existing-wisp=%s)", cleanupStatus, existingWisp)
+		return false
+	}
+
+	// Create first, then dedup, so the wisp acts as an atomic interlock.
+	wispID, wispErr := createCleanupWisp(bd, workDir, polecatName, hookBead, "")
+	if wispErr != nil {
+		zombie.Error = fmt.Errorf("cleanup wisp: %w", wispErr)
+		zombie.Action = fmt.Sprintf("restarted-dirty (cleanup_status=%s, wisp-failed)", cleanupStatus)
+		return false
+	}
+
+	allWisps := findAllCleanupWisps(bd, workDir, polecatName)
+	if len(allWisps) <= 1 {
+		zombie.Action = fmt.Sprintf("restarted-dirty (cleanup_status=%s, wisp=%s)", cleanupStatus, wispID)
+		return false
+	}
+
+	sort.Strings(allWisps)
+	if wispID != allWisps[0] {
+		// Lost the race — close our duplicate and skip restart to avoid
+		// disrupting the session the winning patrol is starting.
+		closeDuplicateCleanupWisp(bd, workDir, wispID)
+		zombie.Action = fmt.Sprintf("already-tracked (cleanup_status=%s, existing-wisp=%s, closed-dup=%s)", cleanupStatus, allWisps[0], wispID)
+		return true
+	}
+
+	// Won the race — clean up the other patrol's duplicate(s).
+	for _, w := range allWisps[1:] {
+		closeDuplicateCleanupWisp(bd, workDir, w)
+	}
+	zombie.Action = fmt.Sprintf("restarted-dirty (cleanup_status=%s, wisp=%s)", cleanupStatus, wispID)
+	return false
+}
+
+func closeDuplicateCleanupWisp(bd *BdCli, workDir, wispID string) {
+	_, _ = bd.Exec(workDir, "close", wispID, "--reason=duplicate: concurrent patrol race (gt-7vs1)")
+}
+
+func restartZombieSession(workDir, rigName, polecatName string, zombie *ZombieResult) {
 	if err := RestartPolecatSession(workDir, rigName, polecatName); err != nil {
 		if zombie.Error == nil {
 			zombie.Error = fmt.Errorf("restart: %w", err)
