@@ -1926,31 +1926,39 @@ func rigDirForWispMigration(townRoot, database string) (string, bool) {
 }
 
 func printMigrateWispsResult(result *doltserver.MigrateWispsResult) {
+	printWispTableChanges(result)
+	printWispCopiedCounts(result)
+	printWispClosedCount(result)
+	if result.AgentsCopied == 0 && len(result.AuxTablesCreated) == 0 && !result.WispsTableCreated {
+		fmt.Printf("  %s Already migrated (no changes needed)\n", style.Bold.Render("✓"))
+	}
+}
+
+func printWispTableChanges(result *doltserver.MigrateWispsResult) {
 	if result.WispsTableCreated {
 		fmt.Printf("  %s Created wisps table\n", style.Bold.Render("✓"))
 	}
 	for _, t := range result.AuxTablesCreated {
 		fmt.Printf("  %s Created %s\n", style.Bold.Render("✓"), t)
 	}
-	if result.AgentsCopied > 0 {
-		fmt.Printf("  %s Copied %d agent beads to wisps\n", style.Bold.Render("✓"), result.AgentsCopied)
+}
+
+func printWispCopiedCounts(result *doltserver.MigrateWispsResult) {
+	printWispCount(result.AgentsCopied, "Copied %d agent beads to wisps")
+	printWispCount(result.LabelsCopied, "Copied %d labels")
+	printWispCount(result.CommentsCopied, "Copied %d comments")
+	printWispCount(result.EventsCopied, "Copied %d events")
+	printWispCount(result.DepsCopied, "Copied %d dependencies")
+}
+
+func printWispCount(count int, format string) {
+	if count > 0 {
+		fmt.Printf("  %s "+format+"\n", style.Bold.Render("✓"), count)
 	}
-	if result.LabelsCopied > 0 {
-		fmt.Printf("  %s Copied %d labels\n", style.Bold.Render("✓"), result.LabelsCopied)
-	}
-	if result.CommentsCopied > 0 {
-		fmt.Printf("  %s Copied %d comments\n", style.Bold.Render("✓"), result.CommentsCopied)
-	}
-	if result.EventsCopied > 0 {
-		fmt.Printf("  %s Copied %d events\n", style.Bold.Render("✓"), result.EventsCopied)
-	}
-	if result.DepsCopied > 0 {
-		fmt.Printf("  %s Copied %d dependencies\n", style.Bold.Render("✓"), result.DepsCopied)
-	}
+}
+
+func printWispClosedCount(result *doltserver.MigrateWispsResult) {
 	if result.AgentsClosed > 0 {
 		fmt.Printf("  %s Closed %d original agent beads\n", style.Bold.Render("✓"), result.AgentsClosed)
-	}
-	if result.AgentsCopied == 0 && len(result.AuxTablesCreated) == 0 && !result.WispsTableCreated {
-		fmt.Printf("  %s Already migrated (no changes needed)\n", style.Bold.Render("✓"))
 	}
 }
