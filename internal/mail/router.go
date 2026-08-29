@@ -369,30 +369,30 @@ func agentBeadToAddress(bead *agentBead) string {
 		return ""
 	}
 
-	// Handle hq- prefixed IDs (town-level format)
 	if strings.HasPrefix(id, "hq-") {
-		// Well-known town-level agents
-		if id == "hq-mayor" {
-			return "mayor/"
-		}
-		if id == "hq-deacon" {
-			return "deacon/"
-		}
-
-		// For other hq- agents, fall back to description parsing
-		return parseAgentAddressFromDescription(bead.Description)
+		return hqAgentAddress(bead)
 	}
 
-	// Handle gt- prefixed IDs (legacy format)
-	// Also handle rig-prefixed IDs (e.g., ppf-) by extracting rig from description
-	var rest string
-	if strings.HasPrefix(id, "gt-") {
-		rest = strings.TrimPrefix(id, "gt-")
-	} else {
+	if !strings.HasPrefix(id, "gt-") {
 		// For rig-prefixed IDs, extract rig and role from description
 		return parseRigAgentAddress(bead)
 	}
+	return legacyAgentAddress(strings.TrimPrefix(id, "gt-"))
+}
 
+func hqAgentAddress(bead *agentBead) string {
+	switch bead.ID {
+	case "hq-mayor":
+		return "mayor/"
+	case "hq-deacon":
+		return "deacon/"
+	default:
+		// For other hq- agents, fall back to description parsing
+		return parseAgentAddressFromDescription(bead.Description)
+	}
+}
+
+func legacyAgentAddress(rest string) string {
 	// Agent bead IDs include the role explicitly: gt-<rig>-<role>[-<name>]
 	// Scan from right for known role markers to handle hyphenated rig names.
 	parts := strings.Split(rest, "-")
@@ -404,22 +404,8 @@ func agentBeadToAddress(bead *agentBead) string {
 
 	// Scan from right for known role markers
 	for i := len(parts) - 1; i >= 1; i-- {
-		switch parts[i] {
-		case constants.RoleWitness, constants.RoleRefinery:
-			// Singleton role: rig is everything before the role
-			rig := strings.Join(parts[:i], "-")
-			return rig + "/" + parts[i]
-		case constants.RoleCrew, constants.RolePolecat:
-			// Named role: rig is before role, name is after (skip role in address)
-			rig := strings.Join(parts[:i], "-")
-			if i+1 < len(parts) {
-				name := strings.Join(parts[i+1:], "-")
-				return rig + "/" + name
-			}
-			return rig + "/"
-		case "dog":
-			// Town-level named: gt-dog-alpha
-			return dogAddressFromParts(parts, i)
+		if address := legacyAddressAtMarker(parts, i); address != "" {
+			return address
 		}
 	}
 
@@ -428,6 +414,28 @@ func agentBeadToAddress(bead *agentBead) string {
 		return parts[0] + "/" + parts[1]
 	}
 	return ""
+}
+
+func legacyAddressAtMarker(parts []string, index int) string {
+	switch parts[index] {
+	case constants.RoleWitness, constants.RoleRefinery:
+		// Singleton role: rig is everything before the role
+		rig := strings.Join(parts[:index], "-")
+		return rig + "/" + parts[index]
+	case constants.RoleCrew, constants.RolePolecat:
+		// Named role: rig is before role, name is after (skip role in address)
+		rig := strings.Join(parts[:index], "-")
+		if index+1 < len(parts) {
+			name := strings.Join(parts[index+1:], "-")
+			return rig + "/" + name
+		}
+		return rig + "/"
+	case "dog":
+		// Town-level named: gt-dog-alpha
+		return dogAddressFromParts(parts, index)
+	default:
+		return ""
+	}
 }
 
 // parseRigAgentAddress extracts address from a rig-prefixed agent bead.
