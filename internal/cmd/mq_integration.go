@@ -954,81 +954,128 @@ func runMqIntegrationStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	epicID := args[0]
+	return runMQIntegrationStatusWorkflow(epicID, jsonOutput)
+}
 
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
+func runMQIntegrationStatusWorkflow(epicID string, jsonOutput bool) error {
 
-	// Find current rig
-	_, r, err := findCurrentRig(townRoot)
+	ctx, err := loadMQIntegrationStatusContext(epicID)
 	if err != nil {
 		return err
 	}
+	if err := resolveMQIntegrationStatusBranch(ctx); err != nil {
+		return err
+	}
 
-	// Initialize beads and git for the rig
+	if err := loadMQIntegrationStatusBranchStats(ctx); err != nil {
+		return err
+	}
+
+	if err := loadMQIntegrationStatusMRs(ctx); err != nil {
+		return err
+	}
+
+	ctx.autoLandEnabled = integrationAutoLandEnabled(ctx.rig.Path)
+	loadMQIntegrationStatusChildren(ctx)
+	readyToLand := isReadyToLand(ctx.aheadCount, ctx.childrenTotal, ctx.childrenClosed, len(ctx.pendingMRs))
+
+	output := buildMQIntegrationStatusOutput(ctx, readyToLand)
+	return writeMQIntegrationStatusOutput(&output, jsonOutput)
+}
+
+type mqIntegrationStatusContext struct {
+	epicID          string
+	rig             *rig.Rig
+	bd              *beads.Beads
+	g               *git.Git
+	epic            *beads.Issue
+	branchName      string
+	baseBranch      string
+	ref             string
+	createdDate     string
+	aheadCount      int
+	mergedMRs       []*beads.Issue
+	pendingMRs      []*beads.Issue
+	autoLandEnabled bool
+	childrenTotal   int
+	childrenClosed  int
+}
+
+func loadMQIntegrationStatusContext(epicID string) (*mqIntegrationStatusContext, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	_, r, err := findCurrentRig(townRoot)
+	if err != nil {
+		return nil, err
+	}
 	bd := beads.New(r.Path)
 	g, err := getRigGit(r.Path)
 	if err != nil {
-		return fmt.Errorf("initializing git: %w", err)
+		return nil, fmt.Errorf("initializing git: %w", err)
 	}
-
-	// Fetch from origin to ensure we have latest refs (needed for branch
-	// detection). Non-fatal: fall back to local data on failure.
 	_ = g.Fetch("origin")
+	epic, err := loadMQIntegrationStatusEpic(bd, epicID)
+	if err != nil {
+		return nil, err
+	}
+	return &mqIntegrationStatusContext{epicID: epicID, rig: r, bd: bd, g: g, epic: epic}, nil
+}
 
-	// Fetch epic to get stored branch name
+func loadMQIntegrationStatusEpic(bd *beads.Beads, epicID string) (*beads.Issue, error) {
 	epic, err := bd.Show(epicID)
 	if err != nil {
 		if err == beads.ErrNotFound {
-			return fmt.Errorf("epic '%s' not found", epicID)
+			return nil, fmt.Errorf("epic '%s' not found", epicID)
 		}
-		return fmt.Errorf("fetching epic: %w", err)
+		return nil, fmt.Errorf("fetching epic: %w", err)
 	}
+	return epic, nil
+}
 
-	// Get integration branch name — tries metadata, then {title} template,
-	// then legacy {epic} template with branch existence checking.
-	branchName := resolveEpicBranch(epic, r.Path, g)
-
-	// Read base_branch from epic metadata (where to merge back)
-	// Fall back to rig's default_branch for backward compat with pre-base-branch epics
-	baseBranch := beads.GetBaseBranchField(epic.Description)
-	if baseBranch == "" {
-		baseBranch = r.DefaultBranch()
+func resolveMQIntegrationStatusBranch(ctx *mqIntegrationStatusContext) error {
+	ctx.branchName = resolveEpicBranch(ctx.epic, ctx.rig.Path, ctx.g)
+	ctx.baseBranch = beads.GetBaseBranchField(ctx.epic.Description)
+	if ctx.baseBranch == "" {
+		ctx.baseBranch = ctx.rig.DefaultBranch()
 	}
+	return nil
+}
 
-	// Check if integration branch exists (locally or remotely)
-	localExists, _ := g.BranchExists(branchName)
-	remoteExists, _ := g.RemoteBranchExists("origin", branchName)
-
+func loadMQIntegrationStatusBranchStats(ctx *mqIntegrationStatusContext) error {
+	localExists, _ := ctx.g.BranchExists(ctx.branchName)
+	remoteExists, _ := ctx.g.RemoteBranchExists("origin", ctx.branchName)
 	if !localExists && !remoteExists {
-		return fmt.Errorf("integration branch '%s' does not exist", branchName)
+		return fmt.Errorf("integration branch '%s' does not exist", ctx.branchName)
 	}
-
-	// Determine which ref to use for comparison
-	ref := branchName
+	ctx.ref = ctx.branchName
 	if !localExists && remoteExists {
-		ref = "origin/" + branchName
+		ctx.ref = "origin/" + ctx.branchName
 	}
+	ctx.createdDate = branchCreatedDate(ctx.g, ctx.ref)
+	ctx.aheadCount = commitsAhead(ctx.g, ctx.baseBranch, ctx.ref)
+	return nil
+}
 
-	// Get branch creation date
+func branchCreatedDate(g *git.Git, ref string) string {
 	createdDate, err := g.BranchCreatedDate(ref)
 	if err != nil {
-		createdDate = "" // Non-fatal
+		return ""
 	}
+	return createdDate
+}
 
-	// Get commits ahead of base branch
+func commitsAhead(g *git.Git, baseBranch, ref string) int {
 	aheadCount, err := g.CommitsAhead("origin/"+baseBranch, ref)
 	if err != nil {
-		aheadCount = 0 // Non-fatal
+		return 0
 	}
+	return aheadCount
+}
 
-	// Query for MRs targeting this integration branch (use resolved name)
-	targetBranch := branchName
-
-	// Get all merge-request issues (MRs have Type: "task" with label "gt:merge-request")
-	allMRs, err := bd.List(beads.ListOptions{
+func loadMQIntegrationStatusMRs(ctx *mqIntegrationStatusContext) error {
+	allMRs, err := ctx.bd.List(beads.ListOptions{
 		Label:    "gt:merge-request",
 		Status:   "all",
 		Priority: -1,
@@ -1036,96 +1083,91 @@ func runMqIntegrationStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("querying merge requests: %w", err)
 	}
+	ctx.mergedMRs, ctx.pendingMRs = splitIntegrationStatusMRs(allMRs, ctx.branchName)
+	return nil
+}
 
-	// Filter by target branch and separate into merged/pending
-	var mergedMRs, pendingMRs []*beads.Issue
+func splitIntegrationStatusMRs(allMRs []*beads.Issue, targetBranch string) (merged, pending []*beads.Issue) {
 	for _, mr := range allMRs {
 		fields := beads.ParseMRFields(mr)
-		if fields == nil {
+		if fields == nil || fields.Target != targetBranch {
 			continue
 		}
-		if fields.Target != targetBranch {
-			continue
-		}
-
 		if mr.Status == "closed" {
-			mergedMRs = append(mergedMRs, mr)
-		} else {
-			pendingMRs = append(pendingMRs, mr)
+			merged = append(merged, mr)
+			continue
 		}
+		pending = append(pending, mr)
 	}
+	return merged, pending
+}
 
-	// Check if auto-land is enabled in settings
-	settingsPath := filepath.Join(r.Path, "settings", "config.json")
-	settings, _ := config.LoadRigSettings(settingsPath) // Ignore error, use defaults
-	autoLandEnabled := false
-	if settings != nil && settings.MergeQueue != nil {
-		autoLandEnabled = config.IsIntegrationBranchAutoLandEnabled(settings.MergeQueue)
-	}
+func integrationAutoLandEnabled(rigPath string) bool {
+	settingsPath := filepath.Join(rigPath, "settings", "config.json")
+	settings, _ := config.LoadRigSettings(settingsPath)
+	return settings != nil && settings.MergeQueue != nil &&
+		config.IsIntegrationBranchAutoLandEnabled(settings.MergeQueue)
+}
 
-	// Query children of the epic to determine if ready to land
-	// Use status "all" to include both open and closed children
-	// Use Priority -1 to disable priority filtering
-	children, err := bd.List(beads.ListOptions{
-		Parent:   epicID,
+func loadMQIntegrationStatusChildren(ctx *mqIntegrationStatusContext) {
+	children, err := ctx.bd.List(beads.ListOptions{
+		Parent:   ctx.epicID,
 		Status:   "all",
 		Priority: -1,
 	})
-	childrenTotal := 0
-	childrenClosed := 0
-	if err == nil {
-		for _, child := range children {
-			childrenTotal++
-			if child.Status == "closed" {
-				childrenClosed++
-			}
+	if err != nil {
+		return
+	}
+	ctx.childrenTotal = len(children)
+	for _, child := range children {
+		if child.Status == "closed" {
+			ctx.childrenClosed++
 		}
 	}
+}
 
-	readyToLand := isReadyToLand(aheadCount, childrenTotal, childrenClosed, len(pendingMRs))
-
-	// Build output structure
-	output := IntegrationStatusOutput{
-		Epic:            epicID,
-		Branch:          branchName,
-		BaseBranch:      baseBranch,
-		Created:         createdDate,
-		AheadOfBase:     aheadCount,
-		MergedMRs:       make([]IntegrationStatusMRSummary, 0, len(mergedMRs)),
-		PendingMRs:      make([]IntegrationStatusMRSummary, 0, len(pendingMRs)),
+func buildMQIntegrationStatusOutput(ctx *mqIntegrationStatusContext, readyToLand bool) IntegrationStatusOutput {
+	return IntegrationStatusOutput{
+		Epic:            ctx.epicID,
+		Branch:          ctx.branchName,
+		BaseBranch:      ctx.baseBranch,
+		Created:         ctx.createdDate,
+		AheadOfBase:     ctx.aheadCount,
+		MergedMRs:       integrationStatusMRSummaries(ctx.mergedMRs, false),
+		PendingMRs:      integrationStatusMRSummaries(ctx.pendingMRs, true),
 		ReadyToLand:     readyToLand,
-		AutoLandEnabled: autoLandEnabled,
-		ChildrenTotal:   childrenTotal,
-		ChildrenClosed:  childrenClosed,
+		AutoLandEnabled: ctx.autoLandEnabled,
+		ChildrenTotal:   ctx.childrenTotal,
+		ChildrenClosed:  ctx.childrenClosed,
 	}
+}
 
-	for _, mr := range mergedMRs {
-		// Extract the title without "Merge: " prefix for cleaner display
-		title := strings.TrimPrefix(mr.Title, "Merge: ")
-		output.MergedMRs = append(output.MergedMRs, IntegrationStatusMRSummary{
-			ID:    mr.ID,
-			Title: title,
-		})
-	}
-
-	for _, mr := range pendingMRs {
-		title := strings.TrimPrefix(mr.Title, "Merge: ")
-		output.PendingMRs = append(output.PendingMRs, IntegrationStatusMRSummary{
+func integrationStatusMRSummaries(mrs []*beads.Issue, includeStatus bool) []IntegrationStatusMRSummary {
+	result := make([]IntegrationStatusMRSummary, 0, len(mrs))
+	for _, mr := range mrs {
+		result = append(result, IntegrationStatusMRSummary{
 			ID:     mr.ID,
-			Title:  title,
-			Status: mr.Status,
+			Title:  strings.TrimPrefix(mr.Title, "Merge: "),
+			Status: integrationStatusSummaryStatus(mr.Status, includeStatus),
 		})
 	}
+	return result
+}
 
-	// JSON output
+func integrationStatusSummaryStatus(status string, includeStatus bool) string {
+	if includeStatus {
+		return status
+	}
+	return ""
+}
+
+func writeMQIntegrationStatusOutput(output *IntegrationStatusOutput, jsonOutput bool) error {
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(output)
 	}
-
-	// Human-readable output
-	return printIntegrationStatus(&output)
+	return printIntegrationStatus(output)
 }
 
 // isReadyToLand determines if an integration branch is ready to land.
