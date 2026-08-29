@@ -352,63 +352,74 @@ func MergeSettingsCommand(repo, local *MergeQueueConfig) *MergeQueueConfig {
 		return nil
 	}
 	result := &MergeQueueConfig{}
-	// Start from repo defaults
 	if repo != nil {
 		*result = *repo
 	}
-	// Overlay local overrides (non-empty fields win)
-	if local != nil {
-		if local.SetupCommand != "" {
-			result.SetupCommand = local.SetupCommand
-		}
-		if local.TypecheckCommand != "" {
-			result.TypecheckCommand = local.TypecheckCommand
-		}
-		if local.LintCommand != "" {
-			result.LintCommand = local.LintCommand
-		}
-		if local.TestCommand != "" {
-			result.TestCommand = local.TestCommand
-		}
-		if local.BuildCommand != "" {
-			result.BuildCommand = local.BuildCommand
-		}
-		// Merge non-command fields from local if explicitly set
-		if local.Enabled {
-			result.Enabled = local.Enabled
-		}
-		if local.MergeStrategy != "" {
-			result.MergeStrategy = local.MergeStrategy
-		}
-		if local.OnConflict != "" {
-			result.OnConflict = local.OnConflict
-		}
-		if local.RunTests != nil {
-			result.RunTests = local.RunTests
-		}
-		if local.DeleteMergedBranches != nil {
-			result.DeleteMergedBranches = local.DeleteMergedBranches
-		}
-		if local.RetryFlakyTests > 0 {
-			result.RetryFlakyTests = local.RetryFlakyTests
-		}
-		if local.PollInterval != "" {
-			result.PollInterval = local.PollInterval
-		}
-		if local.MaxConcurrent > 0 {
-			result.MaxConcurrent = local.MaxConcurrent
-		}
-		if local.StaleClaimTimeout != "" {
-			result.StaleClaimTimeout = local.StaleClaimTimeout
-		}
-		if local.MergeStrategy != "" {
-			result.MergeStrategy = local.MergeStrategy
-		}
-		if local.RequireReview != nil {
-			result.RequireReview = local.RequireReview
-		}
-	}
+	overlayMergeQueueSettings(result, local)
 	return result
+}
+
+func overlayMergeQueueSettings(result, local *MergeQueueConfig) {
+	if local == nil {
+		return
+	}
+	overlayMergeQueueCommands(&result.MergeQueueCommands, &local.MergeQueueCommands)
+	overlayMergeQueueFlags(result, local)
+	overlayMergeQueueLimits(result, local)
+}
+
+func overlayMergeQueueCommands(result, local *MergeQueueCommands) {
+	if local.SetupCommand != "" {
+		result.SetupCommand = local.SetupCommand
+	}
+	if local.TypecheckCommand != "" {
+		result.TypecheckCommand = local.TypecheckCommand
+	}
+	if local.LintCommand != "" {
+		result.LintCommand = local.LintCommand
+	}
+	if local.TestCommand != "" {
+		result.TestCommand = local.TestCommand
+	}
+	if local.BuildCommand != "" {
+		result.BuildCommand = local.BuildCommand
+	}
+}
+
+func overlayMergeQueueFlags(result, local *MergeQueueConfig) {
+	if local.Enabled {
+		result.Enabled = local.Enabled
+	}
+	if local.MergeStrategy != "" {
+		result.MergeStrategy = local.MergeStrategy
+	}
+	if local.OnConflict != "" {
+		result.OnConflict = local.OnConflict
+	}
+	if local.RunTests != nil {
+		result.RunTests = local.RunTests
+	}
+	if local.DeleteMergedBranches != nil {
+		result.DeleteMergedBranches = local.DeleteMergedBranches
+	}
+}
+
+func overlayMergeQueueLimits(result, local *MergeQueueConfig) {
+	if local.RetryFlakyTests > 0 {
+		result.RetryFlakyTests = local.RetryFlakyTests
+	}
+	if local.PollInterval != "" {
+		result.PollInterval = local.PollInterval
+	}
+	if local.MaxConcurrent > 0 {
+		result.MaxConcurrent = local.MaxConcurrent
+	}
+	if local.StaleClaimTimeout != "" {
+		result.StaleClaimTimeout = local.StaleClaimTimeout
+	}
+	if local.RequireReview != nil {
+		result.RequireReview = local.RequireReview
+	}
 }
 
 // LoadRigSettings loads and validates a rig settings file.
@@ -1008,8 +1019,20 @@ func validateMessagingConfig(c *MessagingConfig) error {
 	if c.Version > CurrentMessagingVersion {
 		return fmt.Errorf("%w: got %d, max supported %d", ErrInvalidVersion, c.Version, CurrentMessagingVersion)
 	}
+	initializeMessagingMaps(c)
+	if err := validateMessagingLists(c.Lists); err != nil {
+		return err
+	}
+	if err := validateMessagingQueues(c.Queues); err != nil {
+		return err
+	}
+	if err := validateMessagingAnnounces(c.Announces); err != nil {
+		return err
+	}
+	return validateMessagingNudgeChannels(c.NudgeChannels)
+}
 
-	// Initialize nil maps
+func initializeMessagingMaps(c *MessagingConfig) {
 	if c.Lists == nil {
 		c.Lists = make(map[string][]string)
 	}
@@ -1022,16 +1045,19 @@ func validateMessagingConfig(c *MessagingConfig) error {
 	if c.NudgeChannels == nil {
 		c.NudgeChannels = make(map[string][]string)
 	}
+}
 
-	// Validate lists have at least one recipient
-	for name, recipients := range c.Lists {
+func validateMessagingLists(lists map[string][]string) error {
+	for name, recipients := range lists {
 		if len(recipients) == 0 {
 			return fmt.Errorf("%w: list '%s' has no recipients", ErrMissingField, name)
 		}
 	}
+	return nil
+}
 
-	// Validate queues have at least one worker
-	for name, queue := range c.Queues {
+func validateMessagingQueues(queues map[string]QueueConfig) error {
+	for name, queue := range queues {
 		if len(queue.Workers) == 0 {
 			return fmt.Errorf("%w: queue '%s' workers", ErrMissingField, name)
 		}
@@ -1039,9 +1065,11 @@ func validateMessagingConfig(c *MessagingConfig) error {
 			return fmt.Errorf("%w: queue '%s' max_claims must be non-negative", ErrMissingField, name)
 		}
 	}
+	return nil
+}
 
-	// Validate announces have at least one reader
-	for name, announce := range c.Announces {
+func validateMessagingAnnounces(announces map[string]AnnounceConfig) error {
+	for name, announce := range announces {
 		if len(announce.Readers) == 0 {
 			return fmt.Errorf("%w: announce '%s' readers", ErrMissingField, name)
 		}
@@ -1049,9 +1077,11 @@ func validateMessagingConfig(c *MessagingConfig) error {
 			return fmt.Errorf("%w: announce '%s' retain_count must be non-negative", ErrMissingField, name)
 		}
 	}
+	return nil
+}
 
-	// Validate nudge channels have non-empty names and at least one recipient
-	for name, recipients := range c.NudgeChannels {
+func validateMessagingNudgeChannels(channels map[string][]string) error {
+	for name, recipients := range channels {
 		if name == "" {
 			return fmt.Errorf("%w: nudge channel name cannot be empty", ErrMissingField)
 		}
@@ -1059,7 +1089,6 @@ func validateMessagingConfig(c *MessagingConfig) error {
 			return fmt.Errorf("%w: nudge channel '%s' has no recipients", ErrMissingField, name)
 		}
 	}
-
 	return nil
 }
 
@@ -2921,31 +2950,41 @@ func validateEscalationConfig(c *EscalationConfig) error {
 	if c.Version > CurrentEscalationVersion {
 		return fmt.Errorf("%w: got %d, max supported %d", ErrInvalidVersion, c.Version, CurrentEscalationVersion)
 	}
-
-	// Validate stale_threshold if specified
-	if c.StaleThreshold != "" {
-		if _, err := time.ParseDuration(c.StaleThreshold); err != nil {
-			return fmt.Errorf("invalid stale_threshold: %w", err)
-		}
+	if err := validateEscalationThreshold(c.StaleThreshold); err != nil {
+		return err
 	}
-
-	// Initialize nil maps
 	if c.Routes == nil {
 		c.Routes = make(map[string][]string)
 	}
+	if err := validateEscalationRoutes(c.Routes); err != nil {
+		return err
+	}
+	return validateEscalationLimits(c.MaxReescalations)
+}
 
-	// Validate severity route keys
-	for severity := range c.Routes {
+func validateEscalationThreshold(threshold string) error {
+	if threshold == "" {
+		return nil
+	}
+	if _, err := time.ParseDuration(threshold); err != nil {
+		return fmt.Errorf("invalid stale_threshold: %w", err)
+	}
+	return nil
+}
+
+func validateEscalationRoutes(routes map[string][]string) error {
+	for severity := range routes {
 		if !IsValidSeverity(severity) {
 			return fmt.Errorf("%w: unknown severity '%s' (valid: low, medium, high, critical)", ErrMissingField, severity)
 		}
 	}
+	return nil
+}
 
-	// Validate max_reescalations is non-negative
-	if c.MaxReescalations != nil && *c.MaxReescalations < 0 {
+func validateEscalationLimits(maxReescalations *int) error {
+	if maxReescalations != nil && *maxReescalations < 0 {
 		return fmt.Errorf("%w: max_reescalations must be non-negative", ErrMissingField)
 	}
-
 	return nil
 }
 
