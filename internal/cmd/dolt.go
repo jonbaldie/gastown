@@ -595,131 +595,170 @@ func runDoltStatus(_ *cobra.Command, _ []string) error {
 	config := doltserver.DefaultConfig(townRoot)
 
 	if config.IsRemote() {
-		if running {
-			fmt.Printf("%s Dolt server is %s (remote: %s)\n",
-				style.Bold.Render("●"),
-				style.Bold.Render("reachable"),
-				config.HostPort())
-		} else {
-			fmt.Printf("%s Dolt server is %s (remote: %s)\n",
-				style.Dim.Render("○"),
-				"not reachable",
-				config.HostPort())
-		}
-		fmt.Printf("  Connection: %s\n", doltserver.GetConnectionString(townRoot))
-		printBeadsRuntimeConfig(townRoot)
-		if running {
-			metrics := doltserver.GetHealthMetrics(townRoot)
-			fmt.Printf("\n  %s\n", style.Bold.Render("Resource Metrics:"))
-			fmt.Printf("    Query latency: %v\n", metrics.QueryLatency.Round(time.Millisecond))
-			fmt.Printf("    Connections:   %d / %d (%.0f%%)\n",
-				metrics.Connections, metrics.MaxConnections, metrics.ConnectionPct)
-			if metrics.ReadOnly {
-				fmt.Printf("\n  %s %s\n",
-					style.Bold.Render("!!!"),
-					style.Bold.Render("SERVER IS READ-ONLY — contact the remote server admin"))
-			}
-		}
+		printRemoteDoltStatus(townRoot, config, running)
 		return nil
 	}
 
 	if running {
-		fmt.Printf("%s Dolt server is %s (PID %d)\n",
-			style.Bold.Render("●"),
-			style.Bold.Render("running"),
-			pid)
-
-		// Load state for more details
-		state, err := doltserver.LoadState(townRoot)
-		if err == nil && !state.StartedAt.IsZero() {
-			fmt.Printf("  Started: %s\n", state.StartedAt.Format("2006-01-02 15:04:05"))
-			fmt.Printf("  Port: %d\n", state.Port)
-			fmt.Printf("  Data dir: %s\n", state.DataDir)
-			if len(state.Databases) > 0 {
-				owners := doltserver.CollectDatabaseOwners(townRoot)
-				fmt.Printf("  Databases:\n")
-				for _, db := range state.Databases {
-					if owner, ok := owners[db]; ok {
-						fmt.Printf("    - %-20s (%s)\n", db, owner)
-					} else {
-						fmt.Printf("    - %s\n", db)
-					}
-				}
-			}
-			fmt.Printf("  Connection: %s\n", doltserver.GetConnectionString(townRoot))
-			printBeadsRuntimeConfig(townRoot)
-		}
-
-		// Resource metrics
-		metrics := doltserver.GetHealthMetrics(townRoot)
-		fmt.Printf("\n  %s\n", style.Bold.Render("Resource Metrics:"))
-		fmt.Printf("    Query latency: %v\n", metrics.QueryLatency.Round(time.Millisecond))
-		fmt.Printf("    Connections:   %d / %d (%.0f%%)\n",
-			metrics.Connections, metrics.MaxConnections, metrics.ConnectionPct)
-		fmt.Printf("    Disk usage:    %s\n", metrics.DiskUsageHuman)
-		if metrics.ReadOnly {
-			fmt.Printf("\n  %s %s\n",
-				style.Bold.Render("!!!"),
-				style.Bold.Render("SERVER IS READ-ONLY — run 'gt dolt recover' to restart"))
-		}
-
-		// Verify all filesystem databases are actually served.
-		_, missing, verifyErr := doltserver.VerifyDatabases(townRoot)
-		if verifyErr != nil {
-			fmt.Printf("\n  %s Database verification failed: %v\n", style.Bold.Render("!"), verifyErr)
-		} else if len(missing) > 0 {
-			fmt.Printf("\n  %s %s\n", style.Bold.Render("!!!"),
-				style.Bold.Render("MISSING DATABASES — exist on disk but not served:"))
-			for _, db := range missing {
-				fmt.Printf("    - %s\n", db)
-			}
-			fmt.Printf("  Try: cd ~/gt/.dolt-data/<db> && dolt fsck --repair\n")
-		}
-
-		// Check for orphaned databases
-		orphans, orphanErr := doltserver.FindOrphanedDatabases(townRoot)
-		if orphanErr == nil && len(orphans) > 0 {
-			fmt.Printf("\n  %s %d orphaned database(s) (not referenced by any rig):\n",
-				style.Bold.Render("!"), len(orphans))
-			for _, o := range orphans {
-				fmt.Printf("    - %s (%s)\n", o.Name, formatBytes(o.SizeBytes))
-			}
-			fmt.Printf("  Clean up with: %s\n", style.Dim.Render("gt dolt cleanup"))
-		}
-
-		if len(metrics.Warnings) > 0 {
-			fmt.Printf("\n  %s\n", style.Bold.Render("Warnings:"))
-			for _, w := range metrics.Warnings {
-				fmt.Printf("    %s %s\n", style.Bold.Render("!"), w)
-			}
-		}
+		printRunningDoltStatus(townRoot, pid)
 	} else {
-		fmt.Printf("%s Dolt server is %s\n",
-			style.Dim.Render("○"),
-			"not running")
-
-		// List available databases
-		databases, _ := doltserver.ListDatabases(townRoot)
-		if len(databases) == 0 {
-			fmt.Printf("\n%s No rig databases found in %s\n",
-				style.Bold.Render("!"),
-				config.DataDir)
-			fmt.Printf("  Initialize with: %s\n", style.Dim.Render("gt dolt init-rig <name>"))
-		} else {
-			fmt.Printf("\nAvailable databases in %s:\n", config.DataDir)
-			owners := doltserver.CollectDatabaseOwners(townRoot)
-			for _, db := range databases {
-				if owner, ok := owners[db]; ok {
-					fmt.Printf("  - %-20s (%s)\n", db, owner)
-				} else {
-					fmt.Printf("  - %s\n", db)
-				}
-			}
-			fmt.Printf("\nStart with: %s\n", style.Dim.Render("gt dolt start"))
-		}
+		printStoppedDoltStatus(townRoot, config)
 	}
 
 	return nil
+}
+
+func printRemoteDoltStatus(townRoot string, config *doltserver.Config, running bool) {
+	if running {
+		fmt.Printf("%s Dolt server is %s (remote: %s)\n",
+			style.Bold.Render("●"),
+			style.Bold.Render("reachable"),
+			config.HostPort())
+	} else {
+		fmt.Printf("%s Dolt server is %s (remote: %s)\n",
+			style.Dim.Render("○"),
+			"not reachable",
+			config.HostPort())
+	}
+	fmt.Printf("  Connection: %s\n", doltserver.GetConnectionString(townRoot))
+	printBeadsRuntimeConfig(townRoot)
+	if running {
+		printRemoteDoltMetrics(townRoot)
+	}
+}
+
+func printRemoteDoltMetrics(townRoot string) {
+	metrics := doltserver.GetHealthMetrics(townRoot)
+	fmt.Printf("\n  %s\n", style.Bold.Render("Resource Metrics:"))
+	fmt.Printf("    Query latency: %v\n", metrics.QueryLatency.Round(time.Millisecond))
+	fmt.Printf("    Connections:   %d / %d (%.0f%%)\n",
+		metrics.Connections, metrics.MaxConnections, metrics.ConnectionPct)
+	if metrics.ReadOnly {
+		fmt.Printf("\n  %s %s\n",
+			style.Bold.Render("!!!"),
+			style.Bold.Render("SERVER IS READ-ONLY — contact the remote server admin"))
+	}
+}
+
+func printRunningDoltStatus(townRoot string, pid int) {
+	fmt.Printf("%s Dolt server is %s (PID %d)\n",
+		style.Bold.Render("●"),
+		style.Bold.Render("running"),
+		pid)
+
+	state, err := doltserver.LoadState(townRoot)
+	if err == nil && !state.StartedAt.IsZero() {
+		printRunningDoltState(townRoot, state)
+	}
+
+	metrics := doltserver.GetHealthMetrics(townRoot)
+	printRunningDoltMetrics(metrics)
+	printDoltDatabaseVerification(townRoot)
+	printDoltOrphanedDatabases(townRoot)
+	printDoltWarnings(metrics)
+}
+
+func printRunningDoltState(townRoot string, state *doltserver.State) {
+	fmt.Printf("  Started: %s\n", state.StartedAt.Format("2006-01-02 15:04:05"))
+	fmt.Printf("  Port: %d\n", state.Port)
+	fmt.Printf("  Data dir: %s\n", state.DataDir)
+	if len(state.Databases) > 0 {
+		owners := doltserver.CollectDatabaseOwners(townRoot)
+		fmt.Printf("  Databases:\n")
+		for _, db := range state.Databases {
+			printDoltDatabaseOwner(db, owners)
+		}
+	}
+	fmt.Printf("  Connection: %s\n", doltserver.GetConnectionString(townRoot))
+	printBeadsRuntimeConfig(townRoot)
+}
+
+func printDoltDatabaseOwner(db string, owners map[string]string) {
+	if owner, ok := owners[db]; ok {
+		fmt.Printf("    - %-20s (%s)\n", db, owner)
+	} else {
+		fmt.Printf("    - %s\n", db)
+	}
+}
+
+func printRunningDoltMetrics(metrics *doltserver.HealthMetrics) {
+	fmt.Printf("\n  %s\n", style.Bold.Render("Resource Metrics:"))
+	fmt.Printf("    Query latency: %v\n", metrics.QueryLatency.Round(time.Millisecond))
+	fmt.Printf("    Connections:   %d / %d (%.0f%%)\n",
+		metrics.Connections, metrics.MaxConnections, metrics.ConnectionPct)
+	fmt.Printf("    Disk usage:    %s\n", metrics.DiskUsageHuman)
+	if metrics.ReadOnly {
+		fmt.Printf("\n  %s %s\n",
+			style.Bold.Render("!!!"),
+			style.Bold.Render("SERVER IS READ-ONLY — run 'gt dolt recover' to restart"))
+	}
+}
+
+func printDoltDatabaseVerification(townRoot string) {
+	_, missing, verifyErr := doltserver.VerifyDatabases(townRoot)
+	if verifyErr != nil {
+		fmt.Printf("\n  %s Database verification failed: %v\n", style.Bold.Render("!"), verifyErr)
+	} else if len(missing) > 0 {
+		fmt.Printf("\n  %s %s\n", style.Bold.Render("!!!"),
+			style.Bold.Render("MISSING DATABASES — exist on disk but not served:"))
+		for _, db := range missing {
+			fmt.Printf("    - %s\n", db)
+		}
+		fmt.Printf("  Try: cd ~/gt/.dolt-data/<db> && dolt fsck --repair\n")
+	}
+}
+
+func printDoltOrphanedDatabases(townRoot string) {
+	orphans, orphanErr := doltserver.FindOrphanedDatabases(townRoot)
+	if orphanErr != nil || len(orphans) == 0 {
+		return
+	}
+	fmt.Printf("\n  %s %d orphaned database(s) (not referenced by any rig):\n",
+		style.Bold.Render("!"), len(orphans))
+	for _, o := range orphans {
+		fmt.Printf("    - %s (%s)\n", o.Name, formatBytes(o.SizeBytes))
+	}
+	fmt.Printf("  Clean up with: %s\n", style.Dim.Render("gt dolt cleanup"))
+}
+
+func printDoltWarnings(metrics *doltserver.HealthMetrics) {
+	if len(metrics.Warnings) == 0 {
+		return
+	}
+	fmt.Printf("\n  %s\n", style.Bold.Render("Warnings:"))
+	for _, w := range metrics.Warnings {
+		fmt.Printf("    %s %s\n", style.Bold.Render("!"), w)
+	}
+}
+
+func printStoppedDoltStatus(townRoot string, config *doltserver.Config) {
+	fmt.Printf("%s Dolt server is %s\n",
+		style.Dim.Render("○"),
+		"not running")
+
+	databases, _ := doltserver.ListDatabases(townRoot)
+	if len(databases) == 0 {
+		fmt.Printf("\n%s No rig databases found in %s\n",
+			style.Bold.Render("!"),
+			config.DataDir)
+		fmt.Printf("  Initialize with: %s\n", style.Dim.Render("gt dolt init-rig <name>"))
+		return
+	}
+
+	fmt.Printf("\nAvailable databases in %s:\n", config.DataDir)
+	owners := doltserver.CollectDatabaseOwners(townRoot)
+	for _, db := range databases {
+		printDoltDatabaseOwnerWithIndent(db, owners)
+	}
+	fmt.Printf("\nStart with: %s\n", style.Dim.Render("gt dolt start"))
+}
+
+func printDoltDatabaseOwnerWithIndent(db string, owners map[string]string) {
+	if owner, ok := owners[db]; ok {
+		fmt.Printf("  - %-20s (%s)\n", db, owner)
+	} else {
+		fmt.Printf("  - %s\n", db)
+	}
 }
 
 type beadsRuntimeConfig struct {
