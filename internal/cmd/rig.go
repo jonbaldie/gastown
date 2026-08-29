@@ -720,128 +720,129 @@ func rigStatePriority(hasWitness, hasRefinery bool, opState string) int {
 	}
 }
 
-func runRigList(_ *cobra.Command, _ []string) error {
-	// Find workspace
+type rigListInfo struct {
+	Name        string `json:"name"`
+	BeadsPrefix string `json:"beads_prefix"`
+	Status      string `json:"status"`
+	Witness     string `json:"witness"`
+	Refinery    string `json:"refinery"`
+	Polecats    int    `json:"polecats"`
+	Crew        int    `json:"crew"`
+	// sorting fields (not exported to JSON)
+	sortPrio int
+}
+
+func loadRigListConfig() (string, *config.RigsConfig, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return "", nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Load rigs config
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
-		fmt.Println("No rigs configured.")
-		return nil
+		return townRoot, nil, err
 	}
+	return townRoot, rigsConfig, nil
+}
 
-	if len(rigsConfig.Rigs) == 0 {
-		fmt.Println("No rigs configured.")
-		fmt.Printf("\nAdd one with: %s\n", style.Dim.Render("gt rig add <name> <git-url>"))
-		return nil
+func rigListInfoFor(name, townRoot string, mgr *rig.Manager, t *tmux.Tmux) rigListInfo {
+	prefix := session.PrefixFor(name)
+	r, err := mgr.GetRig(name)
+	if err != nil {
+		return rigListInfo{Name: name, BeadsPrefix: prefix, Status: "error", sortPrio: 99}
 	}
-
-	// Create rig manager to get details
-	g := git.NewGit(townRoot)
-	mgr := rig.NewManager(townRoot, rigsConfig, g)
-	t := tmux.NewTmux()
-
-	type rigInfo struct {
-		Name        string `json:"name"`
-		BeadsPrefix string `json:"beads_prefix"`
-		Status      string `json:"status"`
-		Witness     string `json:"witness"`
-		Refinery    string `json:"refinery"`
-		Polecats    int    `json:"polecats"`
-		Crew        int    `json:"crew"`
-		// sorting fields (not exported to JSON)
-		sortPrio int
+	opState, _ := getRigOperationalState(townRoot, name)
+	witnessRunning, _ := t.HasSession(session.WitnessSessionName(prefix))
+	refineryRunning, _ := t.HasSession(session.RefinerySessionName(prefix))
+	witnessStatus := "stopped"
+	if witnessRunning {
+		witnessStatus = "running"
 	}
-
-	var rigs []rigInfo
-
-	for name := range rigsConfig.Rigs {
-		prefix := session.PrefixFor(name)
-
-		r, err := mgr.GetRig(name)
-		if err != nil {
-			rigs = append(rigs, rigInfo{Name: name, BeadsPrefix: prefix, Status: "error", sortPrio: 99})
-			continue
-		}
-
-		opState, _ := getRigOperationalState(townRoot, name)
-
-		witnessSession := session.WitnessSessionName(prefix)
-		refinerySession := session.RefinerySessionName(prefix)
-		witnessRunning, _ := t.HasSession(witnessSession)
-		refineryRunning, _ := t.HasSession(refinerySession)
-
-		witnessStatus := "stopped"
-		if witnessRunning {
-			witnessStatus = "running"
-		}
-		refineryStatus := "stopped"
-		if refineryRunning {
-			refineryStatus = "running"
-		}
-
-		summary := rig.Summary(r)
-		rigs = append(rigs, rigInfo{
-			Name:        name,
-			BeadsPrefix: prefix,
-			Status:      strings.ToLower(opState),
-			Witness:     witnessStatus,
-			Refinery:    refineryStatus,
-			Polecats:    summary.PolecatCount,
-			Crew:        summary.CrewCount,
-			sortPrio:    rigStatePriority(witnessRunning, refineryRunning, opState),
-		})
+	refineryStatus := "stopped"
+	if refineryRunning {
+		refineryStatus = "running"
 	}
+	summary := rig.Summary(r)
+	return rigListInfo{
+		Name:        name,
+		BeadsPrefix: prefix,
+		Status:      strings.ToLower(opState),
+		Witness:     witnessStatus,
+		Refinery:    refineryStatus,
+		Polecats:    summary.PolecatCount,
+		Crew:        summary.CrewCount,
+		sortPrio:    rigStatePriority(witnessRunning, refineryRunning, opState),
+	}
+}
 
-	// Sort by state priority (active first), then alphabetically
+func sortRigList(rigs []rigListInfo) {
 	sort.Slice(rigs, func(i, j int) bool {
 		if rigs[i].sortPrio != rigs[j].sortPrio {
 			return rigs[i].sortPrio < rigs[j].sortPrio
 		}
 		return rigs[i].Name < rigs[j].Name
 	})
+}
 
-	if rigListJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rigs)
+func encodeRigListJSON(rigs []rigListInfo) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(rigs)
+}
+
+func rigListLEDEntry(ri rigListInfo) {
+	if ri.Status == "error" {
+		fmt.Printf("  %s %s\n", style.Warning.Render("!"), ri.Name)
+		return
 	}
+	led := GetRigLED(ri.Witness == "running", ri.Refinery == "running", strings.ToUpper(ri.Status))
+	space := " "
+	if led == "🅿️" {
+		space = "  "
+	}
+	fmt.Printf("%s%s%s\n", led, space, style.Bold.Render(ri.Name))
+	witnessIcon := style.Dim.Render("○")
+	if ri.Witness == "running" {
+		witnessIcon = style.Success.Render("●")
+	}
+	refineryIcon := style.Dim.Render("○")
+	if ri.Refinery == "running" {
+		refineryIcon = style.Success.Render("●")
+	}
+	fmt.Printf("   Witness: %s %s  Refinery: %s %s\n", witnessIcon, ri.Witness, refineryIcon, ri.Refinery)
+	fmt.Printf("   Polecats: %d  Crew: %d\n", ri.Polecats, ri.Crew)
+	fmt.Println()
+}
 
+func renderRigList(townRoot string, rigs []rigListInfo) {
 	fmt.Printf("Rigs in %s:\n\n", townRoot)
 	for _, ri := range rigs {
-		if ri.Status == "error" {
-			fmt.Printf("  %s %s\n", style.Warning.Render("!"), ri.Name)
-			continue
-		}
-
-		led := GetRigLED(ri.Witness == "running", ri.Refinery == "running", strings.ToUpper(ri.Status))
-		// 🅿️ needs extra space for alignment
-		space := " "
-		if led == "🅿️" {
-			space = "  "
-		}
-
-		fmt.Printf("%s%s%s\n", led, space, style.Bold.Render(ri.Name))
-
-		witnessIcon := style.Dim.Render("○")
-		if ri.Witness == "running" {
-			witnessIcon = style.Success.Render("●")
-		}
-		refineryIcon := style.Dim.Render("○")
-		if ri.Refinery == "running" {
-			refineryIcon = style.Success.Render("●")
-		}
-
-		fmt.Printf("   Witness: %s %s  Refinery: %s %s\n",
-			witnessIcon, ri.Witness, refineryIcon, ri.Refinery)
-		fmt.Printf("   Polecats: %d  Crew: %d\n", ri.Polecats, ri.Crew)
-		fmt.Println()
+		rigListLEDEntry(ri)
 	}
+}
+
+func runRigList(_ *cobra.Command, _ []string) error {
+	townRoot, rigsConfig, err := loadRigListConfig()
+	if err != nil {
+		fmt.Println("No rigs configured.")
+		return nil
+	}
+	if len(rigsConfig.Rigs) == 0 {
+		fmt.Println("No rigs configured.")
+		fmt.Printf("\nAdd one with: %s\n", style.Dim.Render("gt rig add <name> <git-url>"))
+		return nil
+	}
+	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
+	t := tmux.NewTmux()
+	rigs := make([]rigListInfo, 0, len(rigsConfig.Rigs))
+	for name := range rigsConfig.Rigs {
+		rigs = append(rigs, rigListInfoFor(name, townRoot, mgr, t))
+	}
+	sortRigList(rigs)
+	if rigListJSON {
+		return encodeRigListJSON(rigs)
+	}
+	renderRigList(townRoot, rigs)
 
 	return nil
 }
