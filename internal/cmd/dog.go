@@ -359,73 +359,93 @@ func runDogRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var names []string
-	if removeAll {
-		dogs, err := mgr.List()
-		if err != nil {
-			return fmt.Errorf("listing dogs: %w", err)
-		}
-		for _, d := range dogs {
-			names = append(names, d.Name)
-		}
-		if len(names) == 0 {
-			fmt.Println("No dogs in kennel")
-			return nil
-		}
-	} else {
-		names = args
+	names, err := dogRemovalNames(mgr, removeAll, args)
+	if err != nil {
+		return err
+	}
+	if removeAll && len(names) == 0 {
+		fmt.Println("No dogs in kennel")
+		return nil
 	}
 
-	// Get beads client for cleanup
-	townRoot, _ := workspace.FindFromCwd()
-	var b *beads.Beads
-	if townRoot != "" {
-		b = beads.New(townRoot)
-	}
+	b := dogRemovalBeads()
 
 	var removeErrors []string
 	removed := 0
 
 	for _, name := range names {
-		d, err := mgr.Get(name)
-		if err != nil {
-			style.PrintWarning("dog %s not found, skipping", name)
-			continue
-		}
-
-		// Source-backed ownership must be recovered before removal even with
-		// --force; deleting the dog would strand its authoritative hook.
-		if d.State == dog.StateWorking && !dog.CanClearStateOnly(d.Work, d.WorkKind) {
-			removeErrors = append(removeErrors, fmt.Sprintf("%s: has source-backed work %s; recover or complete it before removal", name, d.Work))
-			continue
-		}
-		if d.State == dog.StateWorking && !force {
-			removeErrors = append(removeErrors, fmt.Sprintf("%s: is working (use --force to remove anyway)", name))
-			continue
-		}
-
-		removedMatch, err := mgr.RemoveIfSnapshotMatchesAfter(name, d.Work, d.WorkStartedAt, d.LastActive, nil)
+		removedOne, err := removeDog(mgr, b, name, force)
 		if err != nil {
 			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
-		if !removedMatch {
-			removeErrors = append(removeErrors, fmt.Sprintf("%s: assignment changed during removal; retry", name))
-			continue
-		}
-
-		fmt.Printf("✓ Removed dog %s\n", name)
-		removed++
-
-		// Reset agent bead for the dog (preserves persistent identity)
-		if b != nil {
-			if err := b.ResetDogAgentBead(name); err != nil {
-				// Non-fatal: warn but don't fail dog removal
-				fmt.Printf("  Warning: could not reset agent bead: %v\n", err)
-			}
+		if removedOne {
+			removed++
 		}
 	}
 
+	return reportDogRemoval(removed, removeErrors)
+}
+
+func dogRemovalNames(mgr *dog.Manager, removeAll bool, args []string) ([]string, error) {
+	if !removeAll {
+		return args, nil
+	}
+	dogs, err := mgr.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing dogs: %w", err)
+	}
+	names := make([]string, 0, len(dogs))
+	for _, d := range dogs {
+		names = append(names, d.Name)
+	}
+	return names, nil
+}
+
+func dogRemovalBeads() *beads.Beads {
+	townRoot, _ := workspace.FindFromCwd()
+	if townRoot == "" {
+		return nil
+	}
+	return beads.New(townRoot)
+}
+
+func removeDog(mgr *dog.Manager, b *beads.Beads, name string, force bool) (bool, error) {
+	d, err := mgr.Get(name)
+	if err != nil {
+		style.PrintWarning("dog %s not found, skipping", name)
+		return false, nil
+	}
+	if err := validateDogRemoval(d, force); err != nil {
+		return false, err
+	}
+	removed, err := mgr.RemoveIfSnapshotMatchesAfter(name, d.Work, d.WorkStartedAt, d.LastActive, nil)
+	if err != nil {
+		return false, err
+	}
+	if !removed {
+		return false, fmt.Errorf("assignment changed during removal; retry")
+	}
+	fmt.Printf("✓ Removed dog %s\n", name)
+	if b != nil {
+		if err := b.ResetDogAgentBead(name); err != nil {
+			fmt.Printf("  Warning: could not reset agent bead: %v\n", err)
+		}
+	}
+	return true, nil
+}
+
+func validateDogRemoval(d *dog.Dog, force bool) error {
+	if d.State == dog.StateWorking && !dog.CanClearStateOnly(d.Work, d.WorkKind) {
+		return fmt.Errorf("has source-backed work %s; recover or complete it before removal", d.Work)
+	}
+	if d.State == dog.StateWorking && !force {
+		return fmt.Errorf("is working (use --force to remove anyway)")
+	}
+	return nil
+}
+
+func reportDogRemoval(removed int, removeErrors []string) error {
 	if len(removeErrors) > 0 {
 		fmt.Printf("\nSome removals failed:\n")
 		for _, e := range removeErrors {
