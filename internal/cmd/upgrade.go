@@ -17,12 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	upgradeDryRun  bool
-	upgradeVerbose bool
-	upgradeNoStart bool
-)
-
 var upgradeCmd = &cobra.Command{
 	Use:     "upgrade",
 	GroupID: GroupDiag,
@@ -50,10 +44,16 @@ Examples:
 }
 
 func init() {
-	upgradeCmd.Flags().BoolVar(&upgradeDryRun, "dry-run", false, "Show what would change without modifying anything")
-	upgradeCmd.Flags().BoolVarP(&upgradeVerbose, "verbose", "v", false, "Show detailed output")
-	upgradeCmd.Flags().BoolVar(&upgradeNoStart, "no-start", false, "Suppress starting daemon/agents during doctor fix")
+	upgradeCmd.Flags().Bool("dry-run", false, "Show what would change without modifying anything")
+	upgradeCmd.Flags().BoolP("verbose", "v", false, "Show detailed output")
+	upgradeCmd.Flags().Bool("no-start", false, "Suppress starting daemon/agents during doctor fix")
 	rootCmd.AddCommand(upgradeCmd)
+}
+
+type upgradeOptions struct {
+	dryRun  bool
+	verbose bool
+	noStart bool
 }
 
 // upgradeResult tracks what changed in each step.
@@ -64,13 +64,18 @@ type upgradeResult struct {
 	details []string
 }
 
-func runUpgrade(_ *cobra.Command, _ []string) error {
+func runUpgrade(cmd *cobra.Command, _ []string) error {
+	opts := upgradeOptions{
+		dryRun:  commandBoolFlag(cmd, "dry-run"),
+		verbose: commandBoolFlag(cmd, "verbose"),
+		noStart: commandBoolFlag(cmd, "no-start"),
+	}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	if upgradeDryRun {
+	if opts.dryRun {
 		fmt.Printf("\n%s Dry run — showing what would change\n", style.Bold.Render("gt upgrade"))
 	} else {
 		fmt.Printf("\n%s Post-install migration\n", style.Bold.Render("gt upgrade"))
@@ -79,41 +84,41 @@ func runUpgrade(_ *cobra.Command, _ []string) error {
 	var results []upgradeResult
 
 	// Step 1: Run doctor --fix for structural checks
-	r1 := upgradeDoctor(townRoot)
+	r1 := upgradeDoctor(townRoot, opts)
 	results = append(results, r1)
 
 	// Step 2: Sync AGENTS.md from embedded template
-	r2 := upgradeAgentsMD(townRoot)
+	r2 := upgradeAgentsMD(townRoot, opts.dryRun)
 	results = append(results, r2)
 
 	// Step 3: Ensure daemon.json lifecycle defaults
-	r3 := upgradeDaemonConfig(townRoot)
+	r3 := upgradeDaemonConfig(townRoot, opts.dryRun)
 	results = append(results, r3)
 
 	// Step 4: Sync hooks registry to settings.json
-	r4 := upgradeHooksSync(townRoot)
+	r4 := upgradeHooksSync(townRoot, opts)
 	results = append(results, r4)
 
 	// Step 5: Update formulas from embedded copies
-	r5 := upgradeFormulas(townRoot)
+	r5 := upgradeFormulas(townRoot, opts.dryRun)
 	results = append(results, r5)
 
 	// Print summary
-	printUpgradeSummary(results)
+	printUpgradeSummary(results, opts.dryRun)
 
 	return nil
 }
 
 // upgradeDoctor runs doctor --fix and returns the result.
-func upgradeDoctor(townRoot string) upgradeResult {
+func upgradeDoctor(townRoot string, opts upgradeOptions) upgradeResult {
 	result := upgradeResult{step: "Structural checks"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("1."), "Running structural checks (doctor --fix)...")
 
 	ctx := &doctor.CheckContext{
 		TownRoot: townRoot,
-		Verbose:  upgradeVerbose,
-		NoStart:  upgradeNoStart,
+		Verbose:  opts.verbose,
+		NoStart:  opts.noStart,
 	}
 
 	d := doctor.NewDoctor()
@@ -161,7 +166,7 @@ func upgradeDoctor(townRoot string) upgradeResult {
 	d.Register(doctor.NewRoleBeadsCheck())
 
 	var report *doctor.Report
-	if upgradeDryRun {
+	if opts.dryRun {
 		report = d.RunStreaming(ctx, os.Stdout, 0)
 	} else {
 		report = d.FixStreaming(ctx, os.Stdout, 0)
@@ -182,7 +187,7 @@ func upgradeDoctor(townRoot string) upgradeResult {
 }
 
 // upgradeAgentsMD syncs the town-root identity pair from the embedded template.
-func upgradeAgentsMD(townRoot string) upgradeResult {
+func upgradeAgentsMD(townRoot string, dryRun bool) upgradeResult {
 	result := upgradeResult{step: "AGENTS.md sync"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("2."), "Syncing AGENTS.md from template...")
@@ -207,7 +212,7 @@ func upgradeAgentsMD(townRoot string) upgradeResult {
 		return result
 	}
 
-	if upgradeDryRun {
+	if dryRun {
 		if os.IsNotExist(err) {
 			fmt.Printf("     %s AGENTS.md %s\n", style.WarningPrefix, style.Dim.Render("would create"))
 		} else {
@@ -245,7 +250,7 @@ func upgradeAgentsMD(townRoot string) upgradeResult {
 }
 
 // upgradeDaemonConfig ensures daemon.json has lifecycle defaults.
-func upgradeDaemonConfig(townRoot string) upgradeResult {
+func upgradeDaemonConfig(townRoot string, dryRun bool) upgradeResult {
 	result := upgradeResult{step: "Daemon config"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("3."), "Ensuring daemon.json lifecycle defaults...")
@@ -271,7 +276,7 @@ func upgradeDaemonConfig(townRoot string) upgradeResult {
 	}
 
 	// File doesn't exist — create with defaults
-	if upgradeDryRun {
+	if dryRun {
 		fmt.Printf("     %s daemon.json %s\n", style.WarningPrefix, style.Dim.Render("would create with defaults"))
 		result.changed = 1
 		return result
@@ -290,7 +295,7 @@ func upgradeDaemonConfig(townRoot string) upgradeResult {
 }
 
 // upgradeHooksSync syncs hook registry to all settings.json files.
-func upgradeHooksSync(townRoot string) upgradeResult {
+func upgradeHooksSync(townRoot string, opts upgradeOptions) upgradeResult {
 	result := upgradeResult{step: "Hooks sync"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("4."), "Syncing hooks to settings.json...")
@@ -308,10 +313,10 @@ func upgradeHooksSync(townRoot string) upgradeResult {
 	errors := 0
 
 	for _, target := range targets {
-		syncRes, err := syncTarget(target, upgradeDryRun)
+		syncRes, err := syncTarget(target, opts.dryRun)
 		if err != nil {
 			errors++
-			if upgradeVerbose {
+			if opts.verbose {
 				relPath, _ := filepath.Rel(townRoot, target.Path)
 				fmt.Printf("     %s %s: %v\n", style.ErrorPrefix, relPath, err)
 			}
@@ -326,8 +331,8 @@ func upgradeHooksSync(townRoot string) upgradeResult {
 		switch syncRes {
 		case syncCreated:
 			created++
-			if upgradeVerbose {
-				if upgradeDryRun {
+			if opts.verbose {
+				if opts.dryRun {
 					fmt.Printf("     %s %s %s\n", style.WarningPrefix, relPath, style.Dim.Render("(would create)"))
 				} else {
 					fmt.Printf("     %s %s %s\n", style.SuccessPrefix, relPath, style.Dim.Render("(created)"))
@@ -335,8 +340,8 @@ func upgradeHooksSync(townRoot string) upgradeResult {
 			}
 		case syncUpdated:
 			updated++
-			if upgradeVerbose {
-				if upgradeDryRun {
+			if opts.verbose {
+				if opts.dryRun {
 					fmt.Printf("     %s %s %s\n", style.WarningPrefix, relPath, style.Dim.Render("(would update)"))
 				} else {
 					fmt.Printf("     %s %s %s\n", style.SuccessPrefix, relPath, style.Dim.Render("(updated)"))
@@ -367,7 +372,7 @@ func upgradeHooksSync(townRoot string) upgradeResult {
 
 	summary := strings.Join(parts, ", ")
 	if result.changed > 0 {
-		if upgradeDryRun {
+		if opts.dryRun {
 			fmt.Printf("     %s %s %s\n", style.WarningPrefix, "settings.json", style.Dim.Render(summary))
 		} else {
 			fmt.Printf("     %s %s %s\n", style.SuccessPrefix, "settings.json", style.Dim.Render(summary))
@@ -380,12 +385,12 @@ func upgradeHooksSync(townRoot string) upgradeResult {
 }
 
 // upgradeFormulas updates formulas from embedded copies.
-func upgradeFormulas(townRoot string) upgradeResult {
+func upgradeFormulas(townRoot string, dryRun bool) upgradeResult {
 	result := upgradeResult{step: "Formulas"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("5."), "Updating formulas from embedded copies...")
 
-	if upgradeDryRun {
+	if dryRun {
 		// In dry-run mode, just check health
 		report, err := formula.CheckFormulaHealth(townRoot)
 		if err != nil {
@@ -457,7 +462,7 @@ func upgradeFormulas(townRoot string) upgradeResult {
 }
 
 // printUpgradeSummary prints a final summary of what changed.
-func printUpgradeSummary(results []upgradeResult) {
+func printUpgradeSummary(results []upgradeResult, dryRun bool) {
 	totalChanged := 0
 	var issues []string
 
@@ -471,7 +476,7 @@ func printUpgradeSummary(results []upgradeResult) {
 	}
 
 	fmt.Println()
-	if upgradeDryRun {
+	if dryRun {
 		if totalChanged == 0 {
 			fmt.Printf("  %s Workspace is up-to-date — nothing to change\n", style.SuccessPrefix)
 		} else {
