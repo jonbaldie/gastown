@@ -1209,6 +1209,174 @@ func configureAdoptedRig(ctx rigAdoptContext, result *rig.RegisterRigResult) err
 	return nil
 }
 
+func detectAdoptedBeadsPrefix(beadsDir string) string {
+	metadataPath := filepath.Join(beadsDir, "metadata.json")
+	metaBytes, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return ""
+	}
+	var meta struct {
+		Backend string `json:"backend"`
+	}
+	if json.Unmarshal(metaBytes, &meta) != nil || meta.Backend != "dolt" {
+		return ""
+	}
+	workDir := filepath.Dir(beadsDir)
+	bdCmd := beads.Spawn("config", "get", "issue_prefix")
+	bdCmd.Dir = workDir
+	if out, bdErr := bdCmd.Output(); bdErr == nil {
+		if detected := strings.TrimSpace(string(out)); detected != "" {
+			return detected
+		}
+	}
+	var fullMeta struct {
+		DoltDatabase string `json:"dolt_database"`
+	}
+	if json.Unmarshal(metaBytes, &fullMeta) == nil && strings.HasPrefix(fullMeta.DoltDatabase, "beads_") {
+		return strings.TrimPrefix(fullMeta.DoltDatabase, "beads_")
+	}
+	return ""
+}
+
+func applyAdoptedBeadsPrefix(result *rig.RegisterRigResult, detected string) error {
+	if detected == "" {
+		return nil
+	}
+	if rigAddPrefix != "" && strings.TrimSuffix(rigAddPrefix, "-") != detected {
+		return fmt.Errorf("prefix mismatch: source repo uses '%s' but --prefix '%s' was provided", detected, rigAddPrefix)
+	}
+	if result.BeadsPrefix == "" {
+		result.BeadsPrefix = detected
+	}
+	return nil
+}
+
+func adoptedBeadsNeedInit(beadsDir string) bool {
+	metadataPath := filepath.Join(beadsDir, "metadata.json")
+	if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
+		return true
+	}
+	metaBytes, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		Backend string `json:"backend"`
+	}
+	if json.Unmarshal(metaBytes, &meta) != nil || meta.Backend != "dolt" {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(beadsDir, "dolt"))
+	return os.IsNotExist(err)
+}
+
+func initAdoptedBeadsDatabase(townRoot, rigPath, name, beadsDir string, mgr *rig.Manager, prefix string) {
+	if prefix == "" {
+		return
+	}
+	if running, _, sErr := doltserver.IsRunning(townRoot); sErr != nil || !running {
+		fmt.Printf("  %s Could not init bd database: Dolt server is not running\n", style.Warning.Render("!"))
+		return
+	}
+	if err := mgr.InitBeads(rigPath, prefix, name); err != nil {
+		fmt.Printf("  %s Could not init bd database: %v\n", style.Warning.Render("!"), err)
+		return
+	}
+	if beadsDir != "" {
+		fmt.Printf("  %s Initialized beads database (Dolt)\n", style.Success.Render("✓"))
+	} else {
+		fmt.Printf("  %s Initialized beads database\n", style.Success.Render("✓"))
+	}
+}
+
+func prepareAdoptedBeads(townRoot, rigPath, name string, mgr *rig.Manager, result *rig.RegisterRigResult) error {
+	existingBeadsDirs := listExistingRigBeadsDirs(rigPath)
+	beadsDir, initFresh := adoptedRigBeadsPlan(existingBeadsDirs, result.BeadsPrefix)
+	if beadsDir != "" {
+		if err := applyAdoptedBeadsPrefix(result, detectAdoptedBeadsPrefix(beadsDir)); err != nil {
+			return err
+		}
+		if adoptedBeadsNeedInit(beadsDir) {
+			initAdoptedBeadsDatabase(townRoot, rigPath, name, beadsDir, mgr, result.BeadsPrefix)
+		}
+	}
+	if initFresh {
+		if running, _, sErr := doltserver.IsRunning(townRoot); sErr != nil || !running {
+			fmt.Printf("  %s Could not init beads database: Dolt server is not running\n", style.Warning.Render("!"))
+		} else if err := mgr.InitBeads(rigPath, result.BeadsPrefix, name); err != nil {
+			fmt.Printf("  %s Could not init beads database: %v\n", style.Warning.Render("!"), err)
+		} else {
+			fmt.Printf("  %s Initialized beads database\n", style.Success.Render("✓"))
+		}
+	}
+	return nil
+}
+
+func createAdoptedRigIdentityBead(bd *beads.Beads, name string, result *rig.RegisterRigResult) {
+	rigBeadID := beads.RigBeadIDWithPrefix(result.BeadsPrefix, name)
+	if _, err := bd.Show(rigBeadID); err == nil {
+		return
+	}
+	fields := &beads.RigFields{Repo: result.GitURL, Prefix: result.BeadsPrefix, State: beads.RigStateActive}
+	if _, err := bd.CreateRigBead(name, fields); err != nil {
+		fmt.Printf("  %s Could not create rig identity bead: %v\n", style.Warning.Render("!"), err)
+	} else {
+		fmt.Printf("  %s Created rig identity bead: %s\n", style.Success.Render("✓"), rigBeadID)
+	}
+}
+
+func createAdoptedAgentBead(bd *beads.Beads, id, kind, description string, fields *beads.AgentFields) {
+	if _, err := bd.Show(id); err == nil {
+		return
+	}
+	if _, err := bd.CreateAgentBead(id, description, fields); err != nil {
+		fmt.Printf("  %s Could not create %s agent bead: %v\n", style.Warning.Render("!"), kind, err)
+	} else {
+		fmt.Printf("  %s Created agent bead: %s\n", style.Success.Render("✓"), id)
+	}
+}
+
+func createAdoptedRigBeads(rigPath, name string, result *rig.RegisterRigResult) {
+	if result.BeadsPrefix == "" {
+		return
+	}
+	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
+	beadsWorkDir := rigPath
+	if _, err := os.Stat(mayorRigBeads); err == nil {
+		beadsWorkDir = filepath.Join(rigPath, "mayor", "rig")
+	}
+	bd := beads.New(beadsWorkDir)
+	createAdoptedRigIdentityBead(bd, name, result)
+	prefix := result.BeadsPrefix
+	witnessID := beads.WitnessBeadIDWithPrefix(prefix, name)
+	createAdoptedAgentBead(bd, witnessID, "witness",
+		fmt.Sprintf("Witness for %s - monitors polecat health and progress.", name),
+		&beads.AgentFields{RoleType: "witness", Rig: name, AgentState: "idle"})
+	refineryID := beads.RefineryBeadIDWithPrefix(prefix, name)
+	createAdoptedAgentBead(bd, refineryID, "refinery",
+		fmt.Sprintf("Refinery for %s - processes merge queue.", name),
+		&beads.AgentFields{RoleType: "refinery", Rig: name, AgentState: "idle"})
+}
+
+func syncAdoptedRigHooks(townRoot, name string) {
+	ensureHooksBase()
+	if err := syncRigHooks(townRoot, name); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks for adopted rig: %v\n", err)
+	}
+}
+
+func reportAdoptedRig(name string, result *rig.RegisterRigResult) {
+	fmt.Printf("\n%s Rig %s adopted\n", style.Success.Render("✓"), name)
+	if result.FromConfig {
+		fmt.Printf("  %s Read configuration from existing config.json\n", style.Dim.Render("ℹ"))
+	}
+	fmt.Printf("  Repository: %s\n", result.GitURL)
+	fmt.Printf("  Prefix: %s\n", result.BeadsPrefix)
+	if result.DefaultBranch != "" {
+		fmt.Printf("  Default branch: %s\n", result.DefaultBranch)
+	}
+}
+
 func runRigAdopt(_ *cobra.Command, args []string) error {
 	name := args[0]
 	ctx, err := loadRigAdoptContext(name)
@@ -1228,177 +1396,19 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 
 	// Check for tracked beads and initialize database if missing (Issue #72)
 	rigPath := filepath.Join(ctx.townRoot, name)
-	existingBeadsDirs := listExistingRigBeadsDirs(rigPath)
-	beadsDir, initFresh := adoptedRigBeadsPlan(existingBeadsDirs, result.BeadsPrefix)
-	if beadsDir != "" {
-		// Detect prefix from Dolt metadata: try "bd config get issue_prefix" first,
-		// then extract from metadata.json dolt_database name as fallback.
-		// metadata.json survives clone (dolt/ is gitignored since bd v0.50+).
-		prefixDetected := false
-		metadataPath := filepath.Join(beadsDir, "metadata.json")
-		if metaBytes, readErr := os.ReadFile(metadataPath); readErr == nil {
-			var meta struct {
-				Backend string `json:"backend"`
-			}
-			if json.Unmarshal(metaBytes, &meta) == nil && meta.Backend == "dolt" {
-				workDir := filepath.Dir(beadsDir)
-				bdCmd := beads.Spawn("config", "get", "issue_prefix")
-				bdCmd.Dir = workDir
-				if out, bdErr := bdCmd.Output(); bdErr == nil {
-					detected := strings.TrimSpace(string(out))
-					if detected != "" {
-						if rigAddPrefix != "" && strings.TrimSuffix(rigAddPrefix, "-") != detected {
-							return fmt.Errorf("prefix mismatch: source repo uses '%s' but --prefix '%s' was provided", detected, rigAddPrefix)
-						}
-						if result.BeadsPrefix == "" {
-							result.BeadsPrefix = detected
-						}
-						prefixDetected = true
-					}
-				}
-				// Fallback: extract prefix from dolt_database name in metadata.json.
-				// Format: "beads_<prefix>" (e.g. "beads_my_project" → "my_project").
-				// This survives clone because metadata.json is tracked by git.
-				if !prefixDetected {
-					var fullMeta struct {
-						DoltDatabase string `json:"dolt_database"`
-					}
-					if json.Unmarshal(metaBytes, &fullMeta) == nil && strings.HasPrefix(fullMeta.DoltDatabase, "beads_") {
-						detected := strings.TrimPrefix(fullMeta.DoltDatabase, "beads_")
-						if detected != "" {
-							if rigAddPrefix != "" && strings.TrimSuffix(rigAddPrefix, "-") != detected {
-								return fmt.Errorf("prefix mismatch: source repo uses '%s' but --prefix '%s' was provided", detected, rigAddPrefix)
-							}
-							if result.BeadsPrefix == "" {
-								result.BeadsPrefix = detected
-							}
-							prefixDetected = true
-						}
-					}
-				}
-			}
-		}
-
-		// Re-init database if metadata.json is missing or dolt/ directory is missing.
-		// Since bd v0.50+, dolt/ is gitignored and won't exist after clone.
-		// Use mgr.InitBeads() for consistency with the non-adopt path — it handles
-		// BEADS_DIR env isolation, prefix validation, custom types config, tracked-beads
-		// redirect, and fallback config creation.
-		metadataPath = filepath.Join(beadsDir, "metadata.json")
-		needsInit := false
-		if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
-			needsInit = true
-		} else if metaBytes, readErr := os.ReadFile(metadataPath); readErr == nil {
-			var meta struct {
-				Backend string `json:"backend"`
-			}
-			if json.Unmarshal(metaBytes, &meta) == nil && meta.Backend == "dolt" {
-				doltDir := filepath.Join(beadsDir, "dolt")
-				if _, statErr := os.Stat(doltDir); os.IsNotExist(statErr) {
-					needsInit = true
-				}
-			}
-		}
-		if needsInit {
-			prefix := result.BeadsPrefix
-			if prefix != "" {
-				// Dolt server is required for beads init.
-				if running, _, sErr := doltserver.IsRunning(townRoot); sErr != nil || !running {
-					fmt.Printf("  %s Could not init bd database: Dolt server is not running\n", style.Warning.Render("!"))
-				} else if err := mgr.InitBeads(rigPath, prefix, name); err != nil {
-					fmt.Printf("  %s Could not init bd database: %v\n", style.Warning.Render("!"), err)
-				} else {
-					fmt.Printf("  %s Initialized beads database (Dolt)\n", style.Success.Render("✓"))
-				}
-			}
-		}
+	if err := prepareAdoptedBeads(townRoot, rigPath, name, mgr, result); err != nil {
+		return err
 	}
 
-	// If no existing .beads/ candidate was found, initialize a fresh database
-	// to match the behavior of the normal (non-adopt) gt rig add path.
-	if initFresh {
-		// Dolt server is required for beads init.
-		if running, _, sErr := doltserver.IsRunning(townRoot); sErr != nil || !running {
-			fmt.Printf("  %s Could not init beads database: Dolt server is not running\n", style.Warning.Render("!"))
-		} else if err := mgr.InitBeads(rigPath, result.BeadsPrefix, name); err != nil {
-			fmt.Printf("  %s Could not init beads database: %v\n", style.Warning.Render("!"), err)
-		} else {
-			fmt.Printf("  %s Initialized beads database\n", style.Success.Render("✓"))
-		}
-	}
-
-	// Create rig identity bead if prefix is set
-	if result.BeadsPrefix != "" {
-		mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
-		beadsWorkDir := rigPath
-		if _, err := os.Stat(mayorRigBeads); err == nil {
-			beadsWorkDir = filepath.Join(rigPath, "mayor", "rig")
-		}
-
-		bd := beads.New(beadsWorkDir)
-		rigBeadID := beads.RigBeadIDWithPrefix(result.BeadsPrefix, name)
-
-		// Check if bead already exists
-		if _, err := bd.Show(rigBeadID); err != nil {
-			fields := &beads.RigFields{
-				Repo:   result.GitURL,
-				Prefix: result.BeadsPrefix,
-				State:  beads.RigStateActive,
-			}
-			if _, err := bd.CreateRigBead(name, fields); err != nil {
-				fmt.Printf("  %s Could not create rig identity bead: %v\n", style.Warning.Render("!"), err)
-			} else {
-				fmt.Printf("  %s Created rig identity bead: %s\n", style.Success.Render("✓"), rigBeadID)
-			}
-		}
-
-		// Create agent beads for the rig (witness, refinery)
-		// This ensures they exist before the daemon tries to start them
-		prefix := result.BeadsPrefix
-		witnessID := beads.WitnessBeadIDWithPrefix(prefix, name)
-		if _, err := bd.Show(witnessID); err != nil {
-			if _, err := bd.CreateAgentBead(witnessID,
-				fmt.Sprintf("Witness for %s - monitors polecat health and progress.", name),
-				&beads.AgentFields{RoleType: "witness", Rig: name, AgentState: "idle"},
-			); err != nil {
-				fmt.Printf("  %s Could not create witness agent bead: %v\n", style.Warning.Render("!"), err)
-			} else {
-				fmt.Printf("  %s Created agent bead: %s\n", style.Success.Render("✓"), witnessID)
-			}
-		}
-
-		refineryID := beads.RefineryBeadIDWithPrefix(prefix, name)
-		if _, err := bd.Show(refineryID); err != nil {
-			if _, err := bd.CreateAgentBead(refineryID,
-				fmt.Sprintf("Refinery for %s - processes merge queue.", name),
-				&beads.AgentFields{RoleType: "refinery", Rig: name, AgentState: "idle"},
-			); err != nil {
-				fmt.Printf("  %s Could not create refinery agent bead: %v\n", style.Warning.Render("!"), err)
-			} else {
-				fmt.Printf("  %s Created agent bead: %s\n", style.Success.Render("✓"), refineryID)
-			}
-		}
-	}
+	createAdoptedRigBeads(rigPath, name, result)
 
 	// Auto-assign a namepool theme that doesn't collide with other rigs (gas-21k).
 	autoAssignNamepoolTheme(townRoot, name, mgr)
 
 	// Ensure hooks-base.json exists and sync hooks for the adopted rig.
-	ensureHooksBase()
-	if err := syncRigHooks(townRoot, name); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks for adopted rig: %v\n", err)
-	}
+	syncAdoptedRigHooks(townRoot, name)
 
-	// Print results
-	fmt.Printf("\n%s Rig %s adopted\n", style.Success.Render("✓"), name)
-	if result.FromConfig {
-		fmt.Printf("  %s Read configuration from existing config.json\n", style.Dim.Render("ℹ"))
-	}
-	fmt.Printf("  Repository: %s\n", result.GitURL)
-	fmt.Printf("  Prefix: %s\n", result.BeadsPrefix)
-	if result.DefaultBranch != "" {
-		fmt.Printf("  Default branch: %s\n", result.DefaultBranch)
-	}
+	reportAdoptedRig(name, result)
 
 	return nil
 }
