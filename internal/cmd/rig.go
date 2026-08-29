@@ -1420,6 +1420,30 @@ func resetRigMail(townBd *beads.Beads) error {
 	return nil
 }
 
+func maybeResetRigHandoff(resetAll bool, townBd *beads.Beads, roleKey string) error {
+	if !resetAll && !rigResetHandoff {
+		return nil
+	}
+	return resetRigHandoff(townBd, roleKey)
+}
+
+func maybeResetRigMail(resetAll bool, townBd *beads.Beads) error {
+	if !resetAll && !rigResetMail {
+		return nil
+	}
+	return resetRigMail(townBd)
+}
+
+func maybeResetRigStale(resetAll bool, rigBd *beads.Beads) error {
+	if !resetAll && !rigResetStale {
+		return nil
+	}
+	if err := runResetStale(rigBd, rigResetDryRun); err != nil {
+		return fmt.Errorf("resetting stale issues: %w", err)
+	}
+	return nil
+}
+
 func runRigReset(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -1436,20 +1460,14 @@ func runRigReset(_ *cobra.Command, _ []string) error {
 	resetAll := !rigResetHandoff && !rigResetMail && !rigResetStale
 	townBd := beads.New(townRoot)
 	rigBd := beads.New(cwd)
-	if resetAll || rigResetHandoff {
-		if err := resetRigHandoff(townBd, roleKey); err != nil {
-			return err
-		}
+	if err := maybeResetRigHandoff(resetAll, townBd, roleKey); err != nil {
+		return err
 	}
-	if resetAll || rigResetMail {
-		if err := resetRigMail(townBd); err != nil {
-			return err
-		}
+	if err := maybeResetRigMail(resetAll, townBd); err != nil {
+		return err
 	}
-	if resetAll || rigResetStale {
-		if err := runResetStale(rigBd, rigResetDryRun); err != nil {
-			return fmt.Errorf("resetting stale issues: %w", err)
-		}
+	if err := maybeResetRigStale(resetAll, rigBd); err != nil {
+		return err
 	}
 	return nil
 }
