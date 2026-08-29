@@ -17,14 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Synthesis command flags
-var (
-	synthesisRig      string
-	synthesisDryRun   bool
-	synthesisForce    bool
-	synthesisReviewID string
-)
-
 var synthesisCmd = &cobra.Command{
 	Use:     "synthesis",
 	Aliases: []string{"synth"},
@@ -93,10 +85,10 @@ This marks the convoy as complete and triggers any configured notifications.`,
 
 func init() {
 	// Start flags
-	synthesisStartCmd.Flags().StringVar(&synthesisRig, "rig", "", "Target rig for synthesis polecat")
-	synthesisStartCmd.Flags().BoolVar(&synthesisDryRun, "dry-run", false, "Preview execution")
-	synthesisStartCmd.Flags().BoolVar(&synthesisForce, "force", false, "Start even if legs incomplete")
-	synthesisStartCmd.Flags().StringVar(&synthesisReviewID, "review-id", "", "Override review ID")
+	synthesisStartCmd.Flags().String("rig", "", "Target rig for synthesis polecat")
+	synthesisStartCmd.Flags().Bool("dry-run", false, "Preview execution")
+	synthesisStartCmd.Flags().Bool("force", false, "Start even if legs incomplete")
+	synthesisStartCmd.Flags().String("review-id", "", "Override review ID")
 
 	// Add subcommands
 	synthesisCmd.AddCommand(synthesisStartCmd)
@@ -128,7 +120,11 @@ type ConvoyMeta struct {
 }
 
 // runSynthesisStart implements gt synthesis start.
-func runSynthesisStart(_ *cobra.Command, args []string) error {
+func runSynthesisStart(cmd *cobra.Command, args []string) error {
+	targetRig := commandStringFlag(cmd, "rig")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	force := commandBoolFlag(cmd, "force")
+	reviewID := commandStringFlag(cmd, "review-id")
 	convoyID := args[0]
 
 	// Get convoy metadata
@@ -172,7 +168,7 @@ func runSynthesisStart(_ *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  Legs: %d/%d complete\n", completedCount, len(legOutputs))
 
-	if !allComplete && !synthesisForce {
+	if !allComplete && !force {
 		fmt.Printf("\n%s Not all legs complete. Use --force to proceed anyway.\n",
 			style.Warning.Render("⚠"))
 		fmt.Printf("\nIncomplete legs:\n")
@@ -185,7 +181,6 @@ func runSynthesisStart(_ *cobra.Command, args []string) error {
 	}
 
 	// Determine review ID
-	reviewID := synthesisReviewID
 	if reviewID == "" {
 		reviewID = meta.ReviewID
 	}
@@ -195,7 +190,6 @@ func runSynthesisStart(_ *cobra.Command, args []string) error {
 	}
 
 	// Determine target rig
-	targetRig := synthesisRig
 	if targetRig == "" {
 		townRoot, err := workspace.FindFromCwdOrError()
 		if err == nil {
@@ -209,7 +203,7 @@ func runSynthesisStart(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	if synthesisDryRun {
+	if dryRun {
 		fmt.Printf("\n%s Would start synthesis:\n", style.Dim.Render("[dry-run]"))
 		fmt.Printf("  Convoy:    %s\n", convoyID)
 		fmt.Printf("  Review ID: %s\n", reviewID)
