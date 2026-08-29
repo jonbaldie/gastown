@@ -15,11 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Worktree command flags
-var (
-	worktreeNoCD bool
-)
-
 var worktreeCmd = &cobra.Command{
 	Use:     "worktree <rig>",
 	GroupID: GroupWorkspace,
@@ -64,11 +59,6 @@ Example output:
 	RunE: runWorktreeList,
 }
 
-// Worktree remove command flags
-var (
-	worktreeRemoveForce bool
-)
-
 var worktreeRemoveCmd = &cobra.Command{
 	Use:   "remove <rig>",
 	Short: "Remove a cross-rig worktree",
@@ -85,16 +75,17 @@ Examples:
 }
 
 func init() {
-	worktreeCmd.Flags().BoolVar(&worktreeNoCD, "no-cd", false, "Just print path (don't print cd command)")
+	worktreeCmd.Flags().Bool("no-cd", false, "Just print path (don't print cd command)")
 	worktreeCmd.AddCommand(worktreeListCmd)
 
-	worktreeRemoveCmd.Flags().BoolVarP(&worktreeRemoveForce, "force", "f", false, "Force remove even with uncommitted changes")
+	worktreeRemoveCmd.Flags().BoolP("force", "f", false, "Force remove even with uncommitted changes")
 	worktreeCmd.AddCommand(worktreeRemoveCmd)
 
 	rootCmd.AddCommand(worktreeCmd)
 }
 
-func runWorktree(_ *cobra.Command, args []string) error {
+func runWorktree(cmd *cobra.Command, args []string) error {
+	noCD := commandBoolFlag(cmd, "no-cd")
 	targetRig := args[0]
 
 	// Detect current crew identity from cwd
@@ -124,7 +115,7 @@ func runWorktree(_ *cobra.Command, args []string) error {
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
 		// Worktree exists
-		if worktreeNoCD {
+		if noCD {
 			fmt.Println(worktreePath)
 		} else {
 			fmt.Printf("%s Worktree already exists at %s\n", style.Success.Render("✓"), worktreePath)
@@ -178,7 +169,7 @@ func runWorktree(_ *cobra.Command, args []string) error {
 		fmt.Printf("%s Warning: could not pull latest: %v\n", style.Warning.Render("⚠"), err)
 	}
 
-	if worktreeNoCD {
+	if noCD {
 		fmt.Println(worktreePath)
 	} else {
 		fmt.Printf("To enter the worktree:\n")
@@ -293,7 +284,8 @@ func getGitStatusSummary(dir string) string {
 	return fmt.Sprintf("%d uncommitted", uncommitted)
 }
 
-func runWorktreeRemove(_ *cobra.Command, args []string) error {
+func runWorktreeRemove(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	targetRig := args[0]
 
 	// Detect current crew identity from cwd
@@ -326,7 +318,7 @@ func runWorktreeRemove(_ *cobra.Command, args []string) error {
 	}
 
 	// Check for uncommitted changes (unless --force)
-	if !worktreeRemoveForce {
+	if !force {
 		statusSummary := getGitStatusSummary(worktreePath)
 		if statusSummary != "clean" && statusSummary != "error" {
 			return fmt.Errorf("worktree has %s - use --force to remove anyway", statusSummary)
@@ -338,7 +330,7 @@ func runWorktreeRemove(_ *cobra.Command, args []string) error {
 	g := git.NewGit(targetMayorRig)
 
 	// Remove the worktree
-	if err := g.WorktreeRemove(worktreePath, worktreeRemoveForce); err != nil {
+	if err := g.WorktreeRemove(worktreePath, force); err != nil {
 		return fmt.Errorf("removing worktree: %w", err)
 	}
 
