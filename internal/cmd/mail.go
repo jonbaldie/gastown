@@ -4,54 +4,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Mail command flags
-var (
-	mailSubject       string
-	mailBody          string
-	mailPriority      int
-	mailUrgent        bool
-	mailPinned        bool
-	mailWisp          bool
-	mailPermanent     bool
-	mailType          string
-	mailReplyTo       string
-	mailNotify        bool
-	mailNoNotify      bool // Suppress auto-nudge notification to recipient
-	mailTo            string   // --to flag (alternative to positional arg)
-	mailFrom          string   // --from flag (override sender, for relay/bridge use)
-	mailSendSelf      bool
-	mailCC            []string // CC recipients
-	mailInboxJSON     bool
-	mailReadJSON      bool
-	mailInboxUnread   bool
-	mailInboxAll      bool
-	mailInboxIdentity string
-	mailCheckInject   bool
-	mailCheckJSON     bool
-	mailCheckIdentity string
-	mailThreadJSON    bool
-	mailReplySubject  string
-	mailReplyMessage  string
-	mailStdin         bool // Read message body from stdin
-
-	// Search flags
-	mailSearchFrom    string
-	mailSearchSubject bool
-	mailSearchBody    bool
-	mailSearchArchive bool
-	mailSearchJSON    bool
-
-	// Announces flags
-	mailAnnouncesJSON bool
-
-	// Clear flags
-	mailClearAll bool
-
-	// Archive flags
-	mailArchiveStale  bool
-	mailArchiveDryRun bool
-)
-
 var mailCmd = &cobra.Command{
 	Use:         "mail",
 	GroupID:     GroupComm,
@@ -229,10 +181,6 @@ Examples:
 	},
 	RunE: runMailArchive,
 }
-
-var (
-	mailMarkReadAll bool
-)
 
 var mailMarkReadCmd = &cobra.Command{
 	Use:     "mark-read [message-id...]",
@@ -459,66 +407,66 @@ Examples:
 
 func init() {
 	// Send flags
-	mailSendCmd.Flags().StringVarP(&mailSubject, "subject", "s", "", "Message subject (required)")
-	mailSendCmd.Flags().StringVarP(&mailBody, "message", "m", "", "Message body")
-	mailSendCmd.Flags().StringVar(&mailBody, "body", "", "Alias for --message")
-	mailSendCmd.Flags().BoolVar(&mailStdin, "stdin", false, "Read message body from stdin (avoids shell quoting issues)")
-	mailSendCmd.Flags().IntVar(&mailPriority, "priority", 2, "Message priority (0=urgent, 1=high, 2=normal, 3=low, 4=backlog)")
-	mailSendCmd.Flags().BoolVar(&mailUrgent, "urgent", false, "Set priority=0 (urgent)")
-	mailSendCmd.Flags().StringVar(&mailType, "type", "notification", "Message type (task, scavenge, notification, reply)")
-	mailSendCmd.Flags().StringVar(&mailReplyTo, "reply-to", "", "Message ID this is replying to")
-	mailSendCmd.Flags().BoolVarP(&mailNotify, "notify", "n", false, "Bump priority to high (notification is automatic; use --no-notify to suppress)")
-	mailSendCmd.Flags().BoolVar(&mailNoNotify, "no-notify", false, "Suppress auto-nudge notification to recipient")
+	mailSendCmd.Flags().StringP("subject", "s", "", "Message subject (required)")
+	mailSendCmd.Flags().StringP("message", "m", "", "Message body")
+	mailSendCmd.Flags().String("body", "", "Alias for --message")
+	mailSendCmd.Flags().Bool("stdin", false, "Read message body from stdin (avoids shell quoting issues)")
+	mailSendCmd.Flags().Int("priority", 2, "Message priority (0=urgent, 1=high, 2=normal, 3=low, 4=backlog)")
+	mailSendCmd.Flags().Bool("urgent", false, "Set priority=0 (urgent)")
+	mailSendCmd.Flags().String("type", "notification", "Message type (task, scavenge, notification, reply)")
+	mailSendCmd.Flags().String("reply-to", "", "Message ID this is replying to")
+	mailSendCmd.Flags().BoolP("notify", "n", false, "Bump priority to high (notification is automatic; use --no-notify to suppress)")
+	mailSendCmd.Flags().Bool("no-notify", false, "Suppress auto-nudge notification to recipient")
 	mailSendCmd.MarkFlagsMutuallyExclusive("notify", "no-notify")
-	mailSendCmd.Flags().BoolVar(&mailPinned, "pinned", false, "Pin message (for handoff context that persists)")
-	mailSendCmd.Flags().BoolVar(&mailWisp, "wisp", true, "Send as wisp (ephemeral, default)")
-	mailSendCmd.Flags().BoolVar(&mailPermanent, "permanent", false, "Send as permanent (not ephemeral, synced to remote)")
-	mailSendCmd.Flags().StringVar(&mailTo, "to", "", "Recipient address (alternative to positional argument)")
-	mailSendCmd.Flags().StringVar(&mailFrom, "from", "", "Override sender address (for relay/bridge use)")
-	mailSendCmd.Flags().BoolVar(&mailSendSelf, "self", false, "Send to self (auto-detect from cwd)")
-	mailSendCmd.Flags().StringArrayVar(&mailCC, "cc", nil, "CC recipients (can be used multiple times)")
+	mailSendCmd.Flags().Bool("pinned", false, "Pin message (for handoff context that persists)")
+	mailSendCmd.Flags().Bool("wisp", true, "Send as wisp (ephemeral, default)")
+	mailSendCmd.Flags().Bool("permanent", false, "Send as permanent (not ephemeral, synced to remote)")
+	mailSendCmd.Flags().String("to", "", "Recipient address (alternative to positional argument)")
+	mailSendCmd.Flags().String("from", "", "Override sender address (for relay/bridge use)")
+	mailSendCmd.Flags().Bool("self", false, "Send to self (auto-detect from cwd)")
+	mailSendCmd.Flags().StringArray("cc", nil, "CC recipients (can be used multiple times)")
 	_ = mailSendCmd.MarkFlagRequired("subject") // cobra flags: error only at runtime if missing
 
 	// Inbox flags
-	mailInboxCmd.Flags().BoolVar(&mailInboxJSON, "json", false, "Output as JSON")
-	mailInboxCmd.Flags().BoolVarP(&mailInboxUnread, "unread", "u", false, "Show only unread messages")
-	mailInboxCmd.Flags().BoolVarP(&mailInboxAll, "all", "a", false, "Show all messages (read and unread)")
-	mailInboxCmd.Flags().StringVar(&mailInboxIdentity, "identity", "", "Explicit identity for inbox (e.g., greenplace/Toast)")
-	mailInboxCmd.Flags().StringVar(&mailInboxIdentity, "address", "", "Alias for --identity")
+	mailInboxCmd.Flags().Bool("json", false, "Output as JSON")
+	mailInboxCmd.Flags().BoolP("unread", "u", false, "Show only unread messages")
+	mailInboxCmd.Flags().BoolP("all", "a", false, "Show all messages (read and unread)")
+	mailInboxCmd.Flags().String("identity", "", "Explicit identity for inbox (e.g., greenplace/Toast)")
+	mailInboxCmd.Flags().String("address", "", "Alias for --identity")
 
 	// Read flags
-	mailReadCmd.Flags().BoolVar(&mailReadJSON, "json", false, "Output as JSON")
+	mailReadCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Check flags
-	mailCheckCmd.Flags().BoolVar(&mailCheckInject, "inject", false, "Output format for Claude Code hooks")
-	mailCheckCmd.Flags().BoolVar(&mailCheckJSON, "json", false, "Output as JSON")
-	mailCheckCmd.Flags().StringVar(&mailCheckIdentity, "identity", "", "Explicit identity for inbox (e.g., greenplace/Toast)")
-	mailCheckCmd.Flags().StringVar(&mailCheckIdentity, "address", "", "Alias for --identity")
+	mailCheckCmd.Flags().Bool("inject", false, "Output format for Claude Code hooks")
+	mailCheckCmd.Flags().Bool("json", false, "Output as JSON")
+	mailCheckCmd.Flags().String("identity", "", "Explicit identity for inbox (e.g., greenplace/Toast)")
+	mailCheckCmd.Flags().String("address", "", "Alias for --identity")
 
 	// Thread flags
-	mailThreadCmd.Flags().BoolVar(&mailThreadJSON, "json", false, "Output as JSON")
+	mailThreadCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Reply flags
-	mailReplyCmd.Flags().StringVarP(&mailReplySubject, "subject", "s", "", "Override reply subject (default: Re: <original>)")
-	mailReplyCmd.Flags().StringVarP(&mailReplyMessage, "message", "m", "", "Reply message body")
-	mailReplyCmd.Flags().StringVar(&mailReplyMessage, "body", "", "Reply message body (alias for --message)")
+	mailReplyCmd.Flags().StringP("subject", "s", "", "Override reply subject (default: Re: <original>)")
+	mailReplyCmd.Flags().StringP("message", "m", "", "Reply message body")
+	mailReplyCmd.Flags().String("body", "", "Reply message body (alias for --message)")
 
 	// Search flags
-	mailSearchCmd.Flags().StringVar(&mailSearchFrom, "from", "", "Filter by sender address")
-	mailSearchCmd.Flags().BoolVar(&mailSearchSubject, "subject", false, "Only search subject lines")
-	mailSearchCmd.Flags().BoolVar(&mailSearchBody, "body", false, "Only search message body")
-	mailSearchCmd.Flags().BoolVar(&mailSearchArchive, "archive", false, "Include archived messages")
-	mailSearchCmd.Flags().BoolVar(&mailSearchJSON, "json", false, "Output as JSON")
+	mailSearchCmd.Flags().String("from", "", "Filter by sender address")
+	mailSearchCmd.Flags().Bool("subject", false, "Only search subject lines")
+	mailSearchCmd.Flags().Bool("body", false, "Only search message body")
+	mailSearchCmd.Flags().Bool("archive", false, "Include archived messages")
+	mailSearchCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Announces flags
-	mailAnnouncesCmd.Flags().BoolVar(&mailAnnouncesJSON, "json", false, "Output as JSON")
+	mailAnnouncesCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Clear flags
-	mailClearCmd.Flags().BoolVar(&mailClearAll, "all", false, "Clear all messages (default behavior)")
+	mailClearCmd.Flags().Bool("all", false, "Clear all messages (default behavior)")
 
 	// Archive flags
-	mailArchiveCmd.Flags().BoolVar(&mailArchiveStale, "stale", false, "Archive messages sent before session start")
-	mailArchiveCmd.Flags().BoolVarP(&mailArchiveDryRun, "dry-run", "n", false, "Show what would be archived without archiving")
+	mailArchiveCmd.Flags().Bool("stale", false, "Archive messages sent before session start")
+	mailArchiveCmd.Flags().BoolP("dry-run", "n", false, "Show what would be archived without archiving")
 
 	// Add subcommands
 	mailCmd.AddCommand(mailSendCmd)
@@ -527,7 +475,7 @@ func init() {
 	mailCmd.AddCommand(mailPeekCmd)
 	mailCmd.AddCommand(mailDeleteCmd)
 	mailCmd.AddCommand(mailArchiveCmd)
-	mailMarkReadCmd.Flags().BoolVar(&mailMarkReadAll, "all", false, "Mark all unread messages as read")
+	mailMarkReadCmd.Flags().Bool("all", false, "Mark all unread messages as read")
 	mailCmd.AddCommand(mailMarkReadCmd)
 	mailCmd.AddCommand(mailMarkUnreadCmd)
 	mailCmd.AddCommand(mailCheckCmd)

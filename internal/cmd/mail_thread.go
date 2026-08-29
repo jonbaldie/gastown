@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMailThread(_ *cobra.Command, args []string) error {
+func runMailThread(cmd *cobra.Command, args []string) error {
 	threadID := args[0]
 
 	workDir, err := findMailWorkDir()
@@ -30,7 +30,7 @@ func runMailThread(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("getting thread: %w", err)
 	}
 
-	if mailThreadJSON {
+	if mailBoolFlag(cmd, "json") {
 		return writeMailThreadJSON(messages)
 	}
 	return renderMailThread(threadID, messages)
@@ -83,8 +83,8 @@ func renderMailThreadMessage(index int, msg *mail.Message) {
 	}
 }
 
-func runMailReply(_ *cobra.Command, args []string) error {
-	messageBody, err := resolveMailReplyBody(args)
+func runMailReply(cmd *cobra.Command, args []string) error {
+	messageBody, err := resolveMailReplyBody(args, mailStringAliasFlag(cmd, "message", "body"))
 	if err != nil {
 		return err
 	}
@@ -94,12 +94,12 @@ func runMailReply(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	reply := buildMailReply(msgID, from, original, messageBody)
+	reply := buildMailReply(msgID, from, original, messageBody, mailStringFlag(cmd, "subject"))
 	return sendMailReply(router, from, original, reply)
 }
 
-func resolveMailReplyBody(args []string) (string, error) {
-	messageBody := mailReplyMessage
+func resolveMailReplyBody(args []string, flagBody string) (string, error) {
+	messageBody := flagBody
 	if len(args) > 1 {
 		messageBody = args[1]
 	}
@@ -127,8 +127,7 @@ func loadMailReply(msgID string) (*mail.Router, string, *mail.Message, error) {
 	return router, from, original, nil
 }
 
-func buildMailReply(msgID, from string, original *mail.Message, messageBody string) *mail.Message {
-	subject := mailReplySubject
+func buildMailReply(msgID, from string, original *mail.Message, messageBody, subject string) *mail.Message {
 	if subject == "" {
 		if strings.HasPrefix(original.Subject, "Re: ") {
 			subject = original.Subject

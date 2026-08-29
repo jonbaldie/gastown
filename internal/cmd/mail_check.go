@@ -15,9 +15,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMailCheck(_ *cobra.Command, _ []string) error {
-	address := mailCheckAddress()
-	workDir, mailbox, messages, unread, handled, err := loadMailCheckInbox(address, mailCheckInject)
+func runMailCheck(cmd *cobra.Command, _ []string) error {
+	inject := mailBoolFlag(cmd, "inject")
+	jsonOutput := mailBoolFlag(cmd, "json")
+	identity := mailStringAliasFlag(cmd, "identity", "address")
+	address := mailCheckAddress(identity)
+	workDir, mailbox, messages, unread, handled, err := loadMailCheckInbox(address, inject)
 	if handled {
 		return nil
 	}
@@ -25,20 +28,20 @@ func runMailCheck(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if mailCheckJSON {
+	if jsonOutput {
 		return writeMailCheckJSON(address, unread)
 	}
 
-	if mailCheckInject {
+	if inject {
 		return injectMailCheck(workDir, address, mailbox, messages, unread)
 	}
 
 	return finishNormalMailCheck(unread)
 }
 
-func mailCheckAddress() string {
-	if mailCheckIdentity != "" {
-		return mailCheckIdentity
+func mailCheckAddress(identity string) string {
+	if identity != "" {
+		return identity
 	}
 	return detectSender()
 }

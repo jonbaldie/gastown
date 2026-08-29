@@ -214,12 +214,9 @@ func TestMailAnnounces(t *testing.T) {
 			Announces: nil,
 		}
 
-		// Reset flag to default
-		mailAnnouncesJSON = false
-
 		// This should not panic and should handle nil gracefully
 		// We can't easily capture stdout in unit tests, but we can verify no panic
-		err := listAnnounceChannels(cfg)
+		err := listAnnounceChannels(cfg, false)
 		if err != nil {
 			t.Errorf("listAnnounceChannels with nil announces should not error: %v", err)
 		}
@@ -230,8 +227,7 @@ func TestMailAnnounces(t *testing.T) {
 			Announces: make(map[string]config.AnnounceConfig),
 		}
 
-		mailAnnouncesJSON = false
-		err := listAnnounceChannels(cfg)
+		err := listAnnounceChannels(cfg, false)
 		if err != nil {
 			t.Errorf("listAnnounceChannels with empty announces should not error: %v", err)
 		}
@@ -248,7 +244,7 @@ func TestMailAnnounces(t *testing.T) {
 		}
 
 		// Test with unknown channel
-		err := readAnnounceChannel("/tmp", cfg, "nonexistent")
+		err := readAnnounceChannel("/tmp", cfg, "nonexistent", false)
 		if err == nil {
 			t.Error("readAnnounceChannel should error for unknown channel")
 		}
@@ -262,7 +258,7 @@ func TestMailAnnounces(t *testing.T) {
 			Announces: nil,
 		}
 
-		err := readAnnounceChannel("/tmp", cfg, "alerts")
+		err := readAnnounceChannel("/tmp", cfg, "alerts", false)
 		if err == nil {
 			t.Error("readAnnounceChannel should error for nil announces")
 		}

@@ -18,7 +18,8 @@ import (
 )
 
 // runMailAnnounces lists announce channels or reads messages from a channel.
-func runMailAnnounces(_ *cobra.Command, args []string) error {
+func runMailAnnounces(cmd *cobra.Command, args []string) error {
+	jsonOutput := mailBoolFlag(cmd, "json")
 	// Find workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -34,18 +35,18 @@ func runMailAnnounces(_ *cobra.Command, args []string) error {
 
 	// If no channel specified, list all channels
 	if len(args) == 0 {
-		return listAnnounceChannels(cfg)
+		return listAnnounceChannels(cfg, jsonOutput)
 	}
 
 	// Read messages from specified channel
 	channelName := args[0]
-	return readAnnounceChannel(townRoot, cfg, channelName)
+	return readAnnounceChannel(townRoot, cfg, channelName, jsonOutput)
 }
 
 // listAnnounceChannels lists all announce channels and their configuration.
-func listAnnounceChannels(cfg *config.MessagingConfig) error {
+func listAnnounceChannels(cfg *config.MessagingConfig, jsonOutput bool) error {
 	if cfg.Announces == nil || len(cfg.Announces) == 0 {
-		if mailAnnouncesJSON {
+		if jsonOutput {
 			fmt.Println("[]")
 			return nil
 		}
@@ -54,7 +55,7 @@ func listAnnounceChannels(cfg *config.MessagingConfig) error {
 	}
 
 	// JSON output
-	if mailAnnouncesJSON {
+	if jsonOutput {
 		type channelInfo struct {
 			Name        string   `json:"name"`
 			Readers     []string `json:"readers"`
@@ -102,7 +103,7 @@ func listAnnounceChannels(cfg *config.MessagingConfig) error {
 }
 
 // readAnnounceChannel reads messages from an announce channel.
-func readAnnounceChannel(townRoot string, cfg *config.MessagingConfig, channelName string) error {
+func readAnnounceChannel(townRoot string, cfg *config.MessagingConfig, channelName string, jsonOutput bool) error {
 	if err := validateAnnounceChannel(cfg, channelName); err != nil {
 		return err
 	}
@@ -114,7 +115,7 @@ func readAnnounceChannel(townRoot string, cfg *config.MessagingConfig, channelNa
 	}
 
 	// JSON output
-	if mailAnnouncesJSON {
+	if jsonOutput {
 		// Ensure empty array instead of null for JSON
 		if messages == nil {
 			messages = []announceMessage{}

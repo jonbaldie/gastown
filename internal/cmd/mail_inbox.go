@@ -32,16 +32,19 @@ func getMailbox(address string) (*mail.Mailbox, error) {
 	return mailbox, nil
 }
 
-func runMailInbox(_ *cobra.Command, args []string) error {
+func runMailInbox(cmd *cobra.Command, args []string) error {
+	showAll := mailBoolFlag(cmd, "all")
+	unreadOnly := mailBoolFlag(cmd, "unread")
 	// Check for mutually exclusive flags
-	if mailInboxAll && mailInboxUnread {
+	if showAll && unreadOnly {
 		return errors.New("--all and --unread are mutually exclusive")
 	}
 
 	// Determine which inbox to check (priority: --identity flag, positional arg, auto-detect)
 	address := ""
-	if mailInboxIdentity != "" {
-		address = mailInboxIdentity
+	identity := mailStringAliasFlag(cmd, "identity", "address")
+	if identity != "" {
+		address = identity
 	} else if len(args) > 0 {
 		address = args[0]
 	} else {
@@ -55,13 +58,13 @@ func runMailInbox(_ *cobra.Command, args []string) error {
 
 	// Load the inbox once. Count() and ListUnread() both call List(), so using
 	// them here doubles the bd/Dolt reads on the hot patrol path.
-	messages, total, unread, err := loadInboxSnapshot(mailbox, mailInboxUnread)
+	messages, total, unread, err := loadInboxSnapshot(mailbox, unreadOnly)
 	if err != nil {
 		return fmt.Errorf("listing messages: %w", err)
 	}
 
 	// JSON output
-	if mailInboxJSON {
+	if mailBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(messages); err != nil {
@@ -150,7 +153,7 @@ func filterUnreadMessages(messages []*mail.Message) []*mail.Message {
 	return unreadMessages
 }
 
-func runMailRead(_ *cobra.Command, args []string) error {
+func runMailRead(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("message ID or index required\n\nRun 'gt mail inbox' to list messages and their IDs")
 	}
@@ -194,7 +197,7 @@ func runMailRead(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if mailReadJSON {
+	if mailBoolFlag(cmd, "json") {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(msg); err != nil {
@@ -334,7 +337,9 @@ func runMailDelete(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMailArchive(_ *cobra.Command, args []string) error {
+func runMailArchive(cmd *cobra.Command, args []string) error {
+	stale := mailBoolFlag(cmd, "stale")
+	dryRun := mailBoolFlag(cmd, "dry-run")
 	// Determine which inbox
 	address := detectSender()
 
@@ -343,16 +348,16 @@ func runMailArchive(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	if mailArchiveStale {
+	if stale {
 		if len(args) > 0 {
 			return errors.New("--stale cannot be combined with message IDs")
 		}
-		return runMailArchiveStale(mailbox, address)
+		return runMailArchiveStale(mailbox, address, dryRun)
 	}
 	if len(args) == 0 {
 		return errors.New("message ID required unless using --stale")
 	}
-	if mailArchiveDryRun {
+	if dryRun {
 		fmt.Printf("%s Would archive %d message(s)\n", style.Dim.Render("(dry-run)"), len(args))
 		for _, msgID := range args {
 			fmt.Printf("  %s\n", style.Dim.Render(msgID))
@@ -408,7 +413,7 @@ type staleMessage struct {
 	Reason  string
 }
 
-func runMailArchiveStale(mailbox *mail.Mailbox, address string) error {
+func runMailArchiveStale(mailbox *mail.Mailbox, address string, dryRun bool) error {
 	identity, err := session.ParseAddress(address)
 	if err != nil {
 		return fmt.Errorf("determining session for %s: %w", address, err)
@@ -430,7 +435,7 @@ func runMailArchiveStale(mailbox *mail.Mailbox, address string) error {
 	}
 
 	staleMessages := staleMessagesForSession(messages, sessionStart)
-	if mailArchiveDryRun {
+	if dryRun {
 		if len(staleMessages) == 0 {
 			fmt.Printf("%s No stale messages found\n", style.Success.Render("✓"))
 			return nil
@@ -496,7 +501,7 @@ func staleMessagesForSession(messages []*mail.Message, sessionStart time.Time) [
 	return staleMessages
 }
 
-func runMailMarkRead(_ *cobra.Command, args []string) error {
+func runMailMarkRead(cmd *cobra.Command, args []string) error {
 	// Determine which inbox
 	address := detectSender()
 
@@ -506,7 +511,7 @@ func runMailMarkRead(_ *cobra.Command, args []string) error {
 	}
 
 	// --all: mark all unread messages as read
-	if mailMarkReadAll {
+	if mailBoolFlag(cmd, "all") {
 		if len(args) > 0 {
 			return fmt.Errorf("--all cannot be combined with explicit message IDs")
 		}

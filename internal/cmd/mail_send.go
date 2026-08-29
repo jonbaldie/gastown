@@ -17,12 +17,98 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runMailSend(_ *cobra.Command, args []string) error {
-	if err := readMailStdin(); err != nil {
+type mailSendOptions struct {
+	content  mailSendContentOptions
+	delivery mailSendDeliveryOptions
+	routing  mailSendRoutingOptions
+	stdin    bool
+}
+
+type mailSendContentOptions struct {
+	subject  string
+	body     string
+	typeName string
+	replyTo  string
+}
+
+type mailSendDeliveryOptions struct {
+	priority  int
+	urgent    bool
+	pinned    bool
+	wisp      bool
+	permanent bool
+	notify    bool
+	noNotify  bool
+	cc        []string
+}
+
+type mailSendRoutingOptions struct {
+	to   string
+	from string
+	self bool
+}
+
+func mailSendOptionsFromCommand(cmd *cobra.Command) mailSendOptions {
+	return mailSendOptions{
+		content: mailSendContentOptions{
+			subject:  mailStringFlag(cmd, "subject"),
+			body:     mailStringAliasFlag(cmd, "message", "body"),
+			typeName: mailStringFlag(cmd, "type"),
+			replyTo:  mailStringFlag(cmd, "reply-to"),
+		},
+		delivery: mailSendDeliveryOptions{
+			priority:  mailIntFlag(cmd, "priority"),
+			urgent:    mailBoolFlag(cmd, "urgent"),
+			pinned:    mailBoolFlag(cmd, "pinned"),
+			wisp:      mailBoolFlag(cmd, "wisp"),
+			permanent: mailBoolFlag(cmd, "permanent"),
+			notify:    mailBoolFlag(cmd, "notify"),
+			noNotify:  mailBoolFlag(cmd, "no-notify"),
+			cc:        mailStringArrayFlag(cmd, "cc"),
+		},
+		routing: mailSendRoutingOptions{
+			to:   mailStringFlag(cmd, "to"),
+			from: mailStringFlag(cmd, "from"),
+			self: mailBoolFlag(cmd, "self"),
+		},
+		stdin: mailBoolFlag(cmd, "stdin"),
+	}
+}
+
+func mailStringFlag(cmd *cobra.Command, name string) string {
+	value, _ := cmd.Flags().GetString(name)
+	return value
+}
+
+func mailStringAliasFlag(cmd *cobra.Command, primary, alias string) string {
+	if cmd.Flags().Changed(alias) {
+		return mailStringFlag(cmd, alias)
+	}
+	return mailStringFlag(cmd, primary)
+}
+
+func mailBoolFlag(cmd *cobra.Command, name string) bool {
+	value, _ := cmd.Flags().GetBool(name)
+	return value
+}
+
+func mailIntFlag(cmd *cobra.Command, name string) int {
+	value, _ := cmd.Flags().GetInt(name)
+	return value
+}
+
+func mailStringArrayFlag(cmd *cobra.Command, name string) []string {
+	value, _ := cmd.Flags().GetStringArray(name)
+	return value
+}
+
+func runMailSend(cmd *cobra.Command, args []string) error {
+	opts := mailSendOptionsFromCommand(cmd)
+	if err := readMailStdin(&opts); err != nil {
 		return err
 	}
 
-	to, err := resolveMailRecipient(args)
+	to, err := resolveMailRecipient(args, opts)
 	if err != nil {
 		return err
 	}
@@ -34,7 +120,7 @@ func runMailSend(_ *cobra.Command, args []string) error {
 	}
 
 	// Determine sender (--from overrides auto-detection, for relay/bridge use)
-	from := mailFrom
+	from := opts.routing.from
 	if from == "" {
 		from = detectSender()
 	}
@@ -45,9 +131,9 @@ func runMailSend(_ *cobra.Command, args []string) error {
 	// existing thread-lookup + ClearReplyReminders flow below works as designed.
 	// hq-k382x: without this, every "gt mail send <addr> -s 'Re: ...'" leaves
 	// the queued reply-reminder in place.
-	maybeInferMailReply(workDir, from, to)
+	maybeInferMailReply(workDir, from, to, &opts)
 
-	msg := buildMailSendMessage(workDir, from, to)
+	msg := buildMailSendMessage(workDir, from, to, opts)
 
 	// Use address resolver for new address types
 	townRoot, _ := workspace.FindFromCwd()
@@ -61,33 +147,33 @@ func runMailSend(_ *cobra.Command, args []string) error {
 		if errors.Is(err, mail.ErrUnknownRecipient) {
 			return err
 		}
-		return sendLegacyMail(workDir, from, to, msg)
+		return sendLegacyMail(workDir, from, to, msg, opts.content.subject)
 	}
-	return sendResolvedMail(workDir, from, to, msg, recipients)
+	return sendResolvedMail(workDir, from, to, msg, recipients, opts.content.subject)
 }
 
 // readMailStdin replaces the message body with stdin content when requested.
-func readMailStdin() error {
-	if !mailStdin {
+func readMailStdin(opts *mailSendOptions) error {
+	if !opts.stdin {
 		return nil
 	}
-	if mailBody != "" {
+	if opts.content.body != "" {
 		return fmt.Errorf("cannot use --stdin with --message/-m")
 	}
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
-	mailBody = strings.TrimRight(string(data), "\n")
+	opts.content.body = strings.TrimRight(string(data), "\n")
 	return nil
 }
 
-func resolveMailRecipient(args []string) (string, error) {
-	if mailSendSelf {
+func resolveMailRecipient(args []string, opts mailSendOptions) (string, error) {
+	if opts.routing.self {
 		return resolveSelfMailRecipient()
 	}
-	if mailTo != "" {
-		return mailTo, nil
+	if opts.routing.to != "" {
+		return opts.routing.to, nil
 	}
 	if len(args) > 0 {
 		return args[0], nil
@@ -123,44 +209,44 @@ func resolveSelfMailRecipient() (string, error) {
 	return to, nil
 }
 
-func maybeInferMailReply(workDir, from, to string) {
-	if mailReplyTo != "" || !hasReplyPrefix(mailSubject) {
+func maybeInferMailReply(workDir, from, to string, opts *mailSendOptions) {
+	if opts.content.replyTo != "" || !hasReplyPrefix(opts.content.subject) {
 		return
 	}
-	if inferred := inferReplyTo(workDir, from, to, mailSubject); inferred != "" {
-		mailReplyTo = inferred
+	if inferred := inferReplyTo(workDir, from, to, opts.content.subject); inferred != "" {
+		opts.content.replyTo = inferred
 	}
 }
 
-func buildMailSendMessage(workDir, from, to string) *mail.Message {
-	msg := mail.NewMessage(from, to, mailSubject, mailBody)
-	if mailUrgent {
+func buildMailSendMessage(workDir, from, to string, opts mailSendOptions) *mail.Message {
+	msg := mail.NewMessage(from, to, opts.content.subject, opts.content.body)
+	if opts.delivery.urgent {
 		msg.Priority = mail.PriorityUrgent
 	} else {
-		msg.Priority = mail.PriorityFromInt(mailPriority)
+		msg.Priority = mail.PriorityFromInt(opts.delivery.priority)
 	}
-	if mailNotify && msg.Priority == mail.PriorityNormal {
+	if opts.delivery.notify && msg.Priority == mail.PriorityNormal {
 		msg.Priority = mail.PriorityHigh
 	}
-	msg.Type = mail.ParseMessageType(mailType)
-	msg.Pinned = mailPinned
-	msg.Wisp = mailWisp && !mailPermanent
-	msg.CC = mailCC
-	if mailNoNotify {
+	msg.Type = mail.ParseMessageType(opts.content.typeName)
+	msg.Pinned = opts.delivery.pinned
+	msg.Wisp = opts.delivery.wisp && !opts.delivery.permanent
+	msg.CC = opts.delivery.cc
+	if opts.delivery.noNotify {
 		msg.SuppressNotify = true
 	}
-	applyMailReply(workDir, from, msg)
+	applyMailReply(workDir, from, opts.content.replyTo, msg)
 	if msg.ThreadID == "" {
 		msg.ThreadID = generateThreadID()
 	}
 	return msg
 }
 
-func applyMailReply(workDir, from string, msg *mail.Message) {
-	if mailReplyTo == "" {
+func applyMailReply(workDir, from, replyTo string, msg *mail.Message) {
+	if replyTo == "" {
 		return
 	}
-	msg.ReplyTo = mailReplyTo
+	msg.ReplyTo = replyTo
 	if msg.Type == mail.TypeNotification {
 		msg.Type = mail.TypeReply
 	}
@@ -170,40 +256,40 @@ func applyMailReply(workDir, from string, msg *mail.Message) {
 		style.PrintWarning("could not open mailbox for thread lookup: %v", err)
 		return
 	}
-	original, err := mailbox.Get(mailReplyTo)
+	original, err := mailbox.Get(replyTo)
 	if err != nil {
-		style.PrintWarning("could not find original message %s for threading (new thread will be created)", mailReplyTo)
+		style.PrintWarning("could not find original message %s for threading (new thread will be created)", replyTo)
 		return
 	}
 	msg.ThreadID = original.ThreadID
 }
 
-func sendLegacyMail(workDir, from, to string, msg *mail.Message) error {
+func sendLegacyMail(workDir, from, to string, msg *mail.Message, subject string) error {
 	// Fall back to legacy routing for infrastructure errors (beads down, etc.).
 	router := mail.NewRouter(workDir)
 	defer router.WaitPendingNotifications()
 	if err := router.Send(msg); err != nil {
 		return fmt.Errorf("sending message: %w", err)
 	}
-	_ = events.LogFeed(events.TypeMail, from, events.MailPayload(to, mailSubject))
+	_ = events.LogFeed(events.TypeMail, from, events.MailPayload(to, subject))
 	fmt.Printf("%s Message sent to %s\n", style.Bold.Render("✓"), to)
-	fmt.Printf("  Subject: %s\n", mailSubject)
+	fmt.Printf("  Subject: %s\n", subject)
 	return nil
 }
 
-func sendResolvedMail(workDir, from, to string, msg *mail.Message, recipients []mail.Recipient) error {
+func sendResolvedMail(workDir, from, to string, msg *mail.Message, recipients []mail.Recipient, subject string) error {
 	router := mail.NewRouter(workDir)
 	defer router.WaitPendingNotifications()
 	recipientAddrs, sendErrs := sendMailRecipients(router, msg, recipients)
 	if err := reportMailSendErrors(recipientAddrs, sendErrs); err != nil {
 		return err
 	}
-	clearMailReplyReminders(router, from, msg.ThreadID)
+	clearMailReplyReminders(router, from, msg.ThreadID, msg.ReplyTo)
 
 	// Log mail event to activity feed
-	_ = events.LogFeed(events.TypeMail, from, events.MailPayload(to, mailSubject))
+	_ = events.LogFeed(events.TypeMail, from, events.MailPayload(to, subject))
 
-	printMailSendSummary(to, msg, recipientAddrs)
+	printMailSendSummary(to, msg, recipientAddrs, subject)
 	return nil
 }
 
@@ -218,8 +304,8 @@ func reportMailSendErrors(recipientAddrs, sendErrs []string) error {
 	return nil
 }
 
-func clearMailReplyReminders(router *mail.Router, from, threadID string) {
-	if mailReplyTo == "" {
+func clearMailReplyReminders(router *mail.Router, from, threadID, replyTo string) {
+	if replyTo == "" {
 		return
 	}
 	if err := router.ClearReplyReminders(from, threadID); err != nil {
@@ -227,9 +313,9 @@ func clearMailReplyReminders(router *mail.Router, from, threadID string) {
 	}
 }
 
-func printMailSendSummary(to string, msg *mail.Message, recipientAddrs []string) {
+func printMailSendSummary(to string, msg *mail.Message, recipientAddrs []string, subject string) {
 	fmt.Printf("%s Message sent to %s\n", style.Bold.Render("✓"), to)
-	fmt.Printf("  Subject: %s\n", mailSubject)
+	fmt.Printf("  Subject: %s\n", subject)
 	if len(recipientAddrs) > 1 || (len(recipientAddrs) == 1 && recipientAddrs[0] != to) {
 		fmt.Printf("  Recipients: %s\n", strings.Join(recipientAddrs, ", "))
 	}

@@ -11,22 +11,25 @@ import (
 )
 
 // runMailSearch searches for messages matching a pattern.
-func runMailSearch(_ *cobra.Command, args []string) error {
+func runMailSearch(cmd *cobra.Command, args []string) error {
 	query := args[0]
 	address := detectSender()
-	messages, err := searchMailMessages(query, address)
+	messages, err := searchMailMessages(query, address,
+		mailStringFlag(cmd, "from"),
+		mailBoolFlag(cmd, "subject"),
+		mailBoolFlag(cmd, "body"))
 	if err != nil {
 		return err
 	}
 
-	if mailSearchJSON {
+	if mailBoolFlag(cmd, "json") {
 		return printMailSearchJSON(messages)
 	}
 	printMailSearchResults(address, messages)
 	return nil
 }
 
-func searchMailMessages(query, address string) ([]*mail.Message, error) {
+func searchMailMessages(query, address, fromFilter string, subjectOnly, bodyOnly bool) ([]*mail.Message, error) {
 	// Get workspace for mail operations
 	workDir, err := findMailWorkDir()
 	if err != nil {
@@ -43,9 +46,9 @@ func searchMailMessages(query, address string) ([]*mail.Message, error) {
 	// Build search options
 	opts := mail.SearchOptions{
 		Query:       query,
-		FromFilter:  mailSearchFrom,
-		SubjectOnly: mailSearchSubject,
-		BodyOnly:    mailSearchBody,
+		FromFilter:  fromFilter,
+		SubjectOnly: subjectOnly,
+		BodyOnly:    bodyOnly,
 	}
 
 	// Execute search
