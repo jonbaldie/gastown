@@ -1188,12 +1188,23 @@ func runConfigGet(_ *cobra.Command, args []string) error {
 
 // setMaintenanceConfig sets a maintenance.* key in daemon.json (patrol config).
 func setMaintenanceConfig(townRoot, key, value string) error {
+	patrolConfig := ensureMaintenancePatrolConfig(townRoot)
+	if err := applyMaintenanceValue(patrolConfig.Patrols.ScheduledMaintenance, key, value); err != nil {
+		return err
+	}
+	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
+		return fmt.Errorf("saving daemon config: %w", err)
+	}
+
+	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
+	printMaintenanceSetDetails(key, patrolConfig.Patrols.ScheduledMaintenance)
+	return nil
+}
+
+func ensureMaintenancePatrolConfig(townRoot string) *daemon.DaemonPatrolConfig {
 	patrolConfig := daemon.LoadPatrolConfig(townRoot)
 	if patrolConfig == nil {
-		patrolConfig = &daemon.DaemonPatrolConfig{
-			Type:    "daemon-patrol-config",
-			Version: 1,
-		}
+		patrolConfig = &daemon.DaemonPatrolConfig{Type: "daemon-patrol-config", Version: 1}
 	}
 	if patrolConfig.Patrols == nil {
 		patrolConfig.Patrols = &daemon.PatrolsConfig{}
@@ -1201,96 +1212,119 @@ func setMaintenanceConfig(townRoot, key, value string) error {
 	if patrolConfig.Patrols.ScheduledMaintenance == nil {
 		patrolConfig.Patrols.ScheduledMaintenance = &daemon.ScheduledMaintenanceConfig{}
 	}
-	mc := patrolConfig.Patrols.ScheduledMaintenance
+	return patrolConfig
+}
 
+func applyMaintenanceValue(mc *daemon.ScheduledMaintenanceConfig, key, value string) error {
 	switch key {
 	case "maintenance.window":
-		// Validate HH:MM format
-		parts := strings.SplitN(value, ":", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid window format %q: expected HH:MM (e.g., 03:00)", value)
-		}
-		hour, err := strconv.Atoi(parts[0])
-		if err != nil || hour < 0 || hour > 23 {
-			return fmt.Errorf("invalid hour in %q: expected 0-23", value)
-		}
-		minute, err := strconv.Atoi(parts[1])
-		if err != nil || minute < 0 || minute > 59 {
-			return fmt.Errorf("invalid minute in %q: expected 0-59", value)
-		}
-		mc.Window = fmt.Sprintf("%02d:%02d", hour, minute)
-		mc.Enabled = true // Setting window enables the patrol
-
+		return setMaintenanceWindow(mc, value)
 	case "maintenance.interval":
-		switch value {
-		case "daily", "weekly", "monthly":
-			mc.Interval = value
-		default:
-			// Try parsing as Go duration
-			_, err := time.ParseDuration(value)
-			if err != nil {
-				return fmt.Errorf("invalid interval %q: expected daily, weekly, monthly, or Go duration (e.g., 48h)", value)
-			}
-			mc.Interval = value
-		}
-
+		return setMaintenanceInterval(mc, value)
 	case "maintenance.threshold":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid threshold %q: expected positive integer", value)
-		}
-		mc.Threshold = &n
+		return setMaintenanceThreshold(mc, value)
+	default:
+		return nil
 	}
+}
 
-	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
-		return fmt.Errorf("saving daemon config: %w", err)
+func setMaintenanceWindow(mc *daemon.ScheduledMaintenanceConfig, value string) error {
+	parts := strings.SplitN(value, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid window format %q: expected HH:MM (e.g., 03:00)", value)
 	}
-
-	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
-	if key == "maintenance.window" {
-		fmt.Printf("Scheduled maintenance enabled (window: %s, interval: %s)\n",
-			mc.Window, mc.Interval)
-		if mc.Interval == "" {
-			fmt.Println("Hint: set interval with: gt config set maintenance.interval daily")
-		}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return fmt.Errorf("invalid hour in %q: expected 0-23", value)
 	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil || minute < 0 || minute > 59 {
+		return fmt.Errorf("invalid minute in %q: expected 0-59", value)
+	}
+	mc.Window = fmt.Sprintf("%02d:%02d", hour, minute)
+	mc.Enabled = true
 	return nil
+}
+
+func setMaintenanceInterval(mc *daemon.ScheduledMaintenanceConfig, value string) error {
+	switch value {
+	case "daily", "weekly", "monthly":
+		mc.Interval = value
+		return nil
+	default:
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("invalid interval %q: expected daily, weekly, monthly, or Go duration (e.g., 48h)", value)
+		}
+		mc.Interval = value
+		return nil
+	}
+}
+
+func setMaintenanceThreshold(mc *daemon.ScheduledMaintenanceConfig, value string) error {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		return fmt.Errorf("invalid threshold %q: expected positive integer", value)
+	}
+	mc.Threshold = &n
+	return nil
+}
+
+func printMaintenanceSetDetails(key string, mc *daemon.ScheduledMaintenanceConfig) {
+	if key != "maintenance.window" {
+		return
+	}
+	fmt.Printf("Scheduled maintenance enabled (window: %s, interval: %s)\n", mc.Window, mc.Interval)
+	if mc.Interval == "" {
+		fmt.Println("Hint: set interval with: gt config set maintenance.interval daily")
+	}
 }
 
 // getMaintenanceConfig gets a maintenance.* key from daemon.json (patrol config).
 func getMaintenanceConfig(townRoot, key string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
+	mc := scheduledMaintenanceConfig(daemon.LoadPatrolConfig(townRoot))
+	fmt.Println(maintenanceValue(mc, key))
+	return nil
+}
 
-	var value string
+func scheduledMaintenanceConfig(patrolConfig *daemon.DaemonPatrolConfig) *daemon.ScheduledMaintenanceConfig {
+	if patrolConfig == nil || patrolConfig.Patrols == nil {
+		return nil
+	}
+	return patrolConfig.Patrols.ScheduledMaintenance
+}
+
+func maintenanceValue(mc *daemon.ScheduledMaintenanceConfig, key string) string {
 	switch key {
 	case "maintenance.window":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			value = patrolConfig.Patrols.ScheduledMaintenance.Window
-		}
-		if value == "" {
-			value = "(not set)"
-		}
-
+		return maintenanceWindowValue(mc)
 	case "maintenance.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			value = patrolConfig.Patrols.ScheduledMaintenance.Interval
-		}
-		if value == "" {
-			value = "daily"
-		}
-
+		return maintenanceIntervalValue(mc)
 	case "maintenance.threshold":
-		threshold := 1000 // default
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			if patrolConfig.Patrols.ScheduledMaintenance.Threshold != nil {
-				threshold = *patrolConfig.Patrols.ScheduledMaintenance.Threshold
-			}
-		}
-		value = strconv.Itoa(threshold)
+		return maintenanceThresholdValue(mc)
+	default:
+		return ""
 	}
+}
 
-	fmt.Println(value)
-	return nil
+func maintenanceWindowValue(mc *daemon.ScheduledMaintenanceConfig) string {
+	if mc != nil && mc.Window != "" {
+		return mc.Window
+	}
+	return "(not set)"
+}
+
+func maintenanceIntervalValue(mc *daemon.ScheduledMaintenanceConfig) string {
+	if mc != nil && mc.Interval != "" {
+		return mc.Interval
+	}
+	return "daily"
+}
+
+func maintenanceThresholdValue(mc *daemon.ScheduledMaintenanceConfig) string {
+	if mc != nil && mc.Threshold != nil {
+		return strconv.Itoa(*mc.Threshold)
+	}
+	return "1000"
 }
 
 // setLifecycleConfig sets a lifecycle.* key in daemon.json.
