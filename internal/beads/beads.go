@@ -30,25 +30,31 @@ var (
 	ErrFlagTitle    = errors.New("title looks like a CLI flag (starts with '-'); use --title=\"...\" to set flag-like titles intentionally")
 )
 
-// bdAllowStale caches whether the installed bd supports --allow-stale.
+// bdAllowStaleCache stores whether the installed bd supports --allow-stale.
 // The cache is keyed by the resolved bd path so tests and subprocess stubs that
 // replace bd on PATH get re-probed instead of reusing stale capability state.
-var (
-	bdAllowStaleMu     sync.Mutex
-	bdAllowStalePath   string
-	bdAllowStaleResult bool
-	// bdAllowStaleProbeTimeout bounds the capability probe so a wedged bd
-	// binary cannot hang higher-level commands such as gt status.
-	bdAllowStaleProbeTimeout = 2 * time.Second
-)
+type bdAllowStaleCache struct {
+	sync.Mutex
+	path   string
+	result bool
+}
+
+var bdAllowStaleState = sync.OnceValue(func() *bdAllowStaleCache {
+	return &bdAllowStaleCache{}
+})
+
+// bdAllowStaleProbeTimeout bounds the capability probe so a wedged bd binary
+// cannot hang higher-level commands such as gt status.
+var bdAllowStaleProbeTimeout = 2 * time.Second
 
 // ResetBdAllowStaleCacheForTest clears the cached bd --allow-stale capability.
 // It exists for tests that swap bd binaries on PATH within a single process.
 func ResetBdAllowStaleCacheForTest() {
-	bdAllowStaleMu.Lock()
-	bdAllowStalePath = ""
-	bdAllowStaleResult = false
-	bdAllowStaleMu.Unlock()
+	state := bdAllowStaleState()
+	state.Lock()
+	state.path = ""
+	state.result = false
+	state.Unlock()
 }
 
 // BdSupportsAllowStale returns true if the installed bd binary accepts --allow-stale.
@@ -64,10 +70,11 @@ func BdSupportsAllowStaleWithEnv(env []string) bool {
 		return false
 	}
 
-	bdAllowStaleMu.Lock()
-	cachedPath := bdAllowStalePath
-	cachedResult := bdAllowStaleResult
-	bdAllowStaleMu.Unlock()
+	state := bdAllowStaleState()
+	state.Lock()
+	cachedPath := state.path
+	cachedResult := state.result
+	state.Unlock()
 
 	if cachedPath == bdPath {
 		return cachedResult
@@ -92,13 +99,13 @@ func BdSupportsAllowStaleWithEnv(env []string) bool {
 	probeOut := strings.TrimSpace(combinedOut.String())
 	supported := err == nil && probeOut != "" && !strings.Contains(probeOut, "unknown flag")
 
-	bdAllowStaleMu.Lock()
-	if bdAllowStalePath != bdPath {
-		bdAllowStalePath = bdPath
-		bdAllowStaleResult = supported
+	state.Lock()
+	if state.path != bdPath {
+		state.path = bdPath
+		state.result = supported
 	}
-	result := bdAllowStaleResult
-	bdAllowStaleMu.Unlock()
+	result := state.result
+	state.Unlock()
 	return result
 }
 

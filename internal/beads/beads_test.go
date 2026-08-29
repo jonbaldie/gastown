@@ -1420,18 +1420,22 @@ func TestIsFlagLikeTitle(t *testing.T) {
 	}
 }
 
-func TestBdSupportsAllowStale_ReprobesWhenBinaryPathChanges(t *testing.T) {
-	bdAllowStaleMu.Lock()
-	prevPath := bdAllowStalePath
-	prevResult := bdAllowStaleResult
-	bdAllowStaleMu.Unlock()
-	ResetBdAllowStaleCacheForTest()
+func preserveBdAllowStaleCache(t *testing.T) {
+	t.Helper()
+	state := bdAllowStaleState()
+	state.Lock()
+	prevPath, prevResult := state.path, state.result
+	state.Unlock()
 	t.Cleanup(func() {
-		bdAllowStaleMu.Lock()
-		bdAllowStalePath = prevPath
-		bdAllowStaleResult = prevResult
-		bdAllowStaleMu.Unlock()
+		state.Lock()
+		state.path, state.result = prevPath, prevResult
+		state.Unlock()
 	})
+}
+
+func TestBdSupportsAllowStale_ReprobesWhenBinaryPathChanges(t *testing.T) {
+	preserveBdAllowStaleCache(t)
+	ResetBdAllowStaleCacheForTest()
 
 	supportingDir := t.TempDir()
 	nonSupportingDir := t.TempDir()
@@ -1451,18 +1455,11 @@ func TestBdSupportsAllowStale_ReprobesWhenBinaryPathChanges(t *testing.T) {
 }
 
 func TestBdSupportsAllowStale_TimeoutTreatsProbeAsUnsupported(t *testing.T) {
-	bdAllowStaleMu.Lock()
-	prevPath := bdAllowStalePath
-	prevResult := bdAllowStaleResult
-	bdAllowStaleMu.Unlock()
+	preserveBdAllowStaleCache(t)
 	prevTimeout := bdAllowStaleProbeTimeout
 	ResetBdAllowStaleCacheForTest()
 	bdAllowStaleProbeTimeout = 100 * time.Millisecond
 	t.Cleanup(func() {
-		bdAllowStaleMu.Lock()
-		bdAllowStalePath = prevPath
-		bdAllowStaleResult = prevResult
-		bdAllowStaleMu.Unlock()
 		bdAllowStaleProbeTimeout = prevTimeout
 	})
 
@@ -4891,17 +4888,8 @@ func TestInitPassesServerFlag(t *testing.T) {
 		t.Skip("uses Unix shell script bd stub")
 	}
 
-	bdAllowStaleMu.Lock()
-	prevPath := bdAllowStalePath
-	prevResult := bdAllowStaleResult
-	bdAllowStaleMu.Unlock()
+	preserveBdAllowStaleCache(t)
 	ResetBdAllowStaleCacheForTest()
-	t.Cleanup(func() {
-		bdAllowStaleMu.Lock()
-		bdAllowStalePath = prevPath
-		bdAllowStaleResult = prevResult
-		bdAllowStaleMu.Unlock()
-	})
 
 	stubDir := t.TempDir()
 	logPath := filepath.Join(stubDir, "bd.log")
@@ -5280,17 +5268,8 @@ func TestRunEnv_StripsPollutedDoltEnvAndUsesRigMetadata(t *testing.T) {
 		t.Skip("uses Unix shell script bd stub")
 	}
 
-	bdAllowStaleMu.Lock()
-	prevPath := bdAllowStalePath
-	prevResult := bdAllowStaleResult
-	bdAllowStaleMu.Unlock()
+	preserveBdAllowStaleCache(t)
 	ResetBdAllowStaleCacheForTest()
-	t.Cleanup(func() {
-		bdAllowStaleMu.Lock()
-		bdAllowStalePath = prevPath
-		bdAllowStaleResult = prevResult
-		bdAllowStaleMu.Unlock()
-	})
 
 	workDir := t.TempDir()
 	beadsDir := filepath.Join(workDir, ".beads")
