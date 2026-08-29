@@ -19,15 +19,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Refinery command flags
-var (
-	refineryForeground    bool
-	refineryStatusJSON    bool
-	refineryQueueJSON     bool
-	refineryAgentOverride string
-	refineryForce         bool
-)
-
 var refineryCmd = &cobra.Command{
 	Use:     "refinery",
 	Aliases: []string{"ref"},
@@ -183,8 +174,6 @@ Examples:
 	RunE: runRefineryUnclaimed,
 }
 
-var refineryUnclaimedJSON bool
-
 var refineryReadyCmd = &cobra.Command{
 	Use:   "ready [rig]",
 	Short: "List MRs ready for processing (unclaimed and unblocked)",
@@ -208,9 +197,6 @@ Examples:
 	RunE: runRefineryReady,
 }
 
-var refineryReadyJSON bool
-var refineryReadyAll bool
-
 var refineryBlockedCmd = &cobra.Command{
 	Use:   "blocked [rig]",
 	Short: "List MRs blocked by open tasks",
@@ -226,37 +212,35 @@ Examples:
 	RunE: runRefineryBlocked,
 }
 
-var refineryBlockedJSON bool
-
 func init() {
 	// Start flags
-	refineryStartCmd.Flags().BoolVar(&refineryForeground, "foreground", false, "Run in foreground (default: background)")
+	refineryStartCmd.Flags().Bool("foreground", false, "Run in foreground (default: background)")
 	_ = refineryStartCmd.Flags().MarkHidden("foreground")
-	refineryStartCmd.Flags().StringVar(&refineryAgentOverride, "agent", "", "Agent alias to run the Refinery with (overrides town default)")
-	refineryStartCmd.Flags().BoolVar(&refineryForce, "force", false, "Start even when rig has upstream_url (manual override for fork-backed rigs)")
+	refineryStartCmd.Flags().String("agent", "", "Agent alias to run the Refinery with (overrides town default)")
+	refineryStartCmd.Flags().Bool("force", false, "Start even when rig has upstream_url (manual override for fork-backed rigs)")
 
 	// Attach flags
-	refineryAttachCmd.Flags().StringVar(&refineryAgentOverride, "agent", "", "Agent alias to run the Refinery with (overrides town default)")
+	refineryAttachCmd.Flags().String("agent", "", "Agent alias to run the Refinery with (overrides town default)")
 
 	// Restart flags
-	refineryRestartCmd.Flags().StringVar(&refineryAgentOverride, "agent", "", "Agent alias to run the Refinery with (overrides town default)")
-	refineryRestartCmd.Flags().BoolVar(&refineryForce, "force", false, "Restart even when rig has upstream_url (manual override for fork-backed rigs)")
+	refineryRestartCmd.Flags().String("agent", "", "Agent alias to run the Refinery with (overrides town default)")
+	refineryRestartCmd.Flags().Bool("force", false, "Restart even when rig has upstream_url (manual override for fork-backed rigs)")
 
 	// Status flags
-	refineryStatusCmd.Flags().BoolVar(&refineryStatusJSON, "json", false, "Output as JSON")
+	refineryStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Queue flags
-	refineryQueueCmd.Flags().BoolVar(&refineryQueueJSON, "json", false, "Output as JSON")
+	refineryQueueCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Unclaimed flags
-	refineryUnclaimedCmd.Flags().BoolVar(&refineryUnclaimedJSON, "json", false, "Output as JSON")
+	refineryUnclaimedCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Ready flags
-	refineryReadyCmd.Flags().BoolVar(&refineryReadyJSON, "json", false, "Output as JSON")
-	refineryReadyCmd.Flags().BoolVar(&refineryReadyAll, "all", false, "Show all open MRs (claimed, blocked, etc.) with raw data for queue health analysis")
+	refineryReadyCmd.Flags().Bool("json", false, "Output as JSON")
+	refineryReadyCmd.Flags().Bool("all", false, "Show all open MRs (claimed, blocked, etc.) with raw data for queue health analysis")
 
 	// Blocked flags
-	refineryBlockedCmd.Flags().BoolVar(&refineryBlockedJSON, "json", false, "Output as JSON")
+	refineryBlockedCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Add subcommands
 	refineryCmd.AddCommand(refineryStartCmd)
@@ -298,7 +282,10 @@ func getRefineryManager(rigName string) (*refinery.Manager, *rig.Rig, string, er
 	return mgr, r, rigName, nil
 }
 
-func runRefineryStart(_ *cobra.Command, args []string) error {
+func runRefineryStart(cmd *cobra.Command, args []string) error {
+	foreground := commandBoolFlag(cmd, "foreground")
+	force := commandBoolFlag(cmd, "force")
+	agentOverride := commandStringFlag(cmd, "agent")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -312,17 +299,17 @@ func runRefineryStart(_ *cobra.Command, args []string) error {
 	if err := checkRigNotParkedOrDocked(rigName); err != nil {
 		return err
 	}
-	if refineryForeground {
+	if foreground {
 		return fmt.Errorf("foreground mode is deprecated; use background mode (remove --foreground flag)")
 	}
 
 	fmt.Printf("Starting refinery for %s...\n", rigName)
 
 	start := mgr.Start
-	if refineryForce {
+	if force {
 		start = mgr.StartAllowingForkRig
 	}
-	if err := start(refineryForeground, refineryAgentOverride); err != nil {
+	if err := start(foreground, agentOverride); err != nil {
 		if errors.Is(err, refinery.ErrAlreadyRunning) {
 			fmt.Printf("%s Refinery is already running\n", style.Dim.Render("⚠"))
 			return nil
@@ -366,7 +353,8 @@ type RefineryStatusOutput struct {
 	QueueLength int    `json:"queue_length"`
 }
 
-func runRefineryStatus(_ *cobra.Command, args []string) error {
+func runRefineryStatus(cmd *cobra.Command, args []string) error {
+	statusJSON := commandBoolFlag(cmd, "json")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -386,7 +374,7 @@ func runRefineryStatus(_ *cobra.Command, args []string) error {
 	queueLen := len(queue)
 
 	// JSON output
-	if refineryStatusJSON {
+	if statusJSON {
 		output := RefineryStatusOutput{
 			Running:     running,
 			RigName:     rigName,
@@ -417,7 +405,8 @@ func runRefineryStatus(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryQueue(_ *cobra.Command, args []string) error {
+func runRefineryQueue(cmd *cobra.Command, args []string) error {
+	queueJSON := commandBoolFlag(cmd, "json")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -434,7 +423,7 @@ func runRefineryQueue(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if refineryQueueJSON {
+	if queueJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(queue)
@@ -498,7 +487,8 @@ func runRefineryQueue(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryAttach(_ *cobra.Command, args []string) error {
+func runRefineryAttach(cmd *cobra.Command, args []string) error {
+	agentOverride := commandStringFlag(cmd, "agent")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -533,7 +523,7 @@ func runRefineryAttach(_ *cobra.Command, args []string) error {
 	if !running {
 		// Auto-start if not running
 		fmt.Printf("Refinery not running for %s, starting...\n", rigName)
-		if err := mgr.Start(false, refineryAgentOverride); err != nil {
+		if err := mgr.Start(false, agentOverride); err != nil {
 			if errors.Is(err, refinery.ErrForkRig) {
 				return fmt.Errorf("refinery auto-start skipped: %w", err)
 			}
@@ -546,7 +536,9 @@ func runRefineryAttach(_ *cobra.Command, args []string) error {
 	return attachToTmuxSession(sessionID)
 }
 
-func runRefineryRestart(_ *cobra.Command, args []string) error {
+func runRefineryRestart(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
+	agentOverride := commandStringFlag(cmd, "agent")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -561,7 +553,7 @@ func runRefineryRestart(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	if !refineryForce {
+	if !force {
 		if err := mgr.BlockForkRigStart(); err != nil {
 			return fmt.Errorf("starting refinery: %w", err)
 		}
@@ -584,10 +576,10 @@ func runRefineryRestart(_ *cobra.Command, args []string) error {
 
 	// Start fresh
 	start := mgr.Start
-	if refineryForce {
+	if force {
 		start = mgr.StartAllowingForkRig
 	}
-	if err := start(false, refineryAgentOverride); err != nil {
+	if err := start(false, agentOverride); err != nil {
 		return fmt.Errorf("starting refinery: %w", err)
 	}
 
@@ -659,7 +651,8 @@ func runRefineryRelease(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryUnclaimed(_ *cobra.Command, args []string) error {
+func runRefineryUnclaimed(cmd *cobra.Command, args []string) error {
+	unclaimedJSON := commandBoolFlag(cmd, "json")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -703,7 +696,7 @@ func runRefineryUnclaimed(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if refineryUnclaimedJSON {
+	if unclaimedJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(unclaimed)
@@ -726,7 +719,9 @@ func runRefineryUnclaimed(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryReady(_ *cobra.Command, args []string) error {
+func runRefineryReady(cmd *cobra.Command, args []string) error {
+	readyJSON := commandBoolFlag(cmd, "json")
+	readyAll := commandBoolFlag(cmd, "all")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -740,8 +735,8 @@ func runRefineryReady(_ *cobra.Command, args []string) error {
 	// Create engineer for the rig (it has beads access for status checking)
 	eng := refinery.NewEngineer(r)
 
-	if refineryReadyAll {
-		return runRefineryReadyAll(eng, rigName)
+	if readyAll {
+		return runRefineryReadyAll(eng, rigName, readyJSON)
 	}
 
 	// Get ready MRs (unclaimed AND unblocked)
@@ -755,7 +750,7 @@ func runRefineryReady(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if refineryReadyJSON {
+	if readyJSON {
 		type readyOutput struct {
 			Ready     []*refinery.MRInfo    `json:"ready"`
 			Anomalies []*refinery.MRAnomaly `json:"anomalies,omitempty"`
@@ -801,13 +796,13 @@ func runRefineryReady(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRefineryReadyAll(eng *refinery.Engineer, rigName string) error {
+func runRefineryReadyAll(eng *refinery.Engineer, rigName string, readyJSON bool) error {
 	mrs, err := eng.ListAllOpenMRs()
 	if err != nil {
 		return fmt.Errorf("listing all open MRs: %w", err)
 	}
 
-	if refineryReadyJSON {
+	if readyJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(mrs)
@@ -851,7 +846,8 @@ func runRefineryReadyAll(eng *refinery.Engineer, rigName string) error {
 	return nil
 }
 
-func runRefineryBlocked(_ *cobra.Command, args []string) error {
+func runRefineryBlocked(cmd *cobra.Command, args []string) error {
+	blockedJSON := commandBoolFlag(cmd, "json")
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -872,7 +868,7 @@ func runRefineryBlocked(_ *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if refineryBlockedJSON {
+	if blockedJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(blocked)
