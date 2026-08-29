@@ -187,21 +187,12 @@ func runGroupShow(cmd *cobra.Command, args []string) error {
 
 func runGroupCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	members := args[1:] // Positional members
-
-	// Add --member flag values
+	members := append([]string(nil), args[1:]...)
 	flagMembers, _ := cmd.Flags().GetStringArray("member")
 	members = append(members, flagMembers...)
 
-	if !isValidGroupName(name) {
-		return fmt.Errorf("invalid group name %q: must be alphanumeric with dashes/underscores", name)
-	}
-
-	// Validate member patterns
-	for _, m := range members {
-		if !isValidMemberPattern(m) {
-			return fmt.Errorf("invalid member pattern: %s", m)
-		}
+	if err := validateGroupCreateInputs(name, members); err != nil {
+		return err
 	}
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -209,15 +200,43 @@ func runGroupCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Detect creator
-	createdBy := os.Getenv("BD_ACTOR")
-	if createdBy == "" {
-		createdBy = "unknown"
+	b := beads.New(townRoot)
+	if err := ensureGroupDoesNotExist(b, name); err != nil {
+		return err
 	}
 
-	b := beads.New(townRoot)
+	_, err = b.CreateGroupBead(name, &beads.GroupFields{
+		Members:   members,
+		CreatedBy: groupCreator(),
+	})
+	if err != nil {
+		return fmt.Errorf("creating group: %w", err)
+	}
 
-	// Check if group already exists
+	fmt.Printf("Created group %q with %d member(s)\n", name, len(members))
+	return nil
+}
+
+func validateGroupCreateInputs(name string, members []string) error {
+	if !isValidGroupName(name) {
+		return fmt.Errorf("invalid group name %q: must be alphanumeric with dashes/underscores", name)
+	}
+	for _, member := range members {
+		if !isValidMemberPattern(member) {
+			return fmt.Errorf("invalid member pattern: %s", member)
+		}
+	}
+	return nil
+}
+
+func groupCreator() string {
+	if createdBy := os.Getenv("BD_ACTOR"); createdBy != "" {
+		return createdBy
+	}
+	return "unknown"
+}
+
+func ensureGroupDoesNotExist(b *beads.Beads, name string) error {
 	existing, _, err := b.GetGroupByName(name)
 	if err != nil && !errors.Is(err, beads.ErrNotFound) {
 		return err
@@ -225,16 +244,6 @@ func runGroupCreate(cmd *cobra.Command, args []string) error {
 	if existing != nil {
 		return fmt.Errorf("group already exists: %s", name)
 	}
-
-	_, err = b.CreateGroupBead(name, &beads.GroupFields{
-		Members:   members,
-		CreatedBy: createdBy,
-	})
-	if err != nil {
-		return fmt.Errorf("creating group: %w", err)
-	}
-
-	fmt.Printf("Created group %q with %d member(s)\n", name, len(members))
 	return nil
 }
 
@@ -312,8 +321,7 @@ func isValidGroupName(name string) bool {
 		return false
 	}
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '-' || r == '_') {
+		if !isValidGroupRune(r) {
 			return false
 		}
 	}
@@ -321,6 +329,11 @@ func isValidGroupName(name string) bool {
 	// back as an empty name, so the group is filed under "" and cannot be found
 	// again. Check the name against storage as well.
 	return beads.ValidateGroupStorage(name, []string{storageProbe}) == nil
+}
+
+func isValidGroupRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') || r == '-' || r == '_'
 }
 
 // isValidMemberPattern checks if a member pattern is syntactically valid.
