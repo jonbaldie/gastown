@@ -14,11 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	nudgePollerIntervalFlag string
-	nudgePollerIdleFlag     string
-)
-
 type nudgePollerConfig struct {
 	townRoot           string
 	sessionName        string
@@ -31,8 +26,8 @@ type nudgePollerConfig struct {
 
 func init() {
 	rootCmd.AddCommand(nudgePollerCmd)
-	nudgePollerCmd.Flags().StringVar(&nudgePollerIntervalFlag, "interval", nudge.DefaultPollInterval, "Poll interval (e.g., 10s, 30s)")
-	nudgePollerCmd.Flags().StringVar(&nudgePollerIdleFlag, "idle-timeout", nudge.DefaultIdleTimeout, "How long to wait for agent idle before skipping")
+	nudgePollerCmd.Flags().String("interval", nudge.DefaultPollInterval, "Poll interval (e.g., 10s, 30s)")
+	nudgePollerCmd.Flags().String("idle-timeout", nudge.DefaultIdleTimeout, "How long to wait for agent idle before skipping")
 }
 
 var nudgePollerCmd = &cobra.Command{
@@ -55,16 +50,18 @@ Not intended for direct user invocation.`,
 	RunE: runNudgePoller,
 }
 
-func runNudgePoller(_ *cobra.Command, args []string) error {
+func runNudgePoller(cmd *cobra.Command, args []string) error {
 	sessionName := args[0]
-	cfg, err := loadNudgePollerConfig(sessionName)
+	intervalFlag := commandStringFlag(cmd, "interval")
+	idleTimeoutFlag := commandStringFlag(cmd, "idle-timeout")
+	cfg, err := loadNudgePollerConfig(sessionName, intervalFlag, idleTimeoutFlag)
 	if err != nil {
 		return err
 	}
 	return runNudgePollerLoop(cfg)
 }
 
-func loadNudgePollerConfig(sessionName string) (nudgePollerConfig, error) {
+func loadNudgePollerConfig(sessionName, intervalFlag, idleTimeoutFlag string) (nudgePollerConfig, error) {
 	cfg := nudgePollerConfig{sessionName: sessionName}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -72,13 +69,13 @@ func loadNudgePollerConfig(sessionName string) (nudgePollerConfig, error) {
 	}
 	cfg.townRoot = townRoot
 
-	pollInterval, err := time.ParseDuration(nudgePollerIntervalFlag)
+	pollInterval, err := time.ParseDuration(intervalFlag)
 	if err != nil {
 		return nudgePollerConfig{}, fmt.Errorf("invalid --interval: %w", err)
 	}
 	cfg.pollInterval = pollInterval
 
-	idleTimeout, err := time.ParseDuration(nudgePollerIdleFlag)
+	idleTimeout, err := time.ParseDuration(idleTimeoutFlag)
 	if err != nil {
 		return nudgePollerConfig{}, fmt.Errorf("invalid --idle-timeout: %w", err)
 	}
