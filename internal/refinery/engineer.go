@@ -2645,6 +2645,20 @@ type convoyInfo struct {
 	Description string
 }
 
+type convoyCandidate struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Status      string   `json:"status"`
+	Description string   `json:"description"`
+	IssueType   string   `json:"issue_type"`
+	Labels      []string `json:"labels"`
+}
+
+type convoyDependency struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
 func refineryHasLabel(labels []string, target string) bool {
 	for _, label := range labels {
 		if label == target {
@@ -2660,6 +2674,21 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 	townReadEnv := beads.BuildReadOnlyPinnedBDEnv(os.Environ(), townBeads)
 	townMutationEnv := beads.BuildMutationPinnedBDEnv(os.Environ(), townBeads)
 	routingReadEnv := beads.BuildReadOnlyRoutingBDEnv(os.Environ(), townBeads)
+	convoys, ok := e.listOpenConvoyCandidates(townBeads, townReadEnv)
+	if !ok {
+		return nil
+	}
+
+	var closed []convoyInfo
+	for _, convoy := range convoys {
+		if info, ok := e.closeCompletedConvoy(convoy, townRoot, townBeads, townReadEnv, townMutationEnv, routingReadEnv); ok {
+			closed = append(closed, info)
+		}
+	}
+	return closed
+}
+
+func (e *Engineer) listOpenConvoyCandidates(townBeads string, townReadEnv []string) ([]convoyCandidate, bool) {
 
 	// List all open issues and filter locally so legacy type=convoy beads remain visible.
 	listArgs := beads.InjectFlatForListJSON([]string{"list", "--status=open", "--json", "--limit=0"})
@@ -2670,114 +2699,89 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 
 	if err := listCmd.Run(); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to list convoys: %v\n", err)
-		return nil
+		return nil, false
 	}
 
-	var convoys []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Status      string   `json:"status"`
-		Description string   `json:"description"`
-		IssueType   string   `json:"issue_type"`
-		Labels      []string `json:"labels"`
-	}
+	var convoys []convoyCandidate
 	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to parse convoy list: %v\n", err)
-		return nil
+		return nil, false
 	}
+	return convoys, true
+}
 
-	var closed []convoyInfo
-
-	for _, convoy := range convoys {
-		if convoy.IssueType != "convoy" && !refineryHasLabel(convoy.Labels, "gt:convoy") {
-			continue
-		}
-		// Get tracked issues for this convoy via bd dep list
-		depArgs := beads.MaybePrependAllowStaleWithEnv(townReadEnv, []string{"dep", "list", convoy.ID, "--direction=down", "--type=tracks", "--json"})
-		depCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyPinned, depArgs...)
-		var depOut bytes.Buffer
-		depCmd.Stdout = &depOut
-
-		if err := depCmd.Run(); err != nil {
-			continue
-		}
-
-		var deps []struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		}
-		if err := json.Unmarshal(depOut.Bytes(), &deps); err != nil {
-			continue
-		}
-
-		// Refresh statuses from home rigs (cross-rig lookup)
-		allClosed := true
-		for _, dep := range deps {
-			// Unwrap external:prefix:id format
-			depID := dep.ID
-			if strings.HasPrefix(depID, "external:") {
-				parts := strings.SplitN(depID, ":", 3)
-				if len(parts) == 3 {
-					depID = parts[2]
-				}
-			}
-
-			// Get fresh status from home rig via bd show with routing
-			showArgs := beads.MaybePrependAllowStaleWithEnv(routingReadEnv, []string{"show", depID, "--json"})
-			showCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyRouting, showArgs...)
-			var showOut bytes.Buffer
-			showCmd.Stdout = &showOut
-
-			if err := showCmd.Run(); err != nil || showOut.Len() == 0 {
-				// Can't verify - treat as open to be safe
-				allClosed = false
-				break
-			}
-
-			var issues []struct {
-				Status string `json:"status"`
-			}
-			if err := json.Unmarshal(showOut.Bytes(), &issues); err != nil || len(issues) == 0 {
-				allClosed = false
-				break
-			}
-
-			if issues[0].Status != "closed" && issues[0].Status != "tombstone" {
-				allClosed = false
-				break
-			}
-		}
-
-		if !allClosed {
-			continue
-		}
-
-		// All tracked issues are complete - close the convoy
-		reason := "All tracked issues completed"
-		if len(deps) == 0 {
-			reason = "Empty convoy — auto-closed as definitionally complete"
-		}
-
-		closeArgs := beads.MaybePrependAllowStaleWithEnv(townMutationEnv, []string{"close", convoy.ID, "-r", reason})
-		closeCmd := beads.Command(townBeads, townBeads, beads.MutationPinned, closeArgs...)
-
-		if err := closeCmd.Run(); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close convoy %s: %v\n", convoy.ID, err)
-			continue
-		}
-
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-closed convoy %s: %s\n", convoy.ID, convoy.Title)
-		closed = append(closed, convoyInfo{
-			ID:          convoy.ID,
-			Title:       convoy.Title,
-			Description: convoy.Description,
-		})
-
-		// Send convoy completion notifications (owner + notify addresses)
-		e.notifyConvoyCompletion(townRoot, convoy.ID, convoy.Title, convoy.Description)
+func (e *Engineer) closeCompletedConvoy(
+	convoy convoyCandidate,
+	townRoot, townBeads string,
+	townReadEnv, townMutationEnv, routingReadEnv []string,
+) (convoyInfo, bool) {
+	if convoy.IssueType != "convoy" && !refineryHasLabel(convoy.Labels, "gt:convoy") {
+		return convoyInfo{}, false
 	}
+	deps, ok := e.listConvoyDependencies(townRoot, townBeads, townReadEnv, convoy.ID)
+	if !ok || !e.allConvoyDependenciesClosed(deps, townRoot, townBeads, routingReadEnv) {
+		return convoyInfo{}, false
+	}
+	reason := "All tracked issues completed"
+	if len(deps) == 0 {
+		reason = "Empty convoy — auto-closed as definitionally complete"
+	}
+	closeArgs := beads.MaybePrependAllowStaleWithEnv(townMutationEnv, []string{"close", convoy.ID, "-r", reason})
+	closeCmd := beads.Command(townBeads, townBeads, beads.MutationPinned, closeArgs...)
+	if err := closeCmd.Run(); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close convoy %s: %v\n", convoy.ID, err)
+		return convoyInfo{}, false
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-closed convoy %s: %s\n", convoy.ID, convoy.Title)
+	e.notifyConvoyCompletion(townRoot, convoy.ID, convoy.Title, convoy.Description)
+	return convoyInfo{ID: convoy.ID, Title: convoy.Title, Description: convoy.Description}, true
+}
 
-	return closed
+func (e *Engineer) listConvoyDependencies(townRoot, townBeads string, townReadEnv []string, convoyID string) ([]convoyDependency, bool) {
+	depArgs := beads.MaybePrependAllowStaleWithEnv(townReadEnv, []string{"dep", "list", convoyID, "--direction=down", "--type=tracks", "--json"})
+	depCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyPinned, depArgs...)
+	var depOut bytes.Buffer
+	depCmd.Stdout = &depOut
+	if err := depCmd.Run(); err != nil {
+		return nil, false
+	}
+	var deps []convoyDependency
+	if err := json.Unmarshal(depOut.Bytes(), &deps); err != nil {
+		return nil, false
+	}
+	return deps, true
+}
+
+func (e *Engineer) allConvoyDependenciesClosed(deps []convoyDependency, townRoot, townBeads string, routingReadEnv []string) bool {
+	for _, dep := range deps {
+		if !e.convoyDependencyClosed(dep.ID, townRoot, townBeads, routingReadEnv) {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engineer) convoyDependencyClosed(depID, townRoot, townBeads string, routingReadEnv []string) bool {
+	if strings.HasPrefix(depID, "external:") {
+		parts := strings.SplitN(depID, ":", 3)
+		if len(parts) == 3 {
+			depID = parts[2]
+		}
+	}
+	showArgs := beads.MaybePrependAllowStaleWithEnv(routingReadEnv, []string{"show", depID, "--json"})
+	showCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyRouting, showArgs...)
+	var showOut bytes.Buffer
+	showCmd.Stdout = &showOut
+	if err := showCmd.Run(); err != nil || showOut.Len() == 0 {
+		return false
+	}
+	var issues []struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(showOut.Bytes(), &issues); err != nil || len(issues) == 0 {
+		return false
+	}
+	return issues[0].Status == "closed" || issues[0].Status == "tombstone"
 }
 
 // notifyConvoyCompletion sends notifications to convoy owner and notify addresses.
