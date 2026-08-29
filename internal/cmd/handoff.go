@@ -1680,56 +1680,10 @@ func collectGitState() string {
 //
 // All errors are non-fatal — handoff must succeed even if cleanup fails.
 func cleanupMoleculeOnHandoff() {
-	cwd, err := os.Getwd()
-	if err != nil {
+	b, handoffBead, molID, ok := handoffMoleculeContext()
+	if !ok {
 		return
 	}
-
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil || townRoot == "" {
-		return
-	}
-
-	// Detect agent identity
-	roleInfo, err := GetRoleWithContext(cwd, townRoot)
-	if err != nil {
-		return
-	}
-	roleCtx := RoleContext{
-		Role:     roleInfo.Role,
-		Rig:      roleInfo.Rig,
-		Polecat:  roleInfo.Polecat,
-		TownRoot: townRoot,
-		WorkDir:  cwd,
-	}
-	agentID := buildAgentIdentity(roleCtx)
-	if agentID == "" {
-		return
-	}
-
-	workDir, err := findLocalBeadsDir()
-	if err != nil {
-		return
-	}
-
-	b := beads.New(workDir)
-
-	// Extract the role name for FindHandoffBead
-	parts := strings.Split(agentID, "/")
-	role := parts[len(parts)-1]
-
-	handoffBead, err := b.FindHandoffBead(role)
-	if err != nil || handoffBead == nil {
-		return
-	}
-
-	// Check for attached molecule on the handoff bead
-	attachment := beads.ParseAttachmentFields(handoffBead)
-	if attachment == nil || attachment.AttachedMolecule == "" {
-		return
-	}
-
-	molID := attachment.AttachedMolecule
 
 	// Close descendant steps (the leaked wisps)
 	if n := closeDescendants(b, molID); n > 0 {
@@ -1755,6 +1709,63 @@ func cleanupMoleculeOnHandoff() {
 	if err := b.ForceCloseWithReason("handoff", molID); err != nil {
 		fmt.Fprintf(os.Stderr, "handoff: warning: couldn't close molecule %s: %v\n", molID, err)
 	}
+}
+
+func handoffMoleculeContext() (*beads.Beads, *beads.Issue, string, bool) {
+	cwd, townRoot, ok := handoffWorkspace()
+	if !ok {
+		return nil, nil, "", false
+	}
+	agentID := handoffAgentIdentity(cwd, townRoot)
+	if agentID == "" {
+		return nil, nil, "", false
+	}
+	b, ok := handoffBeads()
+	if !ok {
+		return nil, nil, "", false
+	}
+	parts := strings.Split(agentID, "/")
+	role := parts[len(parts)-1]
+	handoffBead, err := b.FindHandoffBead(role)
+	if err != nil || handoffBead == nil {
+		return nil, nil, "", false
+	}
+	attachment := beads.ParseAttachmentFields(handoffBead)
+	if attachment == nil || attachment.AttachedMolecule == "" {
+		return nil, nil, "", false
+	}
+	return b, handoffBead, attachment.AttachedMolecule, true
+}
+
+func handoffWorkspace() (string, string, bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", false
+	}
+	townRoot, err := workspace.FindFromCwd()
+	return cwd, townRoot, err == nil && townRoot != ""
+}
+
+func handoffAgentIdentity(cwd, townRoot string) string {
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return ""
+	}
+	return buildAgentIdentity(RoleContext{
+		Role:     roleInfo.Role,
+		Rig:      roleInfo.Rig,
+		Polecat:  roleInfo.Polecat,
+		TownRoot: townRoot,
+		WorkDir:  cwd,
+	})
+}
+
+func handoffBeads() (*beads.Beads, bool) {
+	workDir, err := findLocalBeadsDir()
+	if err != nil {
+		return nil, false
+	}
+	return beads.New(workDir), true
 }
 
 // enforceHandoffCooldown sleeps if the last handoff was too recent.
