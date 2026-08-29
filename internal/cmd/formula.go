@@ -26,15 +26,12 @@ import (
 
 // Formula command flags
 var (
-	formulaListJSON   bool
-	formulaShowJSON   bool
-	formulaRunPR      int
-	formulaRunRig     string
-	formulaRunDryRun  bool
-	formulaRunAgent   string
-	formulaRunFiles   []string
-	formulaRunSet     []string
-	formulaCreateType string
+	formulaRunPR     int
+	formulaRunRig    string
+	formulaRunDryRun bool
+	formulaRunAgent  string
+	formulaRunFiles  []string
+	formulaRunSet    []string
 )
 
 var formulaCmd = &cobra.Command{
@@ -162,10 +159,10 @@ Examples:
 
 func init() {
 	// List flags
-	formulaListCmd.Flags().BoolVar(&formulaListJSON, "json", false, "Output as JSON")
+	formulaListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Show flags
-	formulaShowCmd.Flags().BoolVar(&formulaShowJSON, "json", false, "Output as JSON")
+	formulaShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Run flags
 	formulaRunCmd.Flags().IntVar(&formulaRunPR, "pr", 0, "GitHub PR number to run formula on")
@@ -176,7 +173,7 @@ func init() {
 	formulaRunCmd.Flags().StringSliceVar(&formulaRunSet, "set", nil, "Set input variables as key=value pairs (available as {{.key}} in templates)")
 
 	// Create flags
-	formulaCreateCmd.Flags().StringVar(&formulaCreateType, "type", "task", "Formula type: task, workflow, or patrol")
+	formulaCreateCmd.Flags().String("type", "task", "Formula type: task, workflow, or patrol")
 
 	// Add subcommands
 	formulaCmd.AddCommand(formulaListCmd)
@@ -188,9 +185,9 @@ func init() {
 }
 
 // runFormulaList delegates to bd formula list
-func runFormulaList(_ *cobra.Command, _ []string) error {
+func runFormulaList(cmd *cobra.Command, _ []string) error {
 	bdArgs := []string{"formula", "list"}
-	if formulaListJSON {
+	if commandBoolFlag(cmd, "json") {
 		bdArgs = append(bdArgs, "--json")
 	}
 
@@ -201,10 +198,10 @@ func runFormulaList(_ *cobra.Command, _ []string) error {
 }
 
 // runFormulaShow delegates to bd formula show
-func runFormulaShow(_ *cobra.Command, args []string) error {
+func runFormulaShow(cmd *cobra.Command, args []string) error {
 	formulaName := args[0]
 	bdArgs := []string{"formula", "show", formulaName}
-	if formulaShowJSON {
+	if commandBoolFlag(cmd, "json") {
 		bdArgs = append(bdArgs, "--json")
 	}
 
@@ -1149,7 +1146,7 @@ func generateFormulaShortID() string {
 }
 
 // runFormulaCreate creates a new formula template
-func runFormulaCreate(_ *cobra.Command, args []string) error {
+func runFormulaCreate(cmd *cobra.Command, args []string) error {
 	formulaName := args[0]
 
 	// Find or create formulas directory
@@ -1180,7 +1177,7 @@ func runFormulaCreate(_ *cobra.Command, args []string) error {
 
 	// Generate template based on type
 	var template string
-	switch formulaCreateType {
+	switch formulaType := commandStringFlag(cmd, "type"); formulaType {
 	case "task":
 		template = generateTaskTemplate(formulaName)
 	case "workflow":
@@ -1188,7 +1185,7 @@ func runFormulaCreate(_ *cobra.Command, args []string) error {
 	case "patrol":
 		template = generatePatrolTemplate(formulaName)
 	default:
-		return fmt.Errorf("unknown formula type: %s (use: task, workflow, or patrol)", formulaCreateType)
+		return fmt.Errorf("unknown formula type: %s (use: task, workflow, or patrol)", formulaType)
 	}
 
 	// Write the file
