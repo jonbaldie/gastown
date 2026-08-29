@@ -45,234 +45,6 @@ func escalateOptionsFromCommand(cmd *cobra.Command) escalateOptions {
 	}
 }
 
-func runEscalate(cmd *cobra.Command, args []string) error {
-	opts := escalateOptionsFromCommand(cmd)
-	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
-	if opts.stdin {
-		if opts.reason != "" {
-			return fmt.Errorf("cannot use --stdin with --reason/-r")
-		}
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading stdin: %w", err)
-		}
-		opts.reason = strings.TrimRight(string(data), "\n")
-	}
-
-	// Require at least a description when creating an escalation
-	if len(args) == 0 {
-		return cmd.Help()
-	}
-
-	description := strings.Join(args, " ")
-
-	// Validate severity
-	severity := strings.ToLower(opts.severity)
-	if !config.IsValidSeverity(severity) {
-		return fmt.Errorf("invalid severity '%s': must be critical, high, medium, or low", opts.severity)
-	}
-
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	// Load escalation config
-	escalationConfig, err := config.LoadOrCreateEscalationConfig(config.EscalationConfigPath(townRoot))
-	if err != nil {
-		return fmt.Errorf("loading escalation config: %w", err)
-	}
-
-	// Detect agent identity
-	agentID := detectSender()
-	if agentID == "" {
-		agentID = "unknown"
-	}
-
-	// Dry run mode
-	if opts.dryRun {
-		actions := escalationConfig.GetRouteForSeverity(severity)
-		targets := extractMailTargetsFromActions(actions)
-		fmt.Printf("Would create escalation:\n")
-		fmt.Printf("  Severity: %s\n", severity)
-		fmt.Printf("  Description: %s\n", description)
-		if opts.reason != "" {
-			fmt.Printf("  Reason: %s\n", opts.reason)
-		}
-		if opts.source != "" {
-			fmt.Printf("  Source: %s\n", opts.source)
-		}
-		if opts.fingerprint != "" {
-			fmt.Printf("  Fingerprint: %s\n", escalationFingerprintLabel(opts.fingerprint))
-		}
-		fmt.Printf("  Actions: %s\n", strings.Join(actions, ", "))
-		fmt.Printf("  Mail targets: %s\n", strings.Join(targets, ", "))
-		return nil
-	}
-
-	// Create escalation bead
-	bd := beads.New(beads.ResolveBeadsDir(townRoot))
-	fingerprintLabel := escalationFingerprintLabel(opts.fingerprint)
-	if fingerprintLabel != "" {
-		matches, err := bd.ListEscalationsByFingerprint(fingerprintLabel)
-		if err != nil {
-			return fmt.Errorf("checking escalation fingerprint: %w", err)
-		}
-		if len(matches) > 0 {
-			existing := matches[0]
-			if opts.json {
-				result := map[string]interface{}{
-					"id":          existing.ID,
-					"status":      "duplicate_suppressed",
-					"fingerprint": fingerprintLabel,
-				}
-				out, _ := json.MarshalIndent(result, "", "  ")
-				fmt.Println(string(out))
-			} else {
-				fmt.Printf("%s Duplicate escalation suppressed: %s\n", style.Bold.Render("✓"), existing.ID)
-				fmt.Printf("  Fingerprint: %s\n", fingerprintLabel)
-			}
-			return nil
-		}
-	}
-	fields := &beads.EscalationFields{
-		Severity:    severity,
-		Reason:      opts.reason,
-		Source:      opts.source,
-		EscalatedBy: agentID,
-		EscalatedAt: time.Now().Format(time.RFC3339),
-		RelatedBead: opts.relatedBead,
-		Fingerprint: fingerprintLabel,
-	}
-
-	issue, err := bd.CreateEscalationBead(description, fields)
-	if err != nil {
-		return fmt.Errorf("creating escalation bead: %w", err)
-	}
-
-	// Get routing actions for this severity
-	actions := escalationConfig.GetRouteForSeverity(severity)
-	targets := extractMailTargetsFromActions(actions)
-
-	// Send mail to each target (actions with "mail:" prefix)
-	router := mail.NewRouter(townRoot)
-	defer router.WaitPendingNotifications()
-	statuses := []deliveryStatus{{Channel: "bead", Created: true, Severity: severity}}
-	for _, target := range targets {
-		status := deliveryStatus{Target: target, Channel: "mail", Severity: severity, NotificationRoute: "mail+nudge"}
-		msg := &mail.Message{
-			From:    agentID,
-			To:      target,
-			Subject: fmt.Sprintf("[%s] %s", strings.ToUpper(severity), description),
-			Body:    formatEscalationMailBody(issue.ID, severity, opts.reason, agentID, opts.relatedBead),
-			Type:    mail.TypeEscalation,
-			MessageConversation: mail.MessageConversation{
-				ThreadID: issue.ID,
-			},
-		}
-
-		// Set priority based on severity
-		switch severity {
-		case config.SeverityCritical:
-			msg.Priority = mail.PriorityUrgent
-		case config.SeverityHigh:
-			msg.Priority = mail.PriorityHigh
-		case config.SeverityMedium:
-			msg.Priority = mail.PriorityNormal
-		default:
-			msg.Priority = mail.PriorityLow
-		}
-
-		if err := router.Send(msg); err != nil {
-			status.Error = err.Error()
-			statuses = append(statuses, status)
-			style.PrintWarning("failed to send to %s: %v", target, err)
-			continue
-		}
-		status.Persisted = true
-		status.RuntimeNotified = true
-
-		mailBeads := beads.New(beads.ResolveBeadsDir(townRoot))
-		mailIssue, err := mailBeads.FindLatestIssueByTitleAndAssignee(msg.Subject, mail.AddressToIdentity(target))
-		if err != nil {
-			status.Warning = fmt.Sprintf("annotation lookup failed: %v", err)
-			statuses = append(statuses, status)
-			style.PrintWarning("failed to annotate escalation mail for %s: %v", target, err)
-			continue
-		}
-
-		addLabels := []string{
-			fmt.Sprintf("severity:%s", severity),
-			fmt.Sprintf("escalation:%s", issue.ID),
-		}
-		if err := mailBeads.Update(mailIssue.ID, beads.UpdateOptions{AddLabels: addLabels}); err != nil {
-			status.Warning = fmt.Sprintf("annotation update failed: %v", err)
-			style.PrintWarning("failed to annotate escalation mail labels for %s: %v", target, err)
-		} else {
-			status.Annotated = true
-		}
-		statuses = append(statuses, status)
-	}
-
-	// Process external notification actions (email:, sms:, slack, log)
-	statuses = append(statuses, executeExternalActions(actions, escalationConfig, issue.ID, severity, description, townRoot)...)
-
-	// Log to activity feed
-	payload := events.EscalationPayload(issue.ID, agentID, strings.Join(targets, ","), description)
-	payload["severity"] = severity
-	payload["actions"] = strings.Join(actions, ",")
-	if opts.source != "" {
-		payload["source"] = opts.source
-	}
-	_ = events.LogFeed(events.TypeEscalationSent, agentID, payload)
-
-	// Output
-	if opts.json {
-		hasFailure := false
-		for _, status := range statuses {
-			if status.Error != "" {
-				hasFailure = true
-				break
-			}
-		}
-		result := map[string]interface{}{
-			"id":       issue.ID,
-			"severity": severity,
-			"actions":  actions,
-			"targets":  targets,
-			"delivery": statuses,
-			"status":   map[bool]string{true: "partial_failure", false: "ok"}[hasFailure],
-		}
-		if opts.source != "" {
-			result["source"] = opts.source
-		}
-		if fingerprintLabel != "" {
-			result["fingerprint"] = fingerprintLabel
-		}
-		out, _ := json.MarshalIndent(result, "", "  ")
-		fmt.Println(string(out))
-	} else {
-		emoji := severityEmoji(severity)
-		fmt.Printf("%s Escalation created: %s\n", emoji, issue.ID)
-		fmt.Printf("  Severity: %s\n", severity)
-		if opts.source != "" {
-			fmt.Printf("  Source: %s\n", opts.source)
-		}
-		if fingerprintLabel != "" {
-			fmt.Printf("  Fingerprint: %s\n", fingerprintLabel)
-		}
-		fmt.Printf("  Routed to: %s\n", strings.Join(targets, ", "))
-		for _, status := range statuses {
-			if status.Error != "" {
-				fmt.Printf("  Delivery issue [%s:%s]: %s\n", status.Channel, status.Target, status.Error)
-			}
-		}
-	}
-
-	return nil
-}
-
 func escalationFingerprintLabel(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -296,37 +68,46 @@ type deliveryStatus struct {
 }
 
 func runEscalateList(cmd *cobra.Command, _ []string) error {
-	listAll := commandBoolFlag(cmd, "all")
-	listJSON := commandBoolFlag(cmd, "json")
+	issues, phantomCount, err := loadEscalateListIssues(commandBoolFlag(cmd, "all"))
+	if err != nil {
+		return err
+	}
+	return printEscalateList(commandBoolFlag(cmd, "json"), issues, phantomCount)
+}
+
+func loadEscalateListIssues(listAll bool) ([]*beads.Issue, int, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return nil, 0, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
 	bd := beads.New(beads.ResolveBeadsDir(townRoot))
-
-	var issues []*beads.Issue
-	if listAll {
-		// List all (open and closed)
-		out, err := bd.Run("list", "--label=gt:escalation", "--status=all", "--json")
-		if err != nil {
-			return fmt.Errorf("listing escalations: %w", err)
-		}
-		if err := json.Unmarshal(out, &issues); err != nil {
-			return fmt.Errorf("parsing escalations: %w", err)
-		}
-	} else {
-		issues, err = bd.ListEscalations()
-		if err != nil {
-			return fmt.Errorf("listing escalations: %w", err)
-		}
+	issues, err := fetchEscalateListIssues(bd, listAll)
+	if err != nil {
+		return nil, 0, err
 	}
+	return filterLiveEscalateIssues(bd, issues)
+}
 
-	// Cross-check each entry against live Dolt to filter out phantom escalations.
-	// When a rig's Dolt server dies and is restarted fresh, the label-based list
-	// query may still return stale IDs (e.g. from a cached or cross-rig query)
-	// that no longer exist in the live database. We skip any entries that cannot
-	// be fetched individually, since they cannot be acked or closed anyway.
+func fetchEscalateListIssues(bd *beads.Beads, listAll bool) ([]*beads.Issue, error) {
+	if !listAll {
+		issues, err := bd.ListEscalations()
+		if err != nil {
+			return nil, fmt.Errorf("listing escalations: %w", err)
+		}
+		return issues, nil
+	}
+	out, err := bd.Run("list", "--label=gt:escalation", "--status=all", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("listing escalations: %w", err)
+	}
+	var issues []*beads.Issue
+	if err := json.Unmarshal(out, &issues); err != nil {
+		return nil, fmt.Errorf("parsing escalations: %w", err)
+	}
+	return issues, nil
+}
+
+func filterLiveEscalateIssues(bd *beads.Beads, issues []*beads.Issue) ([]*beads.Issue, int, error) {
 	var live []*beads.Issue
 	var phantomCount int
 	for _, issue := range issues {
@@ -336,50 +117,52 @@ func runEscalateList(cmd *cobra.Command, _ []string) error {
 				fmt.Fprintf(os.Stderr, "warning: skipping unresolvable escalation %s (not found in live Dolt)\n", issue.ID)
 				continue
 			}
-			// For other errors (e.g. Dolt temporarily unreachable), include
-			// the entry so the user can see it — just warn.
 			fmt.Fprintf(os.Stderr, "warning: could not verify escalation %s: %v\n", issue.ID, err)
 		}
 		live = append(live, issue)
 	}
-	issues = live
+	return live, phantomCount, nil
+}
 
+func printEscalateList(listJSON bool, issues []*beads.Issue, phantomCount int) error {
 	if listJSON {
 		out, _ := json.MarshalIndent(issues, "", "  ")
 		fmt.Println(string(out))
 		return nil
 	}
-
 	if len(issues) == 0 {
-		if phantomCount > 0 {
-			fmt.Printf("No escalations found (%d phantom entr%s skipped — bead IDs no longer exist in live Dolt)\n",
-				phantomCount, map[bool]string{true: "y", false: "ies"}[phantomCount == 1])
-		} else {
-			fmt.Println("No escalations found")
-		}
+		printEscalateListEmpty(phantomCount)
 		return nil
 	}
-
 	fmt.Printf("Escalations (%d):\n\n", len(issues))
 	for _, issue := range issues {
-		fields := beads.ParseEscalationFields(issue.Description)
-		emoji := severityEmoji(fields.Severity)
-
-		status := issue.Status
-		if beads.HasLabel(issue, "acked") {
-			status = "acked"
-		}
-
-		fmt.Printf("  %s %s [%s] %s\n", emoji, issue.ID, status, issue.Title)
-		fmt.Printf("     Severity: %s | From: %s | %s\n",
-			fields.Severity, fields.EscalatedBy, formatRelativeTime(issue.CreatedAt))
-		if fields.AckedBy != "" {
-			fmt.Printf("     Acked by: %s\n", fields.AckedBy)
-		}
-		fmt.Println()
+		printEscalateListItem(issue)
 	}
-
 	return nil
+}
+
+func printEscalateListEmpty(phantomCount int) {
+	if phantomCount == 0 {
+		fmt.Println("No escalations found")
+		return
+	}
+	fmt.Printf("No escalations found (%d phantom entr%s skipped — bead IDs no longer exist in live Dolt)\n",
+		phantomCount, map[bool]string{true: "y", false: "ies"}[phantomCount == 1])
+}
+
+func printEscalateListItem(issue *beads.Issue) {
+	fields := beads.ParseEscalationFields(issue.Description)
+	status := issue.Status
+	if beads.HasLabel(issue, "acked") {
+		status = "acked"
+	}
+	fmt.Printf("  %s %s [%s] %s\n", severityEmoji(fields.Severity), issue.ID, status, issue.Title)
+	fmt.Printf("     Severity: %s | From: %s | %s\n",
+		fields.Severity, fields.EscalatedBy, formatRelativeTime(issue.CreatedAt))
+	if fields.AckedBy != "" {
+		fmt.Printf("     Acked by: %s\n", fields.AckedBy)
+	}
+	fmt.Println()
 }
 
 func runEscalateAck(_ *cobra.Command, args []string) error {
@@ -446,75 +229,84 @@ func runEscalateClose(cmd *cobra.Command, args []string) error {
 func runEscalateStale(cmd *cobra.Command, _ []string) error {
 	staleJSON := commandBoolFlag(cmd, "json")
 	dryRun := commandBoolFlag(cmd, "dry-run")
-	townRoot, err := workspace.FindFromCwdOrError()
+	townRoot, escalationConfig, threshold, maxReescalations, stale, err := loadEscalateStale()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return err
 	}
-
-	// Load escalation config for threshold and max reescalations
-	escalationConfig, err := config.LoadOrCreateEscalationConfig(config.EscalationConfigPath(townRoot))
-	if err != nil {
-		return fmt.Errorf("loading escalation config: %w", err)
-	}
-
-	threshold := escalationConfig.GetStaleThreshold()
-	maxReescalations := escalationConfig.GetMaxReescalations()
-
-	bd := beads.New(beads.ResolveBeadsDir(townRoot))
-	stale, err := bd.ListStaleEscalations(threshold)
-	if err != nil {
-		return fmt.Errorf("listing stale escalations: %w", err)
-	}
-
 	if len(stale) == 0 {
-		if !staleJSON {
-			fmt.Printf("No stale escalations (threshold: %s)\n", threshold)
-		} else {
-			fmt.Println("[]")
-		}
+		printEscalateStaleEmpty(staleJSON, threshold)
 		return nil
 	}
-
-	// Detect who is reescalating
 	reescalatedBy := detectSender()
 	if reescalatedBy == "" {
 		reescalatedBy = "system"
 	}
-
-	// Dry run mode - just show what would happen
 	if dryRun {
-		fmt.Printf("Would re-escalate %d stale escalations (threshold: %s):\n\n", len(stale), threshold)
-		for _, issue := range stale {
-			fields := beads.ParseEscalationFields(issue.Description)
-			newSeverity := getNextSeverity(fields.Severity)
-			willSkip := maxReescalations > 0 && fields.ReescalationCount >= maxReescalations
-			if fields.Severity == "critical" {
-				willSkip = true
-			}
-
-			emoji := severityEmoji(fields.Severity)
-			if willSkip {
-				fmt.Printf("  %s %s [SKIP] %s\n", emoji, issue.ID, issue.Title)
-				if fields.Severity == "critical" {
-					fmt.Printf("     Already at critical severity\n")
-				} else {
-					fmt.Printf("     Already at max reescalations (%d)\n", maxReescalations)
-				}
-			} else {
-				fmt.Printf("  %s %s %s\n", emoji, issue.ID, issue.Title)
-				fmt.Printf("     %s → %s (reescalation %d/%d)\n",
-					fields.Severity, newSeverity, fields.ReescalationCount+1, maxReescalations)
-			}
-			fmt.Println()
-		}
+		printEscalateStaleDryRun(stale, threshold, maxReescalations)
 		return nil
 	}
+	results := reescalateStaleIssues(townRoot, escalationConfig, stale, reescalatedBy, maxReescalations)
+	return printEscalateStaleResults(staleJSON, results)
+}
 
-	// Perform re-escalation
-	var results []*beads.ReescalationResult
+func loadEscalateStale() (string, *config.EscalationConfig, time.Duration, int, []*beads.Issue, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return "", nil, 0, 0, nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	escalationConfig, err := config.LoadOrCreateEscalationConfig(config.EscalationConfigPath(townRoot))
+	if err != nil {
+		return "", nil, 0, 0, nil, fmt.Errorf("loading escalation config: %w", err)
+	}
+	threshold := escalationConfig.GetStaleThreshold()
+	bd := beads.New(beads.ResolveBeadsDir(townRoot))
+	stale, err := bd.ListStaleEscalations(threshold)
+	if err != nil {
+		return "", nil, 0, 0, nil, fmt.Errorf("listing stale escalations: %w", err)
+	}
+	return townRoot, escalationConfig, threshold, escalationConfig.GetMaxReescalations(), stale, nil
+}
+
+func printEscalateStaleEmpty(staleJSON bool, threshold time.Duration) {
+	if staleJSON {
+		fmt.Println("[]")
+		return
+	}
+	fmt.Printf("No stale escalations (threshold: %s)\n", threshold)
+}
+
+func printEscalateStaleDryRun(stale []*beads.Issue, threshold time.Duration, maxReescalations int) {
+	fmt.Printf("Would re-escalate %d stale escalations (threshold: %s):\n\n", len(stale), threshold)
+	for _, issue := range stale {
+		printEscalateStaleDryRunItem(issue, maxReescalations)
+	}
+}
+
+func printEscalateStaleDryRunItem(issue *beads.Issue, maxReescalations int) {
+	fields := beads.ParseEscalationFields(issue.Description)
+	willSkip := fields.Severity == "critical" || (maxReescalations > 0 && fields.ReescalationCount >= maxReescalations)
+	emoji := severityEmoji(fields.Severity)
+	if !willSkip {
+		fmt.Printf("  %s %s %s\n", emoji, issue.ID, issue.Title)
+		fmt.Printf("     %s → %s (reescalation %d/%d)\n",
+			fields.Severity, getNextSeverity(fields.Severity), fields.ReescalationCount+1, maxReescalations)
+		fmt.Println()
+		return
+	}
+	fmt.Printf("  %s %s [SKIP] %s\n", emoji, issue.ID, issue.Title)
+	if fields.Severity == "critical" {
+		fmt.Printf("     Already at critical severity\n")
+	} else {
+		fmt.Printf("     Already at max reescalations (%d)\n", maxReescalations)
+	}
+	fmt.Println()
+}
+
+func reescalateStaleIssues(townRoot string, escalationConfig *config.EscalationConfig, stale []*beads.Issue, reescalatedBy string, maxReescalations int) []*beads.ReescalationResult {
+	bd := beads.New(beads.ResolveBeadsDir(townRoot))
 	router := mail.NewRouter(townRoot)
 	defer router.WaitPendingNotifications()
-
+	var results []*beads.ReescalationResult
 	for _, issue := range stale {
 		result, err := bd.ReescalateEscalation(issue.ID, reescalatedBy, maxReescalations)
 		if err != nil {
@@ -522,60 +314,66 @@ func runEscalateStale(cmd *cobra.Command, _ []string) error {
 			continue
 		}
 		results = append(results, result)
-
-		// If not skipped, re-route to new severity targets
 		if !result.Skipped {
-			actions := escalationConfig.GetRouteForSeverity(result.NewSeverity)
-			targets := extractMailTargetsFromActions(actions)
-
-			// Send mail to each target about the reescalation
-			for _, target := range targets {
-				msg := &mail.Message{
-					From:    reescalatedBy,
-					To:      target,
-					Subject: fmt.Sprintf("[%s→%s] Re-escalated: %s", strings.ToUpper(result.OldSeverity), strings.ToUpper(result.NewSeverity), result.Title),
-					Body:    formatReescalationMailBody(result, reescalatedBy),
-					Type:    mail.TypeTask,
-				}
-
-				// Set priority based on new severity
-				switch result.NewSeverity {
-				case config.SeverityCritical:
-					msg.Priority = mail.PriorityUrgent
-				case config.SeverityHigh:
-					msg.Priority = mail.PriorityHigh
-				case config.SeverityMedium:
-					msg.Priority = mail.PriorityNormal
-				default:
-					msg.Priority = mail.PriorityLow
-				}
-
-				if err := router.Send(msg); err != nil {
-					style.PrintWarning("failed to send reescalation to %s: %v", target, err)
-				}
-			}
-
-			// Log to activity feed
-			_ = events.LogFeed(events.TypeEscalationSent, reescalatedBy, map[string]interface{}{
-				"escalation_id":    result.ID,
-				"reescalated":      true,
-				"old_severity":     result.OldSeverity,
-				"new_severity":     result.NewSeverity,
-				"reescalation_num": result.ReescalationNum,
-				"targets":          strings.Join(targets, ","),
-			})
+			notifyReescalation(router, escalationConfig, result, reescalatedBy)
 		}
 	}
+	return results
+}
 
-	// Output results
+func notifyReescalation(router *mail.Router, escalationConfig *config.EscalationConfig, result *beads.ReescalationResult, reescalatedBy string) {
+	actions := escalationConfig.GetRouteForSeverity(result.NewSeverity)
+	targets := extractMailTargetsFromActions(actions)
+	for _, target := range targets {
+		msg := &mail.Message{
+			From:     reescalatedBy,
+			To:       target,
+			Subject:  fmt.Sprintf("[%s→%s] Re-escalated: %s", strings.ToUpper(result.OldSeverity), strings.ToUpper(result.NewSeverity), result.Title),
+			Body:     formatReescalationMailBody(result, reescalatedBy),
+			Type:     mail.TypeTask,
+			Priority: escalateMailPriority(result.NewSeverity),
+		}
+		if err := router.Send(msg); err != nil {
+			style.PrintWarning("failed to send reescalation to %s: %v", target, err)
+		}
+	}
+	_ = events.LogFeed(events.TypeEscalationSent, reescalatedBy, map[string]interface{}{
+		"escalation_id":    result.ID,
+		"reescalated":      true,
+		"old_severity":     result.OldSeverity,
+		"new_severity":     result.NewSeverity,
+		"reescalation_num": result.ReescalationNum,
+		"targets":          strings.Join(targets, ","),
+	})
+}
+
+func printEscalateStaleResults(staleJSON bool, results []*beads.ReescalationResult) error {
 	if staleJSON {
 		out, _ := json.MarshalIndent(results, "", "  ")
 		fmt.Println(string(out))
 		return nil
 	}
+	reescalated, skipped := countEscalateStaleResults(results)
+	if reescalated == 0 && skipped > 0 {
+		fmt.Printf("No escalations re-escalated (%d at max level)\n", skipped)
+		return nil
+	}
+	fmt.Printf("🔄 Re-escalated %d stale escalations:\n\n", reescalated)
+	for _, result := range results {
+		if result.Skipped {
+			continue
+		}
+		fmt.Printf("  %s %s: %s → %s (reescalation %d)\n",
+			severityEmoji(result.NewSeverity), result.ID, result.OldSeverity, result.NewSeverity, result.ReescalationNum)
+	}
+	if skipped > 0 {
+		fmt.Printf("\n  (%d skipped - at max level)\n", skipped)
+	}
+	return nil
+}
 
-	reescalated := 0
-	skipped := 0
+func countEscalateStaleResults(results []*beads.ReescalationResult) (int, int) {
+	var reescalated, skipped int
 	for _, r := range results {
 		if r.Skipped {
 			skipped++
@@ -583,27 +381,7 @@ func runEscalateStale(cmd *cobra.Command, _ []string) error {
 			reescalated++
 		}
 	}
-
-	if reescalated == 0 && skipped > 0 {
-		fmt.Printf("No escalations re-escalated (%d at max level)\n", skipped)
-		return nil
-	}
-
-	fmt.Printf("🔄 Re-escalated %d stale escalations:\n\n", reescalated)
-	for _, result := range results {
-		if result.Skipped {
-			continue
-		}
-		emoji := severityEmoji(result.NewSeverity)
-		fmt.Printf("  %s %s: %s → %s (reescalation %d)\n",
-			emoji, result.ID, result.OldSeverity, result.NewSeverity, result.ReescalationNum)
-	}
-
-	if skipped > 0 {
-		fmt.Printf("\n  (%d skipped - at max level)\n", skipped)
-	}
-
-	return nil
+	return reescalated, skipped
 }
 
 func getNextSeverity(severity string) string {
@@ -635,51 +413,64 @@ func formatReescalationMailBody(result *beads.ReescalationResult, reescalatedBy 
 }
 
 func runEscalateShow(cmd *cobra.Command, args []string) error {
-	showJSON := commandBoolFlag(cmd, "json")
-	escalationID := args[0]
+	issue, fields, err := loadEscalateShow(args[0])
+	if err != nil {
+		return err
+	}
+	if commandBoolFlag(cmd, "json") {
+		return printEscalateShowJSON(issue, fields)
+	}
+	printEscalateShowText(issue, fields)
+	return nil
+}
 
+func loadEscalateShow(escalationID string) (*beads.Issue, *beads.EscalationFields, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return nil, nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	bd := beads.New(beads.ResolveBeadsDir(townRoot))
-	issue, fields, err := bd.GetEscalationBead(escalationID)
+	issue, fields, err := beads.New(beads.ResolveBeadsDir(townRoot)).GetEscalationBead(escalationID)
 	if err != nil {
-		return fmt.Errorf("getting escalation: %w", err)
+		return nil, nil, fmt.Errorf("getting escalation: %w", err)
 	}
 	if issue == nil {
-		return fmt.Errorf("escalation not found: %s", escalationID)
+		return nil, nil, fmt.Errorf("escalation not found: %s", escalationID)
 	}
+	return issue, fields, nil
+}
 
-	if showJSON {
-		data := map[string]interface{}{
-			"id":           issue.ID,
-			"title":        issue.Title,
-			"status":       issue.Status,
-			"created_at":   issue.CreatedAt,
-			"severity":     fields.Severity,
-			"reason":       fields.Reason,
-			"escalatedBy":  fields.EscalatedBy,
-			"escalatedAt":  fields.EscalatedAt,
-			"ackedBy":      fields.AckedBy,
-			"ackedAt":      fields.AckedAt,
-			"closedBy":     fields.ClosedBy,
-			"closedReason": fields.ClosedReason,
-			"relatedBead":  fields.RelatedBead,
-		}
-		out, _ := json.MarshalIndent(data, "", "  ")
-		fmt.Println(string(out))
-		return nil
+func printEscalateShowJSON(issue *beads.Issue, fields *beads.EscalationFields) error {
+	data := map[string]interface{}{
+		"id":           issue.ID,
+		"title":        issue.Title,
+		"status":       issue.Status,
+		"created_at":   issue.CreatedAt,
+		"severity":     fields.Severity,
+		"reason":       fields.Reason,
+		"escalatedBy":  fields.EscalatedBy,
+		"escalatedAt":  fields.EscalatedAt,
+		"ackedBy":      fields.AckedBy,
+		"ackedAt":      fields.AckedAt,
+		"closedBy":     fields.ClosedBy,
+		"closedReason": fields.ClosedReason,
+		"relatedBead":  fields.RelatedBead,
 	}
+	out, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(out))
+	return nil
+}
 
-	emoji := severityEmoji(fields.Severity)
-	fmt.Printf("%s Escalation: %s\n", emoji, issue.ID)
+func printEscalateShowText(issue *beads.Issue, fields *beads.EscalationFields) {
+	fmt.Printf("%s Escalation: %s\n", severityEmoji(fields.Severity), issue.ID)
 	fmt.Printf("  Title: %s\n", issue.Title)
 	fmt.Printf("  Status: %s\n", issue.Status)
 	fmt.Printf("  Severity: %s\n", fields.Severity)
 	fmt.Printf("  Created: %s\n", formatRelativeTime(issue.CreatedAt))
 	fmt.Printf("  Escalated by: %s\n", fields.EscalatedBy)
+	printEscalateShowDetails(fields)
+}
+
+func printEscalateShowDetails(fields *beads.EscalationFields) {
 	if fields.Reason != "" {
 		fmt.Printf("  Reason: %s\n", fields.Reason)
 	}
@@ -693,8 +484,6 @@ func runEscalateShow(cmd *cobra.Command, args []string) error {
 	if fields.RelatedBead != "" {
 		fmt.Printf("  Related: %s\n", fields.RelatedBead)
 	}
-
-	return nil
 }
 
 // Helper functions
@@ -717,76 +506,89 @@ func extractMailTargetsFromActions(actions []string) []string {
 
 // executeExternalActions processes external notification actions (email:, sms:, slack, log).
 func executeExternalActions(actions []string, cfg *config.EscalationConfig, beadID, severity, description, townRoot string) []deliveryStatus {
-	statuses := []deliveryStatus{}
+	var statuses []deliveryStatus
 	for _, action := range actions {
-		switch {
-		case strings.HasPrefix(action, "email:"):
-			status := deliveryStatus{Channel: "email", Target: strings.TrimPrefix(action, "email:"), Severity: severity}
-			if cfg.Contacts.HumanEmail == "" {
-				status.Warning = "contacts.human_email not configured"
-				style.PrintWarning("email action '%s' skipped: contacts.human_email not configured in settings/escalation.json", action)
-			} else if cfg.Contacts.SMTPHost == "" {
-				status.Warning = "contacts.smtp_host not configured"
-				style.PrintWarning("email action '%s' skipped: contacts.smtp_host not configured in settings/escalation.json", action)
-			} else {
-				if err := sendEscalationEmail(cfg, beadID, severity, description); err != nil {
-					status.Error = err.Error()
-					style.PrintWarning("email send failed: %v", err)
-				} else {
-					status.RuntimeNotified = true
-					fmt.Printf("  📧 Email sent to %s\n", cfg.Contacts.HumanEmail)
-				}
-			}
-			statuses = append(statuses, status)
-
-		case strings.HasPrefix(action, "sms:"):
-			status := deliveryStatus{Channel: "sms", Target: strings.TrimPrefix(action, "sms:"), Severity: severity}
-			if cfg.Contacts.HumanSMS == "" {
-				status.Warning = "contacts.human_sms not configured"
-				style.PrintWarning("sms action '%s' skipped: contacts.human_sms not configured in settings/escalation.json", action)
-			} else if cfg.Contacts.SMSWebhook == "" {
-				status.Warning = "contacts.sms_webhook not configured"
-				style.PrintWarning("sms action '%s' skipped: contacts.sms_webhook not configured in settings/escalation.json", action)
-			} else {
-				if err := sendEscalationSMS(cfg, beadID, severity, description); err != nil {
-					status.Error = err.Error()
-					style.PrintWarning("sms send failed: %v", err)
-				} else {
-					status.RuntimeNotified = true
-					fmt.Printf("  📱 SMS sent to %s\n", cfg.Contacts.HumanSMS)
-				}
-			}
-			statuses = append(statuses, status)
-
-		case action == "slack":
-			status := deliveryStatus{Channel: "slack", Target: "slack", Severity: severity}
-			if cfg.Contacts.SlackWebhook == "" {
-				status.Warning = "contacts.slack_webhook not configured"
-				style.PrintWarning("slack action skipped: contacts.slack_webhook not configured in settings/escalation.json")
-			} else {
-				if err := sendEscalationSlack(cfg, beadID, severity, description); err != nil {
-					status.Error = err.Error()
-					style.PrintWarning("slack post failed: %v", err)
-				} else {
-					status.RuntimeNotified = true
-					fmt.Printf("  💬 Posted to Slack\n")
-				}
-			}
-			statuses = append(statuses, status)
-
-		case action == "log":
-			status := deliveryStatus{Channel: "log", Target: "log", Severity: severity}
-			if err := writeEscalationLog(townRoot, beadID, severity, description); err != nil {
-				status.Error = err.Error()
-				style.PrintWarning("log write failed: %v", err)
-			} else {
-				status.RuntimeNotified = true
-				fmt.Printf("  📝 Logged to escalation log\n")
-			}
+		if status, ok := executeExternalAction(action, cfg, beadID, severity, description, townRoot); ok {
 			statuses = append(statuses, status)
 		}
 	}
 	return statuses
+}
+
+func executeExternalAction(action string, cfg *config.EscalationConfig, beadID, severity, description, townRoot string) (deliveryStatus, bool) {
+	switch {
+	case strings.HasPrefix(action, "email:"):
+		return executeEscalateEmailAction(action, cfg, beadID, severity, description), true
+	case strings.HasPrefix(action, "sms:"):
+		return executeEscalateSMSAction(action, cfg, beadID, severity, description), true
+	case action == "slack":
+		return executeEscalateSlackAction(cfg, beadID, severity, description), true
+	case action == "log":
+		return executeEscalateLogAction(townRoot, beadID, severity, description), true
+	default:
+		return deliveryStatus{}, false
+	}
+}
+
+func executeEscalateEmailAction(action string, cfg *config.EscalationConfig, beadID, severity, description string) deliveryStatus {
+	status := deliveryStatus{Channel: "email", Target: strings.TrimPrefix(action, "email:"), Severity: severity}
+	switch {
+	case cfg.Contacts.HumanEmail == "":
+		status.Warning = "contacts.human_email not configured"
+		style.PrintWarning("email action '%s' skipped: contacts.human_email not configured in settings/escalation.json", action)
+	case cfg.Contacts.SMTPHost == "":
+		status.Warning = "contacts.smtp_host not configured"
+		style.PrintWarning("email action '%s' skipped: contacts.smtp_host not configured in settings/escalation.json", action)
+	default:
+		applyEscalateNotify(&status, sendEscalationEmail(cfg, beadID, severity, description), "email send failed: %v", "  📧 Email sent to %s\n", cfg.Contacts.HumanEmail)
+	}
+	return status
+}
+
+func executeEscalateSMSAction(action string, cfg *config.EscalationConfig, beadID, severity, description string) deliveryStatus {
+	status := deliveryStatus{Channel: "sms", Target: strings.TrimPrefix(action, "sms:"), Severity: severity}
+	switch {
+	case cfg.Contacts.HumanSMS == "":
+		status.Warning = "contacts.human_sms not configured"
+		style.PrintWarning("sms action '%s' skipped: contacts.human_sms not configured in settings/escalation.json", action)
+	case cfg.Contacts.SMSWebhook == "":
+		status.Warning = "contacts.sms_webhook not configured"
+		style.PrintWarning("sms action '%s' skipped: contacts.sms_webhook not configured in settings/escalation.json", action)
+	default:
+		applyEscalateNotify(&status, sendEscalationSMS(cfg, beadID, severity, description), "sms send failed: %v", "  📱 SMS sent to %s\n", cfg.Contacts.HumanSMS)
+	}
+	return status
+}
+
+func executeEscalateSlackAction(cfg *config.EscalationConfig, beadID, severity, description string) deliveryStatus {
+	status := deliveryStatus{Channel: "slack", Target: "slack", Severity: severity}
+	if cfg.Contacts.SlackWebhook == "" {
+		status.Warning = "contacts.slack_webhook not configured"
+		style.PrintWarning("slack action skipped: contacts.slack_webhook not configured in settings/escalation.json")
+		return status
+	}
+	applyEscalateNotify(&status, sendEscalationSlack(cfg, beadID, severity, description), "slack post failed: %v", "  💬 Posted to Slack\n", "")
+	return status
+}
+
+func executeEscalateLogAction(townRoot, beadID, severity, description string) deliveryStatus {
+	status := deliveryStatus{Channel: "log", Target: "log", Severity: severity}
+	applyEscalateNotify(&status, writeEscalationLog(townRoot, beadID, severity, description), "log write failed: %v", "  📝 Logged to escalation log\n", "")
+	return status
+}
+
+func applyEscalateNotify(status *deliveryStatus, err error, failFmt, okFmt, okArg string) {
+	if err != nil {
+		status.Error = err.Error()
+		style.PrintWarning(failFmt, err)
+		return
+	}
+	status.RuntimeNotified = true
+	if okArg == "" {
+		fmt.Print(okFmt)
+		return
+	}
+	fmt.Printf(okFmt, okArg)
 }
 
 // sendEscalationEmail sends an escalation notification via SMTP.
