@@ -147,15 +147,7 @@ type EscalationResult struct {
 func EvaluateEscalation(profile RigTrustProfile, requirements []TierRequirements) EscalationResult {
 	nextTier := profile.CurrentTier + 1
 
-	// Find requirements for the next tier
-	var req *TierRequirements
-	for i := range requirements {
-		if requirements[i].Tier == nextTier {
-			req = &requirements[i]
-			break
-		}
-	}
-
+	req := findTierRequirements(nextTier, requirements)
 	if req == nil {
 		return EscalationResult{
 			Eligible: false,
@@ -164,44 +156,8 @@ func EvaluateEscalation(profile RigTrustProfile, requirements []TierRequirements
 		}
 	}
 
-	var failures []string
-	eligible := true
-
-	if profile.CompletionCount < req.MinCompletions {
-		eligible = false
-		failures = append(failures, fmt.Sprintf(
-			"completions: %d/%d required", profile.CompletionCount, req.MinCompletions))
-	}
-
-	if profile.StampCount < req.MinStamps {
-		eligible = false
-		failures = append(failures, fmt.Sprintf(
-			"stamps: %d/%d required", profile.StampCount, req.MinStamps))
-	}
-
-	if req.MinAvgQuality > 0 && profile.AvgQuality < req.MinAvgQuality {
-		eligible = false
-		failures = append(failures, fmt.Sprintf(
-			"avg quality: %.1f/%.1f required", profile.AvgQuality, req.MinAvgQuality))
-	}
-
-	if profile.DistinctValidators < req.MinDistinctValidators {
-		eligible = false
-		failures = append(failures, fmt.Sprintf(
-			"distinct validators: %d/%d required", profile.DistinctValidators, req.MinDistinctValidators))
-	}
-
-	if req.MinTimeInCurrentTier > 0 {
-		timeInTier := time.Since(profile.TierSince)
-		if timeInTier < req.MinTimeInCurrentTier {
-			eligible = false
-			remaining := req.MinTimeInCurrentTier - timeInTier
-			failures = append(failures, fmt.Sprintf(
-				"time in tier: %s remaining", remaining.Round(time.Hour)))
-		}
-	}
-
-	if eligible {
+	failures := escalationFailures(profile, *req)
+	if len(failures) == 0 {
 		return EscalationResult{
 			Eligible: true,
 			NextTier: nextTier,
@@ -214,6 +170,51 @@ func EvaluateEscalation(profile RigTrustProfile, requirements []TierRequirements
 		NextTier: nextTier,
 		Reasons:  failures,
 	}
+}
+
+func findTierRequirements(nextTier TrustTier, requirements []TierRequirements) *TierRequirements {
+	for i := range requirements {
+		if requirements[i].Tier == nextTier {
+			return &requirements[i]
+		}
+	}
+	return nil
+}
+
+func escalationFailures(profile RigTrustProfile, req TierRequirements) []string {
+	var failures []string
+	if profile.CompletionCount < req.MinCompletions {
+		failures = append(failures, fmt.Sprintf(
+			"completions: %d/%d required", profile.CompletionCount, req.MinCompletions))
+	}
+	if profile.StampCount < req.MinStamps {
+		failures = append(failures, fmt.Sprintf(
+			"stamps: %d/%d required", profile.StampCount, req.MinStamps))
+	}
+	if req.MinAvgQuality > 0 && profile.AvgQuality < req.MinAvgQuality {
+		failures = append(failures, fmt.Sprintf(
+			"avg quality: %.1f/%.1f required", profile.AvgQuality, req.MinAvgQuality))
+	}
+	if profile.DistinctValidators < req.MinDistinctValidators {
+		failures = append(failures, fmt.Sprintf(
+			"distinct validators: %d/%d required", profile.DistinctValidators, req.MinDistinctValidators))
+	}
+	if failure := timeInTierFailure(profile, req); failure != "" {
+		failures = append(failures, failure)
+	}
+	return failures
+}
+
+func timeInTierFailure(profile RigTrustProfile, req TierRequirements) string {
+	if req.MinTimeInCurrentTier <= 0 {
+		return ""
+	}
+	timeInTier := time.Since(profile.TierSince)
+	if timeInTier >= req.MinTimeInCurrentTier {
+		return ""
+	}
+	remaining := req.MinTimeInCurrentTier - timeInTier
+	return fmt.Sprintf("time in tier: %s remaining", remaining.Round(time.Hour))
 }
 
 // LoadRigTrustProfile queries the local dolt fork for a rig's reputation
@@ -231,35 +232,54 @@ func LoadRigTrustProfile(doltPath, forkDir, handle string) (RigTrustProfile, err
 		return profile, fmt.Errorf("invalid handle: %q", handle)
 	}
 
-	// Get current tier and registration time
-	tierQuery := fmt.Sprintf(
-		`SELECT trust_level, registered_at FROM rigs WHERE handle = '%s'`, handle)
-	tierRows, err := runTrustQuery(doltPath, forkDir, tierQuery)
+	tierRows, err := loadTrustTier(doltPath, forkDir, handle)
 	if err != nil {
 		return profile, fmt.Errorf("querying rig tier: %w", err)
 	}
-	if len(tierRows) > 0 && len(tierRows[0]) >= 2 {
-		tier, _ := strconv.Atoi(tierRows[0][0])
-		profile.CurrentTier = TrustTier(tier)
-		// Parse registration time as tier-since (approximation — ideally we'd
-		// track when each tier was reached, but the schema doesn't have that yet)
-		if t, err := time.Parse("2006-01-02 15:04:05", tierRows[0][1]); err == nil {
-			profile.TierSince = t
-		}
+	applyTrustTier(&profile, tierRows)
+
+	compRows, compErr := loadTrustCompletions(doltPath, forkDir, handle)
+	if compErr == nil && len(compRows) > 0 && len(compRows[0]) > 0 {
+		profile.CompletionCount, _ = strconv.Atoi(compRows[0][0])
 	}
 
-	// Count validated completions (those with stamps)
+	stampRows, stampErr := loadTrustStamps(doltPath, forkDir, handle)
+	if stampErr == nil {
+		applyTrustStampMetrics(&profile, stampRows)
+	}
+
+	return profile, nil
+}
+
+func loadTrustTier(doltPath, forkDir, handle string) ([][]string, error) {
+	tierQuery := fmt.Sprintf(
+		`SELECT trust_level, registered_at FROM rigs WHERE handle = '%s'`, handle)
+	return runTrustQuery(doltPath, forkDir, tierQuery)
+}
+
+func applyTrustTier(profile *RigTrustProfile, rows [][]string) {
+	if len(rows) == 0 || len(rows[0]) < 2 {
+		return
+	}
+	tier, _ := strconv.Atoi(rows[0][0])
+	profile.CurrentTier = TrustTier(tier)
+	// Parse registration time as tier-since (approximation — ideally we'd
+	// track when each tier was reached, but the schema doesn't have that yet)
+	if t, err := time.Parse("2006-01-02 15:04:05", rows[0][1]); err == nil {
+		profile.TierSince = t
+	}
+}
+
+func loadTrustCompletions(doltPath, forkDir, handle string) ([][]string, error) {
 	compQuery := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT c.id)
 		FROM completions c
 		INNER JOIN stamps s ON s.context_id = c.id
 		WHERE c.completed_by = '%s'`, handle)
-	compRows, err := runTrustQuery(doltPath, forkDir, compQuery)
-	if err == nil && len(compRows) > 0 && len(compRows[0]) > 0 {
-		profile.CompletionCount, _ = strconv.Atoi(compRows[0][0])
-	}
+	return runTrustQuery(doltPath, forkDir, compQuery)
+}
 
-	// Count total stamps received and compute average quality
+func loadTrustStamps(doltPath, forkDir, handle string) ([][]string, error) {
 	stampQuery := fmt.Sprintf(`
 		SELECT
 			COUNT(*) AS stamp_count,
@@ -267,14 +287,16 @@ func LoadRigTrustProfile(doltPath, forkDir, handle string) (RigTrustProfile, err
 			COUNT(DISTINCT author) AS distinct_validators
 		FROM stamps
 		WHERE subject = '%s'`, handle)
-	stampRows, err := runTrustQuery(doltPath, forkDir, stampQuery)
-	if err == nil && len(stampRows) > 0 && len(stampRows[0]) >= 3 {
-		profile.StampCount, _ = strconv.Atoi(stampRows[0][0])
-		profile.AvgQuality, _ = strconv.ParseFloat(stampRows[0][1], 64)
-		profile.DistinctValidators, _ = strconv.Atoi(stampRows[0][2])
-	}
+	return runTrustQuery(doltPath, forkDir, stampQuery)
+}
 
-	return profile, nil
+func applyTrustStampMetrics(profile *RigTrustProfile, rows [][]string) {
+	if len(rows) == 0 || len(rows[0]) < 3 {
+		return
+	}
+	profile.StampCount, _ = strconv.Atoi(rows[0][0])
+	profile.AvgQuality, _ = strconv.ParseFloat(rows[0][1], 64)
+	profile.DistinctValidators, _ = strconv.Atoi(rows[0][2])
 }
 
 // runTrustQuery executes a SQL query against a local dolt database. Shared
