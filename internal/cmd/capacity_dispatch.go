@@ -28,12 +28,16 @@ import (
 const crossRigEscalationDebounce = time.Hour
 
 // crossRigEscalationState tracks last-escalation timestamps per (rig, prefix).
-// Process-local — debounce resets on daemon restart, which is fine: a new
-// process should be allowed to surface the issue once.
-var (
-	crossRigEscalationMu   sync.Mutex
-	crossRigEscalationLast = map[string]time.Time{}
-)
+// The state belongs to one scheduler dispatch run; a new process naturally
+// starts with a fresh debounce window.
+type crossRigEscalationState struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func newCrossRigEscalationState() *crossRigEscalationState {
+	return &crossRigEscalationState{last: make(map[string]time.Time)}
+}
 
 // crossRigEscalationKey returns the debounce key for a (rig, prefix) pair.
 func crossRigEscalationKey(rig, prefix string) string {
@@ -43,22 +47,15 @@ func crossRigEscalationKey(rig, prefix string) string {
 // shouldFireCrossRigEscalation reports whether enough time has elapsed since
 // the last escalation for this (rig, prefix) pair to fire a new one. Updates
 // the timestamp on a positive answer.
-func shouldFireCrossRigEscalation(rig, prefix string, now time.Time) bool {
-	crossRigEscalationMu.Lock()
-	defer crossRigEscalationMu.Unlock()
+func (state *crossRigEscalationState) shouldFire(rig, prefix string, now time.Time) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	key := crossRigEscalationKey(rig, prefix)
-	if last, ok := crossRigEscalationLast[key]; ok && now.Sub(last) < crossRigEscalationDebounce {
+	if last, ok := state.last[key]; ok && now.Sub(last) < crossRigEscalationDebounce {
 		return false
 	}
-	crossRigEscalationLast[key] = now
+	state.last[key] = now
 	return true
-}
-
-// resetCrossRigEscalationStateForTest clears the debounce map. Test-only.
-func resetCrossRigEscalationStateForTest() {
-	crossRigEscalationMu.Lock()
-	defer crossRigEscalationMu.Unlock()
-	crossRigEscalationLast = map[string]time.Time{}
 }
 
 // fireCrossRigEscalation invokes `gt escalate` with a MEDIUM severity. Best
@@ -154,12 +151,13 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 // dispatchScheduledWork is the main dispatch loop for the capacity scheduler.
 // Called by both `gt scheduler run` and the daemon heartbeat.
 func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun bool) (int, error) {
+	escalationState := newCrossRigEscalationState()
 	if dryRun {
 		dispatchPlan, err := buildSchedulerDispatchPlan(townRoot, batchOverride, false)
 		if err != nil {
 			return 0, fmt.Errorf("planning dispatch: %w", err)
 		}
-		dispatchPlan.Plan = validateDryRunDispatchPlan(townRoot, dispatchPlan.Plan)
+		dispatchPlan.Plan = validateDryRunDispatchPlan(townRoot, dispatchPlan.Plan, escalationState)
 		printSchedulerDryRunPlan(dispatchPlan)
 		return 0, nil
 	}
@@ -215,7 +213,7 @@ func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun boo
 	polecatNames := make(map[string]string)
 	cycle := &capacity.DispatchCycle{
 		Validate: func(b capacity.PendingBead) error {
-			return validatePendingBeadForDispatch(townRoot, b, true)
+			return validatePendingBeadForDispatch(townRoot, b, true, escalationState)
 		},
 		Execute: func(b capacity.PendingBead) error {
 			result, err := dispatchSingleBead(b, townRoot, actor)
@@ -736,13 +734,13 @@ func dispatchSingleBead(b capacity.PendingBead, townRoot, _ string) (*SlingResul
 	return result, nil
 }
 
-func validateDryRunDispatchPlan(townRoot string, plan capacity.DispatchPlan) capacity.DispatchPlan {
+func validateDryRunDispatchPlan(townRoot string, plan capacity.DispatchPlan, escalationStates ...*crossRigEscalationState) capacity.DispatchPlan {
 	if len(plan.ToDispatch) == 0 {
 		return plan
 	}
 	validated := make([]capacity.PendingBead, 0, len(plan.ToDispatch))
 	for _, b := range plan.ToDispatch {
-		if err := validatePendingBeadForDispatch(townRoot, b, false); err != nil {
+		if err := validatePendingBeadForDispatch(townRoot, b, false, escalationStates...); err != nil {
 			fmt.Fprintf(os.Stderr, "%s dry-run_skip reason=validation bead=%s target_rig=%s: %v\n",
 				style.Dim.Render("○"), b.WorkBeadID, b.TargetRig, err)
 			plan.Skipped++
@@ -771,7 +769,7 @@ func validateDryRunDispatchPlan(townRoot string, plan capacity.DispatchPlan) cap
 	return plan
 }
 
-func validatePendingBeadForDispatch(townRoot string, b capacity.PendingBead, escalate bool) error {
+func validatePendingBeadForDispatch(townRoot string, b capacity.PendingBead, escalate bool, escalationStates ...*crossRigEscalationState) error {
 	// Cross-rig prefix guard (gt-el4). A bead whose ID prefix does not match the
 	// target rig's registered prefix must not be dispatched — the polecat would
 	// land in a rig DB that cannot resolve the bead and hang in prime.
@@ -787,7 +785,11 @@ func validatePendingBeadForDispatch(townRoot string, b capacity.PendingBead, esc
 	fmt.Fprintf(os.Stderr,
 		"%s dispatch_refused reason=cross_rig_prefix bead=%s target_rig=%s rig_prefix=%s bead_prefix=%s\n",
 		style.Warning.Render("⚠"), b.WorkBeadID, b.TargetRig, rigPrefix, gotPrefix)
-	if escalate && shouldFireCrossRigEscalation(b.TargetRig, gotPrefix, time.Now()) {
+	escalationState := newCrossRigEscalationState()
+	if len(escalationStates) > 0 && escalationStates[0] != nil {
+		escalationState = escalationStates[0]
+	}
+	if escalate && escalationState.shouldFire(b.TargetRig, gotPrefix, time.Now()) {
 		fireCrossRigEscalation(b.TargetRig, gotPrefix, b.WorkBeadID)
 	}
 	return capacity.ErrCrossRigPrefix
