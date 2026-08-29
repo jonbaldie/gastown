@@ -104,8 +104,6 @@ Stops the current session (if running) and starts a fresh one.`,
 	RunE: runDeaconRestart,
 }
 
-var deaconAgentOverride string
-
 var deaconHeartbeatCmd = &cobra.Command{
 	Use:   "heartbeat [action]",
 	Short: "Update the Deacon heartbeat",
@@ -433,15 +431,16 @@ func init() {
 	deaconFeedStrandedCmd.Flags().Bool("json", false,
 		"Output results as JSON")
 
-	deaconStartCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
-	deaconAttachCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
-	deaconRestartCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
+	deaconStartCmd.Flags().String("agent", "", "Agent alias to run the Deacon with (overrides town default)")
+	deaconAttachCmd.Flags().String("agent", "", "Agent alias to run the Deacon with (overrides town default)")
+	deaconRestartCmd.Flags().String("agent", "", "Agent alias to run the Deacon with (overrides town default)")
 
 	rootCmd.AddCommand(deaconCmd)
 }
 
-func runDeaconStart(_ *cobra.Command, _ []string) error {
+func runDeaconStart(cmd *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
+	agentOverride := commandStringFlag(cmd, "agent")
 
 	sessionName := getDeaconSessionName()
 
@@ -454,7 +453,7 @@ func runDeaconStart(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("Deacon session already running. Attach with: gt deacon attach")
 	}
 
-	if err := startDeaconSession(t, sessionName, deaconAgentOverride); err != nil {
+	if err := startDeaconSession(t, sessionName, agentOverride); err != nil {
 		return err
 	}
 
@@ -609,8 +608,9 @@ func runDeaconStop(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runDeaconAttach(_ *cobra.Command, _ []string) error {
+func runDeaconAttach(cmd *cobra.Command, _ []string) error {
 	t := tmux.NewTmux()
+	agentOverride := commandStringFlag(cmd, "agent")
 
 	sessionName := getDeaconSessionName()
 
@@ -622,7 +622,7 @@ func runDeaconAttach(_ *cobra.Command, _ []string) error {
 	if !running {
 		// Auto-start if not running
 		fmt.Println("Deacon session not running, starting...")
-		if err := startDeaconSession(t, sessionName, deaconAgentOverride); err != nil {
+		if err := startDeaconSession(t, sessionName, agentOverride); err != nil {
 			return err
 		}
 	}
