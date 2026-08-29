@@ -77,13 +77,11 @@ func isDrainableMessage(subject string) bool {
 
 func runMailDrain(cmd *cobra.Command, _ []string) error {
 	maxAgeText := commandStringFlag(cmd, "max-age")
-	// Parse max-age duration
 	maxAge, err := time.ParseDuration(maxAgeText)
 	if err != nil {
 		return fmt.Errorf("invalid --max-age %q: %w", maxAgeText, err)
 	}
 
-	// Determine which inbox
 	address := commandStringFlag(cmd, "identity")
 	if address == "" {
 		address = detectSender()
@@ -94,7 +92,6 @@ func runMailDrain(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// List all messages
 	messages, err := mailbox.List()
 	if err != nil {
 		return fmt.Errorf("listing messages: %w", err)
@@ -105,40 +102,8 @@ func runMailDrain(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Find drainable messages
 	cutoff := time.Now().Add(-maxAge)
-	type drainCandidate struct {
-		Message *mail.Message
-		Reason  string
-	}
-	var candidates []drainCandidate
-
-	for _, msg := range messages {
-		if !isDrainableMessage(msg.Subject) {
-			continue
-		}
-
-		// Check age unless --all
-		if !commandBoolFlag(cmd, "all") && msg.Timestamp.After(cutoff) {
-			continue
-		}
-
-		reason := "protocol"
-		if msg.Wisp {
-			reason = "wisp+protocol"
-		}
-		candidates = append(candidates, drainCandidate{Message: msg, Reason: reason})
-	}
-
-	// Also drain read wisps (non-protocol) if they're old enough
-	for _, msg := range messages {
-		if isDrainableMessage(msg.Subject) {
-			continue // already handled above
-		}
-		if msg.Wisp && msg.Read && (commandBoolFlag(cmd, "all") || msg.Timestamp.Before(cutoff)) {
-			candidates = append(candidates, drainCandidate{Message: msg, Reason: "read-wisp"})
-		}
-	}
+	candidates := drainCandidates(messages, cutoff, commandBoolFlag(cmd, "all"))
 
 	if len(candidates) == 0 {
 		fmt.Printf("%s No drainable messages in %s (%d messages total)\n",
@@ -146,51 +111,95 @@ func runMailDrain(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Dry run mode
 	if commandBoolFlag(cmd, "dry-run") {
-		fmt.Printf("%s Would drain %d/%d messages from %s:\n",
-			style.Dim.Render("(dry-run)"), len(candidates), len(messages), address)
-		for _, c := range candidates {
-			age := time.Since(c.Message.Timestamp).Truncate(time.Minute)
-			fmt.Printf("  %s %s [%s] (age: %s)\n",
-				style.Dim.Render(c.Message.ID), c.Message.Subject, c.Reason, age)
-		}
+		printDrainDryRun(address, len(messages), candidates)
 		return nil
 	}
 
-	// Archive drainable messages
-	archived := 0
-	var archiveErrors []string
-	for _, c := range candidates {
-		if err := mailbox.Delete(c.Message.ID); err != nil {
-			archiveErrors = append(archiveErrors, fmt.Sprintf("%s: %v", c.Message.ID, err))
-		} else {
-			archived++
+	archived, archiveErrors := archiveDrainCandidates(mailbox, candidates)
+	return reportDrain(address, len(messages), len(candidates), archived, archiveErrors, candidates)
+}
+
+type drainCandidate struct {
+	Message *mail.Message
+	Reason  string
+}
+
+func drainCandidates(messages []*mail.Message, cutoff time.Time, drainAll bool) []drainCandidate {
+	var candidates []drainCandidate
+	for _, msg := range messages {
+		if candidate, ok := protocolDrainCandidate(msg, cutoff, drainAll); ok {
+			candidates = append(candidates, candidate)
+			continue
+		}
+		if candidate, ok := readWispDrainCandidate(msg, cutoff, drainAll); ok {
+			candidates = append(candidates, candidate)
 		}
 	}
+	return candidates
+}
 
-	remaining := len(messages) - archived
+func protocolDrainCandidate(msg *mail.Message, cutoff time.Time, drainAll bool) (drainCandidate, bool) {
+	if !isDrainableMessage(msg.Subject) || (!drainAll && msg.Timestamp.After(cutoff)) {
+		return drainCandidate{}, false
+	}
+	reason := "protocol"
+	if msg.Wisp {
+		reason = "wisp+protocol"
+	}
+	return drainCandidate{Message: msg, Reason: reason}, true
+}
 
+func readWispDrainCandidate(msg *mail.Message, cutoff time.Time, drainAll bool) (drainCandidate, bool) {
+	if isDrainableMessage(msg.Subject) || !msg.Wisp || !msg.Read || (!drainAll && msg.Timestamp.Before(cutoff) == false) {
+		return drainCandidate{}, false
+	}
+	return drainCandidate{Message: msg, Reason: "read-wisp"}, true
+}
+
+func printDrainDryRun(address string, total int, candidates []drainCandidate) {
+	fmt.Printf("%s Would drain %d/%d messages from %s:\n", style.Dim.Render("(dry-run)"), len(candidates), total, address)
+	for _, candidate := range candidates {
+		age := time.Since(candidate.Message.Timestamp).Truncate(time.Minute)
+		fmt.Printf("  %s %s [%s] (age: %s)\n",
+			style.Dim.Render(candidate.Message.ID), candidate.Message.Subject, candidate.Reason, age)
+	}
+}
+
+func archiveDrainCandidates(mailbox *mail.Mailbox, candidates []drainCandidate) (int, []string) {
+	archived := 0
+	var archiveErrors []string
+	for _, candidate := range candidates {
+		if err := mailbox.Delete(candidate.Message.ID); err != nil {
+			archiveErrors = append(archiveErrors, fmt.Sprintf("%s: %v", candidate.Message.ID, err))
+			continue
+		}
+		archived++
+	}
+	return archived, archiveErrors
+}
+
+func reportDrain(address string, total, candidateCount, archived int, archiveErrors []string, candidates []drainCandidate) error {
+	remaining := total - archived
 	if len(archiveErrors) > 0 {
 		fmt.Printf("%s Drained %d/%d messages from %s (%d remaining, %d errors)\n",
-			style.Bold.Render("⚠"), archived, len(candidates), address, remaining, len(archiveErrors))
-		for _, e := range archiveErrors {
-			fmt.Printf("  Error: %s\n", e)
+			style.Bold.Render("⚠"), archived, candidateCount, address, remaining, len(archiveErrors))
+		for _, errMsg := range archiveErrors {
+			fmt.Printf("  Error: %s\n", errMsg)
 		}
 		return fmt.Errorf("failed to drain %d messages", len(archiveErrors))
 	}
+	fmt.Printf("%s Drained %d messages from %s (%d remaining)\n", style.Bold.Render("✓"), archived, address, remaining)
+	printDrainSummary(candidates)
+	return nil
+}
 
-	fmt.Printf("%s Drained %d messages from %s (%d remaining)\n",
-		style.Bold.Render("✓"), archived, address, remaining)
-
-	// Summarize what was drained by type
+func printDrainSummary(candidates []drainCandidate) {
 	typeCounts := make(map[string]int)
-	for _, c := range candidates {
-		typeCounts[c.Reason]++
+	for _, candidate := range candidates {
+		typeCounts[candidate.Reason]++
 	}
 	for reason, count := range typeCounts {
 		fmt.Printf("  %s: %d\n", reason, count)
 	}
-
-	return nil
 }
