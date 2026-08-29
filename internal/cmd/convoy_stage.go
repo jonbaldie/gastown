@@ -2119,23 +2119,33 @@ func detectBlockedRigs(dag *ConvoyDAG) []StagingFinding {
 // detectCrossRig finds slingable nodes that are on a different rig than the
 // primary rig (most common rig among slingable nodes).
 func detectCrossRig(dag *ConvoyDAG) []StagingFinding {
-	// Count rigs among slingable nodes.
-	rigCount := make(map[string]int)
-	for _, node := range dag.Nodes {
-		if !isSlingableType(node.Type) {
-			continue
-		}
-		if node.Rig == "" {
-			continue
-		}
-		rigCount[node.Rig]++
-	}
-
+	rigCount := countSlingableRigs(dag)
 	if len(rigCount) <= 1 {
 		return nil // all same rig or no rigs
 	}
 
-	// Find primary rig (most common; tie-break alphabetically for determinism).
+	primaryRig := primarySlingableRig(rigCount)
+
+	var findings []StagingFinding
+	for _, node := range dag.Nodes {
+		if finding, ok := crossRigFinding(node, primaryRig); ok {
+			findings = append(findings, finding)
+		}
+	}
+	return findings
+}
+
+func countSlingableRigs(dag *ConvoyDAG) map[string]int {
+	rigCount := make(map[string]int)
+	for _, node := range dag.Nodes {
+		if isSlingableType(node.Type) && node.Rig != "" {
+			rigCount[node.Rig]++
+		}
+	}
+	return rigCount
+}
+
+func primarySlingableRig(rigCount map[string]int) string {
 	primaryRig := ""
 	primaryCount := 0
 	for rig, count := range rigCount {
@@ -2144,24 +2154,20 @@ func detectCrossRig(dag *ConvoyDAG) []StagingFinding {
 			primaryCount = count
 		}
 	}
+	return primaryRig
+}
 
-	var findings []StagingFinding
-	for _, node := range dag.Nodes {
-		if !isSlingableType(node.Type) {
-			continue
-		}
-		if node.Rig == "" || node.Rig == primaryRig {
-			continue
-		}
-		findings = append(findings, StagingFinding{
-			Severity:     "warning",
-			Category:     "cross-rig",
-			BeadIDs:      []string{node.ID},
-			Message:      fmt.Sprintf("task %s is on rig %q (primary rig is %q)", node.ID, node.Rig, primaryRig),
-			SuggestedFix: fmt.Sprintf("verify cross-rig routing for %s or reassign to %s", node.ID, primaryRig),
-		})
+func crossRigFinding(node *ConvoyDAGNode, primaryRig string) (StagingFinding, bool) {
+	if !isSlingableType(node.Type) || node.Rig == "" || node.Rig == primaryRig {
+		return StagingFinding{}, false
 	}
-	return findings
+	return StagingFinding{
+		Severity:     "warning",
+		Category:     "cross-rig",
+		BeadIDs:      []string{node.ID},
+		Message:      fmt.Sprintf("task %s is on rig %q (primary rig is %q)", node.ID, node.Rig, primaryRig),
+		SuggestedFix: fmt.Sprintf("verify cross-rig routing for %s or reassign to %s", node.ID, primaryRig),
+	}, true
 }
 
 // estimateCapacity checks each wave for task counts exceeding the threshold
