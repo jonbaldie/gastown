@@ -101,55 +101,52 @@ var branchCheckExemptCommands = map[string]bool{
 
 // persistentPreRun runs before every command.
 func persistentPreRun(cmd *cobra.Command, args []string) error {
-	// Initialize CLI theme (dark/light mode support)
 	initCLITheme()
-
-	// gt done can autosave and push; prove ownership before shared pre-run writes.
-	if isDoneCommand(cmd) {
-		if _, err := resolveDonePolecatWorktree(); err != nil {
-			return err
-		}
+	if err := validateDonePreRun(cmd); err != nil {
+		return err
 	}
-
-	// Log command usage telemetry (fire-and-forget, excludes tap/signal)
 	logCommandUsage(cmd, args)
+	initTownRegistry()
+	runPreRunWarnings(cmd)
+	touchPolecatHeartbeat()
+	return warnAboutBeadsVersion(cmd)
+}
 
-	// Initialize session prefix registry and agent registry from town root.
+func validateDonePreRun(cmd *cobra.Command) error {
+	if !isDoneCommand(cmd) {
+		return nil
+	}
+	_, err := resolveDonePolecatWorktree()
+	return err
+}
+
+func initTownRegistry() {
 	// Try CWD detection first, then fall back to GT_TOWN_ROOT / GT_ROOT env vars.
 	// Env var fallback ensures commands invoked from outside the town directory
 	// (e.g., "gt agents menu" via a cross-socket tmux binding) still connect to
 	// the correct town socket rather than silently using the wrong server.
-	if townRoot := detectTownRootFromCwd(); townRoot != "" {
-		if err := session.InitRegistry(townRoot); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: failed to initialize town registry: %v\n", err)
-		}
+	townRoot := detectTownRootFromCwd()
+	if townRoot == "" {
+		return
 	}
+	if err := session.InitRegistry(townRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: failed to initialize town registry: %v\n", err)
+	}
+}
 
-	beadsExempt := isCommandOrAncestorExempt(cmd, beadsExemptCommands)
-	branchExempt := isCommandOrAncestorExempt(cmd, branchCheckExemptCommands)
-
-	// Check for stale binary (warning only, doesn't block)
-	if !beadsExempt {
+func runPreRunWarnings(cmd *cobra.Command) {
+	if !isCommandOrAncestorExempt(cmd, beadsExemptCommands) {
 		checkStaleBinaryWarning()
 	}
-
-	// Check town root branch (warning only, non-blocking)
-	if !branchExempt {
+	if !isCommandOrAncestorExempt(cmd, branchCheckExemptCommands) {
 		warnIfTownRootOffMain()
 	}
+}
 
-	// Touch polecat session heartbeat on every gt command (gt-qjtq: ZFC liveness fix).
-	// This is best-effort and non-blocking — the heartbeat file signals that the agent
-	// is alive and actively running gt commands. Used by isSessionProcessDead to
-	// determine liveness without PID signal probing.
-	touchPolecatHeartbeat()
-
-	// Skip beads check for exempt commands
-	if beadsExempt || isRoleCommand(cmd) {
+func warnAboutBeadsVersion(cmd *cobra.Command) error {
+	if isCommandOrAncestorExempt(cmd, beadsExemptCommands) || isRoleCommand(cmd) {
 		return nil
 	}
-
-	// Check beads version (non-blocking - warn only)
 	if err := CheckBeadsVersion(); err != nil {
 		fmt.Fprintf(os.Stderr, "\n%s beads (bd) version issue:\n", style.Bold.Render("⚠️  WARNING:"))
 		fmt.Fprintf(os.Stderr, "   %v\n", err)
