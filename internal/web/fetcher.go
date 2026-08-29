@@ -1211,46 +1211,7 @@ func (f *LiveConvoyFetcher) FetchRigs() ([]RigRow, error) {
 
 	var rows []RigRow
 	for name, entry := range rigsConfig.Rigs {
-		row := RigRow{
-			Name:   name,
-			GitURL: entry.GitURL,
-		}
-
-		rigPath := filepath.Join(f.townRoot, name)
-
-		// Count polecats
-		polecatsDir := filepath.Join(rigPath, "polecats")
-		if entries, err := os.ReadDir(polecatsDir); err == nil {
-			for _, e := range entries {
-				if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-					row.PolecatCount++
-				}
-			}
-		}
-
-		// Count crew
-		crewDir := filepath.Join(rigPath, "crew")
-		if entries, err := os.ReadDir(crewDir); err == nil {
-			for _, e := range entries {
-				if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-					row.CrewCount++
-				}
-			}
-		}
-
-		// Check for witness
-		witnessPath := filepath.Join(rigPath, "witness")
-		if _, err := os.Stat(witnessPath); err == nil {
-			row.HasWitness = true
-		}
-
-		// Check for refinery
-		refineryPath := filepath.Join(rigPath, "refinery", "rig")
-		if _, err := os.Stat(refineryPath); err == nil {
-			row.HasRefinery = true
-		}
-
-		rows = append(rows, row)
+		rows = append(rows, f.rigRow(name, entry))
 	}
 
 	// Sort by name
@@ -1259,6 +1220,37 @@ func (f *LiveConvoyFetcher) FetchRigs() ([]RigRow, error) {
 	})
 
 	return rows, nil
+}
+
+func (f *LiveConvoyFetcher) rigRow(name string, entry config.RigEntry) RigRow {
+	rigPath := filepath.Join(f.townRoot, name)
+	return RigRow{
+		Name:         name,
+		GitURL:       entry.GitURL,
+		PolecatCount: countVisibleDirs(filepath.Join(rigPath, "polecats")),
+		CrewCount:    countVisibleDirs(filepath.Join(rigPath, "crew")),
+		HasWitness:   pathExists(filepath.Join(rigPath, "witness")),
+		HasRefinery:  pathExists(filepath.Join(rigPath, "refinery", "rig")),
+	}
+}
+
+func countVisibleDirs(path string) int {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			count++
+		}
+	}
+	return count
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // FetchDogs returns all dogs in the kennel with their state.
