@@ -1473,83 +1473,61 @@ func runRigReset(_ *cobra.Command, _ []string) error {
 }
 
 // runResetStale resets in_progress issues whose assigned agent no longer has a session.
-func runResetStale(bd *beads.Beads, dryRun bool) error {
-	t := tmux.NewTmux()
+type staleIssueResult struct {
+	reset             bool
+	skippedPersistent bool
+}
 
-	// Get all in_progress issues
-	issues, err := bd.List(beads.ListOptions{
-		Status:   "in_progress",
-		Priority: -1, // All priorities
-	})
-	if err != nil {
-		return fmt.Errorf("listing in_progress issues: %w", err)
+func staleIssueStatus(t *tmux.Tmux, issue *beads.Issue) (persistent, stale bool) {
+	if issue.Assignee == "" {
+		return false, false
 	}
-
-	if len(issues) == 0 {
-		fmt.Printf("%s No in_progress issues found\n", style.Success.Render("✓"))
-		return nil
+	sessionName, isPersistent := assigneeToSessionName(issue.Assignee)
+	if sessionName == "" {
+		return false, false
 	}
+	hasSession, err := t.HasSession(sessionName)
+	if err != nil || hasSession {
+		return false, false
+	}
+	return isPersistent, true
+}
 
-	var resetCount, skippedCount int
-	var resetIssues []string
-
-	for _, issue := range issues {
-		if issue.Assignee == "" {
-			continue // No assignee to check
-		}
-
-		// Parse assignee: rig/name or rig/crew/name
-		sessionName, isPersistent := assigneeToSessionName(issue.Assignee)
-		if sessionName == "" {
-			continue // Couldn't parse assignee
-		}
-
-		// Check if session exists
-		hasSession, err := t.HasSession(sessionName)
-		if err != nil {
-			// tmux error, skip this one
-			continue
-		}
-
-		if hasSession {
-			continue // Session exists, not stale
-		}
-
-		// For crew (persistent identities), only reset if explicitly checking sessions
-		if isPersistent {
-			skippedCount++
-			if dryRun {
-				fmt.Printf("  %s: %s %s\n",
-					style.Dim.Render(issue.ID),
-					issue.Assignee,
-					style.Dim.Render("(persistent, skipped)"))
-			}
-			continue
-		}
-
-		// Session doesn't exist - this is stale
+func resetStaleIssue(bd *beads.Beads, t *tmux.Tmux, issue *beads.Issue, dryRun bool) staleIssueResult {
+	isPersistent, stale := staleIssueStatus(t, issue)
+	if !stale {
+		return staleIssueResult{}
+	}
+	if isPersistent {
 		if dryRun {
-			fmt.Printf("  %s: %s (no session) → open\n",
-				style.Bold.Render(issue.ID),
-				issue.Assignee)
-		} else {
-			// Reset status to open and clear assignee
-			openStatus := "open"
-			emptyAssignee := ""
-			if err := bd.Update(issue.ID, beads.UpdateOptions{
-				Status:   &openStatus,
-				Assignee: &emptyAssignee,
-			}); err != nil {
-				fmt.Printf("  %s Failed to reset %s: %v\n",
-					style.Warning.Render("⚠"),
-					issue.ID, err)
-				continue
-			}
+			fmt.Printf("  %s: %s %s\n",
+				style.Dim.Render(issue.ID),
+				issue.Assignee,
+				style.Dim.Render("(persistent, skipped)"))
 		}
-		resetCount++
-		resetIssues = append(resetIssues, issue.ID)
+		return staleIssueResult{skippedPersistent: true}
 	}
+	if dryRun {
+		fmt.Printf("  %s: %s (no session) → open\n",
+			style.Bold.Render(issue.ID),
+			issue.Assignee)
+		return staleIssueResult{reset: true}
+	}
+	openStatus := "open"
+	emptyAssignee := ""
+	if err := bd.Update(issue.ID, beads.UpdateOptions{
+		Status:   &openStatus,
+		Assignee: &emptyAssignee,
+	}); err != nil {
+		fmt.Printf("  %s Failed to reset %s: %v\n",
+			style.Warning.Render("⚠"),
+			issue.ID, err)
+		return staleIssueResult{}
+	}
+	return staleIssueResult{reset: true}
+}
 
+func reportStaleReset(dryRun bool, resetCount, skippedCount int, resetIssues []string) {
 	if dryRun {
 		if resetCount > 0 || skippedCount > 0 {
 			fmt.Printf("\n%s Would reset %d issues, skip %d persistent\n",
@@ -1558,19 +1536,44 @@ func runResetStale(bd *beads.Beads, dryRun bool) error {
 		} else {
 			fmt.Printf("%s No stale issues found\n", style.Success.Render("✓"))
 		}
+		return
+	}
+	if resetCount > 0 {
+		fmt.Printf("%s Reset %d stale issues: %v\n",
+			style.Success.Render("✓"),
+			resetCount, resetIssues)
 	} else {
-		if resetCount > 0 {
-			fmt.Printf("%s Reset %d stale issues: %v\n",
-				style.Success.Render("✓"),
-				resetCount, resetIssues)
-		} else {
-			fmt.Printf("%s No stale issues to reset\n", style.Success.Render("✓"))
-		}
-		if skippedCount > 0 {
-			fmt.Printf("  Skipped %d persistent (crew) issues\n", skippedCount)
-		}
+		fmt.Printf("%s No stale issues to reset\n", style.Success.Render("✓"))
+	}
+	if skippedCount > 0 {
+		fmt.Printf("  Skipped %d persistent (crew) issues\n", skippedCount)
+	}
+}
+
+func runResetStale(bd *beads.Beads, dryRun bool) error {
+	issues, err := bd.List(beads.ListOptions{Status: "in_progress", Priority: -1})
+	if err != nil {
+		return fmt.Errorf("listing in_progress issues: %w", err)
+	}
+	if len(issues) == 0 {
+		fmt.Printf("%s No in_progress issues found\n", style.Success.Render("✓"))
+		return nil
 	}
 
+	t := tmux.NewTmux()
+	var resetCount, skippedCount int
+	var resetIssues []string
+	for _, issue := range issues {
+		result := resetStaleIssue(bd, t, issue, dryRun)
+		if result.reset {
+			resetCount++
+			resetIssues = append(resetIssues, issue.ID)
+		}
+		if result.skippedPersistent {
+			skippedCount++
+		}
+	}
+	reportStaleReset(dryRun, resetCount, skippedCount, resetIssues)
 	return nil
 }
 
