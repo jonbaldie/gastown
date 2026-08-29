@@ -1654,51 +1654,14 @@ type PRShowResponse struct {
 
 // handlePRShow returns details for a specific PR.
 func (h *APIHandler) handlePRShow(w http.ResponseWriter, r *http.Request) {
-	// Accept either repo/number or full URL
 	repo := r.URL.Query().Get("repo")
 	number := r.URL.Query().Get("number")
 	prURL := r.URL.Query().Get("url")
 
-	if prURL == "" && (repo == "" || number == "") {
-		h.sendError(w, "Missing repo/number or url parameter", http.StatusBadRequest)
+	args, errMessage := prShowArgs(repo, number, prURL)
+	if errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
-	}
-
-	// Validate inputs to prevent argument injection.
-	// When url is provided, repo/number are ignored — only validate what's used.
-	if prURL != "" {
-		const maxURLLen = 2000
-		if len(prURL) > maxURLLen {
-			h.sendError(w, fmt.Sprintf("PR URL too long (max %d bytes)", maxURLLen), http.StatusBadRequest)
-			return
-		}
-		if strings.ContainsAny(prURL, "\x00\n\r") {
-			h.sendError(w, "PR URL cannot contain null bytes or newlines", http.StatusBadRequest)
-			return
-		}
-		// Allow any https:// URL, not just github.com — supports GitHub Enterprise.
-		// gh CLI validates against the configured host and rejects non-GitHub API responses,
-		// limiting SSRF risk. Localhost-only deployment further reduces exposure.
-		if !strings.HasPrefix(prURL, "https://") {
-			h.sendError(w, "PR URL must start with https://", http.StatusBadRequest)
-			return
-		}
-	} else {
-		if !isNumeric(number) {
-			h.sendError(w, "Invalid PR number format", http.StatusBadRequest)
-			return
-		}
-		if !isValidRepoRef(repo) {
-			h.sendError(w, "Invalid repo format (expected owner/repo)", http.StatusBadRequest)
-			return
-		}
-	}
-
-	var args []string
-	if prURL != "" {
-		args = []string{"pr", "view", prURL, "--json", "number,title,state,author,url,body,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,baseRefName,headRefName,labels,statusCheckRollup"}
-	} else {
-		args = []string{"pr", "view", number, "--repo", repo, "--json", "number,title,state,author,url,body,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,baseRefName,headRefName,labels,statusCheckRollup"}
 	}
 
 	output, err := h.runGhCommand(r.Context(), 15*time.Second, args)
@@ -1712,6 +1675,45 @@ func (h *APIHandler) handlePRShow(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+const prShowJSONFields = "number,title,state,author,url,body,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,baseRefName,headRefName,labels,statusCheckRollup"
+
+func prShowArgs(repo, number, prURL string) ([]string, string) {
+	if prURL == "" {
+		if repo == "" || number == "" {
+			return nil, "Missing repo/number or url parameter"
+		}
+		if !isNumeric(number) {
+			return nil, "Invalid PR number format"
+		}
+		if !isValidRepoRef(repo) {
+			return nil, "Invalid repo format (expected owner/repo)"
+		}
+		return []string{"pr", "view", number, "--repo", repo, "--json", prShowJSONFields}, ""
+	}
+
+	if errMessage := validatePRShowURL(prURL); errMessage != "" {
+		return nil, errMessage
+	}
+	return []string{"pr", "view", prURL, "--json", prShowJSONFields}, ""
+}
+
+func validatePRShowURL(prURL string) string {
+	const maxURLLen = 2000
+	if len(prURL) > maxURLLen {
+		return fmt.Sprintf("PR URL too long (max %d bytes)", maxURLLen)
+	}
+	if strings.ContainsAny(prURL, "\x00\n\r") {
+		return "PR URL cannot contain null bytes or newlines"
+	}
+	// Allow any https:// URL, not just github.com — supports GitHub Enterprise.
+	// gh CLI validates against the configured host and rejects non-GitHub API responses,
+	// limiting SSRF risk. Localhost-only deployment further reduces exposure.
+	if !strings.HasPrefix(prURL, "https://") {
+		return "PR URL must start with https://"
+	}
+	return ""
 }
 
 // runGhCommand executes a gh command with the given args.
