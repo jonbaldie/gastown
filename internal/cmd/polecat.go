@@ -1047,19 +1047,7 @@ func runPolecatCheckRecovery(_ *cobra.Command, args []string) error {
 		Branch:  p.Branch,
 		Issue:   p.Issue,
 	}
-	if agentErr != nil {
-		status.Diagnostics = append(status.Diagnostics, fmt.Sprintf("agent bead lookup: %v", agentErr))
-	}
-	if fields != nil {
-		status.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
-		status.ActiveMR = fields.ActiveMR
-		if status.Issue == "" {
-			status.Issue = fields.LastSourceIssue
-			if status.Issue == "" {
-				status.Issue = fields.HookBead
-			}
-		}
-	}
+	applyRecoveryAgentFields(&status, fields, agentErr)
 	disposition := polecat.InspectWorkstate(polecatName, bd, p.ClonePath, p.State, status.Issue)
 	applyWorkstateDispositionToRecoveryStatus(&status, disposition)
 	if polecatCheckRecoveryReconcileCleanup {
@@ -1073,7 +1061,29 @@ func runPolecatCheckRecovery(_ *cobra.Command, args []string) error {
 		return enc.Encode(status)
 	}
 
-	// Human-readable output
+	printPolecatRecoveryStatus(rigName, polecatName, &status)
+	return nil
+}
+
+func applyRecoveryAgentFields(status *RecoveryStatus, fields *beads.AgentFields, agentErr error) {
+	if agentErr != nil {
+		status.Diagnostics = append(status.Diagnostics, fmt.Sprintf("agent bead lookup: %v", agentErr))
+	}
+	if fields == nil {
+		return
+	}
+	status.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
+	status.ActiveMR = fields.ActiveMR
+	if status.Issue != "" {
+		return
+	}
+	status.Issue = fields.LastSourceIssue
+	if status.Issue == "" {
+		status.Issue = fields.HookBead
+	}
+}
+
+func printPolecatRecoveryStatus(rigName, polecatName string, status *RecoveryStatus) {
 	fmt.Printf("%s\n\n", style.Bold.Render(fmt.Sprintf("Recovery Status: %s/%s", rigName, polecatName)))
 	fmt.Printf("  Cleanup Status:  %s\n", status.CleanupStatus)
 	if status.Branch != "" {
@@ -1090,6 +1100,10 @@ func runPolecatCheckRecovery(_ *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
+	printPolecatRecoveryVerdict(status)
+}
+
+func printPolecatRecoveryVerdict(status *RecoveryStatus) {
 	switch status.Verdict {
 	case "NEEDS_MQ_SUBMIT":
 		fmt.Printf("  Verdict:         %s\n", style.Warning.Render("NEEDS_MQ_SUBMIT"))
@@ -1128,8 +1142,6 @@ func runPolecatCheckRecovery(_ *cobra.Command, args []string) error {
 		fmt.Println()
 		fmt.Printf("  %s Safe to nuke - no work at risk.\n", style.Success.Render("✓"))
 	}
-
-	return nil
 }
 
 func applyWorkstateDispositionToRecoveryStatus(status *RecoveryStatus, disposition polecat.WorkstateDisposition) {
