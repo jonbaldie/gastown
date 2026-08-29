@@ -2297,58 +2297,52 @@ func (e *Engineer) ListReadyMRs() ([]*MRInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying beads for merge-requests: %w", err)
 	}
+	return e.readyMRInfos(issues), nil
+}
 
-	// Convert beads issues to MRInfo
+func (e *Engineer) readyMRInfos(issues []*beads.Issue) []*MRInfo {
 	var mrs []*MRInfo
 	for _, issue := range issues {
-		// Skip closed MRs (workaround for bd list not respecting --status filter)
-		if issue.Status != "open" {
-			continue
+		if mr := e.readyMRInfo(issue); mr != nil {
+			mrs = append(mrs, mr)
 		}
-
-		// Skip blocked MRs (replaces bd ready's blocker filtering)
-		if beads.HasUnresolvedBlockers(issue) {
-			continue
-		}
-
-		// Belt-and-suspenders: skip MRs labeled gt:owned-direct.
-		// These MRs shouldn't exist (gt done skips MR creation for owned+direct
-		// convoys), but if one slips through, the refinery should not process it.
-		if beads.HasLabel(issue, "gt:owned-direct") {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping MR %s: owned+direct convoy (belt-and-suspenders)\n", issue.ID)
-			continue
-		}
-
-		fields := beads.ParseMRFields(issue)
-		if fields == nil {
-			continue // Skip issues without MR fields
-		}
-
-		// Filter by rig — wisps are shared across all rigs (GH#2718).
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
-			continue
-		}
-
-		// Skip if already assigned, unless claim is stale (allows re-claim after crash).
-		// NOTE: Only one refinery runs per rig (enforced by ErrAlreadyRunning in
-		// manager.go), so concurrent re-claim race conditions are not a concern.
-		if issue.Assignee != "" {
-			stale, parseErr := isClaimStale(issue.UpdatedAt, e.config.StaleClaimTimeout)
-			if parseErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not parse UpdatedAt for %s: %v (treating claim as valid)\n",
-					issue.ID, parseErr)
-			}
-			if !stale {
-				continue
-			}
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Stale claim detected: %s (assignee: %s, updated: %s) — eligible for re-claim\n",
-				issue.ID, issue.Assignee, issue.UpdatedAt)
-		}
-
-		mrs = append(mrs, issueToMRInfo(issue, fields))
 	}
+	return mrs
+}
 
-	return mrs, nil
+func (e *Engineer) readyMRInfo(issue *beads.Issue) *MRInfo {
+	if issue.Status != "open" || beads.HasUnresolvedBlockers(issue) {
+		return nil
+	}
+	if beads.HasLabel(issue, "gt:owned-direct") {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping MR %s: owned+direct convoy (belt-and-suspenders)\n", issue.ID)
+		return nil
+	}
+	fields := beads.ParseMRFields(issue)
+	if fields == nil || (fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name)) {
+		return nil
+	}
+	if !e.readyMRClaimEligible(issue) {
+		return nil
+	}
+	return issueToMRInfo(issue, fields)
+}
+
+func (e *Engineer) readyMRClaimEligible(issue *beads.Issue) bool {
+	if issue.Assignee == "" {
+		return true
+	}
+	stale, parseErr := isClaimStale(issue.UpdatedAt, e.config.StaleClaimTimeout)
+	if parseErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not parse UpdatedAt for %s: %v (treating claim as valid)\n",
+			issue.ID, parseErr)
+	}
+	if !stale {
+		return false
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Stale claim detected: %s (assignee: %s, updated: %s) — eligible for re-claim\n",
+		issue.ID, issue.Assignee, issue.UpdatedAt)
+	return true
 }
 
 // ListBlockedMRs returns MRs that are blocked by open tasks.
