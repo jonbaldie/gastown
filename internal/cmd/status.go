@@ -115,23 +115,29 @@ type DNDInfo struct {
 
 // AgentRuntime represents the runtime state of an agent.
 type AgentRuntime struct {
-	Name              string `json:"name"`                         // Display name (e.g., "mayor", "witness")
-	Address           string `json:"address"`                      // Full address (e.g., "greenplace/witness")
-	Session           string `json:"session"`                      // tmux session name
-	Role              string `json:"role"`                         // Role type
-	Running           bool   `json:"running"`                      // Is tmux session running?
-	Blocked           bool   `json:"blocked,omitempty"`            // Pane is fully blocked on an interactive dialog
-	BlockReason       string `json:"block_reason,omitempty"`       // Why the pane is blocked (e.g. model picker)
-	ACP               bool   `json:"acp"`                          // Is ACP session active?
-	HasWork           bool   `json:"has_work"`                     // Has pinned work?
-	WorkTitle         string `json:"work_title,omitempty"`         // Title of pinned work
-	HookBead          string `json:"hook_bead,omitempty"`          // Pinned bead ID from agent bead
-	State             string `json:"state,omitempty"`              // Agent state from agent bead
+	Name        string `json:"name"`                   // Display name (e.g., "mayor", "witness")
+	Address     string `json:"address"`                // Full address (e.g., "greenplace/witness")
+	Session     string `json:"session"`                // tmux session name
+	Role        string `json:"role"`                   // Role type
+	Running     bool   `json:"running"`                // Is tmux session running?
+	Blocked     bool   `json:"blocked,omitempty"`      // Pane is fully blocked on an interactive dialog
+	BlockReason string `json:"block_reason,omitempty"` // Why the pane is blocked (e.g. model picker)
+	ACP         bool   `json:"acp"`                    // Is ACP session active?
+	AgentWork
 	NotificationLevel string `json:"notification_level,omitempty"` // Notification level (verbose, normal, muted)
 	UnreadMail        int    `json:"unread_mail"`                  // Number of unread messages
 	FirstSubject      string `json:"first_subject,omitempty"`      // Subject of first unread message
 	AgentAlias        string `json:"agent_alias,omitempty"`        // Configured agent name (e.g., "opus-46", "pi")
 	AgentInfo         string `json:"agent_info,omitempty"`         // Runtime summary (e.g., "claude/opus", "pi/kimi-k2p5")
+}
+
+// AgentWork contains the pinned-work state associated with an agent. It is
+// embedded so status JSON keeps these fields at the same top level.
+type AgentWork struct {
+	HasWork   bool   `json:"has_work"`             // Has pinned work?
+	WorkTitle string `json:"work_title,omitempty"` // Title of pinned work
+	HookBead  string `json:"hook_bead,omitempty"`  // Pinned bead ID from agent bead
+	State     string `json:"state,omitempty"`      // Agent state from agent bead
 }
 
 // RigStatus represents status of a single rig.

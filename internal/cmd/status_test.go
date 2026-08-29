@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -194,6 +195,33 @@ func TestBuildStatusIndicator_DNDMutedShowsBadge(t *testing.T) {
 	indicator := buildStatusIndicator(agent)
 	if !strings.Contains(indicator, "🔕") {
 		t.Fatalf("expected muted indicator to include 🔕, got %q", indicator)
+	}
+}
+
+func TestAgentRuntimeJSONFlattensWork(t *testing.T) {
+	data, err := json.Marshal(AgentRuntime{
+		Name: "polecat-1",
+		AgentWork: AgentWork{
+			HasWork:   true,
+			WorkTitle: "Implement feature",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal AgentRuntime: %v", err)
+	}
+
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatalf("unmarshal AgentRuntime JSON: %v", err)
+	}
+	if _, ok := encoded["has_work"]; !ok {
+		t.Fatalf("JSON omitted flattened has_work field: %s", data)
+	}
+	if _, ok := encoded["work_title"]; !ok {
+		t.Fatalf("JSON omitted flattened work_title field: %s", data)
+	}
+	if _, ok := encoded["AgentWork"]; ok {
+		t.Fatalf("JSON nested AgentWork: %s", data)
 	}
 }
 
