@@ -1580,54 +1580,80 @@ func StopIdleMonitors(townRoot string) int {
 // owned by townRoot. This is intentionally narrower than operational cleanup:
 // tests must never kill production Dolt by port or broad process pattern.
 func ReapOwnedTestServers(townRoot string) (int, error) {
-	absRoot, err := filepath.Abs(townRoot)
+	absRoot, err := validateDoltTestServerRoot(townRoot)
 	if err != nil {
-		return 0, fmt.Errorf("resolving town root: %w", err)
-	}
-	absTemp, err := filepath.Abs(os.TempDir())
-	if err != nil {
-		return 0, fmt.Errorf("resolving temp dir: %w", err)
-	}
-	rel, err := filepath.Rel(absTemp, absRoot)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return 0, fmt.Errorf("refusing to reap Dolt outside temp dir: %s", absRoot)
+		return 0, err
 	}
 
 	config := DefaultConfig(absRoot)
 	candidates := ownedDoltTestServerCandidates(absRoot, config)
 	stopped := 0
 	for _, pid := range candidates {
-		if pid <= 0 || pid == os.Getpid() || !processIsAlive(pid) {
-			continue
-		}
-		if !isDoltSQLServerProcess(pid) {
-			continue
-		}
-		if !doltProcessMatchesTown(absRoot, pid, config) && !doltProcessCWDUnderTown(absRoot, pid) {
-			continue
-		}
-		proc, err := os.FindProcess(pid)
+		didStop, err := reapOwnedDoltTestServer(absRoot, config, pid)
 		if err != nil {
-			continue
+			return stopped, err
 		}
-		if err := gracefulTerminate(proc); err != nil {
-			return stopped, fmt.Errorf("terminating owned Dolt PID %d: %w", pid, err)
-		}
-		for i := 0; i < 20; i++ {
-			time.Sleep(100 * time.Millisecond)
-			if !processIsAlive(pid) {
-				stopped++
-				break
-			}
-		}
-		if processIsAlive(pid) {
-			_ = proc.Kill()
-			time.Sleep(100 * time.Millisecond)
+		if didStop {
 			stopped++
 		}
 	}
 
 	return stopped, nil
+}
+
+func validateDoltTestServerRoot(townRoot string) (string, error) {
+	absRoot, err := filepath.Abs(townRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolving town root: %w", err)
+	}
+	absTemp, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return "", fmt.Errorf("resolving temp dir: %w", err)
+	}
+	rel, err := filepath.Rel(absTemp, absRoot)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("refusing to reap Dolt outside temp dir: %s", absRoot)
+	}
+	return absRoot, nil
+}
+
+func reapOwnedDoltTestServer(townRoot string, config *Config, pid int) (bool, error) {
+	if !isOwnedDoltTestServer(townRoot, config, pid) {
+		return false, nil
+	}
+	return terminateOwnedDoltTestServer(pid)
+}
+
+func isOwnedDoltTestServer(townRoot string, config *Config, pid int) bool {
+	if pid <= 0 || pid == os.Getpid() || !processIsAlive(pid) {
+		return false
+	}
+	if !isDoltSQLServerProcess(pid) {
+		return false
+	}
+	return doltProcessMatchesTown(townRoot, pid, config) || doltProcessCWDUnderTown(townRoot, pid)
+}
+
+func terminateOwnedDoltTestServer(pid int) (bool, error) {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false, nil
+	}
+	if err := gracefulTerminate(proc); err != nil {
+		return false, fmt.Errorf("terminating owned Dolt PID %d: %w", pid, err)
+	}
+	for i := 0; i < 20; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if !processIsAlive(pid) {
+			return true, nil
+		}
+	}
+	if !processIsAlive(pid) {
+		return false, nil
+	}
+	_ = proc.Kill()
+	time.Sleep(100 * time.Millisecond)
+	return true, nil
 }
 
 func ownedDoltTestServerCandidates(townRoot string, config *Config) []int {
@@ -1670,26 +1696,48 @@ func findOwnedDoltTestServerCandidatesFromPS(output, townRoot, dataDir string) [
 	absDataDir, _ := filepath.Abs(dataDir)
 	var pids []int
 	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, "sql-server") || !strings.Contains(line, "dolt") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil || pid <= 0 {
-			continue
-		}
-		if !isDoltSQLServerArgs(fields[1:]) {
-			continue
-		}
-		if containsPathBoundary(line, absRoot) || containsPathBoundary(line, absDataDir) || doltProcessCWDUnderTown(absRoot, pid) {
+		if pid, ok := ownedDoltTestServerPID(strings.TrimSpace(line), absRoot, absDataDir); ok {
 			pids = append(pids, pid)
 		}
 	}
 	return pids
+}
+
+func ownedDoltTestServerPID(line, absRoot, absDataDir string) (int, bool) {
+	if !isDoltTestServerProcessLine(line) {
+		return 0, false
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return 0, false
+	}
+	pid := positivePID(fields[0])
+	if pid == 0 {
+		return 0, false
+	}
+	if !isDoltSQLServerArgs(fields[1:]) {
+		return 0, false
+	}
+	if !doltTestServerPathMatches(line, absRoot, absDataDir, pid) {
+		return 0, false
+	}
+	return pid, true
+}
+
+func isDoltTestServerProcessLine(line string) bool {
+	return line != "" && strings.Contains(line, "sql-server") && strings.Contains(line, "dolt")
+}
+
+func positivePID(value string) int {
+	pid, err := strconv.Atoi(value)
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
+}
+
+func doltTestServerPathMatches(line, absRoot, absDataDir string, pid int) bool {
+	return containsPathBoundary(line, absRoot) || containsPathBoundary(line, absDataDir) || doltProcessCWDUnderTown(absRoot, pid)
 }
 
 func doltProcessCWDUnderTown(townRoot string, pid int) bool {
