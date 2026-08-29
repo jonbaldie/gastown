@@ -49,9 +49,11 @@ type Server struct {
 type serverAdapters struct {
 	serverHTTP
 	serverDispatch
+	serverStart
 	serverRun
 	serverLifecycle
 	serverHealth
+	serverReady
 	serverConnections
 	serverDelivery
 }
@@ -74,6 +76,11 @@ type serverRun struct {
 	*Server
 }
 
+// serverStart owns validation and creation of new runs.
+type serverStart struct {
+	*Server
+}
+
 // serverLifecycle owns run state and lifecycle protocol operations.
 type serverLifecycle struct {
 	*Server
@@ -81,6 +88,11 @@ type serverLifecycle struct {
 
 // serverHealth owns health reporting derived from persisted run state.
 type serverHealth struct {
+	*Server
+}
+
+// serverReady owns readiness waits against protocol and tmux-backed runs.
+type serverReady struct {
 	*Server
 }
 
@@ -142,9 +154,11 @@ func newServer(store *Store, tmux TmuxSession) *Server {
 	s.serverAdapters = serverAdapters{
 		serverHTTP:        serverHTTP{Server: s},
 		serverDispatch:    serverDispatch{Server: s},
+		serverStart:       serverStart{Server: s},
 		serverRun:         serverRun{Server: s},
 		serverLifecycle:   serverLifecycle{Server: s},
 		serverHealth:      serverHealth{Server: s},
+		serverReady:       serverReady{Server: s},
 		serverConnections: serverConnections{Server: s},
 		serverDelivery:    serverDelivery{Server: s},
 	}
@@ -401,139 +415,155 @@ func (s *serverHTTP) handleTown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+type townHandler func(context.Context, TownRequest) TownResponse
+
 func (s *serverDispatch) dispatchTown(ctx context.Context, req TownRequest) TownResponse {
-	switch req.Op {
-	case opPing:
-		return TownResponse{OK: true}
-	case opStartRun:
-		spec, err := decodePayload[StartSpec](req.Payload)
-		if err != nil {
-			return failTown(err)
-		}
-		run, err := s.startRun(spec)
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(run)
-	case opDeliver:
-		p, err := decodePayload[Prompt](req.Payload)
-		if err != nil {
-			return failTown(err)
-		}
-		d, err := s.deliver(ctx, p)
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(d)
-	case opState:
-		st, err := s.stateOf(req.RunID, req.Session)
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(st)
-	case opHealth:
-		h, err := s.healthOf(firstNonEmpty(req.RunID, req.Session))
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(h)
-	case opKill:
-		if err := s.kill(req.RunID, req.Session); err != nil {
-			return failTown(err)
-		}
-		return TownResponse{OK: true}
-	case opIdentity:
-		id, err := decodePayload[Identity](req.Payload)
-		if err != nil {
-			return failTown(err)
-		}
-		if err := s.pushIdentity(id); err != nil {
-			return failTown(err)
-		}
-		return TownResponse{OK: true}
-	case opContext:
-		push, err := decodePayload[ContextPush](req.Payload)
-		if err != nil {
-			return failTown(err)
-		}
-		if err := s.pushContext(push); err != nil {
-			return failTown(err)
-		}
-		return TownResponse{OK: true}
-	case opLiveBead:
-		run, err := s.store.LiveRunForBead(req.BeadID)
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(run)
-	case opEvents:
-		ev, err := s.store.ReadEvents()
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(ev)
-	case opCosts:
-		costs, err := s.store.ReadCosts()
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(costs)
-	case opWaitReady:
-		if err := s.waitReady(ctx, req.RunID); err != nil {
-			return failTown(err)
-		}
-		return TownResponse{OK: true}
-	case opExpireQueue:
-		expired, err := s.store.ExpireStale(nowUTC())
-		if err != nil {
-			return failTown(err)
-		}
-		return okTown(expired)
-	default:
+	handler, ok := s.townHandlers()[req.Op]
+	if !ok {
 		return TownResponse{OK: false, Error: "unknown op"}
+	}
+	return handler(ctx, req)
+}
+
+func (s *serverDispatch) townHandlers() map[string]townHandler {
+	return map[string]townHandler{
+		opPing:        s.dispatchPing,
+		opStartRun:    s.dispatchStartRun,
+		opDeliver:     s.dispatchDeliver,
+		opState:       s.dispatchState,
+		opHealth:      s.dispatchHealth,
+		opKill:        s.dispatchKill,
+		opIdentity:    s.dispatchIdentity,
+		opContext:     s.dispatchContext,
+		opLiveBead:    s.dispatchLiveBead,
+		opEvents:      s.dispatchEvents,
+		opCosts:       s.dispatchCosts,
+		opWaitReady:   s.dispatchWaitReady,
+		opExpireQueue: s.dispatchExpireQueue,
 	}
 }
 
-func (s *serverRun) startRun(spec StartSpec) (*Run, error) {
+func (s *serverDispatch) dispatchPing(_ context.Context, _ TownRequest) TownResponse {
+	return TownResponse{OK: true}
+}
+
+func (s *serverDispatch) dispatchStartRun(_ context.Context, req TownRequest) TownResponse {
+	spec, err := decodePayload[StartSpec](req.Payload)
+	if err != nil {
+		return failTown(err)
+	}
+	run, err := s.startRun(spec)
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(run)
+}
+
+func (s *serverDispatch) dispatchDeliver(ctx context.Context, req TownRequest) TownResponse {
+	p, err := decodePayload[Prompt](req.Payload)
+	if err != nil {
+		return failTown(err)
+	}
+	d, err := s.deliver(ctx, p)
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(d)
+}
+
+func (s *serverDispatch) dispatchState(_ context.Context, req TownRequest) TownResponse {
+	st, err := s.stateOf(req.RunID, req.Session)
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(st)
+}
+
+func (s *serverDispatch) dispatchHealth(_ context.Context, req TownRequest) TownResponse {
+	h, err := s.healthOf(firstNonEmpty(req.RunID, req.Session))
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(h)
+}
+
+func (s *serverDispatch) dispatchKill(_ context.Context, req TownRequest) TownResponse {
+	if err := s.kill(req.RunID, req.Session); err != nil {
+		return failTown(err)
+	}
+	return TownResponse{OK: true}
+}
+
+func (s *serverDispatch) dispatchIdentity(_ context.Context, req TownRequest) TownResponse {
+	id, err := decodePayload[Identity](req.Payload)
+	if err != nil {
+		return failTown(err)
+	}
+	if err := s.pushIdentity(id); err != nil {
+		return failTown(err)
+	}
+	return TownResponse{OK: true}
+}
+
+func (s *serverDispatch) dispatchContext(_ context.Context, req TownRequest) TownResponse {
+	push, err := decodePayload[ContextPush](req.Payload)
+	if err != nil {
+		return failTown(err)
+	}
+	if err := s.pushContext(push); err != nil {
+		return failTown(err)
+	}
+	return TownResponse{OK: true}
+}
+
+func (s *serverDispatch) dispatchLiveBead(_ context.Context, req TownRequest) TownResponse {
+	run, err := s.store.LiveRunForBead(req.BeadID)
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(run)
+}
+
+func (s *serverDispatch) dispatchEvents(_ context.Context, _ TownRequest) TownResponse {
+	ev, err := s.store.ReadEvents()
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(ev)
+}
+
+func (s *serverDispatch) dispatchCosts(_ context.Context, _ TownRequest) TownResponse {
+	costs, err := s.store.ReadCosts()
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(costs)
+}
+
+func (s *serverDispatch) dispatchWaitReady(ctx context.Context, req TownRequest) TownResponse {
+	if err := s.waitReady(ctx, req.RunID); err != nil {
+		return failTown(err)
+	}
+	return TownResponse{OK: true}
+}
+
+func (s *serverDispatch) dispatchExpireQueue(_ context.Context, _ TownRequest) TownResponse {
+	expired, err := s.store.ExpireStale(nowUTC())
+	if err != nil {
+		return failTown(err)
+	}
+	return okTown(expired)
+}
+
+func (s *serverStart) startRun(spec StartSpec) (*Run, error) {
 	if spec.RunID == "" {
 		spec.RunID = uuid.NewString()
 	}
-	if spec.SessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
-	if spec.BeadID != "" {
-		if live, err := s.store.LiveRunForBead(spec.BeadID); err != nil {
-			return nil, err
-		} else if live != nil && live.RunID != spec.RunID {
-			return nil, fmt.Errorf("%w: %s is %s", ErrLiveRun, spec.BeadID, live.RunID)
-		}
-		if latest, err := s.store.LatestRunForBead(spec.BeadID); err == nil && latest != nil && !latest.State.known() {
-			return nil, fmt.Errorf("%w: bead %s has unknown state; refusing extra spawn", ErrUnknownState, spec.BeadID)
-		}
-	}
-	if spec.SessionID != "" {
-		if existing, err := s.store.LatestRunForSession(spec.SessionID); err == nil && existing != nil && existing.RunID != spec.RunID {
-			if !existing.State.known() {
-				return nil, fmt.Errorf("%w: session %s has unknown state; refusing extra spawn", ErrUnknownState, spec.SessionID)
-			}
-			if existing.State.live() {
-				return nil, fmt.Errorf("session %s already has live run %s", spec.SessionID, existing.RunID)
-			}
-		}
+	if err := s.validateStartRun(spec); err != nil {
+		return nil, err
 	}
 	now := nowUTC()
-	run := &Run{
-		RunID:     spec.RunID,
-		SessionID: spec.SessionID,
-		BeadID:    spec.BeadID,
-		Role:      spec.Role,
-		Rig:       spec.Rig,
-		AgentName: spec.AgentName,
-		AgentType: spec.AgentType,
-		State:     StateStarted,
-		StartedAt: now,
-		UpdatedAt: now,
-	}
+	run := newStartedRun(spec, now)
 	if s.connected(spec.RunID) {
 		run.Adapter = AdapterProtocol
 	} else {
@@ -550,21 +580,102 @@ func (s *serverRun) startRun(spec StartSpec) (*Run, error) {
 	return run, nil
 }
 
+func (s *serverStart) validateStartRun(spec StartSpec) error {
+	if spec.SessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	if err := s.validateBeadStart(spec); err != nil {
+		return err
+	}
+	return s.validateSessionStart(spec)
+}
+
+func (s *serverStart) validateBeadStart(spec StartSpec) error {
+	if spec.BeadID == "" {
+		return nil
+	}
+	live, err := s.store.LiveRunForBead(spec.BeadID)
+	if err != nil {
+		return err
+	}
+	if live != nil && live.RunID != spec.RunID {
+		return fmt.Errorf("%w: %s is %s", ErrLiveRun, spec.BeadID, live.RunID)
+	}
+	latest, err := s.store.LatestRunForBead(spec.BeadID)
+	if err == nil && latest != nil && !latest.State.known() {
+		return fmt.Errorf("%w: bead %s has unknown state; refusing extra spawn", ErrUnknownState, spec.BeadID)
+	}
+	return nil
+}
+
+func (s *serverStart) validateSessionStart(spec StartSpec) error {
+	existing, err := s.store.LatestRunForSession(spec.SessionID)
+	if err != nil || existing == nil || existing.RunID == spec.RunID {
+		return nil
+	}
+	if !existing.State.known() {
+		return fmt.Errorf("%w: session %s has unknown state; refusing extra spawn", ErrUnknownState, spec.SessionID)
+	}
+	if existing.State.live() {
+		return fmt.Errorf("session %s already has live run %s", spec.SessionID, existing.RunID)
+	}
+	return nil
+}
+
+func newStartedRun(spec StartSpec, now time.Time) *Run {
+	return &Run{
+		RunID:     spec.RunID,
+		SessionID: spec.SessionID,
+		BeadID:    spec.BeadID,
+		Role:      spec.Role,
+		Rig:       spec.Rig,
+		AgentName: spec.AgentName,
+		AgentType: spec.AgentType,
+		State:     StateStarted,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+}
+
 func (s *serverRun) applyLifecycle(lc Lifecycle) error {
 	if lc.RunID == "" {
 		return fmt.Errorf("run_id is required")
 	}
+	st, err := lifecycleState(lc)
+	if err != nil {
+		return err
+	}
+	run, err := s.loadLifecycleRun(lc)
+	if err != nil {
+		return err
+	}
+	applyLifecycleFields(run, lc, st)
+	if s.connected(lc.RunID) {
+		run.Adapter = AdapterProtocol
+	}
+	return s.persistLifecycle(lc, run, st)
+}
+
+func lifecycleState(lc Lifecycle) (State, error) {
 	st := stateFromEvent(lc.Event)
 	if !st.known() {
-		return fmt.Errorf("unknown lifecycle event %q", lc.Event)
+		return StateUnknown, fmt.Errorf("unknown lifecycle event %q", lc.Event)
 	}
+	return st, nil
+}
+
+func (s *serverRun) loadLifecycleRun(lc Lifecycle) (*Run, error) {
 	run, err := s.store.GetRun(lc.RunID)
-	if err != nil {
-		if !errors.Is(err, ErrRunNotFound) {
-			return err
-		}
-		run = &Run{RunID: lc.RunID, SessionID: lc.SessionID, StartedAt: nowUTC()}
+	if err == nil {
+		return run, nil
 	}
+	if !errors.Is(err, ErrRunNotFound) {
+		return nil, err
+	}
+	return &Run{RunID: lc.RunID, SessionID: lc.SessionID, StartedAt: nowUTC()}, nil
+}
+
+func applyLifecycleFields(run *Run, lc Lifecycle, st State) {
 	run.State = st
 	run.UpdatedAt = nowUTC()
 	if lc.SessionID != "" {
@@ -576,25 +687,30 @@ func (s *serverRun) applyLifecycle(lc Lifecycle) error {
 		}
 	}
 	if st == StateStopped {
-		run.StoppedAt = run.UpdatedAt
-		if lc.Metadata != nil {
-			if v, ok := lc.Metadata["exit_code"]; ok {
-				switch n := v.(type) {
-				case float64:
-					code := int(n)
-					run.ExitCode = &code
-				case int:
-					run.ExitCode = &n
-				}
-			}
-			if done, ok := lc.Metadata["done"].(bool); ok {
-				run.Done = done
-			}
+		applyStoppedLifecycleFields(run, lc.Metadata)
+	}
+}
+
+func applyStoppedLifecycleFields(run *Run, metadata map[string]any) {
+	run.StoppedAt = run.UpdatedAt
+	if metadata == nil {
+		return
+	}
+	if v, ok := metadata["exit_code"]; ok {
+		switch n := v.(type) {
+		case float64:
+			code := int(n)
+			run.ExitCode = &code
+		case int:
+			run.ExitCode = &n
 		}
 	}
-	if s.connected(lc.RunID) {
-		run.Adapter = AdapterProtocol
+	if done, ok := metadata["done"].(bool); ok {
+		run.Done = done
 	}
+}
+
+func (s *serverRun) persistLifecycle(lc Lifecycle, run *Run, st State) error {
 	if err := s.store.PutRun(run); err != nil {
 		return err
 	}
@@ -977,7 +1093,7 @@ func (s *serverLifecycle) pushContext(push ContextPush) error {
 	return nil
 }
 
-func (s *serverLifecycle) waitReady(ctx context.Context, runID string) error {
+func (s *serverReady) waitReady(ctx context.Context, runID string) error {
 	deadline := time.Now().Add(s.readyWait)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
@@ -996,7 +1112,7 @@ func (s *serverLifecycle) waitReady(ctx context.Context, runID string) error {
 	return fmt.Errorf("wait ready: timeout for %s", runID)
 }
 
-func (s *serverLifecycle) readyCheck(runID string, remaining time.Duration) (bool, error) {
+func (s *serverReady) readyCheck(runID string, remaining time.Duration) (bool, error) {
 	run, err := s.store.GetRun(runID)
 	if err != nil {
 		return false, err
