@@ -709,12 +709,7 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 	}
 
 	// Kill any lingering tmux session for this name (gt-pqf9x)
-	if m.tmux != nil {
-		sessionName := session.PolecatSessionName(session.PrefixFor(m.rig.Name), name)
-		if alive, _ := m.tmux.HasSession(sessionName); alive {
-			_ = m.tmux.KillSessionWithProcesses(sessionName)
-		}
-	}
+	m.killLingeringPolecatSession(name)
 
 	// Directory exists — pool lock can be released. No concurrent AllocateName
 	// can reallocate this name because reconcilePoolInternal will see the directory.
@@ -729,6 +724,16 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 		return "", nil, err
 	}
 	return name, p, nil
+}
+
+func (m *Manager) killLingeringPolecatSession(name string) {
+	if m.tmux == nil {
+		return
+	}
+	sessionName := session.PolecatSessionName(session.PrefixFor(m.rig.Name), name)
+	if alive, _ := m.tmux.HasSession(sessionName); alive {
+		_ = m.tmux.KillSessionWithProcesses(sessionName)
+	}
 }
 
 // addWithOptionsLocked performs the expensive parts of polecat creation
