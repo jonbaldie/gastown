@@ -217,52 +217,67 @@ func runChannelShow(cmd *cobra.Command, args []string) error {
 	}
 
 	if commandBoolFlag(cmd, "json") {
-		if messages == nil {
-			messages = []channelMessage{}
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(messages)
+		return encodeChannelMessages(messages)
 	}
+	printChannelMessages(channelName, fields, messages)
+	return nil
+}
 
+func encodeChannelMessages(messages []channelMessage) error {
+	if messages == nil {
+		messages = []channelMessage{}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(messages)
+}
+
+func printChannelMessages(channelName string, fields *beads.ChannelFields, messages []channelMessage) {
 	fmt.Printf("%s Channel: %s (%d messages)\n",
 		style.Bold.Render("📡"), channelName, len(messages))
-	if fields.RetentionCount > 0 {
-		fmt.Printf("  Retention: %d messages\n", fields.RetentionCount)
-	} else if fields.RetentionHours > 0 {
-		fmt.Printf("  Retention: %d hours\n", fields.RetentionHours)
-	}
+	printChannelRetention(fields)
 	fmt.Println()
-
 	if len(messages) == 0 {
 		fmt.Printf("  %s\n", style.Dim.Render("(no messages)"))
-		return nil
+		return
 	}
-
 	for _, msg := range messages {
-		priorityMarker := ""
-		if msg.Priority <= 1 {
-			priorityMarker = " " + style.Bold.Render("!")
-		}
-
-		fmt.Printf("  %s %s%s\n", style.Bold.Render("●"), msg.Title, priorityMarker)
-		fmt.Printf("    %s from %s\n",
-			style.Dim.Render(msg.ID),
-			msg.From)
-		fmt.Printf("    %s\n",
-			style.Dim.Render(msg.Created.Local().Format("2006-01-02 15:04")))
-		if msg.Body != "" {
-			// Show first line as preview
-			lines := strings.SplitN(msg.Body, "\n", 2)
-			preview := lines[0]
-			if len(preview) > 80 {
-				preview = preview[:77] + "..."
-			}
-			fmt.Printf("    %s\n", style.Dim.Render(preview))
-		}
+		printChannelMessage(msg)
 	}
+}
 
-	return nil
+func printChannelRetention(fields *beads.ChannelFields) {
+	if fields.RetentionCount > 0 {
+		fmt.Printf("  Retention: %d messages\n", fields.RetentionCount)
+		return
+	}
+	if fields.RetentionHours > 0 {
+		fmt.Printf("  Retention: %d hours\n", fields.RetentionHours)
+	}
+}
+
+func printChannelMessage(msg channelMessage) {
+	priorityMarker := ""
+	if msg.Priority <= 1 {
+		priorityMarker = " " + style.Bold.Render("!")
+	}
+	fmt.Printf("  %s %s%s\n", style.Bold.Render("●"), msg.Title, priorityMarker)
+	fmt.Printf("    %s from %s\n", style.Dim.Render(msg.ID), msg.From)
+	fmt.Printf("    %s\n", style.Dim.Render(msg.Created.Local().Format("2006-01-02 15:04")))
+	if preview := channelMessagePreview(msg.Body); preview != "" {
+		fmt.Printf("    %s\n", style.Dim.Render(preview))
+	}
+}
+
+func channelMessagePreview(body string) string {
+	if body == "" {
+		return ""
+	}
+	preview := strings.SplitN(body, "\n", 2)[0]
+	if len(preview) > 80 {
+		return preview[:77] + "..."
+	}
+	return preview
 }
 
 func runChannelCreate(cmd *cobra.Command, args []string) error {
@@ -279,14 +294,22 @@ func runChannelCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	createdBy := os.Getenv("BD_ACTOR")
-	if createdBy == "" {
-		createdBy = "unknown"
+	b := beads.New(townRoot)
+	if err := ensureChannelDoesNotExist(b, name); err != nil {
+		return err
 	}
 
-	b := beads.New(townRoot)
+	_, err = b.CreateChannelBead(name, nil, groupCreator())
+	if err != nil {
+		return fmt.Errorf("creating channel: %w", err)
+	}
 
-	// Check if channel already exists
+	setChannelRetention(b, name, retainCount, retainHours)
+	printChannelCreated(name, retainCount, retainHours)
+	return nil
+}
+
+func ensureChannelDoesNotExist(b *beads.Beads, name string) error {
 	existing, _, err := b.GetChannelBead(name)
 	if err != nil {
 		return err
@@ -294,20 +317,19 @@ func runChannelCreate(cmd *cobra.Command, args []string) error {
 	if existing != nil {
 		return fmt.Errorf("channel already exists: %s", name)
 	}
+	return nil
+}
 
-	_, err = b.CreateChannelBead(name, nil, createdBy)
-	if err != nil {
-		return fmt.Errorf("creating channel: %w", err)
+func setChannelRetention(b *beads.Beads, name string, retainCount, retainHours int) {
+	if retainCount <= 0 && retainHours <= 0 {
+		return
 	}
-
-	// Update retention settings if specified
-	if retainCount > 0 || retainHours > 0 {
-		if err := b.UpdateChannelRetention(name, retainCount, retainHours); err != nil {
-			// Non-fatal: channel created but retention not set
-			style.PrintWarning("could not set retention: %v", err)
-		}
+	if err := b.UpdateChannelRetention(name, retainCount, retainHours); err != nil {
+		style.PrintWarning("could not set retention: %v", err)
 	}
+}
 
+func printChannelCreated(name string, retainCount, retainHours int) {
 	fmt.Printf("Created channel %q", name)
 	if retainCount > 0 {
 		fmt.Printf(" (retain %d messages)", retainCount)
@@ -315,7 +337,6 @@ func runChannelCreate(cmd *cobra.Command, args []string) error {
 		fmt.Printf(" (retain %d hours)", retainHours)
 	}
 	fmt.Println()
-	return nil
 }
 
 func runChannelDelete(_ *cobra.Command, args []string) error {
