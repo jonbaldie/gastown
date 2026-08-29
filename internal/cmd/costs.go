@@ -24,24 +24,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	costsJSON    bool
-	costsToday   bool
-	costsWeek    bool
-	costsByRole  bool
-	costsByRig   bool
-	costsVerbose bool
-
-	// Record subcommand flags
-	recordSession  string
-	recordWorkItem string
-
-	// Digest subcommand flags
-	digestYesterday bool
-	digestDate      string
-	digestDryRun    bool
-)
-
 var costsCmd = &cobra.Command{
 	Use:     "costs",
 	GroupID: GroupDiag,
@@ -109,24 +91,53 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(costsCmd)
-	costsCmd.Flags().BoolVar(&costsJSON, "json", false, "Output as JSON")
-	costsCmd.Flags().BoolVar(&costsToday, "today", false, "Show today's total from session events")
-	costsCmd.Flags().BoolVar(&costsWeek, "week", false, "Show this week's total from session events")
-	costsCmd.Flags().BoolVar(&costsByRole, "by-role", false, "Show breakdown by role")
-	costsCmd.Flags().BoolVar(&costsByRig, "by-rig", false, "Show breakdown by rig")
-	costsCmd.Flags().BoolVarP(&costsVerbose, "verbose", "v", false, "Show debug output for failures")
+	costsCmd.Flags().Bool("json", false, "Output as JSON")
+	costsCmd.Flags().Bool("today", false, "Show today's total from session events")
+	costsCmd.Flags().Bool("week", false, "Show this week's total from session events")
+	costsCmd.Flags().Bool("by-role", false, "Show breakdown by role")
+	costsCmd.Flags().Bool("by-rig", false, "Show breakdown by rig")
+	costsCmd.Flags().BoolP("verbose", "v", false, "Show debug output for failures")
 
 	// Add record subcommand
 	costsCmd.AddCommand(costsRecordCmd)
-	costsRecordCmd.Flags().StringVar(&recordSession, "session", "", "Tmux session name to record")
-	costsRecordCmd.Flags().StringVar(&recordWorkItem, "work-item", "", "Work item ID (bead) for attribution")
+	costsRecordCmd.Flags().String("session", "", "Tmux session name to record")
+	costsRecordCmd.Flags().String("work-item", "", "Work item ID (bead) for attribution")
 
 	// Add digest subcommand
 	costsCmd.AddCommand(costsDigestCmd)
-	costsDigestCmd.Flags().BoolVar(&digestYesterday, "yesterday", false, "Digest yesterday's costs (default for patrol)")
-	costsDigestCmd.Flags().StringVar(&digestDate, "date", "", "Digest a specific date (YYYY-MM-DD)")
-	costsDigestCmd.Flags().BoolVar(&digestDryRun, "dry-run", false, "Preview what would be done without making changes")
+	costsDigestCmd.Flags().Bool("yesterday", false, "Digest yesterday's costs (default for patrol)")
+	costsDigestCmd.Flags().String("date", "", "Digest a specific date (YYYY-MM-DD)")
+	costsDigestCmd.Flags().Bool("dry-run", false, "Preview what would be done without making changes")
 
+}
+
+type costsOptions struct {
+	json    bool
+	today   bool
+	week    bool
+	byRole  bool
+	byRig   bool
+	verbose bool
+}
+
+func costsOptionsFromCommand(cmd *cobra.Command) costsOptions {
+	return costsOptions{
+		json:    commandBoolFlag(cmd, "json"),
+		today:   commandBoolFlag(cmd, "today"),
+		week:    commandBoolFlag(cmd, "week"),
+		byRole:  commandBoolFlag(cmd, "by-role"),
+		byRig:   commandBoolFlag(cmd, "by-rig"),
+		verbose: commandBoolFlag(cmd, "verbose"),
+	}
+}
+
+func costsVerboseFromCommand(cmd *cobra.Command) bool {
+	for current := cmd; current != nil; current = current.Parent() {
+		if current.Flags().Lookup("verbose") != nil {
+			return commandBoolFlag(current, "verbose")
+		}
+	}
+	return false
 }
 
 // SessionCost represents cost info for a single session.
@@ -217,17 +228,18 @@ var modelPricing = map[string]struct {
 	"default": {3.0, 15.0, 0.3, 3.75},
 }
 
-func runCosts(_ *cobra.Command, _ []string) error {
+func runCosts(cmd *cobra.Command, _ []string) error {
+	opts := costsOptionsFromCommand(cmd)
 	// If querying ledger, use ledger functions
-	if costsToday || costsWeek || costsByRole || costsByRig {
-		return runCostsFromLedger()
+	if opts.today || opts.week || opts.byRole || opts.byRig {
+		return runCostsFromLedger(opts)
 	}
 
 	// Default: show live costs from running sessions
-	return runLiveCosts()
+	return runLiveCosts(opts)
 }
 
-func runLiveCosts() error {
+func runLiveCosts(opts costsOptions) error {
 	t := tmux.NewTmux()
 
 	// Get all tmux sessions
@@ -251,7 +263,7 @@ func runLiveCosts() error {
 		// Get working directory of the session
 		workDir, err := getTmuxSessionWorkDir(sess)
 		if err != nil {
-			if costsVerbose {
+			if opts.verbose {
 				fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", sess, err)
 			}
 			continue
@@ -260,7 +272,7 @@ func runLiveCosts() error {
 		// Extract cost from Claude transcript
 		cost, err := extractCostFromWorkDir(workDir)
 		if err != nil {
-			if costsVerbose {
+			if opts.verbose {
 				fmt.Fprintf(os.Stderr, "[costs] could not extract cost for %s: %v\n", sess, err)
 			}
 			// Still include the session with zero cost
@@ -286,7 +298,7 @@ func runLiveCosts() error {
 		return costs[i].Session < costs[j].Session
 	})
 
-	if costsJSON {
+	if opts.json {
 		return outputCostsJSON(CostsOutput{
 			Sessions: costs,
 			Total:    total,
@@ -296,19 +308,19 @@ func runLiveCosts() error {
 	return outputCostsHuman(costs, total)
 }
 
-func runCostsFromLedger() error {
+func runCostsFromLedger(opts costsOptions) error {
 	now := time.Now()
 	var entries []CostEntry
 	var err error
 
-	if costsToday {
+	if opts.today {
 		// For today: query ephemeral wisps (not yet digested)
 		// This gives real-time view of today's costs
-		entries, err = querySessionCostEntries(now)
+		entries, err = querySessionCostEntries(now, opts.verbose)
 		if err != nil {
 			return fmt.Errorf("querying session cost wisps: %w", err)
 		}
-	} else if costsWeek {
+	} else if opts.week {
 		// For week: query digest beads (costs.digest events)
 		// These are the aggregated daily reports
 		entries, err = queryDigestBeads(7)
@@ -317,19 +329,19 @@ func runCostsFromLedger() error {
 		}
 
 		// Also include today's wisps (not yet digested)
-		todayEntries, _ := querySessionCostEntries(now)
+		todayEntries, _ := querySessionCostEntries(now, opts.verbose)
 		entries = append(entries, todayEntries...)
-	} else if costsByRole || costsByRig {
+	} else if opts.byRole || opts.byRig {
 		// When using --by-role or --by-rig without time filter, default to today
 		// (querying all historical events would be expensive and likely empty)
-		entries, err = querySessionCostEntries(now)
+		entries, err = querySessionCostEntries(now, opts.verbose)
 		if err != nil {
 			return fmt.Errorf("querying session cost entries: %w", err)
 		}
 	} else {
 		// No time filter and no breakdown flags: query both digests and legacy session.ended events
 		// (for backwards compatibility during migration)
-		entries = querySessionEvents()
+		entries = querySessionEvents(opts.verbose)
 	}
 
 	if len(entries) == 0 {
@@ -359,25 +371,25 @@ func runCostsFromLedger() error {
 		Total: total,
 	}
 
-	if costsByRole {
+	if opts.byRole {
 		output.ByRole = byRole
 		output.Entries = entries
 		if len(byAgent) > 0 {
 			output.ByAgentType = byAgent
 		}
 	}
-	if costsByRig {
+	if opts.byRig {
 		output.ByRig = byRig
 	}
 
 	// Set period label
-	if costsToday {
+	if opts.today {
 		output.Period = "today"
-	} else if costsWeek {
+	} else if opts.week {
 		output.Period = "this week"
 	}
 
-	if costsJSON {
+	if opts.json {
 		return outputCostsJSON(output)
 	}
 
@@ -414,7 +426,7 @@ type EventListItem struct {
 // querySessionEvents queries beads for session.ended events and converts them to CostEntry.
 // It queries both town-level beads and all rig-level beads to find all session events.
 // Errors from individual locations are logged (if verbose) but don't fail the query.
-func querySessionEvents() []CostEntry {
+func querySessionEvents(verbose bool) []CostEntry {
 	// Discover town root for cwd-based bd discovery
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -447,7 +459,7 @@ func querySessionEvents() []CostEntry {
 		entries, err := querySessionEventsFromLocation(location)
 		if err != nil {
 			// Log but continue with other locations
-			if costsVerbose {
+			if verbose {
 				fmt.Fprintf(os.Stderr, "[costs] query from %s failed: %v\n", location, err)
 			}
 			continue
@@ -976,7 +988,10 @@ func getCostsLogPath() string {
 // runCostsRecord captures the final cost from a session and appends it to a local log file.
 // This is called by the Claude Code Stop hook. It's designed to never fail due to
 // database availability - it's a simple file append operation.
-func runCostsRecord(_ *cobra.Command, _ []string) error {
+func runCostsRecord(cmd *cobra.Command, _ []string) error {
+	recordSession := commandStringFlag(cmd, "session")
+	recordWorkItem := commandStringFlag(cmd, "work-item")
+	costsVerbose := costsVerboseFromCommand(cmd)
 	// Get session from flag or try to detect from environment
 	session := recordSession
 	if session == "" {
@@ -1175,7 +1190,10 @@ type CostDigestPayload struct {
 }
 
 // runCostsDigest aggregates session cost entries into a daily digest bead.
-func runCostsDigest(_ *cobra.Command, _ []string) error {
+func runCostsDigest(cmd *cobra.Command, _ []string) error {
+	digestYesterday := commandBoolFlag(cmd, "yesterday")
+	digestDate := commandStringFlag(cmd, "date")
+	digestDryRun := commandBoolFlag(cmd, "dry-run")
 	// Determine target date
 	var targetDate time.Time
 
@@ -1194,7 +1212,7 @@ func runCostsDigest(_ *cobra.Command, _ []string) error {
 	dateStr := targetDate.Format("2006-01-02")
 
 	// Query session cost entries for target date
-	costEntries, err := querySessionCostEntries(targetDate)
+	costEntries, err := querySessionCostEntries(targetDate, costsVerboseFromCommand(cmd))
 	if err != nil {
 		return fmt.Errorf("querying session cost entries: %w", err)
 	}
@@ -1260,7 +1278,7 @@ func runCostsDigest(_ *cobra.Command, _ []string) error {
 }
 
 // querySessionCostEntries reads session cost entries from the local log file for a target date.
-func querySessionCostEntries(targetDate time.Time) ([]CostEntry, error) {
+func querySessionCostEntries(targetDate time.Time, verbose bool) ([]CostEntry, error) {
 	logPath := getCostsLogPath()
 
 	// Read log file
@@ -1282,7 +1300,7 @@ func querySessionCostEntries(targetDate time.Time) ([]CostEntry, error) {
 
 		var logEntry CostLogEntry
 		if err := json.Unmarshal([]byte(line), &logEntry); err != nil {
-			if costsVerbose {
+			if verbose {
 				fmt.Fprintf(os.Stderr, "[costs] failed to parse log entry: %v\n", err)
 			}
 			continue

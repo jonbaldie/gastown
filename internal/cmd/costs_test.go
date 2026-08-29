@@ -191,11 +191,6 @@ func TestRunCostsRecord_NoSession_ReturnsNil(t *testing.T) {
 		}
 	}()
 
-	// Clear the flag-based session too
-	oldSession := recordSession
-	recordSession = ""
-	defer func() { recordSession = oldSession }()
-
 	// runCostsRecord should return nil (silent skip) when no session is resolvable
 	err := runCostsRecord(nil, nil)
 	if err != nil {
