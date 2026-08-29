@@ -1095,7 +1095,7 @@ func (e *Engineer) validateMRRecheckFields(mr *MRInfo, target, sourceIssue, mrID
 	if result := validateMRBranchAndTarget(mr, target, fields); !result.Success {
 		return e.rejectMRBeforeMerge(mr, result.Error)
 	}
-	if result := validateMRRigAndSource(e, mr, sourceIssue, fields); !result.Success {
+	if result := validateMRRigAndSource(e, sourceIssue, fields); !result.Success {
 		return e.rejectMRBeforeMerge(mr, result.Error)
 	}
 	return ProcessResult{Success: true}
@@ -1114,7 +1114,7 @@ func validateMRBranchAndTarget(mr *MRInfo, target string, fields *beads.MRFields
 	return ProcessResult{Success: true}
 }
 
-func validateMRRigAndSource(e *Engineer, mr *MRInfo, sourceIssue string, fields *beads.MRFields) ProcessResult {
+func validateMRRigAndSource(e *Engineer, sourceIssue string, fields *beads.MRFields) ProcessResult {
 	if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
 		return mergeIneligibleResult("MR belongs to rig %s", fields.Rig)
 	}
@@ -1231,34 +1231,53 @@ func (e *Engineer) acquireMainPushSlot(ctx context.Context) (string, error) {
 	}
 
 	for attempt := 0; attempt <= e.mergeSlotMaxRetries; attempt++ {
-		if attempt > 0 {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held, retrying in %v (attempt %d/%d)...\n", backoff, attempt, e.mergeSlotMaxRetries)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return "", ctx.Err()
-			}
-			backoff = min(backoff*2, 10*time.Second)
+		if err := e.waitForMainPushSlotRetry(ctx, attempt, &backoff); err != nil {
+			return "", err
 		}
 
-		status, err := e.mergeSlotAcquire(holder, false)
+		acquired, retry, err := e.tryAcquireMainPushSlot(slotID, holder, selfConflictHolder)
 		if err != nil {
-			return "", fmt.Errorf("acquire merge slot %s (%s): %w", slotID, holder, err)
+			return "", err
 		}
-		if status == nil {
-			return "", fmt.Errorf("acquire merge slot %s (%s): empty status", slotID, holder)
-		}
-		if status.Available || status.Holder == holder {
-			return holder, nil
-		}
-		// Slot held by our own conflict-resolution path — safe to proceed.
-		if status.Holder == selfConflictHolder {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by conflict-resolution path, proceeding\n")
-			return "", nil // No holder to release — conflict-resolution owns the slot
+		if !retry {
+			return acquired, nil
 		}
 	}
 
 	return "", fmt.Errorf("merge slot %s: %w after %d retries", slotID, errMergeSlotTimeout, e.mergeSlotMaxRetries)
+}
+
+func (e *Engineer) waitForMainPushSlotRetry(ctx context.Context, attempt int, backoff *time.Duration) error {
+	if attempt == 0 {
+		return nil
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held, retrying in %v (attempt %d/%d)...\n", *backoff, attempt, e.mergeSlotMaxRetries)
+	select {
+	case <-time.After(*backoff):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	*backoff = min(*backoff*2, 10*time.Second)
+	return nil
+}
+
+func (e *Engineer) tryAcquireMainPushSlot(slotID, holder, selfConflictHolder string) (string, bool, error) {
+	status, err := e.mergeSlotAcquire(holder, false)
+	if err != nil {
+		return "", false, fmt.Errorf("acquire merge slot %s (%s): %w", slotID, holder, err)
+	}
+	if status == nil {
+		return "", false, fmt.Errorf("acquire merge slot %s (%s): empty status", slotID, holder)
+	}
+	if status.Available || status.Holder == holder {
+		return holder, false, nil
+	}
+	// Slot held by our own conflict-resolution path — safe to proceed.
+	if status.Holder == selfConflictHolder {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by conflict-resolution path, proceeding\n")
+		return "", false, nil // No holder to release — conflict-resolution owns the slot
+	}
+	return "", true, nil
 }
 
 // ValidateTestCommand validates that a test command is safe to execute.
