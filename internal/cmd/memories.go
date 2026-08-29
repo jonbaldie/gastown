@@ -9,10 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var memoriesTypeFilter string
-
 func init() {
-	memoriesCmd.Flags().StringVar(&memoriesTypeFilter, "type", "", "Filter by memory type: feedback, project, user, reference, general")
+	memoriesCmd.Flags().String("type", "", "Filter by memory type: feedback, project, user, reference, general")
 	memoriesCmd.GroupID = GroupWork
 	rootCmd.AddCommand(memoriesCmd)
 }
@@ -40,7 +38,7 @@ Examples:
 	RunE: runMemories,
 }
 
-func runMemories(_ *cobra.Command, args []string) error {
+func runMemories(cmd *cobra.Command, args []string) error {
 	kvs, err := bdKvListJSON()
 	if err != nil {
 		return fmt.Errorf("listing memories: %w", err)
@@ -51,7 +49,7 @@ func runMemories(_ *cobra.Command, args []string) error {
 		search = strings.ToLower(args[0])
 	}
 
-	typeFilter := strings.ToLower(strings.TrimSpace(memoriesTypeFilter))
+	typeFilter := strings.ToLower(strings.TrimSpace(commandStringFlag(cmd, "type")))
 	if typeFilter != "" {
 		if _, ok := validMemoryTypes[typeFilter]; !ok {
 			return fmt.Errorf("invalid memory type %q — valid types: feedback, project, user, reference, general", typeFilter)
