@@ -15,10 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	doltFlattenConfirm bool
-)
-
 var doltFlattenCmd = &cobra.Command{
 	Use:   "flatten <database>",
 	Short: "Flatten database history to a single commit (NUCLEAR OPTION)",
@@ -41,15 +37,15 @@ Requires --yes-i-am-sure flag as safety interlock.`,
 }
 
 func init() {
-	doltFlattenCmd.Flags().BoolVar(&doltFlattenConfirm, "yes-i-am-sure", false,
+	doltFlattenCmd.Flags().Bool("yes-i-am-sure", false,
 		"Required safety flag to confirm you want to destroy history")
 	doltCmd.AddCommand(doltFlattenCmd)
 }
 
-func runDoltFlatten(_ *cobra.Command, args []string) error {
+func runDoltFlatten(cmd *cobra.Command, args []string) error {
 	dbName := args[0]
 
-	if !doltFlattenConfirm {
+	if !commandBoolFlag(cmd, "yes-i-am-sure") {
 		return fmt.Errorf("this command destroys all commit history. Pass --yes-i-am-sure to proceed")
 	}
 
