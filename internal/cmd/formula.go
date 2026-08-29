@@ -24,16 +24,6 @@ import (
 	"golang.org/x/text/language"
 )
 
-// Formula command flags
-var (
-	formulaRunPR     int
-	formulaRunRig    string
-	formulaRunDryRun bool
-	formulaRunAgent  string
-	formulaRunFiles  []string
-	formulaRunSet    []string
-)
-
 var formulaCmd = &cobra.Command{
 	Use:     "formula",
 	Aliases: []string{"formulas"},
@@ -165,12 +155,12 @@ func init() {
 	formulaShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Run flags
-	formulaRunCmd.Flags().IntVar(&formulaRunPR, "pr", 0, "GitHub PR number to run formula on")
-	formulaRunCmd.Flags().StringVar(&formulaRunRig, "rig", "", "Target rig (default: inferred from cwd, or sole registered rig)")
-	formulaRunCmd.Flags().BoolVar(&formulaRunDryRun, "dry-run", false, "Preview execution without running")
-	formulaRunCmd.Flags().StringVar(&formulaRunAgent, "agent", "", "Override agent/runtime for all legs (e.g., gemini, codex, claude-haiku)")
-	formulaRunCmd.Flags().StringSliceVar(&formulaRunFiles, "files", nil, "Files to pass to formula legs (available as {{.files}} in templates)")
-	formulaRunCmd.Flags().StringSliceVar(&formulaRunSet, "set", nil, "Set input variables as key=value pairs (available as {{.key}} in templates)")
+	formulaRunCmd.Flags().Int("pr", 0, "GitHub PR number to run formula on")
+	formulaRunCmd.Flags().String("rig", "", "Target rig (default: inferred from cwd, or sole registered rig)")
+	formulaRunCmd.Flags().Bool("dry-run", false, "Preview execution without running")
+	formulaRunCmd.Flags().String("agent", "", "Override agent/runtime for all legs (e.g., gemini, codex, claude-haiku)")
+	formulaRunCmd.Flags().StringSlice("files", nil, "Files to pass to formula legs (available as {{.files}} in templates)")
+	formulaRunCmd.Flags().StringSlice("set", nil, "Set input variables as key=value pairs (available as {{.key}} in templates)")
 
 	// Create flags
 	formulaCreateCmd.Flags().String("type", "task", "Formula type: task, workflow, or patrol")
@@ -182,6 +172,26 @@ func init() {
 	formulaCmd.AddCommand(formulaCreateCmd)
 
 	rootCmd.AddCommand(formulaCmd)
+}
+
+type formulaRunOptions struct {
+	pr     int
+	rig    string
+	dryRun bool
+	agent  string
+	files  []string
+	set    []string
+}
+
+func formulaRunOptionsFromCommand(cmd *cobra.Command) formulaRunOptions {
+	return formulaRunOptions{
+		pr:     commandIntFlag(cmd, "pr"),
+		rig:    commandStringFlag(cmd, "rig"),
+		dryRun: commandBoolFlag(cmd, "dry-run"),
+		agent:  commandStringFlag(cmd, "agent"),
+		files:  commandStringArrayFlag(cmd, "files"),
+		set:    commandStringArrayFlag(cmd, "set"),
+	}
 }
 
 // runFormulaList delegates to bd formula list
@@ -214,9 +224,10 @@ func runFormulaShow(cmd *cobra.Command, args []string) error {
 // runFormulaRun executes a formula by spawning a convoy of polecats.
 // For convoy-type formulas, it creates a convoy bead, creates leg beads,
 // and slings each leg to a separate polecat with leg-specific prompts.
-func runFormulaRun(_ *cobra.Command, args []string) error {
+func runFormulaRun(cmd *cobra.Command, args []string) error {
+	opts := formulaRunOptionsFromCommand(cmd)
 	// Determine target rig first (needed for default formula lookup)
-	targetRig := formulaRunRig
+	targetRig := opts.rig
 	var rigPath string
 	if targetRig == "" {
 		// Try to detect from current directory
@@ -280,15 +291,15 @@ func runFormulaRun(_ *cobra.Command, args []string) error {
 	}
 
 	// Handle dry-run mode
-	if formulaRunDryRun {
-		return dryRunFormula(f, formulaName, targetRig)
+	if opts.dryRun {
+		return dryRunFormula(f, formulaName, targetRig, opts)
 	}
 
 	switch f.Type {
 	case formula.TypeConvoy:
-		return executeConvoyFormula(f, formulaName, targetRig)
+		return executeConvoyFormula(f, formulaName, targetRig, opts)
 	case formula.TypeWorkflow:
-		return executeWorkflowFormula(f, formulaName, targetRig)
+		return executeWorkflowFormula(f, formulaName, targetRig, opts)
 	default:
 		fmt.Printf("%s Formula type '%s' not yet supported for execution.\n",
 			style.Dim.Render("Note:"), f.Type)
@@ -303,16 +314,16 @@ func runFormulaRun(_ *cobra.Command, args []string) error {
 }
 
 // dryRunFormula shows what would happen without executing
-func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
+func dryRunFormula(f *formula.Formula, formulaName, targetRig string, opts formulaRunOptions) error {
 	fmt.Printf("%s Would execute formula:\n", style.Dim.Render("[dry-run]"))
 	fmt.Printf("  Formula: %s\n", style.Bold.Render(formulaName))
 	fmt.Printf("  Type:    %s\n", f.Type)
 	fmt.Printf("  Rig:     %s\n", targetRig)
-	if formulaRunPR > 0 {
-		fmt.Printf("  PR:      #%d\n", formulaRunPR)
+	if opts.pr > 0 {
+		fmt.Printf("  PR:      #%d\n", opts.pr)
 	}
 	// Show effective agent override (GH#2118)
-	effectiveAgent := formulaRunAgent
+	effectiveAgent := opts.agent
 	if effectiveAgent == "" {
 		effectiveAgent = f.Agent
 	}
@@ -321,9 +332,9 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 	}
 
 	// Show --set variables if provided
-	if len(formulaRunSet) > 0 {
+	if len(opts.set) > 0 {
 		fmt.Printf("  Set:")
-		for _, s := range formulaRunSet {
+		for _, s := range opts.set {
 			fmt.Printf(" %s", s)
 		}
 		fmt.Println()
@@ -334,12 +345,12 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 		reviewID := generateFormulaShortID()
 
 		// Parse --set key=value pairs for template rendering
-		setVars := parseSetVars(formulaRunSet)
+		setVars := parseSetVars(opts.set)
 
 		// Build target description
 		var targetDescription string
-		if formulaRunPR > 0 {
-			targetDescription = fmt.Sprintf("PR #%d", formulaRunPR)
+		if opts.pr > 0 {
+			targetDescription = fmt.Sprintf("PR #%d", opts.pr)
 		} else {
 			targetDescription = "local files"
 		}
@@ -347,8 +358,8 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 		// Fetch PR info if --pr flag is set
 		var prTitle string
 		var changedFiles []map[string]interface{}
-		if formulaRunPR > 0 {
-			prTitle, changedFiles = fetchPRInfo(formulaRunPR)
+		if opts.pr > 0 {
+			prTitle, changedFiles = fetchPRInfo(opts.pr)
 			if prTitle != "" {
 				fmt.Printf("  PR Title: %s\n", prTitle)
 			}
@@ -361,7 +372,7 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 		var outputDir string
 		if f.Output != nil && f.Output.Directory != "" {
 			dirCtx := formulaTemplateContext(formulaName, targetDescription, reviewID,
-				formulaRunPR, prTitle, changedFiles, formulaRunFiles, setVars)
+				opts.pr, prTitle, changedFiles, opts.files, setVars)
 			outputDir = renderTemplateOrDefault(f.Output.Directory, dirCtx, ".reviews/"+reviewID)
 			fmt.Printf("\n  Output directory: %s\n", outputDir)
 		}
@@ -371,7 +382,7 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 			// Show rendered output path for each leg
 			if f.Output != nil && outputDir != "" {
 				legCtx := formulaTemplateContext(formulaName, targetDescription, reviewID,
-					formulaRunPR, prTitle, changedFiles, formulaRunFiles, setVars)
+					opts.pr, prTitle, changedFiles, opts.files, setVars)
 				legCtx["leg"] = map[string]interface{}{
 					"id":          leg.ID,
 					"title":       leg.Title,
@@ -380,13 +391,13 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 				}
 				legPattern := renderTemplateOrDefault(f.Output.LegPattern, legCtx, leg.ID+"-findings.md")
 				outputPath := filepath.Join(outputDir, legPattern)
-				agentSuffix := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
+				agentSuffix := resolveFormulaLegAgent(leg.Agent, opts.agent, f.Agent)
 				if agentSuffix != "" {
 					agentSuffix = fmt.Sprintf(" [agent: %s]", agentSuffix)
 				}
 				fmt.Printf("    • %s: %s%s\n      → %s\n", leg.ID, leg.Title, agentSuffix, outputPath)
 			} else {
-				agentSuffix := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
+				agentSuffix := resolveFormulaLegAgent(leg.Agent, opts.agent, f.Agent)
 				if agentSuffix != "" {
 					agentSuffix = fmt.Sprintf(" [agent: %s]", agentSuffix)
 				}
@@ -423,7 +434,7 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 }
 
 // executeConvoyFormula spawns a convoy of polecats to execute a convoy formula
-func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) error {
+func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string, opts formulaRunOptions) error {
 	fmt.Printf("%s Executing convoy formula: %s\n\n",
 		style.Bold.Render("🚚"), formulaName)
 
@@ -461,8 +472,8 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 	// Build description with formula context
 	description := fmt.Sprintf("Formula convoy: %s\n\nLegs: %d\nRig: %s",
 		formulaName, len(f.Legs), targetRig)
-	if formulaRunPR > 0 {
-		description += fmt.Sprintf("\nPR: #%d", formulaRunPR)
+	if opts.pr > 0 {
+		description += fmt.Sprintf("\nPR: #%d", opts.pr)
 	}
 
 	// Guard against flag-like convoy titles (gt-e0kx5)
@@ -496,8 +507,8 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 
 	// Build target description
 	var targetDescription string
-	if formulaRunPR > 0 {
-		targetDescription = fmt.Sprintf("PR #%d", formulaRunPR)
+	if opts.pr > 0 {
+		targetDescription = fmt.Sprintf("PR #%d", opts.pr)
 	} else {
 		targetDescription = "local files"
 	}
@@ -505,18 +516,18 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 	// Fetch PR info if --pr flag is set
 	var prTitle string
 	var changedFiles []map[string]interface{}
-	if formulaRunPR > 0 {
-		prTitle, changedFiles = fetchPRInfo(formulaRunPR)
+	if opts.pr > 0 {
+		prTitle, changedFiles = fetchPRInfo(opts.pr)
 	}
 
 	// Parse --set key=value pairs for template rendering.
-	setVars := parseSetVars(formulaRunSet)
+	setVars := parseSetVars(opts.set)
 
 	// Create output directory if configured
 	var outputDir string
 	if f.Output != nil && f.Output.Directory != "" {
 		dirCtx := formulaTemplateContext(formulaName, targetDescription, reviewID,
-			formulaRunPR, prTitle, changedFiles, formulaRunFiles, setVars)
+			opts.pr, prTitle, changedFiles, opts.files, setVars)
 		outputDir = renderTemplateOrDefault(f.Output.Directory, dirCtx, ".reviews/"+reviewID)
 
 		// Create the directory
@@ -539,7 +550,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 			if basePrompt, ok := f.Prompts["base"]; ok {
 				// Build template context for this leg
 				legCtx := formulaTemplateContext(formulaName, targetDescription, reviewID,
-					formulaRunPR, prTitle, changedFiles, formulaRunFiles, setVars)
+					opts.pr, prTitle, changedFiles, opts.files, setVars)
 				legCtx["leg"] = map[string]interface{}{
 					"id":          leg.ID,
 					"title":       leg.Title,
@@ -607,7 +618,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 			synDesc = "Synthesize findings from all legs into unified output"
 		}
 		synCtx := formulaTemplateContext(formulaName, targetDescription, reviewID,
-			formulaRunPR, prTitle, changedFiles, formulaRunFiles, setVars)
+			opts.pr, prTitle, changedFiles, opts.files, setVars)
 		if f.Output != nil {
 			addOutputTemplateContext(synCtx, outputDir, f.Output.Synthesis)
 		}
@@ -666,7 +677,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		contextMsg := fmt.Sprintf("Convoy leg: %s\nFocus: %s", leg.Title, leg.Focus)
 
 		// Agent precedence (GH#2118): per-leg > CLI --agent > formula-level
-		legAgent := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
+		legAgent := resolveFormulaLegAgent(leg.Agent, opts.agent, f.Agent)
 
 		slingArgs := buildConvoyLegSlingArgs(legBeadID, targetRig, leg.Description, leg.Title, legAgent, leg.ReviewOnly || f.ReviewOnly)
 
@@ -704,7 +715,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 // executeWorkflowFormula creates step beads with dependency wiring and dispatches
 // ready steps (those with no unmet needs) to polecats on the target rig.
 // Subsequent steps are auto-dispatched when their dependencies close. (gt-jh68)
-func executeWorkflowFormula(f *formula.Formula, formulaName, targetRig string) error {
+func executeWorkflowFormula(f *formula.Formula, formulaName, targetRig string, opts formulaRunOptions) error {
 	fmt.Printf("%s Executing workflow formula: %s\n\n",
 		style.Bold.Render("📋"), formulaName)
 
@@ -769,7 +780,7 @@ func executeWorkflowFormula(f *formula.Formula, formulaName, targetRig string) e
 
 	// Step 2: Create step beads and wire dependencies
 	stepBeads := make(map[string]string) // step.ID -> bead ID
-	setVars := parseSetVars(formulaRunSet)
+	setVars := parseSetVars(opts.set)
 
 	for _, step := range f.Steps {
 		stepBeadID := fmt.Sprintf("%s-wfs-%s", rigPrefix, generateFormulaShortID())
@@ -870,7 +881,7 @@ func executeWorkflowFormula(f *formula.Formula, formulaName, targetRig string) e
 		// Non-interactive step: sling to the step's target, or to the rig's
 		// polecat pool by default.
 		// Agent precedence: CLI --agent > formula-level
-		stepAgent := formulaRunAgent
+		stepAgent := opts.agent
 		if stepAgent == "" {
 			stepAgent = f.Agent
 		}
