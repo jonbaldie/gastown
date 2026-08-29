@@ -16,12 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	quickAddUser  string
-	quickAddYes   bool
-	quickAddQuiet bool
-)
-
 var rigQuickAddCmd = &cobra.Command{
 	Use:    "quick-add [path]",
 	Short:  "Quickly add current repo to Gas Town",
@@ -41,12 +35,14 @@ Examples:
 
 func init() {
 	rigCmd.AddCommand(rigQuickAddCmd)
-	rigQuickAddCmd.Flags().StringVar(&quickAddUser, "user", "", "Crew workspace name (default: $USER)")
-	rigQuickAddCmd.Flags().BoolVar(&quickAddYes, "yes", false, "Non-interactive, assume yes")
-	rigQuickAddCmd.Flags().BoolVar(&quickAddQuiet, "quiet", false, "Minimal output")
+	rigQuickAddCmd.Flags().String("user", "", "Crew workspace name (default: $USER)")
+	rigQuickAddCmd.Flags().Bool("yes", false, "Non-interactive, assume yes")
+	rigQuickAddCmd.Flags().Bool("quiet", false, "Minimal output")
 }
 
-func runRigQuickAdd(_ *cobra.Command, args []string) error {
+func runRigQuickAdd(cmd *cobra.Command, args []string) error {
+	quickAddUser := commandStringFlag(cmd, "user")
+	quickAddQuiet := commandBoolFlag(cmd, "quiet")
 	targetPath := "."
 	if len(args) > 0 {
 		targetPath = args[0]
