@@ -39,12 +39,6 @@ func init() {
 
 // runMailHook attaches mail to the hook - delegates to the hook command's logic
 func runMailHook(cmd *cobra.Command, args []string) error {
-	// Copy flags to hook command's globals (they share the same functionality)
-	hookSubject = commandStringFlag(cmd, "subject")
-	hookMessage = commandStringFlag(cmd, "message")
-	hookDryRun = commandBoolFlag(cmd, "dry-run")
-	hookForce = commandBoolFlag(cmd, "force")
-
 	// Delegate to the hook command's run function
 	return runHook(cmd, args)
 }

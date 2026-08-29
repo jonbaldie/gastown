@@ -121,7 +121,7 @@ Examples:
   gt hook detach gt-abc gastown/nux   # Detach gt-abc from nux's hook`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runUnslingWith(cmd, args, hookDryRun, hookForce)
+		return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 	},
 }
 
@@ -147,21 +147,13 @@ Related commands:
 	RunE: runHookClear,
 }
 
-var (
-	hookSubject string
-	hookMessage string
-	hookDryRun  bool
-	hookForce   bool
-	hookClear   bool
-)
-
 func init() {
 	// Flags for attaching work (gt hook <bead-id>)
-	hookCmd.Flags().StringVarP(&hookSubject, "subject", "s", "", "Subject for handoff mail (optional)")
-	hookCmd.Flags().StringVarP(&hookMessage, "message", "m", "", "Message for handoff mail (optional)")
-	hookCmd.Flags().BoolVarP(&hookDryRun, "dry-run", "n", false, "Show what would be done")
-	hookCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Replace existing incomplete hooked bead")
-	hookCmd.Flags().BoolVar(&hookClear, "clear", false, "Clear your hook (alias for 'gt unhook')")
+	hookCmd.Flags().StringP("subject", "s", "", "Subject for handoff mail (optional)")
+	hookCmd.Flags().StringP("message", "m", "", "Message for handoff mail (optional)")
+	hookCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
+	hookCmd.Flags().BoolP("force", "f", false, "Replace existing incomplete hooked bead")
+	hookCmd.Flags().Bool("clear", false, "Clear your hook (alias for 'gt unhook')")
 
 	// --json flag for status output (used when no args, i.e., gt hook --json)
 	hookCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON (for status)")
@@ -169,14 +161,14 @@ func init() {
 	hookShowCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
 
 	// Flags for attach subcommand
-	hookAttachCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Replace existing incomplete hooked bead")
+	hookAttachCmd.Flags().BoolP("force", "f", false, "Replace existing incomplete hooked bead")
 
 	// Flags for detach subcommand (mirror unsling flags)
-	hookDetachCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Detach even if work is incomplete")
+	hookDetachCmd.Flags().BoolP("force", "f", false, "Detach even if work is incomplete")
 
 	// Flags for clear subcommand (mirror unsling flags)
-	hookClearCmd.Flags().BoolVarP(&hookDryRun, "dry-run", "n", false, "Show what would be done")
-	hookClearCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Clear even if work is incomplete")
+	hookClearCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
+	hookClearCmd.Flags().BoolP("force", "f", false, "Clear even if work is incomplete")
 
 	hookCmd.AddCommand(hookStatusCmd)
 	hookCmd.AddCommand(hookShowCmd)
@@ -190,8 +182,8 @@ func init() {
 // runHookOrStatus dispatches to status, clear, or hook based on args/flags
 func runHookOrStatus(cmd *cobra.Command, args []string) error {
 	// --clear flag is alias for 'gt unhook'
-	if hookClear {
-		return runUnslingWith(cmd, args, hookDryRun, hookForce)
+	if commandBoolFlag(cmd, "clear") {
+		return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 	}
 	if len(args) == 0 {
 		// No args - show status
@@ -203,10 +195,14 @@ func runHookOrStatus(cmd *cobra.Command, args []string) error {
 
 // runHookClear handles 'gt hook clear' - delegates to runUnsling
 func runHookClear(cmd *cobra.Command, args []string) error {
-	return runUnslingWith(cmd, args, hookDryRun, hookForce)
+	return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 }
 
-func runHook(_ *cobra.Command, args []string) error {
+func runHook(cmd *cobra.Command, args []string) error {
+	subject := commandStringFlag(cmd, "subject")
+	message := commandStringFlag(cmd, "message")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	force := commandBoolFlag(cmd, "force")
 	beadID := args[0]
 	if err := ensureCurrentHookWorktreeIntegrity(); err != nil {
 		return err
@@ -320,7 +316,7 @@ func runHook(_ *cobra.Command, args []string) error {
 		if isComplete {
 			// Auto-replace completed bead
 			fmt.Printf("%s Replacing completed bead %s...\n", style.Dim.Render("ℹ"), existing.ID)
-			if !hookDryRun {
+			if !dryRun {
 				if hasAttachment {
 					if err := closeCompletedHookedMolecule(workDir, existing.ID); err != nil {
 						return fmt.Errorf("closing completed bead %s: %w", existing.ID, err)
@@ -333,10 +329,10 @@ func runHook(_ *cobra.Command, args []string) error {
 					}
 				}
 			}
-		} else if hookForce {
+		} else if force {
 			// Force replace incomplete bead
 			fmt.Printf("%s Force-replacing incomplete bead %s...\n", style.Dim.Render("⚠"), existing.ID)
-			if !hookDryRun {
+			if !dryRun {
 				// Unpin by setting status back to open
 				status := "open"
 				if err := b.Update(existing.ID, beads.UpdateOptions{Status: &status}); err != nil {
@@ -356,13 +352,13 @@ func runHook(_ *cobra.Command, args []string) error {
 		fmt.Printf("%s Hooking %s...\n", style.Bold.Render("🪝"), beadID)
 	}
 
-	if hookDryRun {
+	if dryRun {
 		fmt.Printf("Would run: bd update %s --status=hooked --assignee=%s\n", beadID, agentID)
-		if hookSubject != "" {
-			fmt.Printf("  subject (for handoff mail): %s\n", hookSubject)
+		if subject != "" {
+			fmt.Printf("  subject (for handoff mail): %s\n", subject)
 		}
-		if hookMessage != "" {
-			fmt.Printf("  context (for handoff mail): %s\n", hookMessage)
+		if message != "" {
+			fmt.Printf("  context (for handoff mail): %s\n", message)
 		}
 		return nil
 	}
