@@ -757,46 +757,53 @@ func createStagedConvoy(dag *ConvoyDAG, waves []Wave, status string, title strin
 	// Resolve the actual .beads directory (follows redirects) before calling
 	// EnsureCustomTypes/Statuses, which expect a .beads path, not a workspace root.
 	resolvedBeads := beads.ResolveBeadsDir(townBeads)
+	if err := ensureStagedConvoyConfig(resolvedBeads); err != nil {
+		return "", err
+	}
 
-	// Ensure custom types (including 'convoy') are registered in town beads.
+	convoyID, title, description, slingableIDs := stagedConvoyDetails(dag, waves, title)
+	if err := createStagedConvoyBead(townBeads, convoyID, title, description, status); err != nil {
+		return "", err
+	}
+	trackStagedConvoyBeads(townBeads, convoyID, slingableIDs)
+
+	return convoyID, nil
+}
+
+func ensureStagedConvoyConfig(resolvedBeads string) error {
 	if err := beads.EnsureCustomTypes(resolvedBeads); err != nil {
-		return "", fmt.Errorf("ensuring custom types: %w", err)
+		return fmt.Errorf("ensuring custom types: %w", err)
 	}
-
-	// Ensure custom statuses (staged_ready, staged_warnings) are registered.
 	if err := beads.EnsureCustomStatuses(resolvedBeads); err != nil {
-		return "", fmt.Errorf("ensuring custom statuses: %w", err)
+		return fmt.Errorf("ensuring custom statuses: %w", err)
 	}
+	return nil
+}
 
-	// Generate convoy ID.
-	convoyID := fmt.Sprintf("hq-cv-%s", generateShortID())
-
-	// Count slingable tasks and unique rigs.
+func stagedConvoyDetails(dag *ConvoyDAG, waves []Wave, title string) (string, string, string, []string) {
 	taskCount := 0
 	rigSet := make(map[string]bool)
 	var slingableIDs []string
 	for _, node := range dag.Nodes {
-		if isSlingableType(node.Type) {
-			taskCount++
-			slingableIDs = append(slingableIDs, node.ID)
-			if node.Rig != "" {
-				rigSet[node.Rig] = true
-			}
+		if !isSlingableType(node.Type) {
+			continue
+		}
+		taskCount++
+		slingableIDs = append(slingableIDs, node.ID)
+		if node.Rig != "" {
+			rigSet[node.Rig] = true
 		}
 	}
-	rigCount := len(rigSet)
-
-	// Sort slingable IDs for determinism.
 	sort.Strings(slingableIDs)
-
-	// Build title and description.
 	if title == "" {
-		title = fmt.Sprintf("Staged: %d beads across %d rigs", taskCount, rigCount)
+		title = fmt.Sprintf("Staged: %d beads across %d rigs", taskCount, len(rigSet))
 	}
 	description := fmt.Sprintf("Staged convoy: %d tasks, %d waves. Staged at %s",
 		taskCount, len(waves), time.Now().UTC().Format(time.RFC3339))
+	return fmt.Sprintf("hq-cv-%s", generateShortID()), title, description, slingableIDs
+}
 
-	// Create the convoy via bd create in town beads, then set status via bd update.
+func createStagedConvoyBead(townBeads, convoyID, title, description, status string) error {
 	createArgs := []string{
 		"create",
 		"--type=task",
@@ -809,26 +816,22 @@ func createStagedConvoy(dag *ConvoyDAG, waves []Wave, status string, title strin
 		createArgs = append(createArgs, "--force")
 	}
 	if out, err := BdCmd(createArgs...).Dir(townBeads).WithAutoCommit().CombinedOutput(); err != nil {
-		return "", fmt.Errorf("bd create convoy: %w\noutput: %s", err, out)
+		return fmt.Errorf("bd create convoy: %w\noutput: %s", err, out)
 	}
-
-	// Set the staged status.
-	// Strip BEADS_DIR so bd discovers the correct database from Dir()
-	// rather than using an inherited (possibly wrong) override.
 	if out, err := BdCmd("update", convoyID, "--status="+status).
 		Dir(townBeads).StripBeadsDir().WithAutoCommit().
 		CombinedOutput(); err != nil {
-		return "", fmt.Errorf("bd update convoy status: %w\noutput: %s", err, out)
+		return fmt.Errorf("bd update convoy status: %w\noutput: %s", err, out)
 	}
+	return nil
+}
 
-	// Track each slingable bead via the typed dependency helper.
+func trackStagedConvoyBeads(townBeads, convoyID string, slingableIDs []string) {
 	for _, beadID := range slingableIDs {
 		if err := addTrackingRelationFn(townBeads, convoyID, beadID); err != nil {
 			printStageWarning("  Warning: could not track %s in convoy: %v\n", beadID, err)
 		}
 	}
-
-	return convoyID, nil
 }
 
 // updateStagedConvoy updates an existing staged convoy in place.
