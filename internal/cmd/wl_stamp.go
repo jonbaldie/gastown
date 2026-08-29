@@ -109,36 +109,49 @@ func runWlStamp(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
+	wlCfg, author, err := loadWlStampAuthor(townRoot, opts.subject)
+	if err != nil {
+		return err
+	}
+
+	stamp := buildWlStampRecord(author, opts)
+
+	local, err := persistWlStamp(townRoot, wlCfg, stamp)
+	if err != nil {
+		return err
+	}
+	if local {
+		return nil
+	}
+
+	printWlStampSummary(stamp, opts)
+	return nil
+}
+
+func loadWlStampAuthor(townRoot, subject string) (*wasteland.Config, string, error) {
 	wlCfg, err := wasteland.LoadConfig(townRoot)
 	if err != nil {
-		return fmt.Errorf("loading wasteland config: %w", err)
+		return nil, "", fmt.Errorf("loading wasteland config: %w", err)
 	}
 	author := wlCfg.RigHandle
-
-	if author == opts.subject {
-		return fmt.Errorf("cannot stamp yourself (author=%q, subject=%q)", author, opts.subject)
+	if author == subject {
+		return nil, "", fmt.Errorf("cannot stamp yourself (author=%q, subject=%q)", author, subject)
 	}
+	return wlCfg, author, nil
+}
 
-	// Build valence JSON
+func buildWlStampRecord(author string, opts stampOptions) *doltserver.StampRecord {
 	valence := buildValenceJSON(opts.quality, opts.reliability, opts.creativity)
-
-	// Build skill tags JSON
 	skillTagsJSON := ""
 	if len(opts.skills) > 0 {
 		skillTagsJSON = buildSkillTagsJSON(opts.skills)
 	}
-
-	// Compute confidence (default to 0.7 if not specified — "trusted" tier)
 	confidence := opts.confidence
 	if confidence < 0 {
 		confidence = 0.7
 	}
-
-	// Generate stamp ID from content hash
-	stampID := generateStampID(author, opts.subject, valence, opts.completionID)
-
-	stamp := &doltserver.StampRecord{
-		ID:          stampID,
+	return &doltserver.StampRecord{
+		ID:          generateStampID(author, opts.subject, valence, opts.completionID),
 		Author:      author,
 		Subject:     opts.subject,
 		Valence:     valence,
@@ -152,26 +165,29 @@ func runWlStamp(cmd *cobra.Command, _ []string) error {
 		Message:     opts.message,
 		StampIndex:  -1, // will be computed below
 	}
+}
 
+func persistWlStamp(townRoot string, wlCfg *wasteland.Config, stamp *doltserver.StampRecord) (bool, error) {
 	dbName := wasteland.ResolveDBName(townRoot)
 	if !doltserver.DatabaseExists(townRoot, dbName) {
 		if wlCfg.LocalDir == "" {
-			return fmt.Errorf("database %q not found\nJoin a wasteland first with: gt wl join <org/db>", dbName)
+			return false, fmt.Errorf("database %q not found\nJoin a wasteland first with: gt wl join <org/db>", dbName)
 		}
-		return insertStampInLocalClone(wlCfg.LocalDir, stamp)
+		return true, insertStampInLocalClone(wlCfg.LocalDir, stamp)
 	}
-
-	store := doltserver.NewWLCommons(townRoot)
-	if err := insertStamp(store, stamp); err != nil {
-		return err
+	if err := insertStamp(doltserver.NewWLCommons(townRoot), stamp); err != nil {
+		return false, err
 	}
+	return false, nil
+}
 
+func printWlStampSummary(stamp *doltserver.StampRecord, opts stampOptions) {
 	fmt.Printf("%s Stamp created\n", style.Bold.Render("✓"))
-	fmt.Printf("  Stamp ID: %s\n", stampID)
-	fmt.Printf("  Author: %s\n", author)
-	fmt.Printf("  Subject: %s\n", opts.subject)
-	fmt.Printf("  Valence: %s\n", valence)
-	fmt.Printf("  Confidence: %.2f\n", confidence)
+	fmt.Printf("  Stamp ID: %s\n", stamp.ID)
+	fmt.Printf("  Author: %s\n", stamp.Author)
+	fmt.Printf("  Subject: %s\n", stamp.Subject)
+	fmt.Printf("  Valence: %s\n", stamp.Valence)
+	fmt.Printf("  Confidence: %.2f\n", stamp.Confidence)
 	fmt.Printf("  Severity: %s\n", opts.severity)
 	fmt.Printf("  Type: %s\n", opts.stampType)
 	if opts.pilotCohort != "" {
@@ -183,24 +199,50 @@ func runWlStamp(cmd *cobra.Command, _ []string) error {
 	if stamp.StampIndex >= 0 {
 		fmt.Printf("  Stamp index: %d\n", stamp.StampIndex)
 	}
-
-	return nil
 }
 
 func validateStampInputs(opts stampOptions) error {
-	if opts.quality < 0 || opts.quality > 5 {
-		return fmt.Errorf("quality must be 0-5 (got %.1f)", opts.quality)
+	if err := validateStampScores(opts); err != nil {
+		return err
 	}
-	if opts.reliability >= 0 && opts.reliability > 5 {
-		return fmt.Errorf("reliability must be 0-5 (got %.1f)", opts.reliability)
-	}
-	if opts.creativity >= 0 && opts.creativity > 5 {
-		return fmt.Errorf("creativity must be 0-5 (got %.1f)", opts.creativity)
-	}
-	if opts.confidence >= 0 && (opts.confidence < 0 || opts.confidence > 1) {
-		return fmt.Errorf("confidence must be 0.0-1.0 (got %.2f)", opts.confidence)
-	}
+	return validateStampMetadata(opts)
+}
 
+func validateStampScores(opts stampOptions) error {
+	if err := validateQualityScore(opts.quality); err != nil {
+		return err
+	}
+	if err := validateOptionalScore("reliability", opts.reliability); err != nil {
+		return err
+	}
+	if err := validateOptionalScore("creativity", opts.creativity); err != nil {
+		return err
+	}
+	return validateConfidenceScore(opts.confidence)
+}
+
+func validateQualityScore(quality float64) error {
+	if quality < 0 || quality > 5 {
+		return fmt.Errorf("quality must be 0-5 (got %.1f)", quality)
+	}
+	return nil
+}
+
+func validateOptionalScore(name string, score float64) error {
+	if score >= 0 && score > 5 {
+		return fmt.Errorf("%s must be 0-5 (got %.1f)", name, score)
+	}
+	return nil
+}
+
+func validateConfidenceScore(confidence float64) error {
+	if confidence >= 0 && (confidence < 0 || confidence > 1) {
+		return fmt.Errorf("confidence must be 0.0-1.0 (got %.2f)", confidence)
+	}
+	return nil
+}
+
+func validateStampMetadata(opts stampOptions) error {
 	validSeverities := map[string]bool{"leaf": true, "branch": true, "root": true}
 	if !validSeverities[opts.severity] {
 		return fmt.Errorf("severity must be leaf, branch, or root (got %q)", opts.severity)
