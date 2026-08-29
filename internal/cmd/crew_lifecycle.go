@@ -24,167 +24,167 @@ import (
 )
 
 func runCrewRemove(_ *cobra.Command, args []string) error {
-	var lastErr error
-
-	// --purge implies --force
 	forceRemove := crewForce || crewPurge
-
+	var lastErr error
 	for _, arg := range args {
-		name := arg
-		rigOverride := crewRig
-
-		// Parse rig/name format (e.g., "beads/emma" -> rig=beads, name=emma)
-		if rig, crewName, ok := parseRigSlashName(name); ok {
-			if rigOverride == "" {
-				rigOverride = rig
-			}
-			name = crewName
-		}
-
-		crewMgr, r, err := getCrewManagerForMember(rigOverride, name)
-		if err != nil {
-			fmt.Printf("Error removing %s: %v\n", arg, err)
+		if err := removeCrewMember(arg, forceRemove); err != nil {
 			lastErr = err
-			continue
-		}
-
-		// Check for running session (unless forced)
-		if !forceRemove {
-			t := tmux.NewTmux()
-			sessionID := crewSessionName(r.Name, name)
-			hasSession, _ := t.HasSession(sessionID)
-			if hasSession {
-				fmt.Printf("Error removing %s: session '%s' is running (use --force to kill and remove)\n", arg, sessionID)
-				lastErr = fmt.Errorf("session running")
-				continue
-			}
-		}
-
-		// Kill session if it exists (with proper process cleanup to avoid orphans)
-		t := tmux.NewTmux()
-		sessionID := crewSessionName(r.Name, name)
-		if hasSession, _ := t.HasSession(sessionID); hasSession {
-			if err := t.KillSessionWithProcesses(sessionID); err != nil {
-				fmt.Printf("Error killing session for %s: %v\n", arg, err)
-				lastErr = err
-				continue
-			}
-			fmt.Printf("Killed session %s\n", sessionID)
-		}
-
-		// Determine workspace path
-		crewPath := filepath.Join(r.Path, "crew", name)
-
-		// Check if this is a worktree (has .git file) vs regular clone (has .git directory)
-		isWorktree := false
-		gitPath := filepath.Join(crewPath, ".git")
-		if info, err := os.Stat(gitPath); err == nil && !info.IsDir() {
-			isWorktree = true
-		}
-
-		// Remove the workspace
-		if isWorktree {
-			// For worktrees, use git worktree remove
-			mayorRigPath := constants.RigMayorPath(r.Path)
-			removeArgs := []string{"worktree", "remove", crewPath}
-			if forceRemove {
-				removeArgs = []string{"worktree", "remove", "--force", crewPath}
-			}
-			removeCmd := exec.Command("git", removeArgs...)
-			removeCmd.Dir = mayorRigPath
-			if output, err := removeCmd.CombinedOutput(); err != nil {
-				fmt.Printf("Error removing worktree %s: %v\n%s", arg, err, string(output))
-				lastErr = err
-				continue
-			}
-			fmt.Printf("%s Removed crew worktree: %s/%s\n",
-				style.Bold.Render("✓"), r.Name, name)
-		} else {
-			// For regular clones, use the crew manager
-			if err := crewMgr.Remove(name, forceRemove); err != nil {
-				if err == crew.ErrCrewNotFound {
-					fmt.Printf("Error removing %s: crew workspace not found\n", arg)
-				} else if err == crew.ErrHasChanges {
-					fmt.Printf("Error removing %s: uncommitted changes (use --force)\n", arg)
-				} else {
-					fmt.Printf("Error removing %s: %v\n", arg, err)
-				}
-				lastErr = err
-				continue
-			}
-			fmt.Printf("%s Removed crew workspace: %s/%s\n",
-				style.Bold.Render("✓"), r.Name, name)
-		}
-
-		// Handle agent bead
-		townRoot, _ := workspace.Find(r.Path)
-		if townRoot == "" {
-			townRoot = r.Path
-		}
-		prefix := beads.GetPrefixForRig(townRoot, r.Name)
-		agentBeadID := beads.CrewBeadIDWithPrefix(prefix, r.Name, name)
-
-		if crewPurge {
-			// --purge: DELETE the agent bead entirely (obliterate)
-			deleteArgs := []string{"delete", agentBeadID, "--force"}
-			deleteCmd := beads.Spawn(deleteArgs...)
-			deleteCmd.Dir = r.Path
-			if output, err := deleteCmd.CombinedOutput(); err != nil {
-				// Non-fatal: bead might not exist
-				if !strings.Contains(string(output), "no issue found") &&
-					!strings.Contains(string(output), "not found") {
-					style.PrintWarning("could not delete agent bead %s: %v", agentBeadID, err)
-				}
-			} else {
-				fmt.Printf("Deleted agent bead: %s\n", agentBeadID)
-			}
-
-			// Unassign any beads assigned to this crew member
-			agentAddr := fmt.Sprintf("%s/crew/%s", r.Name, name)
-			unassignArgs := []string{"list", "--assignee=" + agentAddr, "--format=id"}
-			unassignCmd := beads.Spawn(unassignArgs...)
-			unassignCmd.Dir = r.Path
-			if output, err := unassignCmd.CombinedOutput(); err == nil {
-				ids := strings.Fields(strings.TrimSpace(string(output)))
-				for _, id := range ids {
-					if id == "" {
-						continue
-					}
-					updateCmd := beads.Spawn("update", id, "--unassign")
-					updateCmd.Dir = r.Path
-					if _, err := updateCmd.CombinedOutput(); err == nil {
-						fmt.Printf("Unassigned: %s\n", id)
-					}
-				}
-			}
-
-			// Clear mail directory if it exists
-			mailDir := filepath.Join(crewPath, "mail")
-			if _, err := os.Stat(mailDir); err == nil {
-				// Mail dir was removed with the workspace, so nothing to do
-				// But if we want to be extra thorough, we could look in town beads
-			}
-		} else {
-			// Default: CLOSE the agent bead (preserves CV history)
-			closeArgs := []string{"close", agentBeadID, "--reason=Crew workspace removed"}
-			if sessionID := runtime.SessionIDFromEnv(); sessionID != "" {
-				closeArgs = append(closeArgs, "--session="+sessionID)
-			}
-			closeCmd := beads.Spawn(closeArgs...)
-			closeCmd.Dir = r.Path
-			if output, err := closeCmd.CombinedOutput(); err != nil {
-				// Non-fatal: bead might not exist or already be closed
-				if !strings.Contains(string(output), "no issue found") &&
-					!strings.Contains(string(output), "already closed") {
-					style.PrintWarning("could not close agent bead %s: %v", agentBeadID, err)
-				}
-			} else {
-				fmt.Printf("Closed agent bead: %s\n", agentBeadID)
-			}
 		}
 	}
-
 	return lastErr
+}
+
+func removeCrewMember(arg string, forceRemove bool) error {
+	name, rigOverride := crewRemoveTarget(arg)
+	crewMgr, r, err := getCrewManagerForMember(rigOverride, name)
+	if err != nil {
+		fmt.Printf("Error removing %s: %v\n", arg, err)
+		return err
+	}
+	if err := stopCrewRemovalSession(r.Name, name, arg, forceRemove); err != nil {
+		return err
+	}
+	crewPath := filepath.Join(r.Path, "crew", name)
+	if err := removeCrewWorkspace(crewMgr, r.Path, r.Name, name, arg, crewPath, forceRemove); err != nil {
+		return err
+	}
+	handleCrewRemoveAgentBead(r.Path, r.Name, name)
+	return nil
+}
+
+func crewRemoveTarget(arg string) (string, string) {
+	rigOverride := crewRig
+	if rig, crewName, ok := parseRigSlashName(arg); ok {
+		if rigOverride == "" {
+			rigOverride = rig
+		}
+		return crewName, rigOverride
+	}
+	return arg, rigOverride
+}
+
+func stopCrewRemovalSession(rigName, name, arg string, forceRemove bool) error {
+	sessionID := crewSessionName(rigName, name)
+	if !forceRemove {
+		t := tmux.NewTmux()
+		if hasSession, _ := t.HasSession(sessionID); hasSession {
+			fmt.Printf("Error removing %s: session '%s' is running (use --force to kill and remove)\n", arg, sessionID)
+			return fmt.Errorf("session running")
+		}
+	}
+	t := tmux.NewTmux()
+	if hasSession, _ := t.HasSession(sessionID); !hasSession {
+		return nil
+	} else if err := t.KillSessionWithProcesses(sessionID); err != nil {
+		fmt.Printf("Error killing session for %s: %v\n", arg, err)
+		return err
+	}
+	fmt.Printf("Killed session %s\n", sessionID)
+	return nil
+}
+
+func removeCrewWorkspace(crewMgr *crew.Manager, rigPath, rigName, name, arg, crewPath string, forceRemove bool) error {
+	if isCrewWorktree(crewPath) {
+		return removeCrewWorktree(rigPath, rigName, name, arg, crewPath, forceRemove)
+	}
+	if err := crewMgr.Remove(name, forceRemove); err != nil {
+		printCrewRemoveError(arg, err)
+		return err
+	}
+	fmt.Printf("%s Removed crew workspace: %s/%s\n", style.Bold.Render("✓"), rigName, name)
+	return nil
+}
+
+func isCrewWorktree(crewPath string) bool {
+	info, err := os.Stat(filepath.Join(crewPath, ".git"))
+	return err == nil && !info.IsDir()
+}
+
+func removeCrewWorktree(rigPath, rigName, name, arg, crewPath string, forceRemove bool) error {
+	removeArgs := []string{"worktree", "remove", crewPath}
+	if forceRemove {
+		removeArgs = []string{"worktree", "remove", "--force", crewPath}
+	}
+	removeCmd := exec.Command("git", removeArgs...)
+	removeCmd.Dir = constants.RigMayorPath(rigPath)
+	output, err := removeCmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Error removing worktree %s: %v\n%s", arg, err, string(output))
+		return err
+	}
+	fmt.Printf("%s Removed crew worktree: %s/%s\n", style.Bold.Render("✓"), rigName, name)
+	return nil
+}
+
+func printCrewRemoveError(arg string, err error) {
+	if err == crew.ErrCrewNotFound {
+		fmt.Printf("Error removing %s: crew workspace not found\n", arg)
+	} else if err == crew.ErrHasChanges {
+		fmt.Printf("Error removing %s: uncommitted changes (use --force)\n", arg)
+	} else {
+		fmt.Printf("Error removing %s: %v\n", arg, err)
+	}
+}
+
+func handleCrewRemoveAgentBead(rigPath, rigName, name string) {
+	townRoot, _ := workspace.Find(rigPath)
+	if townRoot == "" {
+		townRoot = rigPath
+	}
+	prefix := beads.GetPrefixForRig(townRoot, rigName)
+	agentBeadID := beads.CrewBeadIDWithPrefix(prefix, rigName, name)
+	if crewPurge {
+		purgeCrewAgentBead(rigPath, rigName, name, agentBeadID)
+		return
+	}
+	closeCrewAgentBead(rigPath, agentBeadID)
+}
+
+func purgeCrewAgentBead(rigPath, rigName, name, agentBeadID string) {
+	deleteCmd := beads.Spawn("delete", agentBeadID, "--force")
+	deleteCmd.Dir = rigPath
+	if output, err := deleteCmd.CombinedOutput(); err != nil {
+		if !strings.Contains(string(output), "no issue found") && !strings.Contains(string(output), "not found") {
+			style.PrintWarning("could not delete agent bead %s: %v", agentBeadID, err)
+		}
+	} else {
+		fmt.Printf("Deleted agent bead: %s\n", agentBeadID)
+	}
+	agentAddr := fmt.Sprintf("%s/crew/%s", rigName, name)
+	unassignCmd := beads.Spawn("list", "--assignee="+agentAddr, "--format=id")
+	unassignCmd.Dir = rigPath
+	if output, err := unassignCmd.CombinedOutput(); err == nil {
+		unassignCrewAgentBeads(rigPath, strings.Fields(strings.TrimSpace(string(output))))
+	}
+}
+
+func unassignCrewAgentBeads(rigPath string, ids []string) {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		updateCmd := beads.Spawn("update", id, "--unassign")
+		updateCmd.Dir = rigPath
+		if _, err := updateCmd.CombinedOutput(); err == nil {
+			fmt.Printf("Unassigned: %s\n", id)
+		}
+	}
+}
+
+func closeCrewAgentBead(rigPath, agentBeadID string) {
+	closeArgs := []string{"close", agentBeadID, "--reason=Crew workspace removed"}
+	if sessionID := runtime.SessionIDFromEnv(); sessionID != "" {
+		closeArgs = append(closeArgs, "--session="+sessionID)
+	}
+	closeCmd := beads.Spawn(closeArgs...)
+	closeCmd.Dir = rigPath
+	if output, err := closeCmd.CombinedOutput(); err != nil {
+		if !strings.Contains(string(output), "no issue found") && !strings.Contains(string(output), "already closed") {
+			style.PrintWarning("could not close agent bead %s: %v", agentBeadID, err)
+		}
+	} else {
+		fmt.Printf("Closed agent bead: %s\n", agentBeadID)
+	}
 }
 
 func runCrewRefresh(_ *cobra.Command, args []string) error {
