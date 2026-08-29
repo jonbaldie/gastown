@@ -585,62 +585,49 @@ func runConfigDefaultAgent(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
-
-	// Load town settings
-	settingsPath := config.TownSettingsPath(townRoot)
-	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
+	townSettings, err := loadConfigAgentListSettings(townRoot)
 	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
-	}
-
-	// Load agent registry
-	registryPath := config.DefaultAgentRegistryPath(townRoot)
-	if err := config.LoadAgentRegistry(registryPath); err != nil {
-		return fmt.Errorf("loading agent registry: %w", err)
+		return err
 	}
 
 	if len(args) == 0 {
-		// Show current default
-		defaultAgent := townSettings.DefaultAgent
-		if defaultAgent == "" {
-			defaultAgent = "claude"
-		}
-		fmt.Printf("Default agent: %s\n", style.Bold.Render(defaultAgent))
+		printConfigDefaultAgent(townSettings.DefaultAgent)
 		return nil
 	}
 
-	// Set new default
 	name := args[0]
-
-	// Verify agent exists
-	isValid := false
-	builtInAgents := config.ListAgentPresets()
-	for _, builtin := range builtInAgents {
-		if name == builtin {
-			isValid = true
-			break
-		}
-	}
-	if !isValid && townSettings.Agents != nil {
-		if _, ok := townSettings.Agents[name]; ok {
-			isValid = true
-		}
-	}
-
-	if !isValid {
+	if !isConfigDefaultAgentValid(townSettings, name) {
 		return fmt.Errorf("agent '%s' not found (use 'gt config default-agent list' to see available agents)", name)
 	}
 
-	// Set default
 	townSettings.DefaultAgent = name
-
-	// Save settings
+	settingsPath := config.TownSettingsPath(townRoot)
 	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
 		return fmt.Errorf("saving town settings: %w", err)
 	}
 
 	fmt.Printf("Default agent set to '%s'\n", style.Bold.Render(name))
 	return nil
+}
+
+func printConfigDefaultAgent(defaultAgent string) {
+	if defaultAgent == "" {
+		defaultAgent = "claude"
+	}
+	fmt.Printf("Default agent: %s\n", style.Bold.Render(defaultAgent))
+}
+
+func isConfigDefaultAgentValid(townSettings *config.TownSettings, name string) bool {
+	for _, builtin := range config.ListAgentPresets() {
+		if name == builtin {
+			return true
+		}
+	}
+	if townSettings.Agents == nil {
+		return false
+	}
+	_, ok := townSettings.Agents[name]
+	return ok
 }
 
 func runConfigRoleList(cmd *cobra.Command, _ []string) error {
