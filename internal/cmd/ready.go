@@ -20,9 +20,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var readyJSON bool
-var readyRig string
-
 var readyCmd = &cobra.Command{
 	Use:     "ready",
 	GroupID: GroupWork,
@@ -44,8 +41,8 @@ Examples:
 }
 
 func init() {
-	readyCmd.Flags().BoolVar(&readyJSON, "json", false, "Output as JSON")
-	readyCmd.Flags().StringVar(&readyRig, "rig", "", "Filter to a specific rig")
+	readyCmd.Flags().Bool("json", false, "Output as JSON")
+	readyCmd.Flags().String("rig", "", "Filter to a specific rig")
 	rootCmd.AddCommand(readyCmd)
 }
 
@@ -74,7 +71,9 @@ type ReadySummary struct {
 	P4Count  int            `json:"p4_count"`
 }
 
-func runReady(_ *cobra.Command, _ []string) error {
+func runReady(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	rigName := commandStringFlag(cmd, "rig")
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -97,16 +96,16 @@ func runReady(_ *cobra.Command, _ []string) error {
 	}
 
 	// Filter rigs if --rig flag provided
-	if readyRig != "" {
+	if rigName != "" {
 		var filtered []*rig.Rig
 		for _, r := range rigs {
-			if r.Name == readyRig {
+			if r.Name == rigName {
 				filtered = append(filtered, r)
 				break
 			}
 		}
 		if len(filtered) == 0 {
-			return fmt.Errorf("rig not found: %s", readyRig)
+			return fmt.Errorf("rig not found: %s", rigName)
 		}
 		rigs = filtered
 	}
@@ -117,7 +116,7 @@ func runReady(_ *cobra.Command, _ []string) error {
 	sources := make([]ReadySource, 0, len(rigs)+1)
 
 	// Fetch town beads (only if not filtering to a specific rig)
-	if readyRig == "" {
+	if rigName == "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -240,7 +239,7 @@ func runReady(_ *cobra.Command, _ []string) error {
 	}
 
 	// Output
-	if readyJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
