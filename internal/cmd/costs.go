@@ -781,32 +781,7 @@ func parseTranscriptUsage(transcriptPath string) (*TokenUsage, error) {
 	scanner.Buffer(buf, 1024*1024)
 
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var msg TranscriptMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			continue // Skip malformed lines
-		}
-
-		// Only process assistant messages with usage info
-		if msg.Type != "assistant" || msg.Message == nil || msg.Message.Usage == nil {
-			continue
-		}
-
-		// Capture the model (use first one found, they should all be the same)
-		if usage.Model == "" && msg.Message.Model != "" {
-			usage.Model = msg.Message.Model
-		}
-
-		// Sum token usage
-		u := msg.Message.Usage
-		usage.InputTokens += u.InputTokens
-		usage.CacheCreationInputTokens += u.CacheCreationInputTokens
-		usage.CacheReadInputTokens += u.CacheReadInputTokens
-		usage.OutputTokens += u.OutputTokens
+		addTranscriptUsageLine(usage, scanner.Bytes())
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -814,6 +789,34 @@ func parseTranscriptUsage(transcriptPath string) (*TokenUsage, error) {
 	}
 
 	return usage, nil
+}
+
+func addTranscriptUsageLine(usage *TokenUsage, line []byte) {
+	if len(line) == 0 {
+		return
+	}
+
+	var msg TranscriptMessage
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return // Skip malformed lines
+	}
+
+	// Only process assistant messages with usage info
+	if msg.Type != "assistant" || msg.Message == nil || msg.Message.Usage == nil {
+		return
+	}
+
+	// Capture the model (use first one found, they should all be the same)
+	if usage.Model == "" && msg.Message.Model != "" {
+		usage.Model = msg.Message.Model
+	}
+
+	// Sum token usage
+	u := msg.Message.Usage
+	usage.InputTokens += u.InputTokens
+	usage.CacheCreationInputTokens += u.CacheCreationInputTokens
+	usage.CacheReadInputTokens += u.CacheReadInputTokens
+	usage.OutputTokens += u.OutputTokens
 }
 
 // calculateCost converts token usage to USD cost based on model pricing.
