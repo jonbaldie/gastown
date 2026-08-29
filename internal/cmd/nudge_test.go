@@ -34,16 +34,16 @@ func TestNudgeHelpUsesTownRootMessagingConfig(t *testing.T) {
 
 func TestNudgeStdinConflict(t *testing.T) {
 	// Save and restore package-level flags
-	origMessage := nudgeMessageFlag
-	origStdin := nudgeStdinFlag
+	origMessage := nudgeState().message
+	origStdin := nudgeState().stdin
 	defer func() {
-		nudgeMessageFlag = origMessage
-		nudgeStdinFlag = origStdin
+		nudgeState().message = origMessage
+		nudgeState().stdin = origStdin
 	}()
 
 	// When both --stdin and --message are set, runNudge should return an error
-	nudgeStdinFlag = true
-	nudgeMessageFlag = "some message"
+	nudgeState().stdin = true
+	nudgeState().message = "some message"
 
 	err := runNudge(nudgeCmd, []string{"gastown/alpha"})
 	if err == nil {
@@ -233,19 +233,19 @@ func TestSessionNameToAddress(t *testing.T) {
 
 func TestNudgeInvalidMode(t *testing.T) {
 	// Save and restore package-level flags
-	origMode := nudgeModeFlag
-	origPriority := nudgePriorityFlag
-	origMessage := nudgeMessageFlag
-	origStdin := nudgeStdinFlag
+	origMode := nudgeState().mode
+	origPriority := nudgeState().priority
+	origMessage := nudgeState().message
+	origStdin := nudgeState().stdin
 	defer func() {
-		nudgeModeFlag = origMode
-		nudgePriorityFlag = origPriority
-		nudgeMessageFlag = origMessage
-		nudgeStdinFlag = origStdin
+		nudgeState().mode = origMode
+		nudgeState().priority = origPriority
+		nudgeState().message = origMessage
+		nudgeState().stdin = origStdin
 	}()
 
-	nudgeStdinFlag = false
-	nudgeMessageFlag = "test"
+	nudgeState().stdin = false
+	nudgeState().message = "test"
 
 	tests := []struct {
 		name    string
@@ -258,8 +258,8 @@ func TestNudgeInvalidMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			nudgeModeFlag = tt.mode
-			nudgePriorityFlag = "normal"
+			nudgeState().mode = tt.mode
+			nudgeState().priority = "normal"
 			err := runNudge(nudgeCmd, []string{"gastown/alpha", "hello"})
 			if err == nil {
 				t.Fatal("expected error for invalid mode")
@@ -273,20 +273,20 @@ func TestNudgeInvalidMode(t *testing.T) {
 
 func TestNudgeInvalidPriority(t *testing.T) {
 	// Save and restore package-level flags
-	origMode := nudgeModeFlag
-	origPriority := nudgePriorityFlag
-	origMessage := nudgeMessageFlag
-	origStdin := nudgeStdinFlag
+	origMode := nudgeState().mode
+	origPriority := nudgeState().priority
+	origMessage := nudgeState().message
+	origStdin := nudgeState().stdin
 	defer func() {
-		nudgeModeFlag = origMode
-		nudgePriorityFlag = origPriority
-		nudgeMessageFlag = origMessage
-		nudgeStdinFlag = origStdin
+		nudgeState().mode = origMode
+		nudgeState().priority = origPriority
+		nudgeState().message = origMessage
+		nudgeState().stdin = origStdin
 	}()
 
-	nudgeStdinFlag = false
-	nudgeMessageFlag = "test"
-	nudgeModeFlag = NudgeModeImmediate
+	nudgeState().stdin = false
+	nudgeState().message = "test"
+	nudgeState().mode = NudgeModeImmediate
 
 	tests := []struct {
 		name     string
@@ -299,7 +299,7 @@ func TestNudgeInvalidPriority(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			nudgePriorityFlag = tt.priority
+			nudgeState().priority = tt.priority
 			err := runNudge(nudgeCmd, []string{"gastown/alpha", "hello"})
 			if err == nil {
 				t.Fatal("expected error for invalid priority")
@@ -314,16 +314,16 @@ func TestNudgeInvalidPriority(t *testing.T) {
 func TestNudgeValidModesAccepted(t *testing.T) {
 	// Verify all valid modes pass the validation check (they'll fail later
 	// on tmux operations, but should NOT fail on mode validation).
-	origMode := nudgeModeFlag
-	origPriority := nudgePriorityFlag
-	origMessage := nudgeMessageFlag
-	origStdin := nudgeStdinFlag
+	origMode := nudgeState().mode
+	origPriority := nudgeState().priority
+	origMessage := nudgeState().message
+	origStdin := nudgeState().stdin
 	origTimeout := waitIdleTimeout
 	defer func() {
-		nudgeModeFlag = origMode
-		nudgePriorityFlag = origPriority
-		nudgeMessageFlag = origMessage
-		nudgeStdinFlag = origStdin
+		nudgeState().mode = origMode
+		nudgeState().priority = origPriority
+		nudgeState().message = origMessage
+		nudgeState().stdin = origStdin
 		waitIdleTimeout = origTimeout
 	}()
 
@@ -334,13 +334,13 @@ func TestNudgeValidModesAccepted(t *testing.T) {
 	// Shorten wait-idle timeout to avoid 15s test delay
 	waitIdleTimeout = 200 * time.Millisecond
 
-	nudgeStdinFlag = false
-	nudgeMessageFlag = "test"
-	nudgePriorityFlag = "normal"
+	nudgeState().stdin = false
+	nudgeState().message = "test"
+	nudgeState().priority = "normal"
 
 	for _, mode := range []string{NudgeModeImmediate, NudgeModeQueue, NudgeModeWaitIdle} {
 		t.Run(mode, func(t *testing.T) {
-			nudgeModeFlag = mode
+			nudgeState().mode = mode
 			err := runNudge(nudgeCmd, []string{"gastown/alpha", "hello"})
 			// The error should NOT be about invalid mode — it will fail on
 			// tmux or workspace, which is fine.
@@ -500,16 +500,16 @@ func TestNudgeTrailingSlashNormalization(t *testing.T) {
 	// runNudge must strip the trailing slash so these match the role shortcuts.
 	// Without normalization, "mayor/" falls through to parseAddress which
 	// rejects it ("invalid address format"), silently dropping the nudge.
-	origMode := nudgeModeFlag
-	origPriority := nudgePriorityFlag
-	origMessage := nudgeMessageFlag
-	origStdin := nudgeStdinFlag
+	origMode := nudgeState().mode
+	origPriority := nudgeState().priority
+	origMessage := nudgeState().message
+	origStdin := nudgeState().stdin
 	origTimeout := waitIdleTimeout
 	defer func() {
-		nudgeModeFlag = origMode
-		nudgePriorityFlag = origPriority
-		nudgeMessageFlag = origMessage
-		nudgeStdinFlag = origStdin
+		nudgeState().mode = origMode
+		nudgeState().priority = origPriority
+		nudgeState().message = origMessage
+		nudgeState().stdin = origStdin
 		waitIdleTimeout = origTimeout
 	}()
 
@@ -518,10 +518,10 @@ func TestNudgeTrailingSlashNormalization(t *testing.T) {
 	t.Setenv("GT_TEST_NUDGE_LOG", filepath.Join(t.TempDir(), "nudge.log"))
 
 	waitIdleTimeout = 200 * time.Millisecond
-	nudgeStdinFlag = false
-	nudgeMessageFlag = "test"
-	nudgePriorityFlag = "normal"
-	nudgeModeFlag = NudgeModeImmediate
+	nudgeState().stdin = false
+	nudgeState().message = "test"
+	nudgeState().priority = "normal"
+	nudgeState().mode = NudgeModeImmediate
 
 	for _, target := range []string{"mayor/", "deacon/", "witness/", "refinery/"} {
 		t.Run(target, func(t *testing.T) {
@@ -535,27 +535,27 @@ func TestNudgeTrailingSlashNormalization(t *testing.T) {
 }
 
 func TestNudgeDogTargetRoutesToDogSession(t *testing.T) {
-	origMode := nudgeModeFlag
-	origPriority := nudgePriorityFlag
-	origMessage := nudgeMessageFlag
-	origStdin := nudgeStdinFlag
-	origForce := nudgeForceFlag
+	origMode := nudgeState().mode
+	origPriority := nudgeState().priority
+	origMessage := nudgeState().message
+	origStdin := nudgeState().stdin
+	origForce := nudgeState().force
 	defer func() {
-		nudgeModeFlag = origMode
-		nudgePriorityFlag = origPriority
-		nudgeMessageFlag = origMessage
-		nudgeStdinFlag = origStdin
-		nudgeForceFlag = origForce
+		nudgeState().mode = origMode
+		nudgeState().priority = origPriority
+		nudgeState().message = origMessage
+		nudgeState().stdin = origStdin
+		nudgeState().force = origForce
 	}()
 
 	logPath := filepath.Join(t.TempDir(), "nudge.log")
 	t.Setenv("GT_TEST_NUDGE_LOG", logPath)
 
-	nudgeModeFlag = NudgeModeImmediate
-	nudgePriorityFlag = nudge.PriorityNormal
-	nudgeMessageFlag = "hello dog"
-	nudgeStdinFlag = false
-	nudgeForceFlag = true
+	nudgeState().mode = NudgeModeImmediate
+	nudgeState().priority = nudge.PriorityNormal
+	nudgeState().message = "hello dog"
+	nudgeState().stdin = false
+	nudgeState().force = true
 
 	if err := runNudge(nudgeCmd, []string{"deacon/dogs/fido"}); err != nil {
 		t.Fatalf("runNudge dog target returned error: %v", err)

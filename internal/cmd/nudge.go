@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
@@ -56,14 +57,22 @@ func hasACPSessionByName(townRoot, sessionName string) bool {
 	return false
 }
 
-var (
-	nudgeMessageFlag  string
-	nudgeForceFlag    bool
-	nudgeStdinFlag    bool
-	nudgeIfFreshFlag  bool
-	nudgeModeFlag     string
-	nudgePriorityFlag string
-)
+type nudgeCommandState struct {
+	message  string
+	force    bool
+	stdin    bool
+	ifFresh  bool
+	mode     string
+	priority string
+}
+
+var nudgeCommandStateInstance = sync.OnceValue(func() *nudgeCommandState {
+	return &nudgeCommandState{mode: NudgeModeWaitIdle, priority: nudge.PriorityNormal}
+})
+
+func nudgeState() *nudgeCommandState {
+	return nudgeCommandStateInstance()
+}
 
 // Nudge delivery modes.
 const (
@@ -79,13 +88,14 @@ const (
 )
 
 func init() {
+	state := nudgeState()
 	rootCmd.AddCommand(nudgeCmd)
-	nudgeCmd.Flags().StringVarP(&nudgeMessageFlag, "message", "m", "", "Message to send")
-	nudgeCmd.Flags().BoolVarP(&nudgeForceFlag, "force", "f", false, "Send even if target has DND enabled")
-	nudgeCmd.Flags().BoolVar(&nudgeStdinFlag, "stdin", false, "Read message from stdin (avoids shell quoting issues)")
-	nudgeCmd.Flags().BoolVar(&nudgeIfFreshFlag, "if-fresh", false, "Only send if caller's tmux session is <60s old (suppresses compaction nudges)")
-	nudgeCmd.Flags().StringVar(&nudgeModeFlag, "mode", NudgeModeWaitIdle, "Delivery mode: wait-idle (default), queue, or immediate")
-	nudgeCmd.Flags().StringVar(&nudgePriorityFlag, "priority", nudge.PriorityNormal, "Queue priority: normal (default), urgent, or system")
+	nudgeCmd.Flags().StringVarP(&state.message, "message", "m", "", "Message to send")
+	nudgeCmd.Flags().BoolVarP(&state.force, "force", "f", false, "Send even if target has DND enabled")
+	nudgeCmd.Flags().BoolVar(&state.stdin, "stdin", false, "Read message from stdin (avoids shell quoting issues)")
+	nudgeCmd.Flags().BoolVar(&state.ifFresh, "if-fresh", false, "Only send if caller's tmux session is <60s old (suppresses compaction nudges)")
+	nudgeCmd.Flags().StringVar(&state.mode, "mode", NudgeModeWaitIdle, "Delivery mode: wait-idle (default), queue, or immediate")
+	nudgeCmd.Flags().StringVar(&state.priority, "priority", nudge.PriorityNormal, "Queue priority: normal (default), urgent, or system")
 }
 
 var nudgeCmd = &cobra.Command{
@@ -190,7 +200,7 @@ func deliverNudge(t *tmux.Tmux, sessionName, message, sender string) error {
 
 	// Use the requested mode, but force queue mode for ACP sessions.
 	// ACP agents don't have tmux panes to send-keys to.
-	mode := nudgeModeFlag
+	mode := nudgeState().mode
 	if hasACPSessionByName(townRoot, sessionName) {
 		mode = NudgeModeQueue
 	}
@@ -229,9 +239,9 @@ func deliverNudgeViaWorker(townRoot, sessionName, sender, message string) error 
 	}
 	priority := worker.PriorityNormal
 	switch {
-	case nudgePriorityFlag == nudge.PriorityUrgent || nudgeModeFlag == NudgeModeImmediate:
+	case nudgeState().priority == nudge.PriorityUrgent || nudgeState().mode == NudgeModeImmediate:
 		priority = worker.PriorityUrgent
-	case nudgePriorityFlag == nudge.PrioritySystem || nudgeModeFlag == NudgeModeQueue:
+	case nudgeState().priority == nudge.PrioritySystem || nudgeState().mode == NudgeModeQueue:
 		priority = worker.PrioritySystem
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -297,7 +307,7 @@ func queuedNudge(sender, message string) nudge.QueuedNudge {
 	return nudge.QueuedNudge{
 		Sender:   sender,
 		Message:  message,
-		Priority: nudgePriorityFlag,
+		Priority: nudgeState().priority,
 	}
 }
 
@@ -500,16 +510,16 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 		telemetry.RecordNudge(context.Background(), target, retErr)
 	}()
 	// Validate --mode and --priority before doing anything else.
-	if !validNudgeModes[nudgeModeFlag] {
-		return fmt.Errorf("invalid --mode %q: must be one of immediate, queue, wait-idle", nudgeModeFlag)
+	if !validNudgeModes[nudgeState().mode] {
+		return fmt.Errorf("invalid --mode %q: must be one of immediate, queue, wait-idle", nudgeState().mode)
 	}
-	if !validNudgePriorities[nudgePriorityFlag] {
-		return fmt.Errorf("invalid --priority %q: must be one of normal, urgent, system", nudgePriorityFlag)
+	if !validNudgePriorities[nudgeState().priority] {
+		return fmt.Errorf("invalid --priority %q: must be one of normal, urgent, system", nudgeState().priority)
 	}
 
 	// --if-fresh: skip nudge if the caller's tmux session is older than 60s.
 	// This prevents compaction/clear SessionStart hooks from spamming the deacon.
-	if nudgeIfFreshFlag {
+	if nudgeState().ifFresh {
 		sessionName := tmux.CurrentSessionName()
 		if sessionName != "" {
 			t := tmux.NewTmux()
@@ -533,21 +543,21 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 	target = strings.TrimSuffix(target, "/")
 
 	// Handle --stdin: read message from stdin (avoids shell quoting issues)
-	if nudgeStdinFlag {
-		if nudgeMessageFlag != "" {
+	if nudgeState().stdin {
+		if nudgeState().message != "" {
 			return fmt.Errorf("cannot use --stdin with --message/-m")
 		}
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("reading stdin: %w", err)
 		}
-		nudgeMessageFlag = strings.TrimRight(string(data), "\n")
+		nudgeState().message = strings.TrimRight(string(data), "\n")
 	}
 
 	// Get message from -m flag or positional arg
 	var message string
-	if nudgeMessageFlag != "" {
-		message = nudgeMessageFlag
+	if nudgeState().message != "" {
+		message = nudgeState().message
 	} else if len(args) >= 2 {
 		message = args[1]
 	} else {
@@ -590,8 +600,8 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 		// through to the sentinel socket and fails to find sessions.
 		_ = session.InitRegistry(townRoot)
 	}
-	if townRoot != "" && !nudgeForceFlag {
-		shouldSend, level, _ := shouldNudgeTarget(townRoot, target, nudgeForceFlag)
+	if townRoot != "" && !nudgeState().force {
+		shouldSend, level, _ := shouldNudgeTarget(townRoot, target, nudgeState().force)
 		if !shouldSend {
 			fmt.Printf("%s Target has DND enabled (%s) - nudge skipped\n", style.Dim.Render("○"), level)
 			fmt.Printf("  Use %s to override\n", style.Bold.Render("--force"))
@@ -643,7 +653,7 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("nudging deacon: %w", err)
 		}
 
-		fmt.Printf("%s Nudged deacon (%s)\n", style.Bold.Render("✓"), nudgeModeFlag)
+		fmt.Printf("%s Nudged deacon (%s)\n", style.Bold.Render("✓"), nudgeState().mode)
 
 		// Log nudge event
 		if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
@@ -654,7 +664,7 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 	}
 	if dogName, ok := mail.DogAddressName(target); ok {
 		sessionName := session.DogSessionName(dogName)
-		if nudgeModeFlag != NudgeModeImmediate && !hasACPSessionByName(townRoot, sessionName) {
+		if nudgeState().mode != NudgeModeImmediate && !hasACPSessionByName(townRoot, sessionName) {
 			exists, err := nudgeTargetExists(t, townRoot, sessionName)
 			if err != nil {
 				return fmt.Errorf("checking dog session: %w", err)
@@ -668,7 +678,7 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("nudging dog: %w", err)
 		}
 
-		fmt.Printf("%s Nudged %s (%s)\n", style.Bold.Render("✓"), target, nudgeModeFlag)
+		fmt.Printf("%s Nudged %s (%s)\n", style.Bold.Render("✓"), target, nudgeState().mode)
 		if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
 			_ = LogNudge(townRoot, target, message)
 		}
@@ -723,7 +733,7 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 		// Without this, queue mode silently succeeds for nonexistent sessions —
 		// the file is written but never drained.
 		// ACP sessions are always allowed as they use queue mode.
-		if nudgeModeFlag != NudgeModeImmediate && !hasACPSessionByName(townRoot, sessionName) {
+		if nudgeState().mode != NudgeModeImmediate && !hasACPSessionByName(townRoot, sessionName) {
 			exists, err := nudgeTargetExists(t, townRoot, sessionName)
 			if err != nil {
 				return fmt.Errorf("checking session: %w", err)
@@ -738,7 +748,7 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("nudging session: %w", err)
 		}
 
-		fmt.Printf("%s Nudged %s/%s (%s)\n", style.Bold.Render("✓"), rigName, polecatName, nudgeModeFlag)
+		fmt.Printf("%s Nudged %s/%s (%s)\n", style.Bold.Render("✓"), rigName, polecatName, nudgeState().mode)
 
 		// Log nudge event
 		if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
@@ -764,7 +774,7 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("nudging session: %w", err)
 		}
 
-		fmt.Printf("✓ Nudged %s (%s)\n", target, nudgeModeFlag)
+		fmt.Printf("✓ Nudged %s (%s)\n", target, nudgeState().mode)
 
 		// Log nudge event
 		if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
@@ -832,7 +842,7 @@ func runNudgeChannel(channelName, message, sender string) error {
 	var succeeded, failed, skipped int
 	var failures []string
 
-	fmt.Printf("Nudging channel %q (%d target(s), mode=%s)...\n\n", channelName, len(targets), nudgeModeFlag)
+	fmt.Printf("Nudging channel %q (%d target(s), mode=%s)...\n\n", channelName, len(targets), nudgeState().mode)
 
 	for i, sessionName := range targets {
 		// Check DND status before nudging each target
