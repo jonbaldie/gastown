@@ -2372,28 +2372,30 @@ func runRigRestart(_ *cobra.Command, args []string) error {
 // getRigOperationalState returns the operational state and source for a rig.
 // It checks the wisp layer first (local/ephemeral), then rig bead labels (global).
 // Returns state ("OPERATIONAL", "PARKED", or "DOCKED") and source ("local", "global - synced", or "default").
-func getRigOperationalState(townRoot, rigName string) (state string, source string) {
-	// Check wisp layer first (local/ephemeral overrides)
-	wispConfig := wisp.NewConfig(townRoot, rigName)
-	if status := wispConfig.GetString("status"); status != "" {
-		switch strings.ToLower(status) {
-		case "parked":
-			return "PARKED", "local"
-		case "docked":
-			return "DOCKED", "local"
-		}
+func rigOperationalStateForStatus(status string) (string, bool) {
+	switch strings.ToLower(status) {
+	case "parked":
+		return "PARKED", true
+	case "docked":
+		return "DOCKED", true
+	default:
+		return "", false
 	}
+}
 
-	// Check rig bead labels (global/synced)
-	// Rig identity bead ID: <prefix>-rig-<name>
-	// Look for status:docked or status:parked labels
+func localRigOperationalState(townRoot, rigName string) (string, bool) {
+	status := wisp.NewConfig(townRoot, rigName).GetString("status")
+	if status == "" {
+		return "", false
+	}
+	state, ok := rigOperationalStateForStatus(status)
+	return state, ok
+}
+
+func globalRigOperationalState(townRoot, rigName string) (string, bool) {
 	rigPath := filepath.Join(townRoot, rigName)
 	rigBeadsDir := beads.ResolveBeadsDir(rigPath)
 	bd := beads.NewWithBeadsDir(rigPath, rigBeadsDir)
-
-	// Try to find the rig identity bead
-	// Convention: <prefix>-rig-<rigName>
-	// Try to get prefix from rig config.json, fall back to rigs.json registry
 	var prefix string
 	if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.Beads != nil {
 		prefix = rigCfg.Beads.Prefix
@@ -2402,24 +2404,32 @@ func getRigOperationalState(townRoot, rigName string) (state string, source stri
 		prefix = config.GetRigPrefix(townRoot, rigName)
 	}
 
-	if prefix != "" {
-		rigBeadID := fmt.Sprintf("%s-rig-%s", prefix, rigName)
-		if issue, err := bd.Show(rigBeadID); err == nil {
-			for _, label := range issue.Labels {
-				if strings.HasPrefix(label, "status:") {
-					statusValue := strings.TrimPrefix(label, "status:")
-					switch strings.ToLower(statusValue) {
-					case "docked":
-						return "DOCKED", "global - synced"
-					case "parked":
-						return "PARKED", "global - synced"
-					}
-				}
+	if prefix == "" {
+		return "", false
+	}
+	rigBeadID := fmt.Sprintf("%s-rig-%s", prefix, rigName)
+	issue, err := bd.Show(rigBeadID)
+	if err != nil {
+		return "", false
+	}
+	for _, label := range issue.Labels {
+		if strings.HasPrefix(label, "status:") {
+			state, ok := rigOperationalStateForStatus(strings.TrimPrefix(label, "status:"))
+			if ok {
+				return state, true
 			}
 		}
 	}
+	return "", false
+}
 
-	// Default: operational
+func getRigOperationalState(townRoot, rigName string) (state string, source string) {
+	if state, ok := localRigOperationalState(townRoot, rigName); ok {
+		return state, "local"
+	}
+	if state, ok := globalRigOperationalState(townRoot, rigName); ok {
+		return state, "global - synced"
+	}
 	return "OPERATIONAL", "default"
 }
 
