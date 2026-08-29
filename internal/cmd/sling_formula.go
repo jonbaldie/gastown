@@ -698,6 +698,7 @@ type formulaSlingFinishState struct {
 }
 
 func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInfo, state formulaSlingFinishState, townBeadsDir, formulaName, dispatchBeadID, targetAgent string, isSelfSling bool, mode string) error {
+	targetPane := state.targetPane
 	if err := updateAgentHookBead(targetAgent, dispatchBeadID, "", townBeadsDir); err != nil {
 		if delayedDogInfo != nil {
 			return fmt.Errorf("updating dog agent hook: %w", err)
@@ -713,7 +714,7 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 		if err != nil {
 			return fmt.Errorf("completing dog formula dispatch: %w", err)
 		}
-		*state.targetPane = pane
+		*targetPane = pane
 	}
 
 	if resolved.NewPolecatInfo != nil {
@@ -722,7 +723,7 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 			rollbackSlingArtifactsFn(resolved.NewPolecatInfo, dispatchBeadID, "", "")
 			return fmt.Errorf("starting polecat session: %w", err)
 		}
-		*state.targetPane = pane
+		*targetPane = pane
 	}
 
 	*state.formulaWorkComplete = true
@@ -753,13 +754,13 @@ func finishFormulaSling(resolved *ResolvedTarget, delayedDogInfo *DogDispatchInf
 		return nil
 	}
 
-	if state.targetPane == nil || *state.targetPane == "" {
+	if targetPane == nil || *targetPane == "" {
 		fmt.Printf("%s No pane to nudge (agent will discover work via gt prime)\n", style.Dim.Render("○"))
 		return nil
 	}
 
 	t := tmux.NewTmux()
-	if err := t.NudgePane(*state.targetPane, prompt); err != nil {
+	if err := t.NudgePane(*targetPane, prompt); err != nil {
 		fmt.Printf("%s Could not nudge (no tmux?): %v\n", style.Dim.Render("○"), err)
 		fmt.Printf("  Agent will discover work via gt prime / bd show\n")
 	} else {
