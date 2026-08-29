@@ -1525,110 +1525,142 @@ func parseIssueShowJSON(output string) (IssueShowResponse, bool) {
 // parseIssueShowOutput parses the text output from "bd show <id>".
 // This is the fallback path when --json is unavailable.
 func parseIssueShowOutput(output string, issueID string) IssueShowResponse {
-	resp := IssueShowResponse{
-		ID:        issueID,
-		RawOutput: output,
+	parser := issueShowTextParser{
+		response: IssueShowResponse{ID: issueID, RawOutput: output},
 	}
+	for _, line := range strings.Split(output, "\n") {
+		parser.addLine(line)
+	}
+	return parser.finish()
+}
 
-	lines := strings.Split(output, "\n")
-	inDescription := false
-	parsedFirstLine := false
-	var descLines []string
-	var dependsOn []string
-	var blocks []string
+type issueShowTextParser struct {
+	response         IssueShowResponse
+	parsedFirstLine  bool
+	inDescription    bool
+	descriptionLines []string
+	dependsOn        []string
+	blocks           []string
+}
 
-	for _, line := range lines {
-		// First non-empty line usually has the format: "○ id · title   [● P2 · OPEN]"
-		if !parsedFirstLine && (strings.HasPrefix(line, "○") || strings.HasPrefix(line, "●")) {
-			parsedFirstLine = true
-			// Parse the first line for title and status
-			// Format: "○ id · title   [● P2 · OPEN]"
-			// Find the bracket first to isolate the status
-			if bracketIdx := strings.Index(line, "["); bracketIdx > 0 {
-				beforeBracket := line[:bracketIdx]
-				statusPart := line[bracketIdx:]
+func (p *issueShowTextParser) addLine(line string) {
+	if p.parseHeader(line) {
+		return
+	}
+	if p.parseMetadata(line) {
+		return
+	}
+	p.parseBody(line)
+}
 
-				// Extract priority and status from [● P2 · OPEN]
-				statusPart = strings.Trim(statusPart, "[]●○ ")
-				statusParts := strings.Split(statusPart, "·")
-				if len(statusParts) >= 1 {
-					resp.Priority = strings.TrimSpace(statusParts[0])
-				}
-				if len(statusParts) >= 2 {
-					resp.Status = strings.TrimSpace(statusParts[1])
-				}
+func (p *issueShowTextParser) parseHeader(line string) bool {
+	if p.parsedFirstLine || (!strings.HasPrefix(line, "○") && !strings.HasPrefix(line, "●")) {
+		return false
+	}
+	p.parsedFirstLine = true
+	bracketIdx := strings.Index(line, "[")
+	if bracketIdx <= 0 {
+		return true
+	}
+	p.parseHeaderStatus(line[bracketIdx:])
+	p.response.Title = parseIssueTitle(line[:bracketIdx])
+	return true
+}
 
-				// Now parse the title from before the bracket
-				// Format: "○ id · title"
-				// Use strings.Cut for safe splitting on multi-byte "·" separator
-				if _, afterFirst, ok := strings.Cut(beforeBracket, "·"); ok {
-					if _, afterSecond, ok := strings.Cut(afterFirst, "·"); ok {
-						resp.Title = strings.TrimSpace(afterSecond)
-					} else {
-						// Only one dot - id is embedded in icon part
-						resp.Title = strings.TrimSpace(afterFirst)
-					}
-				}
-			}
-			continue
+func (p *issueShowTextParser) parseHeaderStatus(statusPart string) {
+	statusPart = strings.Trim(statusPart, "[]●○ ")
+	statusParts := strings.Split(statusPart, "·")
+	if len(statusParts) >= 1 {
+		p.response.Priority = strings.TrimSpace(statusParts[0])
+	}
+	if len(statusParts) >= 2 {
+		p.response.Status = strings.TrimSpace(statusParts[1])
+	}
+}
+
+func parseIssueTitle(beforeBracket string) string {
+	// Use strings.Cut for safe splitting on multi-byte "·" separators.
+	_, afterFirst, ok := strings.Cut(beforeBracket, "·")
+	if !ok {
+		return ""
+	}
+	if _, afterSecond, ok := strings.Cut(afterFirst, "·"); ok {
+		return strings.TrimSpace(afterSecond)
+	}
+	return strings.TrimSpace(afterFirst)
+}
+
+func (p *issueShowTextParser) parseMetadata(line string) bool {
+	switch {
+	case strings.HasPrefix(line, "Owner:"):
+		p.parseOwner(line)
+	case strings.HasPrefix(line, "Type:"):
+		p.response.Type = strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
+	case strings.HasPrefix(line, "Created:"):
+		p.parseCreated(line)
+	case line == "DESCRIPTION":
+		p.inDescription = true
+	case line == "DEPENDS ON" || line == "BLOCKS":
+		p.inDescription = false
+	default:
+		return false
+	}
+	return true
+}
+
+func (p *issueShowTextParser) parseOwner(line string) {
+	ownerLine := strings.TrimPrefix(line, "Owner:")
+	ownerParts := strings.Split(ownerLine, "·")
+	p.response.Owner = strings.TrimSpace(ownerParts[0])
+	if len(ownerParts) >= 2 {
+		typePart := strings.TrimSpace(ownerParts[1])
+		p.response.Type = strings.TrimSpace(strings.TrimPrefix(typePart, "Type:"))
+	}
+}
+
+func (p *issueShowTextParser) parseCreated(line string) {
+	parts := strings.Split(line, "·")
+	p.response.Created = strings.TrimSpace(strings.TrimPrefix(parts[0], "Created:"))
+	if len(parts) >= 2 {
+		p.response.Updated = strings.TrimSpace(strings.TrimPrefix(parts[1], "Updated:"))
+	}
+}
+
+func (p *issueShowTextParser) parseBody(line string) {
+	if p.inDescription && strings.TrimSpace(line) != "" {
+		p.descriptionLines = append(p.descriptionLines, line)
+		return
+	}
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "→") {
+		if id, ok := parseIssueDependencyID(trimmed, "→"); ok {
+			p.dependsOn = append(p.dependsOn, id)
 		}
-
-		if strings.HasPrefix(line, "Owner:") {
-			// Format: "Owner: mayor · Type: task"
-			ownerLine := strings.TrimPrefix(line, "Owner:")
-			ownerParts := strings.Split(ownerLine, "·")
-			resp.Owner = strings.TrimSpace(ownerParts[0])
-			if len(ownerParts) >= 2 {
-				typePart := strings.TrimSpace(ownerParts[1])
-				resp.Type = strings.TrimSpace(strings.TrimPrefix(typePart, "Type:"))
-			}
-		} else if strings.HasPrefix(line, "Type:") {
-			resp.Type = strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
-		} else if strings.HasPrefix(line, "Created:") {
-			// Split always returns >= 1 element; parts[0] is safe unconditionally
-			parts := strings.Split(line, "·")
-			resp.Created = strings.TrimSpace(strings.TrimPrefix(parts[0], "Created:"))
-			if len(parts) >= 2 {
-				resp.Updated = strings.TrimSpace(strings.TrimPrefix(parts[1], "Updated:"))
-			}
-		} else if line == "DESCRIPTION" {
-			inDescription = true
-		} else if line == "DEPENDS ON" || line == "BLOCKS" {
-			inDescription = false
-		} else if inDescription && strings.TrimSpace(line) != "" {
-			descLines = append(descLines, line)
-		} else if strings.HasPrefix(strings.TrimSpace(line), "→") {
-			// Dependency line
-			depLine := strings.TrimSpace(line)
-			depLine = strings.TrimPrefix(depLine, "→")
-			depLine = strings.TrimSpace(depLine)
-			// Extract just the bead ID
-			if colonIdx := strings.Index(depLine, ":"); colonIdx > 0 {
-				parts := strings.Fields(depLine[:colonIdx])
-				if len(parts) >= 2 {
-					dependsOn = append(dependsOn, parts[1])
-				}
-			}
-		} else if strings.HasPrefix(strings.TrimSpace(line), "←") {
-			// Blocks line
-			blockLine := strings.TrimSpace(line)
-			blockLine = strings.TrimPrefix(blockLine, "←")
-			blockLine = strings.TrimSpace(blockLine)
-			// Extract just the bead ID
-			if colonIdx := strings.Index(blockLine, ":"); colonIdx > 0 {
-				parts := strings.Fields(blockLine[:colonIdx])
-				if len(parts) >= 2 {
-					blocks = append(blocks, parts[1])
-				}
-			}
+	} else if strings.HasPrefix(trimmed, "←") {
+		if id, ok := parseIssueDependencyID(trimmed, "←"); ok {
+			p.blocks = append(p.blocks, id)
 		}
 	}
+}
 
-	resp.Description = strings.TrimSpace(strings.Join(descLines, "\n"))
-	resp.DependsOn = dependsOn
-	resp.Blocks = blocks
+func parseIssueDependencyID(line, marker string) (string, bool) {
+	depLine := strings.TrimSpace(strings.TrimPrefix(line, marker))
+	colonIdx := strings.Index(depLine, ":")
+	if colonIdx <= 0 {
+		return "", false
+	}
+	parts := strings.Fields(depLine[:colonIdx])
+	if len(parts) < 2 {
+		return "", false
+	}
+	return parts[1], true
+}
 
-	return resp
+func (p *issueShowTextParser) finish() IssueShowResponse {
+	p.response.Description = strings.TrimSpace(strings.Join(p.descriptionLines, "\n"))
+	p.response.DependsOn = p.dependsOn
+	p.response.Blocks = p.blocks
+	return p.response
 }
 
 // PRShowResponse is the response for /api/pr/show.
