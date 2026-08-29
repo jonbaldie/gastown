@@ -1037,20 +1037,24 @@ func isSlingableType(beadType string) bool {
 // Returns (waves, gatedTasks, error). gatedTasks lists tasks blocked by open
 // non-slingable nodes (decisions, epics) that cannot be placed in any wave.
 func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
-	// Step 1: Filter to slingable types only.
+	slingable := slingableWaveNodes(dag)
+	if len(slingable) == 0 {
+		return nil, nil, fmt.Errorf("no slingable tasks in DAG (need task, bug, feature, or chore)")
+	}
+	return peelConvoyWaves(dag, slingable, waveInDegrees(dag, slingable))
+}
+
+func slingableWaveNodes(dag *ConvoyDAG) map[string]*ConvoyDAGNode {
 	slingable := make(map[string]*ConvoyDAGNode)
 	for id, node := range dag.Nodes {
 		if isSlingableType(node.Type) {
 			slingable[id] = node
 		}
 	}
-	if len(slingable) == 0 {
-		return nil, nil, fmt.Errorf("no slingable tasks in DAG (need task, bug, feature, or chore)")
-	}
+	return slingable
+}
 
-	// Step 2: Calculate in-degree for each slingable node.
-	// Count slingable blockers (decremented by Kahn's) and open
-	// non-slingable blockers (never decremented — act as gates).
+func waveInDegrees(dag *ConvoyDAG, slingable map[string]*ConvoyDAGNode) map[string]int {
 	inDegree := make(map[string]int, len(slingable))
 	for id, node := range slingable {
 		deg := 0
@@ -1065,71 +1069,75 @@ func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 		}
 		inDegree[id] = deg
 	}
+	return inDegree
+}
 
-	// Step 3-6: Kahn's algorithm — peel off waves of in-degree-0 nodes.
+func peelConvoyWaves(dag *ConvoyDAG, slingable map[string]*ConvoyDAGNode, inDegree map[string]int) ([]Wave, []GatedTask, error) {
 	var waves []Wave
 	processed := 0
 	waveNum := 0
 	slingableCount := len(slingable)
 
 	for processed < slingableCount {
-		// Collect nodes with in-degree 0.
-		var ready []string
-		for id, deg := range inDegree {
-			if deg == 0 {
-				ready = append(ready, id)
-			}
-		}
-
+		ready := readyWaveNodes(inDegree)
 		if len(ready) == 0 {
-			// No cycles exist (detectCycles ran before computeWaves),
-			// so remaining tasks are gated by open non-slingable nodes
-			// (decisions, epics, etc.) either directly or transitively.
-			var gated []GatedTask
-			for id := range inDegree {
-				node := slingable[id]
-				var gatedBy []string
-				for _, blocker := range node.BlockedBy {
-					if _, ok := slingable[blocker]; ok {
-						continue
-					}
-					if bNode, ok := dag.Nodes[blocker]; ok {
-						if bNode.Status != "closed" && bNode.Status != "tombstone" {
-							gatedBy = append(gatedBy, blocker)
-						}
-					}
-				}
-				sort.Strings(gatedBy)
-				gated = append(gated, GatedTask{TaskID: id, GatedBy: gatedBy})
-			}
-			sort.Slice(gated, func(i, j int) bool { return gated[i].TaskID < gated[j].TaskID })
-			return waves, gated, nil
+			return waves, gatedWaveTasks(dag, slingable, inDegree), nil
 		}
 
-		// Step 7: Sort within each wave for determinism.
 		sort.Strings(ready)
 		waveNum++
-
 		waves = append(waves, Wave{
 			Number: waveNum,
 			Tasks:  ready,
 		})
-
-		// Remove processed nodes and decrement in-degrees of their dependents.
-		for _, id := range ready {
-			delete(inDegree, id)
-			processed++
-
-			// Decrement in-degree of nodes this one blocks (that are slingable).
-			for _, blocked := range slingable[id].Blocks {
-				if _, ok := inDegree[blocked]; ok {
-					inDegree[blocked]--
-				}
-			}
-		}
+		processed += processWave(slingable, inDegree, ready)
 	}
 
 	return waves, nil, nil
+}
+
+func readyWaveNodes(inDegree map[string]int) []string {
+	var ready []string
+	for id, deg := range inDegree {
+		if deg == 0 {
+			ready = append(ready, id)
+		}
+	}
+	return ready
+}
+
+func gatedWaveTasks(dag *ConvoyDAG, slingable map[string]*ConvoyDAGNode, inDegree map[string]int) []GatedTask {
+	var gated []GatedTask
+	for id := range inDegree {
+		node := slingable[id]
+		var gatedBy []string
+		for _, blocker := range node.BlockedBy {
+			if _, ok := slingable[blocker]; ok {
+				continue
+			}
+			if bNode, ok := dag.Nodes[blocker]; ok {
+				if bNode.Status != "closed" && bNode.Status != "tombstone" {
+					gatedBy = append(gatedBy, blocker)
+				}
+			}
+		}
+		sort.Strings(gatedBy)
+		gated = append(gated, GatedTask{TaskID: id, GatedBy: gatedBy})
+	}
+	sort.Slice(gated, func(i, j int) bool { return gated[i].TaskID < gated[j].TaskID })
+	return gated
+}
+
+func processWave(slingable map[string]*ConvoyDAGNode, inDegree map[string]int, ready []string) int {
+	for _, id := range ready {
+		delete(inDegree, id)
+		for _, blocked := range slingable[id].Blocks {
+			if _, ok := inDegree[blocked]; ok {
+				inDegree[blocked]--
+			}
+		}
+	}
+	return len(ready)
 }
 
 // appendValidationWave creates a validation bead blocked by all slingable beads
