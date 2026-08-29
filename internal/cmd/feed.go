@@ -132,9 +132,9 @@ func runFeed(cmd *cobra.Command, _ []string) error {
 
 	// Handle --window mode: --rig is forwarded as a CLI flag via buildFeedArgs
 	if opts.window {
-		workDir, err := os.Getwd()
+		workDir, err := currentFeedWorkDir()
 		if err != nil {
-			return fmt.Errorf("getting current directory: %w", err)
+			return err
 		}
 		return runFeedInWindow(workDir, bdArgs)
 	}
@@ -144,26 +144,9 @@ func runFeed(cmd *cobra.Command, _ []string) error {
 
 	if useTUI {
 		// TUI mode: resolve --rig to a beads directory for BdActivitySource
-		workDir, err := os.Getwd()
+		workDir, err := resolveFeedTUIWorkDir(townRoot, opts.rig)
 		if err != nil {
-			return fmt.Errorf("getting current directory: %w", err)
-		}
-		if opts.rig != "" {
-			candidates := []string{
-				fmt.Sprintf("%s/%s/mayor/rig", townRoot, opts.rig),
-				fmt.Sprintf("%s/%s", townRoot, opts.rig),
-			}
-			found := false
-			for _, candidate := range candidates {
-				if _, err := os.Stat(candidate + "/.beads"); err == nil {
-					workDir = candidate
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("rig '%s' not found or has no .beads directory", opts.rig)
-			}
+			return err
 		}
 		return runFeedTUI(workDir, opts.problems)
 	}
@@ -172,27 +155,59 @@ func runFeed(cmd *cobra.Command, _ []string) error {
 	return runFeedDirect(townRoot, opts)
 }
 
+func currentFeedWorkDir() (string, error) {
+	workDir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+	return workDir, nil
+}
+
+func resolveFeedTUIWorkDir(townRoot, rigName string) (string, error) {
+	workDir, err := currentFeedWorkDir()
+	if err != nil {
+		return "", err
+	}
+	if rigName == "" {
+		return workDir, nil
+	}
+	candidates := []string{
+		fmt.Sprintf("%s/%s/mayor/rig", townRoot, rigName),
+		fmt.Sprintf("%s/%s", townRoot, rigName),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate + "/.beads"); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("rig '%s' not found or has no .beads directory", rigName)
+}
+
 // buildFeedArgs builds the feed CLI arguments for window mode.
 func buildFeedArgs(opts feedOptions) []string {
-	var args []string
+	args := feedFollowArgs(opts)
+	return append(args, feedFilterArgs(opts)...)
+}
 
-	// Default to follow mode unless --no-follow set
-	shouldFollow := !opts.noFollow
+func feedFollowArgs(opts feedOptions) []string {
+	if feedShouldFollow(opts) {
+		return []string{"--follow"}
+	}
+	return nil
+}
+
+func feedShouldFollow(opts feedOptions) bool {
 	if opts.follow {
-		shouldFollow = true
+		return true
 	}
-
-	// Auto-disable follow when stdout is not a TTY (e.g. agents, pipes),
-	// unless the user explicitly passed --follow. This prevents agents
-	// from blocking on a streaming feed that never terminates.
-	if !term.IsTerminal(int(os.Stdout.Fd())) && !opts.follow {
-		shouldFollow = false
+	if opts.noFollow {
+		return false
 	}
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
 
-	if shouldFollow {
-		args = append(args, "--follow")
-	}
-
+func feedFilterArgs(opts feedOptions) []string {
+	var args []string
 	if opts.limit != 100 {
 		args = append(args, "--limit", fmt.Sprintf("%d", opts.limit))
 	}
@@ -322,45 +337,48 @@ func runFeedInWindow(workDir string, bdArgs []string) error {
 		return fmt.Errorf("getting current session: %w", err)
 	}
 
-	// Build the command to run in the window
-	// Use gt feed --plain instead of bd activity (which may not exist)
+	feedWindowCmd := buildFeedWindowCommand(workDir, bdArgs)
+
+	windowTarget := sessionName + ":feed"
+	return openFeedWindow(t, sessionName, windowTarget, workDir, feedWindowCmd)
+}
+
+func buildFeedWindowCommand(workDir string, bdArgs []string) string {
 	gtPath, err := os.Executable()
 	if err != nil {
 		gtPath = "gt"
 	}
-	feedWindowCmd := fmt.Sprintf("cd \"%s\" && \"%s\" feed --plain --follow", workDir, gtPath)
-	if len(bdArgs) > 0 {
-		var filteredArgs []string
-		for _, arg := range bdArgs {
-			if arg != "--follow" {
-				filteredArgs = append(filteredArgs, arg)
-			}
-		}
-		if len(filteredArgs) > 0 {
-			feedWindowCmd = fmt.Sprintf("cd \"%s\" && \"%s\" feed --plain --follow %s", workDir, gtPath, strings.Join(filteredArgs, " "))
+	base := fmt.Sprintf("cd \"%s\" && \"%s\" feed --plain --follow", workDir, gtPath)
+	filteredArgs := filterFeedWindowArgs(bdArgs)
+	if len(filteredArgs) == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s %s", base, strings.Join(filteredArgs, " "))
+}
+
+func filterFeedWindowArgs(bdArgs []string) []string {
+	var filtered []string
+	for _, arg := range bdArgs {
+		if arg != "--follow" {
+			filtered = append(filtered, arg)
 		}
 	}
+	return filtered
+}
 
-	// Check if 'feed' window already exists
-	windowTarget := sessionName + ":feed"
+func openFeedWindow(t *tmux.Tmux, sessionName, windowTarget, workDir, feedWindowCmd string) error {
 	exists, err := windowExists(t, sessionName, "feed")
 	if err != nil {
 		return fmt.Errorf("checking for feed window: %w", err)
 	}
-
 	if exists {
-		// Window exists - just switch to it
 		fmt.Printf("Switching to existing feed window...\n")
 		return selectWindow(t, windowTarget)
 	}
-
-	// Create new window named 'feed'
 	fmt.Printf("Creating feed window in session %s...\n", sessionName)
 	if err := createWindow(t, sessionName, "feed", workDir, feedWindowCmd); err != nil {
 		return fmt.Errorf("creating feed window: %w", err)
 	}
-
-	// Switch to the new window
 	return selectWindow(t, windowTarget)
 }
 
