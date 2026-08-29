@@ -106,10 +106,12 @@ func newTestEngineer(t *testing.T, workDir string, g *gitpkg.Git) *Engineer {
 
 func makeMR(id, branch, target string) *MRInfo {
 	return &MRInfo{
-		ID:        id,
-		Branch:    branch,
-		Target:    target,
-		CreatedAt: time.Now(),
+		ID:     id,
+		Branch: branch,
+		Target: target,
+		MRLifecycleState: MRLifecycleState{
+			CreatedAt: time.Now(),
+		},
 	}
 }
 
@@ -200,7 +202,7 @@ func TestAssembleBatch_SkipsBlockedMRs(t *testing.T) {
 
 	mrs := []*MRInfo{
 		makeMR("mr-1", "branch-1", "main"),
-		{ID: "mr-2", Branch: "branch-2", Target: "main", BlockedBy: "mr-99"},
+		{ID: "mr-2", Branch: "branch-2", Target: "main", MRLifecycleState: MRLifecycleState{BlockedBy: "mr-99"}},
 		makeMR("mr-3", "branch-3", "main"),
 	}
 
@@ -219,7 +221,7 @@ func TestAssembleBatch_IncludesBlockedByBatchMember(t *testing.T) {
 
 	mrs := []*MRInfo{
 		makeMR("mr-1", "branch-1", "main"),
-		{ID: "mr-2", Branch: "branch-2", Target: "main", BlockedBy: "mr-1"},
+		{ID: "mr-2", Branch: "branch-2", Target: "main", MRLifecycleState: MRLifecycleState{BlockedBy: "mr-1"}},
 	}
 
 	batch := e.AssembleBatch(mrs, &BatchConfig{MaxBatchSize: 5})

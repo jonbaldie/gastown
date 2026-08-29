@@ -207,22 +207,10 @@ func DefaultMergeQueueConfig() *MergeQueueConfig {
 	}
 }
 
-// MRInfo holds merge request information for display and processing.
-// This replaces mrqueue.MR after the mrqueue package removal.
-type MRInfo struct {
-	ID              string     // Bead ID (e.g., "gt-abc123")
-	Branch          string     // Source branch (e.g., "polecat/nux")
-	Target          string     // Target branch (e.g., "main")
-	SourceIssue     string     // The work item being merged
-	Worker          string     // Who did the work
-	Rig             string     // Which rig
-	Title           string     // MR title
-	Priority        int        // Priority (lower = higher priority)
-	AgentBead       string     // Agent bead ID that created this MR
-	CommitSHA       string     // Source branch tip submitted to the queue
-	PRURL           string     // Recorded pull request URL, if available
-	PRNumber        int        // Recorded pull request number, if available
-	RetryCount      int        // Conflict retry count
+// MRLifecycleState holds queue, verification, and branch-health state for an MR.
+// It is embedded so MRInfo keeps its existing selector surface while the
+// lifecycle state has one clear owner.
+type MRLifecycleState struct {
 	ConflictTaskID  string     // Open conflict-resolution task for this MR (if any)
 	ConvoyID        string     // Parent convoy ID if part of a convoy
 	ConvoyCreatedAt *time.Time // Convoy creation time
@@ -240,6 +228,25 @@ type MRInfo struct {
 	Assignee           string    // Who claimed this MR (empty = unclaimed)
 	BranchExistsLocal  bool      // Whether the MR branch exists locally
 	BranchExistsRemote bool      // Whether the MR branch exists in remote tracking refs
+}
+
+// MRInfo holds merge request information for display and processing.
+// This replaces mrqueue.MR after the mrqueue package removal.
+type MRInfo struct {
+	ID          string // Bead ID (e.g., "gt-abc123")
+	Branch      string // Source branch (e.g., "polecat/nux")
+	Target      string // Target branch (e.g., "main")
+	SourceIssue string // The work item being merged
+	Worker      string // Who did the work
+	Rig         string // Which rig
+	Title       string // MR title
+	Priority    int    // Priority (lower = higher priority)
+	AgentBead   string // Agent bead ID that created this MR
+	CommitSHA   string // Source branch tip submitted to the queue
+	PRURL       string // Recorded pull request URL, if available
+	PRNumber    int    // Recorded pull request number, if available
+	RetryCount  int    // Conflict retry count
+	MRLifecycleState
 }
 
 // MRAnomaly represents an MR queue health problem that can stall processing.
@@ -2251,28 +2258,30 @@ func issueToMRInfo(issue *beads.Issue, fields *beads.MRFields) *MRInfo {
 	}
 
 	return &MRInfo{
-		ID:              issue.ID,
-		Branch:          fields.Branch,
-		Target:          fields.Target,
-		SourceIssue:     fields.SourceIssue,
-		Worker:          fields.Worker,
-		Rig:             fields.Rig,
-		Title:           issue.Title,
-		Priority:        issue.Priority,
-		AgentBead:       fields.AgentBead,
-		CommitSHA:       fields.CommitSHA,
-		PRURL:           fields.PRURL,
-		PRNumber:        fields.PRNumber,
-		RetryCount:      fields.RetryCount,
-		ConflictTaskID:  fields.ConflictTaskID,
-		ConvoyID:        fields.ConvoyID,
-		ConvoyCreatedAt: convoyCreatedAt,
-		PreVerified:     fields.PreVerified,
-		PreVerifiedAt:   preVerifiedAt,
-		PreVerifiedBase: fields.PreVerifiedBase,
-		CreatedAt:       createdAt,
-		UpdatedAt:       updatedAt,
-		Assignee:        issue.Assignee,
+		ID:          issue.ID,
+		Branch:      fields.Branch,
+		Target:      fields.Target,
+		SourceIssue: fields.SourceIssue,
+		Worker:      fields.Worker,
+		Rig:         fields.Rig,
+		Title:       issue.Title,
+		Priority:    issue.Priority,
+		AgentBead:   fields.AgentBead,
+		CommitSHA:   fields.CommitSHA,
+		PRURL:       fields.PRURL,
+		PRNumber:    fields.PRNumber,
+		RetryCount:  fields.RetryCount,
+		MRLifecycleState: MRLifecycleState{
+			ConflictTaskID:  fields.ConflictTaskID,
+			ConvoyID:        fields.ConvoyID,
+			ConvoyCreatedAt: convoyCreatedAt,
+			PreVerified:     fields.PreVerified,
+			PreVerifiedAt:   preVerifiedAt,
+			PreVerifiedBase: fields.PreVerifiedBase,
+			CreatedAt:       createdAt,
+			UpdatedAt:       updatedAt,
+			Assignee:        issue.Assignee,
+		},
 	}
 }
 

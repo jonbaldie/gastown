@@ -1042,7 +1042,9 @@ func TestPostMergeConvoyCheck_NoTownBeads(t *testing.T) {
 	mr := &MRInfo{
 		ID:          "gt-test",
 		SourceIssue: "gt-src",
-		ConvoyID:    "hq-cv-abc",
+		MRLifecycleState: MRLifecycleState{
+			ConvoyID: "hq-cv-abc",
+		},
 	}
 	e.postMergeConvoyCheck(mr)
 
@@ -1358,7 +1360,9 @@ func TestNotifyDeaconConvoyFeeding_SkipsWhenNoConvoyID(t *testing.T) {
 	mr := &MRInfo{
 		ID:          "gt-test",
 		SourceIssue: "gt-src",
-		ConvoyID:    "", // No convoy
+		MRLifecycleState: MRLifecycleState{
+			ConvoyID: "", // No convoy
+		},
 	}
 	e.notifyDeaconConvoyFeeding(mr)
 
@@ -1393,7 +1397,9 @@ func TestNotifyDeaconConvoyFeeding_AttemptsWhenConvoyID(t *testing.T) {
 	mr := &MRInfo{
 		ID:          "gt-test",
 		SourceIssue: "gt-src",
-		ConvoyID:    "hq-cv-abc",
+		MRLifecycleState: MRLifecycleState{
+			ConvoyID: "hq-cv-abc",
+		},
 	}
 	e.notifyDeaconConvoyFeeding(mr)
 
