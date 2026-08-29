@@ -1138,15 +1138,7 @@ func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 // validation. Returns the updated waves and the validation bead ID.
 // Only called for epic input when --no-validate is not set.
 func appendValidationWave(dag *ConvoyDAG, waves []Wave, epicID string) ([]Wave, string, error) {
-	// Collect all slingable bead IDs (these will block the validation bead).
-	var slingableIDs []string
-	for _, node := range dag.Nodes {
-		if isSlingableType(node.Type) {
-			slingableIDs = append(slingableIDs, node.ID)
-		}
-	}
-	sort.Strings(slingableIDs)
-
+	slingableIDs := dagSlingableIDs(dag)
 	if len(slingableIDs) == 0 {
 		return waves, "", nil // nothing to validate
 	}
@@ -1156,18 +1148,25 @@ func appendValidationWave(dag *ConvoyDAG, waves []Wave, epicID string) ([]Wave, 
 		return waves, "", err
 	}
 
-	// Generate a validation bead ID.
 	validationID := fmt.Sprintf("hq-%s", generateShortID())
+	if err := createValidationBead(townBeads, validationID, epicID); err != nil {
+		return waves, "", err
+	}
+	if err := linkValidationParent(townBeads, epicID, validationID); err != nil {
+		return waves, "", err
+	}
+	addValidationBlockingEdges(townBeads, slingableIDs, validationID)
+	addValidationNode(dag, validationID, epicID, slingableIDs)
+	return appendValidationResult(waves, validationID), validationID, nil
+}
 
-	// Build the description with epic context and formula reference.
+func createValidationBead(townBeads, validationID, epicID string) error {
 	description := fmt.Sprintf(
 		"Capstone validation for epic %s. "+
 			"Run mol-validate-prd formula to validate PRD success criteria.\n\n"+
 			"formula: mol-validate-prd\nepic_id: %s",
 		epicID, epicID,
 	)
-
-	// Create the validation bead in town beads.
 	createArgs := []string{
 		"create",
 		"--type=task",
@@ -1179,17 +1178,21 @@ func appendValidationWave(dag *ConvoyDAG, waves []Wave, epicID string) ([]Wave, 
 		createArgs = append(createArgs, "--force")
 	}
 	if out, err := BdCmd(createArgs...).Dir(townBeads).WithAutoCommit().CombinedOutput(); err != nil {
-		return waves, "", fmt.Errorf("bd create validation bead: %w\noutput: %s", err, out)
+		return fmt.Errorf("bd create validation bead: %w\noutput: %s", err, out)
 	}
+	return nil
+}
 
-	// Set the validation bead as a child of the epic.
+func linkValidationParent(townBeads, epicID, validationID string) error {
 	if out, err := BdCmd("dep", "add", epicID, validationID, "--type=parent-child").
 		Dir(townBeads).WithAutoCommit().StripBeadsDir().
 		CombinedOutput(); err != nil {
-		return waves, "", fmt.Errorf("bd dep add parent-child %s %s: %w\noutput: %s", epicID, validationID, err, out)
+		return fmt.Errorf("bd dep add parent-child %s %s: %w\noutput: %s", epicID, validationID, err, out)
 	}
+	return nil
+}
 
-	// Add blocking edges: every slingable bead blocks the validation bead.
+func addValidationBlockingEdges(townBeads string, slingableIDs []string, validationID string) {
 	// Cross-rig deps may fail (bd validates both IDs in same DB). Non-fatal.
 	for _, beadID := range slingableIDs {
 		if out, err := BdCmd("dep", "add", beadID, validationID, "--type=blocks").
@@ -1199,8 +1202,9 @@ func appendValidationWave(dag *ConvoyDAG, waves []Wave, epicID string) ([]Wave, 
 			_ = out
 		}
 	}
+}
 
-	// Add the validation bead to the DAG.
+func addValidationNode(dag *ConvoyDAG, validationID, epicID string, slingableIDs []string) {
 	dag.Nodes[validationID] = &ConvoyDAGNode{
 		ID:        validationID,
 		Title:     "Validate: PRD success criteria",
@@ -1209,25 +1213,22 @@ func appendValidationWave(dag *ConvoyDAG, waves []Wave, epicID string) ([]Wave, 
 		BlockedBy: slingableIDs,
 		Parent:    epicID,
 	}
-
-	// Update the Blocks field of each slingable node.
 	for _, beadID := range slingableIDs {
 		if node, ok := dag.Nodes[beadID]; ok {
 			node.Blocks = append(node.Blocks, validationID)
 		}
 	}
+}
 
-	// Append as the final wave.
+func appendValidationResult(waves []Wave, validationID string) []Wave {
 	nextWaveNum := 1
 	if len(waves) > 0 {
 		nextWaveNum = waves[len(waves)-1].Number + 1
 	}
-	waves = append(waves, Wave{
+	return append(waves, Wave{
 		Number: nextWaveNum,
 		Tasks:  []string{validationID},
 	})
-
-	return waves, validationID, nil
 }
 
 // BeadInfo represents raw bead data from bd show output.
