@@ -44,9 +44,9 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 	}
 
 	// Issue #288: Auto-apply formula for batch sling (resolved via flags)
-	formulaName := resolveFormula(slingFormula, slingHookRawBead, filepath.Dir(townBeadsDir), rigName)
+	formulaName := resolveFormula(slingState().formula, slingState().hookRawBead, filepath.Dir(townBeadsDir), rigName)
 
-	if slingDryRun {
+	if slingState().dryRun {
 		printBatchSlingDryRun(beadIDs, rigName, formulaName)
 		return nil
 	}
@@ -56,12 +56,12 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 
 func executeBatchSling(beadIDs []string, rigName, townRoot, formulaName, townBeadsDir string) error {
 	fmt.Printf("%s Batch slinging %d beads to rig '%s'...\n", style.Bold.Render("🎯"), len(beadIDs), rigName)
-	if slingMaxConcurrent > 0 {
-		fmt.Printf("  Spawn batch size: %d (spawns N, pauses, spawns N more)\n", slingMaxConcurrent)
+	if slingState().maxConcurrent > 0 {
+		fmt.Printf("  Spawn batch size: %d (spawns N, pauses, spawns N more)\n", slingState().maxConcurrent)
 	}
 	formulaCooked := preCookBatchSlingFormula(formulaName, townRoot, beadIDs)
 	results := spawnBatchSling(beadIDs, rigName, townRoot, townBeadsDir, formulaName, formulaCooked)
-	if !slingNoBoot {
+	if !slingState().noBoot {
 		wakeRigAgents(rigName)
 	}
 	return summarizeBatchSling(beadIDs, results)
@@ -79,7 +79,7 @@ func validateBatchSlingBeads(beadIDs []string) error {
 
 func moveBatchSlingBeads(beadIDs []string, rigName, townRoot string) ([]string, error) {
 	for i, beadID := range beadIDs {
-		movedID, err := ensureBeadInTargetRig(beadID, rigName, townRoot, slingDryRun)
+		movedID, err := ensureBeadInTargetRig(beadID, rigName, townRoot, slingState().dryRun)
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +90,7 @@ func moveBatchSlingBeads(beadIDs []string, rigName, townRoot string) ([]string, 
 
 func checkBatchSlingRigs(beadIDs []string, rigName, townRoot string) error {
 	// Cross-rig guard: check all beads match the target rig before spawning (gt-myecw).
-	if slingForce {
+	if slingState().force {
 		return nil
 	}
 	for _, beadID := range beadIDs {
@@ -163,18 +163,18 @@ func preCookBatchSlingFormula(formulaName, townRoot string, beadIDs []string) bo
 }
 
 func batchSlingMode() string {
-	if slingRalph {
+	if slingState().ralph {
 		return "ralph"
 	}
 	return ""
 }
 
 func throttleBatchSling(activeCount int) int {
-	if slingMaxConcurrent <= 0 || activeCount < slingMaxConcurrent {
+	if slingState().maxConcurrent <= 0 || activeCount < slingState().maxConcurrent {
 		return activeCount
 	}
 	fmt.Printf("\n%s Spawn batch of %d complete, pausing before next batch...\n",
-		style.Warning.Render("⏳"), slingMaxConcurrent)
+		style.Warning.Render("⏳"), slingState().maxConcurrent)
 	for wait := 0; wait < 30; wait++ {
 		time.Sleep(2 * time.Second)
 		if wait >= 2 {
@@ -189,19 +189,19 @@ func batchSlingIntent(beadID, rigName, townRoot, townBeadsDir, formulaName strin
 		BeadID:     beadID,
 		Formula:    formulaName,
 		RigName:    rigName,
-		Args:       slingArgs,
-		Vars:       slingVars,
-		Merge:      slingMerge,
-		BaseBranch: slingBaseBranch,
-		Account:    slingAccount,
-		Agent:      slingAgent,
+		Args:       slingState().args,
+		Vars:       slingState().vars,
+		Merge:      slingState().merge,
+		BaseBranch: slingState().baseBranch,
+		Account:    slingState().account,
+		Agent:      slingState().agent,
 		IntentExecutionOptions: sling.IntentExecutionOptions{
-			NoConvoy:         slingNoConvoy,
-			Owned:            slingOwned,
-			NoMerge:          slingNoMerge,
-			ReviewOnly:       slingReviewOnly,
-			Force:            slingForce,
-			HookRawBead:      slingHookRawBead,
+			NoConvoy:         slingState().noConvoy,
+			Owned:            slingState().owned,
+			NoMerge:          slingState().noMerge,
+			ReviewOnly:       slingState().reviewOnly,
+			Force:            slingState().force,
+			HookRawBead:      slingState().hookRawBead,
 			NoBoot:           true, // coalesced after the loop
 			Mode:             slingMode,
 			SkipCook:         formulaCooked,

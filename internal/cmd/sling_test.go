@@ -437,32 +437,32 @@ exit /b 0
 	}
 
 	// Ensure we don't leak global flag state across tests.
-	prevOn := slingOnTarget
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
-	prevHookRawBead := slingHookRawBead
-	prevReviewOnly := slingReviewOnly
-	prevNoMerge := slingNoMerge
+	prevOn := slingState().onTarget
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
+	prevHookRawBead := slingState().hookRawBead
+	prevReviewOnly := slingState().reviewOnly
+	prevNoMerge := slingState().noMerge
 	prevResolveTargetAgent := resolveTargetAgentFn
 	t.Cleanup(func() {
-		slingOnTarget = prevOn
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
-		slingHookRawBead = prevHookRawBead
-		slingReviewOnly = prevReviewOnly
-		slingNoMerge = prevNoMerge
+		slingState().onTarget = prevOn
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
+		slingState().hookRawBead = prevHookRawBead
+		slingState().reviewOnly = prevReviewOnly
+		slingState().noMerge = prevNoMerge
 		resolveTargetAgentFn = prevResolveTargetAgent
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingHookRawBead = false
-	slingReviewOnly = false
-	slingNoMerge = false
-	slingVars = nil
-	slingOnTarget = ""
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().hookRawBead = false
+	slingState().reviewOnly = false
+	slingState().noMerge = false
+	slingState().vars = nil
+	slingState().onTarget = ""
 	resolveTargetAgentFn = func(target string) (agentID string, pane string, hookRoot string, err error) {
 		if target != "gastown/polecats/toast" {
 			t.Fatalf("resolveTargetAgent target = %q, want gastown/polecats/toast", target)
@@ -498,15 +498,15 @@ exit /b 0
 
 	// Also exercise the explicit formula-on-bead path; this is the older
 	// --on-style route that must use the same target rig database.
-	slingOnTarget = newBeadID
+	slingState().onTarget = newBeadID
 	if err := runSling(nil, []string{"mol-review"}); err != nil {
 		t.Fatalf("runSling: %v", err)
 	}
 
-	slingOnTarget = ""
-	slingHookRawBead = true
-	slingReviewOnly = true
-	slingNoMerge = true
+	slingState().onTarget = ""
+	slingState().hookRawBead = true
+	slingState().reviewOnly = true
+	slingState().noMerge = true
 	if err := runSling(nil, []string{newBeadID, "gastown/polecats/toast"}); err != nil {
 		t.Fatalf("runSling raw review-only: %v", err)
 	}
@@ -870,25 +870,25 @@ exit /b 0
 	}
 
 	// Ensure we don't leak global flag/seam state across tests.
-	prevNoConvoy := slingNoConvoy
-	prevNoBoot := slingNoBoot
-	prevDryRun := slingDryRun
-	prevHookRaw := slingHookRawBead
+	prevNoConvoy := slingState().noConvoy
+	prevNoBoot := slingState().noBoot
+	prevDryRun := slingState().dryRun
+	prevHookRaw := slingState().hookRawBead
 	prevSpawn := spawnPolecatForSling
 	prevRollback := rollbackSlingArtifactsFn
 	t.Cleanup(func() {
-		slingNoConvoy = prevNoConvoy
-		slingNoBoot = prevNoBoot
-		slingDryRun = prevDryRun
-		slingHookRawBead = prevHookRaw
+		slingState().noConvoy = prevNoConvoy
+		slingState().noBoot = prevNoBoot
+		slingState().dryRun = prevDryRun
+		slingState().hookRawBead = prevHookRaw
 		spawnPolecatForSling = prevSpawn
 		rollbackSlingArtifactsFn = prevRollback
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingNoBoot = true
-	slingHookRawBead = false
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().noBoot = true
+	slingState().hookRawBead = false
 
 	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
 		return &SpawnedPolecatInfo{
@@ -980,25 +980,25 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevNoConvoy := slingNoConvoy
-	prevNoBoot := slingNoBoot
-	prevHookRaw := slingHookRawBead
+	prevNoConvoy := slingState().noConvoy
+	prevNoBoot := slingState().noBoot
+	prevHookRaw := slingState().hookRawBead
 	prevSpawn := spawnPolecatForSling
 	prevResolveTargetAgent := resolveTargetAgentFn
 	prevRollback := rollbackSlingArtifactsFn
 	prevHook := hookBeadWithRetryWithTownRootFn
 	t.Cleanup(func() {
-		slingNoConvoy = prevNoConvoy
-		slingNoBoot = prevNoBoot
-		slingHookRawBead = prevHookRaw
+		slingState().noConvoy = prevNoConvoy
+		slingState().noBoot = prevNoBoot
+		slingState().hookRawBead = prevHookRaw
 		spawnPolecatForSling = prevSpawn
 		resolveTargetAgentFn = prevResolveTargetAgent
 		rollbackSlingArtifactsFn = prevRollback
 		hookBeadWithRetryWithTownRootFn = prevHook
 	})
-	slingNoConvoy = true
-	slingNoBoot = true
-	slingHookRawBead = true
+	slingState().noConvoy = true
+	slingState().noBoot = true
+	slingState().hookRawBead = true
 
 	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
 		return &SpawnedPolecatInfo{RigName: rigName, PolecatName: "Toast", ClonePath: filepath.Join(townRoot, "fake-polecat")}, nil
@@ -1128,16 +1128,16 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevNoConvoy := slingNoConvoy
-	prevNoBoot := slingNoBoot
+	prevNoConvoy := slingState().noConvoy
+	prevNoBoot := slingState().noBoot
 	prevSpawn := spawnPolecatForSling
 	t.Cleanup(func() {
-		slingNoConvoy = prevNoConvoy
-		slingNoBoot = prevNoBoot
+		slingState().noConvoy = prevNoConvoy
+		slingState().noBoot = prevNoBoot
 		spawnPolecatForSling = prevSpawn
 	})
-	slingNoConvoy = true
-	slingNoBoot = true
+	slingState().noConvoy = true
+	slingState().noBoot = true
 
 	spawnCalled := false
 	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
@@ -1565,16 +1565,16 @@ func TestScheduleBeadRejectsMissingTargetRigDatabaseBeforeContext(t *testing.T) 
 func TestBatchSlingRejectsMissingTargetRigDatabaseBeforeSpawn(t *testing.T) {
 	townRoot, _ := setupCrossDatabaseSlingGuardTest(t)
 
-	prevDryRun := slingDryRun
-	prevForce := slingForce
+	prevDryRun := slingState().dryRun
+	prevForce := slingState().force
 	prevSpawn := spawnPolecatForSling
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingForce = prevForce
+		slingState().dryRun = prevDryRun
+		slingState().force = prevForce
 		spawnPolecatForSling = prevSpawn
 	})
-	slingDryRun = false
-	slingForce = false
+	slingState().dryRun = false
+	slingState().force = false
 
 	spawnCalled := false
 	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
@@ -2018,27 +2018,27 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 		t.Fatalf("mkdir workDir: %v", err)
 	}
 
-	prevHookRaw := slingHookRawBead
-	prevNoMerge := slingNoMerge
-	prevReviewOnly := slingReviewOnly
-	prevNoConvoy := slingNoConvoy
-	prevDryRun := slingDryRun
+	prevHookRaw := slingState().hookRawBead
+	prevNoMerge := slingState().noMerge
+	prevReviewOnly := slingState().reviewOnly
+	prevNoConvoy := slingState().noConvoy
+	prevDryRun := slingState().dryRun
 	prevResolve := resolveTargetAgentFn
 	prevHook := hookBeadWithRetryWithTownRootFn
 	t.Cleanup(func() {
-		slingHookRawBead = prevHookRaw
-		slingNoMerge = prevNoMerge
-		slingReviewOnly = prevReviewOnly
-		slingNoConvoy = prevNoConvoy
-		slingDryRun = prevDryRun
+		slingState().hookRawBead = prevHookRaw
+		slingState().noMerge = prevNoMerge
+		slingState().reviewOnly = prevReviewOnly
+		slingState().noConvoy = prevNoConvoy
+		slingState().dryRun = prevDryRun
 		resolveTargetAgentFn = prevResolve
 		hookBeadWithRetryWithTownRootFn = prevHook
 	})
-	slingHookRawBead = true
-	slingNoMerge = true
-	slingReviewOnly = true
-	slingNoConvoy = true
-	slingDryRun = false
+	slingState().hookRawBead = true
+	slingState().noMerge = true
+	slingState().reviewOnly = true
+	slingState().noConvoy = true
+	slingState().dryRun = false
 	resolveTargetAgentFn = func(target string) (string, string, string, error) {
 		return "gastown/crew/toast", "", workDir, nil
 	}
@@ -2357,19 +2357,19 @@ exit /b 0
 	}
 
 	// Ensure we don't leak global flag/seam state across tests.
-	prevNoBoot := slingNoBoot
-	prevDryRun := slingDryRun
+	prevNoBoot := slingState().noBoot
+	prevDryRun := slingState().dryRun
 	prevSpawn := spawnPolecatForSling
 	prevRollback := rollbackSlingArtifactsFn
 	t.Cleanup(func() {
-		slingNoBoot = prevNoBoot
-		slingDryRun = prevDryRun
+		slingState().noBoot = prevNoBoot
+		slingState().dryRun = prevDryRun
 		spawnPolecatForSling = prevSpawn
 		rollbackSlingArtifactsFn = prevRollback
 	})
 
-	slingDryRun = false
-	slingNoBoot = true
+	slingState().dryRun = false
+	slingState().noBoot = true
 
 	fakeWorkDir := filepath.Join(townRoot, "fake-polecat")
 	if err := os.MkdirAll(fakeWorkDir, 0755); err != nil {
@@ -2493,21 +2493,21 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoBoot := slingNoBoot
-	prevRalph := slingRalph
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoBoot := slingState().noBoot
+	prevRalph := slingState().ralph
 	t.Cleanup(func() {
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoBoot = prevNoBoot
-		slingRalph = prevRalph
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noBoot = prevNoBoot
+		slingState().ralph = prevRalph
 	})
 
-	slingVars = []string{"version=1.2.3", "channel=stable"}
-	slingDryRun = false
-	slingNoBoot = true
-	slingRalph = true
+	slingState().vars = []string{"version=1.2.3", "channel=stable"}
+	slingState().dryRun = false
+	slingState().noBoot = true
+	slingState().ralph = true
 
 	if err := runSlingFormula(context.Background(), []string{"mol-anything"}); err != nil {
 		t.Fatalf("runSlingFormula: %v", err)
@@ -2590,20 +2590,20 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevDryRun := slingDryRun
-	prevNoBoot := slingNoBoot
-	prevForce := slingForce
+	prevDryRun := slingState().dryRun
+	prevNoBoot := slingState().noBoot
+	prevForce := slingState().force
 	prevFindSingleton := findHookedFormulaSingletonFn
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoBoot = prevNoBoot
-		slingForce = prevForce
+		slingState().dryRun = prevDryRun
+		slingState().noBoot = prevNoBoot
+		slingState().force = prevForce
 		findHookedFormulaSingletonFn = prevFindSingleton
 	})
 
-	slingDryRun = false
-	slingNoBoot = true
-	slingForce = false
+	slingState().dryRun = false
+	slingState().noBoot = true
+	slingState().force = false
 	findHookedFormulaSingletonFn = func(workDir, targetAgent, formulaName string) (*beads.Issue, error) {
 		return &beads.Issue{ID: "gt-dispatch-existing", Labels: []string{formulaDispatchLabel}}, nil
 	}
@@ -2664,23 +2664,23 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevDryRun := slingDryRun
-	prevNoBoot := slingNoBoot
-	prevForce := slingForce
-	prevRalph := slingRalph
+	prevDryRun := slingState().dryRun
+	prevNoBoot := slingState().noBoot
+	prevForce := slingState().force
+	prevRalph := slingState().ralph
 	prevFindSingleton := findHookedFormulaSingletonFn
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoBoot = prevNoBoot
-		slingForce = prevForce
-		slingRalph = prevRalph
+		slingState().dryRun = prevDryRun
+		slingState().noBoot = prevNoBoot
+		slingState().force = prevForce
+		slingState().ralph = prevRalph
 		findHookedFormulaSingletonFn = prevFindSingleton
 	})
 
-	slingDryRun = false
-	slingNoBoot = true
-	slingForce = false
-	slingRalph = false
+	slingState().dryRun = false
+	slingState().noBoot = true
+	slingState().force = false
+	slingState().ralph = false
 	findHookedFormulaSingletonFn = func(workDir, targetAgent, formulaName string) (*beads.Issue, error) {
 		return &beads.Issue{ID: "gt-dispatch-existing", Labels: []string{formulaDispatchLabel}, Description: "attached_formula: mol-anything\nmode: ralph"}, nil
 	}
@@ -2813,21 +2813,21 @@ exit /b 0
 	}
 
 	// Ensure we don't leak global flag state across tests.
-	prevOn := slingOnTarget
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevOn := slingState().onTarget
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingOnTarget = prevOn
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().onTarget = prevOn
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingVars = nil
-	slingOnTarget = "gt-abc123"
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().vars = nil
+	slingState().onTarget = "gt-abc123"
 
 	// Prevent real tmux nudge from firing during tests (causes agent self-interruption)
 	t.Setenv("GT_TEST_NO_NUDGE", "1")
@@ -3016,15 +3016,15 @@ exit /b 0
 	}
 
 	// Save and restore global flags
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = true
-	slingNoConvoy = true
+	slingState().dryRun = true
+	slingState().noConvoy = true
 
 	// Prevent real tmux nudge from firing during tests (causes agent self-interruption)
 	t.Setenv("GT_TEST_NO_NUDGE", "1")
@@ -3311,21 +3311,21 @@ exit /b 0
 	}
 
 	// Ensure we don't leak global flag state across tests.
-	prevOn := slingOnTarget
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevOn := slingState().onTarget
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingOnTarget = prevOn
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().onTarget = prevOn
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingVars = nil
-	slingOnTarget = "gt-abc123" // The bug bead we're applying formula to
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().vars = nil
+	slingState().onTarget = "gt-abc123" // The bug bead we're applying formula to
 
 	// Prevent real tmux nudge from firing during tests (causes agent self-interruption)
 	t.Setenv("GT_TEST_NO_NUDGE", "1")
@@ -3477,18 +3477,18 @@ exit /b 0
 	}
 
 	// Save and restore global flags
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
-	prevNoMerge := slingNoMerge
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
+	prevNoMerge := slingState().noMerge
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
-		slingNoMerge = prevNoMerge
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
+		slingState().noMerge = prevNoMerge
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingNoMerge = true // This is what we're testing
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().noMerge = true // This is what we're testing
 
 	if err := runSling(nil, []string{"gt-test123"}); err != nil {
 		t.Fatalf("runSling: %v", err)
@@ -3565,17 +3565,17 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
-	prevRalph := slingRalph
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
+	prevRalph := slingState().ralph
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
-		slingRalph = prevRalph
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
+		slingState().ralph = prevRalph
 	})
-	slingDryRun = false
-	slingNoConvoy = true
-	slingRalph = true
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().ralph = true
 
 	if err := runSling(nil, []string{"gt-test123"}); err != nil {
 		t.Fatalf("runSling: %v", err)
@@ -3787,15 +3787,15 @@ exit /b 0
 	}
 
 	// Save and restore global flags
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
+	slingState().dryRun = false
+	slingState().noConvoy = true
 
 	if err := runSling(nil, []string{"gt-test456"}); err != nil {
 		t.Fatalf("runSling: %v", err)
@@ -4050,14 +4050,14 @@ exit /b 0
 	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
 	isHookedAgentDeadFn = func(assignee string) bool { return false }
 
-	prevForce := slingForce
-	prevNoConvoy := slingNoConvoy
+	prevForce := slingState().force
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingForce = prevForce
-		slingNoConvoy = prevNoConvoy
+		slingState().force = prevForce
+		slingState().noConvoy = prevNoConvoy
 	})
-	slingForce = false
-	slingNoConvoy = true
+	slingState().force = false
+	slingState().noConvoy = true
 
 	// Sling to same target — should no-op (return nil, no error)
 	err = runSling(nil, []string{"gt-test123", "gastown/polecats/toast"})
@@ -4123,14 +4123,14 @@ exit /b 0
 	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
 	isHookedAgentDeadFn = func(assignee string) bool { return false }
 
-	prevForce := slingForce
-	prevNoConvoy := slingNoConvoy
+	prevForce := slingState().force
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingForce = prevForce
-		slingNoConvoy = prevNoConvoy
+		slingState().force = prevForce
+		slingState().noConvoy = prevNoConvoy
 	})
-	slingForce = false
-	slingNoConvoy = true
+	slingState().force = false
+	slingState().noConvoy = true
 
 	// Sling pinned bead to same target — should no-op (return nil, no error)
 	err = runSling(nil, []string{"gt-test-pinned", "gastown/polecats/toast"})
@@ -4202,17 +4202,17 @@ exit /b 0
 	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
 	isHookedAgentDeadFn = func(assignee string) bool { return true }
 
-	prevForce := slingForce
-	prevNoConvoy := slingNoConvoy
-	prevDryRun := slingDryRun
+	prevForce := slingState().force
+	prevNoConvoy := slingState().noConvoy
+	prevDryRun := slingState().dryRun
 	t.Cleanup(func() {
-		slingForce = prevForce
-		slingNoConvoy = prevNoConvoy
-		slingDryRun = prevDryRun
+		slingState().force = prevForce
+		slingState().noConvoy = prevNoConvoy
+		slingState().dryRun = prevDryRun
 	})
-	slingForce = false
-	slingNoConvoy = true
-	slingDryRun = true // dry-run to avoid side effects from resolveTarget
+	slingState().force = false
+	slingState().noConvoy = true
+	slingState().dryRun = true // dry-run to avoid side effects from resolveTarget
 
 	// Capture stdout to verify the "auto-forcing re-sling" message is printed.
 	origStdout := os.Stdout
@@ -4306,17 +4306,17 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevForce := slingForce
-	prevNoConvoy := slingNoConvoy
-	prevDryRun := slingDryRun
+	prevForce := slingState().force
+	prevNoConvoy := slingState().noConvoy
+	prevDryRun := slingState().dryRun
 	t.Cleanup(func() {
-		slingForce = prevForce
-		slingNoConvoy = prevNoConvoy
-		slingDryRun = prevDryRun
+		slingState().force = prevForce
+		slingState().noConvoy = prevNoConvoy
+		slingState().dryRun = prevDryRun
 	})
-	slingForce = true // --force
-	slingNoConvoy = true
-	slingDryRun = true
+	slingState().force = true // --force
+	slingState().noConvoy = true
+	slingState().dryRun = true
 
 	// --force bypasses the entire pinned/hooked guard including idempotency.
 	// resolveTarget will fail because rig doesn't exist, but the key assertion
@@ -4399,17 +4399,17 @@ exit /b 0
 	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
 	isHookedAgentDeadFn = func(assignee string) bool { return false }
 
-	prevForce := slingForce
-	prevNoConvoy := slingNoConvoy
-	prevOnTarget := slingOnTarget
+	prevForce := slingState().force
+	prevNoConvoy := slingState().noConvoy
+	prevOnTarget := slingState().onTarget
 	t.Cleanup(func() {
-		slingForce = prevForce
-		slingNoConvoy = prevNoConvoy
-		slingOnTarget = prevOnTarget
+		slingState().force = prevForce
+		slingState().noConvoy = prevNoConvoy
+		slingState().onTarget = prevOnTarget
 	})
-	slingForce = false
-	slingNoConvoy = true
-	slingOnTarget = "gt-test-formula-on-bead" // --on flag: bead ID
+	slingState().force = false
+	slingState().noConvoy = true
+	slingState().onTarget = "gt-test-formula-on-bead" // --on flag: bead ID
 
 	// Formula-on-bead with matching target. The idempotency guard must NOT
 	// return nil (no-op) or "already hooked" error — it should fall through
@@ -4488,14 +4488,14 @@ exit /b 0
 	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
 	isHookedAgentDeadFn = func(assignee string) bool { return false }
 
-	prevForce := slingForce
-	prevNoConvoy := slingNoConvoy
+	prevForce := slingState().force
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingForce = prevForce
-		slingNoConvoy = prevNoConvoy
+		slingState().force = prevForce
+		slingState().noConvoy = prevNoConvoy
 	})
-	slingForce = false
-	slingNoConvoy = true
+	slingState().force = false
+	slingState().noConvoy = true
 
 	// Sling pinned bead with dot target — self-resolution as mayor returns
 	// "mayor/" which normalizes to "mayor", matching the assignee. Should no-op.
@@ -4692,14 +4692,14 @@ exit /b 0
 				return tt.wantAgent, "%99", townRoot, nil
 			}
 
-			prevDryRun := slingDryRun
-			prevNoConvoy := slingNoConvoy
+			prevDryRun := slingState().dryRun
+			prevNoConvoy := slingState().noConvoy
 			t.Cleanup(func() {
-				slingDryRun = prevDryRun
-				slingNoConvoy = prevNoConvoy
+				slingState().dryRun = prevDryRun
+				slingState().noConvoy = prevNoConvoy
 			})
-			slingDryRun = true
-			slingNoConvoy = true
+			slingState().dryRun = true
+			slingState().noConvoy = true
 
 			// Capture stdout
 			origStdout := os.Stdout
@@ -4825,34 +4825,34 @@ exit /b 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
-	prevMerge := slingMerge
-	prevOwned := slingOwned
-	prevOnTarget := slingOnTarget
-	prevVars := slingVars
-	prevFormula := slingFormula
-	prevHookRawBead := slingHookRawBead
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
+	prevMerge := slingState().merge
+	prevOwned := slingState().owned
+	prevOnTarget := slingState().onTarget
+	prevVars := slingState().vars
+	prevFormula := slingState().formula
+	prevHookRawBead := slingState().hookRawBead
 	prevResolveTargetAgent := resolveTargetAgentFn
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
-		slingMerge = prevMerge
-		slingOwned = prevOwned
-		slingOnTarget = prevOnTarget
-		slingVars = prevVars
-		slingFormula = prevFormula
-		slingHookRawBead = prevHookRawBead
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
+		slingState().merge = prevMerge
+		slingState().owned = prevOwned
+		slingState().onTarget = prevOnTarget
+		slingState().vars = prevVars
+		slingState().formula = prevFormula
+		slingState().hookRawBead = prevHookRawBead
 		resolveTargetAgentFn = prevResolveTargetAgent
 	})
-	slingDryRun = true
-	slingNoConvoy = false
-	slingMerge = ""
-	slingOwned = false
-	slingOnTarget = ""
-	slingVars = nil
-	slingFormula = ""
-	slingHookRawBead = false
+	slingState().dryRun = true
+	slingState().noConvoy = false
+	slingState().merge = ""
+	slingState().owned = false
+	slingState().onTarget = ""
+	slingState().vars = nil
+	slingState().formula = ""
+	slingState().hookRawBead = false
 	resolveTargetAgentFn = func(target string) (string, string, string, error) {
 		if target != "gastown/crew/max" {
 			t.Fatalf("resolveTargetAgent target = %q, want gastown/crew/max", target)
@@ -4981,17 +4981,17 @@ func TestSlingRejectsDeferredBead(t *testing.T) {
 				t.Fatalf("chdir: %v", err)
 			}
 
-			prevDryRun := slingDryRun
-			prevNoConvoy := slingNoConvoy
-			prevForce := slingForce
+			prevDryRun := slingState().dryRun
+			prevNoConvoy := slingState().noConvoy
+			prevForce := slingState().force
 			t.Cleanup(func() {
-				slingDryRun = prevDryRun
-				slingNoConvoy = prevNoConvoy
-				slingForce = prevForce
+				slingState().dryRun = prevDryRun
+				slingState().noConvoy = prevNoConvoy
+				slingState().force = prevForce
 			})
-			slingDryRun = true
-			slingNoConvoy = true
-			slingForce = tt.force
+			slingState().dryRun = true
+			slingState().noConvoy = true
+			slingState().force = tt.force
 
 			err = runSling(nil, []string{"gt-test123"})
 
@@ -5047,20 +5047,20 @@ func TestRunSlingResumeFlagValidation(t *testing.T) {
 	t.Setenv(EnvGTRole, "")
 	t.Setenv("GT_POLECAT", "")
 
-	prevResumeBranch := slingResumeBranch
-	prevResumePR := slingResumePR
-	prevBaseBranch := slingBaseBranch
+	prevResumeBranch := slingState().resumeBranch
+	prevResumePR := slingState().resumePR
+	prevBaseBranch := slingState().baseBranch
 	t.Cleanup(func() {
-		slingResumeBranch = prevResumeBranch
-		slingResumePR = prevResumePR
-		slingBaseBranch = prevBaseBranch
+		slingState().resumeBranch = prevResumeBranch
+		slingState().resumePR = prevResumePR
+		slingState().baseBranch = prevBaseBranch
 	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			slingResumeBranch = tt.resumeBranch
-			slingResumePR = tt.resumePR
-			slingBaseBranch = tt.baseBranch
+			slingState().resumeBranch = tt.resumeBranch
+			slingState().resumePR = tt.resumePR
+			slingState().baseBranch = tt.baseBranch
 
 			err := runSling(nil, []string{"gt-test"})
 			if err == nil {
@@ -5172,20 +5172,20 @@ exit /b 0
 	t.Setenv("GT_TEST_SKIP_HOOK_VERIFY", "1")
 
 	// Save and restore global sling state
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
-	prevVars := slingVars
-	prevOnTarget := slingOnTarget
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
+	prevVars := slingState().vars
+	prevOnTarget := slingState().onTarget
 	t.Cleanup(func() {
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
-		slingVars = prevVars
-		slingOnTarget = prevOnTarget
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
+		slingState().vars = prevVars
+		slingState().onTarget = prevOnTarget
 	})
-	slingDryRun = true // avoid real polecat spawning
-	slingNoConvoy = true
-	slingVars = nil
-	slingOnTarget = ""
+	slingState().dryRun = true // avoid real polecat spawning
+	slingState().noConvoy = true
+	slingState().vars = nil
+	slingState().onTarget = ""
 
 	// Regression: before the fix, this returned "standalone formula cannot be scheduled".
 	err = runSling(nil, []string{"mol-test-formula", "testrig"})

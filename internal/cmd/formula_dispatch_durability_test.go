@@ -69,15 +69,15 @@ exit 0
 
 	prevFind := findHookedFormulaSingletonFn
 	prevHook := hookBeadWithRetryFn
-	prevDryRun, prevNoBoot := slingDryRun, slingNoBoot
+	prevDryRun, prevNoBoot := slingState().dryRun, slingState().noBoot
 	t.Cleanup(func() {
 		findHookedFormulaSingletonFn = prevFind
 		hookBeadWithRetryFn = prevHook
-		slingDryRun, slingNoBoot = prevDryRun, prevNoBoot
+		slingState().dryRun, slingState().noBoot = prevDryRun, prevNoBoot
 	})
 
-	slingDryRun = false
-	slingNoBoot = true
+	slingState().dryRun = false
+	slingState().noBoot = true
 	findHookedFormulaSingletonFn = func(workDir, targetAgent, formulaName string) (*beads.Issue, error) {
 		return &beads.Issue{
 			ID:               "gt-wisp-existing",
@@ -149,13 +149,13 @@ exit 0
 `)
 
 	prevHook := hookBeadWithRetryFn
-	prevDryRun, prevNoBoot := slingDryRun, slingNoBoot
+	prevDryRun, prevNoBoot := slingState().dryRun, slingState().noBoot
 	t.Cleanup(func() {
 		hookBeadWithRetryFn = prevHook
-		slingDryRun, slingNoBoot = prevDryRun, prevNoBoot
+		slingState().dryRun, slingState().noBoot = prevDryRun, prevNoBoot
 	})
-	slingDryRun = false
-	slingNoBoot = true
+	slingState().dryRun = false
+	slingState().noBoot = true
 
 	var hookedID string
 	hookBeadWithRetryFn = func(beadID, targetAgent, hookDir string) error {
@@ -246,13 +246,13 @@ exit 0
 		t.Fatalf("chdir: %v", err)
 	}
 	prevHook := hookBeadWithRetryFn
-	prevDryRun, prevNoBoot := slingDryRun, slingNoBoot
+	prevDryRun, prevNoBoot := slingState().dryRun, slingState().noBoot
 	t.Cleanup(func() {
 		hookBeadWithRetryFn = prevHook
-		slingDryRun, slingNoBoot = prevDryRun, prevNoBoot
+		slingState().dryRun, slingState().noBoot = prevDryRun, prevNoBoot
 	})
-	slingDryRun = false
-	slingNoBoot = true
+	slingState().dryRun = false
+	slingState().noBoot = true
 	hookBeadWithRetryFn = func(beadID, targetAgent, hookDir string) error {
 		return errors.New("hook failed")
 	}

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
@@ -21,12 +22,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var slingCmd = &cobra.Command{
-	Use:         "sling <bead-or-formula> [target]",
-	GroupID:     GroupWork,
-	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
-	Short:       "Assign work to an agent (THE unified work dispatch command)",
-	Long: `Sling work onto an agent's hook and start working immediately.
+func newSlingCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:         "sling <bead-or-formula> [target]",
+		GroupID:     GroupWork,
+		Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+		Short:       "Assign work to an agent (THE unified work dispatch command)",
+		Long: `Sling work onto an agent's hook and start working immediately.
 
 This is THE command for assigning work in Gas Town. It handles:
   - Existing agents (mayor, crew, witness, refinery)
@@ -131,68 +133,76 @@ Batch Slinging:
   When multiple beads are provided with a rig target, each bead gets its own
   polecat. This parallelizes work dispatch without running gt sling N times.
   Use --max-concurrent to throttle spawn rate and prevent Dolt server overload.`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: runSling,
+		Args: cobra.MinimumNArgs(1),
+		RunE: runSling,
+	}
 }
 
-var (
-	slingSubject     string
-	slingMessage     string
-	slingDryRun      bool
-	slingOnTarget    string   // --on flag: target bead when slinging a formula
-	slingVars        []string // --var flag: formula variables (key=value)
-	slingArgs        string   // --args flag: natural language instructions for executor
-	slingStdin       bool     // --stdin: read --message and/or --args from stdin
-	slingHookRawBead bool     // --hook-raw-bead: hook raw bead without default formula (expert mode)
+type slingCommandState struct {
+	subject       string
+	message       string
+	dryRun        bool
+	onTarget      string
+	vars          []string
+	args          string
+	stdin         bool
+	hookRawBead   bool
+	create        bool
+	force         bool
+	account       string
+	agent         string
+	noConvoy      bool
+	owned         bool
+	noMerge       bool
+	merge         string
+	noBoot        bool
+	maxConcurrent int
+	baseBranch    string
+	resumeBranch  string
+	resumePR      int
+	ralph         bool
+	formula       string
+	crew          string
+	reviewOnly    bool
+}
 
-	// Flags migrated for polecat spawning (used by sling for work assignment)
-	slingCreate        bool   // --create: create polecat if it doesn't exist
-	slingForce         bool   // --force: force spawn even if polecat has unread mail
-	slingAccount       string // --account: Claude Code account handle to use
-	slingAgent         string // --agent: override runtime agent for this sling/spawn
-	slingNoConvoy      bool   // --no-convoy: skip auto-convoy creation
-	slingOwned         bool   // --owned: mark auto-convoy as caller-managed lifecycle
-	slingNoMerge       bool   // --no-merge: skip merge queue on completion (for upstream PRs/human review)
-	slingMerge         string // --merge: merge strategy for convoy (direct/mr/local)
-	slingNoBoot        bool   // --no-boot: skip wakeRigAgents (avoid witness/refinery boot and lock contention)
-	slingMaxConcurrent int    // --max-concurrent: throttle spawn rate in batch mode (spawns N, pauses, spawns N more)
-	slingBaseBranch    string // --base-branch: override base branch for polecat worktree
-	slingResumeBranch  string // --branch: resume an existing branch instead of creating a fresh one
-	slingResumePR      int    // --pr: resume the head branch of an existing PR (resolves via gh)
-	slingRalph         bool   // --ralph: enable Ralph Wiggum loop mode for multi-step workflows
-	slingFormula       string // --formula: override formula for dispatch (default: mol-polecat-work)
-	slingCrew          string // --crew: target a crew member in the specified rig
-	slingReviewOnly    bool   // --review-only: mark work as review-only (no merge/commit/push)
-)
+var slingCommandStateInstance = sync.OnceValue(func() *slingCommandState {
+	return &slingCommandState{}
+})
+
+func slingState() *slingCommandState {
+	return slingCommandStateInstance()
+}
 
 func init() {
-	slingCmd.Flags().StringVarP(&slingSubject, "subject", "s", "", "Context subject for the work")
-	slingCmd.Flags().StringVarP(&slingMessage, "message", "m", "", "Context message for the work")
-	slingCmd.Flags().BoolVarP(&slingDryRun, "dry-run", "n", false, "Show what would be done")
-	slingCmd.Flags().StringVar(&slingOnTarget, "on", "", "Apply formula to existing bead (implies wisp scaffolding)")
-	slingCmd.Flags().StringArrayVar(&slingVars, "var", nil, "Formula variable (key=value), can be repeated")
-	slingCmd.Flags().StringVarP(&slingArgs, "args", "a", "", "Natural language instructions for the executor (e.g., 'patch release')")
-	slingCmd.Flags().BoolVar(&slingStdin, "stdin", false, "Read --message and/or --args from stdin (avoids shell quoting issues)")
+	slingCmd := newSlingCommand()
+	slingCmd.Flags().StringVarP(&slingState().subject, "subject", "s", "", "Context subject for the work")
+	slingCmd.Flags().StringVarP(&slingState().message, "message", "m", "", "Context message for the work")
+	slingCmd.Flags().BoolVarP(&slingState().dryRun, "dry-run", "n", false, "Show what would be done")
+	slingCmd.Flags().StringVar(&slingState().onTarget, "on", "", "Apply formula to existing bead (implies wisp scaffolding)")
+	slingCmd.Flags().StringArrayVar(&slingState().vars, "var", nil, "Formula variable (key=value), can be repeated")
+	slingCmd.Flags().StringVarP(&slingState().args, "args", "a", "", "Natural language instructions for the executor (e.g., 'patch release')")
+	slingCmd.Flags().BoolVar(&slingState().stdin, "stdin", false, "Read --message and/or --args from stdin (avoids shell quoting issues)")
 
 	// Flags for polecat spawning (when target is a rig)
-	slingCmd.Flags().BoolVar(&slingCreate, "create", false, "Create polecat if it doesn't exist")
-	slingCmd.Flags().BoolVar(&slingForce, "force", false, "Force spawn even if polecat has unread mail")
-	slingCmd.Flags().StringVar(&slingAccount, "account", "", "Claude Code account handle to use")
-	slingCmd.Flags().StringVar(&slingAgent, "agent", "", "Override agent/runtime for this sling (e.g., claude, gemini, codex, or custom alias)")
-	slingCmd.Flags().BoolVar(&slingNoConvoy, "no-convoy", false, "Skip auto-convoy creation for single-issue sling")
-	slingCmd.Flags().BoolVar(&slingOwned, "owned", false, "Mark auto-convoy as caller-managed lifecycle (no automatic witness/refinery registration)")
-	slingCmd.Flags().BoolVar(&slingHookRawBead, "hook-raw-bead", false, "Hook raw bead without default formula (expert mode)")
-	slingCmd.Flags().BoolVar(&slingNoMerge, "no-merge", false, "Skip merge queue on completion (keep work on feature branch for review)")
-	slingCmd.Flags().StringVar(&slingMerge, "merge", "", "Merge strategy: direct (push to main), mr (merge queue, default), local (keep on branch)")
-	slingCmd.Flags().BoolVar(&slingNoBoot, "no-boot", false, "Skip rig boot after polecat spawn (avoids witness/refinery lock contention)")
-	slingCmd.Flags().IntVar(&slingMaxConcurrent, "max-concurrent", 0, "Throttle spawn rate: spawn N polecats, pause, then spawn N more (0 = no throttle). Does not limit total concurrent polecats")
-	slingCmd.Flags().StringVar(&slingBaseBranch, "base-branch", "", "Override base branch for polecat worktree (e.g., 'develop', 'release/v2')")
-	slingCmd.Flags().StringVar(&slingResumeBranch, "branch", "", "Resume work on an existing branch instead of creating a fresh polecat branch (use to fix an existing PR)")
-	slingCmd.Flags().IntVar(&slingResumePR, "pr", 0, "Resume work on the head branch of an existing PR (resolved via 'gh pr view'). Mutually exclusive with --branch.")
-	slingCmd.Flags().BoolVar(&slingRalph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
-	slingCmd.Flags().StringVar(&slingFormula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
-	slingCmd.Flags().StringVar(&slingCrew, "crew", "", "Target a crew member in the specified rig (e.g., --crew mel with target gastown → gastown/crew/mel)")
-	slingCmd.Flags().BoolVar(&slingReviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push")
+	slingCmd.Flags().BoolVar(&slingState().create, "create", false, "Create polecat if it doesn't exist")
+	slingCmd.Flags().BoolVar(&slingState().force, "force", false, "Force spawn even if polecat has unread mail")
+	slingCmd.Flags().StringVar(&slingState().account, "account", "", "Claude Code account handle to use")
+	slingCmd.Flags().StringVar(&slingState().agent, "agent", "", "Override agent/runtime for this sling (e.g., claude, gemini, codex, or custom alias)")
+	slingCmd.Flags().BoolVar(&slingState().noConvoy, "no-convoy", false, "Skip auto-convoy creation for single-issue sling")
+	slingCmd.Flags().BoolVar(&slingState().owned, "owned", false, "Mark auto-convoy as caller-managed lifecycle (no automatic witness/refinery registration)")
+	slingCmd.Flags().BoolVar(&slingState().hookRawBead, "hook-raw-bead", false, "Hook raw bead without default formula (expert mode)")
+	slingCmd.Flags().BoolVar(&slingState().noMerge, "no-merge", false, "Skip merge queue on completion (keep work on feature branch for review)")
+	slingCmd.Flags().StringVar(&slingState().merge, "merge", "", "Merge strategy: direct (push to main), mr (merge queue, default), local (keep on branch)")
+	slingCmd.Flags().BoolVar(&slingState().noBoot, "no-boot", false, "Skip rig boot after polecat spawn (avoids witness/refinery lock contention)")
+	slingCmd.Flags().IntVar(&slingState().maxConcurrent, "max-concurrent", 0, "Throttle spawn rate: spawn N polecats, pause, then spawn N more (0 = no throttle). Does not limit total concurrent polecats")
+	slingCmd.Flags().StringVar(&slingState().baseBranch, "base-branch", "", "Override base branch for polecat worktree (e.g., 'develop', 'release/v2')")
+	slingCmd.Flags().StringVar(&slingState().resumeBranch, "branch", "", "Resume work on an existing branch instead of creating a fresh polecat branch (use to fix an existing PR)")
+	slingCmd.Flags().IntVar(&slingState().resumePR, "pr", 0, "Resume work on the head branch of an existing PR (resolved via 'gh pr view'). Mutually exclusive with --branch.")
+	slingCmd.Flags().BoolVar(&slingState().ralph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
+	slingCmd.Flags().StringVar(&slingState().formula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
+	slingCmd.Flags().StringVar(&slingState().crew, "crew", "", "Target a crew member in the specified rig (e.g., --crew mel with target gastown → gastown/crew/mel)")
+	slingCmd.Flags().BoolVar(&slingState().reviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push")
 
 	slingCmd.AddCommand(slingRespawnResetCmd)
 	rootCmd.AddCommand(slingCmd)

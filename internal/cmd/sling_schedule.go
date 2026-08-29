@@ -240,7 +240,7 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 // runBatchSchedule schedules multiple beads for deferred dispatch.
 // Returns error when all schedule attempts fail.
 func runBatchSchedule(beadIDs []string, rigName, townRoot string) error {
-	if slingDryRun {
+	if slingState().dryRun {
 		fmt.Printf("%s Would schedule %d beads to rig '%s':\n", style.Bold.Render("📋"), len(beadIDs), rigName)
 		for _, beadID := range beadIDs {
 			fmt.Printf("  Would schedule: %s → %s\n", beadID, rigName)
@@ -252,26 +252,26 @@ func runBatchSchedule(beadIDs []string, rigName, townRoot string) error {
 
 	successCount := 0
 	for _, beadID := range beadIDs {
-		formula := resolveFormula(slingFormula, slingHookRawBead, townRoot, rigName)
+		formula := resolveFormula(slingState().formula, slingState().hookRawBead, townRoot, rigName)
 		err := scheduleBead(beadID, rigName, ScheduleOptions{
 			ScheduleWork: ScheduleWork{
 				Formula:      formula,
-				Args:         slingArgs,
-				Vars:         slingVars,
-				Merge:        slingMerge,
-				BaseBranch:   slingBaseBranch,
-				ResumeBranch: slingResumeBranch,
+				Args:         slingState().args,
+				Vars:         slingState().vars,
+				Merge:        slingState().merge,
+				BaseBranch:   slingState().baseBranch,
+				ResumeBranch: slingState().resumeBranch,
 			},
-			NoConvoy:    slingNoConvoy,
-			Owned:       slingOwned,
+			NoConvoy:    slingState().noConvoy,
+			Owned:       slingState().owned,
 			DryRun:      false,
-			Force:       slingForce,
-			NoMerge:     slingNoMerge,
-			ReviewOnly:  slingReviewOnly,
-			Account:     slingAccount,
-			Agent:       slingAgent,
-			HookRawBead: slingHookRawBead,
-			Ralph:       slingRalph,
+			Force:       slingState().force,
+			NoMerge:     slingState().noMerge,
+			ReviewOnly:  slingState().reviewOnly,
+			Account:     slingState().account,
+			Agent:       slingState().agent,
+			HookRawBead: slingState().hookRawBead,
+			Ralph:       slingState().ralph,
 		})
 		if err != nil {
 			fmt.Printf("  %s %s: %v\n", style.Dim.Render("✗"), beadID, err)

@@ -1082,9 +1082,9 @@ exit 0
 	}
 
 	// Save and restore package-level flags
-	origForce := slingForce
-	t.Cleanup(func() { slingForce = origForce })
-	slingForce = false
+	origForce := slingState().force
+	t.Cleanup(func() { slingState().force = origForce })
+	slingState().force = false
 
 	// Directly test the cross-rig guard logic from runBatchSling lines 32-61.
 	// A bd- bead targeting "gastown" should be rejected.

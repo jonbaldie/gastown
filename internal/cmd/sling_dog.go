@@ -333,7 +333,7 @@ func (d *DogDispatchInfo) CompleteFormulaStartup(sourceID string) (string, error
 // and prompt delivery agree. Success is reported only after notification.
 func completeBareDogDispatch(delayed *DogDispatchInfo, beadID, convoyID, attachedMoleculeID, slingSubject, slingArgs string) (string, error) {
 	delayed.requireHook = true
-	if !slingNoConvoy {
+	if !slingState().noConvoy {
 		delayed.requireConvoy = true
 		delayed.expectedConvoy = convoyID
 	}

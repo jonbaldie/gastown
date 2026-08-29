@@ -62,26 +62,27 @@ func validateSlingRole() error {
 }
 
 func validateSlingMerge() error {
-	if slingMerge != "" && slingMerge != "direct" && slingMerge != "mr" && slingMerge != "local" {
-		return fmt.Errorf("invalid --merge value %q: must be direct, mr, or local", slingMerge)
+	if slingState().merge != "" && slingState().merge != "direct" && slingState().merge != "mr" && slingState().merge != "local" {
+		return fmt.Errorf("invalid --merge value %q: must be direct, mr, or local", slingState().merge)
 	}
 	return nil
 }
 
 func validateSlingResume() error {
-	if slingResumeBranch != "" && slingResumePR != 0 {
+	state := slingState()
+	if state.resumeBranch != "" && state.resumePR != 0 {
 		return fmt.Errorf("--branch and --pr are mutually exclusive")
 	}
-	if (slingResumeBranch != "" || slingResumePR != 0) && slingBaseBranch != "" {
+	if (state.resumeBranch != "" || state.resumePR != 0) && state.baseBranch != "" {
 		return fmt.Errorf("--base-branch cannot be combined with --branch or --pr (resume implies starting on the existing branch)")
 	}
-	if slingResumePR != 0 {
-		resolved, err := resolvePRBranch(slingResumePR)
+	if state.resumePR != 0 {
+		resolved, err := resolvePRBranch(state.resumePR)
 		if err != nil {
-			return fmt.Errorf("resolving --pr %d: %w", slingResumePR, err)
+			return fmt.Errorf("resolving --pr %d: %w", state.resumePR, err)
 		}
-		slingResumeBranch = resolved
-		fmt.Printf("%s --pr %d resolved to branch %s\n", style.Dim.Render("→"), slingResumePR, resolved)
+		state.resumeBranch = resolved
+		fmt.Printf("%s --pr %d resolved to branch %s\n", style.Dim.Render("→"), state.resumePR, resolved)
 	}
 	return nil
 }
@@ -120,10 +121,11 @@ func prepareSlingInput(cmd *cobra.Command, args []string) (slingRunInput, error)
 }
 
 func readSlingStdin() error {
-	if !slingStdin {
+	state := slingState()
+	if !state.stdin {
 		return nil
 	}
-	if slingMessage != "" && slingArgs != "" {
+	if state.message != "" && state.args != "" {
 		return fmt.Errorf("cannot use --stdin when both --message and --args are already provided")
 	}
 	data, err := io.ReadAll(os.Stdin)
@@ -131,10 +133,10 @@ func readSlingStdin() error {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
 	stdinContent := strings.TrimRight(string(data), "\n")
-	if slingArgs == "" {
-		slingArgs = stdinContent
+	if state.args == "" {
+		state.args = stdinContent
 	} else {
-		slingMessage = stdinContent
+		state.message = stdinContent
 	}
 	return nil
 }
@@ -143,12 +145,12 @@ func prepareSlingArgs(args []string) error {
 	for i := range args {
 		args[i] = normalizeSlingTarget(args[i])
 	}
-	if slingCrew != "" {
+	if slingState().crew != "" {
 		if len(args) < 2 {
-			return fmt.Errorf("--crew requires a rig target argument (e.g., gt sling <bead> <rig> --crew %s)", slingCrew)
+			return fmt.Errorf("--crew requires a rig target argument (e.g., gt sling <bead> <rig> --crew %s)", slingState().crew)
 		}
 		target := args[len(args)-1]
-		args[len(args)-1] = target + "/crew/" + slingCrew
+		args[len(args)-1] = target + "/crew/" + slingState().crew
 	}
 	if len(args) > 1 {
 		if err := ValidateTarget(args[len(args)-1]); err != nil {
@@ -222,34 +224,34 @@ func rejectBatchScheduleIDs(beadIDs []string) error {
 }
 
 func dispatchSlingDeferredOn(input slingRunInput) (bool, error) {
-	if !input.deferred || slingOnTarget == "" {
+	if !input.deferred || slingState().onTarget == "" {
 		return false, nil
 	}
 	if len(input.args) >= 2 {
 		rigName, isRig := IsRigName(input.args[len(input.args)-1])
 		if !isRig {
-			return true, fmt.Errorf("'%s' is not a known rig\nUse: gt sling %s --on %s <rig>", input.args[len(input.args)-1], input.args[0], slingOnTarget)
+			return true, fmt.Errorf("'%s' is not a known rig\nUse: gt sling %s --on %s <rig>", input.args[len(input.args)-1], input.args[0], slingState().onTarget)
 		}
 		formulaName := input.args[0]
-		if slingHookRawBead {
+		if slingState().hookRawBead {
 			formulaName = ""
 		}
-		return true, scheduleBead(slingOnTarget, rigName, slingScheduleOptions(formulaName))
+		return true, scheduleBead(slingState().onTarget, rigName, slingScheduleOptions(formulaName))
 	}
 
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return true, err
 	}
-	rigName := resolveRigForBead(townRoot, slingOnTarget)
+	rigName := resolveRigForBead(townRoot, slingState().onTarget)
 	if rigName == "" {
-		return true, fmt.Errorf("cannot resolve rig for bead %s\nSpecify explicitly: gt sling %s --on %s <rig>", slingOnTarget, input.args[0], slingOnTarget)
+		return true, fmt.Errorf("cannot resolve rig for bead %s\nSpecify explicitly: gt sling %s --on %s <rig>", slingState().onTarget, input.args[0], slingState().onTarget)
 	}
 	formulaName := input.args[0]
-	if slingHookRawBead {
+	if slingState().hookRawBead {
 		formulaName = ""
 	}
-	return true, scheduleBead(slingOnTarget, rigName, slingScheduleOptions(formulaName))
+	return true, scheduleBead(slingState().onTarget, rigName, slingScheduleOptions(formulaName))
 }
 
 func dispatchSlingDeferredRig(ctx context.Context, input slingRunInput) (bool, error) {
@@ -274,7 +276,7 @@ func scheduleDeferredRigSling(ctx context.Context, input slingRunInput, rigName 
 	if verifyBeadExists(input.args[0]) != nil && isSlingFormulaForRig(input, rigName) {
 		return runSlingFormula(ctx, input.args)
 	}
-	formula := resolveFormula(slingFormula, slingHookRawBead, input.townRoot, rigName)
+	formula := resolveFormula(slingState().formula, slingState().hookRawBead, input.townRoot, rigName)
 	return scheduleBead(input.args[0], rigName, slingScheduleOptions(formula))
 }
 
@@ -290,22 +292,22 @@ func slingScheduleOptions(formula string) ScheduleOptions {
 	return ScheduleOptions{
 		ScheduleWork: ScheduleWork{
 			Formula:      formula,
-			Args:         slingArgs,
-			Vars:         slingVars,
-			Merge:        slingMerge,
-			BaseBranch:   slingBaseBranch,
-			ResumeBranch: slingResumeBranch,
+			Args:         slingState().args,
+			Vars:         slingState().vars,
+			Merge:        slingState().merge,
+			BaseBranch:   slingState().baseBranch,
+			ResumeBranch: slingState().resumeBranch,
 		},
-		NoConvoy:    slingNoConvoy,
-		Owned:       slingOwned,
-		DryRun:      slingDryRun,
-		Force:       slingForce,
-		NoMerge:     slingNoMerge,
-		ReviewOnly:  slingReviewOnly,
-		Account:     slingAccount,
-		Agent:       slingAgent,
-		HookRawBead: slingHookRawBead,
-		Ralph:       slingRalph,
+		NoConvoy:    slingState().noConvoy,
+		Owned:       slingState().owned,
+		DryRun:      slingState().dryRun,
+		Force:       slingState().force,
+		NoMerge:     slingState().noMerge,
+		ReviewOnly:  slingState().reviewOnly,
+		Account:     slingState().account,
+		Agent:       slingState().agent,
+		HookRawBead: slingState().hookRawBead,
+		Ralph:       slingState().ralph,
 	}
 }
 
@@ -326,7 +328,7 @@ func dispatchSlingSingleID(input slingRunInput) (bool, error) {
 		}
 		return false, nil
 	}
-	formula := resolveFormula(slingFormula, slingHookRawBead, input.townRoot, "")
+	formula := resolveFormula(slingState().formula, slingState().hookRawBead, input.townRoot, "")
 	if err := validateNoTaskOnlySchedulerFlags(input.cmd, idType); err != nil {
 		return true, err
 	}
@@ -337,14 +339,14 @@ func executeSlingSchedulerID(input slingRunInput, idType, formula string) (bool,
 	switch idType {
 	case "convoy":
 		if input.deferred {
-			return true, runConvoyScheduleByID(input.args[0], convoyScheduleOpts{Formula: formula, HookRawBead: slingHookRawBead, Force: slingForce, DryRun: slingDryRun})
+			return true, runConvoyScheduleByID(input.args[0], convoyScheduleOpts{Formula: formula, HookRawBead: slingState().hookRawBead, Force: slingState().force, DryRun: slingState().dryRun})
 		}
-		return true, runConvoySlingByID(input.args[0], convoyScheduleOpts{Formula: formula, HookRawBead: slingHookRawBead, Force: slingForce, DryRun: slingDryRun, NoBoot: slingNoBoot})
+		return true, runConvoySlingByID(input.args[0], convoyScheduleOpts{Formula: formula, HookRawBead: slingState().hookRawBead, Force: slingState().force, DryRun: slingState().dryRun, NoBoot: slingState().noBoot})
 	case "epic":
 		if input.deferred {
-			return true, runEpicScheduleByID(input.args[0], epicScheduleOpts{Formula: formula, HookRawBead: slingHookRawBead, Force: slingForce, DryRun: slingDryRun})
+			return true, runEpicScheduleByID(input.args[0], epicScheduleOpts{Formula: formula, HookRawBead: slingState().hookRawBead, Force: slingState().force, DryRun: slingState().dryRun})
 		}
-		return true, runEpicSlingByID(input.args[0], epicScheduleOpts{Formula: formula, HookRawBead: slingHookRawBead, Force: slingForce, DryRun: slingDryRun, NoBoot: slingNoBoot})
+		return true, runEpicSlingByID(input.args[0], epicScheduleOpts{Formula: formula, HookRawBead: slingState().hookRawBead, Force: slingState().force, DryRun: slingState().dryRun, NoBoot: slingState().noBoot})
 	}
 	return false, nil
 }
@@ -374,11 +376,11 @@ func dispatchSlingSingle(ctx context.Context, input slingRunInput) error {
 	if err := worker.RefuseLiveBead(input.townRoot, beadID); err != nil {
 		return err
 	}
-	if !slingDryRun && len(input.args) == 2 {
+	if !slingState().dryRun && len(input.args) == 2 {
 		if rigName, isRig := IsRigName(input.args[1]); isRig {
 			formula := formulaName
 			if formula == "" {
-				formula = resolveFormula(slingFormula, slingHookRawBead, input.townRoot, rigName)
+				formula = resolveFormula(slingState().formula, slingState().hookRawBead, input.townRoot, rigName)
 			}
 			return runRigBeadSling(ctx, beadID, rigName, formula, input.townRoot, input.townBeadsDir)
 		}
@@ -394,9 +396,9 @@ func dispatchSlingSingle(ctx context.Context, input slingRunInput) error {
 }
 
 func resolveSlingBeadOrFormula(input slingRunInput) (beadID, formulaName string, formulaOnly bool, err error) {
-	if slingOnTarget != "" {
+	if slingState().onTarget != "" {
 		formulaName = input.args[0]
-		beadID = slingOnTarget
+		beadID = slingState().onTarget
 		if err = verifyBeadExists(beadID); err != nil {
 			return "", "", false, err
 		}

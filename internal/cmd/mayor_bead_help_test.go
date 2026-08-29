@@ -8,7 +8,7 @@ import (
 // UAT Low #14: Mayor created town hq-* work beads and tried to sling them
 // to rigs. Prime and sling help must show the create-in-rig recipe.
 func TestSlingHelpShowsRigBeadCreatePath(t *testing.T) {
-	assertRigBeadCreateRecipe(t, slingCmd.Long)
+	assertRigBeadCreateRecipe(t, newSlingCommand().Long)
 }
 
 func TestMayorPrimeFallbackShowsRigBeadCreatePath(t *testing.T) {

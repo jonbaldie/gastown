@@ -81,39 +81,39 @@ func compensateSlingAttempt(c slingCompensation) {
 
 func intentFromCLIFlags(beadID, rigName, formula, townRoot, beadsDir string) sling.Intent {
 	mode := ""
-	if slingRalph {
+	if slingState().ralph {
 		mode = "ralph"
 	}
 	return sling.Intent{
 		BeadID:       beadID,
 		RigName:      rigName,
 		Formula:      formula,
-		Args:         slingArgs,
-		Vars:         append([]string(nil), slingVars...),
-		Merge:        slingMerge,
-		BaseBranch:   slingBaseBranch,
-		ResumeBranch: slingResumeBranch,
-		Account:      slingAccount,
-		Agent:        slingAgent,
+		Args:         slingState().args,
+		Vars:         append([]string(nil), slingState().vars...),
+		Merge:        slingState().merge,
+		BaseBranch:   slingState().baseBranch,
+		ResumeBranch: slingState().resumeBranch,
+		Account:      slingState().account,
+		Agent:        slingState().agent,
 		IntentExecutionOptions: sling.IntentExecutionOptions{
 			Mode:             mode,
-			NoMerge:          slingNoMerge,
-			ReviewOnly:       slingReviewOnly,
-			HookRawBead:      slingHookRawBead,
-			Owned:            slingOwned,
-			NoConvoy:         slingNoConvoy,
-			Force:            slingForce,
-			NoBoot:           slingNoBoot,
+			NoMerge:          slingState().noMerge,
+			ReviewOnly:       slingState().reviewOnly,
+			HookRawBead:      slingState().hookRawBead,
+			Owned:            slingState().owned,
+			NoConvoy:         slingState().noConvoy,
+			Force:            slingState().force,
+			NoBoot:           slingState().noBoot,
 			FormulaFailFatal: true,
 			CallerContext:    "sling",
 			TownRoot:         townRoot,
 			BeadsDir:         beadsDir,
 		},
 		IntentTargetOptions: sling.IntentTargetOptions{
-			DryRun:  slingDryRun,
-			Create:  slingCreate,
-			Subject: slingSubject,
-			Message: slingMessage,
+			DryRun:  slingState().dryRun,
+			Create:  slingState().create,
+			Subject: slingState().subject,
+			Message: slingState().message,
 		},
 	}
 }

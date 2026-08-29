@@ -74,7 +74,7 @@ func prepareFormulaSlingState(ctx context.Context, args []string) (*formulaSling
 }
 
 func acquireFormulaSlingAdmission(townRoot, target, formulaName string) (*polecatAdmissionHandle, error) {
-	if slingDryRun || target == "" {
+	if slingState().dryRun || target == "" {
 		return nil, nil
 	}
 	rigName, isRig := IsRigName(target)
@@ -86,7 +86,7 @@ func acquireFormulaSlingAdmission(townRoot, target, formulaName string) (*poleca
 }
 
 func acquireFormulaDogPoolLock(townRoot, target, formulaName string) (func(), error) {
-	if slingDryRun || !isFormulaDogPoolTarget(target) {
+	if slingState().dryRun || !isFormulaDogPoolTarget(target) {
 		return nil, nil
 	}
 	poolUnlock, err := tryAcquireSlingAssigneeLock(townRoot, "deacon/dogs")
@@ -98,12 +98,12 @@ func acquireFormulaDogPoolLock(townRoot, target, formulaName string) (func(), er
 
 func resolveFormulaSlingTarget(townRoot, target, formulaName string, skipAdmission bool) (*ResolvedTarget, error) {
 	return resolveTarget(target, ResolveTargetOptions{
-		DryRun:               slingDryRun,
-		Force:                slingForce,
-		Create:               slingCreate,
-		Account:              slingAccount,
-		Agent:                slingAgent,
-		NoBoot:               slingNoBoot,
+		DryRun:               slingState().dryRun,
+		Force:                slingState().force,
+		Create:               slingState().create,
+		Account:              slingState().account,
+		Agent:                slingState().agent,
+		NoBoot:               slingState().noBoot,
 		WorkDesc:             formulaName,
 		TownRoot:             townRoot,
 		SkipPolecatAdmission: skipAdmission,
@@ -163,13 +163,13 @@ func dryRunFormulaSling(s *formulaSlingState) error {
 	if err != nil {
 		return fmt.Errorf("checking existing hooked formulas for %s: %w", s.targetAgent, err)
 	}
-	if existing != nil && !slingForce && isDurableFormulaDispatch(existing) {
+	if existing != nil && !slingState().force && isDurableFormulaDispatch(existing) {
 		fmt.Printf("Would reuse existing formula %s on %s via %s\n", s.formulaName, s.targetAgent, existing.ID)
 		return nil
 	}
 	fmt.Printf("Would cook formula: %s\n", s.formulaName)
 	fmt.Printf("Would create wisp and pin to: %s\n", s.targetAgent)
-	for _, v := range slingVars {
+	for _, v := range slingState().vars {
 		fmt.Printf("  --var %s\n", v)
 	}
 	fmt.Printf("Would nudge pane: %s\n", s.targetPane)
@@ -192,14 +192,14 @@ func acquireFormulaAssigneeLock(s *formulaSlingState) (func(), error) {
 }
 
 func formulaSlingMode() string {
-	if slingRalph {
+	if slingState().ralph {
 		return "ralph"
 	}
 	return ""
 }
 
 func prepareExistingFormulaSling(s *formulaSlingState, existing *beads.Issue) (bool, *polecatAdmissionHandle, error) {
-	if shouldReuseExistingFormula(existing, s.delayedDogInfo, slingForce) {
+	if shouldReuseExistingFormula(existing, s.delayedDogInfo, slingState().force) {
 		return true, nil, reuseExistingFormulaSling(s, existing)
 	}
 	if s.delayedDogInfo != nil && !s.delayedDogInfo.ownsWork && !s.delayedDogInfo.WorksOnHook(existing) {
@@ -222,7 +222,7 @@ func prepareExistingFormulaSling(s *formulaSlingState, existing *beads.Issue) (b
 }
 
 func migrateExistingFormulaSling(s *formulaSlingState, existing *beads.Issue) (bool, error) {
-	if existing == nil || slingForce || !isLegacyFormulaWisp(existing) {
+	if existing == nil || slingState().force || !isLegacyFormulaWisp(existing) {
 		return false, nil
 	}
 	dispatchBeadID, wispRootID, err := migrateLegacyFormulaDispatch(existing, s.formulaName, s.formulaWorkDir, s.townRoot, s.targetAgent, s.mode)
@@ -253,7 +253,7 @@ func acquireAdditionalFormulaAdmission(s *formulaSlingState) (*polecatAdmissionH
 }
 
 func cleanupOrMigrateExistingFormula(s *formulaSlingState, existing *beads.Issue) (bool, error) {
-	if existing == nil || slingForce {
+	if existing == nil || slingState().force {
 		return false, nil
 	}
 	if s.delayedDogInfo != nil && s.delayedDogInfo.ownsWork {
@@ -345,7 +345,7 @@ func cookFormulaSling(s *formulaSlingState) error {
 func createFormulaSlingWisp(s *formulaSlingState) error {
 	fmt.Printf("  Creating wisp...\n")
 	wispArgs := []string{"mol", "wisp", s.formulaName}
-	for _, v := range slingVars {
+	for _, v := range slingState().vars {
 		wispArgs = append(wispArgs, "--var", v)
 	}
 	wispArgs = append(wispArgs, "--json")

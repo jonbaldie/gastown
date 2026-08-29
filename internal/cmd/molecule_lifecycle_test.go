@@ -281,21 +281,21 @@ exit /b 0
 	}
 
 	// Save and restore global flag state
-	prevOn := slingOnTarget
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevOn := slingState().onTarget
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingOnTarget = prevOn
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().onTarget = prevOn
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingVars = nil
-	slingOnTarget = "gt-abc123" // The base bead
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().vars = nil
+	slingState().onTarget = "gt-abc123" // The base bead
 
 	if err := runSling(nil, []string{"mol-polecat-work"}); err != nil {
 		t.Fatalf("runSling: %v", err)
@@ -475,21 +475,21 @@ exit /b 0
 	}
 
 	// Save and restore global flag state
-	prevOn := slingOnTarget
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevOn := slingState().onTarget
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingOnTarget = prevOn
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().onTarget = prevOn
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingVars = nil
-	slingOnTarget = "gt-abc123" // The base bead
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().vars = nil
+	slingState().onTarget = "gt-abc123" // The base bead
 
 	if err := runSling(nil, []string{"mol-polecat-work"}); err != nil {
 		t.Fatalf("runSling: %v", err)

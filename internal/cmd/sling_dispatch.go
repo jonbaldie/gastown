@@ -198,8 +198,8 @@ func runTownSling(ctx context.Context, intent sling.Intent) (*SlingResult, error
 				targetRig = parts[0]
 			}
 		}
-		formulaName = resolveFormula(slingFormula, false, townRoot, targetRig)
-		if slingFormula != "" {
+		formulaName = resolveFormula(slingState().formula, false, townRoot, targetRig)
+		if slingState().formula != "" {
 			fmt.Printf("  Applying %s for polecat work...\n", formulaName)
 		} else if intent.RigName == "" {
 			fmt.Printf("  Auto-applying %s for polecat work...\n", formulaName)

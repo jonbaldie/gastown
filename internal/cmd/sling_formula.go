@@ -127,8 +127,8 @@ func cleanupDelayedDogFormulaFailure(currentErr error, delayedDogInfo *DogDispat
 }
 
 func formulaSlingPrompt(formulaName string) string {
-	if slingArgs != "" {
-		return fmt.Sprintf("Formula %s slung. Args: %s. Run `"+cli.Name()+" hook` to see your hook, then execute using these args.", formulaName, slingArgs)
+	if slingState().args != "" {
+		return fmt.Sprintf("Formula %s slung. Args: %s. Run `"+cli.Name()+" hook` to see your hook, then execute using these args.", formulaName, slingState().args)
 	}
 	return fmt.Sprintf("Formula %s slung. Run `"+cli.Name()+" hook` to see your hook, then execute the steps.", formulaName)
 }
@@ -329,12 +329,12 @@ func unhookFormulaBead(beadID, formulaWorkDir, townRoot string) error {
 func formulaDispatchFieldUpdates(formulaName, moleculeID, mode string) beadFieldUpdates {
 	return beadFieldUpdates{
 		Dispatcher:       detectActor(),
-		Args:             slingArgs,
-		Vars:             append([]string(nil), slingVars...),
+		Args:             slingState().args,
+		Vars:             append([]string(nil), slingState().vars...),
 		AttachedMolecule: moleculeID,
 		AttachedFormula:  formulaName,
 		Mode:             &mode,
-		FormulaVars:      strings.Join(slingVars, "\n"),
+		FormulaVars:      strings.Join(slingState().vars, "\n"),
 	}
 }
 
@@ -347,7 +347,7 @@ func persistAndHookFormulaDispatch(townRoot, formulaWorkDir, dispatchBeadID, tar
 		return err
 	}
 	fmt.Printf("%s Attached durable work to hook (status=hooked)\n", style.Bold.Render("✓"))
-	if slingArgs != "" {
+	if slingState().args != "" {
 		fmt.Printf("%s Args stored in bead (durable)\n", style.Bold.Render("✓"))
 	}
 	payload := events.SlingPayload(dispatchBeadID, targetAgent)
@@ -437,7 +437,7 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 	// the failure defer performs cleanupDelayedDogFormulaFailure(err, delayedDogInfo, cleanupID, formulaWorkDir).
 	// The pool lock is acquired with tryAcquireSlingAssigneeLock(townRoot, "deacon/dogs")
 	// before target resolution.
-	// Existing formula handling checks shouldReuseExistingFormula(existing, delayedDogInfo, slingForce)
+	// Existing formula handling checks shouldReuseExistingFormula(existing, delayedDogInfo, slingState().force)
 	// and the delayed-dog guard `delayedDogInfo != nil && !delayedDogInfo.ownsWork` before
 	// the delegated cook operation.
 	// Reused dog formulas call delayedDogInfo.CompleteFormulaStartup(existing.ID),
@@ -450,7 +450,7 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	defer releaseFormulaSlingResources(state.admission, state.poolUnlock)
-	if slingDryRun {
+	if slingState().dryRun {
 		return dryRunFormulaSling(state)
 	}
 
