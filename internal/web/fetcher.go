@@ -592,35 +592,8 @@ func (f *LiveConvoyFetcher) getAllPolecatActivity() *time.Time {
 
 	var mostRecent time.Time
 	for _, line := range strings.Split(stdout.String(), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) < 2 {
-			continue
-		}
-
-		sessionName := parts[0]
-		// Check if it's a polecat or crew session (skip infrastructure roles).
-		// Use the fetcher's own registry to avoid dependency on global
-		// DefaultRegistry initialization (gt-y24).
-		identity, err := session.ParseSessionNameWithRegistry(sessionName, f.registry)
-		if err != nil {
-			continue
-		}
-		if identity.Role != session.RolePolecat && identity.Role != session.RoleCrew {
-			continue
-		}
-
-		var activityUnix int64
-		if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil || activityUnix == 0 {
-			continue
-		}
-
-		activityTime := time.Unix(activityUnix, 0)
-		if activityTime.After(mostRecent) {
+		activityTime, ok := polecatActivityFromSessionLine(line, f.registry)
+		if ok && activityTime.After(mostRecent) {
 			mostRecent = activityTime
 		}
 	}
@@ -629,6 +602,31 @@ func (f *LiveConvoyFetcher) getAllPolecatActivity() *time.Time {
 		return nil
 	}
 	return &mostRecent
+}
+
+func polecatActivityFromSessionLine(line string, registry *session.PrefixRegistry) (time.Time, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return time.Time{}, false
+	}
+	parts := strings.Split(line, "|")
+	if len(parts) < 2 {
+		return time.Time{}, false
+	}
+
+	// Check if it's a polecat or crew session (skip infrastructure roles).
+	// Use the fetcher's own registry to avoid dependency on global
+	// DefaultRegistry initialization (gt-y24).
+	identity, err := session.ParseSessionNameWithRegistry(parts[0], registry)
+	if err != nil || (identity.Role != session.RolePolecat && identity.Role != session.RoleCrew) {
+		return time.Time{}, false
+	}
+
+	var activityUnix int64
+	if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil || activityUnix == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(activityUnix, 0), true
 }
 
 // calculateWorkStatus determines the work status based on progress and activity.
