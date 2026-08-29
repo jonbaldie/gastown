@@ -18,25 +18,37 @@ type WorkstateInput struct {
 	CleanupStatus                  CleanupStatus
 	IgnoreCleanupStatus            bool
 	PartialSpawnWithoutDurableHook bool
-	PushFailed                     bool
-	MRFailed                       bool
-	Branch                         string
-	GitDirty                       bool
-	GitDirtyReason                 string
-	StashCount                     int
-	UnpushedCommits                int
-	GitCheckFailed                 bool
-	GitCheckFailedReason           string
 	ActiveWorkBlocker              string
 	ActiveWorkCountsTowardCapacity bool
 	ActiveMR                       string
 	ActiveMRBlocker                string
-	MQCheckRequired                bool
-	HasSubmittableWork             bool
-	MQNotRequired                  bool
 	AssignedBeadTerminal           bool
-	MRSubmitted                    bool
-	MQLookupFailed                 bool
+	WorkstateGitFacts
+	WorkstateMQFacts
+}
+
+// WorkstateGitFacts contains the live branch and working-tree evidence used
+// when deciding whether a polecat can be reused.
+type WorkstateGitFacts struct {
+	Branch               string
+	GitDirty             bool
+	GitDirtyReason       string
+	StashCount           int
+	UnpushedCommits      int
+	GitCheckFailed       bool
+	GitCheckFailedReason string
+}
+
+// WorkstateMQFacts contains merge-request and merge-queue evidence used when
+// deciding whether a polecat has work that still needs attention.
+type WorkstateMQFacts struct {
+	PushFailed         bool
+	MRFailed           bool
+	MQCheckRequired    bool
+	HasSubmittableWork bool
+	MQNotRequired      bool
+	MRSubmitted        bool
+	MQLookupFailed     bool
 }
 
 // WorkstateDisposition is the canonical polecat lifecycle decision. InspectWorkstate

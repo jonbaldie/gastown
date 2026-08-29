@@ -276,13 +276,13 @@ func TestWorkstateDispositionProjectionAgreement(t *testing.T) {
 		},
 		{
 			name:         "live branch stash remains recovery blocked",
-			in:           polecat.WorkstateInput{State: polecat.StateIdle, CleanupStatus: polecat.CleanupClean, StashCount: 1},
+			in:           polecat.WorkstateInput{State: polecat.StateIdle, CleanupStatus: polecat.CleanupClean, WorkstateGitFacts: polecat.WorkstateGitFacts{StashCount: 1}},
 			wantRecovery: true,
 			wantCapacity: polecatCapacitySnapshot{RecoveryBlocked: 1},
 		},
 		{
 			name:         "needs mq submit",
-			in:           polecat.WorkstateInput{State: polecat.StateIdle, CleanupStatus: polecat.CleanupClean, Branch: "polecat/test", MQCheckRequired: true, HasSubmittableWork: true},
+			in:           polecat.WorkstateInput{State: polecat.StateIdle, CleanupStatus: polecat.CleanupClean, WorkstateGitFacts: polecat.WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: polecat.WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true}},
 			wantRecovery: true,
 			wantMQSubmit: true,
 			wantCapacity: polecatCapacitySnapshot{RecoveryBlocked: 1},
@@ -393,7 +393,7 @@ func TestPolecatReuseStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input := polecat.WorkstateInput{State: tt.state, CleanupStatus: polecat.CleanupStatus(tt.cleanupStatus), ActiveMR: tt.activeMR, Branch: tt.branch}
+			input := polecat.WorkstateInput{State: tt.state, CleanupStatus: polecat.CleanupStatus(tt.cleanupStatus), ActiveMR: tt.activeMR, WorkstateGitFacts: polecat.WorkstateGitFacts{Branch: tt.branch}}
 			if tt.activeMRBlocks {
 				input.ActiveMRBlocker = "active_mr=" + tt.activeMR + " status=open"
 			}
