@@ -16,13 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	trailSince string
-	trailLimit int
-	trailJSON  bool
-	trailAll   bool
-)
-
 var trailCmd = &cobra.Command{
 	Use:     "trail",
 	Aliases: []string{"recent", "recap"},
@@ -96,10 +89,10 @@ Examples:
 
 func init() {
 	// Add flags to trail command
-	trailCmd.PersistentFlags().StringVar(&trailSince, "since", "", "Show activity since this time (e.g., 1h, 24h, 7d)")
-	trailCmd.PersistentFlags().IntVar(&trailLimit, "limit", 20, "Maximum number of items to show")
-	trailCmd.PersistentFlags().BoolVar(&trailJSON, "json", false, "Output as JSON")
-	trailCmd.PersistentFlags().BoolVar(&trailAll, "all", false, "Include all activity (not just agents)")
+	trailCmd.PersistentFlags().String("since", "", "Show activity since this time (e.g., 1h, 24h, 7d)")
+	trailCmd.PersistentFlags().Int("limit", 20, "Maximum number of items to show")
+	trailCmd.PersistentFlags().Bool("json", false, "Output as JSON")
+	trailCmd.PersistentFlags().Bool("all", false, "Include all activity (not just agents)")
 
 	// Add subcommands
 	trailCmd.AddCommand(trailCommitsCmd)
@@ -122,7 +115,11 @@ type CommitEntry struct {
 	IsAgent   bool      `json:"is_agent"`
 }
 
-func runTrailCommits(_ *cobra.Command, _ []string) error {
+func runTrailCommits(cmd *cobra.Command, _ []string) error {
+	sinceText := commandStringFlag(cmd, "since")
+	limit := commandIntFlag(cmd, "limit")
+	jsonOutput := commandBoolFlag(cmd, "json")
+	includeAll := commandBoolFlag(cmd, "all")
 	// Get email domain for agent filtering
 	domain := DefaultAgentEmailDomain
 	townRoot, err := workspace.FindFromCwd()
@@ -137,11 +134,11 @@ func runTrailCommits(_ *cobra.Command, _ []string) error {
 	gitArgs := []string{
 		"log",
 		"--format=%H|%h|%an|%ae|%aI|%ar|%s",
-		fmt.Sprintf("-n%d", trailLimit*2), // Get extra to filter
+		fmt.Sprintf("-n%d", limit*2), // Get extra to filter
 	}
 
-	if trailSince != "" {
-		duration, err := parseDuration(trailSince)
+	if sinceText != "" {
+		duration, err := parseDuration(sinceText)
 		if err != nil {
 			return fmt.Errorf("invalid --since value: %w", err)
 		}
@@ -172,7 +169,7 @@ func runTrailCommits(_ *cobra.Command, _ []string) error {
 		isAgent := strings.HasSuffix(parts[3], "@"+domain)
 
 		// Skip non-agents unless --all is set
-		if !trailAll && !isAgent {
+		if !includeAll && !isAgent {
 			continue
 		}
 
@@ -187,12 +184,12 @@ func runTrailCommits(_ *cobra.Command, _ []string) error {
 			IsAgent:   isAgent,
 		})
 
-		if len(commits) >= trailLimit {
+		if len(commits) >= limit {
 			break
 		}
 	}
 
-	if trailJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(commits)
@@ -237,7 +234,10 @@ type HookEntry struct {
 	TimeRel   string    `json:"time_relative"`
 }
 
-func runTrailBeads(_ *cobra.Command, _ []string) error {
+func runTrailBeads(cmd *cobra.Command, _ []string) error {
+	sinceText := commandStringFlag(cmd, "since")
+	limit := commandIntFlag(cmd, "limit")
+	jsonOutput := commandBoolFlag(cmd, "json")
 	// Find beads directory
 	beadsDir, err := findBeadsDir()
 	if err != nil {
@@ -248,12 +248,12 @@ func runTrailBeads(_ *cobra.Command, _ []string) error {
 	beadsArgs := []string{
 		"query",
 		"--format", "{{.ID}}|{{.Title}}|{{.Status}}|{{.Agent}}|{{.UpdatedAt}}",
-		"--limit", fmt.Sprintf("%d", trailLimit),
+		"--limit", fmt.Sprintf("%d", limit),
 		"--sort", "-updated_at",
 	}
 
-	if trailSince != "" {
-		duration, err := parseDuration(trailSince)
+	if sinceText != "" {
+		duration, err := parseDuration(sinceText)
 		if err != nil {
 			return fmt.Errorf("invalid --since value: %w", err)
 		}
@@ -268,7 +268,7 @@ func runTrailBeads(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		// Fallback: beads might not support all these flags
 		// Try a simpler approach
-		return runTrailBeadsSimple(beadsDir)
+		return runTrailBeadsSimple(beadsDir, limit)
 	}
 
 	// Parse output
@@ -295,7 +295,7 @@ func runTrailBeads(_ *cobra.Command, _ []string) error {
 		})
 	}
 
-	if trailJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(beads)
@@ -330,9 +330,9 @@ func runTrailBeads(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runTrailBeadsSimple(beadsDir string) error {
+func runTrailBeadsSimple(beadsDir string, limit int) error {
 	// Simple fallback using beads list
-	beadsCmd := exec.Command("beads", "list", "--limit", fmt.Sprintf("%d", trailLimit))
+	beadsCmd := exec.Command("beads", "list", "--limit", fmt.Sprintf("%d", limit))
 	beadsCmd.Dir = beadsDir
 	beadsCmd.Env = append(os.Environ(), "BEADS_DIR="+beadsDir+"/.beads")
 	beadsCmd.Stdout = os.Stdout
@@ -340,27 +340,30 @@ func runTrailBeadsSimple(beadsDir string) error {
 	return beadsCmd.Run()
 }
 
-func runTrailHooks(_ *cobra.Command, _ []string) error {
+func runTrailHooks(cmd *cobra.Command, _ []string) error {
+	sinceText := commandStringFlag(cmd, "since")
+	limit := commandIntFlag(cmd, "limit")
+	jsonOutput := commandBoolFlag(cmd, "json")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
 	}
 
 	var since time.Time
-	if trailSince != "" {
-		duration, err := parseDuration(trailSince)
+	if sinceText != "" {
+		duration, err := parseDuration(sinceText)
 		if err != nil {
 			return fmt.Errorf("invalid --since value: %w", err)
 		}
 		since = time.Now().Add(-duration)
 	}
 
-	entries, err := readHookTrailEntries(filepath.Join(townRoot, events.EventsFile), since, trailLimit)
+	entries, err := readHookTrailEntries(filepath.Join(townRoot, events.EventsFile), since, limit)
 	if err != nil {
 		return err
 	}
 
-	if trailJSON {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(entries)
