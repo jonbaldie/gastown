@@ -1655,6 +1655,14 @@ func runtimeLabelForRuntimeConfig(rc *config.RuntimeConfig, fallback string) str
 }
 
 func runtimeLabelFromConfig(command string, args []string, fallback string) string {
+	cmd := runtimeCommandName(command, args, fallback)
+	if model, ok := runtimeModelArg(args); ok {
+		return cmd + "/" + stripModelSuffix(model)
+	}
+	return cmd
+}
+
+func runtimeCommandName(command string, args []string, fallback string) string {
 	command = strings.TrimSpace(command)
 	cmd := ""
 	if command != "" {
@@ -1669,26 +1677,44 @@ func runtimeLabelFromConfig(command string, args []string, fallback string) stri
 	if cmd == "cgroup-wrap" && len(args) > 0 {
 		cmd = filepath.Base(args[0])
 	}
+	return cmd
+}
 
-	argCount := len(args)
-	for i := 0; i < argCount; i++ {
-		arg := args[i]
-		if (arg == "--model" || arg == "-m") && i+1 < len(args) && strings.TrimSpace(args[i+1]) != "" {
-			return cmd + "/" + stripModelSuffix(strings.TrimSpace(args[i+1]))
+func runtimeModelArg(args []string) (string, bool) {
+	for i, arg := range args {
+		next := ""
+		hasNext := i+1 < len(args)
+		if hasNext {
+			next = args[i+1]
 		}
-		if strings.HasPrefix(arg, "--model=") {
-			if v := strings.TrimSpace(strings.TrimPrefix(arg, "--model=")); v != "" {
-				return cmd + "/" + stripModelSuffix(v)
-			}
-		}
-		if strings.HasPrefix(arg, "-m=") {
-			if v := strings.TrimSpace(strings.TrimPrefix(arg, "-m=")); v != "" {
-				return cmd + "/" + stripModelSuffix(v)
-			}
+		if model, ok := runtimeModelValue(arg, next, hasNext); ok {
+			return model, true
 		}
 	}
+	return "", false
+}
 
-	return cmd
+func runtimeModelValue(arg, next string, hasNext bool) (string, bool) {
+	if arg == "--model" || arg == "-m" {
+		if hasNext {
+			if model := strings.TrimSpace(next); model != "" {
+				return model, true
+			}
+		}
+		return "", false
+	}
+	if strings.HasPrefix(arg, "--model=") {
+		return nonEmptyTrimmedPrefix(arg, "--model=")
+	}
+	if strings.HasPrefix(arg, "-m=") {
+		return nonEmptyTrimmedPrefix(arg, "-m=")
+	}
+	return "", false
+}
+
+func nonEmptyTrimmedPrefix(value, prefix string) (string, bool) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+	return trimmed, trimmed != ""
 }
 
 // stripModelSuffix removes bracketed context-window hints (e.g. "[1m]")
