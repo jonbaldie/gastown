@@ -1028,18 +1028,7 @@ func buildRestartCommandWithOpts(sessionName string, opts buildRestartCommandOpt
 // from shell exports in the pane. Without this, post-handoff liveness checks
 // would use stale values from the previous agent.
 func updateSessionEnvForHandoff(t *tmux.Tmux, sessionName, agentOverride string) {
-	// Resolve current agent using the same priority as buildRestartCommandWithAgent
-	var currentAgent string
-	if agentOverride != "" {
-		currentAgent = agentOverride
-	} else {
-		currentAgent = os.Getenv("GT_AGENT")
-		if currentAgent == "" {
-			if val, err := t.GetEnvironment(sessionName, "GT_AGENT"); err == nil && val != "" {
-				currentAgent = val
-			}
-		}
-	}
+	currentAgent := handoffAgentName(t, sessionName, agentOverride)
 
 	if currentAgent == "" {
 		return
@@ -1050,34 +1039,57 @@ func updateSessionEnvForHandoff(t *tmux.Tmux, sessionName, agentOverride string)
 
 	// Resolve and update GT_PROCESS_NAMES in session env
 	// When switching agents, recompute from config. When preserving, use env value.
-	var processNames string
-	if agentOverride != "" {
-		// Agent is changing — resolve config to get the command for process name resolution
-		townRoot := detectTownRootFromCwd()
-		if townRoot != "" {
-			identity, err := session.ParseSessionName(sessionName)
-			rigPath := ""
-			if err == nil && identity.Rig != "" {
-				rigPath = filepath.Join(townRoot, identity.Rig)
-			}
-			rc, _, err := config.ResolveAgentConfigWithOverride(townRoot, rigPath, currentAgent)
-			if err == nil {
-				resolved := config.ResolveProcessNames(currentAgent, rc.Command, rc.Args...)
-				processNames = strings.Join(resolved, ",")
-			}
-		}
-	}
-	if processNames == "" {
-		// Preserve existing value or compute from current agent
-		if pn := os.Getenv("GT_PROCESS_NAMES"); pn != "" {
-			processNames = pn
-		} else {
-			resolved := config.ResolveProcessNames(currentAgent, "")
-			processNames = strings.Join(resolved, ",")
-		}
-	}
+	processNames := handoffProcessNames(sessionName, currentAgent, agentOverride)
 
 	_ = t.SetEnvironment(sessionName, "GT_PROCESS_NAMES", processNames)
+}
+
+func handoffAgentName(t *tmux.Tmux, sessionName, agentOverride string) string {
+	if agentOverride != "" {
+		return agentOverride
+	}
+	if currentAgent := os.Getenv("GT_AGENT"); currentAgent != "" {
+		return currentAgent
+	}
+	if currentAgent, err := t.GetEnvironment(sessionName, "GT_AGENT"); err == nil {
+		return currentAgent
+	}
+	return ""
+}
+
+func handoffProcessNames(sessionName, currentAgent, agentOverride string) string {
+	if agentOverride != "" {
+		if processNames := overriddenHandoffProcessNames(sessionName, currentAgent); processNames != "" {
+			return processNames
+		}
+	}
+	if processNames := os.Getenv("GT_PROCESS_NAMES"); processNames != "" {
+		return processNames
+	}
+	resolved := config.ResolveProcessNames(currentAgent, "")
+	return strings.Join(resolved, ",")
+}
+
+func overriddenHandoffProcessNames(sessionName, currentAgent string) string {
+	townRoot := detectTownRootFromCwd()
+	if townRoot == "" {
+		return ""
+	}
+	rigPath := handoffRigPath(townRoot, sessionName)
+	rc, _, err := config.ResolveAgentConfigWithOverride(townRoot, rigPath, currentAgent)
+	if err != nil {
+		return ""
+	}
+	resolved := config.ResolveProcessNames(currentAgent, rc.Command, rc.Args...)
+	return strings.Join(resolved, ",")
+}
+
+func handoffRigPath(townRoot, sessionName string) string {
+	identity, err := session.ParseSessionName(sessionName)
+	if err != nil || identity.Rig == "" {
+		return ""
+	}
+	return filepath.Join(townRoot, identity.Rig)
 }
 
 // sessionWorkDir returns the correct working directory for a session.
