@@ -650,49 +650,26 @@ func runPolecatAdd(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPolecatRemove(_ *cobra.Command, args []string) error {
-	targets, err := resolvePolecatTargets(args, polecatRemoveAll)
-	if err != nil {
-		return err
-	}
-
-	if len(targets) == 0 {
-		fmt.Println("No polecats to remove.")
-		return nil
-	}
-
-	// Remove each polecat
-	t := tmux.NewTmux()
-	var removeErrors []string
-	removed := 0
-
-	for _, p := range targets {
-		// Check if session is running
-		if !polecatForce {
-			polecatMgr := polecat.NewSessionManager(t, p.r)
-			running, _ := polecatMgr.IsRunning(p.polecatName)
-			if running {
-				removeErrors = append(removeErrors, fmt.Sprintf("%s/%s: session is running (stop first or use --force)", p.rigName, p.polecatName))
-				continue
-			}
+func removePolecatTarget(p polecatTarget, t *tmux.Tmux, force bool) (bool, string) {
+	if !force {
+		polecatMgr := polecat.NewSessionManager(t, p.r)
+		running, _ := polecatMgr.IsRunning(p.polecatName)
+		if running {
+			return false, fmt.Sprintf("%s/%s: session is running (stop first or use --force)", p.rigName, p.polecatName)
 		}
-
-		fmt.Printf("Removing polecat %s/%s...\n", p.rigName, p.polecatName)
-
-		if err := p.mgr.Remove(p.polecatName, polecatForce); err != nil {
-			if errors.Is(err, polecat.ErrHasChanges) {
-				removeErrors = append(removeErrors, fmt.Sprintf("%s/%s: has uncommitted changes (use --force)", p.rigName, p.polecatName))
-			} else {
-				removeErrors = append(removeErrors, fmt.Sprintf("%s/%s: %v", p.rigName, p.polecatName, err))
-			}
-			continue
-		}
-
-		fmt.Printf("  %s removed\n", style.Success.Render("✓"))
-		removed++
 	}
+	fmt.Printf("Removing polecat %s/%s...\n", p.rigName, p.polecatName)
+	if err := p.mgr.Remove(p.polecatName, force); err != nil {
+		if errors.Is(err, polecat.ErrHasChanges) {
+			return false, fmt.Sprintf("%s/%s: has uncommitted changes (use --force)", p.rigName, p.polecatName)
+		}
+		return false, fmt.Sprintf("%s/%s: %v", p.rigName, p.polecatName, err)
+	}
+	fmt.Printf("  %s removed\n", style.Success.Render("✓"))
+	return true, ""
+}
 
-	// Report results
+func reportPolecatRemovals(removeErrors []string, removed int) error {
 	if len(removeErrors) > 0 {
 		fmt.Printf("\n%s Some removals failed:\n", style.Warning.Render("Warning:"))
 		for _, e := range removeErrors {
@@ -709,6 +686,29 @@ func runPolecatRemove(_ *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func runPolecatRemove(_ *cobra.Command, args []string) error {
+	targets, err := resolvePolecatTargets(args, polecatRemoveAll)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		fmt.Println("No polecats to remove.")
+		return nil
+	}
+	t := tmux.NewTmux()
+	var removeErrors []string
+	removed := 0
+	for _, target := range targets {
+		wasRemoved, removeErr := removePolecatTarget(target, t, polecatForce)
+		if removeErr != "" {
+			removeErrors = append(removeErrors, removeErr)
+		} else if wasRemoved {
+			removed++
+		}
+	}
+	return reportPolecatRemovals(removeErrors, removed)
 }
 
 // PolecatStatus represents detailed polecat status for JSON output.
