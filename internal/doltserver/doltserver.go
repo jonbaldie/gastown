@@ -860,7 +860,11 @@ func liveDoltServerMatchesTown(townRoot string, config *Config, pid int) bool {
 }
 
 func doltServerReachable(config *Config) bool {
-	conn, err := net.DialTimeout("tcp", config.HostPort(), 2*time.Second)
+	return doltServerReachableWithTimeout(config.HostPort(), 2*time.Second)
+}
+
+func doltServerReachableWithTimeout(addr string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return false
 	}
@@ -908,37 +912,43 @@ func WaitForReady(townRoot string, timeout time.Duration) error {
 	interval := 100 * time.Millisecond
 
 	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		dialTimeout := 1 * time.Second
-		if remaining < dialTimeout {
-			dialTimeout = remaining
-		}
-		conn, err := net.DialTimeout("tcp", addr, dialTimeout)
-		if err == nil {
-			_ = conn.Close()
+		ready, done := waitForReadyAttempt(addr, deadline, &interval)
+		if ready {
 			return nil
 		}
-		remaining = time.Until(deadline)
-		if remaining <= 0 {
+		if done {
 			break
-		}
-		if interval > remaining {
-			interval = remaining
-		}
-		time.Sleep(interval)
-		// Exponential backoff capped at 500ms
-		if interval < 500*time.Millisecond {
-			interval = interval * 2
-			if interval > 500*time.Millisecond {
-				interval = 500 * time.Millisecond
-			}
 		}
 	}
 
 	return fmt.Errorf("Dolt server not ready at %s after %v", addr, timeout)
+}
+
+func waitForReadyAttempt(addr string, deadline time.Time, interval *time.Duration) (ready, done bool) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false, true
+	}
+	dialTimeout := minDuration(remaining, time.Second)
+	if doltServerReachableWithTimeout(addr, dialTimeout) {
+		return true, true
+	}
+	remaining = time.Until(deadline)
+	if remaining <= 0 {
+		return false, true
+	}
+	*interval = minDuration(*interval, remaining)
+	time.Sleep(*interval)
+	// Exponential backoff capped at 500ms.
+	*interval = minDuration(*interval*2, 500*time.Millisecond)
+	return false, false
+}
+
+func minDuration(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 // HasServerModeMetadata checks whether any rig has metadata.json configured for
@@ -1018,38 +1028,67 @@ func CheckPortConflict(townRoot string) (int, string) {
 // Tries lsof first (macOS and most Linux), then ss (iproute2) as a fallback
 // for Linux systems where lsof is not installed.
 func findDoltServerOnPort(port int) int {
+	if pid := findDoltServerWithLsof(port); pid > 0 {
+		return pid
+	}
+	return findDoltServerWithSS(port)
+}
+
+func findDoltServerWithLsof(port int) int {
 	// Try lsof — preferred when available (cross-platform).
 	// Without -sTCP:LISTEN, lsof returns client PIDs (e.g., gt daemon) first,
 	// which aren't dolt processes — causing false negatives.
 	cmd := exec.Command("lsof", "-i", fmt.Sprintf(":%d", port), "-sTCP:LISTEN", "-t")
 	setProcessGroup(cmd)
 	if output, err := cmd.Output(); err == nil {
-		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-		if len(lines) > 0 && lines[0] != "" {
-			if pid, err := strconv.Atoi(lines[0]); err == nil {
+		return parseFirstPID(output)
+	}
+	return 0
+}
+
+func findDoltServerWithSS(port int) int {
+	// Fall back to ss (iproute2) — standard on modern Linux, no extra packages needed.
+	// Example output line: LISTEN 0 128 *:3307 *:* users:(("dolt",pid=12345,fd=7))
+	cmd := exec.Command("ss", "-tlnp", fmt.Sprintf("sport = :%d", port))
+	setProcessGroup(cmd)
+	if output, err := cmd.Output(); err == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			if pid := parseSSListeningPID(line); pid > 0 {
 				return pid
 			}
 		}
 	}
 
-	// Fall back to ss (iproute2) — standard on modern Linux, no extra packages needed.
-	// Example output line: LISTEN 0 128 *:3307 *:* users:(("dolt",pid=12345,fd=7))
-	cmd = exec.Command("ss", "-tlnp", fmt.Sprintf("sport = :%d", port))
-	setProcessGroup(cmd)
-	if output, err := cmd.Output(); err == nil {
-		for _, line := range strings.Split(string(output), "\n") {
-			if idx := strings.Index(line, "pid="); idx >= 0 {
-				rest := line[idx+4:]
-				if end := strings.IndexAny(rest, ",)"); end > 0 {
-					if pid, err := strconv.Atoi(rest[:end]); err == nil && pid > 0 {
-						return pid
-					}
-				}
-			}
-		}
-	}
-
 	return 0
+}
+
+func parseFirstPID(output []byte) int {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		return 0
+	}
+	pid, err := strconv.Atoi(lines[0])
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+func parseSSListeningPID(line string) int {
+	idx := strings.Index(line, "pid=")
+	if idx < 0 {
+		return 0
+	}
+	rest := line[idx+4:]
+	end := strings.IndexAny(rest, ",)")
+	if end <= 0 {
+		return 0
+	}
+	pid, err := strconv.Atoi(rest[:end])
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
 }
 
 // DoltListener represents a Dolt process listening on a TCP port.
