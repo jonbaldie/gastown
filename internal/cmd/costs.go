@@ -619,47 +619,53 @@ func queryDigestBeads(days int) ([]CostEntry, error) {
 	now := time.Now()
 	cutoff := now.AddDate(0, 0, -days)
 
+	return digestCostEntriesFromEvents(events, cutoff), nil
+}
+
+func digestCostEntriesFromEvents(events []SessionEvent, cutoff time.Time) []CostEntry {
 	var entries []CostEntry
 	for _, event := range events {
-		// Filter for costs.digest events only
-		if event.EventKind != "costs.digest" {
-			continue
-		}
+		entries = append(entries, digestCostEntriesFromEvent(event, cutoff)...)
+	}
+	return entries
+}
 
-		// Parse the digest payload
-		var digest CostDigest
-		if event.Payload != "" {
-			if err := json.Unmarshal([]byte(event.Payload), &digest); err != nil {
-				continue
-			}
-		}
+func digestCostEntriesFromEvent(event SessionEvent, cutoff time.Time) []CostEntry {
+	// Filter for costs.digest events only
+	if event.EventKind != "costs.digest" {
+		return nil
+	}
 
-		// Check date is within range
-		digestDate, err := time.Parse("2006-01-02", digest.Date)
-		if err != nil {
-			continue
-		}
-		if digestDate.Before(cutoff) {
-			continue
-		}
-
-		// If the digest has per-session data (old format), use it directly.
-		// Otherwise, synthesize entries from the aggregate ByRole data.
-		if len(digest.Sessions) > 0 {
-			entries = append(entries, digest.Sessions...)
-		} else {
-			for role, cost := range digest.ByRole {
-				entries = append(entries, CostEntry{
-					SessionID: fmt.Sprintf("digest-%s-%s", digest.Date, role),
-					Role:      role,
-					CostUSD:   cost,
-					EndedAt:   digestDate,
-				})
-			}
+	// Parse the digest payload
+	var digest CostDigest
+	if event.Payload != "" {
+		if err := json.Unmarshal([]byte(event.Payload), &digest); err != nil {
+			return nil
 		}
 	}
 
-	return entries, nil
+	// Check date is within range
+	digestDate, err := time.Parse("2006-01-02", digest.Date)
+	if err != nil || digestDate.Before(cutoff) {
+		return nil
+	}
+
+	// If the digest has per-session data (old format), use it directly.
+	// Otherwise, synthesize entries from the aggregate ByRole data.
+	if len(digest.Sessions) > 0 {
+		return digest.Sessions
+	}
+
+	entries := make([]CostEntry, 0, len(digest.ByRole))
+	for role, cost := range digest.ByRole {
+		entries = append(entries, CostEntry{
+			SessionID: fmt.Sprintf("digest-%s-%s", digest.Date, role),
+			Role:      role,
+			CostUSD:   cost,
+			EndedAt:   digestDate,
+		})
+	}
+	return entries
 }
 
 // parseSessionName extracts role, rig, and worker from a session name.
