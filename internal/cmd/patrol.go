@@ -14,14 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	// Patrol digest flags
-	patrolDigestYesterday bool
-	patrolDigestDate      string
-	patrolDigestDryRun    bool
-	patrolDigestVerbose   bool
-)
-
 var patrolCmd = &cobra.Command{
 	Use:     "patrol",
 	GroupID: GroupDiag,
@@ -62,10 +54,10 @@ func init() {
 	rootCmd.AddCommand(patrolCmd)
 
 	// Patrol digest flags
-	patrolDigestCmd.Flags().BoolVar(&patrolDigestYesterday, "yesterday", false, "Digest yesterday's patrol cycles")
-	patrolDigestCmd.Flags().StringVar(&patrolDigestDate, "date", "", "Digest patrol cycles for specific date (YYYY-MM-DD)")
-	patrolDigestCmd.Flags().BoolVar(&patrolDigestDryRun, "dry-run", false, "Preview what would be created without creating")
-	patrolDigestCmd.Flags().BoolVarP(&patrolDigestVerbose, "verbose", "v", false, "Verbose output")
+	patrolDigestCmd.Flags().Bool("yesterday", false, "Digest yesterday's patrol cycles")
+	patrolDigestCmd.Flags().String("date", "", "Digest patrol cycles for specific date (YYYY-MM-DD)")
+	patrolDigestCmd.Flags().Bool("dry-run", false, "Preview what would be created without creating")
+	patrolDigestCmd.Flags().BoolP("verbose", "v", false, "Verbose output")
 }
 
 // PatrolDigest represents the aggregated daily patrol report.
@@ -87,17 +79,21 @@ type PatrolCycleEntry struct {
 }
 
 // runPatrolDigest aggregates patrol cycle digests into a daily digest bead.
-func runPatrolDigest(_ *cobra.Command, _ []string) error {
+func runPatrolDigest(cmd *cobra.Command, _ []string) error {
+	yesterday := commandBoolFlag(cmd, "yesterday")
+	dateFlag := commandStringFlag(cmd, "date")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	verbose := commandBoolFlag(cmd, "verbose")
 	// Determine target date
 	var targetDate time.Time
 
-	if patrolDigestDate != "" {
-		parsed, err := time.Parse("2006-01-02", patrolDigestDate)
+	if dateFlag != "" {
+		parsed, err := time.Parse("2006-01-02", dateFlag)
 		if err != nil {
 			return fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
 		}
 		targetDate = parsed
-	} else if patrolDigestYesterday {
+	} else if yesterday {
 		// Use UTC: Dolt stores timestamps in UTC, so date comparisons
 		// must use UTC dates to avoid evening PDT mismatches (gt-ty4).
 		targetDate = time.Now().UTC().AddDate(0, 0, -1)
@@ -111,7 +107,7 @@ func runPatrolDigest(_ *cobra.Command, _ []string) error {
 	existingID, err := findExistingPatrolDigest(dateStr)
 	if err != nil {
 		// Non-fatal: continue with creation attempt
-		if patrolDigestVerbose {
+		if verbose {
 			fmt.Fprintf(os.Stderr, "[patrol] warning: failed to check existing digest: %v\n", err)
 		}
 	} else if existingID != "" {
@@ -121,7 +117,7 @@ func runPatrolDigest(_ *cobra.Command, _ []string) error {
 	}
 
 	// Query ephemeral patrol digest beads for target date
-	cycles, err := queryPatrolDigests(targetDate)
+	cycles, err := queryPatrolDigests(targetDate, verbose)
 	if err != nil {
 		return fmt.Errorf("querying patrol digests: %w", err)
 	}
@@ -143,7 +139,7 @@ func runPatrolDigest(_ *cobra.Command, _ []string) error {
 		digest.ByRole[c.Role]++
 	}
 
-	if patrolDigestDryRun {
+	if dryRun {
 		fmt.Printf("%s [DRY RUN] Would create Patrol Report %s:\n", style.Bold.Render("📊"), dateStr)
 		fmt.Printf("  Total cycles: %d\n", digest.TotalCycles)
 		fmt.Printf("  By Role:\n")
@@ -165,7 +161,7 @@ func runPatrolDigest(_ *cobra.Command, _ []string) error {
 	}
 
 	// Delete source digests (they're ephemeral)
-	deletedCount, deleteErr := deletePatrolDigests(targetDate)
+	deletedCount, deleteErr := deletePatrolDigests(targetDate, verbose)
 	if deleteErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to delete some source digests: %v\n", deleteErr)
 	}
@@ -183,7 +179,7 @@ func runPatrolDigest(_ *cobra.Command, _ []string) error {
 }
 
 // queryPatrolDigests queries ephemeral patrol digest beads for a target date.
-func queryPatrolDigests(targetDate time.Time) ([]PatrolCycleEntry, error) {
+func queryPatrolDigests(targetDate time.Time, verbose bool) ([]PatrolCycleEntry, error) {
 	// List closed issues with "digest" label that are ephemeral
 	// Patrol digests have titles like "Digest: mol-deacon-patrol", "Digest: mol-witness-patrol"
 	listCmd := beads.Spawn("list",
@@ -194,7 +190,7 @@ func queryPatrolDigests(targetDate time.Time) ([]PatrolCycleEntry, error) {
 	)
 	listOutput, err := listCmd.Output()
 	if err != nil {
-		if patrolDigestVerbose {
+		if verbose {
 			fmt.Fprintf(os.Stderr, "[patrol] bd list failed: %v\n", err)
 		}
 		return nil, nil
@@ -358,9 +354,9 @@ func findExistingPatrolDigest(dateStr string) (string, error) {
 }
 
 // deletePatrolDigests deletes ephemeral patrol digest beads for a target date.
-func deletePatrolDigests(targetDate time.Time) (int, error) {
+func deletePatrolDigests(targetDate time.Time, verbose bool) (int, error) {
 	// Query patrol digests for the target date
-	cycles, err := queryPatrolDigests(targetDate)
+	cycles, err := queryPatrolDigests(targetDate, verbose)
 	if err != nil {
 		return 0, err
 	}
