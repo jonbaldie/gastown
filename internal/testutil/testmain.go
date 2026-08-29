@@ -16,10 +16,18 @@ func (c *processCleanup) run() {
 	c.once.Do(c.fn)
 }
 
-var testProcessCleanups = struct {
+type processCleanupState struct {
 	sync.Mutex
 	entries []*processCleanup
-}{}
+}
+
+var processCleanupStateInstance = sync.OnceValue(func() *processCleanupState {
+	return &processCleanupState{}
+})
+
+func processCleanups() *processCleanupState {
+	return processCleanupStateInstance()
+}
 
 // RegisterProcessCleanup records cleanup that must run when an integration test
 // process is interrupted. The returned function unregisters the cleanup after
@@ -27,16 +35,17 @@ var testProcessCleanups = struct {
 // signal racing ordinary test teardown is safe.
 func RegisterProcessCleanup(cleanup func()) func() {
 	entry := &processCleanup{fn: cleanup}
-	testProcessCleanups.Lock()
-	testProcessCleanups.entries = append(testProcessCleanups.entries, entry)
-	testProcessCleanups.Unlock()
+	state := processCleanups()
+	state.Lock()
+	state.entries = append(state.entries, entry)
+	state.Unlock()
 
 	return func() {
-		testProcessCleanups.Lock()
-		defer testProcessCleanups.Unlock()
-		for i, candidate := range testProcessCleanups.entries {
+		state.Lock()
+		defer state.Unlock()
+		for i, candidate := range state.entries {
 			if candidate == entry {
-				testProcessCleanups.entries = append(testProcessCleanups.entries[:i], testProcessCleanups.entries[i+1:]...)
+				state.entries = append(state.entries[:i], state.entries[i+1:]...)
 				return
 			}
 		}
@@ -44,10 +53,11 @@ func RegisterProcessCleanup(cleanup func()) func() {
 }
 
 func runRegisteredProcessCleanups() {
-	testProcessCleanups.Lock()
-	entries := testProcessCleanups.entries
-	testProcessCleanups.entries = nil
-	testProcessCleanups.Unlock()
+	state := processCleanups()
+	state.Lock()
+	entries := state.entries
+	state.entries = nil
+	state.Unlock()
 
 	// Match testing.T.Cleanup's LIFO semantics: a Town's sessions stop before
 	// its daemon, which stops before its owned Dolt server.
