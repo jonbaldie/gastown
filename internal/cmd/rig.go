@@ -1790,13 +1790,13 @@ func runRigStart(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func stopRigPolecats(r *rig.Rig) []string {
+func stopRigPolecats(r *rig.Rig, force bool) []string {
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewSessionManager(t, r)
 	infos, err := polecatMgr.ListPolecats()
 	if err == nil && len(infos) > 0 {
 		fmt.Printf("  Stopping %d polecat session(s)...\n", len(infos))
-		if err := polecatMgr.StopAll(rigShutdownForce); err != nil {
+		if err := polecatMgr.StopAll(force); err != nil {
 			return []string{fmt.Sprintf("polecat sessions: %v", err)}
 		}
 	}
@@ -1825,9 +1825,9 @@ func stopRigWitness(r *rig.Rig) []string {
 	return nil
 }
 
-func stopRigAgents(r *rig.Rig) []string {
+func stopRigAgents(r *rig.Rig, force bool) []string {
 	var errors []string
-	errors = append(errors, stopRigPolecats(r)...)
+	errors = append(errors, stopRigPolecats(r, force)...)
 	errors = append(errors, stopRigRefinery(r)...)
 	errors = append(errors, stopRigWitness(r)...)
 	return errors
@@ -1855,7 +1855,7 @@ func runRigShutdown(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Shutting down rig %s...\n", style.Bold.Render(rigName))
-	if err := reportRigShutdownErrors(stopRigAgents(r)); err != nil {
+	if err := reportRigShutdownErrors(stopRigAgents(r, rigShutdownForce)); err != nil {
 		return err
 	}
 
@@ -2111,88 +2111,28 @@ func runRigStatus(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRigStop(_ *cobra.Command, args []string) error {
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
+func stopRigByName(townRoot string, rigMgr *rig.Manager, rigName string, force, nuclear bool) (succeeded, failed bool) {
+	r, err := rigMgr.GetRig(rigName)
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		fmt.Printf("%s Rig '%s' not found\n", style.Warning.Render("⚠"), rigName)
+		return false, true
 	}
-
-	// Load rigs config
-	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsPath)
-	if err != nil {
-		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
+	if !nuclear && !checkUncommittedWork(r, rigName, "stop", force) {
+		return false, true
 	}
-
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
-
-	// Track results
-	var succeeded []string
-	var failed []string
-
-	// Process each rig
-	for _, rigName := range args {
-		r, err := rigMgr.GetRig(rigName)
-		if err != nil {
-			fmt.Printf("%s Rig '%s' not found\n", style.Warning.Render("⚠"), rigName)
-			failed = append(failed, rigName)
-			continue
+	fmt.Printf("Stopping rig %s...\n", style.Bold.Render(rigName))
+	if errors := stopRigAgents(r, force); len(errors) > 0 {
+		fmt.Printf("%s Some agents in %s failed to stop:\n", style.Warning.Render("⚠"), rigName)
+		for _, e := range errors {
+			fmt.Printf("  - %s\n", e)
 		}
-
-		// Check all polecats for uncommitted work (unless nuclear)
-		if !rigStopNuclear && !checkUncommittedWork(r, rigName, "stop", rigStopForce) {
-			failed = append(failed, rigName)
-			continue
-		}
-
-		fmt.Printf("Stopping rig %s...\n", style.Bold.Render(rigName))
-
-		var errors []string
-
-		// 1. Stop all polecat sessions
-		t := tmux.NewTmux()
-		polecatMgr := polecat.NewSessionManager(t, r)
-		infos, err := polecatMgr.ListPolecats()
-		if err == nil && len(infos) > 0 {
-			fmt.Printf("  Stopping %d polecat session(s)...\n", len(infos))
-			if err := polecatMgr.StopAll(rigStopForce); err != nil {
-				errors = append(errors, fmt.Sprintf("polecat sessions: %v", err))
-			}
-		}
-
-		// 2. Stop the refinery
-		refMgr := refinery.NewManager(r)
-		if running, _ := refMgr.IsRunning(); running {
-			fmt.Printf("  Stopping refinery...\n")
-			if err := refMgr.Stop(); err != nil {
-				errors = append(errors, fmt.Sprintf("refinery: %v", err))
-			}
-		}
-
-		// 3. Stop the witness
-		witMgr := witness.NewManager(r)
-		if running, _ := witMgr.IsRunning(); running {
-			fmt.Printf("  Stopping witness...\n")
-			if err := witMgr.Stop(); err != nil {
-				errors = append(errors, fmt.Sprintf("witness: %v", err))
-			}
-		}
-
-		if len(errors) > 0 {
-			fmt.Printf("%s Some agents in %s failed to stop:\n", style.Warning.Render("⚠"), rigName)
-			for _, e := range errors {
-				fmt.Printf("  - %s\n", e)
-			}
-			failed = append(failed, rigName)
-		} else {
-			fmt.Printf("%s Rig %s stopped\n", style.Success.Render("✓"), rigName)
-			succeeded = append(succeeded, rigName)
-		}
+		return false, true
 	}
+	fmt.Printf("%s Rig %s stopped\n", style.Success.Render("✓"), rigName)
+	return true, false
+}
 
-	// Summary
+func reportRigStopSummary(args []string, succeeded, failed []string) error {
 	if len(args) > 1 {
 		fmt.Println()
 		if len(succeeded) > 0 {
@@ -2205,8 +2145,25 @@ func runRigStop(_ *cobra.Command, args []string) error {
 	} else if len(failed) > 0 {
 		return fmt.Errorf("rig failed to stop")
 	}
-
 	return nil
+}
+
+func runRigStop(_ *cobra.Command, args []string) error {
+	townRoot, rigMgr, err := loadRigManagerForStart()
+	if err != nil {
+		return err
+	}
+	var succeeded []string
+	var failed []string
+	for _, rigName := range args {
+		stopped, stopFailed := stopRigByName(townRoot, rigMgr, rigName, rigStopForce, rigStopNuclear)
+		if stopFailed {
+			failed = append(failed, rigName)
+		} else if stopped {
+			succeeded = append(succeeded, rigName)
+		}
+	}
+	return reportRigStopSummary(args, succeeded, failed)
 }
 
 func runRigRestart(_ *cobra.Command, args []string) error {
