@@ -2637,16 +2637,103 @@ func getBeadStatus(bd *BdCli, workDir, beadID string) (string, bool) {
 	return issues[0].Status, true
 }
 
+func witnessMaxBeadRespawns(workDir string) int {
+	townRoot, err := workspace.Find(workDir)
+	if err != nil || townRoot == "" {
+		townRoot = workDir
+	}
+	return config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
+}
+
+func closeAbandonedBeadIfComplete(bd *BdCli, workDir, rigName, hookBead, polecatName string) bool {
+	onMain, err := verifyCommitOnMain(workDir, rigName, polecatName)
+	if err != nil || !onMain {
+		return false
+	}
+	reason := fmt.Sprintf("Work already on main (verified by witness, polecat %s)", polecatName)
+	if err := bd.Run(workDir, "close", hookBead, "-r", reason); err != nil {
+		fmt.Fprintf(os.Stderr, "witness: failed to close bead %s (work already on main): %v\n", hookBead, err)
+	}
+	return true
+}
+
+func notifyAbandonedRespawnBlocked(router *mail.Router, rigName, hookBead, polecatName, status string, maxRespawns int) {
+	if router == nil {
+		return
+	}
+	msg := &mail.Message{
+		From:     fmt.Sprintf("%s/witness", rigName),
+		To:       "mayor/",
+		Subject:  fmt.Sprintf("SPAWN_BLOCKED %s (respawn limit reached)", hookBead),
+		Priority: mail.PriorityUrgent,
+		Body: fmt.Sprintf(`Bead %s has been respawned %d+ times and keeps failing.
+Re-dispatch blocked to prevent spawn storm.
+
+Polecat: %s/%s
+Previous Status: %s
+
+Action required: investigate why this task keeps killing its polecat,
+then either close the bead or reset the respawn counter.`,
+			hookBead, maxRespawns, rigName, polecatName, status),
+	}
+	if err := router.Send(msg); err == nil {
+		return
+	} else {
+		fmt.Fprintf(os.Stderr, "witness: failed to send SPAWN_BLOCKED mail for %s: %v, attempting nudge fallback\n", hookBead, err)
+	}
+	t := tmux.NewTmux()
+	nudgeMsg := fmt.Sprintf("SPAWN_BLOCKED %s (respawn limit reached) from %s/%s — mail send failed, investigate spawn storm",
+		hookBead, rigName, polecatName)
+	if nudgeErr := t.NudgeSession(session.MayorSessionName(), nudgeMsg); nudgeErr != nil {
+		fmt.Fprintf(os.Stderr, "witness: nudge fallback to mayor also failed for %s: %v\n", hookBead, nudgeErr)
+	}
+}
+
+func notifyRecoveredAbandonedBead(router *mail.Router, rigName, hookBead, polecatName, status string, respawnCount, maxRespawns int) {
+	if router == nil {
+		return
+	}
+	subject := fmt.Sprintf("RECOVERED_BEAD %s", hookBead)
+	priority := mail.PriorityHigh
+	stormNote := ""
+	if respawnCount >= maxRespawns {
+		subject = fmt.Sprintf("SPAWN_STORM RECOVERED_BEAD %s (respawned %dx)", hookBead, respawnCount)
+		priority = mail.PriorityUrgent
+		stormNote = fmt.Sprintf("\n\n⚠️ SPAWN STORM: bead has been reset %d times. "+
+			"Next respawn will be BLOCKED. "+
+			"Check polecat completion protocol or close the bead manually.",
+			respawnCount)
+	}
+	msg := &mail.Message{
+		From:     fmt.Sprintf("%s/witness", rigName),
+		To:       "deacon/",
+		Subject:  subject,
+		Priority: priority,
+		Body: fmt.Sprintf(`Recovered abandoned bead from dead polecat.
+
+Bead: %s
+Polecat: %s/%s
+Previous Status: %s
+Respawn Count: %d%s
+
+The bead has been reset to open with no assignee.
+Please re-dispatch to an available polecat.`,
+			hookBead, rigName, polecatName, status, respawnCount, stormNote),
+	}
+	if err := router.Send(msg); err == nil {
+		return
+	} else {
+		fmt.Fprintf(os.Stderr, "witness: failed to send RECOVERED_BEAD mail for %s: %v, attempting nudge fallback\n", hookBead, err)
+	}
+	t := tmux.NewTmux()
+	nudgeMsg := fmt.Sprintf("RECOVERED_BEAD %s from %s/%s (status=%s, respawns=%d) — mail send failed, please re-dispatch",
+		hookBead, rigName, polecatName, status, respawnCount)
+	if nudgeErr := t.NudgeSession(session.DeaconSessionName(), nudgeMsg); nudgeErr != nil {
+		fmt.Fprintf(os.Stderr, "witness: nudge fallback to deacon also failed for %s: %v\n", hookBead, nudgeErr)
+	}
+}
+
 // resetAbandonedBead resets a dead polecat's hooked bead so it can be re-dispatched.
-// If the bead is in "hooked" or "in_progress" status, it:
-//  0. Checks if the polecat's work is already on main — if so, closes
-//     the bead instead of resetting (prevents re-dispatch of completed work)
-//  1. Records the respawn in the witness spawn-count ledger
-//  2. Resets status to open
-//  3. Clears assignee
-//  4. Sends mail to deacon for re-dispatch (includes respawn count; SPAWN_STORM
-//     prefix and Urgent priority when count exceeds max bead respawns config)
-//
 // Returns true if the bead was recovered.
 func resetAbandonedBead(bd *BdCli, workDir, rigName, hookBead, polecatName string, router *mail.Router) bool {
 	if hookBead == "" {
@@ -2656,109 +2743,19 @@ func resetAbandonedBead(bd *BdCli, workDir, rigName, hookBead, polecatName strin
 	if !ok || (status != "hooked" && status != "in_progress") {
 		return false
 	}
-
-	// Load max respawns threshold from config.
-	trRoot, trErr := workspace.Find(workDir)
-	if trErr != nil || trRoot == "" {
-		trRoot = workDir
-	}
-	maxRespawns := config.LoadOperationalConfig(trRoot).GetWitnessConfig().MaxBeadRespawnsV()
-
-	// Guard: if the polecat's commit is already on the default branch,
-	// the work is done — close the bead instead of resetting for re-dispatch.
-	// This prevents the spawn-storm / duplicate-work loop described in #2036.
-	if onMain, err := verifyCommitOnMain(workDir, rigName, polecatName); err == nil && onMain {
-		reason := fmt.Sprintf("Work already on main (verified by witness, polecat %s)", polecatName)
-		if err := bd.Run(workDir, "close", hookBead, "-r", reason); err != nil {
-			fmt.Fprintf(os.Stderr, "witness: failed to close bead %s (work already on main): %v\n", hookBead, err)
-		}
+	maxRespawns := witnessMaxBeadRespawns(workDir)
+	if closeAbandonedBeadIfComplete(bd, workDir, rigName, hookBead, polecatName) {
 		return false
 	}
-
-	// Circuit breaker (clown show #22): if this bead has already been
-	// respawned too many times, escalate to mayor instead of re-dispatching.
-	// This prevents the witness→deacon→spawn feedback loop from creating
-	// unbounded polecats when a task repeatedly kills its polecat.
 	if ShouldBlockRespawn(workDir, hookBead) {
-		if router != nil {
-			msg := &mail.Message{
-				From:     fmt.Sprintf("%s/witness", rigName),
-				To:       "mayor/",
-				Subject:  fmt.Sprintf("SPAWN_BLOCKED %s (respawn limit reached)", hookBead),
-				Priority: mail.PriorityUrgent,
-				Body: fmt.Sprintf(`Bead %s has been respawned %d+ times and keeps failing.
-Re-dispatch blocked to prevent spawn storm.
-
-Polecat: %s/%s
-Previous Status: %s
-
-Action required: investigate why this task keeps killing its polecat,
-then either close the bead or reset the respawn counter.`,
-					hookBead, maxRespawns, rigName, polecatName, status),
-			}
-			if err := router.Send(msg); err != nil {
-				fmt.Fprintf(os.Stderr, "witness: failed to send SPAWN_BLOCKED mail for %s: %v, attempting nudge fallback\n", hookBead, err)
-				// Nudge mayor as fallback — nudges are more reliable than mail
-				t := tmux.NewTmux()
-				nudgeMsg := fmt.Sprintf("SPAWN_BLOCKED %s (respawn limit reached) from %s/%s — mail send failed, investigate spawn storm",
-					hookBead, rigName, polecatName)
-				if nudgeErr := t.NudgeSession(session.MayorSessionName(), nudgeMsg); nudgeErr != nil {
-					fmt.Fprintf(os.Stderr, "witness: nudge fallback to mayor also failed for %s: %v\n", hookBead, nudgeErr)
-				}
-			}
-		}
+		notifyAbandonedRespawnBlocked(router, rigName, hookBead, polecatName, status, maxRespawns)
 		return false
 	}
-
-	// Track respawn count for audit and storm detection.
 	respawnCount := RecordBeadRespawn(workDir, hookBead)
-
-	// Reset bead status to open and clear assignee
 	if err := bd.Run(workDir, "update", hookBead, "--status=open", "--assignee="); err != nil {
 		return false
 	}
-
-	// Send mail to deacon for re-dispatch
-	if router != nil {
-		subject := fmt.Sprintf("RECOVERED_BEAD %s", hookBead)
-		priority := mail.PriorityHigh
-		stormNote := ""
-		if respawnCount >= maxRespawns {
-			subject = fmt.Sprintf("SPAWN_STORM RECOVERED_BEAD %s (respawned %dx)", hookBead, respawnCount)
-			priority = mail.PriorityUrgent
-			stormNote = fmt.Sprintf("\n\n⚠️ SPAWN STORM: bead has been reset %d times. "+
-				"Next respawn will be BLOCKED. "+
-				"Check polecat completion protocol or close the bead manually.",
-				respawnCount)
-		}
-		msg := &mail.Message{
-			From:     fmt.Sprintf("%s/witness", rigName),
-			To:       "deacon/",
-			Subject:  subject,
-			Priority: priority,
-			Body: fmt.Sprintf(`Recovered abandoned bead from dead polecat.
-
-Bead: %s
-Polecat: %s/%s
-Previous Status: %s
-Respawn Count: %d%s
-
-The bead has been reset to open with no assignee.
-Please re-dispatch to an available polecat.`,
-				hookBead, rigName, polecatName, status, respawnCount, stormNote),
-		}
-		if err := router.Send(msg); err != nil {
-			fmt.Fprintf(os.Stderr, "witness: failed to send RECOVERED_BEAD mail for %s: %v, attempting nudge fallback\n", hookBead, err)
-			// Nudge deacon as fallback — nudges are more reliable than mail
-			t := tmux.NewTmux()
-			nudgeMsg := fmt.Sprintf("RECOVERED_BEAD %s from %s/%s (status=%s, respawns=%d) — mail send failed, please re-dispatch",
-				hookBead, rigName, polecatName, status, respawnCount)
-			if nudgeErr := t.NudgeSession(session.DeaconSessionName(), nudgeMsg); nudgeErr != nil {
-				fmt.Fprintf(os.Stderr, "witness: nudge fallback to deacon also failed for %s: %v\n", hookBead, nudgeErr)
-			}
-		}
-	}
-
+	notifyRecoveredAbandonedBead(router, rigName, hookBead, polecatName, status, respawnCount, maxRespawns)
 	return true
 }
 
