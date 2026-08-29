@@ -2434,76 +2434,33 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 }
 
 // handleRigAdd creates a new rig, optionally with a local bare repo.
+type rigAddRequest struct {
+	Name    string `json:"name"`
+	RepoURL string `json:"repo_url,omitempty"`
+	Local   bool   `json:"local,omitempty"`
+}
+
 func (h *APIHandler) handleRigAdd(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name    string `json:"name"`
-		RepoURL string `json:"repo_url,omitempty"`
-		Local   bool   `json:"local,omitempty"`
-	}
+	var req rigAddRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Name == "" {
-		h.sendError(w, "Rig name is required", http.StatusBadRequest)
-		return
-	}
-	if !isValidRigName(req.Name) {
-		h.sendError(w, "Invalid rig name: must be alphanumeric/underscore only", http.StatusBadRequest)
+	if errMessage := validateRigAddRequest(req); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
 	repoURL := req.RepoURL
 	if req.Local || repoURL == "" {
-		// Create a local bare repo with an initial commit
-		localRepoPath := fmt.Sprintf("/tmp/gastown-repos/%s.git", req.Name)
-
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-
-		// Create bare repo
-		mkdirCmd := exec.CommandContext(ctx, "mkdir", "-p", localRepoPath)
-		if out, err := mkdirCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to create repo dir: %s %v", string(out), err), http.StatusInternalServerError)
+		var err error
+		repoURL, err = createLocalRigRepo(ctx, req.Name)
+		if err != nil {
+			h.sendError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
-		initCmd.Dir = localRepoPath
-		if out, err := initCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to init bare repo: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-
-		// Clone, create initial commit, push
-		tmpDir := fmt.Sprintf("/tmp/gastown-repos/.tmp-%s", req.Name)
-		cloneCmd := exec.CommandContext(ctx, "git", "clone", localRepoPath, tmpDir)
-		if out, err := cloneCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to clone: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-		defer func() {
-			_ = exec.CommandContext(context.Background(), "rm", "-rf", tmpDir).Run()
-		}()
-
-		commitCmd := exec.CommandContext(ctx, "git", "commit", "--allow-empty", "-m", "Initial commit")
-		commitCmd.Dir = tmpDir
-		if out, err := commitCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to create initial commit: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-
-		pushCmd := exec.CommandContext(ctx, "git", "push", "origin", "HEAD:main")
-		pushCmd.Dir = tmpDir
-		if out, err := pushCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to push: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-
-		repoURL = localRepoPath
-	} else if !isValidGitURL(repoURL) {
-		h.sendError(w, "Invalid git URL", http.StatusBadRequest)
-		return
 	}
 
 	// Run gt rig add
@@ -2533,4 +2490,53 @@ func (h *APIHandler) handleRigAdd(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Rig '%s' created successfully", req.Name),
 		"output":  output,
 	})
+}
+
+func validateRigAddRequest(req rigAddRequest) string {
+	if req.Name == "" {
+		return "Rig name is required"
+	}
+	if !isValidRigName(req.Name) {
+		return "Invalid rig name: must be alphanumeric/underscore only"
+	}
+	if !req.Local && req.RepoURL != "" && !isValidGitURL(req.RepoURL) {
+		return "Invalid git URL"
+	}
+	return ""
+}
+
+func createLocalRigRepo(ctx context.Context, name string) (string, error) {
+	localRepoPath := fmt.Sprintf("/tmp/gastown-repos/%s.git", name)
+	mkdirCmd := exec.CommandContext(ctx, "mkdir", "-p", localRepoPath)
+	if out, err := mkdirCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to create repo dir: %s %v", string(out), err)
+	}
+
+	initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
+	initCmd.Dir = localRepoPath
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to init bare repo: %s %v", string(out), err)
+	}
+
+	tmpDir := fmt.Sprintf("/tmp/gastown-repos/.tmp-%s", name)
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", localRepoPath, tmpDir)
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to clone: %s %v", string(out), err)
+	}
+	defer func() {
+		_ = exec.CommandContext(context.Background(), "rm", "-rf", tmpDir).Run()
+	}()
+
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "--allow-empty", "-m", "Initial commit")
+	commitCmd.Dir = tmpDir
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to create initial commit: %s %v", string(out), err)
+	}
+
+	pushCmd := exec.CommandContext(ctx, "git", "push", "origin", "HEAD:main")
+	pushCmd.Dir = tmpDir
+	if out, err := pushCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to push: %s %v", string(out), err)
+	}
+	return localRepoPath, nil
 }
