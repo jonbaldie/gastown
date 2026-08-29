@@ -319,31 +319,7 @@ type DaemonThresholds struct {
 	// MassDeathThreshold is session deaths within window to trigger alert (default 3).
 	MassDeathThreshold *int `json:"mass_death_threshold,omitempty"`
 
-	// DogIdleSessionTimeout is how long a dog can be idle with tmux before kill (default "1h").
-	DogIdleSessionTimeout string `json:"dog_idle_session_timeout,omitempty"`
-
-	// DogIdleRemoveTimeout is how long a dog can be idle before removal (default "4h").
-	DogIdleRemoveTimeout string `json:"dog_idle_remove_timeout,omitempty"`
-
-	// PolecatIdleSessionTimeout is how long a polecat can be idle before its session
-	// is killed to prevent API slot burn (default "15m"). Polecats are ephemeral workers;
-	// unlike dogs, they should not persist when idle.
-	PolecatIdleSessionTimeout string `json:"polecat_idle_session_timeout,omitempty"`
-
-	// PolecatSelfTerminate controls whether polecats kill their own session after
-	// gt done completes (default false). When true, polecats terminate 3 seconds
-	// after work submission instead of transitioning to IDLE. This gives fresh
-	// context windows per task, reduces token waste, and eliminates stale state
-	// issues at scale. Worktree reuse is preserved — ReuseIdlePolecat creates
-	// a fresh branch on the existing worktree.
-	PolecatSelfTerminate *bool `json:"polecat_self_terminate,omitempty"`
-
-	// StaleWorkingTimeout is how long a dog in state=working with no activity
-	// before considered stuck (default "2h").
-	StaleWorkingTimeout string `json:"stale_working_timeout,omitempty"`
-
-	// MaxDogPoolSize is target dog pool size (default 4).
-	MaxDogPoolSize *int `json:"max_dog_pool_size,omitempty"`
+	DaemonWorkerLifecycle
 
 	// MaxLifecycleMessageAge is max age of lifecycle mail before discard (default "6h").
 	MaxLifecycleMessageAge string `json:"max_lifecycle_message_age,omitempty"`
@@ -381,6 +357,37 @@ type DaemonThresholds struct {
 	// PressureMaxSessions is the maximum number of concurrent agent tmux
 	// sessions before new non-infrastructure spawns are deferred. Disabled by default (0 = unlimited).
 	PressureMaxSessions *int `json:"pressure_max_sessions,omitempty"`
+}
+
+// DaemonWorkerLifecycle contains idle, recovery, and pool sizing thresholds
+// for managed workers. It is embedded so the operational config JSON remains
+// flat for existing settings files.
+type DaemonWorkerLifecycle struct {
+	// DogIdleSessionTimeout is how long a dog can be idle with tmux before kill (default "1h").
+	DogIdleSessionTimeout string `json:"dog_idle_session_timeout,omitempty"`
+
+	// DogIdleRemoveTimeout is how long a dog can be idle before removal (default "4h").
+	DogIdleRemoveTimeout string `json:"dog_idle_remove_timeout,omitempty"`
+
+	// PolecatIdleSessionTimeout is how long a polecat can be idle before its session
+	// is killed to prevent API slot burn (default "15m"). Polecats are ephemeral workers;
+	// unlike dogs, they should not persist when idle.
+	PolecatIdleSessionTimeout string `json:"polecat_idle_session_timeout,omitempty"`
+
+	// PolecatSelfTerminate controls whether polecats kill their own session after
+	// gt done completes (default false). When true, polecats terminate 3 seconds
+	// after work submission instead of transitioning to IDLE. This gives fresh
+	// context windows per task, reduces token waste, and eliminates stale state
+	// issues at scale. Worktree reuse is preserved — ReuseIdlePolecat creates
+	// a fresh branch on the existing worktree.
+	PolecatSelfTerminate *bool `json:"polecat_self_terminate,omitempty"`
+
+	// StaleWorkingTimeout is how long a dog in state=working with no activity
+	// before considered stuck (default "2h").
+	StaleWorkingTimeout string `json:"stale_working_timeout,omitempty"`
+
+	// MaxDogPoolSize is target dog pool size (default 4).
+	MaxDogPoolSize *int `json:"max_dog_pool_size,omitempty"`
 }
 
 // DeaconThresholds configures deacon health-check and dispatch thresholds.

@@ -121,8 +121,10 @@ func TestDaemonThresholds_Overrides(t *testing.T) {
 	poolSize := 8
 	op := &OperationalConfig{
 		Daemon: &DaemonThresholds{
-			DogIdleSessionTimeout: "2h",
-			MaxDogPoolSize:        &poolSize,
+			DaemonWorkerLifecycle: DaemonWorkerLifecycle{
+				DogIdleSessionTimeout: "2h",
+				MaxDogPoolSize:        &poolSize,
+			},
 		},
 	}
 
@@ -238,7 +240,9 @@ func TestLoadOperationalConfig_WithConfig(t *testing.T) {
 				StartupNudgeMaxRetries: &retries,
 			},
 			Daemon: &DaemonThresholds{
-				DogIdleSessionTimeout: "3h",
+				DaemonWorkerLifecycle: DaemonWorkerLifecycle{
+					DogIdleSessionTimeout: "3h",
+				},
 			},
 		},
 	}
