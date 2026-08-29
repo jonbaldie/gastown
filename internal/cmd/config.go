@@ -854,173 +854,212 @@ type townSettingsKeySpec struct {
 	set  func(*config.TownSettings, string) error
 }
 
-var townSettingsKeySpecs = []townSettingsKeySpec{
-	{
-		key:  "convoy.notify_on_complete",
-		help: "Push notification to Mayor session on convoy completion (true/false, default: false)",
-		get: func(s *config.TownSettings) string {
-			if s.Convoy != nil && s.Convoy.NotifyOnComplete {
-				return "true"
-			}
-			return "false"
-		},
-		set: func(s *config.TownSettings, value string) error {
-			b, err := parseBool(value)
-			if err != nil {
-				return fmt.Errorf("invalid value for convoy.notify_on_complete: %w (expected true/false)", err)
-			}
-			if s.Convoy == nil {
-				s.Convoy = &config.ConvoyConfig{}
-			}
-			s.Convoy.NotifyOnComplete = b
-			return nil
-		},
-	},
-	{
-		key:  "cli_theme",
-		help: `CLI color scheme ("dark", "light", "auto")`,
-		get: func(s *config.TownSettings) string {
-			if s.CLITheme == "" {
-				return "auto"
-			}
-			return s.CLITheme
-		},
-		set: func(s *config.TownSettings, value string) error {
-			switch value {
-			case "dark", "light", "auto":
-				s.CLITheme = value
+func townSettingsKeySpecs() []townSettingsKeySpec {
+	specs := townSettingsCoreKeySpecs()
+	specs = append(specs, townSettingsSchedulerKeySpecs()...)
+	specs = append(specs, townSettingsPolecatKeySpecs()...)
+	return specs
+}
+
+func townSettingsCoreKeySpecs() []townSettingsKeySpec {
+	specs := townSettingsCoreIdentityKeySpecs()
+	return append(specs, townSettingsCoreTokenKeySpecs()...)
+}
+
+func townSettingsCoreIdentityKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "convoy.notify_on_complete",
+			help: "Push notification to Mayor session on convoy completion (true/false, default: false)",
+			get: func(s *config.TownSettings) string {
+				if s.Convoy != nil && s.Convoy.NotifyOnComplete {
+					return "true"
+				}
+				return "false"
+			},
+			set: func(s *config.TownSettings, value string) error {
+				b, err := parseBool(value)
+				if err != nil {
+					return fmt.Errorf("invalid value for convoy.notify_on_complete: %w (expected true/false)", err)
+				}
+				if s.Convoy == nil {
+					s.Convoy = &config.ConvoyConfig{}
+				}
+				s.Convoy.NotifyOnComplete = b
 				return nil
-			default:
-				return fmt.Errorf("invalid cli_theme: %q (expected dark, light, or auto)", value)
-			}
+			},
 		},
-	},
-	{
-		key:  "default_agent",
-		help: "Default agent preset name",
-		get: func(s *config.TownSettings) string {
-			if s.DefaultAgent == "" {
-				return "claude"
-			}
-			return s.DefaultAgent
+		{
+			key:  "cli_theme",
+			help: `CLI color scheme ("dark", "light", "auto")`,
+			get: func(s *config.TownSettings) string {
+				if s.CLITheme == "" {
+					return "auto"
+				}
+				return s.CLITheme
+			},
+			set: func(s *config.TownSettings, value string) error {
+				switch value {
+				case "dark", "light", "auto":
+					s.CLITheme = value
+					return nil
+				default:
+					return fmt.Errorf("invalid cli_theme: %q (expected dark, light, or auto)", value)
+				}
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			s.DefaultAgent = value
-			return nil
+	}
+}
+
+func townSettingsCoreTokenKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "default_agent",
+			help: "Default agent preset name",
+			get: func(s *config.TownSettings) string {
+				if s.DefaultAgent == "" {
+					return "claude"
+				}
+				return s.DefaultAgent
+			},
+			set: func(s *config.TownSettings, value string) error {
+				s.DefaultAgent = value
+				return nil
+			},
 		},
-	},
-	{
-		key: "auto_compact_window",
-		help: "Auto-compaction cap in tokens (default: 150000 / 150k). " +
-			"Applied to every agent type as min(cap, model window).",
-		get: func(s *config.TownSettings) string {
-			if s.AutoCompactWindow > 0 {
-				return strconv.Itoa(s.AutoCompactWindow)
-			}
-			return strconv.Itoa(config.DefaultAutoCompactWindowTokens)
+		{
+			key: "auto_compact_window",
+			help: "Auto-compaction cap in tokens (default: 150000 / 150k). " +
+				"Applied to every agent type as min(cap, model window).",
+			get: func(s *config.TownSettings) string {
+				if s.AutoCompactWindow > 0 {
+					return strconv.Itoa(s.AutoCompactWindow)
+				}
+				return strconv.Itoa(config.DefaultAutoCompactWindowTokens)
+			},
+			set: func(s *config.TownSettings, value string) error {
+				n, ok := config.ParseTokenCount(value)
+				if !ok {
+					return fmt.Errorf("invalid value for auto_compact_window: expected a positive token count such as 150000 or 150k")
+				}
+				s.AutoCompactWindow = n
+				return nil
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			n, ok := config.ParseTokenCount(value)
-			if !ok {
-				return fmt.Errorf("invalid value for auto_compact_window: expected a positive token count such as 150000 or 150k")
-			}
-			s.AutoCompactWindow = n
-			return nil
+	}
+}
+
+func townSettingsSchedulerKeySpecs() []townSettingsKeySpec {
+	specs := townSettingsSchedulerCapacityKeySpecs()
+	return append(specs, townSettingsSchedulerDelayKeySpecs()...)
+}
+
+func townSettingsSchedulerCapacityKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "scheduler.max_polecats",
+			help: "Dispatch mode: -1 = direct (default), N > 0 = deferred",
+			get: func(s *config.TownSettings) string {
+				scfg := s.Scheduler
+				if scfg == nil {
+					scfg = capacity.DefaultSchedulerConfig()
+				}
+				return strconv.Itoa(scfg.GetMaxPolecats())
+			},
+			set: func(s *config.TownSettings, value string) error {
+				n, err := strconv.Atoi(value)
+				if err != nil {
+					return fmt.Errorf("invalid value for scheduler.max_polecats: %w (expected integer)", err)
+				}
+				if n < -1 {
+					return fmt.Errorf("invalid value for scheduler.max_polecats: must be >= -1 (-1 = direct dispatch, 0 = direct dispatch, N > 0 = deferred)")
+				}
+				if s.Scheduler == nil {
+					s.Scheduler = capacity.DefaultSchedulerConfig()
+				}
+				s.Scheduler.MaxPolecats = &n
+				return nil
+			},
 		},
-	},
-	{
-		key:  "scheduler.max_polecats",
-		help: "Dispatch mode: -1 = direct (default), N > 0 = deferred",
-		get: func(s *config.TownSettings) string {
-			scfg := s.Scheduler
-			if scfg == nil {
-				scfg = capacity.DefaultSchedulerConfig()
-			}
-			return strconv.Itoa(scfg.GetMaxPolecats())
+		{
+			key:  "scheduler.batch_size",
+			help: "Beads per heartbeat (default: 1)",
+			get: func(s *config.TownSettings) string {
+				scfg := s.Scheduler
+				if scfg == nil {
+					scfg = capacity.DefaultSchedulerConfig()
+				}
+				return strconv.Itoa(capacity.GetBatchSize(scfg))
+			},
+			set: func(s *config.TownSettings, value string) error {
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 {
+					return fmt.Errorf("invalid value for scheduler.batch_size: expected positive integer")
+				}
+				if s.Scheduler == nil {
+					s.Scheduler = capacity.DefaultSchedulerConfig()
+				}
+				s.Scheduler.BatchSize = &n
+				return nil
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			n, err := strconv.Atoi(value)
-			if err != nil {
-				return fmt.Errorf("invalid value for scheduler.max_polecats: %w (expected integer)", err)
-			}
-			if n < -1 {
-				return fmt.Errorf("invalid value for scheduler.max_polecats: must be >= -1 (-1 = direct dispatch, 0 = direct dispatch, N > 0 = deferred)")
-			}
-			if s.Scheduler == nil {
-				s.Scheduler = capacity.DefaultSchedulerConfig()
-			}
-			s.Scheduler.MaxPolecats = &n
-			return nil
+	}
+}
+
+func townSettingsSchedulerDelayKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "scheduler.spawn_delay",
+			help: "Delay between spawns (default: 0s)",
+			get: func(s *config.TownSettings) string {
+				scfg := s.Scheduler
+				if scfg == nil {
+					scfg = capacity.DefaultSchedulerConfig()
+				}
+				return capacity.GetSpawnDelay(scfg).String()
+			},
+			set: func(s *config.TownSettings, value string) error {
+				if _, err := time.ParseDuration(value); err != nil {
+					return fmt.Errorf("invalid value for scheduler.spawn_delay: %w (expected Go duration, e.g. 2s, 500ms)", err)
+				}
+				if s.Scheduler == nil {
+					s.Scheduler = capacity.DefaultSchedulerConfig()
+				}
+				s.Scheduler.SpawnDelay = value
+				return nil
+			},
 		},
-	},
-	{
-		key:  "scheduler.batch_size",
-		help: "Beads per heartbeat (default: 1)",
-		get: func(s *config.TownSettings) string {
-			scfg := s.Scheduler
-			if scfg == nil {
-				scfg = capacity.DefaultSchedulerConfig()
-			}
-			return strconv.Itoa(capacity.GetBatchSize(scfg))
+	}
+}
+
+func townSettingsPolecatKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key: "polecat.target_clean_policy",
+			help: `When to delete <polecat>/target/ on reuse ("per_bead", "every_n_beads:<N>", ` +
+				`"never"; default: per_bead)`,
+			get: func(s *config.TownSettings) string {
+				if s.Polecat != nil && s.Polecat.TargetCleanPolicy != "" {
+					return s.Polecat.TargetCleanPolicy
+				}
+				return polecat.DefaultTargetCleanPolicy().String()
+			},
+			set: func(s *config.TownSettings, value string) error {
+				// Validate the policy string parses cleanly. Storage form is the raw
+				// input normalized via parsed.String(), so e.g. "  per_bead  " becomes
+				// "per_bead".
+				parsed, err := polecat.ParseTargetCleanPolicy(value)
+				if err != nil {
+					return fmt.Errorf("invalid value for polecat.target_clean_policy: %w", err)
+				}
+				if s.Polecat == nil {
+					s.Polecat = &config.PolecatConfig{}
+				}
+				s.Polecat.TargetCleanPolicy = parsed.String()
+				return nil
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 1 {
-				return fmt.Errorf("invalid value for scheduler.batch_size: expected positive integer")
-			}
-			if s.Scheduler == nil {
-				s.Scheduler = capacity.DefaultSchedulerConfig()
-			}
-			s.Scheduler.BatchSize = &n
-			return nil
-		},
-	},
-	{
-		key:  "scheduler.spawn_delay",
-		help: "Delay between spawns (default: 0s)",
-		get: func(s *config.TownSettings) string {
-			scfg := s.Scheduler
-			if scfg == nil {
-				scfg = capacity.DefaultSchedulerConfig()
-			}
-			return capacity.GetSpawnDelay(scfg).String()
-		},
-		set: func(s *config.TownSettings, value string) error {
-			if _, err := time.ParseDuration(value); err != nil {
-				return fmt.Errorf("invalid value for scheduler.spawn_delay: %w (expected Go duration, e.g. 2s, 500ms)", err)
-			}
-			if s.Scheduler == nil {
-				s.Scheduler = capacity.DefaultSchedulerConfig()
-			}
-			s.Scheduler.SpawnDelay = value
-			return nil
-		},
-	},
-	{
-		key: "polecat.target_clean_policy",
-		help: `When to delete <polecat>/target/ on reuse ("per_bead", "every_n_beads:<N>", ` +
-			`"never"; default: per_bead)`,
-		get: func(s *config.TownSettings) string {
-			if s.Polecat != nil && s.Polecat.TargetCleanPolicy != "" {
-				return s.Polecat.TargetCleanPolicy
-			}
-			return polecat.DefaultTargetCleanPolicy().String()
-		},
-		set: func(s *config.TownSettings, value string) error {
-			// Validate the policy string parses cleanly. Storage form is the raw
-			// input normalized via parsed.String(), so e.g. "  per_bead  " becomes
-			// "per_bead".
-			parsed, err := polecat.ParseTargetCleanPolicy(value)
-			if err != nil {
-				return fmt.Errorf("invalid value for polecat.target_clean_policy: %w", err)
-			}
-			if s.Polecat == nil {
-				s.Polecat = &config.PolecatConfig{}
-			}
-			s.Polecat.TargetCleanPolicy = parsed.String()
-			return nil
-		},
-	},
+	}
 }
 
 // buildConfigKeyHelp renders the "Supported keys" section shared by
@@ -1029,7 +1068,7 @@ var townSettingsKeySpecs = []townSettingsKeySpec{
 func buildConfigKeyHelp(verb string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s a town configuration value using dot-notation keys.\n\nSupported keys:\n", verb)
-	for _, spec := range townSettingsKeySpecs {
+	for _, spec := range townSettingsKeySpecs() {
 		fmt.Fprintf(&b, "  %-28s %s\n", spec.key, spec.help)
 	}
 	b.WriteString(daemonBackedConfigKeyHelp)
@@ -1037,9 +1076,9 @@ func buildConfigKeyHelp(verb string) string {
 }
 
 func findTownSettingsKeySpec(key string) *townSettingsKeySpec {
-	for i := range townSettingsKeySpecs {
-		if townSettingsKeySpecs[i].key == key {
-			return &townSettingsKeySpecs[i]
+	for _, spec := range townSettingsKeySpecs() {
+		if spec.key == key {
+			return &spec
 		}
 	}
 	return nil
@@ -1073,7 +1112,7 @@ const daemonBackedConfigKeyHelp = `  dolt.port                   Dolt SQL server
 func unknownConfigKeyError(key string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "unknown config key: %q\n\nSupported keys:\n", key)
-	for _, spec := range townSettingsKeySpecs {
+	for _, spec := range townSettingsKeySpecs() {
 		fmt.Fprintf(&b, "  %-28s %s\n", spec.key, spec.help)
 	}
 	b.WriteString(daemonBackedConfigKeyHelp)
