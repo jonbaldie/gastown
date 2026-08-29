@@ -39,11 +39,6 @@ automated agents. When in doubt, escalate to the Mayor.
 Role shortcuts: "mayor" in mail/nudge addresses resolves to this agent.`,
 }
 
-var (
-	mayorAgentOverride string
-	mayorStatusRunning bool
-)
-
 var mayorStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the Mayor session",
@@ -112,9 +107,6 @@ is vetoed to allow the Mayor to review worker diffs before they vanish.`,
 	RunE: runMayorAcp,
 }
 
-var acpRigOverride string
-var acpTownRootOverride string
-
 func init() {
 	mayorCmd.AddCommand(mayorStartCmd)
 	mayorCmd.AddCommand(mayorStopCmd)
@@ -123,15 +115,15 @@ func init() {
 	mayorCmd.AddCommand(mayorRestartCmd)
 	mayorCmd.AddCommand(mayorAcpCmd)
 
-	mayorStatusCmd.Flags().BoolVar(&mayorStatusRunning, "running", false, "Output only true/false for running status")
+	mayorStatusCmd.Flags().Bool("running", false, "Output only true/false for running status")
 
-	mayorStartCmd.Flags().StringVar(&mayorAgentOverride, "agent", "", "Agent alias to run the Mayor with (overrides town default)")
-	mayorAttachCmd.Flags().StringVar(&mayorAgentOverride, "agent", "", "Agent alias to run the Mayor with (overrides town default)")
-	mayorRestartCmd.Flags().StringVar(&mayorAgentOverride, "agent", "", "Agent alias to run the Mayor with (overrides town default)")
+	mayorStartCmd.Flags().String("agent", "", "Agent alias to run the Mayor with (overrides town default)")
+	mayorAttachCmd.Flags().String("agent", "", "Agent alias to run the Mayor with (overrides town default)")
+	mayorRestartCmd.Flags().String("agent", "", "Agent alias to run the Mayor with (overrides town default)")
 
-	mayorAcpCmd.Flags().StringVar(&acpRigOverride, "rig", "", "Rig name (overrides GT_RIG env)")
-	mayorAcpCmd.Flags().StringVar(&acpTownRootOverride, "town", "", "Town root directory (overrides GT_TOWN_ROOT env)")
-	mayorAcpCmd.Flags().StringVar(&mayorAgentOverride, "agent", "", "Agent alias to run (overrides town default)")
+	mayorAcpCmd.Flags().String("rig", "", "Rig name (overrides GT_RIG env)")
+	mayorAcpCmd.Flags().String("town", "", "Town root directory (overrides GT_TOWN_ROOT env)")
+	mayorAcpCmd.Flags().String("agent", "", "Agent alias to run (overrides town default)")
 
 	rootCmd.AddCommand(mayorCmd)
 }
@@ -150,14 +142,14 @@ func getMayorSessionName() string {
 	return mayor.SessionName()
 }
 
-func runMayorStart(_ *cobra.Command, _ []string) error {
+func runMayorStart(cmd *cobra.Command, _ []string) error {
 	mgr, err := getMayorManager()
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("Starting Mayor session...")
-	if err := mgr.Start(mayorAgentOverride); err != nil {
+	if err := mgr.Start(commandStringFlag(cmd, "agent")); err != nil {
 		if err == mayor.ErrAlreadyRunning {
 			return fmt.Errorf("Mayor session already running. Attach with: gt mayor attach")
 		}
@@ -189,7 +181,7 @@ func runMayorStop(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runMayorAttach(_ *cobra.Command, _ []string) error {
+func runMayorAttach(cmd *cobra.Command, _ []string) error {
 	mgr, err := getMayorManager()
 	if err != nil {
 		return err
@@ -224,7 +216,7 @@ func runMayorAttach(_ *cobra.Command, _ []string) error {
 	if !running {
 		// Auto-start if not running
 		fmt.Println("Mayor session not running, starting...")
-		if err := mgr.Start(mayorAgentOverride); err != nil {
+		if err := mgr.Start(commandStringFlag(cmd, "agent")); err != nil {
 			return err
 		}
 	} else {
@@ -249,7 +241,7 @@ func runMayorAttach(_ *cobra.Command, _ []string) error {
 			})
 
 			// Build startup command with beacon
-			startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("mayor", "", townRoot, "", beacon, mayorAgentOverride)
+			startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("mayor", "", townRoot, "", beacon, commandStringFlag(cmd, "agent"))
 			if err != nil {
 				return fmt.Errorf("building startup command: %w", err)
 			}
@@ -333,7 +325,7 @@ func gracefullyShutdownACP(townRoot string) error {
 	return nil
 }
 
-func runMayorStatus(_ *cobra.Command, _ []string) error {
+func runMayorStatus(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return err
@@ -345,7 +337,7 @@ func runMayorStatus(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if mayorStatusRunning {
+	if commandBoolFlag(cmd, "running") {
 		fmt.Println(status.Active)
 		return nil
 	}
@@ -458,10 +450,10 @@ func ensureMayorInfra(townRoot string) error {
 // It bypasses tmux and execs the agent directly with stdin/stdout connected.
 // A PID file is created to signal that automatic cleanup should be vetoed,
 // allowing the Mayor to review worker diffs before cleanup.
-func runMayorAcp(_ *cobra.Command, _ []string) error {
+func runMayorAcp(cmd *cobra.Command, _ []string) error {
 	ctx := context.Background()
 
-	townRoot := acpTownRootOverride
+	townRoot := commandStringFlag(cmd, "town")
 	if townRoot == "" {
 		townRoot = os.Getenv("GT_TOWN_ROOT")
 	}
@@ -477,11 +469,11 @@ func runMayorAcp(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	rigName := acpRigOverride
+	rigName := commandStringFlag(cmd, "rig")
 	if rigName == "" {
 		rigName = os.Getenv("GT_RIG")
 	}
 
 	mgr := mayor.NewManager(townRoot)
-	return mgr.StartACP(ctx, mayorAgentOverride, rigName)
+	return mgr.StartACP(ctx, commandStringFlag(cmd, "agent"), rigName)
 }
