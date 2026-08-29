@@ -609,52 +609,74 @@ func mailSendArgs(req MailSendRequest) []string {
 
 // parseMailInboxText parses text output from "gt mail inbox".
 func parseMailInboxText(output string) []MailMessage {
-	var messages []MailMessage
-	lines := strings.Split(output, "\n")
-
-	// Format: "  1. ● subject" or "  1. subject" (● = unread)
-	// followed by "      id from sender"
-	// followed by "      timestamp"
-	var current *MailMessage
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "📬") || strings.HasPrefix(trimmed, "(no messages)") {
-			continue
-		}
-
-		// Check for numbered message line
-		if len(trimmed) > 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && trimmed[1] == '.' {
-			// Save previous message
-			if current != nil {
-				messages = append(messages, *current)
-			}
-			current = &MailMessage{}
-			// Parse "1. ● subject" or "1. subject"
-			rest := strings.TrimSpace(trimmed[2:])
-			if strings.HasPrefix(rest, "●") {
-				current.Read = false
-				current.Subject = strings.TrimSpace(strings.TrimPrefix(rest, "●"))
-			} else {
-				current.Read = true
-				current.Subject = rest
-			}
-		} else if current != nil && current.ID == "" && strings.Contains(trimmed, " from ") {
-			// Parse "id from sender"
-			parts := strings.SplitN(trimmed, " from ", 2)
-			if len(parts) == 2 {
-				current.ID = strings.TrimSpace(parts[0])
-				current.From = strings.TrimSpace(parts[1])
-			}
-		} else if current != nil && current.Timestamp == "" && (strings.Contains(trimmed, "-") || strings.Contains(trimmed, ":")) {
-			current.Timestamp = trimmed
-		}
+	parser := mailInboxParser{}
+	for _, line := range strings.Split(output, "\n") {
+		parser.addLine(line)
 	}
-	// Don't forget the last one
-	if current != nil && current.ID != "" {
-		messages = append(messages, *current)
-	}
+	return parser.finish()
+}
 
-	return messages
+type mailInboxParser struct {
+	messages []MailMessage
+	current  *MailMessage
+}
+
+func (p *mailInboxParser) addLine(line string) {
+	trimmed := strings.TrimSpace(line)
+	if isMailInboxNoise(trimmed) {
+		return
+	}
+	if p.startMessage(trimmed) {
+		return
+	}
+	p.addMetadata(trimmed)
+}
+
+func isMailInboxNoise(line string) bool {
+	return line == "" || strings.HasPrefix(line, "📬") || strings.HasPrefix(line, "(no messages)")
+}
+
+func (p *mailInboxParser) startMessage(line string) bool {
+	if len(line) <= 2 || line[0] < '1' || line[0] > '9' || line[1] != '.' {
+		return false
+	}
+	if p.current != nil {
+		p.messages = append(p.messages, *p.current)
+	}
+	p.current = &MailMessage{}
+	rest := strings.TrimSpace(line[2:])
+	if strings.HasPrefix(rest, "●") {
+		p.current.Read = false
+		p.current.Subject = strings.TrimSpace(strings.TrimPrefix(rest, "●"))
+	} else {
+		p.current.Read = true
+		p.current.Subject = rest
+	}
+	return true
+}
+
+func (p *mailInboxParser) addMetadata(line string) {
+	if p.current == nil {
+		return
+	}
+	if p.current.ID == "" && strings.Contains(line, " from ") {
+		parts := strings.SplitN(line, " from ", 2)
+		if len(parts) == 2 {
+			p.current.ID = strings.TrimSpace(parts[0])
+			p.current.From = strings.TrimSpace(parts[1])
+		}
+		return
+	}
+	if p.current.Timestamp == "" && (strings.Contains(line, "-") || strings.Contains(line, ":")) {
+		p.current.Timestamp = line
+	}
+}
+
+func (p *mailInboxParser) finish() []MailMessage {
+	if p.current != nil && p.current.ID != "" {
+		p.messages = append(p.messages, *p.current)
+	}
+	return p.messages
 }
 
 // parseMailReadOutput parses the output from "gt mail read <id>".
