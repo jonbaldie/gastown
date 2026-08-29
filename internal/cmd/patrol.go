@@ -80,44 +80,21 @@ type PatrolCycleEntry struct {
 
 // runPatrolDigest aggregates patrol cycle digests into a daily digest bead.
 func runPatrolDigest(cmd *cobra.Command, _ []string) error {
-	yesterday := commandBoolFlag(cmd, "yesterday")
-	dateFlag := commandStringFlag(cmd, "date")
-	dryRun := commandBoolFlag(cmd, "dry-run")
-	verbose := commandBoolFlag(cmd, "verbose")
-	// Determine target date
-	var targetDate time.Time
-
-	if dateFlag != "" {
-		parsed, err := time.Parse("2006-01-02", dateFlag)
-		if err != nil {
-			return fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
-		}
-		targetDate = parsed
-	} else if yesterday {
-		// Use UTC: Dolt stores timestamps in UTC, so date comparisons
-		// must use UTC dates to avoid evening PDT mismatches (gt-ty4).
-		targetDate = time.Now().UTC().AddDate(0, 0, -1)
-	} else {
-		return fmt.Errorf("specify --yesterday or --date YYYY-MM-DD")
+	options := readPatrolDigestOptions(cmd)
+	targetDate, err := resolvePatrolDigestDate(options.date, options.yesterday)
+	if err != nil {
+		return err
 	}
 
 	dateStr := targetDate.Format("2006-01-02")
 
 	// Idempotency check: see if digest already exists for this date
-	existingID, err := findExistingPatrolDigest(dateStr)
-	if err != nil {
-		// Non-fatal: continue with creation attempt
-		if verbose {
-			fmt.Fprintf(os.Stderr, "[patrol] warning: failed to check existing digest: %v\n", err)
-		}
-	} else if existingID != "" {
-		fmt.Printf("%s Patrol digest already exists for %s (bead: %s)\n",
-			style.Dim.Render("○"), dateStr, existingID)
+	if existing := reportExistingPatrolDigest(dateStr, options.verbose); existing {
 		return nil
 	}
 
 	// Query ephemeral patrol digest beads for target date
-	cycles, err := queryPatrolDigests(targetDate, verbose)
+	cycles, err := queryPatrolDigests(targetDate, options.verbose)
 	if err != nil {
 		return fmt.Errorf("querying patrol digests: %w", err)
 	}
@@ -127,30 +104,10 @@ func runPatrolDigest(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Build digest
-	digest := PatrolDigest{
-		Date:   dateStr,
-		Cycles: cycles,
-		ByRole: make(map[string]int),
-	}
+	digest := buildPatrolDigest(dateStr, cycles)
 
-	for _, c := range cycles {
-		digest.TotalCycles++
-		digest.ByRole[c.Role]++
-	}
-
-	if dryRun {
-		fmt.Printf("%s [DRY RUN] Would create Patrol Report %s:\n", style.Bold.Render("📊"), dateStr)
-		fmt.Printf("  Total cycles: %d\n", digest.TotalCycles)
-		fmt.Printf("  By Role:\n")
-		roles := make([]string, 0, len(digest.ByRole))
-		for role := range digest.ByRole {
-			roles = append(roles, role)
-		}
-		sort.Strings(roles)
-		for _, role := range roles {
-			fmt.Printf("    %s: %d cycles\n", role, digest.ByRole[role])
-		}
+	if options.dryRun {
+		printPatrolDigestDryRun(digest)
 		return nil
 	}
 
@@ -161,11 +118,92 @@ func runPatrolDigest(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Delete source digests (they're ephemeral)
-	deletedCount, deleteErr := deletePatrolDigests(targetDate, verbose)
+	deletedCount, deleteErr := deletePatrolDigests(targetDate, options.verbose)
 	if deleteErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to delete some source digests: %v\n", deleteErr)
 	}
 
+	printPatrolDigestSummary(dateStr, digest, digestID, deletedCount)
+	return nil
+}
+
+type patrolDigestOptions struct {
+	yesterday bool
+	date      string
+	dryRun    bool
+	verbose   bool
+}
+
+func readPatrolDigestOptions(cmd *cobra.Command) patrolDigestOptions {
+	return patrolDigestOptions{
+		yesterday: commandBoolFlag(cmd, "yesterday"),
+		date:      commandStringFlag(cmd, "date"),
+		dryRun:    commandBoolFlag(cmd, "dry-run"),
+		verbose:   commandBoolFlag(cmd, "verbose"),
+	}
+}
+
+func resolvePatrolDigestDate(dateFlag string, yesterday bool) (time.Time, error) {
+	if dateFlag != "" {
+		parsed, err := time.Parse("2006-01-02", dateFlag)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
+		}
+		return parsed, nil
+	}
+	if yesterday {
+		// Use UTC: Dolt stores timestamps in UTC, so date comparisons
+		// must use UTC dates to avoid evening PDT mismatches (gt-ty4).
+		return time.Now().UTC().AddDate(0, 0, -1), nil
+	}
+	return time.Time{}, fmt.Errorf("specify --yesterday or --date YYYY-MM-DD")
+}
+
+func reportExistingPatrolDigest(dateStr string, verbose bool) bool {
+	existingID, err := findExistingPatrolDigest(dateStr)
+	if err != nil {
+		// Non-fatal: continue with creation attempt.
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[patrol] warning: failed to check existing digest: %v\n", err)
+		}
+		return false
+	}
+	if existingID == "" {
+		return false
+	}
+	fmt.Printf("%s Patrol digest already exists for %s (bead: %s)\n",
+		style.Dim.Render("○"), dateStr, existingID)
+	return true
+}
+
+func buildPatrolDigest(dateStr string, cycles []PatrolCycleEntry) PatrolDigest {
+	digest := PatrolDigest{
+		Date:   dateStr,
+		Cycles: cycles,
+		ByRole: make(map[string]int),
+	}
+	for _, cycle := range cycles {
+		digest.TotalCycles++
+		digest.ByRole[cycle.Role]++
+	}
+	return digest
+}
+
+func printPatrolDigestDryRun(digest PatrolDigest) {
+	fmt.Printf("%s [DRY RUN] Would create Patrol Report %s:\n", style.Bold.Render("📊"), digest.Date)
+	fmt.Printf("  Total cycles: %d\n", digest.TotalCycles)
+	fmt.Printf("  By Role:\n")
+	roles := make([]string, 0, len(digest.ByRole))
+	for role := range digest.ByRole {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	for _, role := range roles {
+		fmt.Printf("    %s: %d cycles\n", role, digest.ByRole[role])
+	}
+}
+
+func printPatrolDigestSummary(dateStr string, digest PatrolDigest, digestID string, deletedCount int) {
 	fmt.Printf("%s Created Patrol Report %s (bead: %s)\n", style.Success.Render("✓"), dateStr, digestID)
 	fmt.Printf("  Total: %d cycles\n", digest.TotalCycles)
 	for role, count := range digest.ByRole {
@@ -174,8 +212,6 @@ func runPatrolDigest(cmd *cobra.Command, _ []string) error {
 	if deletedCount > 0 {
 		fmt.Printf("  Deleted %d source digests\n", deletedCount)
 	}
-
-	return nil
 }
 
 // queryPatrolDigests queries ephemeral patrol digest beads for a target date.
