@@ -270,6 +270,14 @@ type Config struct {
 	// See hq-57jr8 and DefaultTimeZone.
 	TimeZone string
 
+	ServerBehavior
+}
+
+// ServerBehavior contains managed Dolt runtime behavior settings. It is
+// embedded so Config keeps its existing selectors while separating connection
+// details from server policy.
+type ServerBehavior struct {
+
 	// LogLevel is the Dolt server log level (trace, debug, info, warning, error, fatal).
 	// Default is "warning" to suppress connection open/close noise. Override with
 	// GT_DOLT_LOGLEVEL=info (or debug) for diagnostics.
@@ -351,21 +359,23 @@ func DefaultConfig(townRoot string) *Config {
 func newDefaultConfig(townRoot string) *Config {
 	daemonDir := filepath.Join(townRoot, "daemon")
 	return &Config{
-		TownRoot:         townRoot,
-		Port:             DefaultPort,
-		User:             DefaultUser,
-		DataDir:          filepath.Join(townRoot, ".dolt-data"),
-		LogFile:          filepath.Join(daemonDir, "dolt.log"),
-		PidFile:          filepath.Join(daemonDir, "dolt.pid"),
-		MaxConnections:   DefaultMaxConnections,
-		ReadTimeoutMs:    DefaultReadTimeoutMs,
-		WriteTimeoutMs:   DefaultWriteTimeoutMs,
-		WaitTimeoutSec:   DefaultWaitTimeoutSec,
-		TimeZone:         DefaultTimeZone,
-		LogLevel:         "warning",
-		EventScheduler:   "OFF",
-		DoltStatsEnabled: "0",
-		AutoGC:           "on",
+		TownRoot:       townRoot,
+		Port:           DefaultPort,
+		User:           DefaultUser,
+		DataDir:        filepath.Join(townRoot, ".dolt-data"),
+		LogFile:        filepath.Join(daemonDir, "dolt.log"),
+		PidFile:        filepath.Join(daemonDir, "dolt.pid"),
+		MaxConnections: DefaultMaxConnections,
+		ReadTimeoutMs:  DefaultReadTimeoutMs,
+		WriteTimeoutMs: DefaultWriteTimeoutMs,
+		WaitTimeoutSec: DefaultWaitTimeoutSec,
+		TimeZone:       DefaultTimeZone,
+		ServerBehavior: ServerBehavior{
+			LogLevel:         "warning",
+			EventScheduler:   "OFF",
+			DoltStatsEnabled: "0",
+			AutoGC:           "on",
+		},
 	}
 }
 

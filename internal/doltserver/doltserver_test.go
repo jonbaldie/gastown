@@ -4474,7 +4474,7 @@ func TestWriteServerConfig_Defaults(t *testing.T) {
 		MaxConnections: 1000,
 		ReadTimeoutMs:  DefaultReadTimeoutMs,
 		WriteTimeoutMs: DefaultWriteTimeoutMs,
-		LogLevel:       "warning",
+		ServerBehavior: ServerBehavior{LogLevel: "warning"},
 	}
 
 	if err := writeServerConfig(config, configPath); err != nil {
@@ -4577,8 +4577,7 @@ func TestWriteServerConfig_AutoGCDisabled(t *testing.T) {
 		MaxConnections: 1000,
 		ReadTimeoutMs:  DefaultReadTimeoutMs,
 		WriteTimeoutMs: DefaultWriteTimeoutMs,
-		LogLevel:       "warning",
-		AutoGC:         "off",
+		ServerBehavior: ServerBehavior{LogLevel: "warning", AutoGC: "off"},
 	}
 
 	if err := writeServerConfig(config, configPath); err != nil {
@@ -4675,10 +4674,12 @@ func TestWriteServerConfig_StatsAndSchedulerCanBeOmitted(t *testing.T) {
 	configPath := filepath.Join(dir, "config.yaml")
 
 	config := &Config{
-		Port:             3307,
-		DataDir:          dir,
-		DoltStatsEnabled: "omit",
-		EventScheduler:   "omit",
+		Port:    3307,
+		DataDir: dir,
+		ServerBehavior: ServerBehavior{
+			DoltStatsEnabled: "omit",
+			EventScheduler:   "omit",
+		},
 	}
 	if err := writeServerConfig(config, configPath); err != nil {
 		t.Fatal(err)
@@ -4706,7 +4707,7 @@ func TestWriteServerConfig_Overwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	config := &Config{Port: 3307, DataDir: dir, LogLevel: "info"}
+	config := &Config{Port: 3307, DataDir: dir, ServerBehavior: ServerBehavior{LogLevel: "info"}}
 	if err := writeServerConfig(config, configPath); err != nil {
 		t.Fatal(err)
 	}
