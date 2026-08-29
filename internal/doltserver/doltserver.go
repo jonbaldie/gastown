@@ -1845,6 +1845,42 @@ func waitForPortRelease(port int, timeout time.Duration) error {
 // present when the server starts. The file is overwritten on each start to prevent
 // configuration drift.
 func writeServerConfig(config *Config, configPath string) error {
+	return os.WriteFile(configPath, []byte(renderDoltServerConfig(config)), 0600)
+}
+
+func renderDoltServerConfig(config *Config) string {
+	eventSchedulerLine := renderDoltEventScheduler(config.EventScheduler)
+	statsBlock := renderDoltStatsBlock(config.DoltStatsEnabled)
+	autoGCBlock := renderDoltAutoGCBlock(config.AutoGC)
+
+	return fmt.Sprintf(`# Dolt SQL server configuration — managed by Gas Town (gt dolt start)
+# Do not edit manually; changes are overwritten on each server start.
+# To customize, set Gas Town environment variables:
+#   GT_DOLT_PORT, GT_DOLT_HOST, GT_DOLT_USER, GT_DOLT_PASSWORD, GT_DOLT_LOGLEVEL
+#   GT_DOLT_EVENT_SCHEDULER (OFF, ON, omit), GT_DOLT_STATS_ENABLED (0, 1, omit)
+#   GT_DOLT_AUTO_GC (on, off)
+
+log_level: %s
+
+listener:
+  port: %d%s
+
+data_dir: "%s"
+
+behavior:
+  dolt_transaction_commit: false
+%s%s%s`,
+		config.LogLevel,
+		config.Port,
+		renderDoltListenerOptions(config),
+		filepath.ToSlash(config.DataDir),
+		eventSchedulerLine,
+		autoGCBlock,
+		statsBlock,
+	)
+}
+
+func renderDoltListenerOptions(config *Config) string {
 	// Build the listener host entry. Omit it when empty to use Dolt's default
 	// (binds to all interfaces), which is the backward-compatible behavior.
 	hostLine := ""
@@ -1870,60 +1906,40 @@ func writeServerConfig(config *Config, configPath string) error {
 	if sock := SocketPathForConfig(config); sock != "" {
 		socketLine = fmt.Sprintf("\n  socket: %s", filepath.ToSlash(sock))
 	}
-	eventSchedulerLine := "  event_scheduler: \"OFF\"\n"
-	if strings.EqualFold(config.EventScheduler, "omit") {
-		eventSchedulerLine = ""
-	} else if strings.TrimSpace(config.EventScheduler) != "" {
-		eventSchedulerLine = fmt.Sprintf("  event_scheduler: %q\n", strings.ToUpper(strings.TrimSpace(config.EventScheduler)))
-	}
-	systemVariablesBlock := "\nsystem_variables:\n  dolt_stats_enabled: 0\n"
-	if strings.EqualFold(config.DoltStatsEnabled, "omit") {
-		systemVariablesBlock = ""
-	} else if strings.TrimSpace(config.DoltStatsEnabled) != "" {
-		systemVariablesBlock = fmt.Sprintf("\nsystem_variables:\n  dolt_stats_enabled: %s\n", strings.TrimSpace(config.DoltStatsEnabled))
-	}
+	return hostLine + maxConnLine + readTimeoutLine + writeTimeoutLine + socketLine
+}
 
+func renderDoltEventScheduler(value string) string {
+	eventSchedulerLine := "  event_scheduler: \"OFF\"\n"
+	if strings.EqualFold(value, "omit") {
+		eventSchedulerLine = ""
+	} else if strings.TrimSpace(value) != "" {
+		eventSchedulerLine = fmt.Sprintf("  event_scheduler: %q\n", strings.ToUpper(strings.TrimSpace(value)))
+	}
+	return eventSchedulerLine
+}
+
+func renderDoltStatsBlock(value string) string {
+	systemVariablesBlock := "\nsystem_variables:\n  dolt_stats_enabled: 0\n"
+	if strings.EqualFold(value, "omit") {
+		systemVariablesBlock = ""
+	} else if strings.TrimSpace(value) != "" {
+		systemVariablesBlock = fmt.Sprintf("\nsystem_variables:\n  dolt_stats_enabled: %s\n", strings.TrimSpace(value))
+	}
+	return systemVariablesBlock
+}
+
+func renderDoltAutoGCBlock(value string) string {
 	// Non-blocking storage GC keeps the managed sql-server's RSS bounded (hq-excy9g);
 	// enabled by default. GT_DOLT_AUTO_GC=off (or false/0/disabled) turns it off at
 	// runtime (next Dolt restart) without a source revert+rebuild — the escape hatch
 	// given the old blocking-GC lockup history. Dolt's non-blocking auto-GC is
 	// default-on since 1.75.
 	autoGcBlock := "  auto_gc_behavior:\n    enable: true\n    archive_level: 1\n"
-	if v := strings.ToLower(strings.TrimSpace(config.AutoGC)); v == "off" || v == "false" || v == "0" || v == "disabled" {
+	if v := strings.ToLower(strings.TrimSpace(value)); v == "off" || v == "false" || v == "0" || v == "disabled" {
 		autoGcBlock = "  auto_gc_behavior:\n    enable: false\n    archive_level: 0\n"
 	}
-
-	content := fmt.Sprintf(`# Dolt SQL server configuration — managed by Gas Town (gt dolt start)
-# Do not edit manually; changes are overwritten on each server start.
-# To customize, set Gas Town environment variables:
-#   GT_DOLT_PORT, GT_DOLT_HOST, GT_DOLT_USER, GT_DOLT_PASSWORD, GT_DOLT_LOGLEVEL
-#   GT_DOLT_EVENT_SCHEDULER (OFF, ON, omit), GT_DOLT_STATS_ENABLED (0, 1, omit)
-#   GT_DOLT_AUTO_GC (on, off)
-
-log_level: %s
-
-listener:
-  port: %d%s%s%s%s%s
-
-data_dir: "%s"
-
-behavior:
-  dolt_transaction_commit: false
-%s%s%s`,
-		config.LogLevel,
-		config.Port,
-		hostLine,
-		maxConnLine,
-		readTimeoutLine,
-		writeTimeoutLine,
-		socketLine,
-		filepath.ToSlash(config.DataDir),
-		eventSchedulerLine,
-		autoGcBlock,
-		systemVariablesBlock,
-	)
-
-	return os.WriteFile(configPath, []byte(content), 0600)
+	return autoGcBlock
 }
 
 // Start starts the Dolt SQL server.
