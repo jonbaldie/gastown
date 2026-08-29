@@ -1222,80 +1222,88 @@ func isTownRoot(root string) bool {
 
 // handoffRemoteSession respawns a different session and optionally switches to it.
 func handoffRemoteSession(t *tmux.Tmux, targetSession, restartCmd string) error {
-	// Check if target session exists
-	exists, err := t.HasSession(targetSession)
+	targetPane, err := remoteHandoffPane(t, targetSession)
 	if err != nil {
-		return fmt.Errorf("checking session: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("session '%s' not found - is the agent running?", targetSession)
-	}
-
-	// Get the pane ID for the target session
-	targetPane, err := getSessionPane(targetSession)
-	if err != nil {
-		return fmt.Errorf("getting target pane: %w", err)
+		return err
 	}
 
 	fmt.Printf("%s Handing off %s...\n", style.Bold.Render("🤝"), targetSession)
 
-	// Dry run mode
 	if handoffDryRun {
-		fmt.Printf("Would execute: tmux clear-history -t %s\n", targetPane)
-		fmt.Printf("Would execute: tmux respawn-pane -k -t %s %s\n", targetPane, restartCmd)
-		if handoffWatch {
-			fmt.Printf("Would execute: tmux switch-client -t %s\n", targetSession)
-		}
+		printRemoteHandoffDryRun(targetPane, targetSession, restartCmd)
 		return nil
 	}
 
+	prepareRemoteHandoffPane(t, targetPane)
+	if err := respawnRemoteHandoffPane(t, targetPane, targetSession, restartCmd); err != nil {
+		return fmt.Errorf("respawning pane: %w", err)
+	}
+
+	return switchToHandoffSession(targetSession)
+}
+
+func remoteHandoffPane(t *tmux.Tmux, targetSession string) (string, error) {
+	exists, err := t.HasSession(targetSession)
+	if err != nil {
+		return "", fmt.Errorf("checking session: %w", err)
+	}
+	if !exists {
+		return "", fmt.Errorf("session '%s' not found - is the agent running?", targetSession)
+	}
+	targetPane, err := getSessionPane(targetSession)
+	if err != nil {
+		return "", fmt.Errorf("getting target pane: %w", err)
+	}
+	return targetPane, nil
+}
+
+func printRemoteHandoffDryRun(targetPane, targetSession, restartCmd string) {
+	fmt.Printf("Would execute: tmux clear-history -t %s\n", targetPane)
+	fmt.Printf("Would execute: tmux respawn-pane -k -t %s %s\n", targetPane, restartCmd)
+	if handoffWatch {
+		fmt.Printf("Would execute: tmux switch-client -t %s\n", targetSession)
+	}
+}
+
+func prepareRemoteHandoffPane(t *tmux.Tmux, targetPane string) {
 	// Set remain-on-exit so the pane survives process death during handoff.
-	// Without this, killing processes causes tmux to destroy the pane before
-	// we can respawn it. This is essential for tmux session reuse.
 	if err := t.SetRemainOnExit(targetPane, true); err != nil {
 		style.PrintWarning("could not set remain-on-exit: %v", err)
 	}
-
-	// Kill all processes in the pane before respawning to prevent orphan leaks
-	// RespawnPane's -k flag only sends SIGHUP which Claude/Node may ignore
+	// Kill all processes in the pane before respawning to prevent orphan leaks.
 	if err := t.KillPaneProcesses(targetPane); err != nil {
-		// Non-fatal but log the warning
 		style.PrintWarning("could not kill pane processes: %v", err)
 	}
-
-	// Clear scrollback history before respawn (resets copy-mode from [0/N] to [0/0])
+	// Clear scrollback history before respawn.
 	if err := t.ClearHistory(targetPane); err != nil {
-		// Non-fatal - continue with respawn even if clear fails
 		style.PrintWarning("could not clear history: %v", err)
 	}
+}
 
-	// Respawn the remote session's pane, handling deleted working directories
-	respawnErr := func() error {
-		paneWorkDir, _ := t.GetPaneWorkDir(targetSession)
-		if paneWorkDir != "" {
-			if _, statErr := os.Stat(paneWorkDir); statErr != nil {
-				if townRoot := detectTownRootFromCwd(); townRoot != "" {
-					style.PrintWarning("pane working directory deleted, using town root")
-					return t.RespawnPaneWithWorkDir(targetPane, townRoot, restartCmd)
-				}
-			}
-		}
-		return t.RespawnPane(targetPane, restartCmd)
-	}()
-	if respawnErr != nil {
-		return fmt.Errorf("respawning pane: %w", respawnErr)
-	}
-
-	// If --watch, switch to that session
-	if handoffWatch {
-		fmt.Printf("Switching to %s...\n", targetSession)
-		// Use tmux switch-client to move our view to the target session
-		if err := tmux.BuildCommand("switch-client", "-t", targetSession).Run(); err != nil {
-			// Non-fatal - they can manually switch
-			fmt.Printf("Note: Could not auto-switch (use: tmux switch-client -t %s)\n", targetSession)
+func respawnRemoteHandoffPane(t *tmux.Tmux, targetPane, targetSession, restartCmd string) error {
+	paneWorkDir, _ := t.GetPaneWorkDir(targetSession)
+	if paneWorkDir != "" && !handoffPathExists(paneWorkDir) {
+		if townRoot := detectTownRootFromCwd(); townRoot != "" {
+			style.PrintWarning("pane working directory deleted, using town root")
+			return t.RespawnPaneWithWorkDir(targetPane, townRoot, restartCmd)
 		}
 	}
+	return t.RespawnPane(targetPane, restartCmd)
+}
 
+func handoffPathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func switchToHandoffSession(targetSession string) error {
+	if !handoffWatch {
+		return nil
+	}
+	fmt.Printf("Switching to %s...\n", targetSession)
+	if err := tmux.BuildCommand("switch-client", "-t", targetSession).Run(); err != nil {
+		fmt.Printf("Note: Could not auto-switch (use: tmux switch-client -t %s)\n", targetSession)
+	}
 	return nil
 }
 
