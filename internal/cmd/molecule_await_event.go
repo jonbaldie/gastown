@@ -151,195 +151,248 @@ func init() {
 
 func runMoleculeAwaitEvent(cmd *cobra.Command, _ []string) error {
 	opts := awaitEventOptionsFromCommand(cmd)
-
-	// Validate channel name (prevent path traversal)
-	if !channelevents.ValidChannelName.MatchString(opts.channel) {
-		return fmt.Errorf("invalid channel name %q: must match [a-zA-Z0-9_-]", opts.channel)
+	state, err := prepareAwaitEvent(opts)
+	if err != nil {
+		return err
 	}
 
-	// Resolve event directory
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil || townRoot == "" {
-		// Fallback to ~/gt
-		home, _ := os.UserHomeDir()
-		townRoot = filepath.Join(home, "gt")
+	result, err := waitForAwaitEvent(state)
+	if err != nil {
+		return err
 	}
+	updateAwaitEventTracking(state, result)
+	cleanupAwaitEvent(state, result)
+	result.EffortLevel = effortLevelForAwaitResult(result.Reason, result.IdleCycles)
+	return outputAwaitEvent(opts, result)
+}
+
+type awaitEventState struct {
+	opts                 awaitEventOptions
+	townRoot             string
+	eventDir             string
+	beadsDir             string
+	idleCycles           int
+	backoffUntil         time.Time
+	timeout              time.Duration
+	contextCheckInterval time.Duration
+	resumed              bool
+}
+
+func prepareAwaitEvent(opts awaitEventOptions) (*awaitEventState, error) {
+	if err := validateAwaitEventChannel(opts.channel); err != nil {
+		return nil, err
+	}
+	townRoot := resolveAwaitEventTownRoot()
 	eventDir := filepath.Join(townRoot, "events", opts.channel)
 	if err := os.MkdirAll(eventDir, 0755); err != nil {
-		return fmt.Errorf("creating event directory: %w", err)
+		return nil, fmt.Errorf("creating event directory: %w", err)
 	}
 
-	// Read current idle cycles and backoff window from agent bead
-	var idleCycles int
-	var backoffUntil time.Time
-	var beadsDir string
-	if opts.agentBead != "" {
-		var wdErr error
-		beadsDir, wdErr = resolveAgentTrackingBeadsDir()
-		if wdErr == nil {
-			labels, labErr := getAgentLabels(opts.agentBead, beadsDir)
-			if labErr != nil {
-				if !opts.quiet {
-					fmt.Printf("%s Could not read agent bead (starting at idle=0): %v\n",
-						style.Dim.Render("⚠"), labErr)
-				}
-			} else {
-				if idleStr, ok := labels["idle"]; ok {
-					if n, parseErr := parseIntSimple(idleStr); parseErr == nil {
-						idleCycles = n
-					}
-				}
-				if untilStr, ok := labels["backoff-until"]; ok {
-					if ts, parseErr := parseIntSimple(untilStr); parseErr == nil && ts > 0 {
-						backoffUntil = time.Unix(int64(ts), 0)
-					}
-				}
-			}
-		}
-	}
-
-	// Calculate timeout (with backoff if configured)
+	beadsDir, idleCycles, backoffUntil := loadAwaitEventTracking(opts)
 	fullTimeout, err := calculateEventTimeout(opts, idleCycles)
 	if err != nil {
-		return fmt.Errorf("invalid timeout configuration: %w", err)
+		return nil, fmt.Errorf("invalid timeout configuration: %w", err)
 	}
-
-	// Parse context-check interval (optional)
-	var contextCheckInterval time.Duration
-	if opts.contextCheckInterval != "" {
-		contextCheckInterval, err = time.ParseDuration(opts.contextCheckInterval)
-		if err != nil {
-			return fmt.Errorf("invalid context-check-interval: %w", err)
-		}
-	}
-
-	// Resume from backoff-until if interrupted (same pattern as await-signal)
-	timeout := fullTimeout
-	resumed := false
-	now := time.Now()
-	if opts.agentBead != "" && !backoffUntil.IsZero() && backoffUntil.After(now) {
-		remaining := backoffUntil.Sub(now)
-		if remaining <= fullTimeout {
-			timeout = remaining
-			resumed = true
-			if !opts.quiet && !opts.json {
-				fmt.Printf("%s Resuming backoff window (%v remaining)\n",
-					style.Dim.Render("↻"), remaining.Round(time.Second))
-			}
-		}
-	}
-
-	// Persist backoff-until for crash recovery.
-	// When resuming an existing window, keep the original deadline stable across
-	// context-yield re-entry instead of rewriting it on every invocation.
-	if opts.agentBead != "" && beadsDir != "" && !resumed {
-		_ = setAgentBackoffUntil(opts.agentBead, beadsDir, now.Add(timeout))
-	}
-
-	if !opts.quiet && !opts.json {
-		fmt.Printf("%s Awaiting event on channel %q (timeout: %v, idle: %d)...\n",
-			style.Dim.Render("⏳"), opts.channel, timeout, idleCycles)
-	}
-
-	startTime := time.Now()
-
-	// Wait for events
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	result, err := waitForEventFiles(ctx, eventDir, contextCheckInterval)
+	contextCheckInterval, err := parseAwaitEventContextInterval(opts.contextCheckInterval)
 	if err != nil {
-		return fmt.Errorf("event watch failed: %w", err)
+		return nil, err
+	}
+	timeout, resumed := resumeAwaitEventWindow(opts, fullTimeout, backoffUntil)
+	persistAwaitEventWindow(opts, beadsDir, timeout, resumed)
+	printAwaitEventStart(opts, timeout, idleCycles)
+
+	return &awaitEventState{
+		opts: opts, townRoot: townRoot, eventDir: eventDir, beadsDir: beadsDir,
+		idleCycles: idleCycles, backoffUntil: backoffUntil, timeout: timeout,
+		contextCheckInterval: contextCheckInterval, resumed: resumed,
+	}, nil
+}
+
+func validateAwaitEventChannel(channel string) error {
+	if !channelevents.ValidChannelName.MatchString(channel) {
+		return fmt.Errorf("invalid channel name %q: must match [a-zA-Z0-9_-]", channel)
+	}
+	return nil
+}
+
+func resolveAwaitEventTownRoot() string {
+	townRoot, err := workspace.FindFromCwd()
+	if err == nil && townRoot != "" {
+		return townRoot
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "gt")
+}
+
+func loadAwaitEventTracking(opts awaitEventOptions) (string, int, time.Time) {
+	if opts.agentBead == "" {
+		return "", 0, time.Time{}
+	}
+	beadsDir, err := resolveAgentTrackingBeadsDir()
+	if err != nil {
+		return "", 0, time.Time{}
+	}
+	labels, err := getAgentLabels(opts.agentBead, beadsDir)
+	if err != nil {
+		if !opts.quiet {
+			fmt.Printf("%s Could not read agent bead (starting at idle=0): %v\n", style.Dim.Render("⚠"), err)
+		}
+		return beadsDir, 0, time.Time{}
+	}
+	idleCycles, backoffUntil := parseAwaitEventTrackingLabels(labels)
+	return beadsDir, idleCycles, backoffUntil
+}
+
+func parseAwaitEventTrackingLabels(labels map[string]string) (int, time.Time) {
+	var idleCycles int
+	if idleStr, ok := labels["idle"]; ok {
+		if n, err := parseIntSimple(idleStr); err == nil {
+			idleCycles = n
+		}
+	}
+	var backoffUntil time.Time
+	if untilStr, ok := labels["backoff-until"]; ok {
+		if ts, err := parseIntSimple(untilStr); err == nil && ts > 0 {
+			backoffUntil = time.Unix(int64(ts), 0)
+		}
+	}
+	return idleCycles, backoffUntil
+}
+
+func parseAwaitEventContextInterval(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	interval, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid context-check-interval: %w", err)
+	}
+	return interval, nil
+}
+
+func resumeAwaitEventWindow(opts awaitEventOptions, fullTimeout time.Duration, backoffUntil time.Time) (time.Duration, bool) {
+	now := time.Now()
+	if opts.agentBead == "" || !backoffUntil.After(now) {
+		return fullTimeout, false
+	}
+	remaining := backoffUntil.Sub(now)
+	if remaining > fullTimeout {
+		return fullTimeout, false
+	}
+	if !opts.quiet && !opts.json {
+		fmt.Printf("%s Resuming backoff window (%v remaining)\n", style.Dim.Render("↻"), remaining.Round(time.Second))
+	}
+	return remaining, true
+}
+
+func persistAwaitEventWindow(opts awaitEventOptions, beadsDir string, timeout time.Duration, resumed bool) {
+	if opts.agentBead != "" && beadsDir != "" && !resumed {
+		_ = setAgentBackoffUntil(opts.agentBead, beadsDir, time.Now().Add(timeout))
+	}
+}
+
+func printAwaitEventStart(opts awaitEventOptions, timeout time.Duration, idleCycles int) {
+	if !opts.quiet && !opts.json {
+		fmt.Printf("%s Awaiting event on channel %q (timeout: %v, idle: %d)...\n", style.Dim.Render("⏳"), opts.channel, timeout, idleCycles)
+	}
+}
+
+func waitForAwaitEvent(state *awaitEventState) (*AwaitEventResult, error) {
+	startTime := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), state.timeout)
+	defer cancel()
+	result, err := waitForEventFiles(ctx, state.eventDir, state.contextCheckInterval)
+	if err != nil {
+		return nil, fmt.Errorf("event watch failed: %w", err)
 	}
 	result.Elapsed = time.Since(startTime)
+	return result, nil
+}
 
-	// Update agent bead idle cycles and heartbeat
-	if opts.agentBead != "" && beadsDir != "" {
-		// Always update heartbeat (both event and timeout) so witness doesn't
-		// think we're dead during long idle periods.
-		_ = updateAgentHeartbeat(opts.agentBead, beadsDir)
-
-		if result.Reason == "timeout" {
-			newIdle := idleCycles + 1
-			if setErr := setAgentIdleCycles(opts.agentBead, beadsDir, newIdle); setErr != nil {
-				if !opts.quiet {
-					fmt.Printf("%s Failed to update idle count: %v\n",
-						style.Dim.Render("⚠"), setErr)
-				}
-			} else {
-				result.IdleCycles = newIdle
-			}
-		} else if result.Reason == "event" {
-			// Reset idle on event received
-			if idleCycles > 0 {
-				_ = setAgentIdleCycles(opts.agentBead, beadsDir, 0)
-			}
-			result.IdleCycles = 0
-		}
-		// For "context-yield": idle cycles unchanged — we yielded early for context
-		// assessment, not because the full backoff window elapsed.
-
-		// Keep the backoff window across context-yield so the next invocation
-		// resumes the remaining wait instead of restarting the same idle tier.
-		if result.Reason == "event" || result.Reason == "timeout" {
-			_ = clearAgentBackoffUntil(opts.agentBead, beadsDir)
-		}
+func updateAwaitEventTracking(state *awaitEventState, result *AwaitEventResult) {
+	if state.opts.agentBead == "" || state.beadsDir == "" {
+		return
 	}
-
-	// Cleanup event files if requested
-	if opts.cleanup && result.Reason == "event" {
-		for _, ef := range result.Events {
-			_ = os.Remove(ef.Path)
-		}
+	_ = updateAgentHeartbeat(state.opts.agentBead, state.beadsDir)
+	updateAwaitEventIdle(state, result)
+	if result.Reason == "event" || result.Reason == "timeout" {
+		_ = clearAgentBackoffUntil(state.opts.agentBead, state.beadsDir)
 	}
+}
 
-	// Set effort level based on idle cycles.
-	// context-yield forces full effort: context-check must not be abbreviated.
-	result.EffortLevel = effortLevelForAwaitResult(result.Reason, result.IdleCycles)
+func updateAwaitEventIdle(state *awaitEventState, result *AwaitEventResult) {
+	switch result.Reason {
+	case "timeout":
+		newIdle := state.idleCycles + 1
+		if err := setAgentIdleCycles(state.opts.agentBead, state.beadsDir, newIdle); err != nil {
+			if !state.opts.quiet {
+				fmt.Printf("%s Failed to update idle count: %v\n", style.Dim.Render("⚠"), err)
+			}
+			return
+		}
+		result.IdleCycles = newIdle
+	case "event":
+		if state.idleCycles > 0 {
+			_ = setAgentIdleCycles(state.opts.agentBead, state.beadsDir, 0)
+		}
+		result.IdleCycles = 0
+	}
+}
 
-	// Output
+func cleanupAwaitEvent(state *awaitEventState, result *AwaitEventResult) {
+	if !state.opts.cleanup || result.Reason != "event" {
+		return
+	}
+	for _, event := range result.Events {
+		_ = os.Remove(event.Path)
+	}
+}
+
+func outputAwaitEvent(opts awaitEventOptions, result *AwaitEventResult) error {
 	if opts.json {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
 	}
+	if opts.quiet {
+		return nil
+	}
+	printAwaitEventResult(result)
+	printAwaitEventEffort(result.EffortLevel)
+	return nil
+}
 
-	if !opts.quiet {
-		switch result.Reason {
-		case "event":
-			fmt.Printf("%s %d event(s) received after %v\n",
-				style.Bold.Render("✓"), len(result.Events), result.Elapsed.Round(time.Millisecond))
-			for _, ef := range result.Events {
-				// Show event type from content
-				var parsed map[string]interface{}
-				if json.Unmarshal(ef.Content, &parsed) == nil {
-					if t, ok := parsed["type"].(string); ok {
-						fmt.Printf("  %s %s\n", style.Dim.Render("→"), t)
-					}
-				}
-			}
-		case "timeout":
-			fmt.Printf("%s Timeout after %v (idle cycle: %d)\n",
-				style.Dim.Render("⏱"), result.Elapsed.Round(time.Millisecond), result.IdleCycles)
-		case "context-yield":
-			fmt.Printf("%s Context-check interval reached after %v\n",
-				style.Dim.Render("↺"), result.Elapsed.Round(time.Millisecond))
-			fmt.Printf("\n%s Assess context usage before re-entering event wait.\n",
-				style.Bold.Render("CONTEXT: check"))
-			fmt.Printf("If context is OK, call await-event again. If context is high, hand off.\n")
+func printAwaitEventResult(result *AwaitEventResult) {
+	switch result.Reason {
+	case "event":
+		fmt.Printf("%s %d event(s) received after %v\n", style.Bold.Render("✓"), len(result.Events), result.Elapsed.Round(time.Millisecond))
+		for _, event := range result.Events {
+			printAwaitEventType(event)
 		}
+	case "timeout":
+		fmt.Printf("%s Timeout after %v (idle cycle: %d)\n", style.Dim.Render("⏱"), result.Elapsed.Round(time.Millisecond), result.IdleCycles)
+	case "context-yield":
+		fmt.Printf("%s Context-check interval reached after %v\n", style.Dim.Render("↺"), result.Elapsed.Round(time.Millisecond))
+		fmt.Printf("\n%s Assess context usage before re-entering event wait.\n", style.Bold.Render("CONTEXT: check"))
+		fmt.Printf("If context is OK, call await-event again. If context is high, hand off.\n")
+	}
+}
 
-		// Output effort recommendation for the next patrol cycle.
-		if result.EffortLevel == "abbreviated" {
-			fmt.Printf("\n%s Run ABBREVIATED patrol: quick checks only, skip optional steps.\n",
-				style.Bold.Render("EFFORT: reduced"))
-		} else {
-			fmt.Printf("\n%s Run full patrol.\n",
-				style.Bold.Render("EFFORT: full"))
+func printAwaitEventType(event EventFile) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(event.Content, &parsed); err == nil {
+		if eventType, ok := parsed["type"].(string); ok {
+			fmt.Printf("  %s %s\n", style.Dim.Render("→"), eventType)
 		}
 	}
+}
 
-	return nil
+func printAwaitEventEffort(effort string) {
+	if effort == "abbreviated" {
+		fmt.Printf("\n%s Run ABBREVIATED patrol: quick checks only, skip optional steps.\n", style.Bold.Render("EFFORT: reduced"))
+		return
+	}
+	fmt.Printf("\n%s Run full patrol.\n", style.Bold.Render("EFFORT: full"))
 }
 
 func effortLevelForAwaitResult(reason string, idleCycles int) string {
@@ -351,37 +404,43 @@ func effortLevelForAwaitResult(reason string, idleCycles int) string {
 
 // calculateEventTimeout mirrors calculateEffectiveTimeout for await-event.
 func calculateEventTimeout(opts awaitEventOptions, idleCycles int) (time.Duration, error) {
-	if opts.backoffBase != "" {
-		base, err := time.ParseDuration(opts.backoffBase)
-		if err != nil {
-			return 0, fmt.Errorf("invalid backoff-base: %w", err)
-		}
-
-		var maxDur time.Duration
-		if opts.backoffMax != "" {
-			maxDur, err = time.ParseDuration(opts.backoffMax)
-			if err != nil {
-				return 0, fmt.Errorf("invalid backoff-max: %w", err)
-			}
-		}
-
-		timeout := base
-		for i := 0; i < idleCycles; i++ {
-			// Cap early to prevent int64 overflow at high idle counts.
-			// time.Duration is int64 nanoseconds; multiplying repeatedly
-			// without a guard wraps negative around idle ~62+ (30s base,
-			// mult=2). Check before each multiply.
-			if maxDur > 0 && timeout >= maxDur {
-				return maxDur, nil
-			}
-			timeout *= time.Duration(opts.backoffMult)
-		}
-		if maxDur > 0 && timeout > maxDur {
-			return maxDur, nil
-		}
-		return timeout, nil
+	if opts.backoffBase == "" {
+		return time.ParseDuration(opts.timeout)
 	}
-	return time.ParseDuration(opts.timeout)
+	base, err := time.ParseDuration(opts.backoffBase)
+	if err != nil {
+		return 0, fmt.Errorf("invalid backoff-base: %w", err)
+	}
+	maxDur, err := parseAwaitEventBackoffMax(opts.backoffMax)
+	if err != nil {
+		return 0, err
+	}
+	return applyAwaitEventBackoff(base, maxDur, opts.backoffMult, idleCycles), nil
+}
+
+func parseAwaitEventBackoffMax(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	maxDur, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid backoff-max: %w", err)
+	}
+	return maxDur, nil
+}
+
+func applyAwaitEventBackoff(base, maxDur time.Duration, multiplier, idleCycles int) time.Duration {
+	timeout := base
+	for i := 0; i < idleCycles; i++ {
+		if maxDur > 0 && timeout >= maxDur {
+			return maxDur
+		}
+		timeout *= time.Duration(multiplier)
+	}
+	if maxDur > 0 && timeout > maxDur {
+		return maxDur
+	}
+	return timeout
 }
 
 // waitForEventFiles checks for pending events, then polls until events appear or timeout.
@@ -392,7 +451,6 @@ func calculateEventTimeout(opts awaitEventOptions, idleCycles int) (time.Duratio
 // assess context usage before re-entering the wait, preventing unbounded context
 // accumulation during long idle periods.
 func waitForEventFiles(ctx context.Context, eventDir string, contextCheckAfter time.Duration) (*AwaitEventResult, error) {
-	// Check for already-pending events
 	events, err := readPendingEvents(eventDir)
 	if err != nil {
 		return nil, err
@@ -404,91 +462,82 @@ func waitForEventFiles(ctx context.Context, eventDir string, contextCheckAfter t
 		}, nil
 	}
 
-	// Calculate remaining timeout from context
+	if result := eventWaitDeadlineResult(ctx); result != nil {
+		return result, nil
+	}
+
+	contextYieldC, stopTimer := eventContextYieldTimer(contextCheckAfter)
+	defer stopTimer()
+	return pollEventFiles(ctx, eventDir, contextYieldC)
+}
+
+func eventWaitDeadlineResult(ctx context.Context) *AwaitEventResult {
 	deadline, ok := ctx.Deadline()
-	if !ok {
-		return &AwaitEventResult{Reason: "timeout"}, nil
+	if !ok || time.Until(deadline) <= 0 {
+		return &AwaitEventResult{Reason: "timeout"}
 	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return &AwaitEventResult{Reason: "timeout"}, nil
-	}
+	return nil
+}
 
-	// Set up context-yield timer when requested.
-	// A nil channel is never selected, so when contextCheckAfter is zero
-	// the timer case never fires and existing behavior is preserved.
-	var contextYieldC <-chan time.Time
-	if contextCheckAfter > 0 {
-		t := time.NewTimer(contextCheckAfter)
-		defer t.Stop()
-		contextYieldC = t.C
+func eventContextYieldTimer(after time.Duration) (<-chan time.Time, func()) {
+	if after <= 0 {
+		return nil, func() {}
 	}
+	timer := time.NewTimer(after)
+	return timer.C, func() { timer.Stop() }
+}
 
-	// Poll with 500ms interval until event appears or timeout.
-	// This is cross-platform (no inotifywait dependency) and the 500ms
-	// latency is acceptable for the event-driven patrol use case.
+func pollEventFiles(ctx context.Context, eventDir string, contextYieldC <-chan time.Time) (*AwaitEventResult, error) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Final check for events (race condition safety). Bound the
-			// read so a stuck filesystem can't prevent us from returning —
-			// the wait has already timed out, and reporting timeout is
-			// more useful than hanging indefinitely on the last read.
-			events = readPendingEventsBounded(ctx, eventDir, 500*time.Millisecond)
-			if len(events) > 0 {
-				return &AwaitEventResult{
-					Reason: "event",
-					Events: events,
-				}, nil
-			}
-			return &AwaitEventResult{Reason: "timeout"}, nil
+			return finalizeEventWait(ctx, eventDir, "timeout"), nil
 		case <-contextYieldC:
-			// Context-check interval elapsed. Do a final event check before
-			// yielding — if an event just arrived, return it instead.
-			events = readPendingEventsBounded(ctx, eventDir, 500*time.Millisecond)
-			if len(events) > 0 {
-				return &AwaitEventResult{
-					Reason: "event",
-					Events: events,
-				}, nil
-			}
-			return &AwaitEventResult{Reason: "context-yield"}, nil
+			return finalizeEventWait(ctx, eventDir, "context-yield"), nil
 		case <-ticker.C:
-			// Run readPendingEvents in a goroutine so ctx.Done() can
-			// always interrupt the wait. Without this, a slow/stuck
-			// read (e.g., stalled filesystem, sleeping laptop) would
-			// starve the timeout case until the read returns. This is
-			// the root cause of gt-x2lc: the timeout deadline expired
-			// but waitForEventFiles stayed blocked inside the read.
-			type readRes struct {
-				events []EventFile
-				err    error
+			result, err := pollEventFilesOnce(ctx, eventDir)
+			if err != nil {
+				return nil, err
 			}
-			ch := make(chan readRes, 1)
-			go func() {
-				ev, er := readPendingEvents(eventDir)
-				ch <- readRes{events: ev, err: er}
-			}()
-			select {
-			case <-ctx.Done():
-				// Timeout raced with read — abandon the goroutine and
-				// let the outer loop's ctx.Done() case finalize.
-				continue
-			case res := <-ch:
-				if res.err != nil {
-					return nil, res.err
-				}
-				if len(res.events) > 0 {
-					return &AwaitEventResult{
-						Reason: "event",
-						Events: res.events,
-					}, nil
-				}
+			if result != nil {
+				return result, nil
 			}
 		}
+	}
+}
+
+func finalizeEventWait(ctx context.Context, eventDir, reason string) *AwaitEventResult {
+	events := readPendingEventsBounded(ctx, eventDir, 500*time.Millisecond)
+	if len(events) > 0 {
+		return &AwaitEventResult{Reason: "event", Events: events}
+	}
+	return &AwaitEventResult{Reason: reason}
+}
+
+func pollEventFilesOnce(ctx context.Context, eventDir string) (*AwaitEventResult, error) {
+	type readResult struct {
+		events []EventFile
+		err    error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		events, err := readPendingEvents(eventDir)
+		ch <- readResult{events: events, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, nil
+	case result := <-ch:
+		if result.err != nil {
+			return nil, result.err
+		}
+		if len(result.events) == 0 {
+			return nil, nil
+		}
+		return &AwaitEventResult{Reason: "event", Events: result.events}, nil
 	}
 }
 
