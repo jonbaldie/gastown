@@ -1627,24 +1627,7 @@ func runDeaconFeedStranded(cmd *cobra.Command, _ []string) error {
 	}
 
 	for _, d := range result.Details {
-		switch d.Action {
-		case "fed":
-			fmt.Printf("  %s %s: %s\n", style.Bold.Render("✓"), d.ConvoyID, d.Message)
-		case "closed":
-			fmt.Printf("  %s %s: %s\n", style.Bold.Render("✓"), d.ConvoyID, d.Message)
-		case "needs_attention":
-			fmt.Printf("  %s %s: %s\n", style.Warning.Render("?"), d.ConvoyID, d.Message)
-		case "cooldown":
-			fmt.Printf("  %s %s: %s\n", style.Dim.Render("○"), d.ConvoyID, d.Message)
-		case "limit":
-			fmt.Printf("  %s %s: %s\n", style.Dim.Render("○"), d.ConvoyID, d.Message)
-		case "error":
-			id := d.ConvoyID
-			if id == "" {
-				id = "(general)"
-			}
-			fmt.Printf("  %s %s: %s\n", style.Dim.Render("✗"), id, d.Message)
-		}
+		reportDeaconFeedConvoy(d)
 	}
 
 	// Summary
@@ -1652,6 +1635,23 @@ func runDeaconFeedStranded(cmd *cobra.Command, _ []string) error {
 		style.Bold.Render("●"), result.Fed, result.Closed, result.NeedsAttention, result.Skipped, result.Errors)
 
 	return nil
+}
+
+func reportDeaconFeedConvoy(d deacon.FeedConvoyResult) {
+	switch d.Action {
+	case "fed", "closed":
+		fmt.Printf("  %s %s: %s\n", style.Bold.Render("✓"), d.ConvoyID, d.Message)
+	case "needs_attention":
+		fmt.Printf("  %s %s: %s\n", style.Warning.Render("?"), d.ConvoyID, d.Message)
+	case "cooldown", "limit":
+		fmt.Printf("  %s %s: %s\n", style.Dim.Render("○"), d.ConvoyID, d.Message)
+	case "error":
+		id := d.ConvoyID
+		if id == "" {
+			id = "(general)"
+		}
+		fmt.Printf("  %s %s: %s\n", style.Dim.Render("✗"), id, d.Message)
+	}
 }
 
 // runDeaconFeedStrandedState shows the current feed-stranded state.
