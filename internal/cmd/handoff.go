@@ -1626,49 +1626,70 @@ func collectGitState() string {
 		return ""
 	}
 
-	var lines []string
-
-	// Branch
-	if branch, err := g.CurrentBranch(); err == nil && branch != "" {
-		lines = append(lines, "Branch: "+branch)
-	}
-
-	// Uncommitted work summary (skip section on error, don't bail entirely)
-	if work, err := g.CheckUncommittedWork(); err == nil {
-		if work.HasUncommittedChanges {
-			if len(work.ModifiedFiles) > 0 {
-				files := work.ModifiedFiles
-				if len(files) > 10 {
-					files = append(files[:10], fmt.Sprintf("... (+%d more)", len(work.ModifiedFiles)-10))
-				}
-				lines = append(lines, "Modified: "+strings.Join(files, ", "))
-			}
-			if len(work.UntrackedFiles) > 0 {
-				files := work.UntrackedFiles
-				if len(files) > 5 {
-					files = append(files[:5], fmt.Sprintf("... (+%d more)", len(work.UntrackedFiles)-5))
-				}
-				lines = append(lines, "Untracked: "+strings.Join(files, ", "))
-			}
-		}
-		if work.StashCount > 0 {
-			lines = append(lines, fmt.Sprintf("Stashes: %d", work.StashCount))
-		}
-		if work.UnpushedCommits > 0 {
-			lines = append(lines, fmt.Sprintf("Unpushed commits: %d", work.UnpushedCommits))
-		}
-	}
-
-	// Recent commits (last 5) for context on what was being worked on.
-	if logStr, err := g.RecentCommits(5); err == nil && logStr != "" {
-		lines = append(lines, "Recent commits:\n"+logStr)
-	}
+	lines := gitBranchState(g)
+	lines = append(lines, gitWorkState(g)...)
+	lines = append(lines, gitRecentState(g)...)
 
 	if len(lines) == 0 {
 		return ""
 	}
 
 	return "## Workspace State\n" + strings.Join(lines, "\n")
+}
+
+func gitBranchState(g *git.Git) []string {
+	branch, err := g.CurrentBranch()
+	if err != nil || branch == "" {
+		return nil
+	}
+	return []string{"Branch: " + branch}
+}
+
+func gitWorkState(g *git.Git) []string {
+	work, err := g.CheckUncommittedWork()
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	if work.HasUncommittedChanges {
+		lines = append(lines, formatGitFiles("Modified", work.ModifiedFiles, 10))
+		lines = append(lines, formatGitFiles("Untracked", work.UntrackedFiles, 5))
+	}
+	if work.StashCount > 0 {
+		lines = append(lines, fmt.Sprintf("Stashes: %d", work.StashCount))
+	}
+	if work.UnpushedCommits > 0 {
+		lines = append(lines, fmt.Sprintf("Unpushed commits: %d", work.UnpushedCommits))
+	}
+	return compactNonEmptyLines(lines)
+}
+
+func formatGitFiles(label string, files []string, limit int) string {
+	if len(files) == 0 {
+		return ""
+	}
+	if len(files) > limit {
+		files = append(files[:limit], fmt.Sprintf("... (+%d more)", len(files)-limit))
+	}
+	return label + ": " + strings.Join(files, ", ")
+}
+
+func compactNonEmptyLines(lines []string) []string {
+	compact := lines[:0]
+	for _, line := range lines {
+		if line != "" {
+			compact = append(compact, line)
+		}
+	}
+	return compact
+}
+
+func gitRecentState(g *git.Git) []string {
+	logStr, err := g.RecentCommits(5)
+	if err != nil || logStr == "" {
+		return nil
+	}
+	return []string{"Recent commits:\n" + logStr}
 }
 
 // cleanupMoleculeOnHandoff closes any in-progress molecule steps before session
