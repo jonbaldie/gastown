@@ -1526,103 +1526,122 @@ func runPolecatNuke(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Safety checks: refuse to nuke polecats with active work unless --force is set
-	if !polecatNukeForce && !polecatNukeDryRun {
-		var blocked []*SafetyCheckResult
-		for _, p := range targets {
-			result := checkPolecatSafety(p)
-			if result.Blocked {
-				blocked = append(blocked, result)
-			}
-		}
-
-		if len(blocked) > 0 {
-			displaySafetyCheckBlocked(blocked)
-			return fmt.Errorf("blocked: %d polecat(s) failed nuke safety checks: %s", len(blocked), formatSafetyCheckBlockers(blocked))
-		}
+	if err := checkPolecatNukeSafety(targets); err != nil {
+		return err
 	}
 
-	// Nuke each polecat
-	var nukeErrors []string
-	nuked := 0
+	result := executePolecatNukeTargets(targets)
 	batchPurge := !polecatNukeDryRun && len(targets) > 1
-	purgeRigs := make(map[string]*rig.Rig)
-	dryRunBlocked := 0
-
-	for _, p := range targets {
-		if polecatNukeDryRun {
-			blocked := !polecatNukeForce && checkPolecatSafety(p).Blocked
-			if blocked {
-				fmt.Printf("Would refuse to nuke %s/%s without --force:\n", p.rigName, p.polecatName)
-				dryRunBlocked++
-			} else {
-				fmt.Printf("Would nuke %s/%s:\n", p.rigName, p.polecatName)
-			}
-			fmt.Printf("  - Kill session: gt-%s-%s\n", p.rigName, p.polecatName)
-			fmt.Printf("  - Delete worktree: %s/polecats/%s\n", p.r.Path, p.polecatName)
-			fmt.Printf("  - Delete branch (if exists)\n")
-			fmt.Printf("  - Reset agent bead: %s\n", polecatBeadIDForRig(p.r, p.rigName, p.polecatName))
-
-			if displayDryRunSafetyCheck(p) && !blocked {
-				dryRunBlocked++
-			}
-			fmt.Println()
-			continue
-		}
-
-		if polecatNukeForce {
-			fmt.Printf("%s Nuking %s/%s (--force)...\n", style.Warning.Render("⚠"), p.rigName, p.polecatName)
-		} else {
-			fmt.Printf("Nuking %s/%s...\n", p.rigName, p.polecatName)
-		}
-
-		if err := nukePolecatFullWithOptions(p.polecatName, p.rigName, p.mgr, p.r, nukePolecatOptions{Force: polecatNukeForce, PurgeClosedEphemerals: !batchPurge}); err != nil {
-			nukeErrors = append(nukeErrors, fmt.Sprintf("%s/%s: %v", p.rigName, p.polecatName, err))
-			continue
-		}
-
-		nuked++
-		if batchPurge {
-			purgeRigs[p.r.Path] = p.r
-		}
-	}
-	if batchPurge && len(purgeRigs) > 0 {
-		for _, r := range purgeRigs {
+	if batchPurge && len(result.purgeRigs) > 0 {
+		for _, r := range result.purgeRigs {
 			purgeClosedEphemeralBeads(beads.New(r.Path))
 		}
 	}
 
-	// Report results
+	return reportPolecatNukeResult(len(targets), result)
+}
+
+type polecatNukeResult struct {
+	nukeErrors    []string
+	nuked         int
+	purgeRigs     map[string]*rig.Rig
+	dryRunBlocked int
+}
+
+func checkPolecatNukeSafety(targets []polecatTarget) error {
+	if polecatNukeForce || polecatNukeDryRun {
+		return nil
+	}
+	var blocked []*SafetyCheckResult
+	for _, target := range targets {
+		result := checkPolecatSafety(target)
+		if result.Blocked {
+			blocked = append(blocked, result)
+		}
+	}
+	if len(blocked) == 0 {
+		return nil
+	}
+	displaySafetyCheckBlocked(blocked)
+	return fmt.Errorf("blocked: %d polecat(s) failed nuke safety checks: %s", len(blocked), formatSafetyCheckBlockers(blocked))
+}
+
+func executePolecatNukeTargets(targets []polecatTarget) polecatNukeResult {
+	result := polecatNukeResult{purgeRigs: make(map[string]*rig.Rig)}
+	batchPurge := !polecatNukeDryRun && len(targets) > 1
+	for _, target := range targets {
+		if polecatNukeDryRun {
+			result.dryRunBlocked += reportPolecatNukeDryRun(target)
+			continue
+		}
+		if err := nukePolecatTarget(target, batchPurge); err != nil {
+			result.nukeErrors = append(result.nukeErrors, fmt.Sprintf("%s/%s: %v", target.rigName, target.polecatName, err))
+			continue
+		}
+		result.nuked++
+		if batchPurge {
+			result.purgeRigs[target.r.Path] = target.r
+		}
+	}
+	return result
+}
+
+func reportPolecatNukeDryRun(target polecatTarget) int {
+	blocked := !polecatNukeForce && checkPolecatSafety(target).Blocked
+	if blocked {
+		fmt.Printf("Would refuse to nuke %s/%s without --force:\n", target.rigName, target.polecatName)
+	} else {
+		fmt.Printf("Would nuke %s/%s:\n", target.rigName, target.polecatName)
+	}
+	fmt.Printf("  - Kill session: gt-%s-%s\n", target.rigName, target.polecatName)
+	fmt.Printf("  - Delete worktree: %s/polecats/%s\n", target.r.Path, target.polecatName)
+	fmt.Printf("  - Delete branch (if exists)\n")
+	fmt.Printf("  - Reset agent bead: %s\n", polecatBeadIDForRig(target.r, target.rigName, target.polecatName))
+
+	blockedCount := 0
+	if blocked {
+		blockedCount++
+	} else if displayDryRunSafetyCheck(target) {
+		blockedCount++
+	}
+	fmt.Println()
+	return blockedCount
+}
+
+func nukePolecatTarget(target polecatTarget, batchPurge bool) error {
+	if polecatNukeForce {
+		fmt.Printf("%s Nuking %s/%s (--force)...\n", style.Warning.Render("⚠"), target.rigName, target.polecatName)
+	} else {
+		fmt.Printf("Nuking %s/%s...\n", target.rigName, target.polecatName)
+	}
+	return nukePolecatFullWithOptions(target.polecatName, target.rigName, target.mgr, target.r, nukePolecatOptions{Force: polecatNukeForce, PurgeClosedEphemerals: !batchPurge})
+}
+
+func reportPolecatNukeResult(total int, result polecatNukeResult) error {
 	if polecatNukeDryRun {
-		if dryRunBlocked > 0 {
-			fmt.Printf("\n%s %s\n", style.Warning.Render("⚠"), dryRunNukeSummary(len(targets), dryRunBlocked))
+		if result.dryRunBlocked > 0 {
+			fmt.Printf("\n%s %s\n", style.Warning.Render("⚠"), dryRunNukeSummary(total, result.dryRunBlocked))
 		} else {
-			fmt.Printf("\n%s %s\n", style.Info.Render("ℹ"), dryRunNukeSummary(len(targets), dryRunBlocked))
+			fmt.Printf("\n%s %s\n", style.Info.Render("ℹ"), dryRunNukeSummary(total, result.dryRunBlocked))
 		}
 		return nil
 	}
 
-	if len(nukeErrors) > 0 {
+	if len(result.nukeErrors) > 0 {
 		fmt.Printf("\n%s Some nukes failed:\n", style.Warning.Render("Warning:"))
-		for _, e := range nukeErrors {
+		for _, e := range result.nukeErrors {
 			fmt.Printf("  - %s\n", e)
 		}
 	}
-
-	if nuked > 0 {
-		fmt.Printf("\n%s Nuked %d polecat(s).\n", style.SuccessPrefix, nuked)
+	if result.nuked > 0 {
+		fmt.Printf("\n%s Nuked %d polecat(s).\n", style.SuccessPrefix, result.nuked)
 	}
 
-	// Final cleanup: Kill any orphaned Claude processes that escaped the session termination.
-	// This catches processes that called setsid() or were reparented during session shutdown.
-	if !polecatNukeDryRun {
-		cleanupOrphanedProcesses()
+	// Final cleanup: kill any orphaned Claude processes that escaped session termination.
+	cleanupOrphanedProcesses()
+	if len(result.nukeErrors) > 0 {
+		return fmt.Errorf("%d nuke(s) failed", len(result.nukeErrors))
 	}
-
-	if len(nukeErrors) > 0 {
-		return fmt.Errorf("%d nuke(s) failed", len(nukeErrors))
-	}
-
 	return nil
 }
 
