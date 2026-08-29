@@ -597,19 +597,7 @@ func assessScheduledContexts(townRoot string) ([]scheduledContextAssessment, err
 		return nil, nil
 	}
 
-	candidates := make([]scheduledContextAssessment, 0, len(contexts))
-	workBeadIDs := make([]string, 0, len(contexts))
-	for _, ctx := range contexts {
-		fields := beads.ParseSlingContextFields(ctx.issue.Description)
-		if fields == nil || fields.WorkBeadID == "" || fields.TargetRig == "" {
-			continue
-		}
-		if fields.DispatchFailures >= maxDispatchFailures {
-			continue
-		}
-		candidates = append(candidates, scheduledContextAssessment{context: ctx, fields: fields})
-		workBeadIDs = append(workBeadIDs, fields.WorkBeadID)
-	}
+	candidates, workBeadIDs := scheduledContextCandidates(contexts)
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -626,6 +614,24 @@ func assessScheduledContexts(townRoot string) ([]scheduledContextAssessment, err
 	workBeadInfo := batchFetchBeadInfoByIDs(townRoot, workBeadIDs)
 	blockedWorkIDs, blockedUnknownIDs, blockedErr := listBlockedWorkBeadIDStates(townRoot, workBeadIDs)
 
+	return buildScheduledContextAssessments(candidates, workBeadInfo, blockedWorkIDs, blockedUnknownIDs), blockedErr
+}
+
+func scheduledContextCandidates(contexts []slingContextRecord) ([]scheduledContextAssessment, []string) {
+	candidates := make([]scheduledContextAssessment, 0, len(contexts))
+	workBeadIDs := make([]string, 0, len(contexts))
+	for _, ctx := range contexts {
+		fields := beads.ParseSlingContextFields(ctx.issue.Description)
+		if fields == nil || fields.WorkBeadID == "" || fields.TargetRig == "" || fields.DispatchFailures >= maxDispatchFailures {
+			continue
+		}
+		candidates = append(candidates, scheduledContextAssessment{context: ctx, fields: fields})
+		workBeadIDs = append(workBeadIDs, fields.WorkBeadID)
+	}
+	return candidates, workBeadIDs
+}
+
+func buildScheduledContextAssessments(candidates []scheduledContextAssessment, infoByID map[string]beadStatusInfo, blockedIDs, blockedUnknownIDs map[string]bool) []scheduledContextAssessment {
 	seenWork := make(map[string]bool)
 	assessments := make([]scheduledContextAssessment, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -635,16 +641,15 @@ func assessScheduledContexts(townRoot string) ([]scheduledContextAssessment, err
 		}
 		seenWork[workBeadID] = true
 
-		info, found := workBeadInfo[workBeadID]
+		info, found := infoByID[workBeadID]
 		candidate.info = info
 		candidate.found = found
-		candidate.blocked = blockedWorkIDs[workBeadID]
+		candidate.blocked = blockedIDs[workBeadID]
 		candidate.blockedUnknown = blockedUnknownIDs[workBeadID]
-		candidate.ready = isScheduledWorkBeadReady(workBeadID, info, found, blockedWorkIDs, blockedUnknownIDs)
+		candidate.ready = isScheduledWorkBeadReady(workBeadID, info, found, blockedIDs, blockedUnknownIDs)
 		assessments = append(assessments, candidate)
 	}
-
-	return assessments, blockedErr
+	return assessments
 }
 
 // getReadySlingContexts queries for sling context beads whose work beads are ready.
