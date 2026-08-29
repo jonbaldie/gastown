@@ -256,12 +256,12 @@ func TestRunDoneRejectsMayorRigBeforeAutosave(t *testing.T) {
 				t.Fatalf("write dirty file: %v", err)
 			}
 
-			origDoneStatus, origCleanupStatus := doneStatus, doneCleanupStatus
-			doneStatus = ExitDeferred
-			doneCleanupStatus = "uncommitted"
+			origDoneStatus, origCleanupStatus := doneState().status, doneState().cleanupStatus
+			doneState().status = ExitDeferred
+			doneState().cleanupStatus = "uncommitted"
 			t.Cleanup(func() {
-				doneStatus = origDoneStatus
-				doneCleanupStatus = origCleanupStatus
+				doneState().status = origDoneStatus
+				doneState().cleanupStatus = origCleanupStatus
 			})
 			setDoneGuardEnv(t, "gastown", "shiny", "gastown/polecats/shiny")
 

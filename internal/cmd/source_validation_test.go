@@ -172,9 +172,9 @@ func TestRunDoneWithRoutedIssueIgnoresCurrentRigMirror(t *testing.T) {
 	t.Setenv("BD_ACTOR", "gastown/polecats/refuge")
 	t.Chdir(workDir)
 
-	doneIssue = "bd-source"
-	doneCleanupStatus = "unpushed"
-	doneSkipVerify = true
+	doneState().issue = "bd-source"
+	doneState().cleanupStatus = "unpushed"
+	doneState().skipVerify = true
 	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID string) error { return nil }
 	if err := runDone(nil, nil); err != nil {
 		t.Fatalf("runDone: %v", err)
@@ -429,22 +429,22 @@ func resetMqSubmitFlagsForTest(t *testing.T) {
 
 func resetDoneFlagsForTest(t *testing.T) {
 	t.Helper()
-	oldIssue, oldStatus, oldCleanupStatus, oldTarget := doneIssue, doneStatus, doneCleanupStatus, doneTarget
-	oldPriority := donePriority
-	oldResume, oldPreVerified, oldSkipVerify := doneResume, donePreVerified, doneSkipVerify
+	oldIssue, oldStatus, oldCleanupStatus, oldTarget := doneState().issue, doneState().status, doneState().cleanupStatus, doneState().target
+	oldPriority := doneState().priority
+	oldResume, oldPreVerified, oldSkipVerify := doneState().resume, doneState().preVerified, doneState().skipVerify
 	oldUpdateAgentStateOnDoneFn := updateAgentStateOnDoneFn
-	doneIssue = ""
-	donePriority = -1
-	doneStatus = ExitCompleted
-	doneCleanupStatus = ""
-	doneResume = false
-	donePreVerified = false
-	doneTarget = ""
-	doneSkipVerify = false
+	doneState().issue = ""
+	doneState().priority = -1
+	doneState().status = ExitCompleted
+	doneState().cleanupStatus = ""
+	doneState().resume = false
+	doneState().preVerified = false
+	doneState().target = ""
+	doneState().skipVerify = false
 	t.Cleanup(func() {
-		doneIssue, doneStatus, doneCleanupStatus, doneTarget = oldIssue, oldStatus, oldCleanupStatus, oldTarget
-		donePriority = oldPriority
-		doneResume, donePreVerified, doneSkipVerify = oldResume, oldPreVerified, oldSkipVerify
+		doneState().issue, doneState().status, doneState().cleanupStatus, doneState().target = oldIssue, oldStatus, oldCleanupStatus, oldTarget
+		doneState().priority = oldPriority
+		doneState().resume, doneState().preVerified, doneState().skipVerify = oldResume, oldPreVerified, oldSkipVerify
 		updateAgentStateOnDoneFn = oldUpdateAgentStateOnDoneFn
 	})
 }

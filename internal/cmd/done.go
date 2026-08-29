@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
@@ -60,16 +61,24 @@ Examples:
 	SilenceUsage: true, // Don't print usage on operational errors (confuses agents)
 }
 
-var (
-	doneIssue         string
-	donePriority      int
-	doneStatus        string
-	doneCleanupStatus string
-	doneResume        bool
-	donePreVerified   bool
-	doneTarget        string
-	doneSkipVerify    bool
-)
+type doneCommandState struct {
+	issue         string
+	priority      int
+	status        string
+	cleanupStatus string
+	resume        bool
+	preVerified   bool
+	target        string
+	skipVerify    bool
+}
+
+var doneCommandStateInstance = sync.OnceValue(func() *doneCommandState {
+	return &doneCommandState{priority: -1, status: ExitCompleted}
+})
+
+func doneState() *doneCommandState {
+	return doneCommandStateInstance()
+}
 
 // Valid exit types for gt done
 const (
@@ -716,20 +725,21 @@ func isReviewEvidenceText(text string) bool {
 }
 
 func init() {
-	doneCmd.Flags().StringVar(&doneIssue, "issue", "", "Source issue ID (default: parse from branch name)")
-	doneCmd.Flags().IntVarP(&donePriority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
-	doneCmd.Flags().StringVar(&doneStatus, "status", ExitCompleted, "Exit status: COMPLETED, ESCALATED, or DEFERRED")
-	doneCmd.Flags().StringVar(&doneCleanupStatus, "cleanup-status", "", "Git cleanup status: clean, uncommitted, unpushed, stash, unknown (ZFC: agent-observed)")
-	doneCmd.Flags().BoolVar(&doneResume, "resume", false, "Resume from last checkpoint (auto-detected, for Witness recovery)")
-	doneCmd.Flags().BoolVar(&donePreVerified, "pre-verified", false, "Mark MR as pre-verified (polecat ran gates after rebasing onto target)")
-	doneCmd.Flags().StringVar(&doneTarget, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
-	doneCmd.Flags().BoolVar(&doneSkipVerify, "skip-verify", false, "Skip verified-push checks for audit/test-only completion (recorded on bead)")
+	state := doneState()
+	doneCmd.Flags().StringVar(&state.issue, "issue", "", "Source issue ID (default: parse from branch name)")
+	doneCmd.Flags().IntVarP(&state.priority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
+	doneCmd.Flags().StringVar(&state.status, "status", ExitCompleted, "Exit status: COMPLETED, ESCALATED, or DEFERRED")
+	doneCmd.Flags().StringVar(&state.cleanupStatus, "cleanup-status", "", "Git cleanup status: clean, uncommitted, unpushed, stash, unknown (ZFC: agent-observed)")
+	doneCmd.Flags().BoolVar(&state.resume, "resume", false, "Resume from last checkpoint (auto-detected, for Witness recovery)")
+	doneCmd.Flags().BoolVar(&state.preVerified, "pre-verified", false, "Mark MR as pre-verified (polecat ran gates after rebasing onto target)")
+	doneCmd.Flags().StringVar(&state.target, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
+	doneCmd.Flags().BoolVar(&state.skipVerify, "skip-verify", false, "Skip verified-push checks for audit/test-only completion (recorded on bead)")
 
 	rootCmd.AddCommand(doneCmd)
 }
 
 func runDone(_ *cobra.Command, _ []string) (retErr error) {
-	defer func() { telemetry.RecordDone(context.Background(), strings.ToUpper(doneStatus), retErr) }()
+	defer func() { telemetry.RecordDone(context.Background(), strings.ToUpper(doneState().status), retErr) }()
 	// Guard: Only polecats should call gt done
 	// Crew, deacons, witnesses etc. don't use gt done - they persist across tasks.
 	// Polecat sessions end with gt done — the session is cleaned up, but the
@@ -740,9 +750,9 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 	}
 
 	// Validate exit status
-	exitType := strings.ToUpper(doneStatus)
+	exitType := strings.ToUpper(doneState().status)
 	if exitType != ExitCompleted && exitType != ExitEscalated && exitType != ExitDeferred {
-		return fmt.Errorf("invalid exit status '%s': must be COMPLETED, ESCALATED, or DEFERRED", doneStatus)
+		return fmt.Errorf("invalid exit status '%s': must be COMPLETED, ESCALATED, or DEFERRED", doneState().status)
 	}
 
 	// Clean completions retire the live polecat session after durable handoff.
@@ -767,7 +777,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 
 	// Auto-detect cleanup status if not explicitly provided
 	// This prevents premature polecat cleanup by ensuring witness knows git state
-	if doneCleanupStatus == "" {
+	if doneState().cleanupStatus == "" {
 		workStatus, err := g.CheckUncommittedWork()
 		if err != nil {
 			style.PrintWarning("could not auto-detect cleanup status: %v", err)
@@ -779,7 +789,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 			if pushErr != nil {
 				style.PrintWarning("could not check if branch is pushed: %v", pushErr)
 			}
-			doneCleanupStatus = cleanupStatusFromWorkState(workStatus, cwd, pushed, unpushedCount, pushErr)
+			doneState().cleanupStatus = cleanupStatusFromWorkState(workStatus, cwd, pushed, unpushedCount, pushErr)
 		}
 	}
 
@@ -798,7 +808,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 	// working tree (matches what a user would do manually). If any pop has
 	// conflicts, we stop and let the agent/user resolve — surfacing the
 	// conflict is better than silently dropping the stash.
-	if doneCleanupStatus == "stash" {
+	if doneState().cleanupStatus == "stash" {
 		entries, err := g.StashListForBranch()
 		if err != nil {
 			style.PrintWarning("auto-pop: could not list stashes: %v — orphaned stashes may remain", err)
@@ -827,13 +837,13 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 				// that the next block will auto-commit. Worst case, status was already
 				// uncommitted and the next block runs anyway.
 				if workStatus, wsErr := g.CheckUncommittedWork(); wsErr == nil && workStatus.HasUncommittedChanges {
-					doneCleanupStatus = "uncommitted"
+					doneState().cleanupStatus = "uncommitted"
 					fmt.Printf("%s Stash content moved to working tree — will auto-commit below.\n",
 						style.Bold.Render("✓"))
 				} else {
 					// Pops succeeded but produced nothing dirty (e.g. stashes were
 					// already merged). Recompute status normally.
-					doneCleanupStatus = ""
+					doneState().cleanupStatus = ""
 				}
 			}
 		}
@@ -849,7 +859,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 	//
 	// Auto-commit ensures work is NEVER lost regardless of exit type or agent behavior.
 	// The commit message is clearly marked as an auto-save so reviewers know.
-	if doneCleanupStatus == "uncommitted" {
+	if doneState().cleanupStatus == "uncommitted" {
 		// Re-check to get file details (cleanup detection already confirmed uncommitted changes)
 		workStatus, err := g.CheckUncommittedWork()
 		if err == nil && workStatus.HasUncommittedChanges && !workStatus.CleanExcludingSafetyNet(cwd) {
@@ -891,7 +901,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 					fmt.Printf("%s Auto-committed uncommitted work (safety net)\n", style.Bold.Render("✓"))
 					fmt.Printf("  The agent should have committed before running gt done.\n")
 					fmt.Printf("  This auto-save prevents work loss.\n\n")
-					doneCleanupStatus = "unpushed" // Update status — changes are now committed but not pushed
+					doneState().cleanupStatus = "unpushed" // Update status — changes are now committed but not pushed
 				}
 			}
 		}
@@ -901,7 +911,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 	info := parseBranchName(branch)
 
 	// Override with explicit flags
-	issueID := doneIssue
+	issueID := doneState().issue
 	if issueID == "" {
 		issueID = info.Issue
 	}
@@ -958,7 +968,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 	// from the hooked bead, trust the hook. An explicit --issue flag still
 	// wins, and subtask branches of the hooked bead (e.g. gt-abc.1 under
 	// hooked gt-abc) are left alone.
-	if doneIssue == "" && info.Issue != "" && sender != "" {
+	if doneState().issue == "" && info.Issue != "" && sender != "" {
 		if hookIssue, ambiguous := selectAssignedIssue(info.Issue, loadAssignedIssueIDs()); isStaleBranchIssue(info.Issue, hookIssue) {
 			style.PrintWarning("branch %q embeds issue %s but your hooked bead is %s — submitting for %s (stale branch reuse?)", branch, info.Issue, hookIssue, hookIssue)
 			fmt.Printf("  Fresh branches must be named polecat/<name>/<bead-id>+<suffix> for the bead you are working.\n")
@@ -1001,7 +1011,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 	if rigCfg, err := rig.LoadRigConfig(filepath.Join(townRoot, rigName)); err == nil && rigCfg.DefaultBranch != "" {
 		defaultBranch = rigCfg.DefaultBranch
 	}
-	baseRef := g.CleanBaseRef("origin", defaultBranch, doneTarget)
+	baseRef := g.CleanBaseRef("origin", defaultBranch, doneState().target)
 
 	// For COMPLETED, we need an issue ID and branch must not be the default branch
 	var mrID string
@@ -1080,7 +1090,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 		// IMPORTANT: The error message must NOT mention --cleanup-status=clean.
 		// LLM agents read error messages and self-bypass (the original bug).
 		if aheadCount == 0 {
-			if os.Getenv("GT_POLECAT") != "" && doneCleanupStatus != "clean" && !isNoMergeTask {
+			if os.Getenv("GT_POLECAT") != "" && doneState().cleanupStatus != "clean" && !isNoMergeTask {
 				// Before failing, check whether commits exist on the remote feature branch.
 				// After a polecat pushes to origin/<feature-branch> and submits an MR,
 				// if master advances (e.g., other MRs land), the feature branch is no
@@ -1133,7 +1143,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 				if !skipClose {
 					closeReason := "Completed with no code changes (already fixed or already merged)"
 					noMRCommitSHA, _ := g.Rev("HEAD")
-					if doneSkipVerify {
+					if doneState().skipVerify {
 						noteVerifiedPushSkipped(bd, cwd, issueID, defaultBranch, noMRCommitSHA, "--skip-verify on no-MR close")
 						if noMRCommitSHA != "" {
 							closeReason = fmt.Sprintf("%s\nskip_verify: true\ntarget_branch: %s\ncommit_sha: %s", closeReason, defaultBranch, noMRCommitSHA)
@@ -1187,8 +1197,8 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 		// the auto-rebase below) sees the current clean base. In fork-backed rigs,
 		// that base is upstream/main, not the fork's origin/main.
 		contaminationBase := baseRef
-		if doneTarget != "" && doneTarget != defaultBranch {
-			contaminationBase = doneContaminationBaseRef(defaultBranch, doneTarget)
+		if doneState().target != "" && doneState().target != defaultBranch {
+			contaminationBase = doneContaminationBaseRef(defaultBranch, doneState().target)
 		}
 		fetchRemote := git.RemoteForRef(contaminationBase)
 		if fetchRemote == "" {
@@ -1213,7 +1223,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 			// gh#3400: Auto-rebase the polecat branch onto the latest target before
 			// push, so the resulting MR/PR has a current base.
 			alreadyPushed := checkpoints[CheckpointPushed] == branch
-			rebased, skipReason, rebaseErr := autoRebaseOnTarget(g, contaminationBase, contam.Behind, donePreVerified, alreadyPushed)
+			rebased, skipReason, rebaseErr := autoRebaseOnTarget(g, contaminationBase, contam.Behind, doneState().preVerified, alreadyPushed)
 			if rebaseErr != nil {
 				return rebaseErr
 			}
@@ -1286,7 +1296,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 				goto notifyWitness
 			}
 			directCommitSHA, _ := g.Rev("HEAD")
-			if doneSkipVerify {
+			if doneState().skipVerify {
 				noteVerifiedPushSkipped(directBd, cwd, issueID, defaultBranch, directCommitSHA, "--skip-verify on direct merge")
 			} else if verifyErr := g.VerifyPushedCommitReachableFromPushTarget("origin", defaultBranch, directCommitSHA); verifyErr != nil {
 				pushFailed = true
@@ -1297,7 +1307,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 				goto notifyWitness
 			}
 			fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), defaultBranch)
-			doneCleanupStatus = cleanupStatusAfterSuccessfulPush(doneCleanupStatus)
+			doneState().cleanupStatus = cleanupStatusAfterSuccessfulPush(doneState().cleanupStatus)
 
 			// Close the base issue — no MR/refinery will close it
 			if issueID != "" {
@@ -1378,7 +1388,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 				goto notifyWitness
 			}
 			directCommitSHA, _ := g.Rev("HEAD")
-			if doneSkipVerify {
+			if doneState().skipVerify {
 				noteVerifiedPushSkipped(directBd, cwd, issueID, defaultBranch, directCommitSHA, "--skip-verify on late direct merge")
 			} else if verifyErr := g.VerifyPushedCommitReachableFromPushTarget("origin", defaultBranch, directCommitSHA); verifyErr != nil {
 				pushFailed = true
@@ -1389,7 +1399,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 				goto notifyWitness
 			}
 			fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), defaultBranch)
-			doneCleanupStatus = cleanupStatusAfterSuccessfulPush(doneCleanupStatus)
+			doneState().cleanupStatus = cleanupStatusAfterSuccessfulPush(doneState().cleanupStatus)
 
 			if skipReason, fatal := doneSourceCloseSkipReason(directBd, issueID, sourceIssueForNoMerge); skipReason != "" {
 				style.PrintWarning("%s", skipReason)
@@ -1495,7 +1505,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 		if pushedCommitSHA == "" {
 			pushedCommitSHA, _ = g.Rev("HEAD")
 		}
-		if doneSkipVerify {
+		if doneState().skipVerify {
 			noteVerifiedPushSkipped(sourceBD, cwd, issueID, branch, pushedCommitSHA, "--skip-verify on branch push")
 		} else if verifyErr := verifyPushedCommitWithBareFallback(g, townRoot, rigName, branch, pushedCommitSHA); verifyErr != nil {
 			pushFailed = true
@@ -1509,7 +1519,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 
 		// Fix cleanup_status after successful push (gt-wcr).
 		// Status was detected before push, so "unpushed" is now stale.
-		doneCleanupStatus = cleanupStatusAfterSuccessfulPush(doneCleanupStatus)
+		doneState().cleanupStatus = cleanupStatusAfterSuccessfulPush(doneState().cleanupStatus)
 
 		// Write push checkpoint for resume (gt-aufru)
 		if agentBeadID != "" {
@@ -1668,8 +1678,8 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 		// 1. Explicit --target flag (highest priority — polecat knows its base branch).
 		// This is the most reliable path: the formula passes {{base_branch}} directly,
 		// avoiding any dependency on bd.Show() or Dolt availability.
-		if doneTarget != "" {
-			target = doneTarget
+		if doneState().target != "" {
+			target = doneState().target
 			explicitTarget = true
 			fmt.Printf("  Target branch: %s (from --target flag)\n", target)
 		}
@@ -1704,8 +1714,8 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 
 		// Get source issue for priority inheritance
 		var priority int
-		if donePriority >= 0 {
-			priority = donePriority
+		if doneState().priority >= 0 {
+			priority = doneState().priority
 		} else {
 			priority = sourceIssueForNoMerge.Priority
 		}
@@ -1778,7 +1788,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 			if commitSHA != "" {
 				description += fmt.Sprintf("\ncommit_sha: %s", commitSHA)
 			}
-			if doneSkipVerify {
+			if doneState().skipVerify {
 				description += "\nskip_verify: true"
 			}
 			if worker != "" {
@@ -1795,7 +1805,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 
 			// Phase 3: Add pre-verification metadata if polecat ran gates after rebasing.
 			// The refinery uses these fields to fast-path merge without re-running gates.
-			if donePreVerified {
+			if doneState().preVerified {
 				description += "\npre_verified: true"
 				description += fmt.Sprintf("\npre_verified_at: %s", time.Now().UTC().Format(time.RFC3339))
 				// Capture current clean target HEAD as the verified base.
@@ -2492,19 +2502,19 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
 
 	// Completion metadata (exit_type, MR ID, branch) remains on the agent bead
 	// for audit purposes and anomaly detection by witness patrol.
-	doneState := string(beads.AgentStateDone)
+	agentState := string(beads.AgentStateDone)
 	if exitType != ExitCompleted {
-		doneState = "stuck"
+		agentState = "stuck"
 	}
 	// Use UpdateAgentState to sync both column and description (gt-ulom).
-	if err := agentBd.UpdateAgentState(agentBeadID, doneState); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: couldn't set agent %s to %s: %v\n", agentBeadID, doneState, err)
+	if err := agentBd.UpdateAgentState(agentBeadID, agentState); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: couldn't set agent %s to %s: %v\n", agentBeadID, agentState, err)
 	}
 
 	// ZFC #10: Self-report cleanup status
 	// Agent observes git state and passes cleanup status via --cleanup-status flag
-	if doneCleanupStatus != "" {
-		cleanupStatus := parseCleanupStatus(doneCleanupStatus)
+	if doneState().cleanupStatus != "" {
+		cleanupStatus := parseCleanupStatus(doneState().cleanupStatus)
 		if cleanupStatus != polecat.CleanupUnknown {
 			if err := agentBd.UpdateAgentCleanupStatus(agentBeadID, string(cleanupStatus)); err != nil {
 				// Non-fatal: don't return — done-intent labels still need clearing (za-o9e)
