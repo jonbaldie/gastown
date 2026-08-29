@@ -1481,43 +1481,9 @@ func formatMQSummaryCompact(mq *MQSummary) string {
 func renderAgentCompactWithSuffix(w io.Writer, agent AgentRuntime, indent string, hooks []AgentHookInfo, _ string, suffix string) {
 	// Build status indicator (gt-zecmc: use tmux state, not bead state)
 	statusIndicator := buildStatusIndicator(agent)
-
-	// Get hook info
-	hookBead := agent.HookBead
-	hookTitle := agent.WorkTitle
-	if hookBead == "" && hooks != nil {
-		for _, h := range hooks {
-			if h.Agent == agent.Address && h.HasWork {
-				hookBead = h.Molecule
-				hookTitle = h.Title
-				break
-			}
-		}
-	}
-
-	// Build hook suffix
-	hookSuffix := ""
-	if hookBead != "" {
-		if hookTitle != "" {
-			hookSuffix = style.Dim.Render(" → ") + truncateWithEllipsis(hookTitle, 30)
-		} else {
-			hookSuffix = style.Dim.Render(" → ") + hookBead
-		}
-	} else if hookTitle != "" {
-		hookSuffix = style.Dim.Render(" → ") + truncateWithEllipsis(hookTitle, 30)
-	}
-
-	// Mail indicator
-	mailSuffix := ""
-	if agent.UnreadMail > 0 {
-		mailSuffix = fmt.Sprintf(" 📬%d", agent.UnreadMail)
-	}
-
-	// Agent runtime info
-	agentSuffix := ""
-	if agent.AgentInfo != "" {
-		agentSuffix = " " + style.Dim.Render("["+agent.AgentInfo+"]")
-	}
+	hookSuffix := agentHookSuffix(agent, hooks)
+	mailSuffix := agentMailSuffix(agent)
+	agentSuffix := agentRuntimeSuffix(agent)
 
 	// Print single line: name + status + agent-info + hook + mail + suffix
 	fmt.Fprintf(w, "%s%-12s %s%s%s%s%s\n", indent, agent.Name, statusIndicator, agentSuffix, hookSuffix, mailSuffix, suffix)
@@ -1525,48 +1491,43 @@ func renderAgentCompactWithSuffix(w io.Writer, agent AgentRuntime, indent string
 
 // renderAgentCompact renders a single-line agent status
 func renderAgentCompact(w io.Writer, agent AgentRuntime, indent string, hooks []AgentHookInfo, _ string) {
-	// Build status indicator (gt-zecmc: use tmux state, not bead state)
-	statusIndicator := buildStatusIndicator(agent)
+	renderAgentCompactWithSuffix(w, agent, indent, hooks, "", "")
+}
 
-	// Get hook info
-	hookBead := agent.HookBead
-	hookTitle := agent.WorkTitle
+func agentHookSuffix(agent AgentRuntime, hooks []AgentHookInfo) string {
+	hookBead, hookTitle := agent.HookBead, agent.WorkTitle
 	if hookBead == "" && hooks != nil {
 		for _, h := range hooks {
 			if h.Agent == agent.Address && h.HasWork {
-				hookBead = h.Molecule
-				hookTitle = h.Title
+				hookBead, hookTitle = h.Molecule, h.Title
 				break
 			}
 		}
 	}
-
-	// Build hook suffix
-	hookSuffix := ""
 	if hookBead != "" {
 		if hookTitle != "" {
-			hookSuffix = style.Dim.Render(" → ") + truncateWithEllipsis(hookTitle, 30)
-		} else {
-			hookSuffix = style.Dim.Render(" → ") + hookBead
+			return style.Dim.Render(" → ") + truncateWithEllipsis(hookTitle, 30)
 		}
-	} else if hookTitle != "" {
-		hookSuffix = style.Dim.Render(" → ") + truncateWithEllipsis(hookTitle, 30)
+		return style.Dim.Render(" → ") + hookBead
 	}
+	if hookTitle != "" {
+		return style.Dim.Render(" → ") + truncateWithEllipsis(hookTitle, 30)
+	}
+	return ""
+}
 
-	// Mail indicator
-	mailSuffix := ""
+func agentMailSuffix(agent AgentRuntime) string {
 	if agent.UnreadMail > 0 {
-		mailSuffix = fmt.Sprintf(" 📬%d", agent.UnreadMail)
+		return fmt.Sprintf(" 📬%d", agent.UnreadMail)
 	}
+	return ""
+}
 
-	// Agent runtime info
-	agentSuffix := ""
+func agentRuntimeSuffix(agent AgentRuntime) string {
 	if agent.AgentInfo != "" {
-		agentSuffix = " " + style.Dim.Render("["+agent.AgentInfo+"]")
+		return " " + style.Dim.Render("["+agent.AgentInfo+"]")
 	}
-
-	// Print single line: name + status + agent-info + hook + mail
-	fmt.Fprintf(w, "%s%-12s %s%s%s%s\n", indent, agent.Name, statusIndicator, agentSuffix, hookSuffix, mailSuffix)
+	return ""
 }
 
 func applyPaneBlock(agent *AgentRuntime) {
@@ -1887,12 +1848,28 @@ type agentDef struct {
 // allAgentBeads is a preloaded map of agent beads for O(1) lookup.
 // allHookBeads is a preloaded map of hook beads for O(1) lookup.
 func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, allAgentBeads map[string]*beads.Issue, allHookBeads map[string]*beads.Issue, mailRouter *mail.Router, skipMail bool) []AgentRuntime {
-	// Build list of all agents to discover
+	defs := rigAgentDefs(r, crews)
+	if len(defs) == 0 {
+		return nil
+	}
+
+	agents := make([]AgentRuntime, len(defs))
+	var wg sync.WaitGroup
+	for i, def := range defs {
+		wg.Add(1)
+		go func(idx int, d agentDef) {
+			defer wg.Done()
+			agents[idx] = discoverRigAgent(d, allSessions, allAgentBeads, allHookBeads, mailRouter, skipMail)
+		}(i, def)
+	}
+	wg.Wait()
+	return agents
+}
+
+func rigAgentDefs(r *rig.Rig, crews []string) []agentDef {
 	var defs []agentDef
 	townRoot := filepath.Dir(r.Path)
 	prefix := beads.GetPrefixForRig(townRoot, r.Name)
-
-	// Witness
 	if r.HasWitness {
 		defs = append(defs, agentDef{
 			name:    constants.RoleWitness,
@@ -1902,8 +1879,6 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 			beadID:  beads.WitnessBeadIDWithPrefix(prefix, r.Name),
 		})
 	}
-
-	// Refinery
 	if r.HasRefinery {
 		defs = append(defs, agentDef{
 			name:    constants.RoleRefinery,
@@ -1913,8 +1888,6 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 			beadID:  beads.RefineryBeadIDWithPrefix(prefix, r.Name),
 		})
 	}
-
-	// Polecats
 	for _, name := range r.Polecats {
 		defs = append(defs, agentDef{
 			name:    name,
@@ -1924,8 +1897,6 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 			beadID:  beads.PolecatBeadIDWithPrefix(prefix, r.Name, name),
 		})
 	}
-
-	// Crew
 	for _, name := range crews {
 		defs = append(defs, agentDef{
 			name:    name,
@@ -1935,61 +1906,35 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 			beadID:  beads.CrewBeadIDWithPrefix(prefix, r.Name, name),
 		})
 	}
+	return defs
+}
 
-	if len(defs) == 0 {
-		return nil
+func discoverRigAgent(d agentDef, allSessions map[string]bool, allAgentBeads map[string]*beads.Issue, allHookBeads map[string]*beads.Issue, mailRouter *mail.Router, skipMail bool) AgentRuntime {
+	agent := AgentRuntime{
+		Name:    d.name,
+		Address: d.address,
+		Session: d.session,
+		Role:    d.role,
+		Running: allSessions[d.session],
 	}
-
-	// Fetch all agents in parallel
-	agents := make([]AgentRuntime, len(defs))
-	var wg sync.WaitGroup
-
-	for i, def := range defs {
-		wg.Add(1)
-		go func(idx int, d agentDef) {
-			defer wg.Done()
-
-			agent := AgentRuntime{
-				Name:    d.name,
-				Address: d.address,
-				Session: d.session,
-				Role:    d.role,
+	applyPaneBlock(&agent)
+	if issue, ok := allAgentBeads[d.beadID]; ok {
+		agent.HookBead = issue.HookBead
+		agent.State = beads.ResolveAgentState(issue.Description, issue.AgentState)
+		if agent.HookBead != "" {
+			agent.HasWork = true
+			if pinnedIssue, ok := allHookBeads[agent.HookBead]; ok {
+				agent.WorkTitle = pinnedIssue.Title
 			}
-
-			// Check tmux session from preloaded map (O(1))
-			agent.Running = allSessions[d.session]
-			applyPaneBlock(&agent)
-
-			// Look up agent bead from preloaded map (O(1))
-			if issue, ok := allAgentBeads[d.beadID]; ok {
-				// Prefer database columns over description parsing
-				// HookBead column is authoritative (cleared by unsling)
-				agent.HookBead = issue.HookBead
-				agent.State = beads.ResolveAgentState(issue.Description, issue.AgentState)
-				if agent.HookBead != "" {
-					agent.HasWork = true
-					// Get hook title from preloaded map
-					if pinnedIssue, ok := allHookBeads[agent.HookBead]; ok {
-						agent.WorkTitle = pinnedIssue.Title
-					}
-				}
-				// Parse description fields for notification level
-				if fields := beads.ParseAgentFields(issue.Description); fields != nil {
-					agent.NotificationLevel = fields.NotificationLevel
-				}
-			}
-
-			// Get mail info (skip if --fast)
-			if !skipMail {
-				populateMailInfo(&agent, mailRouter)
-			}
-
-			agents[idx] = agent
-		}(i, def)
+		}
+		if fields := beads.ParseAgentFields(issue.Description); fields != nil {
+			agent.NotificationLevel = fields.NotificationLevel
+		}
 	}
-
-	wg.Wait()
-	return agents
+	if !skipMail {
+		populateMailInfo(&agent, mailRouter)
+	}
+	return agent
 }
 
 // getMQSummary queries beads for merge-request issues and returns a summary.
@@ -2001,25 +1946,35 @@ func getMQSummary(r *rig.Rig) *MQSummary {
 		return nil
 	}
 
-	// Create beads instance for the rig
-	b := beads.New(r.BeadsPath())
-
-	// Single query for all non-closed merge-request issues.
-	// Status "all" fetches everything; we filter open/in_progress in memory.
-	opts := beads.ListOptions{
-		Label:    "gt:merge-request",
-		Status:   "all",
-		Priority: -1, // No priority filter
-	}
-	allMRs, err := b.List(opts)
+	allMRs, err := loadMergeRequestIssues(r)
 	if err != nil {
 		return nil
 	}
 
-	// Split by status in memory
-	pending := 0
-	blocked := 0
-	inProgress := 0
+	pending, blocked, inProgress := countMergeRequestStates(allMRs)
+	if pending == 0 && inProgress == 0 && blocked == 0 {
+		return nil
+	}
+
+	return &MQSummary{
+		Pending:  pending,
+		InFlight: inProgress,
+		Blocked:  blocked,
+		State:    mergeQueueState(pending, blocked, inProgress),
+		Health:   mergeQueueHealth(pending, blocked, inProgress),
+	}
+}
+
+func loadMergeRequestIssues(r *rig.Rig) ([]*beads.Issue, error) {
+	b := beads.New(r.BeadsPath())
+	return b.List(beads.ListOptions{
+		Label:    "gt:merge-request",
+		Status:   "all",
+		Priority: -1,
+	})
+}
+
+func countMergeRequestStates(allMRs []*beads.Issue) (pending, blocked, inProgress int) {
 	for _, mr := range allMRs {
 		switch mr.Status {
 		case "open":
@@ -2031,43 +1986,31 @@ func getMQSummary(r *rig.Rig) *MQSummary {
 		case "in_progress":
 			inProgress++
 		}
-		// closed/other statuses are ignored
 	}
+	return pending, blocked, inProgress
+}
 
-	// Determine queue state
-	state := "idle"
+func mergeQueueState(pending, blocked, inProgress int) string {
 	if inProgress > 0 {
-		state = "processing"
-	} else if pending > 0 {
-		state = "idle" // Has work but not processing yet
-	} else if blocked > 0 {
-		state = "blocked" // Only blocked items, nothing processable
+		return "processing"
 	}
+	if pending > 0 {
+		return "idle"
+	}
+	if blocked > 0 {
+		return "blocked"
+	}
+	return "idle"
+}
 
-	// Determine queue health
-	health := "empty"
-	total := pending + inProgress + blocked
-	if total > 0 {
-		health = "healthy"
-		// Check for potential issues
-		if pending > 10 && inProgress == 0 {
-			// Large queue but nothing processing - may be stuck
-			health = "stale"
-		}
+func mergeQueueHealth(pending, blocked, inProgress int) string {
+	if pending+inProgress+blocked == 0 {
+		return "empty"
 	}
-
-	// Only return summary if there's something to show
-	if pending == 0 && inProgress == 0 && blocked == 0 {
-		return nil
+	if pending > 10 && inProgress == 0 {
+		return "stale"
 	}
-
-	return &MQSummary{
-		Pending:  pending,
-		InFlight: inProgress,
-		Blocked:  blocked,
-		State:    state,
-		Health:   health,
-	}
+	return "healthy"
 }
 
 // getAgentHook retrieves hook status for a specific agent.
