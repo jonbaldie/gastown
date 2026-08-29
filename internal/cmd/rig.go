@@ -1121,16 +1121,19 @@ func refreshCycleBindingsOnExistingSessions() {
 	_ = t.SetCycleBindings(sessions[0])
 }
 
-func runRigAdopt(_ *cobra.Command, args []string) error {
-	name := args[0]
+type rigAdoptContext struct {
+	name       string
+	townRoot   string
+	rigsPath   string
+	rigsConfig *config.RigsConfig
+	mgr        *rig.Manager
+}
 
-	// Find workspace
+func loadRigAdoptContext(name string) (rigAdoptContext, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return rigAdoptContext{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Load rigs config
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsPath)
 	if err != nil {
@@ -1139,33 +1142,36 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 			Rigs:    make(map[string]config.RigEntry),
 		}
 	}
+	return rigAdoptContext{
+		name:       name,
+		townRoot:   townRoot,
+		rigsPath:   rigsPath,
+		rigsConfig: rigsConfig,
+		mgr:        rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot)),
+	}, nil
+}
 
-	// Create rig manager
-	g := git.NewGit(townRoot)
-	mgr := rig.NewManager(townRoot, rigsConfig, g)
-
-	fmt.Printf("Adopting existing rig %s...\n", style.Bold.Render(name))
-
-	// Validate --url if provided
+func validateRigAdoptURLs() error {
 	if rigAddAdoptURL != "" && !isGitRemoteURL(rigAddAdoptURL) {
 		return fmt.Errorf("invalid git URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", rigAddAdoptURL)
 	}
-
-	// Validate --push-url if provided
 	rigAddPushURL = strings.TrimSpace(rigAddPushURL)
 	if rigAddPushURL != "" && !isGitRemoteURL(rigAddPushURL) {
 		return fmt.Errorf("invalid push URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", rigAddPushURL)
 	}
-
-	// Validate --upstream-url if provided
 	rigAddUpstreamURL = strings.TrimSpace(rigAddUpstreamURL)
 	if rigAddUpstreamURL != "" && !isGitRemoteURL(rigAddUpstreamURL) {
 		return fmt.Errorf("invalid upstream URL %q: expected a remote URL (e.g. https://, git@host:, ssh://, s3://, file:///abs/path)", rigAddUpstreamURL)
 	}
+	return nil
+}
 
-	// Register the existing rig
-	result, err := mgr.RegisterRig(rig.RegisterRigOptions{
-		Name:        name,
+func registerAdoptedRig(ctx rigAdoptContext) (*rig.RegisterRigResult, error) {
+	if err := validateRigAdoptURLs(); err != nil {
+		return nil, err
+	}
+	result, err := ctx.mgr.RegisterRig(rig.RegisterRigOptions{
+		Name:        ctx.name,
 		GitURL:      rigAddAdoptURL,
 		PushURL:     rigAddPushURL,
 		UpstreamURL: rigAddUpstreamURL,
@@ -1173,41 +1179,55 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 		Force:       rigAddAdoptForce,
 	})
 	if err != nil {
-		return fmt.Errorf("adopting rig: %w", err)
+		return nil, fmt.Errorf("adopting rig: %w", err)
 	}
+	return result, nil
+}
 
-	// Save updated config
-	if err := config.SaveRigsConfig(rigsPath, rigsConfig); err != nil {
+func configureAdoptedRig(ctx rigAdoptContext, result *rig.RegisterRigResult) error {
+	if err := config.SaveRigsConfig(ctx.rigsPath, ctx.rigsConfig); err != nil {
 		return fmt.Errorf("saving rigs config: %w", err)
 	}
-
-	// Add adopted rig to daemon.json patrol config (witness + refinery rigs arrays)
-	if err := config.AddRigToDaemonPatrols(townRoot, name); err != nil {
+	if err := config.AddRigToDaemonPatrols(ctx.townRoot, ctx.name); err != nil {
 		fmt.Printf("  %s Could not update daemon.json patrols: %v\n", style.Warning.Render("!"), err)
 	}
-
-	// Add route to town-level routes.jsonl for prefix-based routing
 	if result.BeadsPrefix != "" {
-		routePath := name
-		mayorRigBeads := filepath.Join(townRoot, name, "mayor", "rig", ".beads")
+		routePath := ctx.name
+		mayorRigBeads := filepath.Join(ctx.townRoot, ctx.name, "mayor", "rig", ".beads")
 		if _, err := os.Stat(mayorRigBeads); err == nil {
-			routePath = name + "/mayor/rig"
+			routePath = ctx.name + "/mayor/rig"
 		}
 		route := beads.Route{
 			Prefix: result.BeadsPrefix + "-",
 			Path:   routePath,
 		}
-		if err := beads.AppendRoute(townRoot, route); err != nil {
+		if err := beads.AppendRoute(ctx.townRoot, route); err != nil {
 			fmt.Printf("  %s Could not update routes.jsonl: %v\n", style.Warning.Render("!"), err)
 		}
 	}
+	commitTownConfigChanges(ctx.townRoot, ctx.name)
+	return nil
+}
 
-	// Commit town-level config changes (rigs.json, daemon.json, routes.jsonl)
-	// so they aren't reverted by git restore/checkout operations.
-	commitTownConfigChanges(townRoot, name)
+func runRigAdopt(_ *cobra.Command, args []string) error {
+	name := args[0]
+	ctx, err := loadRigAdoptContext(name)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Adopting existing rig %s...\n", style.Bold.Render(name))
+	result, err := registerAdoptedRig(ctx)
+	if err != nil {
+		return err
+	}
+	if err := configureAdoptedRig(ctx, result); err != nil {
+		return err
+	}
+	townRoot := ctx.townRoot
+	mgr := ctx.mgr
 
 	// Check for tracked beads and initialize database if missing (Issue #72)
-	rigPath := filepath.Join(townRoot, name)
+	rigPath := filepath.Join(ctx.townRoot, name)
 	existingBeadsDirs := listExistingRigBeadsDirs(rigPath)
 	beadsDir, initFresh := adoptedRigBeadsPlan(existingBeadsDirs, result.BeadsPrefix)
 	if beadsDir != "" {
