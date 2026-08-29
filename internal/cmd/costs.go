@@ -531,6 +531,10 @@ func querySessionEventsFromLocation(location string) ([]CostEntry, error) {
 		return nil, fmt.Errorf("parsing event details: %w", err)
 	}
 
+	return sessionCostEntriesFromEvents(events), nil
+}
+
+func sessionCostEntriesFromEvents(events []SessionEvent) []CostEntry {
 	var entries []CostEntry
 	for _, event := range events {
 		// Filter for session.ended events only
@@ -565,7 +569,7 @@ func querySessionEventsFromLocation(location string) ([]CostEntry, error) {
 		})
 	}
 
-	return entries, nil
+	return entries
 }
 
 // queryDigestBeads queries costs.digest events from the past N days and extracts session entries.
