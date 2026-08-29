@@ -1076,73 +1076,14 @@ func (f *LiveConvoyFetcher) FetchMail() ([]MailRow, error) {
 		return nil, fmt.Errorf("listing mail: %w", err)
 	}
 
-	var messages []struct {
-		ID        string   `json:"id"`
-		Title     string   `json:"title"`
-		Status    string   `json:"status"`
-		CreatedAt string   `json:"created_at"`
-		Priority  int      `json:"priority"`
-		Assignee  string   `json:"assignee"`   // "to" address stored here
-		CreatedBy string   `json:"created_by"` // "from" address
-		Labels    []string `json:"labels"`
-	}
+	var messages []mailListMessage
 	if err := json.Unmarshal(stdout.Bytes(), &messages); err != nil {
 		return nil, fmt.Errorf("parsing mail list: %w", err)
 	}
 
 	rows := make([]MailRow, 0, len(messages))
 	for _, m := range messages {
-		// Parse timestamp
-		var timestamp time.Time
-		var age string
-		var sortKey int64
-		if m.CreatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {
-				timestamp = t
-				age = formatTimestamp(t)
-				sortKey = t.Unix()
-			}
-		}
-
-		// Determine priority string
-		priorityStr := "normal"
-		switch m.Priority {
-		case 0:
-			priorityStr = "urgent"
-		case 1:
-			priorityStr = "high"
-		case 2:
-			priorityStr = "normal"
-		case 3, 4:
-			priorityStr = "low"
-		}
-
-		// Determine message type from labels
-		msgType := "notification"
-		for _, label := range m.Labels {
-			if label == "task" || label == "reply" || label == "scavenge" {
-				msgType = label
-				break
-			}
-		}
-
-		// Format from/to addresses for display
-		from := formatAgentAddress(m.CreatedBy)
-		to := formatAgentAddress(m.Assignee)
-
-		rows = append(rows, MailRow{
-			ID:        m.ID,
-			From:      from,
-			FromRaw:   m.CreatedBy,
-			To:        to,
-			Subject:   m.Title,
-			Timestamp: timestamp.Format("15:04"),
-			Age:       age,
-			Priority:  priorityStr,
-			Type:      msgType,
-			Read:      m.Status == "closed",
-			SortKey:   sortKey,
-		})
+		rows = append(rows, mailRowFromMessage(m))
 	}
 
 	// Sort by timestamp, newest first
@@ -1151,6 +1092,67 @@ func (f *LiveConvoyFetcher) FetchMail() ([]MailRow, error) {
 	})
 
 	return rows, nil
+}
+
+type mailListMessage struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	CreatedAt string   `json:"created_at"`
+	Priority  int      `json:"priority"`
+	Assignee  string   `json:"assignee"`   // "to" address stored here
+	CreatedBy string   `json:"created_by"` // "from" address stored here
+	Labels    []string `json:"labels"`
+}
+
+func mailRowFromMessage(message mailListMessage) MailRow {
+	timestamp, age, sortKey := parseMailTimestamp(message.CreatedAt)
+	return MailRow{
+		ID:        message.ID,
+		From:      formatAgentAddress(message.CreatedBy),
+		FromRaw:   message.CreatedBy,
+		To:        formatAgentAddress(message.Assignee),
+		Subject:   message.Title,
+		Timestamp: timestamp.Format("15:04"),
+		Age:       age,
+		Priority:  mailPriority(message.Priority),
+		Type:      mailType(message.Labels),
+		Read:      message.Status == "closed",
+		SortKey:   sortKey,
+	}
+}
+
+func parseMailTimestamp(createdAt string) (time.Time, string, int64) {
+	if createdAt == "" {
+		return time.Time{}, "", 0
+	}
+	timestamp, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return time.Time{}, "", 0
+	}
+	return timestamp, formatTimestamp(timestamp), timestamp.Unix()
+}
+
+func mailPriority(priority int) string {
+	switch priority {
+	case 0:
+		return "urgent"
+	case 1:
+		return "high"
+	case 3, 4:
+		return "low"
+	default:
+		return "normal"
+	}
+}
+
+func mailType(labels []string) string {
+	for _, label := range labels {
+		if label == "task" || label == "reply" || label == "scavenge" {
+			return label
+		}
+	}
+	return "notification"
 }
 
 // formatMailAge returns a human-readable age string.
