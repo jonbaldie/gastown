@@ -1325,126 +1325,45 @@ func doltCommitHasNoChanges(out string) bool {
 // on bd >= 0.62 or "beads_<prefix>" on older bd), InitBeads drops the orphan
 // to prevent the silent data split documented in gh#3562.
 func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
-	// Validate prefix format to prevent command injection from config files
 	if !isValidBeadsPrefix(prefix) {
 		return fmt.Errorf("invalid beads prefix %q: must be alphanumeric with optional hyphens, start with letter, max 20 chars", prefix)
 	}
-
 	beadsDir := filepath.Join(rigPath, ".beads")
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
-
-	// Check if source repo has tracked .beads/ (cloned into mayor/rig).
-	// If so, create a redirect file instead of a new database.
-	if _, err := os.Stat(mayorRigBeads); err == nil {
-		// Tracked beads exist - create redirect to mayor/rig/.beads
-		if err := beads.EnsureDir(beadsDir); err != nil {
-			return err
-		}
-		redirectPath := filepath.Join(beadsDir, "redirect")
-		if err := os.WriteFile(redirectPath, []byte("mayor/rig/.beads\n"), 0644); err != nil {
-			return fmt.Errorf("creating redirect file: %w", err)
-		}
-		return nil
+	redirected, err := createTrackedBeadsRedirect(rigPath, beadsDir)
+	if err != nil || redirected {
+		return err
 	}
-
-	// No tracked beads - create local database
 	if err := beads.EnsureDir(beadsDir); err != nil {
 		return err
 	}
-
-	// Pin bd to the intended .beads directory/database through the shared
-	// hardened env builder so stale shell selectors cannot leak into rig init.
 	filteredEnv := bdSubprocessEnv(beadsDir, rigName)
-
-	// Run bd init if available (Dolt is the only backend since bd v0.51.0).
-	// --server tells bd to set dolt_mode=server in metadata.json so bd
-	// connects to the centralized Dolt sql-server instead of embedded mode.
-	initArgs := []string{"init"}
-	if prefix != "" {
-		initArgs = append(initArgs, "--prefix", prefix)
-	}
-	if rigName != "" {
-		initArgs = append(initArgs, "--database", rigName)
-	}
-	initArgs = append(initArgs, "--server")
-	// Always pass --server-port so bd connects to gt's central Dolt server.
-	// Without this, bd auto-starts its own server on a random port. (GH #2405)
-	initArgs = append(initArgs, "--server-port", strconv.Itoa(bdInitServerPort(m.townRoot)))
-	// --force ensures bd 1.0+ persists issue_prefix on existing server-side DBs.
-	initArgs = append(initArgs, "--force")
-	cmd := beads.Spawn(initArgs...)
+	cmd := beads.Spawn(rigBeadsInitArgs(m.townRoot, prefix, rigName)...)
 	cmd.Dir = rigPath
 	cmd.Env = filteredEnv
 	_, bdInitErr := cmd.CombinedOutput()
-	// bd init may create or reset .beads to 0755; tighten after it returns.
 	if err := beads.EnsureDir(beadsDir); err != nil {
 		return err
 	}
-	// If bd init failed (not installed or errored), the shared helper below
-	// creates config.yaml with the required defaults as a fallback. Otherwise
-	// configure the Dolt database now.
 	if bdInitErr == nil {
-		// bd init succeeded - configure the Dolt database
-
-		// Configure Gas Town bead types. Rig remains a custom durable type, not an
-		// infra/wisp type.
-		for _, cfg := range []struct{ key, value string }{
-			{"types.custom", constants.BeadsCustomTypes},
-			{"types.infra", constants.BeadsInfraTypes},
-		} {
-			configCmd := beads.Spawn("config", "set", cfg.key, cfg.value)
-			configCmd.Dir = rigPath
-			configCmd.Env = filteredEnv
-			// Ignore errors - older beads versions don't need this
-			_, _ = configCmd.CombinedOutput()
-		}
-
-		// Explicitly set issue_prefix config (bd init --prefix may not persist it in newer versions).
-		// Without this, bd create and gt sling fail with "issue_prefix config is missing".
-		// bd >= 1.0.0 rejects this with "cannot be set via 'bd config set'" because init persists
-		// it directly; treat that as already-set rather than a failure.
-		prefixSetCmd := beads.Spawn("config", "set", "issue_prefix", prefix)
-		prefixSetCmd.Dir = rigPath
-		prefixSetCmd.Env = filteredEnv
-		if prefixOutput, prefixErr := prefixSetCmd.CombinedOutput(); prefixErr != nil {
-			out := strings.TrimSpace(string(prefixOutput))
-			if !strings.Contains(out, "cannot be set via") {
-				return fmt.Errorf("bd config set issue_prefix failed: %s", out)
-			}
-		}
-
-		// Drop orphan databases created by bd init (gh#3562, gt-sv1h).
-		// bd init --prefix creates a database whose name depends on the bd version:
-		//   bd >= 0.62: "<prefix>"        (e.g. "ma" for prefix=ma)
-		//   bd <  0.62: "beads_<prefix>"  (e.g. "beads_ma")
-		// The rig uses <rigName> as its canonical database (set by InitRig +
-		// EnsureMetadata). Orphans must be dropped or beads created from the
-		// rig will silently land in the wrong DB and become invisible to the mayor.
-		if rigName != "" {
-			if err := dropRigOrphanDBs(m.townRoot, prefix, rigName); err != nil {
-				// Non-fatal: AddRig has a post-init verification step that errors
-				// loudly if an orphan persists. Log here so the trail is visible
-				// when rig init is invoked outside AddRig.
-				fmt.Fprintf(os.Stderr, "Warning: orphan database cleanup: %v\n", err)
-			}
+		if err := configureInitializedRigBeads(m.townRoot, rigPath, prefix, rigName, filteredEnv); err != nil {
+			return err
 		}
 	}
+	return completeRigBeadsFiles(m.townRoot, rigPath, beadsDir, prefix, rigName, filteredEnv)
+}
 
+func completeRigBeadsFiles(townRoot, rigPath, beadsDir, prefix, rigName string, env []string) error {
 	if err := beads.EnsureConfigYAML(beadsDir, prefix); err != nil {
 		return fmt.Errorf("ensuring config.yaml: %w", err)
 	}
 	if rigName != "" {
-		if err := doltserver.EnsureMetadataForBeadsDir(m.townRoot, beadsDir, rigName, rigName); err != nil {
+		if err := doltserver.EnsureMetadataForBeadsDir(townRoot, beadsDir, rigName, rigName); err != nil {
 			return fmt.Errorf("ensuring metadata.json: %w", err)
 		}
 	}
-
-	// Ensure database has repository fingerprint (GH #25).
-	// This is idempotent - safe on both new and legacy (pre-0.17.5) databases.
-	// Without fingerprint, the bd daemon fails to start silently.
 	migrateCmd := beads.Spawn("migrate", "--update-repo-id")
 	migrateCmd.Dir = rigPath
-	migrateCmd.Env = filteredEnv
+	migrateCmd.Env = env
 	// Ignore errors - fingerprint is optional for functionality
 	_, _ = migrateCmd.CombinedOutput()
 
@@ -1452,7 +1371,52 @@ func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
 	// bd's routing walks up to find town root (via mayor/town.json) and uses
 	// town-level routes.jsonl for prefix-based routing. Rig-level routes.jsonl
 	// would prevent this walk-up and break cross-rig routing.
+	return nil
+}
 
+func createTrackedBeadsRedirect(rigPath, beadsDir string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(rigPath, "mayor", "rig", ".beads")); err != nil {
+		return false, nil
+	}
+	if err := beads.EnsureDir(beadsDir); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "redirect"), []byte("mayor/rig/.beads\n"), 0644); err != nil {
+		return false, fmt.Errorf("creating redirect file: %w", err)
+	}
+	return true, nil
+}
+
+func rigBeadsInitArgs(townRoot, prefix, rigName string) []string {
+	args := []string{"init"}
+	if prefix != "" {
+		args = append(args, "--prefix", prefix)
+	}
+	if rigName != "" {
+		args = append(args, "--database", rigName)
+	}
+	return append(args, "--server", "--server-port", strconv.Itoa(bdInitServerPort(townRoot)), "--force")
+}
+
+func configureInitializedRigBeads(townRoot, rigPath, prefix, rigName string, env []string) error {
+	for _, cfg := range []struct{ key, value string }{
+		{"types.custom", constants.BeadsCustomTypes},
+		{"types.infra", constants.BeadsInfraTypes},
+	} {
+		cmd := beads.Spawn("config", "set", cfg.key, cfg.value)
+		cmd.Dir, cmd.Env = rigPath, env
+		_, _ = cmd.CombinedOutput()
+	}
+	prefixCmd := beads.Spawn("config", "set", "issue_prefix", prefix)
+	prefixCmd.Dir, prefixCmd.Env = rigPath, env
+	if output, err := prefixCmd.CombinedOutput(); err != nil && !strings.Contains(strings.TrimSpace(string(output)), "cannot be set via") {
+		return fmt.Errorf("bd config set issue_prefix failed: %s", strings.TrimSpace(string(output)))
+	}
+	if rigName != "" {
+		if err := dropRigOrphanDBs(townRoot, prefix, rigName); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: orphan database cleanup: %v\n", err)
+		}
+	}
 	return nil
 }
 
