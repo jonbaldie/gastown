@@ -41,68 +41,65 @@ const MaxLifecycleMessageAge = 6 * time.Hour
 
 // ProcessLifecycleRequests checks for and processes lifecycle requests from the deacon inbox.
 func (d *Daemon) ProcessLifecycleRequests() {
-	// Get mail for deacon identity (using gt mail, not bd mail)
-	cmd := exec.Command(d.gtPath, "mail", "inbox", "--identity", "deacon/", "--json")
-	cmd.Dir = d.config.TownRoot
-	cmd.Env = bdReadOnlyPinnedEnv(filepath.Join(d.config.TownRoot, ".beads"))
-	util.SetDetachedProcessGroup(cmd)
-
-	output, err := cmd.Output()
+	output, err := d.fetchLifecycleMessages()
 	if err != nil {
 		d.logger.Printf("Warning: failed to fetch deacon inbox: %v", err)
 		return
 	}
-
 	if len(output) == 0 || string(output) == "[]" || string(output) == "[]\n" {
 		return
 	}
-
 	var messages []BeadsMessage
 	if err := json.Unmarshal(output, &messages); err != nil {
 		d.logger.Printf("Error parsing mail: %v", err)
 		return
 	}
-
-	for _, msg := range messages {
-		if msg.Read {
-			continue // Already processed
-		}
-
-		request := d.parseLifecycleRequest(&msg)
-		if request == nil {
-			continue // Not a lifecycle request
-		}
-
-		// Check message age - ignore stale lifecycle requests
-		maxAge := d.loadOperationalConfig().GetDaemonConfig().MaxLifecycleMessageAgeD()
-		if msgTime, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
-			age := time.Since(msgTime)
-			if age > maxAge {
-				d.logger.Printf("Ignoring stale lifecycle request from %s (age: %v, max: %v) - deleting",
-					request.From, age.Round(time.Minute), maxAge)
-				if err := d.closeMessage(msg.ID); err != nil {
-					d.logger.Printf("Warning: failed to delete stale message %s: %v", msg.ID, err)
-				}
-				continue
-			}
-		}
-
-		d.logger.Printf("Processing lifecycle request from %s: %s", request.From, request.Action)
-
-		// CRITICAL: Delete message FIRST, before executing action.
-		// This prevents stale messages from being reprocessed on every heartbeat.
-		// "Claim then execute" pattern: claim by deleting, then execute.
-		// Even if action fails, the message is gone - sender must re-request.
-		if err := d.closeMessage(msg.ID); err != nil {
-			d.logger.Printf("Warning: failed to delete message %s before execution: %v", msg.ID, err)
-			// Continue anyway - better to attempt action than leave stale message
-		}
-
-		if err := d.executeLifecycleAction(request); err != nil {
-			d.logger.Printf("Error executing lifecycle action: %v", err)
-			continue
-		}
+	for i := range messages {
+		d.processLifecycleMessage(&messages[i])
 	}
+}
+
+func (d *Daemon) fetchLifecycleMessages() ([]byte, error) {
+	cmd := exec.Command(d.gtPath, "mail", "inbox", "--identity", "deacon/", "--json")
+	cmd.Dir = d.config.TownRoot
+	cmd.Env = bdReadOnlyPinnedEnv(filepath.Join(d.config.TownRoot, ".beads"))
+	util.SetDetachedProcessGroup(cmd)
+	return cmd.Output()
+}
+
+func (d *Daemon) processLifecycleMessage(msg *BeadsMessage) {
+	if msg.Read {
+		return
+	}
+	request := d.parseLifecycleRequest(msg)
+	if request == nil {
+		return
+	}
+	if d.lifecycleMessageStale(msg, request) {
+		return
+	}
+	d.logger.Printf("Processing lifecycle request from %s: %s", request.From, request.Action)
+	if err := d.closeMessage(msg.ID); err != nil {
+		d.logger.Printf("Warning: failed to delete message %s before execution: %v", msg.ID, err)
+	}
+	if err := d.executeLifecycleAction(request); err != nil {
+		d.logger.Printf("Error executing lifecycle action: %v", err)
+	}
+}
+
+func (d *Daemon) lifecycleMessageStale(msg *BeadsMessage, request *LifecycleRequest) bool {
+	maxAge := d.loadOperationalConfig().GetDaemonConfig().MaxLifecycleMessageAgeD()
+	msgTime, err := time.Parse(time.RFC3339, msg.Timestamp)
+	if err != nil || time.Since(msgTime) <= maxAge {
+		return false
+	}
+	age := time.Since(msgTime)
+	d.logger.Printf("Ignoring stale lifecycle request from %s (age: %v, max: %v) - deleting",
+		request.From, age.Round(time.Minute), maxAge)
+	if err := d.closeMessage(msg.ID); err != nil {
+		d.logger.Printf("Warning: failed to delete stale message %s: %v", msg.ID, err)
+	}
+	return true
 }
 
 // LifecycleBody is the structured body format for lifecycle requests.
@@ -114,44 +111,20 @@ type LifecycleBody struct {
 // parseLifecycleRequest extracts a lifecycle request from a message.
 // Uses structured body parsing instead of keyword matching on subject.
 func (d *Daemon) parseLifecycleRequest(msg *BeadsMessage) *LifecycleRequest {
-	// Gate: subject must start with "LIFECYCLE:"
 	subject := strings.ToLower(msg.Subject)
 	if !strings.HasPrefix(subject, "lifecycle:") {
 		return nil
 	}
-
-	// Parse structured body for action
-	var body LifecycleBody
-	if err := json.Unmarshal([]byte(msg.Body), &body); err != nil {
-		// Fallback: check for simple action strings in body
-		bodyLower := strings.ToLower(strings.TrimSpace(msg.Body))
-		switch {
-		case bodyLower == "restart" || bodyLower == "action: restart":
-			body.Action = "restart"
-		case bodyLower == "shutdown" || bodyLower == "action: shutdown" || bodyLower == "stop":
-			body.Action = "shutdown"
-		case bodyLower == "cycle" || bodyLower == "action: cycle":
-			body.Action = "cycle"
-		default:
-			d.logger.Printf("Lifecycle request with unparseable body: %q", msg.Body)
-			return nil
-		}
+	body, ok := parseLifecycleBody(msg.Body)
+	if !ok {
+		d.logger.Printf("Lifecycle request with unparseable body: %q", msg.Body)
+		return nil
 	}
-
-	// Map action string to enum
-	var action LifecycleAction
-	switch strings.ToLower(body.Action) {
-	case "restart":
-		action = ActionRestart
-	case "shutdown", "stop":
-		action = ActionShutdown
-	case "cycle":
-		action = ActionCycle
-	default:
+	action, ok := lifecycleActionFor(body.Action)
+	if !ok {
 		d.logger.Printf("Unknown lifecycle action: %q", body.Action)
 		return nil
 	}
-
 	return &LifecycleRequest{
 		From:      msg.From,
 		Action:    action,
@@ -159,9 +132,39 @@ func (d *Daemon) parseLifecycleRequest(msg *BeadsMessage) *LifecycleRequest {
 	}
 }
 
+func parseLifecycleBody(raw string) (LifecycleBody, bool) {
+	var body LifecycleBody
+	if json.Unmarshal([]byte(raw), &body) == nil {
+		return body, true
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "restart", "action: restart":
+		body.Action = "restart"
+	case "shutdown", "action: shutdown", "stop":
+		body.Action = "shutdown"
+	case "cycle", "action: cycle":
+		body.Action = "cycle"
+	default:
+		return LifecycleBody{}, false
+	}
+	return body, true
+}
+
+func lifecycleActionFor(raw string) (LifecycleAction, bool) {
+	switch strings.ToLower(raw) {
+	case "restart":
+		return ActionRestart, true
+	case "shutdown", "stop":
+		return ActionShutdown, true
+	case "cycle":
+		return ActionCycle, true
+	default:
+		return LifecycleAction(""), false
+	}
+}
+
 // executeLifecycleAction performs the requested lifecycle action.
 func (d *Daemon) executeLifecycleAction(request *LifecycleRequest) error {
-	// Determine session name from sender identity
 	sessionName := d.identityToSession(request.From)
 	if sessionName == "" {
 		return fmt.Errorf("unknown agent identity: %s", request.From)
@@ -169,15 +172,7 @@ func (d *Daemon) executeLifecycleAction(request *LifecycleRequest) error {
 
 	d.logger.Printf("Executing %s for session %s", request.Action, sessionName)
 
-	// Check agent bead state (ZFC: trust what agent reports) - gt-39ttg
-	agentBeadID := d.identityToAgentBeadID(request.From)
-	if agentBeadID != "" {
-		if beadState, err := d.getAgentBeadState(agentBeadID); err == nil {
-			d.logger.Printf("Agent bead %s reports state: %s", agentBeadID, beadState)
-		}
-	}
-
-	// Check if session exists (tmux detection still needed for lifecycle actions)
+	d.logLifecycleAgentState(request.From)
 	running, err := d.tmux.HasSession(sessionName)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
@@ -185,38 +180,48 @@ func (d *Daemon) executeLifecycleAction(request *LifecycleRequest) error {
 
 	switch request.Action {
 	case ActionShutdown:
-		if running {
-			// Use KillSessionWithProcesses to ensure all descendant processes are killed.
-			// This prevents orphan bash processes from Claude's Bash tool surviving session termination.
-			if err := d.tmux.KillSessionWithProcesses(sessionName); err != nil {
-				return fmt.Errorf("killing session: %w", err)
-			}
-			d.logger.Printf("Killed session %s", sessionName)
-		}
-		return nil
-
+		return d.shutdownLifecycleSession(sessionName, running)
 	case ActionCycle, ActionRestart:
-		if running {
-			// Kill the session first - use KillSessionWithProcesses to prevent orphan processes.
-			if err := d.tmux.KillSessionWithProcesses(sessionName); err != nil {
-				return fmt.Errorf("killing session: %w", err)
-			}
-			d.logger.Printf("Killed session %s for restart", sessionName)
-
-			// Wait a moment
-			time.Sleep(constants.ShutdownNotifyDelay)
-		}
-
-		// Restart the session
-		if err := d.restartSession(sessionName, request.From); err != nil {
-			return fmt.Errorf("restarting session: %w", err)
-		}
-		d.logger.Printf("Restarted session %s", sessionName)
-		return nil
-
+		return d.restartLifecycleSession(sessionName, request.From, running)
 	default:
 		return fmt.Errorf("unknown action: %s", request.Action)
 	}
+}
+
+func (d *Daemon) logLifecycleAgentState(identity string) {
+	agentBeadID := d.identityToAgentBeadID(identity)
+	if agentBeadID == "" {
+		return
+	}
+	if beadState, err := d.getAgentBeadState(agentBeadID); err == nil {
+		d.logger.Printf("Agent bead %s reports state: %s", agentBeadID, beadState)
+	}
+}
+
+func (d *Daemon) shutdownLifecycleSession(sessionName string, running bool) error {
+	if !running {
+		return nil
+	}
+	if err := d.tmux.KillSessionWithProcesses(sessionName); err != nil {
+		return fmt.Errorf("killing session: %w", err)
+	}
+	d.logger.Printf("Killed session %s", sessionName)
+	return nil
+}
+
+func (d *Daemon) restartLifecycleSession(sessionName, identity string, running bool) error {
+	if running {
+		if err := d.tmux.KillSessionWithProcesses(sessionName); err != nil {
+			return fmt.Errorf("killing session: %w", err)
+		}
+		d.logger.Printf("Killed session %s for restart", sessionName)
+		time.Sleep(constants.ShutdownNotifyDelay)
+	}
+	if err := d.restartSession(sessionName, identity); err != nil {
+		return fmt.Errorf("restarting session: %w", err)
+	}
+	d.logger.Printf("Restarted session %s", sessionName)
+	return nil
 }
 
 // ParsedIdentity holds the components extracted from an agent identity string.
@@ -237,44 +242,40 @@ func parseIdentity(identity string) (*ParsedIdentity, error) {
 	case constants.RoleDeacon:
 		return &ParsedIdentity{RoleType: constants.RoleDeacon}, nil
 	}
-
-	// Pattern: <rig>-witness → witness role
-	if strings.HasSuffix(identity, "-witness") {
-		rigName := strings.TrimSuffix(identity, "-witness")
-		return &ParsedIdentity{RoleType: constants.RoleWitness, RigName: rigName}, nil
+	if parsed, ok := parseIdentitySuffix(identity, "-witness", constants.RoleWitness); ok {
+		return parsed, nil
 	}
-
-	// Pattern: <rig>-refinery → refinery role
-	if strings.HasSuffix(identity, "-refinery") {
-		rigName := strings.TrimSuffix(identity, "-refinery")
-		return &ParsedIdentity{RoleType: constants.RoleRefinery, RigName: rigName}, nil
+	if parsed, ok := parseIdentitySuffix(identity, "-refinery", constants.RoleRefinery); ok {
+		return parsed, nil
 	}
-
-	// Pattern: <rig>-crew-<name> → crew role
-	if strings.Contains(identity, "-crew-") {
-		parts := strings.SplitN(identity, "-crew-", 2)
-		if len(parts) == 2 {
-			return &ParsedIdentity{RoleType: constants.RoleCrew, RigName: parts[0], AgentName: parts[1]}, nil
-		}
+	if parsed, ok := parseIdentityDelimited(identity, "-crew-", constants.RoleCrew); ok {
+		return parsed, nil
 	}
-
-	// Pattern: <rig>-polecat-<name> → polecat role
-	if strings.Contains(identity, "-polecat-") {
-		parts := strings.SplitN(identity, "-polecat-", 2)
-		if len(parts) == 2 {
-			return &ParsedIdentity{RoleType: constants.RolePolecat, RigName: parts[0], AgentName: parts[1]}, nil
-		}
+	if parsed, ok := parseIdentityDelimited(identity, "-polecat-", constants.RolePolecat); ok {
+		return parsed, nil
 	}
-
-	// Pattern: <rig>/polecats/<name> → polecat role (slash format)
-	if strings.Contains(identity, "/polecats/") {
-		parts := strings.Split(identity, "/polecats/")
-		if len(parts) == 2 {
-			return &ParsedIdentity{RoleType: constants.RolePolecat, RigName: parts[0], AgentName: parts[1]}, nil
-		}
+	if parsed, ok := parseIdentityDelimited(identity, "/polecats/", constants.RolePolecat); ok {
+		return parsed, nil
 	}
-
 	return nil, fmt.Errorf("unknown identity format: %s", identity)
+}
+
+func parseIdentitySuffix(identity, suffix, role string) (*ParsedIdentity, bool) {
+	if !strings.HasSuffix(identity, suffix) {
+		return nil, false
+	}
+	return &ParsedIdentity{RoleType: role, RigName: strings.TrimSuffix(identity, suffix)}, true
+}
+
+func parseIdentityDelimited(identity, delimiter, role string) (*ParsedIdentity, bool) {
+	if !strings.Contains(identity, delimiter) {
+		return nil, false
+	}
+	parts := strings.Split(identity, delimiter)
+	if len(parts) != 2 {
+		return nil, false
+	}
+	return &ParsedIdentity{RoleType: role, RigName: parts[0], AgentName: parts[1]}, true
 }
 
 // getRoleConfigForIdentity loads role configuration from the config-based role system.
@@ -341,49 +342,55 @@ func (d *Daemon) identityToSession(identity string) string {
 // restartSession starts a new session for the given agent.
 // Uses role config if available, falls back to hardcoded defaults.
 func (d *Daemon) restartSession(sessionName, identity string) error {
-	// Get role config for this identity
 	roleConfig, parsed, err := d.getRoleConfigForIdentity(identity)
 	if err != nil {
 		return fmt.Errorf("parsing identity: %w", err)
 	}
+	if err := d.validateRestart(parsed, identity); err != nil {
+		return err
+	}
+	workDir := d.getWorkDir(roleConfig, parsed)
+	if workDir == "" {
+		return fmt.Errorf("cannot determine working directory for %s", identity)
+	}
+	if d.getNeedsPreSync(roleConfig, parsed) {
+		d.logger.Printf("Pre-syncing workspace for %s at %s", identity, workDir)
+		d.syncWorkspace(workDir)
+	}
+	work := d.buildRestartWork(sessionName, roleConfig, parsed, workDir)
+	started, err := d.startRestartWork(sessionName, parsed, work)
+	if err != nil {
+		return err
+	}
+	if started {
+		time.Sleep(constants.ShutdownNotifyDelay)
+	}
+	return nil
+}
 
-	// Check rig operational state for rig-level agents (witness, refinery, crew, polecat)
-	// Town-level agents (mayor, deacon) are not affected by rig state
+func (d *Daemon) validateRestart(parsed *ParsedIdentity, identity string) error {
 	if parsed.RigName != "" {
 		if operational, reason := isRigOperational(d, parsed.RigName); !operational {
 			d.logger.Printf("Skipping session restart for %s: %s", identity, reason)
 			return fmt.Errorf("cannot restart session: %s", reason)
 		}
 	}
-	if parsed.RoleType == constants.RoleRefinery {
-		if stop, err := refinery.ActiveSafetyStop(d.config.TownRoot, parsed.RigName); err != nil {
-			return fmt.Errorf("checking refinery safety stop: %w", err)
-		} else if stop != nil {
-			d.logger.Printf("Skipping session restart for %s: %s", identity, stop.Reason())
-			return refinery.NewSafetyStoppedError(stop)
-		}
+	if parsed.RoleType != constants.RoleRefinery {
+		return nil
 	}
-
-	// Determine working directory
-	workDir := d.getWorkDir(roleConfig, parsed)
-	if workDir == "" {
-		return fmt.Errorf("cannot determine working directory for %s", identity)
+	stop, err := refinery.ActiveSafetyStop(d.config.TownRoot, parsed.RigName)
+	if err != nil {
+		return fmt.Errorf("checking refinery safety stop: %w", err)
 	}
-
-	// Determine if pre-sync is needed
-	needsPreSync := d.getNeedsPreSync(roleConfig, parsed)
-
-	// Pre-sync workspace for agents with git worktrees
-	if needsPreSync {
-		d.logger.Printf("Pre-syncing workspace for %s at %s", identity, workDir)
-		d.syncWorkspace(workDir)
+	if stop != nil {
+		d.logger.Printf("Skipping session restart for %s: %s", identity, stop.Reason())
+		return refinery.NewSafetyStoppedError(stop)
 	}
+	return nil
+}
 
-	rigPath := ""
-	if parsed != nil && parsed.RigName != "" {
-		rigPath = filepath.Join(d.config.TownRoot, parsed.RigName)
-	}
-
+func (d *Daemon) buildRestartWork(sessionName string, roleConfig *beads.RoleConfig, parsed *ParsedIdentity, workDir string) session.Work {
+	rigPath := restartRigPath(d.config.TownRoot, parsed)
 	work := session.Work{
 		SessionID: sessionName,
 		WorkDir:   workDir,
@@ -399,56 +406,68 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 		Instructions: "Run `gt prime --hook` and begin work.",
 		Theme:        tmux.ResolveSessionTheme(d.config.TownRoot, parsed.RigName, parsed.RoleType, parsed.AgentName),
 	}
-	if roleConfig != nil && roleConfig.StartCommand != "" {
-		rc := config.ResolveRoleAgentConfig(parsed.RoleType, d.config.TownRoot, rigPath)
-		if config.IsResolvedAgentClaude(rc) && !isBuiltinClaudeStartCommand(roleConfig.StartCommand) {
-			work.Command = d.getStartCommand(roleConfig, parsed)
-		}
+	if restartUsesCustomCommand(d.config.TownRoot, rigPath, parsed, roleConfig) {
+		work.Command = d.getStartCommand(roleConfig, parsed)
 	}
+	return work
+}
 
+func restartRigPath(townRoot string, parsed *ParsedIdentity) string {
+	if parsed == nil || parsed.RigName == "" {
+		return ""
+	}
+	return filepath.Join(townRoot, parsed.RigName)
+}
+
+func restartUsesCustomCommand(townRoot, rigPath string, parsed *ParsedIdentity, roleConfig *beads.RoleConfig) bool {
+	if roleConfig == nil || roleConfig.StartCommand == "" {
+		return false
+	}
+	rc := config.ResolveRoleAgentConfig(parsed.RoleType, townRoot, rigPath)
+	return config.IsResolvedAgentClaude(rc) && !isBuiltinClaudeStartCommand(roleConfig.StartCommand)
+}
+
+func (d *Daemon) startRestartWork(sessionName string, parsed *ParsedIdentity, work session.Work) (bool, error) {
 	if _, err := session.KillExistingSession(d.tmux, d.config.TownRoot, sessionName, true); err != nil {
 		if errors.Is(err, session.ErrSessionAlive) {
 			d.logger.Printf("Session %s already running with healthy agent, skipping restart", sessionName)
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
-
 	if _, err := session.StartSession(d.tmux, parsed.RoleType, work); err != nil {
-		return err
+		return false, err
 	}
-	time.Sleep(constants.ShutdownNotifyDelay)
-	return nil
+	return true, nil
 }
 
 // getWorkDir determines the working directory for an agent.
 // Uses role config if available, falls back to hardcoded defaults.
 func (d *Daemon) getWorkDir(config *beads.RoleConfig, parsed *ParsedIdentity) string {
-	// If role config has work_dir_pattern, use it
 	if config != nil && config.WorkDirPattern != "" {
 		return beads.ExpandRolePattern(config.WorkDirPattern, d.config.TownRoot, parsed.RigName, parsed.AgentName, parsed.RoleType, session.PrefixFor(parsed.RigName))
 	}
+	return defaultWorkDir(d.config.TownRoot, parsed)
+}
 
-	// Fallback: use default patterns based on role type
+func defaultWorkDir(townRoot string, parsed *ParsedIdentity) string {
 	switch parsed.RoleType {
 	case constants.RoleMayor:
-		return d.config.TownRoot
+		return townRoot
 	case constants.RoleDeacon:
-		return d.config.TownRoot
+		return townRoot
 	case constants.RoleWitness:
-		return filepath.Join(d.config.TownRoot, parsed.RigName)
+		return filepath.Join(townRoot, parsed.RigName)
 	case constants.RoleRefinery:
-		return filepath.Join(d.config.TownRoot, parsed.RigName, "refinery", "rig")
+		return filepath.Join(townRoot, parsed.RigName, "refinery", "rig")
 	case constants.RoleCrew:
-		return filepath.Join(d.config.TownRoot, parsed.RigName, "crew", parsed.AgentName)
+		return filepath.Join(townRoot, parsed.RigName, "crew", parsed.AgentName)
 	case constants.RolePolecat:
-		// New structure: polecats/<name>/<rigname>/ (for LLM ergonomics)
-		// Old structure: polecats/<name>/ (for backward compat)
-		newPath := filepath.Join(d.config.TownRoot, parsed.RigName, "polecats", parsed.AgentName, parsed.RigName)
+		newPath := filepath.Join(townRoot, parsed.RigName, "polecats", parsed.AgentName, parsed.RigName)
 		if _, err := os.Stat(newPath); err == nil {
 			return newPath
 		}
-		return filepath.Join(d.config.TownRoot, parsed.RigName, "polecats", parsed.AgentName)
+		return filepath.Join(townRoot, parsed.RigName, "polecats", parsed.AgentName)
 	default:
 		return ""
 	}
@@ -483,62 +502,37 @@ func isBuiltinClaudeStartCommand(cmd string) bool {
 // Uses role config if available, then role-based agent selection, then hardcoded defaults.
 // Includes beacon + role-specific instructions in the CLI prompt.
 func (d *Daemon) getStartCommand(roleConfig *beads.RoleConfig, parsed *ParsedIdentity) string {
-	// Role config start_command: only use when the resolved agent is Claude.
-	// Built-in role TOMLs hardcode "exec claude ..." which bypasses the
-	// declarative agent resolution system. Fall through to agent resolution
-	// so non-Claude agents (copilot, codex, etc.) get the correct command.
-	if roleConfig != nil && roleConfig.StartCommand != "" {
-		rigPath := ""
-		if parsed != nil && parsed.RigName != "" {
-			rigPath = filepath.Join(d.config.TownRoot, parsed.RigName)
-		}
-		rc := config.ResolveRoleAgentConfig(parsed.RoleType, d.config.TownRoot, rigPath)
-		if !config.IsResolvedAgentClaude(rc) {
-			// Non-Claude agent: skip TOML start_command entirely (GH#2417).
-			// Built-in role TOMLs hardcode "exec claude ..." which is wrong
-			// for non-Claude agents. Fall through to BuildStartupCommandFromConfig
-			// which uses the resolved agent's command and args.
-		} else if !isBuiltinClaudeStartCommand(roleConfig.StartCommand) {
-			// Custom (non-builtin) start_command with Claude agent: use TOML
-			// pattern with template expansion.
-			cmd := beads.ExpandRolePattern(roleConfig.StartCommand, d.config.TownRoot, parsed.RigName, parsed.AgentName, parsed.RoleType, session.PrefixFor(parsed.RigName))
-			if strings.HasPrefix(cmd, "exec ") {
-				cmd = "exec env -u CLAUDECODE NODE_OPTIONS='' " + cmd[len("exec "):]
-			} else {
-				cmd = "env -u CLAUDECODE NODE_OPTIONS='' " + cmd
-			}
-			return cmd
-		}
-		// Claude agent with built-in start_command: fall through to
-		// BuildStartupCommandFromConfig for proper model flag resolution.
+	if command, ok := d.customStartCommand(roleConfig, parsed); ok {
+		return command
 	}
+	return d.defaultStartCommand(parsed)
+}
 
-	rigPath := ""
-	if parsed != nil && parsed.RigName != "" {
-		rigPath = filepath.Join(d.config.TownRoot, parsed.RigName)
+func (d *Daemon) customStartCommand(roleConfig *beads.RoleConfig, parsed *ParsedIdentity) (string, bool) {
+	if roleConfig == nil || roleConfig.StartCommand == "" {
+		return "", false
 	}
+	rigPath := restartRigPath(d.config.TownRoot, parsed)
+	rc := config.ResolveRoleAgentConfig(parsed.RoleType, d.config.TownRoot, rigPath)
+	if !config.IsResolvedAgentClaude(rc) || isBuiltinClaudeStartCommand(roleConfig.StartCommand) {
+		return "", false
+	}
+	cmd := beads.ExpandRolePattern(roleConfig.StartCommand, d.config.TownRoot, parsed.RigName, parsed.AgentName, parsed.RoleType, session.PrefixFor(parsed.RigName))
+	if strings.HasPrefix(cmd, "exec ") {
+		return "exec env -u CLAUDECODE NODE_OPTIONS='' " + cmd[len("exec "):], true
+	}
+	return "env -u CLAUDECODE NODE_OPTIONS='' " + cmd, true
+}
 
-	// Use role-based agent resolution for per-role model selection
+func (d *Daemon) defaultStartCommand(parsed *ParsedIdentity) string {
+	rigPath := restartRigPath(d.config.TownRoot, parsed)
 	runtimeConfig := config.ResolveRoleAgentConfig(parsed.RoleType, d.config.TownRoot, rigPath)
-
-	// Build recipient for beacon using non-path format to prevent LLMs
-	// from misinterpreting the recipient as a filesystem path.
 	recipient := session.BeaconRecipient(parsed.RoleType, parsed.AgentName, parsed.RigName)
 	prompt := session.BuildStartupPrompt(session.BeaconConfig{
 		Recipient: recipient,
 		Sender:    "daemon",
 		Topic:     "lifecycle-restart",
 	}, "Run `gt prime --hook` and begin work.")
-
-	// Inline AgentEnv into the command for ALL roles, not just polecat/crew.
-	// Without this, daemon-restarted witness/refinery/mayor/deacon sessions
-	// don't get BEADS_DOLT_PORT, GT_ROLE, GT_RIG, etc. in Claude's env. Their
-	// bd subprocess then falls back to embedded-Dolt auto-discovery instead of
-	// connecting to the central server (gt-neycp).
-	//
-	// PrependEnv produces "export K=V ... && exec cmd" which is safe for
-	// WaitForCommand/pane_current_command detection: exec replaces the shell,
-	// so tmux sees the agent process, not a shell running exports.
 	var sessionIDEnv string
 	if runtimeConfig.Session != nil {
 		sessionIDEnv = runtimeConfig.Session.SessionIDEnv
@@ -623,108 +617,87 @@ func (d *Daemon) syncWorkspace(workDir string) {
 		d.logger.Printf("Error: refusing daemon git sync in unsafe workdir %s: %v", workDir, err)
 		return
 	}
-
-	// Determine default branch from rig config
-	// workDir is like <townRoot>/<rigName>/<role>/rig or <townRoot>/<rigName>/crew/<name>
-	defaultBranch := "main" // fallback
-	rel, err := filepath.Rel(d.config.TownRoot, workDir)
-	if err == nil {
-		parts := strings.Split(rel, string(filepath.Separator))
-		if len(parts) > 0 {
-			rigPath := filepath.Join(d.config.TownRoot, parts[0])
-			if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.DefaultBranch != "" {
-				defaultBranch = rigCfg.DefaultBranch
-			}
-		}
-	}
-
-	// Capture stderr for debuggability
-	var stderr bytes.Buffer
-
-	// Fetch latest from origin
-	fetchCmd := exec.Command("git", "fetch", "origin")
-	fetchCmd.Dir = workDir
-	fetchCmd.Stderr = &stderr
-	fetchCmd.Env = os.Environ() // Inherit PATH to find git executable
-	util.SetDetachedProcessGroup(fetchCmd)
-	if err := fetchCmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg == "" {
-			errMsg = err.Error()
-		}
-		d.logger.Printf("Error: git fetch failed in %s: %s", workDir, errMsg)
+	defaultBranch := d.syncDefaultBranch(workDir)
+	if err := runWorkspaceGitCommand(workDir, "fetch", "origin"); err != nil {
+		d.logger.Printf("Error: git fetch failed in %s: %v", workDir, err)
 		return // Fail fast - don't start agent with stale code
 	}
-
-	// Reset stderr buffer
-	stderr.Reset()
-
-	// Check if working tree is dirty before attempting pull.
-	// "git pull --rebase" fails with "cannot pull with rebase: You have unstaged changes"
-	// on dirty trees, so we auto-stash first and restore after.
-	stashed := false
-	if d.isWorkingTreeDirty(workDir) {
-		d.logger.Printf("Warning: dirty working tree in %s, auto-stashing before pull", workDir)
-		stashCmd := exec.Command("git", "stash", "push", "-u", "-m", "daemon-auto-stash: pre-sync")
-		stashCmd.Dir = workDir
-		stashCmd.Stderr = &stderr
-		stashCmd.Env = os.Environ()
-		util.SetDetachedProcessGroup(stashCmd)
-		if err := stashCmd.Run(); err != nil {
-			errMsg := strings.TrimSpace(stderr.String())
-			if errMsg == "" {
-				errMsg = err.Error()
-			}
-			d.logger.Printf("Warning: git stash failed in %s: %s, skipping pull", workDir, errMsg)
-			d.recordSyncFailure(workDir)
-			return
-		}
-		stashed = true
-		stderr.Reset()
+	stashed, proceed := d.stashWorkspace(workDir)
+	if !proceed {
+		return
 	}
+	d.pullWorkspace(workDir, defaultBranch)
+	if stashed {
+		d.restoreWorkspace(workDir)
+	}
+}
 
-	// Pull with rebase to incorporate changes
-	pullCmd := exec.Command("git", "pull", "--rebase", "origin", defaultBranch)
-	pullCmd.Dir = workDir
-	pullCmd.Stderr = &stderr
-	pullCmd.Env = os.Environ() // Inherit PATH to find git executable
-	util.SetDetachedProcessGroup(pullCmd)
-	if err := pullCmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg == "" {
-			errMsg = err.Error()
+func (d *Daemon) syncDefaultBranch(workDir string) string {
+	defaultBranch := "main"
+	rel, err := filepath.Rel(d.config.TownRoot, workDir)
+	if err != nil {
+		return defaultBranch
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 0 {
+		return defaultBranch
+	}
+	rigCfg, err := rig.LoadRigConfig(filepath.Join(d.config.TownRoot, parts[0]))
+	if err == nil && rigCfg.DefaultBranch != "" {
+		return rigCfg.DefaultBranch
+	}
+	return defaultBranch
+}
+
+func runWorkspaceGitCommand(workDir string, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workDir
+	cmd.Env = os.Environ()
+	util.SetDetachedProcessGroup(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if message := strings.TrimSpace(stderr.String()); message != "" {
+			return errors.New(message)
 		}
+		return err
+	}
+	return nil
+}
+
+func (d *Daemon) stashWorkspace(workDir string) (bool, bool) {
+	if !d.isWorkingTreeDirty(workDir) {
+		return false, true
+	}
+	d.logger.Printf("Warning: dirty working tree in %s, auto-stashing before pull", workDir)
+	if err := runWorkspaceGitCommand(workDir, "stash", "push", "-u", "-m", "daemon-auto-stash: pre-sync"); err != nil {
+		d.logger.Printf("Warning: git stash failed in %s: %v, skipping pull", workDir, err)
+		d.recordSyncFailure(workDir)
+		return false, false
+	}
+	return true, true
+}
+
+func (d *Daemon) pullWorkspace(workDir, defaultBranch string) {
+	if err := runWorkspaceGitCommand(workDir, "pull", "--rebase", "origin", defaultBranch); err == nil {
+		d.resetSyncFailures(workDir)
+		return
+	} else {
 		d.recordSyncFailure(workDir)
 		failures := d.getSyncFailures(workDir)
 		escalationThreshold := d.loadOperationalConfig().GetDaemonConfig().SyncFailureEscalationThresholdV()
 		if failures >= escalationThreshold {
-			d.logger.Printf("Error: git pull repeatedly failing in %s (%d consecutive failures): %s", workDir, failures, errMsg)
-		} else {
-			d.logger.Printf("Warning: git pull failed in %s (%d consecutive failure(s)): %s", workDir, failures, errMsg)
+			d.logger.Printf("Error: git pull repeatedly failing in %s (%d consecutive failures): %v", workDir, failures, err)
+			return
 		}
-	} else {
-		// Pull succeeded - reset failure counter
-		d.resetSyncFailures(workDir)
+		d.logger.Printf("Warning: git pull failed in %s (%d consecutive failure(s)): %v", workDir, failures, err)
 	}
+}
 
-	// Restore stashed changes if we stashed them
-	if stashed {
-		stderr.Reset()
-		popCmd := exec.Command("git", "stash", "pop")
-		popCmd.Dir = workDir
-		popCmd.Stderr = &stderr
-		popCmd.Env = os.Environ()
-		util.SetDetachedProcessGroup(popCmd)
-		if err := popCmd.Run(); err != nil {
-			errMsg := strings.TrimSpace(stderr.String())
-			if errMsg == "" {
-				errMsg = err.Error()
-			}
-			d.logger.Printf("Warning: git stash pop failed in %s: %s (stashed changes preserved in stash list)", workDir, errMsg)
-		}
+func (d *Daemon) restoreWorkspace(workDir string) {
+	if err := runWorkspaceGitCommand(workDir, "stash", "pop"); err != nil {
+		d.logger.Printf("Warning: git stash pop failed in %s: %v (stashed changes preserved in stash list)", workDir, err)
 	}
-
-	// Note: With Dolt backend, beads changes are persisted immediately - no sync needed
 }
 
 // isWorkingTreeDirty checks if a git working tree has uncommitted changes.
@@ -935,17 +908,22 @@ func (d *Daemon) identityToAgentBeadID(identity string) string {
 // identityToBDActor converts a daemon identity to BD_ACTOR format (with slashes).
 // Uses parseIdentity to extract components, then builds the slash format.
 func identityToBDActor(identity string) string {
-	// Handle already-slash-formatted identities
-	if strings.Contains(identity, "/polecats/") || strings.Contains(identity, "/crew/") ||
-		strings.Contains(identity, "/witness") || strings.Contains(identity, "/refinery") {
+	if isSlashIdentity(identity) {
 		return identity
 	}
-
 	parsed, err := parseIdentity(identity)
 	if err != nil {
-		return identity // Unknown format - return as-is
+		return identity
 	}
+	return bdActorForIdentity(parsed, identity)
+}
 
+func isSlashIdentity(identity string) bool {
+	return strings.Contains(identity, "/polecats/") || strings.Contains(identity, "/crew/") ||
+		strings.Contains(identity, "/witness") || strings.Contains(identity, "/refinery")
+}
+
+func bdActorForIdentity(parsed *ParsedIdentity, fallback string) string {
 	switch parsed.RoleType {
 	case constants.RoleMayor, constants.RoleDeacon:
 		return parsed.RoleType
@@ -958,7 +936,7 @@ func identityToBDActor(identity string) string {
 	case constants.RolePolecat:
 		return parsed.RigName + "/polecats/" + parsed.AgentName
 	default:
-		return identity
+		return fallback
 	}
 }
 
@@ -1002,49 +980,58 @@ func (d *Daemon) listAgentBeadsJSON(dest interface{}) error {
 // Returns a combined JSON array with wisps taking precedence for duplicate IDs.
 // Filters wisps to only include agent beads (type=agent or label gt:agent).
 func mergeAgentBeadJSON(wispJSON, issuesJSON []byte) []byte {
-	type agentEntry struct {
-		ID     string   `json:"id"`
-		Type   string   `json:"issue_type"`
-		Labels []string `json:"labels"`
-	}
-
-	// Track IDs from wisps to avoid duplicates
 	seenIDs := make(map[string]bool)
-	var result []json.RawMessage
-
-	// Parse wisps first (primary source)
-	if len(wispJSON) > 0 {
-		var wispEntries []json.RawMessage
-		if json.Unmarshal(wispJSON, &wispEntries) == nil {
-			for _, raw := range wispEntries {
-				var entry agentEntry
-				if json.Unmarshal(raw, &entry) == nil && beads.IsAgentBead(&beads.Issue{Type: entry.Type, Labels: entry.Labels}) {
-					seenIDs[entry.ID] = true
-					result = append(result, raw)
-				}
-			}
-		}
-	}
-
-	// Then issues (backward compat, skip duplicates)
-	if len(issuesJSON) > 0 {
-		var issueEntries []json.RawMessage
-		if json.Unmarshal(issuesJSON, &issueEntries) == nil {
-			for _, raw := range issueEntries {
-				var entry agentEntry
-				if json.Unmarshal(raw, &entry) == nil && !seenIDs[entry.ID] {
-					result = append(result, raw)
-				}
-			}
-		}
-	}
-
+	result := mergeWispAgentJSON(wispJSON, seenIDs)
+	result = mergeIssueAgentJSON(issuesJSON, seenIDs, result)
 	if len(result) == 0 {
 		return nil
 	}
 
 	combined, _ := json.Marshal(result)
 	return combined
+}
+
+type agentBeadJSONEntry struct {
+	ID     string   `json:"id"`
+	Type   string   `json:"issue_type"`
+	Labels []string `json:"labels"`
+}
+
+func mergeWispAgentJSON(rawJSON []byte, seenIDs map[string]bool) []json.RawMessage {
+	if len(rawJSON) == 0 {
+		return nil
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(rawJSON, &entries) != nil {
+		return nil
+	}
+	var result []json.RawMessage
+	for _, raw := range entries {
+		var entry agentBeadJSONEntry
+		if json.Unmarshal(raw, &entry) != nil || !beads.IsAgentBead(&beads.Issue{Type: entry.Type, Labels: entry.Labels}) {
+			continue
+		}
+		seenIDs[entry.ID] = true
+		result = append(result, raw)
+	}
+	return result
+}
+
+func mergeIssueAgentJSON(rawJSON []byte, seenIDs map[string]bool, result []json.RawMessage) []json.RawMessage {
+	if len(rawJSON) == 0 {
+		return result
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(rawJSON, &entries) != nil {
+		return result
+	}
+	for _, raw := range entries {
+		var entry agentBeadJSONEntry
+		if json.Unmarshal(raw, &entry) == nil && !seenIDs[entry.ID] {
+			result = append(result, raw)
+		}
+	}
+	return result
 }
 
 // checkGUPPViolations looks for agents that have work-on-hook but aren't
