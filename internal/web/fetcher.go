@@ -834,118 +834,87 @@ func determineColorClass(ciStatus, mergeable string) string {
 
 // FetchWorkers fetches all running worker sessions (polecats and refinery) with activity data.
 func (f *LiveConvoyFetcher) FetchWorkers() ([]WorkerRow, error) {
-	// Load registered rigs to filter sessions
-	rigsConfigPath := filepath.Join(f.townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	rigsConfig, err := config.LoadRigsConfig(filepath.Join(f.townRoot, "mayor", "rigs.json"))
 	if err != nil {
 		return nil, fmt.Errorf("loading rigs config: %w", err)
 	}
-
-	// Build set of registered rig names
 	registeredRigs := make(map[string]bool)
 	for rigName := range rigsConfig.Rigs {
 		registeredRigs[rigName] = true
 	}
-
-	// Pre-fetch assigned issues map: assignee -> (issueID, title)
-	assignedIssues := f.getAssignedIssuesMap()
-
-	// Query all tmux sessions with window_activity for more accurate timing
 	stdout, err := f.runTmuxCmd("list-sessions", "-F", "#{session_name}|#{window_activity}")
 	if err != nil {
-		// tmux not running or no sessions
 		return nil, nil
 	}
-
-	// Pre-fetch merge queue count to determine refinery idle status
-	mergeQueueCount := f.getMergeQueueCount()
-
-	var workers []WorkerRow
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) < 2 {
-			continue
-		}
-
-		sessionName := parts[0]
-
-		// Parse session name using the fetcher's own registry to avoid
-		// dependency on global DefaultRegistry initialization (gt-y24).
-		identity, err := session.ParseSessionNameWithRegistry(sessionName, f.registry)
-		if err != nil {
-			log.Printf("dashboard: FetchWorkers: skipping session %q: %v", sessionName, err)
-			continue
-		}
-
-		rig := identity.Rig
-
-		// Skip rigs not registered in this workspace
-		if !registeredRigs[rig] {
-			continue
-		}
-
-		// Skip non-worker sessions (witness, mayor, deacon, boot)
-		switch identity.Role {
-		case session.RoleMayor, session.RoleDeacon, session.RoleWitness:
-			continue
-		}
-
-		// Determine agent type and worker name
-		workerName := identity.Name
-		agentType := constants.RolePolecat // Default for ephemeral sessions (polecats, crew)
-		if identity.Role == session.RoleRefinery {
-			agentType = constants.RoleRefinery
-		}
-
-		// Parse activity timestamp
-		var activityUnix int64
-		if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil || activityUnix == 0 {
-			continue
-		}
-		activityTime := time.Unix(activityUnix, 0)
-		activityAge := time.Since(activityTime)
-
-		// Get status hint - special handling for refinery
-		var statusHint string
-		if workerName == "refinery" {
-			statusHint = f.getRefineryStatusHint(mergeQueueCount)
-		} else {
-			statusHint = f.getWorkerStatusHint(sessionName)
-		}
-
-		// Look up assigned issue for this worker
-		// Assignee format: "rigname/polecats/workername"
-		assignee := fmt.Sprintf("%s/polecats/%s", rig, workerName)
-		var issueID, issueTitle string
-		if issue, ok := assignedIssues[assignee]; ok {
-			issueID = issue.ID
-			issueTitle = issue.Title
-			// Keep full title - CSS handles overflow
-		}
-
-		// Calculate work status based on activity age and issue assignment
-		workStatus := calculateWorkerWorkStatus(activityAge, issueID, workerName, f.staleThreshold, f.stuckThreshold)
-
-		workers = append(workers, WorkerRow{
-			Name:         workerName,
-			Rig:          rig,
-			SessionID:    sessionName,
-			LastActivity: activity.Calculate(activityTime),
-			StatusHint:   statusHint,
-			IssueID:      issueID,
-			IssueTitle:   issueTitle,
-			WorkStatus:   workStatus,
-			AgentType:    agentType,
-		})
+	context := workerFetchContext{
+		registeredRigs:  registeredRigs,
+		assignedIssues:  f.getAssignedIssuesMap(),
+		mergeQueueCount: f.getMergeQueueCount(),
 	}
-
+	var workers []WorkerRow
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		if row, ok := f.workerRowFromSession(line, context); ok {
+			workers = append(workers, row)
+		}
+	}
 	return workers, nil
+}
+
+type workerFetchContext struct {
+	registeredRigs  map[string]bool
+	assignedIssues  map[string]assignedIssue
+	mergeQueueCount int
+}
+
+func (f *LiveConvoyFetcher) workerRowFromSession(line string, ctx workerFetchContext) (WorkerRow, bool) {
+	parts := strings.Split(line, "|")
+	if line == "" || len(parts) < 2 {
+		return WorkerRow{}, false
+	}
+	identity, err := session.ParseSessionNameWithRegistry(parts[0], f.registry)
+	if err != nil {
+		log.Printf("dashboard: FetchWorkers: skipping session %q: %v", parts[0], err)
+		return WorkerRow{}, false
+	}
+	if !ctx.registeredRigs[identity.Rig] || isNonWorkerRole(identity.Role) {
+		return WorkerRow{}, false
+	}
+	activityTime, ok := workerActivityTime(parts[1])
+	if !ok {
+		return WorkerRow{}, false
+	}
+	issue := ctx.assignedIssues[fmt.Sprintf("%s/polecats/%s", identity.Rig, identity.Name)]
+	agentType := constants.RolePolecat
+	if identity.Role == session.RoleRefinery {
+		agentType = constants.RoleRefinery
+	}
+	return WorkerRow{
+		Name: identity.Name, Rig: identity.Rig, SessionID: parts[0],
+		LastActivity: activity.Calculate(activityTime),
+		StatusHint:   f.workerStatusHint(identity.Name, parts[0], ctx.mergeQueueCount),
+		IssueID:      issue.ID, IssueTitle: issue.Title,
+		WorkStatus: calculateWorkerWorkStatus(time.Since(activityTime), issue.ID, identity.Name, f.staleThreshold, f.stuckThreshold),
+		AgentType:  agentType,
+	}, true
+}
+
+func isNonWorkerRole(role session.Role) bool {
+	return role == session.RoleMayor || role == session.RoleDeacon || role == session.RoleWitness
+}
+
+func workerActivityTime(value string) (time.Time, bool) {
+	var unix int64
+	if _, err := fmt.Sscanf(value, "%d", &unix); err != nil || unix == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(unix, 0), true
+}
+
+func (f *LiveConvoyFetcher) workerStatusHint(workerName, sessionName string, mergeQueueCount int) string {
+	if workerName == "refinery" {
+		return f.getRefineryStatusHint(mergeQueueCount)
+	}
+	return f.getWorkerStatusHint(sessionName)
 }
 
 // assignedIssue holds issue info for the assigned issues map.
