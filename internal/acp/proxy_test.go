@@ -18,12 +18,6 @@ import (
 	"time"
 )
 
-func setProxyStreams(proxy *Proxy, in io.Reader, out io.Writer) {
-	proxy.stdin = in
-	proxy.stdout = out
-	proxy.uiEncoder = json.NewEncoder(out)
-}
-
 func waitForAgent(proxy *Proxy) <-chan error {
 	done := make(chan error, 1)
 	go func() { done <- proxy.cmd.Wait() }()
