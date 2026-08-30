@@ -1,21 +1,15 @@
 package doctor
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/jonbaldie/gastown/internal/beads"
-	"github.com/jonbaldie/gastown/internal/config"
-	"github.com/jonbaldie/gastown/internal/constants"
-	"github.com/jonbaldie/gastown/internal/doltserver"
-	"github.com/jonbaldie/gastown/internal/git"
 )
 
 // RigIsGitRepoCheck verifies the rig has a valid mayor/rig git clone.
@@ -111,97 +105,16 @@ func NewGitExcludeConfiguredCheck() *GitExcludeConfiguredCheck {
 	}
 }
 
-// requiredExcludes returns the directories that should be excluded.
-func (c *GitExcludeConfiguredCheck) requiredExcludes() []string {
-	return []string{"/polecats/", "/witness/", "/refinery/", "/mayor/"}
-}
-
 // Run checks if .git/info/exclude contains required entries.
 func (c *GitExcludeConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
-	rigPath := ctx.RigPath()
-	if rigPath == "" {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: "No rig specified",
-		}
+	gitDir, result := gitExcludeMayorGitDir(c, ctx)
+	if result != nil {
+		return result
 	}
-
-	// Check mayor/rig/ which is the authoritative clone
-	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
-	gitDir := filepath.Join(mayorRigPath, ".git")
-	info, err := os.Stat(gitDir)
-	if os.IsNotExist(err) {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: "No mayor/rig clone found",
-			FixHint: "Run rig-is-git-repo check first",
-		}
-	}
-
-	// If .git is a file (worktree), read the actual git dir
-	if info.Mode().IsRegular() {
-		content, err := os.ReadFile(gitDir)
-		if err != nil {
-			return &CheckResult{
-				Name:    c.Name(),
-				Status:  StatusError,
-				Message: fmt.Sprintf("Cannot read .git file: %v", err),
-			}
-		}
-		// Format: "gitdir: /path/to/actual/git/dir"
-		line := strings.TrimSpace(string(content))
-		if strings.HasPrefix(line, "gitdir: ") {
-			gitDir = strings.TrimPrefix(line, "gitdir: ")
-			// Resolve relative paths
-			if !filepath.IsAbs(gitDir) {
-				gitDir = filepath.Join(rigPath, gitDir)
-			}
-		}
-	}
-
-	c.excludePath = filepath.Join(gitDir, "info", "exclude")
-
-	// Read existing excludes
-	existing := make(map[string]bool)
-	if file, err := os.Open(c.excludePath); err == nil {
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line != "" && !strings.HasPrefix(line, "#") {
-				existing[line] = true
-			}
-		}
-		_ = file.Close() //nolint:gosec // G104: best-effort close
-	}
-
-	// Check for missing entries. Accept either anchored (/refinery/) or
-	// legacy un-anchored (refinery/) forms — the un-anchored form is overly
-	// broad but still covers the required directory.
-	c.missingEntries = nil
-	for _, required := range c.requiredExcludes() {
-		unanchored := strings.TrimPrefix(required, "/")
-		if !existing[required] && !existing[unanchored] {
-			c.missingEntries = append(c.missingEntries, required)
-		}
-	}
-
-	if len(c.missingEntries) == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "Git exclude properly configured",
-		}
-	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusWarning,
-		Message: fmt.Sprintf("%d Gas Town directories not excluded", len(c.missingEntries)),
-		Details: []string{fmt.Sprintf("Missing: %s", strings.Join(c.missingEntries, ", "))},
-		FixHint: "Run 'gt doctor --fix' to add missing entries",
-	}
+	loadGitExcludeMissing(c, gitDir)
+	_ = c.excludePath
+	_ = c.missingEntries
+	return reportGitExclude(c)
 }
 
 // Fix appends missing entries to .git/info/exclude.
@@ -275,84 +188,10 @@ func (c *HooksPathConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
 			Message: "No rig specified",
 		}
 	}
-
 	c.unconfiguredClones = nil
-
-	// Check all clone locations
-	clonePaths := []string{
-		filepath.Join(rigPath, "mayor", "rig"),
-		filepath.Join(rigPath, "refinery", "rig"),
-	}
-
-	// Add crew clones
-	crewDir := filepath.Join(rigPath, "crew")
-	if entries, err := os.ReadDir(crewDir); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				clonePaths = append(clonePaths, filepath.Join(crewDir, entry.Name()))
-			}
-		}
-	}
-
-	// Add polecat clones
-	polecatDir := filepath.Join(rigPath, "polecats")
-	if entries, err := os.ReadDir(polecatDir); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				clonePaths = append(clonePaths, filepath.Join(polecatDir, entry.Name()))
-			}
-		}
-	}
-
-	for _, clonePath := range clonePaths {
-		// Skip if not a git repo
-		if _, err := os.Stat(filepath.Join(clonePath, ".git")); os.IsNotExist(err) {
-			continue
-		}
-
-		// Skip if no .githooks directory exists
-		if _, err := os.Stat(filepath.Join(clonePath, ".githooks")); os.IsNotExist(err) {
-			continue
-		}
-
-		// Check core.hooksPath
-		cmd := exec.Command("git", "-C", clonePath, "config", "--get", "core.hooksPath")
-		output, err := cmd.Output()
-		if err != nil || strings.TrimSpace(string(output)) != ".githooks" {
-			// Get relative path for cleaner output
-			relPath, _ := filepath.Rel(rigPath, clonePath)
-			if relPath == "" {
-				relPath = clonePath
-			}
-			c.unconfiguredClones = append(c.unconfiguredClones, clonePath)
-		}
-	}
-
-	if len(c.unconfiguredClones) == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "All clones have hooks configured",
-		}
-	}
-
-	// Build details with relative paths
-	var details []string
-	for _, clonePath := range c.unconfiguredClones {
-		relPath, _ := filepath.Rel(rigPath, clonePath)
-		if relPath == "" {
-			relPath = clonePath
-		}
-		details = append(details, relPath)
-	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusWarning,
-		Message: fmt.Sprintf("%d clone(s) missing hooks configuration", len(c.unconfiguredClones)),
-		Details: details,
-		FixHint: "Run 'gt doctor --fix' to configure hooks",
-	}
+	collectUnconfiguredHookClones(c, rigPath)
+	_ = c.unconfiguredClones
+	return reportHooksPath(c, rigPath)
 }
 
 // Fix configures core.hooksPath for all unconfigured clones.
@@ -553,60 +392,17 @@ func (c *RefineryExistsCheck) Run(ctx *CheckContext) *CheckResult {
 
 // Fix creates missing refinery structure.
 func (c *RefineryExistsCheck) Fix(_ *CheckContext) error {
+	_ = c.needsCreate
+	_ = c.needsMail
+	_ = c.needsClone
 	refineryDir := filepath.Join(c.rigPath, "refinery")
-
-	if c.needsCreate {
-		if err := os.MkdirAll(refineryDir, 0755); err != nil {
-			return fmt.Errorf("failed to create refinery/: %w", err)
-		}
+	if err := createRefineryDirIfNeeded(c, refineryDir); err != nil {
+		return err
 	}
-
-	if c.needsMail {
-		mailDir := filepath.Join(refineryDir, "mail")
-		if err := os.MkdirAll(mailDir, 0755); err != nil {
-			return fmt.Errorf("failed to create refinery/mail/: %w", err)
-		}
-		inboxPath := filepath.Join(mailDir, "inbox.jsonl")
-		if err := os.WriteFile(inboxPath, []byte{}, 0644); err != nil {
-			return fmt.Errorf("failed to create inbox.jsonl: %w", err)
-		}
+	if err := createRefineryMailIfNeeded(c, refineryDir); err != nil {
+		return err
 	}
-
-	// Auto-repair refinery worktree from shared bare repo (.repo.git).
-	// The refinery/rig is a worktree (not a full clone), so we don't need
-	// the repo URL -- we just create a worktree from the local bare repo.
-	if c.needsClone {
-		bareRepoPath := filepath.Join(c.rigPath, ".repo.git")
-		if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
-			return fmt.Errorf("cannot auto-create refinery/rig/ worktree: bare repo not found at %s", bareRepoPath)
-		}
-
-		bareGit := git.NewGitWithDir(bareRepoPath, "")
-		_ = bareGit.WorktreePrune()
-
-		rigClone := filepath.Join(refineryDir, "rig")
-		// Detect default branch from rig config
-		rigCfgPath := filepath.Join(c.rigPath, "settings", "rig.json")
-		defaultBranch := "main"
-		if data, err := os.ReadFile(rigCfgPath); err == nil {
-			var cfg struct {
-				DefaultBranch string `json:"default_branch"`
-			}
-			if json.Unmarshal(data, &cfg) == nil && cfg.DefaultBranch != "" {
-				defaultBranch = cfg.DefaultBranch
-			}
-		}
-
-		if err := bareGit.WorktreeAddExisting(rigClone, defaultBranch); err != nil {
-			return fmt.Errorf("creating refinery worktree from bare repo: %w", err)
-		}
-
-		// Configure hooks path
-		refineryGit := git.NewGit(rigClone)
-		_ = refineryGit.ConfigureHooksPath()
-	}
-
-	return nil
+	return createRefineryWorktreeIfNeeded(c, refineryDir)
 }
 
 // MayorCloneExistsCheck verifies the mayor/rig clone exists.
@@ -714,118 +510,12 @@ func NewPolecatClonesValidCheck() *PolecatClonesValidCheck {
 
 // Run checks if each polecat directory is a valid git clone.
 func (c *PolecatClonesValidCheck) Run(ctx *CheckContext) *CheckResult {
-	rigPath := ctx.RigPath()
-	if rigPath == "" {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: "No rig specified",
-		}
+	entries, result := listPolecatCloneEntries(c, ctx)
+	if result != nil {
+		return result
 	}
-
-	polecatsDir := filepath.Join(rigPath, "polecats")
-	entries, err := os.ReadDir(polecatsDir)
-	if os.IsNotExist(err) {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No polecats/ directory (none deployed)",
-		}
-	}
-	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: fmt.Sprintf("Cannot read polecats/: %v", err),
-		}
-	}
-
-	var issues []string
-	var warnings []string
-	validCount := 0
-
-	// Get rig name for new structure path detection
-	rigName := ctx.RigName
-
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-
-		polecatName := entry.Name()
-
-		// Determine worktree path (handle both new and old structures)
-		// New structure: polecats/<name>/<rigname>/
-		// Old structure: polecats/<name>/
-		polecatPath := filepath.Join(polecatsDir, polecatName, rigName)
-		if _, err := os.Stat(polecatPath); os.IsNotExist(err) {
-			polecatPath = filepath.Join(polecatsDir, polecatName)
-		}
-
-		// Check if it's a git clone
-		gitPath := filepath.Join(polecatPath, ".git")
-		if _, err := os.Stat(gitPath); os.IsNotExist(err) {
-			issues = append(issues, fmt.Sprintf("%s: not a git clone", polecatName))
-			continue
-		}
-
-		// Verify git status works and check for uncommitted changes
-		cmd := exec.Command("git", "-C", polecatPath, "status", "--porcelain")
-		output, err := cmd.Output()
-		if err != nil {
-			issues = append(issues, fmt.Sprintf("%s: git status failed", polecatName))
-			continue
-		}
-
-		if len(output) > 0 {
-			warnings = append(warnings, fmt.Sprintf("%s: has uncommitted changes", polecatName))
-		}
-
-		// Check if on a polecat branch
-		cmd = exec.Command("git", "-C", polecatPath, "branch", "--show-current")
-		branchOutput, err := cmd.Output()
-		if err == nil {
-			branch := strings.TrimSpace(string(branchOutput))
-			if !strings.HasPrefix(branch, constants.BranchPolecatPrefix) {
-				warnings = append(warnings, fmt.Sprintf("%s: on branch '%s' (expected %s*)", polecatName, branch, constants.BranchPolecatPrefix))
-			}
-		}
-
-		validCount++
-	}
-
-	if len(issues) > 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: fmt.Sprintf("%d polecat(s) invalid", len(issues)),
-			Details: append(issues, warnings...),
-			FixHint: "Cannot auto-fix (data loss risk)",
-		}
-	}
-
-	if len(warnings) > 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: fmt.Sprintf("%d polecat(s) valid, %d warning(s)", validCount, len(warnings)),
-			Details: warnings,
-		}
-	}
-
-	if validCount == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No polecats deployed",
-		}
-	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusOK,
-		Message: fmt.Sprintf("%d polecat(s) valid", validCount),
-	}
+	scan := inspectPolecatClones(ctx, entries)
+	return reportPolecatClones(c, scan)
 }
 
 // BeadsConfigValidCheck verifies beads configuration if .beads/ exists.
@@ -918,7 +608,6 @@ func NewBeadsRedirectCheck() *BeadsRedirectCheck {
 
 // Run checks if the rig-level beads redirect exists when needed.
 func (c *BeadsRedirectCheck) Run(ctx *CheckContext) *CheckResult {
-	// Only applies when checking a specific rig
 	if ctx.RigName == "" {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -926,96 +615,10 @@ func (c *BeadsRedirectCheck) Run(ctx *CheckContext) *CheckResult {
 			Message: "No rig specified (skipping redirect check)",
 		}
 	}
-
-	rigPath := ctx.RigPath()
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
-	rigBeadsDir := filepath.Join(rigPath, ".beads")
-	redirectPath := filepath.Join(rigBeadsDir, "redirect")
-
-	// Check if this rig has tracked beads (mayor/rig/.beads exists)
-	if _, err := os.Stat(mayorRigBeads); os.IsNotExist(err) {
-		// No tracked beads - check if rig/.beads exists (local beads)
-		if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
-			return &CheckResult{
-				Name:    c.Name(),
-				Status:  StatusError,
-				Message: "No .beads directory found at rig root",
-				Details: []string{
-					"Beads database not initialized for this rig",
-					"This prevents issue tracking for this rig",
-				},
-				FixHint: "Run 'gt doctor --fix --rig " + ctx.RigName + "' to initialize beads",
-			}
-		}
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "Rig uses local beads (no redirect needed)",
-		}
+	if result := checkBeadsRedirectWithoutTracked(c, ctx); result != nil {
+		return result
 	}
-
-	// Tracked beads exist - check for conflicting local beads
-	hasLocalData := hasBeadsData(rigBeadsDir)
-	redirectExists := false
-	if _, err := os.Stat(redirectPath); err == nil {
-		redirectExists = true
-	}
-
-	// Case: Local beads directory has actual data (not just redirect)
-	if hasLocalData && !redirectExists {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: "Conflicting local beads found with tracked beads",
-			Details: []string{
-				"Tracked beads exist at: mayor/rig/.beads",
-				"Local beads with data exist at: .beads/",
-				"Fix will remove local beads and create redirect to tracked beads",
-			},
-			FixHint: "Run 'gt doctor --fix --rig " + ctx.RigName + "' to fix",
-		}
-	}
-
-	// Case: No redirect file (but no conflicting data)
-	if !redirectExists {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: "Missing rig-level beads redirect for tracked beads",
-			Details: []string{
-				"Tracked beads exist at: mayor/rig/.beads",
-				"Missing redirect at: .beads/redirect",
-				"Without this redirect, bd commands from rig root won't find beads",
-			},
-			FixHint: "Run 'gt doctor --fix' to create the redirect",
-		}
-	}
-
-	// Verify redirect points to correct location
-	content, err := os.ReadFile(redirectPath)
-	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: fmt.Sprintf("Could not read redirect file: %v", err),
-		}
-	}
-
-	target := strings.TrimSpace(string(content))
-	if target != "mayor/rig/.beads" {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: fmt.Sprintf("Redirect points to %q, expected mayor/rig/.beads", target),
-			FixHint: "Run 'gt doctor --fix --rig " + ctx.RigName + "' to correct the redirect",
-		}
-	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusOK,
-		Message: "Rig-level beads redirect is correctly configured",
-	}
+	return checkBeadsRedirectWithTracked(c, ctx)
 }
 
 // Fix creates or corrects the rig-level beads redirect, or initializes beads if missing.
@@ -1023,102 +626,13 @@ func (c *BeadsRedirectCheck) Fix(ctx *CheckContext) error {
 	if ctx.RigName == "" {
 		return nil
 	}
-
-	rigPath := ctx.RigPath()
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
-	rigBeadsDir := filepath.Join(rigPath, ".beads")
-	redirectPath := filepath.Join(rigBeadsDir, "redirect")
-
-	// Check if tracked beads exist
-	hasTrackedBeads := true
-	if _, err := os.Stat(mayorRigBeads); os.IsNotExist(err) {
-		hasTrackedBeads = false
+	state := beadsRedirectFixState(ctx)
+	if !state.hasTracked && !state.hasLocal {
+		return initMissingRigBeads(ctx)
 	}
-
-	// Check if local beads exist
-	hasLocalBeads := true
-	if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
-		hasLocalBeads = false
+	if state.hasTracked {
+		return writeBeadsRedirect(ctx, state.hasLocal)
 	}
-
-	// Case 1: No beads at all - initialize with bd init
-	if !hasTrackedBeads && !hasLocalBeads {
-		// Get the rig's beads prefix from rigs.json (falls back to "gt" if not found)
-		prefix := config.GetRigPrefix(ctx.TownRoot, ctx.RigName)
-
-		// Create .beads directory
-		if err := beads.EnsureDir(rigBeadsDir); err != nil {
-			return fmt.Errorf("creating .beads directory: %w", err)
-		}
-
-		// Run bd init with the configured prefix (Dolt is the only backend since bd v0.51.0).
-		// Gas Town rigs use Dolt server mode via the shared town Dolt sql-server.
-		initArgs := []string{"init"}
-		if prefix != "" {
-			initArgs = append(initArgs, "--prefix", prefix)
-		}
-		initArgs = append(initArgs, "--database", ctx.RigName)
-		initArgs = append(initArgs, "--server")
-		doltCfg := doltserver.DefaultConfig(ctx.TownRoot)
-		initArgs = append(initArgs, "--server-port", strconv.Itoa(doltCfg.Port))
-		bdEnv := append(stripEnvPrefixes(os.Environ(), "BEADS_DIR=", "BEADS_DB=", "BEADS_DOLT_SERVER_DATABASE="),
-			"BEADS_DIR="+rigBeadsDir,
-			"BEADS_DOLT_SERVER_DATABASE="+ctx.RigName,
-		)
-		cmd := beads.Spawn(initArgs...)
-		cmd.Dir = rigPath
-		cmd.Env = bdEnv
-		output, err := cmd.CombinedOutput()
-		if chmodErr := beads.EnsureDir(rigBeadsDir); chmodErr != nil {
-			return chmodErr
-		}
-		if err != nil {
-			// bd might not be installed — create config.yaml via shared helper.
-			if writeErr := beads.EnsureConfigYAML(rigBeadsDir, prefix); writeErr != nil {
-				return fmt.Errorf("bd init failed (%v) and fallback config creation failed: %w", err, writeErr)
-			}
-			// Continue - minimal config created
-		} else {
-			_ = output // bd init succeeded
-			// Configure Gas Town bead types (beads v0.46.0+). Rig remains durable,
-			// not infra/wisp-backed.
-			for _, cfg := range []struct{ key, value string }{
-				{"types.custom", constants.BeadsCustomTypes},
-				{"types.infra", constants.BeadsInfraTypes},
-			} {
-				configCmd := beads.Spawn("config", "set", cfg.key, cfg.value)
-				configCmd.Dir = rigPath
-				configCmd.Env = bdEnv
-				_, _ = configCmd.CombinedOutput() // Ignore errors - older beads don't need this
-			}
-		}
-		if err := doltserver.EnsureMetadataForBeadsDir(ctx.TownRoot, rigBeadsDir, ctx.RigName, ctx.RigName); err != nil {
-			return fmt.Errorf("ensuring metadata.json: %w", err)
-		}
-		return nil
-	}
-
-	// Case 2: Tracked beads exist - create redirect (may need to remove conflicting local beads)
-	if hasTrackedBeads {
-		// Check if local beads have conflicting data
-		if hasLocalBeads && hasBeadsData(rigBeadsDir) {
-			// Remove conflicting local beads directory
-			if err := os.RemoveAll(rigBeadsDir); err != nil {
-				return fmt.Errorf("removing conflicting local beads: %w", err)
-			}
-		}
-
-		// Create .beads directory if needed
-		if err := beads.EnsureDir(rigBeadsDir); err != nil {
-			return fmt.Errorf("creating .beads directory: %w", err)
-		}
-
-		// Write redirect file
-		if err := os.WriteFile(redirectPath, []byte("mayor/rig/.beads\n"), 0644); err != nil {
-			return fmt.Errorf("writing redirect file: %w", err)
-		}
-	}
-
 	return nil
 }
 
@@ -1453,72 +967,8 @@ func (c *DefaultBranchAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 			Message: fmt.Sprintf("Cannot read town root: %v", err),
 		}
 	}
-
-	var errors []string
-	rigsChecked := 0
-
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "mayor" || entry.Name() == "docs" || entry.Name() == "scripts" {
-			continue
-		}
-
-		rigPath := filepath.Join(ctx.TownRoot, entry.Name())
-		configPath := filepath.Join(rigPath, "config.json")
-
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			continue // No config.json = not a rig or no default_branch configured
-		}
-
-		type rigConfig struct {
-			DefaultBranch string `json:"default_branch"`
-		}
-		var cfg rigConfig
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			continue
-		}
-
-		if cfg.DefaultBranch == "" {
-			continue // Using default "main", skip
-		}
-
-		rigsChecked++
-
-		// Check bare repo for the ref
-		bareRepoPath := filepath.Join(rigPath, ".repo.git")
-		if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
-			continue // No bare repo, skip
-		}
-
-		ref := originTrackingRef(cfg.DefaultBranch)
-		if !gitRefExists(bareRepoPath, ref) {
-			errors = append(errors, fmt.Sprintf("%s: default_branch %q not found on remote", entry.Name(), cfg.DefaultBranch))
-		}
-	}
-
-	if len(errors) > 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: fmt.Sprintf("%d rig(s) with invalid default_branch", len(errors)),
-			Details: errors,
-			FixHint: "Run 'gt doctor --fix' to fetch origin tracking refs, or fix the branch name in <rig>/config.json",
-		}
-	}
-
-	if rigsChecked == 0 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No rigs with custom default_branch configured",
-		}
-	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusOK,
-		Message: fmt.Sprintf("All %d rig(s) with custom default_branch validated", rigsChecked),
-	}
+	scan := scanDefaultBranchAllRigs(ctx.TownRoot, entries)
+	return reportDefaultBranchAllRigs(c, scan)
 }
 
 // Fix fetches origin tracking refs for every rig whose default_branch is missing
@@ -1529,42 +979,7 @@ func (c *DefaultBranchAllRigsCheck) Fix(ctx *CheckContext) error {
 	if err != nil {
 		return fmt.Errorf("reading town root: %w", err)
 	}
-
-	var failed []string
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "mayor" || entry.Name() == "docs" || entry.Name() == "scripts" {
-			continue
-		}
-
-		rigPath := filepath.Join(ctx.TownRoot, entry.Name())
-		data, err := os.ReadFile(filepath.Join(rigPath, "config.json"))
-		if err != nil {
-			continue
-		}
-
-		type rigConfig struct {
-			DefaultBranch string `json:"default_branch"`
-		}
-		var cfg rigConfig
-		if err := json.Unmarshal(data, &cfg); err != nil || cfg.DefaultBranch == "" {
-			continue
-		}
-
-		bareRepoPath := filepath.Join(rigPath, ".repo.git")
-		if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
-			continue
-		}
-		if gitRefExists(bareRepoPath, originTrackingRef(cfg.DefaultBranch)) {
-			continue
-		}
-		if err := fetchOriginTrackingRefs(bareRepoPath); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", entry.Name(), err))
-			continue
-		}
-		if !gitRefExists(bareRepoPath, originTrackingRef(cfg.DefaultBranch)) {
-			failed = append(failed, fmt.Sprintf("%s: default_branch %q still missing after fetch", entry.Name(), cfg.DefaultBranch))
-		}
-	}
+	failed := fixDefaultBranchAllRigs(ctx.TownRoot, entries)
 	if len(failed) > 0 {
 		return fmt.Errorf("could not restore origin tracking refs: %s", strings.Join(failed, "; "))
 	}
