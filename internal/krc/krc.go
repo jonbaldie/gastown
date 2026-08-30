@@ -229,11 +229,7 @@ func (p *Pruner) Prune() (*PruneResult, error) {
 
 // pruneFile prunes a single JSONL file.
 func (p *Pruner) pruneFile(filePath string) (result *PruneResult, err error) {
-	result = &PruneResult{
-		PrunedByType: make(map[string]int),
-	}
-
-	// Get file size before
+	result = &PruneResult{PrunedByType: make(map[string]int)}
 	info, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return result, nil
@@ -242,130 +238,133 @@ func (p *Pruner) pruneFile(filePath string) (result *PruneResult, err error) {
 		return nil, err
 	}
 	result.BytesBefore = info.Size()
-
-	// Open source file
-	srcFile, err := os.Open(filePath)
+	files, err := openPruneFiles(filePath)
 	if err != nil {
 		return nil, err
 	}
-	srcClosed := false
-	defer func() {
-		if srcClosed {
-			return
-		}
-		if closeErr := srcFile.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
+	defer files.cleanup(&err)
+	retained, err := p.scanPrunableLines(files.src, result, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	result.EventsRetained = len(retained)
+	if err := writeRetainedLines(files.tmp, retained); err != nil {
+		return nil, err
+	}
+	if err := files.replace(filePath, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
 
-	// Create temp file for output
+type pruneFiles struct {
+	src       *os.File
+	tmp       *os.File
+	tmpPath   string
+	srcClosed bool
+	tmpClosed bool
+}
+
+func openPruneFiles(filePath string) (*pruneFiles, error) {
+	src, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
 	tmpPath := filePath + ".tmp"
-	tmpFile, err := os.Create(tmpPath)
+	tmp, err := os.Create(tmpPath)
 	if err != nil {
+		_ = src.Close()
 		return nil, err
 	}
-	tmpClosed := false
-	defer func() {
-		if err == nil {
-			return
-		}
-		if !tmpClosed {
-			if closeErr := tmpFile.Close(); closeErr != nil && err == nil {
-				err = closeErr
-			}
-		}
-		if removeErr := os.Remove(tmpPath); removeErr != nil && !os.IsNotExist(removeErr) && err == nil {
-			err = removeErr
-		}
-	}()
+	return &pruneFiles{src: src, tmp: tmp, tmpPath: tmpPath}, nil
+}
 
-	now := time.Now()
-	scanner := bufio.NewScanner(srcFile)
-	// Increase buffer size for potentially long lines
+func (f *pruneFiles) cleanup(retErr *error) {
+	if !f.srcClosed {
+		if err := f.src.Close(); err != nil && *retErr == nil {
+			*retErr = err
+		}
+	}
+	if !f.tmpClosed {
+		if err := f.tmp.Close(); err != nil && *retErr == nil {
+			*retErr = err
+		}
+	}
+	if *retErr != nil {
+		_ = os.Remove(f.tmpPath)
+	}
+}
+
+type krcEvent struct {
+	Timestamp string `json:"ts"`
+	Type      string `json:"type"`
+}
+
+func (p *Pruner) scanPrunableLines(src *os.File, result *PruneResult, now time.Time) ([]string, error) {
+	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
 	var retained []string
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
 		result.EventsProcessed++
-
-		// Parse event to check TTL
-		var event struct {
-			Timestamp string `json:"ts"`
-			Type      string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			// Keep malformed lines (might be important)
+		event, expired := p.expiredEvent(line, now)
+		if event == nil || !expired {
 			retained = append(retained, line)
 			continue
 		}
-
-		// Parse timestamp
-		ts, err := time.Parse(time.RFC3339, event.Timestamp)
-		if err != nil {
-			// Keep events with unparseable timestamps
-			retained = append(retained, line)
-			continue
-		}
-
-		// Check if event has expired
-		ttl := p.config.GetTTL(event.Type)
-		if now.Sub(ts) > ttl {
-			result.EventsPruned++
-			result.PrunedByType[event.Type]++
-		} else {
-			retained = append(retained, line)
-		}
+		result.EventsPruned++
+		result.PrunedByType[event.Type]++
 	}
-
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scanning file: %w", err)
 	}
+	return retained, nil
+}
 
-	// Ensure we keep minimum retain count (most recent events)
-	if len(retained) > p.config.MinRetainCount {
-		result.EventsRetained = len(retained)
-	} else {
-		// If we're below minimum, recalculate - keep the minimum from original
-		result.EventsRetained = len(retained)
+func (p *Pruner) expiredEvent(line string, now time.Time) (*krcEvent, bool) {
+	var event krcEvent
+	if json.Unmarshal([]byte(line), &event) != nil {
+		return nil, false
 	}
+	ts, err := time.Parse(time.RFC3339, event.Timestamp)
+	if err != nil {
+		return nil, false
+	}
+	return &event, now.Sub(ts) > p.config.GetTTL(event.Type)
+}
 
-	// Write retained events
+func writeRetainedLines(file *os.File, retained []string) error {
 	for _, line := range retained {
-		if _, err := tmpFile.WriteString(line + "\n"); err != nil {
-			return nil, err
+		if _, err := file.WriteString(line + "\n"); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Get final size
-	tmpInfo, err := tmpFile.Stat()
+func (f *pruneFiles) replace(filePath string, result *PruneResult) error {
+	info, err := f.tmp.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	result.BytesAfter = tmpInfo.Size()
-
-	// Close files before rename
-	if err := tmpFile.Close(); err != nil {
-		tmpClosed = true
-		return nil, err
+	result.BytesAfter = info.Size()
+	if err := f.tmp.Close(); err != nil {
+		f.tmpClosed = true
+		return err
 	}
-	tmpClosed = true
-	if err := srcFile.Close(); err != nil {
-		srcClosed = true
-		return nil, err
+	f.tmpClosed = true
+	if err := f.src.Close(); err != nil {
+		f.srcClosed = true
+		return err
 	}
-	srcClosed = true
-
-	// Atomic replace
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		return nil, fmt.Errorf("replacing file: %w", err)
+	f.srcClosed = true
+	if err := os.Rename(f.tmpPath, filePath); err != nil {
+		return fmt.Errorf("replacing file: %w", err)
 	}
-
-	return result, nil
+	return nil
 }
 
 // Stats contains statistics about the current ephemeral data.
