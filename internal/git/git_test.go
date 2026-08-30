@@ -651,7 +651,7 @@ func TestCheckoutNewBranch(t *testing.T) {
 	g := NewGit(dir)
 
 	// Get current HEAD ref
-	head, err := g.run("rev-parse", "HEAD")
+	head, err := run(g, "rev-parse", "HEAD")
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
