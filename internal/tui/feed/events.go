@@ -363,179 +363,148 @@ func parseGtEventLine(line string) *Event {
 		t = time.Now()
 	}
 
-	// Extract rig from payload or actor
-	rig := ""
-	if ge.Payload != nil {
-		if r, ok := ge.Payload["rig"].(string); ok {
-			rig = r
-		}
-	}
-	if rig == "" && ge.Actor != "" {
-		// Extract rig from actor like "gastown/witness"
-		parts := strings.Split(ge.Actor, "/")
-		if len(parts) > 0 && parts[0] != constants.RoleMayor && parts[0] != constants.RoleDeacon {
-			rig = parts[0]
-		}
-	}
-
-	// Extract role from actor
-	role := ""
-	if ge.Actor != "" {
-		parts := strings.Split(ge.Actor, "/")
-		if len(parts) >= 2 {
-			role = parts[len(parts)-1]
-			// Check for known roles
-			switch parts[len(parts)-1] {
-			case constants.RoleWitness, constants.RoleRefinery:
-				role = parts[len(parts)-1]
-			default:
-				// Could be polecat name - check second-to-last part
-				if len(parts) >= 2 {
-					switch parts[len(parts)-2] {
-					case "polecats":
-						role = constants.RolePolecat
-					case constants.RoleCrew:
-						role = constants.RoleCrew
-					}
-				}
-			}
-		} else if len(parts) == 1 {
-			role = parts[0]
-		}
-	}
-
-	// Build message from event type and payload
-	message := buildEventMessage(ge.Type, ge.Payload)
-
 	return &Event{
 		Time:    t,
 		Type:    ge.Type,
 		Actor:   ge.Actor,
 		Target:  getPayloadString(ge.Payload, "bead"),
-		Message: message,
-		Rig:     rig,
-		Role:    role,
+		Message: buildEventMessage(ge.Type, ge.Payload),
+		Rig:     eventRig(ge),
+		Role:    actorRole(ge.Actor),
 		Raw:     line,
+	}
+}
+
+func eventRig(event GtEvent) string {
+	if rig := getPayloadString(event.Payload, "rig"); rig != "" {
+		return rig
+	}
+	parts := strings.Split(event.Actor, "/")
+	if event.Actor != "" && parts[0] != constants.RoleMayor && parts[0] != constants.RoleDeacon {
+		return parts[0]
+	}
+	return ""
+}
+
+func actorRole(actor string) string {
+	if actor == "" {
+		return ""
+	}
+	parts := strings.Split(actor, "/")
+	last := parts[len(parts)-1]
+	if len(parts) == 1 || last == constants.RoleWitness || last == constants.RoleRefinery {
+		return last
+	}
+	switch parts[len(parts)-2] {
+	case "polecats":
+		return constants.RolePolecat
+	case constants.RoleCrew:
+		return constants.RoleCrew
+	default:
+		return last
 	}
 }
 
 // buildEventMessage creates a human-readable message from event type and payload
 func buildEventMessage(eventType string, payload map[string]interface{}) string {
-	switch eventType {
-	case "patrol_started":
-		count := getPayloadInt(payload, "polecat_count")
-		if msg := getPayloadString(payload, "message"); msg != "" {
-			return msg
-		}
-		if count > 0 {
-			return fmt.Sprintf("patrol started (%d polecats)", count)
-		}
-		return "patrol started"
-
-	case "patrol_complete":
-		count := getPayloadInt(payload, "polecat_count")
-		if msg := getPayloadString(payload, "message"); msg != "" {
-			return msg
-		}
-		if count > 0 {
-			return fmt.Sprintf("patrol complete (%d polecats)", count)
-		}
-		return "patrol complete"
-
-	case "polecat_checked":
-		polecat := getPayloadString(payload, "polecat")
-		status := getPayloadString(payload, "status")
-		if polecat != "" {
-			if status != "" {
-				return fmt.Sprintf("checked %s (%s)", polecat, status)
-			}
-			return fmt.Sprintf("checked %s", polecat)
-		}
-		return "polecat checked"
-
-	case "polecat_nudged":
-		polecat := getPayloadString(payload, "polecat")
-		reason := getPayloadString(payload, "reason")
-		if polecat != "" {
-			if reason != "" {
-				return fmt.Sprintf("nudged %s: %s", polecat, reason)
-			}
-			return fmt.Sprintf("nudged %s", polecat)
-		}
-		return "polecat nudged"
-
-	case "escalation_sent":
-		target := getPayloadString(payload, "target")
-		to := getPayloadString(payload, "to")
-		reason := getPayloadString(payload, "reason")
-		if target != "" && to != "" {
-			if reason != "" {
-				return fmt.Sprintf("escalated %s to %s: %s", target, to, reason)
-			}
-			return fmt.Sprintf("escalated %s to %s", target, to)
-		}
-		return "escalation sent"
-
-	case "sling":
-		bead := getPayloadString(payload, "bead")
-		target := getPayloadString(payload, "target")
-		if bead != "" && target != "" {
-			return fmt.Sprintf("slung %s to %s", bead, target)
-		}
-		return "work slung"
-
-	case "hook":
-		bead := getPayloadString(payload, "bead")
-		if bead != "" {
-			return fmt.Sprintf("hooked %s", bead)
-		}
-		return "bead hooked"
-
-	case "handoff":
-		subject := getPayloadString(payload, "subject")
-		if subject != "" {
-			return fmt.Sprintf("handoff: %s", subject)
-		}
-		return "session handoff"
-
-	case "done":
-		bead := getPayloadString(payload, "bead")
-		if bead != "" {
-			return fmt.Sprintf("done: %s", bead)
-		}
-		return "work done"
-
-	case "mail":
-		subject := getPayloadString(payload, "subject")
-		to := getPayloadString(payload, "to")
-		if subject != "" {
-			if to != "" {
-				return fmt.Sprintf("→ %s: %s", to, subject)
-			}
-			return subject
-		}
-		return "mail sent"
-
-	case "merged":
-		worker := getPayloadString(payload, "worker")
-		if worker != "" {
-			return fmt.Sprintf("merged work from %s", worker)
-		}
-		return "merged"
-
-	case "merge_failed":
-		reason := getPayloadString(payload, "reason")
-		if reason != "" {
-			return fmt.Sprintf("merge failed: %s", reason)
-		}
-		return "merge failed"
-
-	default:
-		if msg := getPayloadString(payload, "message"); msg != "" {
-			return msg
-		}
-		return eventType
+	formatters := map[string]func(map[string]interface{}) string{
+		"patrol_started":  func(p map[string]interface{}) string { return patrolMessage("patrol started", p) },
+		"patrol_complete": func(p map[string]interface{}) string { return patrolMessage("patrol complete", p) },
+		"polecat_checked": checkedMessage,
+		"polecat_nudged":  nudgedMessage,
+		"escalation_sent": escalationMessage,
+		"sling":           slingMessage,
+		"hook": func(p map[string]interface{}) string {
+			return optionalValueMessage(p, "bead", "hooked %s", "bead hooked")
+		},
+		"handoff": func(p map[string]interface{}) string {
+			return optionalValueMessage(p, "subject", "handoff: %s", "session handoff")
+		},
+		"done": func(p map[string]interface{}) string { return optionalValueMessage(p, "bead", "done: %s", "work done") },
+		"mail": mailMessage,
+		"merged": func(p map[string]interface{}) string {
+			return optionalValueMessage(p, "worker", "merged work from %s", "merged")
+		},
+		"merge_failed": func(p map[string]interface{}) string {
+			return optionalValueMessage(p, "reason", "merge failed: %s", "merge failed")
+		},
 	}
+	if formatter, ok := formatters[eventType]; ok {
+		return formatter(payload)
+	}
+	if message := getPayloadString(payload, "message"); message != "" {
+		return message
+	}
+	return eventType
+}
+
+func patrolMessage(fallback string, payload map[string]interface{}) string {
+	if message := getPayloadString(payload, "message"); message != "" {
+		return message
+	}
+	if count := getPayloadInt(payload, "polecat_count"); count > 0 {
+		return fmt.Sprintf("%s (%d polecats)", fallback, count)
+	}
+	return fallback
+}
+
+func checkedMessage(payload map[string]interface{}) string {
+	polecat, status := getPayloadString(payload, "polecat"), getPayloadString(payload, "status")
+	if polecat == "" {
+		return "polecat checked"
+	}
+	if status != "" {
+		return fmt.Sprintf("checked %s (%s)", polecat, status)
+	}
+	return fmt.Sprintf("checked %s", polecat)
+}
+
+func nudgedMessage(payload map[string]interface{}) string {
+	polecat, reason := getPayloadString(payload, "polecat"), getPayloadString(payload, "reason")
+	if polecat == "" {
+		return "polecat nudged"
+	}
+	if reason != "" {
+		return fmt.Sprintf("nudged %s: %s", polecat, reason)
+	}
+	return fmt.Sprintf("nudged %s", polecat)
+}
+
+func escalationMessage(payload map[string]interface{}) string {
+	target, to := getPayloadString(payload, "target"), getPayloadString(payload, "to")
+	if target == "" || to == "" {
+		return "escalation sent"
+	}
+	if reason := getPayloadString(payload, "reason"); reason != "" {
+		return fmt.Sprintf("escalated %s to %s: %s", target, to, reason)
+	}
+	return fmt.Sprintf("escalated %s to %s", target, to)
+}
+
+func slingMessage(payload map[string]interface{}) string {
+	bead, target := getPayloadString(payload, "bead"), getPayloadString(payload, "target")
+	if bead != "" && target != "" {
+		return fmt.Sprintf("slung %s to %s", bead, target)
+	}
+	return "work slung"
+}
+
+func optionalValueMessage(payload map[string]interface{}, key, format, fallback string) string {
+	if value := getPayloadString(payload, key); value != "" {
+		return fmt.Sprintf(format, value)
+	}
+	return fallback
+}
+
+func mailMessage(payload map[string]interface{}) string {
+	subject := getPayloadString(payload, "subject")
+	if subject == "" {
+		return "mail sent"
+	}
+	if to := getPayloadString(payload, "to"); to != "" {
+		return fmt.Sprintf("→ %s: %s", to, subject)
+	}
+	return subject
 }
 
 // getPayloadString extracts a string from payload
@@ -588,36 +557,35 @@ func NewCombinedSource(sources ...EventSource) *CombinedSource {
 	// 2. Source channel is closed
 	// 3. No event received for fanInTimeout (prevents indefinite blocking)
 	for _, src := range sources {
-		go func(s EventSource) {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case event, ok := <-s.Events():
-					if !ok {
-						return
-					}
-					select {
-					case combined.events <- event:
-					case <-ctx.Done():
-						return
-					default:
-						// Drop if full
-					}
-				case <-time.After(fanInTimeout):
-					// Timeout - check if we should exit
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						// Context still active, continue waiting
-					}
-				}
-			}
-		}(src)
+		go fanInEvents(ctx, combined.events, src)
 	}
 
 	return combined
+}
+
+func fanInEvents(ctx context.Context, destination chan<- Event, source EventSource) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-source.Events():
+			if !ok || !sendCombinedEvent(ctx, destination, event) {
+				return
+			}
+		case <-time.After(fanInTimeout):
+		}
+	}
+}
+
+func sendCombinedEvent(ctx context.Context, destination chan<- Event, event Event) bool {
+	select {
+	case destination <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	default:
+		return true
+	}
 }
 
 // Events returns the combined event channel
