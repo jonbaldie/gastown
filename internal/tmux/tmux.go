@@ -195,15 +195,6 @@ func BuildCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// Tmux wraps tmux operations.
-type Tmux struct {
-	socketName   string // tmux socket name (-L flag), empty = default socket
-	binary       string // optional tmux executable override; empty means "tmux"
-	CapsOnce     sync.Once
-	Caps         Capabilities
-	CapsOverride *Capabilities
-}
-
 // noTownSocket is a sentinel socket name used when no town socket is configured.
 // Using a non-existent socket causes tmux operations to fail with a clear
 // "no server running" error instead of silently connecting to the wrong server.
@@ -214,34 +205,6 @@ const noTownSocket = "gt-no-town-socket"
 // Used by WaitForCommand as a ZFC-compliant fallback for detecting wrapped
 // agents (where pane_current_command remains a shell). See gt-sk5u.
 const EnvAgentReady = "GT_AGENT_READY"
-
-// NewTmux creates a new Tmux wrapper using the initialized town socket.
-// Falls back to GT_TOWN_SOCKET env var (set by cross-socket tmux bindings).
-// Empty socket means use the default tmux server.
-func NewTmux() *Tmux {
-	sock := GetDefaultSocket()
-	if sock == "" {
-		// GT_TOWN_SOCKET is embedded in tmux bindings created by EnsureBindingsOnSocket
-		// so that "gt agents menu" / "gt feed" invoked from a personal terminal still
-		// target the correct town server even when InitRegistry was not called.
-		sock = os.Getenv("GT_TOWN_SOCKET")
-	}
-	return &Tmux{socketName: sock}
-}
-
-// NewTmuxWithSocket creates a Tmux wrapper that targets a named socket.
-// This creates/connects to an isolated tmux server, separate from the user's
-// default server. Primarily used in tests to prevent session name collisions
-// and keystroke leaks (e.g. Escape from NudgeSession hitting the user's prefix table).
-func NewTmuxWithSocket(socket string) *Tmux {
-	return &Tmux{socketName: socket}
-}
-
-// NewTmuxWithSocketAndBinary is like NewTmuxWithSocket but invokes a specific
-// tmux executable. Tests use this to wrap the host tmux without mutating PATH.
-func NewTmuxWithSocketAndBinary(socket, binary string) *Tmux {
-	return &Tmux{socketName: socket, binary: binary}
-}
 
 // run executes a tmux command and returns stdout.
 // All commands include -u flag for UTF-8 support regardless of locale settings.
@@ -2052,22 +2015,28 @@ func ContainsBlockingPane(content string) (string, bool) {
 
 func containsModelPickerDialog(content string) (string, bool) {
 	lower := strings.ToLower(content)
-	hasSelect := strings.Contains(lower, "select model") ||
+	if !containsModelPickerSelection(lower) {
+		return "", false
+	}
+	if !containsModelPickerUI(content, lower) {
+		return "", false
+	}
+	return "model picker", true
+}
+
+func containsModelPickerSelection(lower string) bool {
+	return strings.Contains(lower, "select model") ||
 		strings.Contains(lower, "select a model") ||
 		strings.Contains(lower, "choose a model") ||
 		strings.Contains(lower, "switch model")
-	if !hasSelect {
-		return "", false
-	}
-	hasUI := strings.Contains(content, "❯") ||
+}
+
+func containsModelPickerUI(content, lower string) bool {
+	return strings.Contains(content, "❯") ||
 		strings.Contains(content, "Enter to confirm") ||
 		strings.Contains(lower, "esc to exit") ||
 		strings.Contains(lower, "type to filter") ||
 		strings.Contains(content, "Default (recommended)")
-	if !hasUI {
-		return "", false
-	}
-	return "model picker", true
 }
 
 func containsBlockingStartupDialog(content string) (string, bool) {
@@ -2561,40 +2530,43 @@ func hasDescendantWithNamesFromSnapshot(root string, names []string, depth int, 
 		return false
 	}
 
-	// Build a set of names for fast lookup
-	nameSet := make(map[string]bool, len(names))
-	for _, n := range names {
-		n = strings.TrimSpace(n)
-		if n != "" {
-			nameSet[n] = true
-		}
-	}
+	nameSet := processNameSet(names)
 	if len(nameSet) == 0 {
 		return false
 	}
 
 	seen := map[string]bool{root: true}
-	var walk func(string, int) bool
-	walk = func(pid string, currentDepth int) bool {
-		if currentDepth > maxDepth {
-			return false
+	return walkSnapshotDescendants(root, depth, maxDepth, nameSet, seen, snapshot)
+}
+
+func processNameSet(names []string) map[string]bool {
+	nameSet := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			nameSet[name] = true
 		}
-		for _, child := range snapshot.children[pid] {
-			if seen[child] {
-				continue
-			}
-			seen[child] = true
-			if nameSet[filepath.Base(strings.TrimSpace(snapshot.names[child]))] {
-				return true
-			}
-			if walk(child, currentDepth+1) {
-				return true
-			}
-		}
+	}
+	return nameSet
+}
+
+func walkSnapshotDescendants(pid string, depth, maxDepth int, nameSet, seen map[string]bool, snapshot processSnapshot) bool {
+	if depth > maxDepth {
 		return false
 	}
-
-	return walk(root, depth)
+	for _, child := range snapshot.children[pid] {
+		if seen[child] {
+			continue
+		}
+		seen[child] = true
+		if nameSet[filepath.Base(strings.TrimSpace(snapshot.names[child]))] {
+			return true
+		}
+		if walkSnapshotDescendants(child, depth+1, maxDepth, nameSet, seen, snapshot) {
+			return true
+		}
+	}
+	return false
 }
 
 func isNoMatchExit(err error) bool {
@@ -2909,24 +2881,45 @@ func (t *Tmux) IsRuntimeRunningChecked(session string, processNames []string) (b
 	}
 
 	// ZFC: check declared pane identity set at session startup (gt-qmsx).
-	if declaredPane, ok, err := t.getEnvironmentOptional(session, "GT_PANE_ID"); err != nil {
+	running, handled, err := t.checkDeclaredRuntimePane(session, processNames)
+	if err != nil {
 		return false, err
-	} else if ok && declaredPane != "" {
-		running, err := t.checkTargetPaneForRuntimeChecked(session, declaredPane, processNames)
-		if err != nil {
-			if runtime.GOOS != "windows" {
-				return false, err
-			}
-		} else if running {
-			return true, nil
-		}
-		// On Windows (psmux), pane IDs like %1 may not be supported by
-		// display-message. Fall through to legacy path instead of returning false.
-		if runtime.GOOS != "windows" {
-			return false, nil
-		}
+	}
+	if handled {
+		return running, nil
 	}
 
+	return t.checkLegacyRuntime(session, processNames)
+}
+
+func (t *Tmux) checkDeclaredRuntimePane(session string, processNames []string) (bool, bool, error) {
+	declaredPane, ok, err := t.getEnvironmentOptional(session, "GT_PANE_ID")
+	if err != nil {
+		return false, false, err
+	}
+	if !ok || declaredPane == "" {
+		return false, false, nil
+	}
+
+	running, err := t.checkTargetPaneForRuntimeChecked(session, declaredPane, processNames)
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			return false, true, err
+		}
+		// On Windows (psmux), pane IDs like %1 may not be supported by
+		// display-message. Fall through to the legacy path instead.
+		return false, false, nil
+	}
+	if running {
+		return true, true, nil
+	}
+	if runtime.GOOS != "windows" {
+		return false, true, nil
+	}
+	return false, false, nil
+}
+
+func (t *Tmux) checkLegacyRuntime(session string, processNames []string) (bool, error) {
 	// Legacy fallback: check first window, then scan all panes.
 	running, err := t.checkPaneForRuntimeChecked(session, processNames)
 	if err != nil {
@@ -2939,13 +2932,16 @@ func (t *Tmux) IsRuntimeRunningChecked(session string, processNames []string) (b
 	if err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	return t.scanRuntimePanes(session, processNames, out)
+}
+
+func (t *Tmux) scanRuntimePanes(session string, processNames []string, output string) (bool, error) {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		parts := strings.SplitN(line, "\t", 2)
 		if len(parts) < 2 {
 			continue
 		}
-		cmd, pid := parts[0], parts[1]
-		running, err := t.matchesPaneRuntimeChecked(session, cmd, pid, processNames)
+		running, err := t.matchesPaneRuntimeChecked(session, parts[0], parts[1], processNames)
 		if err != nil {
 			return false, err
 		}
@@ -3083,14 +3079,16 @@ func cursorAgentSessionDeclaresCursorChecked(t *Tmux, session string) (bool, err
 	if err != nil {
 		return false, err
 	}
-	if ok && names != "" {
-		for _, n := range strings.Split(names, ",") {
-			if strings.TrimSpace(n) == "cursor-agent" {
-				return true, nil
-			}
+	return ok && containsCursorAgentName(names), nil
+}
+
+func containsCursorAgentName(names string) bool {
+	for _, name := range strings.Split(names, ",") {
+		if strings.TrimSpace(name) == "cursor-agent" {
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 // matchesPaneRuntime checks if a pane with the given command and PID is running a matching process.
@@ -3107,27 +3105,44 @@ func (t *Tmux) matchesPaneRuntimeChecked(session, cmd, pid string, processNames 
 	if len(names) == 0 {
 		return false, nil
 	}
-	// Direct command match
-	for _, name := range names {
-		if cmd == name {
-			return true, nil
-		}
+	if matchesProcessName(cmd, names) {
+		return true, nil
 	}
 	if pid == "" {
 		return false, nil
 	}
-	// If pane command is a shell, check descendants
-	for _, shell := range constants.SupportedShells {
-		if cmd == shell {
-			return hasDescendantWithNamesChecked(pid, names, 0)
+	if isSupportedShell(cmd) {
+		return hasDescendantWithNamesChecked(pid, names, 0)
+	}
+	return matchProcessOrDescendant(pid, names)
+}
+
+func matchesProcessName(command string, names []string) bool {
+	for _, name := range names {
+		if command == name {
+			return true
 		}
 	}
-	// Unrecognized command: check if process itself matches (version-as-argv[0])
-	running, err := processMatchesNamesChecked(pid, names)
-	if err == nil && running {
+	return false
+}
+
+func isSupportedShell(command string) bool {
+	for _, shell := range constants.SupportedShells {
+		if command == shell {
+			return true
+		}
+	}
+	return false
+}
+
+func matchProcessOrDescendant(pid string, names []string) (bool, error) {
+	// Unrecognized command: check if process itself matches (version-as-argv[0]).
+	running, processErr := processMatchesNamesChecked(pid, names)
+	if processErr == nil && running {
 		return true, nil
 	}
-	// Finally check descendants as fallback
+
+	// Finally check descendants as fallback.
 	descendantRunning, descendantErr := hasDescendantWithNamesChecked(pid, names, 0)
 	if descendantErr != nil {
 		return false, descendantErr
@@ -3135,8 +3150,8 @@ func (t *Tmux) matchesPaneRuntimeChecked(session, cmd, pid string, processNames 
 	if descendantRunning {
 		return true, nil
 	}
-	if err != nil {
-		return false, err
+	if processErr != nil {
+		return false, processErr
 	}
 	return false, nil
 }
@@ -3379,18 +3394,25 @@ func (t *Tmux) WaitForRuntimeReady(session string, rc *config.RuntimeConfig, tim
 	}
 
 	if rc.Tmux.ReadyPromptPrefix == "" {
-		if rc.Tmux.ReadyDelayMs <= 0 {
-			return nil
-		}
-		// Fallback to fixed delay when prompt detection is unavailable.
-		delay := time.Duration(rc.Tmux.ReadyDelayMs) * time.Millisecond
-		if delay > timeout {
-			delay = timeout
-		}
-		time.Sleep(delay)
+		return waitForRuntimeReadyDelay(rc.Tmux.ReadyDelayMs, timeout)
+	}
+	return waitForRuntimePrompt(t, session, rc.Tmux.ReadyPromptPrefix, timeout)
+}
+
+func waitForRuntimeReadyDelay(delayMs int, timeout time.Duration) error {
+	if delayMs <= 0 {
 		return nil
 	}
+	// Fallback to fixed delay when prompt detection is unavailable.
+	delay := time.Duration(delayMs) * time.Millisecond
+	if delay > timeout {
+		delay = timeout
+	}
+	time.Sleep(delay)
+	return nil
+}
 
+func waitForRuntimePrompt(t *Tmux, session, readyPromptPrefix string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		// Capture last few lines of the pane
@@ -3401,7 +3423,7 @@ func (t *Tmux) WaitForRuntimeReady(session string, rc *config.RuntimeConfig, tim
 		}
 		// Look for runtime prompt indicator at start of line
 		for _, line := range lines {
-			if matchesPromptPrefix(line, rc.Tmux.ReadyPromptPrefix) {
+			if matchesPromptPrefix(line, readyPromptPrefix) {
 				return nil
 			}
 		}
@@ -3423,7 +3445,10 @@ const DefaultReadyPromptPrefix = "❯ "
 func (t *Tmux) WaitForIdle(session string, timeout time.Duration) error {
 	promptPrefix := readyPromptPrefixForSession(t, session)
 	prefix := strings.TrimSpace(promptPrefix)
+	return t.waitForIdlePrompt(session, promptPrefix, prefix, timeout)
+}
 
+func (t *Tmux) waitForIdlePrompt(session, promptPrefix, prefix string, timeout time.Duration) error {
 	// Require 2 consecutive idle polls to filter out transient states.
 	// During inter-tool-call gaps (~500ms), the prompt may briefly appear
 	// in the pane buffer while Claude Code is still actively working.
@@ -3433,51 +3458,11 @@ func (t *Tmux) WaitForIdle(session string, timeout time.Duration) error {
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		lines, err := t.CapturePaneLines(session, 5)
+		idle, err := t.idlePoll(session, promptPrefix, prefix)
 		if err != nil {
-			// Distinguish terminal errors from transient ones.
-			// Session not found or no server means the session is gone —
-			// no point in polling further.
-			if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrNoServer) {
-				return err
-			}
-			consecutiveIdle = 0
-			time.Sleep(200 * time.Millisecond)
-			continue
+			return err
 		}
-
-		// Busy indicator check: if "esc to interrupt" is visible anywhere in
-		// the recent pane output, the agent is actively working — NOT idle,
-		// regardless of whether the prompt prefix is also visible.
-		statusBarBusy := false
-		for _, line := range lines {
-			if hasBusyIndicator(line) {
-				statusBarBusy = true
-				break
-			}
-		}
-		if statusBarBusy {
-			consecutiveIdle = 0
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-
-		// Scan all captured lines for the prompt prefix.
-		// Claude Code renders a status bar below the prompt line,
-		// so the prompt may not be the last non-empty line.
-		promptFound := false
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" {
-				continue
-			}
-			if matchesPromptPrefix(trimmed, promptPrefix) || (prefix != "" && trimmed == prefix) {
-				promptFound = true
-				break
-			}
-		}
-
-		if promptFound {
+		if idle {
 			consecutiveIdle++
 			if consecutiveIdle >= requiredConsecutive {
 				return nil
@@ -3488,6 +3473,46 @@ func (t *Tmux) WaitForIdle(session string, timeout time.Duration) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return ErrIdleTimeout
+}
+
+func (t *Tmux) idlePoll(session, promptPrefix, prefix string) (bool, error) {
+	lines, err := t.CapturePaneLines(session, 5)
+	if err != nil {
+		// Distinguish terminal errors from transient ones. Session not found or
+		// no server means the session is gone; other failures are transient.
+		if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrNoServer) {
+			return false, err
+		}
+		return false, nil
+	}
+	if hasBusyIndicatorLines(lines) {
+		return false, nil
+	}
+	return hasIdlePromptLine(lines, promptPrefix, prefix), nil
+}
+
+func hasBusyIndicatorLines(lines []string) bool {
+	for _, line := range lines {
+		if hasBusyIndicator(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasIdlePromptLine(lines []string, promptPrefix, prefix string) bool {
+	// Claude Code renders a status bar below the prompt line, so the prompt may
+	// not be the last non-empty line.
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if matchesPromptPrefix(trimmed, promptPrefix) || (prefix != "" && trimmed == prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsAtPrompt checks if the agent is currently at an idle prompt (non-blocking).
@@ -3716,24 +3741,46 @@ func (t *Tmux) SetDynamicStatus(session string) error {
 //   - non-nil: apply Window's colors as the window background
 //   - nil: reset window background to terminal defaults (disabled)
 func (t *Tmux) ConfigureGasTownSession(session string, theme *Theme, rig, worker, role string) error {
-	if theme != nil {
-		if err := t.ApplyTheme(session, *theme); err != nil {
-			return fmt.Errorf("applying theme: %w", err)
-		}
-		if err := t.ApplyWindowStyle(session, theme.Window); err != nil {
-			return fmt.Errorf("applying window style: %w", err)
-		}
-	} else {
+	if err := t.configureSessionTheme(session, theme); err != nil {
+		return err
+	}
+	return t.configureSessionStatusAndBindings(session, rig, worker, role)
+}
+
+func (t *Tmux) configureSessionTheme(session string, theme *Theme) error {
+	if theme == nil {
 		if err := t.ClearTheme(session); err != nil {
 			return fmt.Errorf("clearing theme: %w", err)
 		}
+		return nil
 	}
+	if err := t.ApplyTheme(session, *theme); err != nil {
+		return fmt.Errorf("applying theme: %w", err)
+	}
+	if err := t.ApplyWindowStyle(session, theme.Window); err != nil {
+		return fmt.Errorf("applying window style: %w", err)
+	}
+	return nil
+}
+
+func (t *Tmux) configureSessionStatusAndBindings(session, rig, worker, role string) error {
+	if err := t.configureSessionStatus(session, rig, worker, role); err != nil {
+		return err
+	}
+	return t.configureSessionBindings(session)
+}
+
+func (t *Tmux) configureSessionStatus(session, rig, worker, role string) error {
 	if err := t.SetStatusFormat(session, rig, worker, role); err != nil {
 		return fmt.Errorf("setting status format: %w", err)
 	}
 	if err := t.SetDynamicStatus(session); err != nil {
 		return fmt.Errorf("setting dynamic status: %w", err)
 	}
+	return nil
+}
+
+func (t *Tmux) configureSessionBindings(session string) error {
 	if err := t.SetMailClickBinding(session); err != nil {
 		return fmt.Errorf("setting mail click binding: %w", err)
 	}
@@ -3971,26 +4018,29 @@ func (t *Tmux) getKeyBinding(table, key string) string {
 		return ""
 	}
 
-	// Don't capture existing GT bindings as "user bindings to preserve" —
-	// that would wrap our own command in another layer.
-	// Check both guarded (if-shell) and unguarded (direct run-shell) forms.
-	if strings.Contains(output, "if-shell") && strings.Contains(output, "gt ") {
+	if isGasTownKeyBinding(output) {
 		return ""
 	}
-	if strings.Contains(output, "gt agents menu") ||
-		strings.Contains(output, "gt feed --window") {
-		return ""
-	}
+	return parseKeyBindingCommand(output)
+}
 
-	// Parse the binding command from list-keys output.
-	// Format: "bind-key [-r] -T <table> <key> <command...>"
-	// We need everything after the key name.
-	// Find the key in the output and take everything after it.
+// isGasTownKeyBinding reports whether list-keys output already contains a
+// Gas Town binding. Such bindings must not be wrapped again as user fallbacks.
+func isGasTownKeyBinding(output string) bool {
+	// Check both guarded (if-shell) and unguarded (direct run-shell) forms.
+	return (strings.Contains(output, "if-shell") && strings.Contains(output, "gt ")) ||
+		strings.Contains(output, "gt agents menu") ||
+		strings.Contains(output, "gt feed --window")
+}
+
+// parseKeyBindingCommand extracts the command portion from tmux list-keys
+// output. It returns an empty string when the output does not match the
+// expected "bind-key [-r] -T <table> <key> <command...>" shape.
+func parseKeyBindingCommand(output string) string {
 	fields := strings.Fields(output)
 	keyIdx := -1
 	for i, f := range fields {
 		if f == "-T" && i+2 < len(fields) {
-			// Skip table name, the next field is the key
 			keyIdx = i + 2
 			break
 		}
@@ -3999,9 +4049,6 @@ func (t *Tmux) getKeyBinding(table, key string) string {
 		return ""
 	}
 
-	// Everything after the key is the command
-	// Rejoin from keyIdx+1 onward, but we need to preserve the original spacing.
-	// Find the key token in the original string and take everything after it.
 	idx := strings.Index(output, " "+fields[keyIdx]+" ")
 	if idx < 0 {
 		return ""
@@ -4205,72 +4252,37 @@ func (t *Tmux) SetRigMenuBinding(_ string) error {
 // Safe to call multiple times; skips if bindings already exist.
 func EnsureBindingsOnSocket(socket, townSocket string) error {
 	t := NewTmuxWithSocket(socket)
-
-	// Build the command strings, optionally prefixed with GT_TOWN_SOCKET so
-	// gt agents menu / gt feed can find the right tmux server even when called
-	// from a non-town directory.
-	agentsCmd := "gt agents menu"
-	feedCmd := "gt feed --window"
-	if townSocket != "" {
-		agentsCmd = fmt.Sprintf("GT_TOWN_SOCKET=%s gt agents menu", townSocket)
-		feedCmd = fmt.Sprintf("GT_TOWN_SOCKET=%s gt feed --window", townSocket)
-	}
-
-	// Agents binding (prefix + g)
-	if !t.isGTBinding("prefix", "g") {
-		ifShell := fmt.Sprintf("echo '#{session_name}' | grep -Eq '%s'", sessionPrefixPattern())
-		fallback := t.getKeyBinding("prefix", "g")
-		if fallback == "" || fallback == ":" {
-			// No user binding to preserve — always show the GT agent menu.
-			// This is critical for cross-socket use: on the default socket,
-			// no session names match GT prefixes, so an if-shell guard would
-			// prevent the menu from ever appearing.
-			_, _ = t.run("bind-key", "-T", "prefix", "g",
-				"run-shell", agentsCmd)
-		} else {
-			// User has a custom binding — guard with GT pattern, preserve theirs.
-			_, _ = t.run("bind-key", "-T", "prefix", "g",
-				"if-shell", ifShell,
-				"run-shell '"+agentsCmd+"'",
-				fallback)
-		}
-	}
-
-	// Feed binding (prefix + a)
-	if !t.isGTBinding("prefix", "a") {
-		ifShell := fmt.Sprintf("echo '#{session_name}' | grep -Eq '%s'", sessionPrefixPattern())
-		fallback := t.getKeyBinding("prefix", "a")
-		if fallback == "" || fallback == ":" {
-			_, _ = t.run("bind-key", "-T", "prefix", "a",
-				"run-shell", feedCmd)
-		} else {
-			_, _ = t.run("bind-key", "-T", "prefix", "a",
-				"if-shell", ifShell,
-				"run-shell '"+feedCmd+"'",
-				fallback)
-		}
-	}
-
-	// Rig menu binding (prefix + r)
-	rigMenuCmd := "gt rig menu"
-	if townSocket != "" {
-		rigMenuCmd = fmt.Sprintf("GT_TOWN_SOCKET=%s gt rig menu", townSocket)
-	}
-	if !t.isGTBinding("prefix", "r") {
-		ifShell := fmt.Sprintf("echo '#{session_name}' | grep -Eq '%s'", sessionPrefixPattern())
-		fallback := t.getKeyBinding("prefix", "r")
-		if fallback == "" || fallback == ":" {
-			_, _ = t.run("bind-key", "-T", "prefix", "r",
-				"run-shell", rigMenuCmd)
-		} else {
-			_, _ = t.run("bind-key", "-T", "prefix", "r",
-				"if-shell", ifShell,
-				"run-shell '"+rigMenuCmd+"'",
-				fallback)
-		}
-	}
-
+	ensureSocketBinding(t, "g", socketBoundCommand("gt agents menu", townSocket))
+	ensureSocketBinding(t, "a", socketBoundCommand("gt feed --window", townSocket))
+	ensureSocketBinding(t, "r", socketBoundCommand("gt rig menu", townSocket))
 	return nil
+}
+
+func socketBoundCommand(command, townSocket string) string {
+	if townSocket == "" {
+		return command
+	}
+	return fmt.Sprintf("GT_TOWN_SOCKET=%s %s", townSocket, command)
+}
+
+func ensureSocketBinding(t *Tmux, key, command string) {
+	if t.isGTBinding("prefix", key) {
+		return
+	}
+	ifShell := fmt.Sprintf("echo '#{session_name}' | grep -Eq '%s'", sessionPrefixPattern())
+	fallback := t.getKeyBinding("prefix", key)
+	if fallback == "" || fallback == ":" {
+		// No user binding to preserve — always show the GT menu. This is
+		// important for cross-socket use, where the current session may not
+		// match a Gas Town prefix.
+		_, _ = t.run("bind-key", "-T", "prefix", key, "run-shell", command)
+		return
+	}
+	// User has a custom binding — guard with the GT pattern and preserve it.
+	_, _ = t.run("bind-key", "-T", "prefix", key,
+		"if-shell", ifShell,
+		"run-shell '"+command+"'",
+		fallback)
 }
 
 // GetSessionCreatedUnix returns the Unix timestamp when a session was created.
