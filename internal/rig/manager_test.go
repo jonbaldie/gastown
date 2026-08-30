@@ -502,12 +502,11 @@ func TestRigSummary(t *testing.T) {
 }
 
 func TestEnsureGitignoreEntry_AddsEntry(t *testing.T) {
-	root, rigsConfig := setupTestTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
+	root, _ := setupTestTown(t)
 
 	gitignorePath := filepath.Join(root, ".gitignore")
 
-	if err := manager.ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
+	if err := ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
 		t.Fatalf("ensureGitignoreEntry: %v", err)
 	}
 
@@ -518,8 +517,7 @@ func TestEnsureGitignoreEntry_AddsEntry(t *testing.T) {
 }
 
 func TestEnsureGitignoreEntry_DoesNotDuplicate(t *testing.T) {
-	root, rigsConfig := setupTestTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
+	root, _ := setupTestTown(t)
 
 	gitignorePath := filepath.Join(root, ".gitignore")
 
@@ -528,7 +526,7 @@ func TestEnsureGitignoreEntry_DoesNotDuplicate(t *testing.T) {
 		t.Fatalf("writing .gitignore: %v", err)
 	}
 
-	if err := manager.ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
+	if err := ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
 		t.Fatalf("ensureGitignoreEntry: %v", err)
 	}
 
@@ -539,8 +537,7 @@ func TestEnsureGitignoreEntry_DoesNotDuplicate(t *testing.T) {
 }
 
 func TestEnsureGitignoreEntry_AppendsToExisting(t *testing.T) {
-	root, rigsConfig := setupTestTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
+	root, _ := setupTestTown(t)
 
 	gitignorePath := filepath.Join(root, ".gitignore")
 
@@ -549,7 +546,7 @@ func TestEnsureGitignoreEntry_AppendsToExisting(t *testing.T) {
 		t.Fatalf("writing .gitignore: %v", err)
 	}
 
-	if err := manager.ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
+	if err := ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
 		t.Fatalf("ensureGitignoreEntry: %v", err)
 	}
 

@@ -330,7 +330,7 @@ func resolveLocalRepo(path, gitURL string) (string, string) {
 //	├── polecats/              # Worker directories (empty)
 //	└── crew/<crew>/           # Default human workspace
 func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
-	prepared, err := m.prepareAddRig(opts)
+	prepared, err := prepareAddRig(m, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -352,12 +352,12 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		return nil, err
 	}
 	runNewRigBestEffortSetup(
-		func() error { return m.initAgentBeads(prepared.rigPath, opts.Name, opts.BeadsPrefix) },
+		func() error { return initAgentBeads(prepared.rigPath, opts.Name, opts.BeadsPrefix) },
 		func() error { return m.seedPatrolMolecules(prepared.rigPath) },
-		func() error { return m.createPluginDirectories(prepared.rigPath) },
+		func() error { return createPluginDirectories(m.townRoot, prepared.rigPath) },
 	)
 	if err := registerNewRig(m.townRoot, m.config, opts, prepared.localRepo, func() error {
-		return m.verifyRigIdentity(prepared.rigPath, opts.Name)
+		return verifyRigIdentity(m.townRoot, prepared.rigPath, opts.Name)
 	}); err != nil {
 		return nil, err
 	}
@@ -825,14 +825,14 @@ func registerNewRig(townRoot string, rigsConfig *config.RigsConfig, opts AddRigO
 	return nil
 }
 
-func (m *Manager) prepareAddRig(opts AddRigOptions) (preparedRigAdd, error) {
+func prepareAddRig(m *Manager, opts AddRigOptions) (preparedRigAdd, error) {
 	if m.RigExists(opts.Name) {
 		return preparedRigAdd{}, ErrRigExists
 	}
 	if err := validateNewRigName(opts.Name); err != nil {
 		return preparedRigAdd{}, err
 	}
-	if err := m.requireAddRigDolt(opts.SkipDoltCheck); err != nil {
+	if err := requireAddRigDolt(m.townRoot, opts.SkipDoltCheck); err != nil {
 		return preparedRigAdd{}, err
 	}
 	rigPath := filepath.Join(m.townRoot, opts.Name)
@@ -863,11 +863,11 @@ func validateNewRigName(name string) error {
 	return nil
 }
 
-func (m *Manager) requireAddRigDolt(skip bool) error {
+func requireAddRigDolt(townRoot string, skip bool) error {
 	if skip {
 		return nil
 	}
-	running, _, err := doltserver.IsRunning(m.townRoot)
+	running, _, err := doltserver.IsRunning(townRoot)
 	if err != nil {
 		return fmt.Errorf("checking Dolt server: %w", err)
 	}
@@ -945,7 +945,7 @@ func removeRigPathIfOwned(rigPath, expectedStamp string) {
 // verifyRigIdentity checks that metadata.json points to the correct Dolt database
 // for this rig. This catches identity mismatches early — before polecats are spawned
 // and get stuck in retry loops. (gas-tc4)
-func (m *Manager) verifyRigIdentity(rigPath, rigName string) error {
+func verifyRigIdentity(townRoot, rigPath, rigName string) error {
 	resolvedBeadsDir := beads.ResolveBeadsDir(rigPath)
 	metadataPath := filepath.Join(resolvedBeadsDir, "metadata.json")
 
@@ -975,7 +975,7 @@ func (m *Manager) verifyRigIdentity(rigPath, rigName string) error {
 	if metadata.DoltDatabase != "" && metadata.DoltDatabase != rigName {
 		fmt.Fprintf(os.Stderr, "   ⚠ metadata.json has dolt_database=%q (expected %q) — attempting repair\n",
 			metadata.DoltDatabase, rigName)
-		if repairErr := doltserver.EnsureMetadata(m.townRoot, rigName); repairErr != nil {
+		if repairErr := doltserver.EnsureMetadata(townRoot, rigName); repairErr != nil {
 			return fmt.Errorf("metadata.json has dolt_database=%q (expected %q) and auto-repair failed: %w",
 				metadata.DoltDatabase, rigName, repairErr)
 		}
@@ -1129,6 +1129,10 @@ func markRigBeadsReady(rigPath string) error {
 // town route, and PRIME.md. Clone-based Add() and local gt now rigs share this
 // so `bd -C <town>/<rig> create` files a rig-prefixed bead instead of hq-*.
 func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeadsInitOptions) error {
+	return initializeRigBeads(m, rigPath, name, prefix, opts)
+}
+
+func initializeRigBeads(m *Manager, rigPath, name, prefix string, opts RigBeadsInitOptions) error {
 	if err := checkRigBeadsPrefix(m.townRoot, name, prefix); err != nil {
 		return err
 	}
@@ -1152,7 +1156,7 @@ func initializeRigBeadsLocked(m *Manager, rigPath, name, prefix string, opts Rig
 	if err := ensureRigDoltDatabase(m.townRoot, name, already, opts); err != nil {
 		return err
 	}
-	if err := m.initializeNewRigBeads(rigPath, name, prefix, already, opts); err != nil {
+	if err := initializeNewRigBeads(m, rigPath, name, prefix, already, opts); err != nil {
 		return err
 	}
 	resolvedBeadsDir, err := configureRigBeads(rigPath, name, prefix, opts)
@@ -1220,7 +1224,7 @@ func ensureRigDoltDatabase(townRoot, name string, already bool, opts RigBeadsIni
 	return nil
 }
 
-func (m *Manager) initializeNewRigBeads(rigPath, name, prefix string, already bool, opts RigBeadsInitOptions) error {
+func initializeNewRigBeads(m *Manager, rigPath, name, prefix string, already bool, opts RigBeadsInitOptions) error {
 	if already {
 		return nil
 	}
@@ -1264,6 +1268,10 @@ func configureRigBeads(rigPath, name, prefix string, opts RigBeadsInitOptions) (
 }
 
 func (m *Manager) appendRigRoute(rigPath, name, prefix string, opts RigBeadsInitOptions) error {
+	return appendRigRoute(m.townRoot, rigPath, name, prefix, opts)
+}
+
+func appendRigRoute(townRoot, rigPath, name, prefix string, opts RigBeadsInitOptions) error {
 	if prefix == "" {
 		return nil
 	}
@@ -1275,7 +1283,7 @@ func (m *Manager) appendRigRoute(rigPath, name, prefix string, opts RigBeadsInit
 		Prefix: prefix + "-",
 		Path:   routePath,
 	}
-	if err := beads.AppendRoute(m.townRoot, route); err != nil {
+	if err := beads.AppendRoute(townRoot, route); err != nil {
 		if opts.RequireDolt {
 			return fmt.Errorf("updating routes.jsonl for %s: %w", name, err)
 		}
@@ -1286,7 +1294,7 @@ func (m *Manager) appendRigRoute(rigPath, name, prefix string, opts RigBeadsInit
 
 // EnsureAgentBeads creates Witness and Refinery agent beads in the rig database.
 func (m *Manager) EnsureAgentBeads(rigPath, name, prefix string) error {
-	if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
+	if err := initAgentBeads(rigPath, name, prefix); err != nil {
 		return err
 	}
 	if err := commitRigBeads(rigPath, beads.ResolveBeadsDir(rigPath), name, "create "+name+" agent beads"); err != nil {
@@ -1325,6 +1333,10 @@ func doltCommitHasNoChanges(out string) bool {
 // on bd >= 0.62 or "beads_<prefix>" on older bd), InitBeads drops the orphan
 // to prevent the silent data split documented in gh#3562.
 func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
+	return initBeads(m.townRoot, rigPath, prefix, rigName)
+}
+
+func initBeads(townRoot, rigPath, prefix, rigName string) error {
 	if !isValidBeadsPrefix(prefix) {
 		return fmt.Errorf("invalid beads prefix %q: must be alphanumeric with optional hyphens, start with letter, max 20 chars", prefix)
 	}
@@ -1337,7 +1349,7 @@ func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
 		return err
 	}
 	filteredEnv := bdSubprocessEnv(beadsDir, rigName)
-	cmd := beads.Spawn(rigBeadsInitArgs(m.townRoot, prefix, rigName)...)
+	cmd := beads.Spawn(rigBeadsInitArgs(townRoot, prefix, rigName)...)
 	cmd.Dir = rigPath
 	cmd.Env = filteredEnv
 	_, bdInitErr := cmd.CombinedOutput()
@@ -1345,11 +1357,11 @@ func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
 		return err
 	}
 	if bdInitErr == nil {
-		if err := configureInitializedRigBeads(m.townRoot, rigPath, prefix, rigName, filteredEnv); err != nil {
+		if err := configureInitializedRigBeads(townRoot, rigPath, prefix, rigName, filteredEnv); err != nil {
 			return err
 		}
 	}
-	return completeRigBeadsFiles(m.townRoot, rigPath, beadsDir, prefix, rigName, filteredEnv)
+	return completeRigBeadsFiles(townRoot, rigPath, beadsDir, prefix, rigName, filteredEnv)
 }
 
 func completeRigBeadsFiles(townRoot, rigPath, beadsDir, prefix, rigName string, env []string) error {
@@ -1431,6 +1443,10 @@ func configureInitializedRigBeads(townRoot, rigPath, prefix, rigName string, env
 //
 // Agent beads track lifecycle state for ZFC compliance (gt-h3hak, gt-pinkq).
 func (m *Manager) initAgentBeads(rigPath, rigName, prefix string) error {
+	return initAgentBeads(rigPath, rigName, prefix)
+}
+
+func initAgentBeads(rigPath, rigName, prefix string) error {
 	// Rig-level agents go in rig beads with rig prefix (per docs/architecture.md).
 	// Town-level agents (Mayor, Deacon) are created by gt install in town beads.
 	// Use ResolveBeadsDir to follow redirect files for tracked beads.
@@ -1488,7 +1504,7 @@ func (m *Manager) initAgentBeads(rigPath, rigName, prefix string) error {
 }
 
 // ensureGitignoreEntry adds an entry to .gitignore if it doesn't already exist.
-func (m *Manager) ensureGitignoreEntry(gitignorePath, entry string) error {
+func ensureGitignoreEntry(gitignorePath, entry string) error {
 	// Read existing content
 	content, err := os.ReadFile(gitignorePath)
 	if err != nil && !os.IsNotExist(err) {
@@ -1809,7 +1825,7 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 	if err := resolveRigRegistration(m, rigPath, opts, result); err != nil {
 		return nil, err
 	}
-	pushURL, authoritative := registrationPushURL(opts, existingConfig, m.detectPushURL(rigPath))
+	pushURL, authoritative := registrationPushURL(opts, existingConfig, detectPushURL(rigPath))
 	if err := configureRegistrationRemotes(rigPath, pushURL, authoritative, opts.UpstreamURL); err != nil {
 		return nil, err
 	}
@@ -1869,7 +1885,7 @@ func loadRigRegistration(rigPath string, opts RegisterRigOptions) (*RegisterRigR
 
 func resolveRigRegistration(m *Manager, rigPath string, opts RegisterRigOptions, result *RegisterRigResult) error {
 	if result.GitURL == "" && opts.GitURL == "" {
-		detected, err := m.detectGitURL(rigPath)
+		detected, err := detectGitURL(rigPath)
 		if err != nil && !opts.Force {
 			return fmt.Errorf("could not detect git URL (use --url to specify, or --force to skip): %w", err)
 		}
@@ -1983,7 +1999,7 @@ func syncRegistrationPushURL(rigPath string, cfg *RigConfig, pushURL string, sav
 
 // detectPushURL attempts to detect a custom push URL from an existing repository.
 // Returns empty string if push URL matches fetch URL (no custom push URL configured).
-func (m *Manager) detectPushURL(rigPath string) string {
+func detectPushURL(rigPath string) string {
 	// Check bare repo first (polecat-preferred source of truth), then clones.
 	// .repo.git is a bare repo and requires NewGitWithDir; the rest are regular clones.
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
@@ -2025,7 +2041,7 @@ func detectPushURLFrom(g *git.Git) string {
 // Note: .repo.git is intentionally not checked here — it's a bare repo shared by worktrees
 // and requires NewGitWithDir (not NewGit). detectPushURL checks .repo.git because push URL
 // is primarily configured there. For git URL, the clone-based paths are authoritative.
-func (m *Manager) detectGitURL(rigPath string) (string, error) {
+func detectGitURL(rigPath string) (string, error) {
 	possiblePaths := []string{
 		rigPath,
 		filepath.Join(rigPath, "mayor", "rig"),
@@ -2058,13 +2074,13 @@ func (m *Manager) seedPatrolMolecules(rigPath string) error {
 	if err := cmd.Run(); err != nil {
 		// Fallback: bd mol seed might not support --patrol yet
 		// Try creating them individually via bd create
-		return m.seedPatrolMoleculesManually(rigPath)
+		return seedPatrolMoleculesManually(rigPath)
 	}
 	return nil
 }
 
 // seedPatrolMoleculesManually creates patrol molecules using bd create commands.
-func (m *Manager) seedPatrolMoleculesManually(rigPath string) error {
+func seedPatrolMoleculesManually(rigPath string) error {
 	// Patrol molecule definitions for seeding
 	patrolMols := []struct {
 		title string
@@ -2112,9 +2128,9 @@ func (m *Manager) seedPatrolMoleculesManually(rigPath string) error {
 // createPluginDirectories creates plugin directories at town and rig levels.
 // - ~/gt/plugins/ (town-level, shared across all rigs)
 // - <rig>/plugins/ (rig-level, rig-specific plugins)
-func (m *Manager) createPluginDirectories(rigPath string) error {
+func createPluginDirectories(townRoot, rigPath string) error {
 	// Town-level plugins directory
-	townPluginsDir := filepath.Join(m.townRoot, "plugins")
+	townPluginsDir := filepath.Join(townRoot, "plugins")
 	if err := os.MkdirAll(townPluginsDir, 0755); err != nil {
 		return fmt.Errorf("creating town plugins directory: %w", err)
 	}
@@ -2184,7 +2200,7 @@ See docs/deacon-plugins.md for full documentation.
 		"AGENTS.md",
 	}
 	for _, entry := range gitignoreEntries {
-		if err := m.ensureGitignoreEntry(gitignorePath, entry); err != nil {
+		if err := ensureGitignoreEntry(gitignorePath, entry); err != nil {
 			return err
 		}
 	}
