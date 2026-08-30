@@ -16,20 +16,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/telemetry"
 )
 
-// SetStore configures an in-process beadsdk.Storage for this Mailbox.
-// When set, beads-mode methods use the store directly instead of shelling
-// out to the bd CLI. Legacy JSONL mode is unaffected.
-//
-// Callers are responsible for closing the store when done.
-func (m *Mailbox) SetStore(store beadsdk.Storage) {
-	m.store = store
-}
-
-// Store returns the in-process beadsdk.Storage, or nil if not set.
-func (m *Mailbox) Store() beadsdk.Storage {
-	return m.store
-}
-
 // NewMailboxBeadsWithStore creates a mailbox backed by an in-process beads store.
 func NewMailboxBeadsWithStore(identity, workDir string, store beadsdk.Storage) *Mailbox {
 	return &Mailbox{
