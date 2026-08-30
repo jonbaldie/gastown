@@ -445,7 +445,10 @@ func scanDanglingParentAnomaly(ctx context.Context, db *sql.DB) *Anomaly {
 		LEFT JOIN wisps pw ON pw.id = wd.depends_on_wisp_id LEFT JOIN issues pi ON pi.id = wd.depends_on_issue_id
 		WHERE wd.type = 'parent-child' AND wd.depends_on_external IS NULL AND (wd.depends_on_wisp_id IS NOT NULL OR wd.depends_on_issue_id IS NOT NULL) AND pw.id IS NULL AND pi.id IS NULL`
 	var count int
-	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil || count == 0 {
+	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return nil
+	}
+	if count == 0 {
 		return nil
 	}
 	return &Anomaly{

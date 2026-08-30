@@ -140,6 +140,131 @@ func TestIsNothingToCommit(t *testing.T) {
 	}
 }
 
+func TestScanPropagatesCandidateErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker string
+		want   string
+	}{
+		{name: "molecule steps", marker: "pm.issue_type = 'molecule'", want: "count molecule step candidates"},
+		{name: "reap candidates", marker: "w.created_at < ?", want: "count reap candidates"},
+		{name: "purge candidates", marker: "w.status = 'closed' AND w.closed_at <", want: "count purge candidates"},
+		{name: "mail candidates", marker: "FROM issues WHERE status = 'closed'", want: "count mail candidates"},
+		{name: "stale candidates", marker: "FROM issues i WHERE i.status IN", want: "count stale candidates"},
+		{name: "open wisps", marker: "FROM wisps WHERE status IN", want: "count open wisps"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &fakeReaperState{
+				wisps:       map[string]*fakeWisp{},
+				ops:         map[int][]string{},
+				queryErrors: map[string]error{tt.marker: fmt.Errorf("synthetic query failure")},
+			}
+			db := openFakeReaperDB(t, state)
+			defer db.Close()
+
+			_, err := Scan(db, "testdb", time.Hour, time.Hour, time.Hour, time.Hour)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Scan error = %v, want message containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestScanReportsDanglingParentAnomaly(t *testing.T) {
+	state := &fakeReaperState{
+		wisps: map[string]*fakeWisp{},
+		ops:   map[int][]string{},
+	}
+	db := openFakeReaperDB(t, state)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO wisp_dependencies (issue_id, depends_on_wisp_id, type)
+		VALUES ('orphan-step', 'missing-parent', 'parent-child')`); err != nil {
+		t.Fatalf("insert dangling dependency: %v", err)
+	}
+
+	result, err := Scan(db, "testdb", time.Hour, time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(result.Anomalies) != 1 {
+		t.Fatalf("Scan anomalies = %#v, want one anomaly", result.Anomalies)
+	}
+	if got := result.Anomalies[0]; got.Type != "dangling_parent_ref" || got.Count != 1 {
+		t.Fatalf("Scan anomaly = %#v, want dangling_parent_ref count 1", got)
+	}
+}
+
+func TestReapDryRunPropagatesQueryErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker string
+		want   string
+	}{
+		{name: "molecule steps", marker: "pm.issue_type = 'molecule'", want: "dry-run molecule step count"},
+		{name: "stale wisps", marker: "w.created_at < ?", want: "dry-run count"},
+		{name: "open wisps", marker: "FROM wisps WHERE status IN", want: "count open"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &fakeReaperState{
+				wisps:       map[string]*fakeWisp{},
+				ops:         map[int][]string{},
+				queryErrors: map[string]error{tt.marker: fmt.Errorf("synthetic query failure")},
+			}
+			db := openFakeReaperDB(t, state)
+			defer db.Close()
+
+			_, err := Reap(db, "testdb", time.Hour, true)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Reap error = %v, want message containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestReapMutatingPropagatesCommitAndFinalScanErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		execError map[string]error
+		queryErr  map[string]error
+		want      string
+	}{
+		{
+			name:      "commit",
+			execError: map[string]error{"CALL DOLT_COMMIT": fmt.Errorf("synthetic commit failure")},
+			want:      "dolt commit",
+		},
+		{
+			name:     "final scan",
+			queryErr: map[string]error{"FROM wisps WHERE status IN": fmt.Errorf("synthetic final scan failure")},
+			want:     "count open",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			state := &fakeReaperState{
+				wisps: map[string]*fakeWisp{
+					"stale": {id: "stale", status: "open", issueType: "task", createdAt: now.Add(-48 * time.Hour)},
+				},
+				ops:              map[int][]string{},
+				queryErrors:      tt.queryErr,
+				execErrors:       tt.execError,
+				rejectNilContext: true,
+			}
+			db := openFakeReaperDB(t, state)
+			defer db.Close()
+
+			_, err := Reap(db, "testdb", time.Hour, false)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Reap error = %v, want message containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func sourceBetween(t *testing.T, source, startMarker, endMarker string) string {
 	t.Helper()
 	start := strings.Index(source, startMarker)
@@ -155,11 +280,15 @@ func sourceBetween(t *testing.T, source, startMarker, endMarker string) string {
 
 func TestClosedMoleculeStepReapBehavior(t *testing.T) {
 	now := time.Now().UTC()
+	closedOld := now.Add(-8 * 24 * time.Hour)
+	staleOld := now.Add(-31 * 24 * time.Hour)
+	closedRecent := now.Add(-1 * time.Hour)
 	state := &fakeReaperState{
 		wisps: map[string]*fakeWisp{
 			"mol-closed":               {id: "mol-closed", status: "closed", issueType: "molecule", createdAt: now},
 			"mol-open":                 {id: "mol-open", status: "open", issueType: "molecule", createdAt: now},
-			"closed-epic":              {id: "closed-epic", status: "closed", issueType: "epic", createdAt: now},
+			"closed-epic":              {id: "closed-epic", status: "closed", issueType: "epic", createdAt: now, closedAt: &closedOld},
+			"closed-recent":            {id: "closed-recent", status: "closed", issueType: "task", createdAt: now, closedAt: &closedRecent},
 			"step-closed-mol-recent":   {id: "step-closed-mol-recent", status: "open", issueType: "task", createdAt: now.Add(-1 * time.Hour)},
 			"step-closed-mol-old":      {id: "step-closed-mol-old", status: "open", issueType: "task", createdAt: now.Add(-48 * time.Hour)},
 			"step-mixed-parent-old":    {id: "step-mixed-parent-old", status: "open", issueType: "task", createdAt: now.Add(-48 * time.Hour)},
@@ -185,7 +314,31 @@ func TestClosedMoleculeStepReapBehavior(t *testing.T) {
 	}
 	db := openFakeReaperDB(t, state)
 	t.Cleanup(func() { _ = db.Close() })
-
+	for _, issue := range []struct {
+		id        string
+		status    string
+		closedAt  time.Time
+		updatedAt time.Time
+		priority  int
+		issueType string
+	}{
+		{id: "mail-old", status: "closed", closedAt: closedOld, updatedAt: closedOld, priority: 2, issueType: "task"},
+		{id: "mail-recent", status: "closed", closedAt: closedRecent, updatedAt: closedRecent, priority: 2, issueType: "task"},
+		{id: "stale-old", status: "open", updatedAt: staleOld, priority: 2, issueType: "task"},
+		{id: "stale-recent", status: "open", updatedAt: closedRecent, priority: 2, issueType: "task"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO issues (id, status, closed_at, updated_at, priority, issue_type) VALUES (?, ?, ?, ?, ?, ?)`,
+			issue.id, issue.status, issue.closedAt, issue.updatedAt, issue.priority, issue.issueType,
+		); err != nil {
+			t.Fatalf("insert issue %s: %v", issue.id, err)
+		}
+	}
+	for _, issueID := range []string{"mail-old", "mail-recent"} {
+		if _, err := db.Exec(`INSERT INTO labels (issue_id, label) VALUES (?, 'gt:message')`, issueID); err != nil {
+			t.Fatalf("insert mail label %s: %v", issueID, err)
+		}
+	}
 	maxAge := 24 * time.Hour
 	scan, err := Scan(db, "testdb", maxAge, 7*24*time.Hour, 7*24*time.Hour, 30*24*time.Hour)
 	if err != nil {
@@ -196,6 +349,18 @@ func TestClosedMoleculeStepReapBehavior(t *testing.T) {
 	}
 	if scan.ReapCandidates != 2 {
 		t.Fatalf("Scan ReapCandidates = %d, want 2", scan.ReapCandidates)
+	}
+	if scan.PurgeCandidates != 1 {
+		t.Fatalf("Scan PurgeCandidates = %d, want 1", scan.PurgeCandidates)
+	}
+	if scan.MailCandidates != 1 {
+		t.Fatalf("Scan MailCandidates = %d, want 1", scan.MailCandidates)
+	}
+	if scan.StaleCandidates != 1 {
+		t.Fatalf("Scan StaleCandidates = %d, want 1", scan.StaleCandidates)
+	}
+	if scan.OpenWisps != 10 {
+		t.Fatalf("Scan OpenWisps = %d, want 10", scan.OpenWisps)
 	}
 
 	beforeDryRun := state.statuses()
@@ -257,6 +422,11 @@ func TestClosedMoleculeStepReapBehavior(t *testing.T) {
 			"QUERY SELECT COUNT(*) FROM wisps WHERE status IN",
 			"EXEC SET @@autocommit = 1",
 		)
+		for _, op := range ops {
+			if op == "EXEC ROLLBACK" {
+				t.Fatalf("successful Reap rolled back connection %d: %v", connID, ops)
+			}
+		}
 		t.Logf("real Reap used pinned connection %d", connID)
 	}
 }
@@ -325,9 +495,13 @@ func seedReaperSQL(db *sql.DB, state *fakeReaperState) error {
 		}
 	}
 	for _, w := range state.wisps {
+		var closedAt any
+		if w.closedAt != nil {
+			closedAt = *w.closedAt
+		}
 		if _, err := db.Exec(
-			`INSERT INTO wisps (id, status, issue_type, created_at) VALUES (?, ?, ?, ?)`,
-			w.id, w.status, w.issueType, w.createdAt,
+			`INSERT INTO wisps (id, status, issue_type, created_at, closed_at) VALUES (?, ?, ?, ?, ?)`,
+			w.id, w.status, w.issueType, w.createdAt, closedAt,
 		); err != nil {
 			return err
 		}
@@ -355,6 +529,7 @@ type fakeWisp struct {
 	status    string
 	issueType string
 	createdAt time.Time
+	closedAt  *time.Time
 }
 
 type fakeDep struct {
@@ -365,12 +540,15 @@ type fakeDep struct {
 }
 
 type fakeReaperState struct {
-	mu       sync.Mutex
-	inner    *sql.DB
-	wisps    map[string]*fakeWisp
-	deps     []fakeDep
-	nextConn int
-	ops      map[int][]string
+	mu               sync.Mutex
+	inner            *sql.DB
+	wisps            map[string]*fakeWisp
+	deps             []fakeDep
+	nextConn         int
+	ops              map[int][]string
+	queryErrors      map[string]error
+	execErrors       map[string]error
+	rejectNilContext bool
 }
 
 func (s *fakeReaperState) status(id string) string {
@@ -458,6 +636,14 @@ func (c *fakeReaperConn) QueryContext(ctx context.Context, query string, args []
 	c.state.mu.Lock()
 	c.state.record(c.id, "QUERY "+normalized)
 	c.state.mu.Unlock()
+	if c.state.rejectNilContext && ctx == nil {
+		return nil, fmt.Errorf("nil query context")
+	}
+	for marker, err := range c.state.queryErrors {
+		if strings.Contains(normalized, marker) {
+			return nil, err
+		}
+	}
 
 	if strings.Contains(normalized, "created_at <") {
 		if err := validateStaleWispQuery(normalized); err != nil {
@@ -482,6 +668,14 @@ func (c *fakeReaperConn) ExecContext(ctx context.Context, query string, args []d
 	c.state.mu.Lock()
 	c.state.record(c.id, "EXEC "+normalized)
 	c.state.mu.Unlock()
+	if c.state.rejectNilContext && ctx == nil {
+		return nil, fmt.Errorf("nil exec context")
+	}
+	for marker, err := range c.state.execErrors {
+		if strings.Contains(normalized, marker) {
+			return nil, err
+		}
+	}
 
 	if isSessionSQL(normalized) {
 		return fakeReaperResult(0), nil
