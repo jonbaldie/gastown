@@ -114,76 +114,61 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 		return nil, nil, fmt.Errorf("get base SHA: %w", err)
 	}
 
-	// Try to stack each MR via merge commit.
 	for _, mr := range batch {
-		_, _ = fmt.Fprintf(e.output, "[Batch] Stacking MR %s (branch %s)...\n", mr.ID, mr.Branch)
-
-		// Check branch exists
-		exists, brErr := git.BranchExists(e.git, mr.Branch)
-		if brErr != nil || !exists {
-			// Branch not found — escalate to mayor (gas-556)
-			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: branch %s not found, escalating to mayor\n", mr.ID, mr.Branch)
-			e.HandleMRInfoFailure(mr, ProcessResult{BranchNotFound: true})
+		added, conflict, addErr := e.stackRebaseMR(mr, target, baseSHA, stacked)
+		if addErr != nil {
+			return nil, nil, addErr
+		}
+		if conflict {
 			conflicts = append(conflicts, mr)
 			continue
 		}
-		mergeRef, shaErr := e.submittedBranchHead(mr)
-		if shaErr != nil {
-			return nil, nil, shaErr
+		if added {
+			stacked = append(stacked, mr)
 		}
-
-		// Check for conflicts before merging
-		conflictFiles, conflictErr := git.CheckConflicts(e.git, mergeRef, target)
-		if conflictErr != nil || len(conflictFiles) > 0 {
-			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: conflicts detected, removing from batch\n", mr.ID)
-			conflicts = append(conflicts, mr)
-
-			// Reset to base and rebuild stack without this MR
-			if resetErr := git.ResetHard(e.git, baseSHA); resetErr != nil {
-				return nil, nil, fmt.Errorf("reset after conflict: %w", resetErr)
-			}
-			// Rebuild the stack with MRs stacked so far (minus the conflicting one)
-			for _, prev := range stacked {
-				prevRef, refErr := e.submittedBranchHead(prev)
-				if refErr != nil {
-					return nil, nil, refErr
-				}
-				msg := e.getMergeMessage(prev)
-				if mergeErr := git.MergeNoFF(e.git, prevRef, msg); mergeErr != nil {
-					return nil, nil, fmt.Errorf("rebuild stack for %s: %w", prev.ID, mergeErr)
-				}
-			}
-			continue
-		}
-
-		// Merge this MR onto the stack, preserving the submitted head in ancestry.
-		msg := e.getMergeMessage(mr)
-		if mergeErr := git.MergeNoFF(e.git, mergeRef, msg); mergeErr != nil {
-			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: merge failed: %v, removing from batch\n", mr.ID, mergeErr)
-			conflicts = append(conflicts, mr)
-
-			// Reset and rebuild without this MR
-			if resetErr := git.ResetHard(e.git, baseSHA); resetErr != nil {
-				return nil, nil, fmt.Errorf("reset after merge failure: %w", resetErr)
-			}
-			for _, prev := range stacked {
-				prevRef, refErr := e.submittedBranchHead(prev)
-				if refErr != nil {
-					return nil, nil, refErr
-				}
-				prevMsg := e.getMergeMessage(prev)
-				if rebuildErr := git.MergeNoFF(e.git, prevRef, prevMsg); rebuildErr != nil {
-					return nil, nil, fmt.Errorf("rebuild stack for %s: %w", prev.ID, rebuildErr)
-				}
-			}
-			continue
-		}
-
-		stacked = append(stacked, mr)
 	}
 
 	_, _ = fmt.Fprintf(e.output, "[Batch] Stack built: %d MRs stacked, %d conflicts\n", len(stacked), len(conflicts))
 	return stacked, conflicts, nil
+}
+
+func (e *Engineer) stackRebaseMR(mr *MRInfo, target, baseSHA string, stacked []*MRInfo) (added, conflict bool, err error) {
+	_, _ = fmt.Fprintf(e.output, "[Batch] Stacking MR %s (branch %s)...\n", mr.ID, mr.Branch)
+	exists, branchErr := git.BranchExists(e.git, mr.Branch)
+	if branchErr != nil || !exists {
+		_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: branch %s not found, escalating to mayor\n", mr.ID, mr.Branch)
+		e.HandleMRInfoFailure(mr, ProcessResult{BranchNotFound: true})
+		return false, true, nil
+	}
+	mergeRef, err := e.submittedBranchHead(mr)
+	if err != nil {
+		return false, false, err
+	}
+	conflictFiles, conflictErr := git.CheckConflicts(e.git, mergeRef, target)
+	if conflictErr != nil || len(conflictFiles) > 0 {
+		return false, true, e.resetAndRebuildRebaseStack(baseSHA, stacked, "conflict")
+	}
+	if mergeErr := git.MergeNoFF(e.git, mergeRef, e.getMergeMessage(mr)); mergeErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: merge failed: %v, removing from batch\n", mr.ID, mergeErr)
+		return false, true, e.resetAndRebuildRebaseStack(baseSHA, stacked, "merge failure")
+	}
+	return true, false, nil
+}
+
+func (e *Engineer) resetAndRebuildRebaseStack(baseSHA string, stacked []*MRInfo, reason string) error {
+	if err := git.ResetHard(e.git, baseSHA); err != nil {
+		return fmt.Errorf("reset after %s: %w", reason, err)
+	}
+	for _, prev := range stacked {
+		prevRef, err := e.submittedBranchHead(prev)
+		if err != nil {
+			return err
+		}
+		if err := git.MergeNoFF(e.git, prevRef, e.getMergeMessage(prev)); err != nil {
+			return fmt.Errorf("rebuild stack for %s: %w", prev.ID, err)
+		}
+	}
+	return nil
 }
 
 // getMergeMessage returns the commit message for a merged MR.
@@ -229,8 +214,10 @@ func (e *Engineer) ProcessBatch(ctx context.Context, batch []*MRInfo, target str
 	if !e.recheckBatchEligibility(batch, target, result) {
 		return result
 	}
+	return e.processEligibleBatch(ctx, batch, target, batchCfg, result)
+}
 
-	// Step 1: Build the stack
+func (e *Engineer) processEligibleBatch(ctx context.Context, batch []*MRInfo, target string, batchCfg *BatchConfig, result *BatchResult) *BatchResult {
 	stacked, conflicts, err := e.BuildRebaseStack(ctx, batch, target)
 	if err != nil {
 		result.Error = fmt.Errorf("build rebase stack: %w", err)
@@ -246,60 +233,60 @@ func (e *Engineer) ProcessBatch(ctx context.Context, batch []*MRInfo, target str
 	// If only one MR survived after conflict removal, just process it directly
 	if len(stacked) == 1 {
 		_, _ = fmt.Fprintln(e.output, "[Batch] Only 1 MR survived stack construction, processing directly")
-		// We already have the merged stack on the target branch, run gates and push.
 		return e.verifyAndPush(ctx, stacked, target)
 	}
+	return e.processStackedBatch(ctx, stacked, target, batchCfg, result)
+}
 
-	// Step 2: Run gates on the stack tip
+func (e *Engineer) processStackedBatch(ctx context.Context, stacked []*MRInfo, target string, batchCfg *BatchConfig, result *BatchResult) *BatchResult {
 	_, _ = fmt.Fprintf(e.output, "[Batch] Running gates on stack tip (%d MRs)...\n", len(stacked))
-	gateResult := e.runBatchGates(ctx)
-
-	// Step 3: Happy path — all green
-	if gateResult.Success {
+	if e.runBatchGates(ctx).Success {
 		return e.fastForwardBatch(ctx, stacked, target, result)
 	}
-
-	// Step 4: Retry if flaky test handling is enabled
 	if batchCfg.RetryBatchOnFlaky {
-		_, _ = fmt.Fprintln(e.output, "[Batch] Gates failed, retrying full batch (flaky test check)...")
-
-		// Rebuild the stack from scratch for a clean retry
-		if resetErr := e.resetAndRebuildStack(stacked, target); resetErr != nil {
-			result.Error = fmt.Errorf("rebuild for retry: %w", resetErr)
+		retryPassed, retryErr := e.retryBatchGates(ctx, stacked, target)
+		if retryErr != nil {
+			result.Error = retryErr
 			return result
 		}
-
-		retryResult := e.runBatchGates(ctx)
-		if retryResult.Success {
-			_, _ = fmt.Fprintln(e.output, "[Batch] Retry succeeded (was flaky)")
+		if retryPassed {
 			return e.fastForwardBatch(ctx, stacked, target, result)
 		}
-		_, _ = fmt.Fprintln(e.output, "[Batch] Retry also failed, proceeding to bisection")
 	}
+	return e.bisectFailedBatch(ctx, stacked, target, result)
+}
 
-	// Step 5: Bisect to find the culprit
+func (e *Engineer) retryBatchGates(ctx context.Context, stacked []*MRInfo, target string) (bool, error) {
+	_, _ = fmt.Fprintln(e.output, "[Batch] Gates failed, retrying full batch (flaky test check)...")
+	if err := e.resetAndRebuildStack(stacked, target); err != nil {
+		return false, fmt.Errorf("rebuild for retry: %w", err)
+	}
+	if e.runBatchGates(ctx).Success {
+		_, _ = fmt.Fprintln(e.output, "[Batch] Retry succeeded (was flaky)")
+		return true, nil
+	}
+	_, _ = fmt.Fprintln(e.output, "[Batch] Retry also failed, proceeding to bisection")
+	return false, nil
+}
+
+func (e *Engineer) bisectFailedBatch(ctx context.Context, stacked []*MRInfo, target string, result *BatchResult) *BatchResult {
 	_, _ = fmt.Fprintf(e.output, "[Batch] Bisecting %d MRs to isolate failure...\n", len(stacked))
 	good, culprits := e.bisectBatch(ctx, stacked, target)
 
 	result.Culprits = culprits
-
-	// Step 6: If we found good MRs, merge them
-	if len(good) > 0 {
-		_, _ = fmt.Fprintf(e.output, "[Batch] Merging %d good MRs after bisection\n", len(good))
-		if resetErr := e.resetAndRebuildStack(good, target); resetErr != nil {
-			result.Error = fmt.Errorf("rebuild good MRs: %w", resetErr)
-			return result
-		}
-		// Verify the good subset actually passes
-		verifyResult := e.runBatchGates(ctx)
-		if verifyResult.Success {
-			return e.fastForwardBatch(ctx, good, target, result)
-		}
-		// If the good subset also fails, something is wrong — don't merge anything
-		_, _ = fmt.Fprintln(e.output, "[Batch] Warning: good subset also failed gates, aborting batch")
-		result.Error = fmt.Errorf("good subset failed verification after bisection")
+	if len(good) == 0 {
+		return result
 	}
-
+	_, _ = fmt.Fprintf(e.output, "[Batch] Merging %d good MRs after bisection\n", len(good))
+	if err := e.resetAndRebuildStack(good, target); err != nil {
+		result.Error = fmt.Errorf("rebuild good MRs: %w", err)
+		return result
+	}
+	if e.runBatchGates(ctx).Success {
+		return e.fastForwardBatch(ctx, good, target, result)
+	}
+	_, _ = fmt.Fprintln(e.output, "[Batch] Warning: good subset also failed gates, aborting batch")
+	result.Error = fmt.Errorf("good subset failed verification after bisection")
 	return result
 }
 
@@ -404,83 +391,101 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 		return result
 	}
 
-	// Acquire merge slot for default branch pushes
-	var pushHolder string
-	if target == e.rig.DefaultBranch() {
-		var slotErr error
-		pushHolder, slotErr = e.acquireMainPushSlot(ctx)
-		if slotErr != nil {
-			if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after slot failure: %v\n", target, resetErr)
-			}
-			result.Error = fmt.Errorf("acquire merge slot: %w", slotErr)
-			return result
-		}
-		defer func() {
-			if pushHolder != "" {
-				if releaseErr := e.mergeSlotRelease(pushHolder); releaseErr != nil {
-					_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to release merge slot: %v\n", releaseErr)
-				}
-			}
-		}()
+	pushHolder, slotErr := e.acquireBatchPushHolder(ctx, target)
+	if slotErr != nil {
+		result.Error = slotErr
+		return result
+	}
+	defer e.releaseBatchPushHolder(pushHolder)
+
+	if !e.validateBatchPushEligibility(stacked, target, result) {
+		return result
 	}
 
+	if err := e.pushBatchCommit(target, tipSHA, len(stacked)); err != nil {
+		result.Error = err
+		return result
+	}
+
+	e.recordBatchSuccess(stacked, tipSHA, result)
+
+	return result
+}
+
+func (e *Engineer) acquireBatchPushHolder(ctx context.Context, target string) (string, error) {
+	if target != e.rig.DefaultBranch() {
+		return "", nil
+	}
+	holder, err := e.acquireMainPushSlot(ctx)
+	if err != nil {
+		e.resetBatchAfterFailure(target, "slot failure")
+		return "", fmt.Errorf("acquire merge slot: %w", err)
+	}
+	return holder, nil
+}
+
+func (e *Engineer) releaseBatchPushHolder(holder string) {
+	if holder == "" {
+		return
+	}
+	if err := e.mergeSlotRelease(holder); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to release merge slot: %v\n", err)
+	}
+}
+
+func (e *Engineer) validateBatchPushEligibility(stacked []*MRInfo, target string, result *BatchResult) bool {
 	for _, mr := range stacked {
-		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-			if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)
-			}
-			if eligibility.NoMerge {
-				_, _ = fmt.Fprintf(e.output, "[Batch] MR %s became ineligible before push: %s\n", mr.ID, eligibility.Error)
-				e.HandleMRInfoFailure(mr, eligibility)
-			} else {
-				result.Error = fmt.Errorf("pre-push eligibility recheck failed for %s: %s", mr.ID, eligibility.Error)
-			}
-			return result
+		eligibility := e.recheckMRStillMergeable(mr, target)
+		if eligibility.Success {
+			continue
 		}
+		e.resetBatchAfterFailure(target, "pre-push eligibility failure")
+		if eligibility.NoMerge {
+			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s became ineligible before push: %s\n", mr.ID, eligibility.Error)
+			e.HandleMRInfoFailure(mr, eligibility)
+		} else {
+			result.Error = fmt.Errorf("pre-push eligibility recheck failed for %s: %s", mr.ID, eligibility.Error)
+		}
+		return false
 	}
+	return true
+}
 
-	// Push to origin
-	_, _ = fmt.Fprintf(e.output, "[Batch] Pushing %d merged MRs to origin/%s...\n", len(stacked), target)
-	if pushErr := git.Push(e.git, "origin", target, false); pushErr != nil {
-		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
-			_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
-		}
-		result.Error = fmt.Errorf("push to origin: %w", pushErr)
-		return result
+func (e *Engineer) pushBatchCommit(target, tipSHA string, batchSize int) error {
+	_, _ = fmt.Fprintf(e.output, "[Batch] Pushing %d merged MRs to origin/%s...\n", batchSize, target)
+	if err := git.Push(e.git, "origin", target, false); err != nil {
+		e.resetBatchAfterFailure(target, "push failure")
+		return fmt.Errorf("push to origin: %w", err)
 	}
-	if verifyErr := git.VerifyPushedCommit(e.git, "origin", target, tipSHA); verifyErr != nil {
-		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
-			_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after verified-push failure: %v\n", target, resetErr)
-		}
-		result.Error = verifyErr
-		return result
+	if err := git.VerifyPushedCommit(e.git, "origin", target, tipSHA); err != nil {
+		e.resetBatchAfterFailure(target, "verified-push failure")
+		return err
 	}
+	return nil
+}
 
+func (e *Engineer) resetBatchAfterFailure(target, reason string) {
+	if err := git.ResetHard(e.git, "origin/"+target); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after %s: %v\n", target, reason, err)
+	}
+}
+
+func (e *Engineer) recordBatchSuccess(stacked []*MRInfo, tipSHA string, result *BatchResult) {
 	ids := make([]string, len(stacked))
 	for i, mr := range stacked {
 		ids[i] = mr.ID
 	}
 	_, _ = fmt.Fprintf(e.output, "[Batch] Successfully merged batch: %s (commit %s)\n", strings.Join(ids, ", "), shortSHA(tipSHA))
-
 	result.MergeCommit = tipSHA
-
-	// GH#2321: Run post-merge cleanup for each merged MR — close source beads,
-	// delete branches, nudge mayor, and check convoy completion.
-	// HandleMRInfoSuccess was previously dead code (never called), causing task
-	// beads to remain open after successful merges.
 	cleaned := make([]*MRInfo, 0, len(stacked))
 	for _, mr := range stacked {
-		mergeResult := ProcessResult{Success: true, MergeCommit: tipSHA}
-		if e.HandleMRInfoSuccess(mr, mergeResult) {
+		if e.HandleMRInfoSuccess(mr, ProcessResult{Success: true, MergeCommit: tipSHA}) {
 			cleaned = append(cleaned, mr)
 		} else if result.Error == nil {
 			result.Error = fmt.Errorf("post-merge cleanup proof failed for %s", mr.ID)
 		}
 	}
 	result.Merged = cleaned
-
-	return result
 }
 
 // bisectBatch performs binary search to find which MR(s) caused a test failure.
