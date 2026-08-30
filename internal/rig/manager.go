@@ -214,16 +214,9 @@ func (m *Manager) UsedNamepoolThemes(fallbackTheme func(rigName string) string) 
 // loadRig loads rig details from the filesystem.
 func (m *Manager) loadRig(name string, entry config.RigEntry) (*Rig, error) {
 	rigPath := filepath.Join(m.townRoot, name)
-
-	// Verify directory exists
-	info, err := os.Stat(rigPath)
-	if err != nil {
+	if err := validateRigDirectory(rigPath); err != nil {
 		return nil, fmt.Errorf("rig directory: %w", err)
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("not a directory: %s", rigPath)
-	}
-
 	rig := &Rig{
 		Name:      name,
 		Path:      rigPath,
@@ -233,50 +226,47 @@ func (m *Manager) loadRig(name string, entry config.RigEntry) (*Rig, error) {
 		Config:    entry.BeadsConfig,
 	}
 
-	// Scan for polecats
-	polecatsDir := filepath.Join(rigPath, "polecats")
-	if entries, err := os.ReadDir(polecatsDir); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if strings.HasPrefix(name, ".") {
-				continue
-			}
-			rig.Polecats = append(rig.Polecats, name)
-		}
-	}
-
-	// Scan for crew workers
-	crewDir := filepath.Join(rigPath, "crew")
-	if entries, err := os.ReadDir(crewDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-				rig.Crew = append(rig.Crew, e.Name())
-			}
-		}
-	}
-
-	// Check for witness (witnesses don't have clones, just the witness directory)
-	witnessPath := filepath.Join(rigPath, "witness")
-	if info, err := os.Stat(witnessPath); err == nil && info.IsDir() {
-		rig.HasWitness = true
-	}
-
-	// Check for refinery
-	refineryPath := filepath.Join(rigPath, "refinery", "rig")
-	if _, err := os.Stat(refineryPath); err == nil {
-		rig.HasRefinery = true
-	}
-
-	// Check for mayor clone
-	mayorPath := filepath.Join(rigPath, "mayor", "rig")
-	if _, err := os.Stat(mayorPath); err == nil {
-		rig.HasMayor = true
-	}
-
+	rig.Polecats = scanRigWorkers(filepath.Join(rigPath, "polecats"))
+	rig.Crew = scanRigWorkers(filepath.Join(rigPath, "crew"))
+	rig.HasWitness = directoryExists(filepath.Join(rigPath, "witness"))
+	rig.HasRefinery = pathExists(filepath.Join(rigPath, "refinery", "rig"))
+	rig.HasMayor = pathExists(filepath.Join(rigPath, "mayor", "rig"))
 	return rig, nil
+}
+
+func validateRigDirectory(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory: %s", path)
+	}
+	return nil
+}
+
+func scanRigWorkers(path string) []string {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil
+	}
+	workers := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			workers = append(workers, entry.Name())
+		}
+	}
+	return workers
+}
+
+func directoryExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // AddRigOptions configures rig creation.
