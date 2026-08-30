@@ -271,7 +271,7 @@ func (s *Server) limiterFor(identity string) *rate.Limiter {
 	if v, ok := s.RateLimiters.Load(identity); ok {
 		return v.(*rate.Limiter)
 	}
-	l := rate.NewLimiter(s.rateLimit, s.rateBurst)
+	l := rate.NewLimiter(rate.Limit(s.rateLimit), s.rateBurst)
 	v, _ := s.RateLimiters.LoadOrStore(identity, l)
 	return v.(*rate.Limiter)
 }
