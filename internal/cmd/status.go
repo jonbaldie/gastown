@@ -620,7 +620,7 @@ func writeStatusWatchFrame(opts statusOptions, isTTY bool, watch *statusWatchSta
 
 func writeStatusWatchHeader(w io.Writer, opts statusOptions, isTTY bool) {
 	if isTTY {
-		fmt.Fprint(w, "\033[H\033[2J")
+		_, _ = fmt.Fprint(w, "\033[H\033[2J")
 	}
 	header := fmt.Sprintf("[%s] gt status --watch (every %ds, Ctrl+C to stop)", time.Now().Format("15:04:05"), opts.interval)
 	if isTTY {

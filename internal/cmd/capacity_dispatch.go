@@ -174,7 +174,7 @@ func buildSchedulerDispatchPlanForReady(
 func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun bool) (int, error) {
 	escalationState := newCrossRigEscalationState()
 	if dryRun {
-		return runSchedulerDryRun(townRoot, batchOverride, escalationState)
+		return 0, runSchedulerDryRun(townRoot, batchOverride, escalationState)
 	}
 
 	fileLock, err := acquireSchedulerDispatchLock(townRoot)
@@ -225,14 +225,14 @@ func runSchedulerDispatchPlan(
 	return report.Dispatched, nil
 }
 
-func runSchedulerDryRun(townRoot string, batchOverride int, escalationState *crossRigEscalationState) (int, error) {
+func runSchedulerDryRun(townRoot string, batchOverride int, escalationState *crossRigEscalationState) error {
 	dispatchPlan, err := buildSchedulerDispatchPlan(townRoot, batchOverride, false)
 	if err != nil {
-		return 0, fmt.Errorf("planning dispatch: %w", err)
+		return fmt.Errorf("planning dispatch: %w", err)
 	}
 	dispatchPlan.Plan = validateDryRunDispatchPlan(townRoot, dispatchPlan.Plan, escalationState)
 	printSchedulerDryRunPlan(dispatchPlan)
-	return 0, nil
+	return nil
 }
 
 func acquireSchedulerDispatchLock(townRoot string) (*flock.Flock, error) {

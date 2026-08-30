@@ -2957,10 +2957,7 @@ func InitRig(townRoot, rigName string) (serverWasRunning bool, created bool, err
 	if handled, running, err := initExistingRigDatabase(townRoot, rigName, rigDir); handled {
 		return running, false, err
 	}
-	running, err := stopOrphanedDoltServerIfNeeded(townRoot, config)
-	if err != nil {
-		return false, false, err
-	}
+	running := stopOrphanedDoltServerIfNeeded(townRoot, config)
 	if err := createRigDatabase(townRoot, rigName, rigDir, running); err != nil {
 		return running, false, err
 	}
@@ -3009,13 +3006,13 @@ func initExistingRigDatabase(townRoot, rigName, rigDir string) (bool, bool, erro
 	return true, running, nil
 }
 
-func stopOrphanedDoltServerIfNeeded(townRoot string, config *Config) (bool, error) {
+func stopOrphanedDoltServerIfNeeded(townRoot string, config *Config) bool {
 	running, runningPID, _ := IsRunning(townRoot)
 	if !running {
-		return false, nil
+		return false
 	}
 	if _, err := os.Stat(config.DataDir); !os.IsNotExist(err) {
-		return true, nil
+		return true
 	}
 	fmt.Fprintf(os.Stderr, "Warning: Dolt server (PID %d) is running but data directory %s does not exist — stopping orphaned server\n", runningPID, config.DataDir)
 	if stopErr := Stop(townRoot); stopErr != nil && runningPID > 0 {
@@ -3023,7 +3020,7 @@ func stopOrphanedDoltServerIfNeeded(townRoot string, config *Config) (bool, erro
 			_ = proc.Kill()
 		}
 	}
-	return false, nil
+	return false
 }
 
 func createRigDatabase(townRoot, rigName, rigDir string, running bool) error {

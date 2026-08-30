@@ -590,40 +590,40 @@ func symlinkSessionToConfigDir(townRoot, sessionID, targetConfigDir string) (cle
 	if loc == nil {
 		return nil, fmt.Errorf("session not found in any account")
 	}
-	cleanup, done, err := symlinkSessionInSameAccount(loc, sessionID, targetConfigDir)
+	cleanup, done := symlinkSessionInSameAccount(loc, sessionID, targetConfigDir)
 	if done {
-		return cleanup, err
+		return cleanup, nil
 	}
 	return symlinkSessionAcrossAccounts(loc, sessionID, targetConfigDir)
 }
 
-func symlinkSessionInSameAccount(loc *sessionLocation, sessionID, targetConfigDir string) (func(), bool, error) {
+func symlinkSessionInSameAccount(loc *sessionLocation, sessionID, targetConfigDir string) (func(), bool) {
 	resolvedLocDir, _ := filepath.EvalSymlinks(loc.configDir)
 	resolvedTargetDir, _ := filepath.EvalSymlinks(targetConfigDir)
 	if resolvedLocDir != resolvedTargetDir {
-		return nil, false, nil
+		return nil, false
 	}
 	cwd, cwdErr := os.Getwd()
 	if cwdErr != nil {
-		return nil, true, nil
+		return nil, true
 	}
 	cwdProjectDir := strings.ReplaceAll(cwd, "/", "-")
 	if cwdProjectDir == loc.projectDir {
-		return nil, true, nil
+		return nil, true
 	}
 	sourceFile := filepath.Join(targetConfigDir, "projects", loc.projectDir, sessionID+".jsonl")
 	targetDir := filepath.Join(targetConfigDir, "projects", cwdProjectDir)
 	if mkErr := os.MkdirAll(targetDir, 0755); mkErr != nil {
-		return nil, true, nil
+		return nil, true
 	}
 	targetFile := filepath.Join(targetDir, sessionID+".jsonl")
 	if _, lstatErr := os.Lstat(targetFile); lstatErr == nil {
-		return nil, true, nil
+		return nil, true
 	}
 	if symlinkErr := os.Symlink(sourceFile, targetFile); symlinkErr != nil {
-		return nil, true, nil
+		return nil, true
 	}
-	return func() { _ = os.Remove(targetFile) }, true, nil
+	return func() { _ = os.Remove(targetFile) }, true
 }
 
 func symlinkSessionAcrossAccounts(loc *sessionLocation, sessionID, targetConfigDir string) (func(), error) {
@@ -636,8 +636,8 @@ func symlinkSessionAcrossAccounts(loc *sessionLocation, sessionID, targetConfigD
 		return nil, fmt.Errorf("creating project directory: %w", err)
 	}
 	targetSessionFile := filepath.Join(currentProjectDir, sessionID+".jsonl")
-	if done, err := prepareCrossAccountSessionTarget(sourceSessionFile, targetSessionFile); done {
-		return nil, err
+	if prepareCrossAccountSessionTarget(sourceSessionFile, targetSessionFile) {
+		return nil, nil
 	}
 	if err := os.Symlink(sourceSessionFile, targetSessionFile); err != nil {
 		return nil, fmt.Errorf("creating symlink: %w", err)
@@ -650,20 +650,20 @@ func symlinkSessionAcrossAccounts(loc *sessionLocation, sessionID, targetConfigD
 	return seanceSessionCleanup(targetSessionFile, targetIndexPath, sessionID, indexModified), nil
 }
 
-func prepareCrossAccountSessionTarget(sourceSessionFile, targetSessionFile string) (bool, error) {
+func prepareCrossAccountSessionTarget(sourceSessionFile, targetSessionFile string) bool {
 	info, err := os.Lstat(targetSessionFile)
 	if err != nil {
-		return false, nil
+		return false
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
-		return true, nil
+		return true
 	}
 	existing, _ := os.Readlink(targetSessionFile)
 	if existing == sourceSessionFile {
-		return true, nil
+		return true
 	}
 	_ = os.Remove(targetSessionFile)
-	return false, nil
+	return false
 }
 
 func addSessionToTargetIndex(loc *sessionLocation, sessionID, currentProjectDir, targetSessionFile string) (bool, error) {

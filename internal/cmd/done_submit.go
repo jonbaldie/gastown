@@ -436,10 +436,7 @@ func assignDoneMRPriority(f *doneFlow) {
 }
 
 func resumeOrCreateDoneMR(f *doneFlow) (doneStage, error) {
-	resumed, notify, err := tryResumeDoneMRCheckpoint(f)
-	if err != nil {
-		return 0, err
-	}
+	resumed, notify := tryResumeDoneMRCheckpoint(f)
 	if notify {
 		return doneStageNotify, nil
 	}
@@ -458,30 +455,30 @@ func resumeOrCreateDoneMR(f *doneFlow) (doneStage, error) {
 	return doneStageAfterMR, nil
 }
 
-func tryResumeDoneMRCheckpoint(f *doneFlow) (resumed bool, notify bool, err error) {
+func tryResumeDoneMRCheckpoint(f *doneFlow) (resumed bool, notify bool) {
 	if f.work.checkpoints[CheckpointMRCreated] == "" {
-		return false, false, nil
+		return false, false
 	}
 	cpMRID := f.work.checkpoints[CheckpointMRCreated]
 	cpMR, cpErr := f.work.bd.Show(cpMRID)
 	if cpErr != nil || cpMR == nil {
-		return false, false, nil
+		return false, false
 	}
 	branchPrefix := "branch: " + f.repo.branch + "\n"
 	if !strings.HasPrefix(cpMR.Description, branchPrefix) {
 		fmt.Printf("→ Discarding stale MR checkpoint %s (was for different branch)\n", cpMRID)
-		return false, false, nil
+		return false, false
 	}
 	if err := validateMergeRequestSource(cpMR, f.work.issueID, f.work.sourceIssueForNoMerge); err != nil {
 		f.work.mrFailed = true
 		errMsg := fmt.Sprintf("checkpoint MR validation failed: %v", err)
 		f.work.doneErrors = append(f.work.doneErrors, errMsg)
 		style.PrintWarning("%s\nBranch is pushed but MR bead not trusted. Witness will be notified.", errMsg)
-		return false, true, nil
+		return false, true
 	}
 	f.work.mrID = cpMRID
 	fmt.Printf("%s MR already created (resumed from checkpoint: %s)\n", style.Bold.Render("✓"), f.work.mrID)
-	return true, false, nil
+	return true, false
 }
 
 func findOrCreateDoneMR(f *doneFlow) {

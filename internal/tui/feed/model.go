@@ -408,8 +408,8 @@ func handleModelKey(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if model, cmd, handled := handleViewNavigation(m, msg); handled {
 		return model, cmd
 	}
-	if model, cmd, handled := handleActivityFocus(m, msg); handled {
-		return model, cmd
+	if model, handled := handleActivityFocus(m, msg); handled {
+		return model, nil
 	}
 	if model, cmd, handled := handleRefreshKey(m, msg); handled {
 		return model, cmd
@@ -447,7 +447,7 @@ func handleViewNavigation(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	return nil, nil, false
 }
 
-func handleActivityFocus(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+func handleActivityFocus(m *Model, msg tea.KeyMsg) (tea.Model, bool) {
 	panel := Panel(-1)
 	switch {
 	case key.Matches(msg, m.keys.FocusTree):
@@ -457,14 +457,14 @@ func handleActivityFocus(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	case key.Matches(msg, m.keys.FocusConvoy):
 		panel = PanelConvoy
 	default:
-		return nil, nil, false
+		return nil, false
 	}
 	if m.viewMode == ViewActivity {
 		m.mu.Lock()
 		m.focusedPanel = panel
 		m.mu.Unlock()
 	}
-	return m, nil, true
+	return m, true
 }
 
 func handleRefreshKey(m *Model, msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {

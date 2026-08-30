@@ -269,10 +269,12 @@ func refreshIssueStatus(ctx context.Context, tracked []struct {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		return m, m.updateWindowSize(msg)
+		m.updateWindowSize(msg)
+		return m, nil
 
 	case fetchConvoysMsg:
-		return m, m.updateConvoys(msg)
+		m.updateConvoys(msg)
+		return m, nil
 
 	case tea.KeyMsg:
 		return m, m.updateKey(msg)
@@ -281,21 +283,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) updateWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
+func (m *Model) updateWindowSize(msg tea.WindowSizeMsg) {
 	m.mu.Lock()
 	m.width = msg.Width
 	m.height = msg.Height
 	m.help.Width = msg.Width
 	m.mu.Unlock()
-	return nil
 }
 
-func (m *Model) updateConvoys(msg fetchConvoysMsg) tea.Cmd {
+func (m *Model) updateConvoys(msg fetchConvoysMsg) {
 	m.mu.Lock()
 	m.err = msg.err
 	m.convoys = msg.convoys
 	m.mu.Unlock()
-	return nil
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) tea.Cmd {
@@ -351,11 +351,10 @@ func (m *Model) moveCursor(delta int) {
 	}
 }
 
-func (m *Model) setCursor(cursor int) tea.Cmd {
+func (m *Model) setCursor(cursor int) {
 	m.mu.Lock()
 	m.cursor = cursor
 	m.mu.Unlock()
-	return nil
 }
 
 func (m *Model) moveCursorToBottom() tea.Cmd {

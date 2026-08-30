@@ -117,10 +117,7 @@ func resumeDonePushCheckpoint(flow *doneFlow) doneCompletedStage {
 }
 
 func finishDoneFeaturePush(flow *doneFlow) (doneCompletedStage, error) {
-	pushed, err := pushDoneFeatureBranch(flow.repo.g, flow.session.townRoot, flow.session.rigName, flow.repo.branch, flow.repo.baseRef, flow.work.issueID, flow.session.agentBeadID, flow.session.cwd, flow.work.sourceBD)
-	if err != nil {
-		return 0, err
-	}
+	pushed := pushDoneFeatureBranch(flow.repo.g, flow.session.townRoot, flow.session.rigName, flow.repo.branch, flow.repo.baseRef, flow.work.issueID, flow.session.agentBeadID, flow.session.cwd, flow.work.sourceBD)
 	flow.work.pushFailed = pushed.pushFailed
 	flow.work.doneErrors = append(flow.work.doneErrors, pushed.doneErrors...)
 	if pushed.afterPush {
@@ -439,7 +436,7 @@ type donePushStage struct {
 	doneErrors []string
 }
 
-func pushDoneFeatureBranch(g *git.Git, townRoot, rigName, branch, baseRef, issueID, agentBeadID, cwd string, sourceBD *beads.Beads) (donePushStage, error) {
+func pushDoneFeatureBranch(g *git.Git, townRoot, rigName, branch, baseRef, issueID, agentBeadID, cwd string, sourceBD *beads.Beads) donePushStage {
 	pushSubmoduleChanges(g, baseRef)
 	fmt.Printf("Pushing branch to remote...\n")
 	refspec := branch + ":" + branch
@@ -453,10 +450,10 @@ func pushDoneFeatureBranch(g *git.Git, townRoot, rigName, branch, baseRef, issue
 		if doneTreatPushAsLocalFallback(pushErr) {
 			style.PrintWarning("%s\nOrigin is not writable. Keeping work on the local branch; this is not an agent failure.", errMsg)
 			fmt.Printf("%s Local fallback: skipping merge queue. Use --push-url or --merge=local for third-party remotes.\n", style.Bold.Render("→"))
-			return donePushStage{}, nil
+			return donePushStage{}
 		}
 		style.PrintWarning("%s\nCommits exist locally but failed to push. Witness will be notified.", errMsg)
-		return donePushStage{pushFailed: true, doneErrors: []string{errMsg}}, nil
+		return donePushStage{pushFailed: true, doneErrors: []string{errMsg}}
 	}
 	if pushedCommitSHA == "" {
 		pushedCommitSHA, _ = git.Rev(g, "HEAD")
@@ -467,7 +464,7 @@ func pushDoneFeatureBranch(g *git.Git, townRoot, rigName, branch, baseRef, issue
 		errMsg := verifyErr.Error()
 		noteVerifiedPushFailure(sourceBD, cwd, issueID, branch, pushedCommitSHA, verifyErr)
 		style.PrintWarning("%s\nCommits exist locally but verified push failed. Witness will be notified.", errMsg)
-		return donePushStage{pushFailed: true, doneErrors: []string{errMsg}}, nil
+		return donePushStage{pushFailed: true, doneErrors: []string{errMsg}}
 	}
 	fmt.Printf("%s Branch pushed to origin\n", style.Bold.Render("✓"))
 	doneState().cleanupStatus = cleanupStatusAfterSuccessfulPush(doneState().cleanupStatus)
@@ -475,7 +472,7 @@ func pushDoneFeatureBranch(g *git.Git, townRoot, rigName, branch, baseRef, issue
 		cpBd := beads.New(cwd).ForAgentBead()
 		writeDoneCheckpoint(cpBd, agentBeadID, CheckpointPushed, branch)
 	}
-	return donePushStage{afterPush: true}, nil
+	return donePushStage{afterPush: true}
 }
 
 func retryDonePushFromBareRepo(townRoot, rigName, refspec string, pushErr error) error {

@@ -92,10 +92,10 @@ func run() error {
 
 func writeExecResult(result execResponse) error {
 	if result.Stdout != "" {
-		_, _ = fmt.Fprint(os.Stdout, result.Stdout)
+		_, _ = fmt.Fprint(os.Stdout, result.Stdout) //nolint:gosec // remote command output is intentionally forwarded to the terminal
 	}
 	if result.Stderr != "" {
-		_, _ = fmt.Fprint(os.Stderr, result.Stderr)
+		_, _ = fmt.Fprint(os.Stderr, result.Stderr) //nolint:gosec // remote command output is intentionally forwarded to the terminal
 	}
 	if result.ExitCode != 0 {
 		return &exitCodeError{code: result.ExitCode}

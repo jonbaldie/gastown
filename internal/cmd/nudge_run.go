@@ -48,8 +48,8 @@ func runNudge(_ *cobra.Command, args []string) (retErr error) {
 	if strings.HasPrefix(r.target, "channel:") {
 		return runNudgeChannel(strings.TrimPrefix(r.target, "channel:"), r.message, r.sender)
 	}
-	if skipped, err := skipNudgeDND(r); skipped || err != nil {
-		return err
+	if skipNudgeDND(r) {
+		return nil
 	}
 	return dispatchNudgeRun(r)
 }
@@ -140,17 +140,17 @@ func nudgeSenderName() string {
 	}
 }
 
-func skipNudgeDND(r *nudgeRun) (bool, error) {
+func skipNudgeDND(r *nudgeRun) bool {
 	if r.townRoot == "" || nudgeState().force {
-		return false, nil
+		return false
 	}
 	shouldSend, level, _ := shouldNudgeTarget(r.townRoot, r.target, nudgeState().force)
 	if shouldSend {
-		return false, nil
+		return false
 	}
 	fmt.Printf("%s Target has DND enabled (%s) - nudge skipped\n", style.Dim.Render("○"), level)
 	fmt.Printf("  Use %s to override\n", style.Bold.Render("--force"))
-	return true, nil
+	return true
 }
 
 func dispatchNudgeRun(r *nudgeRun) error {

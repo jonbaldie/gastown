@@ -136,7 +136,7 @@ func NewConvoyManager(townRoot string, logger func(format string, args ...interf
 	if isRigParked == nil {
 		isRigParked = func(string) bool { return false }
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored and invoked by ConvoyManager.Stop
 	return &ConvoyManager{
 		townRoot:     townRoot,
 		scanInterval: scanInterval,
