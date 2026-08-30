@@ -189,45 +189,55 @@ func runWithEnvAndTimeout(g *Git, args []string, extraEnv []string, timeout time
 	if err := guardUnsafeTownRootMutation(g, args); err != nil {
 		return "", err
 	}
-
-	if g.gitDir != "" {
-		args = append([]string{"--git-dir=" + g.gitDir}, args...)
-	}
-
-	var cmd *exec.Cmd
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		var ctx context.Context
-		ctx, cancel = context.WithTimeout(context.Background(), timeout)
-		cmd = exec.CommandContext(ctx, "git", args...)
-	} else {
-		cmd = exec.Command("git", args...)
-	}
+	args = prependGitDir(g, args)
+	cmd, cancel := gitCommandWithTimeout(args, timeout)
 	if cancel != nil {
 		defer cancel()
 	}
-	util.SetDetachedProcessGroup(cmd)
+	applyGitCommandEnv(cmd, g, extraEnv)
+	return finishGitCommand(cmd, args, timeout)
+}
 
+func prependGitDir(g *Git, args []string) []string {
+	if g.gitDir == "" {
+		return args
+	}
+	return append([]string{"--git-dir=" + g.gitDir}, args...)
+}
+
+func gitCommandWithTimeout(args []string, timeout time.Duration) (*exec.Cmd, context.CancelFunc) {
+	if timeout <= 0 {
+		return exec.Command("git", args...), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return exec.CommandContext(ctx, "git", args...), cancel
+}
+
+func applyGitCommandEnv(cmd *exec.Cmd, g *Git, extraEnv []string) {
+	util.SetDetachedProcessGroup(cmd)
 	if g.workDir != "" {
 		cmd.Dir = g.workDir
 	}
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
+}
+
+func finishGitCommand(cmd *exec.Cmd, args []string, timeout time.Duration) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		if timeout > 0 {
-			// Check if the context's deadline was exceeded
-			if errors.Is(err, context.DeadlineExceeded) {
-				return "", fmt.Errorf("git %s timed out after %v (remote may be unreachable)", args[0], timeout)
-			}
-		}
-		return "", wrapError(err, stdout.String(), stderr.String(), args)
+	if err := cmd.Run(); err != nil {
+		return "", gitCommandRunError(err, stdout.String(), stderr.String(), args, timeout)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func gitCommandRunError(err error, stdout, stderr string, args []string, timeout time.Duration) error {
+	if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("git %s timed out after %v (remote may be unreachable)", args[0], timeout)
+	}
+	return wrapError(err, stdout, stderr, args)
 }
 
 func guardUnsafeTownRootMutation(g *Git, args []string) error {
@@ -254,27 +264,68 @@ func gitEffectiveWorkDir(args []string, workDir string) string {
 	effective := workDir
 	argCount := len(args)
 	for i := 0; i < argCount; i++ {
-		arg := args[i]
-		switch {
-		case arg == "-C" && i+1 < len(args):
-			effective = gitPathAbs(args[i+1], effective)
-			i++
-		case arg == "--work-tree" && i+1 < len(args):
-			effective = gitPathAbs(args[i+1], effective)
-			i++
-		case strings.HasPrefix(arg, "--work-tree="):
-			effective = gitPathAbs(strings.TrimPrefix(arg, "--work-tree="), effective)
-		case arg == "-c" || arg == "--git-dir" || arg == "--namespace" || arg == "--config-env" || arg == "--exec-path":
-			i++
-		case strings.HasPrefix(arg, "--git-dir=") || strings.HasPrefix(arg, "--namespace=") || strings.HasPrefix(arg, "--config-env=") || strings.HasPrefix(arg, "--exec-path="):
-			continue
-		case strings.HasPrefix(arg, "-"):
-			continue
-		default:
+		next, skip, done := gitWorkDirArg(args, i, effective)
+		if done {
 			return effective
 		}
+		effective = next
+		i += skip
 	}
 	return effective
+}
+
+func gitWorkDirArg(args []string, i int, effective string) (string, int, bool) {
+	if path, skip, ok := gitWorkTreePathArg(args, i); ok {
+		return gitPathAbs(path, effective), skip, false
+	}
+	arg := args[i]
+	if gitWorkDirValueSkip(arg) {
+		return effective, 1, false
+	}
+	if gitEqualsGlobal(arg) || strings.HasPrefix(arg, "-") {
+		return effective, 0, false
+	}
+	return effective, 0, true
+}
+
+func gitWorkTreePathArg(args []string, i int) (string, int, bool) {
+	arg := args[i]
+	if arg == "-C" && i+1 < len(args) {
+		return args[i+1], 1, true
+	}
+	if arg == "--work-tree" && i+1 < len(args) {
+		return args[i+1], 1, true
+	}
+	if strings.HasPrefix(arg, "--work-tree=") {
+		return strings.TrimPrefix(arg, "--work-tree="), 0, true
+	}
+	return "", 0, false
+}
+
+func gitWorkDirValueSkip(arg string) bool {
+	switch arg {
+	case "-c", "--git-dir", "--namespace", "--config-env", "--exec-path":
+		return true
+	default:
+		return false
+	}
+}
+
+func gitTakesValueGlobal(arg string) bool {
+	switch arg {
+	case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--exec-path":
+		return true
+	default:
+		return false
+	}
+}
+
+func gitEqualsGlobal(arg string) bool {
+	return strings.HasPrefix(arg, "--git-dir=") ||
+		strings.HasPrefix(arg, "--work-tree=") ||
+		strings.HasPrefix(arg, "--namespace=") ||
+		strings.HasPrefix(arg, "--config-env=") ||
+		strings.HasPrefix(arg, "--exec-path=")
 }
 
 // EnsureSafeMutationWorkDir fails when workDir's effective git worktree is the
@@ -324,22 +375,32 @@ func fileExists(path string) bool {
 func gitSubcommand(args []string) (string, []string) {
 	argCount := len(args)
 	for i := 0; i < argCount; i++ {
-		arg := args[i]
-		switch {
-		case arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--config-env" || arg == "--exec-path":
-			i++
-			continue
-		case strings.HasPrefix(arg, "--git-dir=") || strings.HasPrefix(arg, "--work-tree=") || strings.HasPrefix(arg, "--namespace=") || strings.HasPrefix(arg, "--config-env=") || strings.HasPrefix(arg, "--exec-path="):
-			continue
-		case arg == "--no-pager" || arg == "--bare" || arg == "--literal-pathspecs" || arg == "--no-replace-objects":
-			continue
-		case strings.HasPrefix(arg, "-"):
-			continue
-		default:
-			return arg, args[i+1:]
+		skip, cmd := gitGlobalArg(args[i])
+		if cmd != "" {
+			return cmd, args[i+1:]
 		}
+		i += skip
 	}
 	return "", nil
+}
+
+func gitGlobalArg(arg string) (int, string) {
+	if gitTakesValueGlobal(arg) {
+		return 1, ""
+	}
+	if gitEqualsGlobal(arg) || gitBareGlobal(arg) || strings.HasPrefix(arg, "-") {
+		return 0, ""
+	}
+	return 0, arg
+}
+
+func gitBareGlobal(arg string) bool {
+	switch arg {
+	case "--no-pager", "--bare", "--literal-pathspecs", "--no-replace-objects":
+		return true
+	default:
+		return false
+	}
 }
 
 func gitSubcommandMutatesWorktree(cmd string, args []string) bool {
@@ -454,24 +515,7 @@ func symbolicRefArgsMutate(args []string) bool {
 }
 
 func protectedWorktreeTargets(cmd string, args []string, baseDir string) []string {
-	if cmd != "worktree" || len(args) == 0 {
-		return nil
-	}
-
-	var targets []string
-	switch args[0] {
-	case "add":
-		if target := firstWorktreeAddTarget(args[1:]); target != "" {
-			targets = append(targets, target)
-		}
-	case "remove":
-		if target := firstNonOptionPath(args[1:], nil); target != "" {
-			targets = append(targets, target)
-		}
-	case "move":
-		targets = append(targets, nonOptionPaths(args[1:], nil, 2)...)
-	}
-
+	targets := worktreeCommandTargets(cmd, args)
 	protected := make([]string, 0, len(targets))
 	for _, target := range targets {
 		abs := gitPathAbs(target, baseDir)
@@ -480,6 +524,29 @@ func protectedWorktreeTargets(cmd string, args []string, baseDir string) []strin
 		}
 	}
 	return protected
+}
+
+func worktreeCommandTargets(cmd string, args []string) []string {
+	if cmd != "worktree" || len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "add":
+		return nonEmptyStrings(firstWorktreeAddTarget(args[1:]))
+	case "remove":
+		return nonEmptyStrings(firstNonOptionPath(args[1:], nil))
+	case "move":
+		return nonOptionPaths(args[1:], nil, 2)
+	default:
+		return nil
+	}
+}
+
+func nonEmptyStrings(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return []string{value}
 }
 
 func firstWorktreeAddTarget(args []string) string {
@@ -625,40 +692,55 @@ type cloneOptions struct {
 
 // cloneInternal runs `git clone` in an isolated temp directory, moves the result
 // to dest, and applies post-clone configuration (hooks or refspec).
-func cloneInternal(g *Git, url, dest string, opts cloneOptions) error {
+func cloneInternal(_ *Git, url, dest string, opts cloneOptions) error {
 	dest = gitPathAbs(dest, "")
-	if protectedTownRuntimePath(dest) {
-		return fmt.Errorf("%w: clone destination %s", ErrUnsafeTownRootGitMutation, dest)
-	}
-
-	// Ensure destination directory's parent exists
-	destParent := filepath.Dir(dest)
-	if err := os.MkdirAll(destParent, 0755); err != nil {
-		return fmt.Errorf("creating destination parent: %w", err)
-	}
-	// Run clone from a temporary directory to completely isolate from any
-	// git repo at the process cwd. Then move the result to the destination.
-	tmpDir, err := os.MkdirTemp("", "gt-clone-*")
+	tmpDir, tmpDest, cleanup, err := prepareCloneDirs(dest)
 	if err != nil {
-		return fmt.Errorf("creating temp dir: %w", err)
+		return err
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer cleanup()
+	if err := runCloneCommand(url, tmpDest, tmpDir, opts); err != nil {
+		return err
+	}
+	if err := moveDir(tmpDest, dest); err != nil {
+		return fmt.Errorf("moving clone to destination: %w", err)
+	}
+	return configureClone(dest, opts)
+}
 
-	tmpDest := filepath.Join(tmpDir, filepath.Base(dest))
+func prepareCloneDirs(dest string) (tmpDir, tmpDest string, cleanup func(), err error) {
+	if protectedTownRuntimePath(dest) {
+		return "", "", nil, fmt.Errorf("%w: clone destination %s", ErrUnsafeTownRootGitMutation, dest)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return "", "", nil, fmt.Errorf("creating destination parent: %w", err)
+	}
+	tmpDir, err = os.MkdirTemp("", "gt-clone-*")
+	if err != nil {
+		return "", "", nil, fmt.Errorf("creating temp dir: %w", err)
+	}
+	return tmpDir, filepath.Join(tmpDir, filepath.Base(dest)), func() { _ = os.RemoveAll(tmpDir) }, nil
+}
 
-	// Build clone args
+func cloneArgs(url, tmpDest string, opts cloneOptions) []string {
 	var args []string
-	// Git refuses file-protocol fetches unless protocol.file.allow is always.
-	// A local --reference fetch uses the file protocol even when the clone URL
-	// is https:// or git@ and insteadOf rewrites it onto file://.
+	args = appendCloneProtocolArgs(args, url, opts)
+	args = append(args, "clone")
+	args = appendCloneOptionArgs(args, opts)
+	return append(args, url, tmpDest)
+}
+
+func appendCloneProtocolArgs(args []string, url string, opts cloneOptions) []string {
 	if strings.HasPrefix(url, "file://") || opts.reference != "" {
 		args = append(args, "-c", "protocol.file.allow=always")
 	}
-	// Windows symlink fix for non-bare reference clones
 	if opts.reference != "" && !opts.bare && runtime.GOOS == "windows" {
 		args = append(args, "-c", "core.symlinks=true")
 	}
-	args = append(args, "clone")
+	return args
+}
+
+func appendCloneOptionArgs(args []string, opts cloneOptions) []string {
 	if opts.bare {
 		args = append(args, "--bare")
 	}
@@ -677,8 +759,11 @@ func cloneInternal(g *Git, url, dest string, opts cloneOptions) error {
 	if opts.reference != "" {
 		args = append(args, "--reference-if-able", opts.reference)
 	}
-	args = append(args, url, tmpDest)
+	return args
+}
 
+func runCloneCommand(url, tmpDest, tmpDir string, opts cloneOptions) error {
+	args := cloneArgs(url, tmpDest, opts)
 	cmd := exec.Command("git", args...)
 	util.SetDetachedProcessGroup(cmd)
 	cmd.Dir = tmpDir
@@ -689,24 +774,16 @@ func cloneInternal(g *Git, url, dest string, opts cloneOptions) error {
 	if err := cmd.Run(); err != nil {
 		return wrapError(err, stdout.String(), stderr.String(), args)
 	}
+	return nil
+}
 
-	// Move to final destination (handles cross-filesystem moves)
-	if err := moveDir(tmpDest, dest); err != nil {
-		return fmt.Errorf("moving clone to destination: %w", err)
-	}
-
-	// Post-clone configuration
+func configureClone(dest string, opts cloneOptions) error {
 	if opts.bare {
-		// Configure refspec so worktrees can fetch and see origin/* refs.
-		// For single-branch shallow clones, only set the config without
-		// fetching all branches (which would defeat the purpose of --single-branch).
 		return configureRefspec(dest, opts.singleBranch)
 	}
-	// Configure hooks path for Gas Town clones
 	if err := configureHooksPath(dest); err != nil {
 		return err
 	}
-	// Initialize submodules if present
 	return InitSubmodules(dest)
 }
 
@@ -812,77 +889,92 @@ func ConfigureHooksPath(g *Git) error {
 // branches. This prevents failures on repos with many branches where a full fetch
 // would error with "some local refs could not be updated".
 func configureRefspec(repoPath string, singleBranch bool) error {
+	gitDir := refspecGitDir(repoPath)
+	if err := setOriginFetchRefspec(gitDir); err != nil {
+		return err
+	}
+	hasRefs, err := gitDirHasRefs(gitDir)
+	if err != nil || !hasRefs {
+		return err
+	}
+	if singleBranch {
+		return fetchSingleBranchOrigin(gitDir)
+	}
+	return fetchOrigin(gitDir)
+}
+
+func refspecGitDir(repoPath string) string {
 	gitDir := repoPath
 	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err == nil {
 		gitDir = filepath.Join(repoPath, ".git")
 	}
-	gitDir = filepath.Clean(gitDir)
+	return filepath.Clean(gitDir)
+}
 
+func setOriginFetchRefspec(gitDir string) error {
 	var stderr bytes.Buffer
-	configCmd := exec.Command("git", "--git-dir", gitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
-	util.SetDetachedProcessGroup(configCmd)
-	configCmd.Stderr = &stderr
-	if err := configCmd.Run(); err != nil {
+	cmd := exec.Command("git", "--git-dir", gitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	util.SetDetachedProcessGroup(cmd)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("configuring refspec: %s", strings.TrimSpace(stderr.String()))
 	}
+	return nil
+}
 
-	// Empty remotes clone successfully but have no refs to fetch. Let callers
-	// perform their own empty-repository validation instead of returning a
-	// misleading "couldn't find remote ref" error from the fetch below.
-	var refsStderr bytes.Buffer
-	refsCmd := exec.Command("git", "--git-dir", gitDir, "show-ref", "--quiet")
-	util.SetDetachedProcessGroup(refsCmd)
-	refsCmd.Stderr = &refsStderr
-	if err := refsCmd.Run(); err != nil {
+func gitDirHasRefs(gitDir string) (bool, error) {
+	var stderr bytes.Buffer
+	cmd := exec.Command("git", "--git-dir", gitDir, "show-ref", "--quiet")
+	util.SetDetachedProcessGroup(cmd)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("checking refs: %s", strings.TrimSpace(refsStderr.String()))
+		return false, fmt.Errorf("checking refs: %s", strings.TrimSpace(stderr.String()))
 	}
+	return true, nil
+}
 
-	if singleBranch {
-		// For shallow single-branch clones, fetch only the HEAD branch to create
-		// the origin/<branch> ref that worktrees need. A full `git fetch origin`
-		// would try to fetch ALL remote branches (due to the refspec we just set),
-		// which fails on repos with many branches.
-		//
-		// Detect HEAD branch name, then fetch only that specific branch.
-		var headOut bytes.Buffer
-		headCmd := exec.Command("git", "--git-dir", gitDir, "symbolic-ref", "HEAD")
-		util.SetDetachedProcessGroup(headCmd)
-		headCmd.Stdout = &headOut
-		headCmd.Stderr = &stderr
-		if err := headCmd.Run(); err != nil {
-			// Fallback: if HEAD is detached, try fetching all (shouldn't happen for clones)
-			fetchCmd := exec.Command("git", "--git-dir", gitDir, "fetch", "--depth", "1", "origin")
-			util.SetDetachedProcessGroup(fetchCmd)
-			fetchCmd.Stderr = &stderr
-			if fetchErr := fetchCmd.Run(); fetchErr != nil {
-				return fmt.Errorf("fetching origin: %s", strings.TrimSpace(stderr.String()))
-			}
-			return nil
+func fetchSingleBranchOrigin(gitDir string) error {
+	var headOut, stderr bytes.Buffer
+	headCmd := exec.Command("git", "--git-dir", gitDir, "symbolic-ref", "HEAD")
+	util.SetDetachedProcessGroup(headCmd)
+	headCmd.Stdout = &headOut
+	headCmd.Stderr = &stderr
+	if err := headCmd.Run(); err != nil {
+		return fetchOriginDepth(gitDir)
+	}
+	branch := strings.TrimPrefix(strings.TrimSpace(headOut.String()), "refs/heads/")
+	refspec := branch + ":refs/remotes/origin/" + branch
+	return fetchOriginRefspec(gitDir, branch, refspec)
+}
+
+func fetchOrigin(gitDir string) error {
+	return runGitDirFetch(gitDir, []string{"origin"}, "")
+}
+
+func fetchOriginDepth(gitDir string) error {
+	return runGitDirFetch(gitDir, []string{"--depth", "1", "origin"}, "")
+}
+
+func fetchOriginRefspec(gitDir, branch, refspec string) error {
+	return runGitDirFetch(gitDir, []string{"--depth", "1", "origin", refspec}, branch)
+}
+
+func runGitDirFetch(gitDir string, fetchArgs []string, branch string) error {
+	var stderr bytes.Buffer
+	cmd := exec.Command("git", append([]string{"--git-dir", gitDir, "fetch"}, fetchArgs...)...)
+	util.SetDetachedProcessGroup(cmd)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if branch != "" {
+			return fmt.Errorf("fetching origin %s: %s", branch, msg)
 		}
-		headRef := strings.TrimSpace(headOut.String())       // e.g. "refs/heads/main"
-		branch := strings.TrimPrefix(headRef, "refs/heads/") // e.g. "main"
-		refspec := branch + ":refs/remotes/origin/" + branch // e.g. "main:refs/remotes/origin/main"
-
-		fetchCmd := exec.Command("git", "--git-dir", gitDir, "fetch", "--depth", "1", "origin", refspec)
-		util.SetDetachedProcessGroup(fetchCmd)
-		fetchCmd.Stderr = &stderr
-		if err := fetchCmd.Run(); err != nil {
-			return fmt.Errorf("fetching origin %s: %s", branch, strings.TrimSpace(stderr.String()))
-		}
-		return nil
+		return fmt.Errorf("fetching origin: %s", msg)
 	}
-
-	fetchCmd := exec.Command("git", "--git-dir", gitDir, "fetch", "origin")
-	util.SetDetachedProcessGroup(fetchCmd)
-	fetchCmd.Stderr = &stderr
-	if err := fetchCmd.Run(); err != nil {
-		return fmt.Errorf("fetching origin: %s", strings.TrimSpace(stderr.String()))
-	}
-
 	return nil
 }
 
@@ -902,7 +994,7 @@ func CloneBareWithReferenceAndBranch(g *Git, url, dest, reference, branch string
 // It does not fetch from the network. After the clone it materializes
 // refs/remotes/origin/* from the local origin so polecats and doctor can
 // resolve origin/<default-branch> the same way a network CloneBare does.
-func CloneBareLocal(g *Git, ctx context.Context, src, dest string) error {
+func CloneBareLocal(_ *Git, ctx context.Context, src, dest string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2782,39 +2874,45 @@ func StashCount(g *Git) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
 	if out == "" {
 		return 0, nil
 	}
-
-	// Get current branch to filter stashes.
-	// If we can't determine the branch (detached HEAD, error), count all
-	// stashes as a safe fallback — better to over-count than silently lose work.
-	branch, branchErr := CurrentBranch(g)
-	filterByBranch := branchErr == nil && branch != "" && branch != "HEAD"
-
-	// Stash reflog lines have the format:
-	//   stash@{N}: WIP on <branch>: <hash> <message>
-	//   stash@{N}: On <branch>: <message>
-	// We anchor the match to ": WIP on <branch>:" or ": On <branch>:" to avoid
-	// false positives from commit messages that happen to contain "on <branch>:".
-	wipPrefix := ": WIP on " + branch + ":"
-	onPrefix := ": On " + branch + ":"
-
-	lines := strings.Split(out, "\n")
+	filter := stashBranchFilter(g)
 	count := 0
-	for _, line := range lines {
-		if line == "" {
-			continue
+	for _, line := range strings.Split(out, "\n") {
+		if stashLineMatches(line, filter) {
+			count++
 		}
-		if filterByBranch {
-			if !strings.Contains(line, wipPrefix) && !strings.Contains(line, onPrefix) {
-				continue
-			}
-		}
-		count++
 	}
 	return count, nil
+}
+
+type stashFilter struct {
+	wipPrefix string
+	onPrefix  string
+	filter    bool
+}
+
+func stashBranchFilter(g *Git) stashFilter {
+	branch, err := CurrentBranch(g)
+	if err != nil || branch == "" || branch == "HEAD" {
+		return stashFilter{}
+	}
+	return stashFilter{
+		wipPrefix: ": WIP on " + branch + ":",
+		onPrefix:  ": On " + branch + ":",
+		filter:    true,
+	}
+}
+
+func stashLineMatches(line string, filter stashFilter) bool {
+	if line == "" {
+		return false
+	}
+	if !filter.filter {
+		return true
+	}
+	return strings.Contains(line, filter.wipPrefix) || strings.Contains(line, filter.onPrefix)
 }
 
 // StashCountAll returns the total number of repo-wide stashes visible from the
@@ -2857,33 +2955,28 @@ func StashListForBranch(g *Git) ([]StashEntry, error) {
 	if out == "" {
 		return nil, nil
 	}
-
-	branch, branchErr := CurrentBranch(g)
-	filterByBranch := branchErr == nil && branch != "" && branch != "HEAD"
-	wipPrefix := ": WIP on " + branch + ":"
-	onPrefix := ": On " + branch + ":"
-
+	filter := stashBranchFilter(g)
 	var entries []StashEntry
 	for _, line := range strings.Split(out, "\n") {
-		if line == "" {
-			continue
+		if entry, ok := parseStashEntry(line, filter); ok {
+			entries = append(entries, entry)
 		}
-		if filterByBranch {
-			if !strings.Contains(line, wipPrefix) && !strings.Contains(line, onPrefix) {
-				continue
-			}
-		}
-		// Lines have the form "stash@{N}: <message>"
-		colonIdx := strings.Index(line, ":")
-		if colonIdx <= 0 {
-			continue
-		}
-		entries = append(entries, StashEntry{
-			Ref:     line[:colonIdx],
-			Message: strings.TrimSpace(line[colonIdx+1:]),
-		})
 	}
 	return entries, nil
+}
+
+func parseStashEntry(line string, filter stashFilter) (StashEntry, bool) {
+	if !stashLineMatches(line, filter) {
+		return StashEntry{}, false
+	}
+	colonIdx := strings.Index(line, ":")
+	if colonIdx <= 0 {
+		return StashEntry{}, false
+	}
+	return StashEntry{
+		Ref:     line[:colonIdx],
+		Message: strings.TrimSpace(line[colonIdx+1:]),
+	}, true
 }
 
 // StashPop applies the given stash ref to the working tree and drops it on success.
@@ -3245,22 +3338,46 @@ func runtimeArtifactRoot(path string) (string, bool) {
 	if bare == "" {
 		return "", false
 	}
+	if root, ok := runtimeArtifactDirRoot(strings.Split(bare, "/")); ok {
+		return root, true
+	}
+	return runtimeArtifactFileRoot(bare)
+}
 
-	parts := strings.Split(bare, "/")
+func runtimeArtifactDirRoot(parts []string) (string, bool) {
 	for i, part := range parts {
-		switch part {
-		case ".beads", ".claude", ".opencode", ".agents", ".runtime", ".logs", "__pycache__", "node_modules", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", "coverage", "htmlcov":
+		if runtimeArtifactDirs[part] {
 			return strings.Join(parts[:i+1], "/") + "/", true
 		}
 	}
+	return "", false
+}
 
+var runtimeArtifactDirs = map[string]bool{
+	".beads": true, ".claude": true, ".opencode": true, ".agents": true,
+	".runtime": true, ".logs": true, "__pycache__": true, "node_modules": true,
+	".vite": true, ".pytest_cache": true, ".mypy_cache": true, ".ruff_cache": true,
+	".cache": true, "coverage": true, "htmlcov": true,
+}
+
+func runtimeArtifactFileRoot(bare string) (string, bool) {
 	base := filepath.Base(bare)
 	lower := strings.ToLower(base)
-	if base == "CLAUDE.local.md" || base == "AGENTS.local.md" || base == ".DS_Store" || strings.HasSuffix(lower, ".db") || strings.HasSuffix(lower, ".pyc") || strings.HasSuffix(lower, ".pyo") {
+	if runtimeArtifactFileName(base, lower) {
 		return bare, true
 	}
-
 	return "", false
+}
+
+func runtimeArtifactFileName(base, lower string) bool {
+	switch {
+	case base == "CLAUDE.local.md", base == "AGENTS.local.md", base == ".DS_Store":
+		return true
+	case strings.HasSuffix(lower, ".db"), strings.HasSuffix(lower, ".pyc"), strings.HasSuffix(lower, ".pyo"):
+		return true
+	default:
+		return false
+	}
 }
 
 // isGasTownRuntimePath returns true if the path is a runtime artifact that should
@@ -3311,16 +3428,13 @@ func looksBinary(buf []byte) bool {
 }
 
 func hasExecutableMagic(buf []byte) bool {
-	if len(buf) >= 4 && buf[0] == 0x7f && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'F' {
-		return true
-	}
-	if len(buf) >= 4 && buf[0] == 0x00 && buf[1] == 'a' && buf[2] == 's' && buf[3] == 'm' {
-		return true
-	}
-	if len(buf) >= 2 && buf[0] == 'M' && buf[1] == 'Z' {
-		return true
-	}
-	return false
+	return hasPrefixMagic(buf, []byte{0x7f, 'E', 'L', 'F'}) ||
+		hasPrefixMagic(buf, []byte{0x00, 'a', 's', 'm'}) ||
+		hasPrefixMagic(buf, []byte{'M', 'Z'})
+}
+
+func hasPrefixMagic(buf, magic []byte) bool {
+	return len(buf) >= len(magic) && bytes.Equal(buf[:len(magic)], magic)
 }
 
 // RuntimeArtifactPathspecs returns deduplicated git pathspecs for runtime
@@ -3649,79 +3763,79 @@ func SubmoduleChanges(g *Git, base, head string) ([]SubmoduleChange, error) {
 
 	var changes []SubmoduleChange
 	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+		if change, ok := parseSubmoduleChange(line); ok {
+			change.URL, _ = submoduleURL(g, head, change.Path)
+			changes = append(changes, change)
 		}
-		// Format: :oldmode newmode oldsha newsha status\tpath
-		// Submodule entries have mode 160000
-		if !strings.Contains(line, "160000") {
-			continue
-		}
-		// Parse the raw diff line
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		path := strings.TrimSpace(parts[1])
-		// Skip .claude/ paths — Claude Code creates worktrees under
-		// .claude/worktrees/ with .git files (worktree pointers) that git
-		// reports as gitlinks. These are not real submodules. (gt-dg7)
-		if strings.HasPrefix(path, ".claude/") {
-			continue
-		}
-		fields := strings.Fields(parts[0])
-		if len(fields) < 5 {
-			continue
-		}
-		oldSHA := fields[2]
-		newSHA := fields[3]
-		// Null SHAs (all zeros) indicate added/removed submodules
-		if strings.Repeat("0", len(oldSHA)) == oldSHA {
-			oldSHA = ""
-		}
-		if strings.Repeat("0", len(newSHA)) == newSHA {
-			newSHA = ""
-		}
-
-		change := SubmoduleChange{
-			Path:   path,
-			OldSHA: oldSHA,
-			NewSHA: newSHA,
-		}
-
-		// Try to get the submodule URL from .gitmodules on the head ref
-		url, urlErr := submoduleURL(g, head, path)
-		if urlErr == nil {
-			change.URL = url
-		}
-
-		changes = append(changes, change)
 	}
 	return changes, nil
+}
+
+func parseSubmoduleChange(line string) (SubmoduleChange, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || !strings.Contains(line, "160000") {
+		return SubmoduleChange{}, false
+	}
+	parts := strings.SplitN(line, "\t", 2)
+	if len(parts) != 2 {
+		return SubmoduleChange{}, false
+	}
+	path := strings.TrimSpace(parts[1])
+	if strings.HasPrefix(path, ".claude/") {
+		return SubmoduleChange{}, false
+	}
+	fields := strings.Fields(parts[0])
+	if len(fields) < 5 {
+		return SubmoduleChange{}, false
+	}
+	return SubmoduleChange{Path: path, OldSHA: nonNullSHA(fields[2]), NewSHA: nonNullSHA(fields[3])}, true
+}
+
+func nonNullSHA(sha string) string {
+	if strings.Trim(sha, "0") == "" {
+		return ""
+	}
+	return sha
 }
 
 // submoduleURL reads the URL for a submodule from .gitmodules at a given ref.
 // Uses git config -f to parse the file correctly regardless of field ordering.
 func submoduleURL(g *Git, ref, submodulePath string) (string, error) {
-	// Write .gitmodules from the ref to a temp file so we can use git config -f
 	content, err := run(g, "show", ref+":.gitmodules")
 	if err != nil {
 		return "", err
 	}
+	tmpName, cleanup, err := writeGitmodulesTemp(content)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	sectionName, err := submoduleSectionForPath(tmpName, submodulePath)
+	if err != nil {
+		return "", err
+	}
+	return submoduleSectionURL(tmpName, sectionName, submodulePath)
+}
+
+func writeGitmodulesTemp(content string) (string, func(), error) {
 	tmpFile, err := os.CreateTemp("", "gitmodules-*")
 	if err != nil {
-		return "", fmt.Errorf("creating temp file for .gitmodules: %w", err)
+		return "", nil, fmt.Errorf("creating temp file for .gitmodules: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
 	if _, err := tmpFile.WriteString(content); err != nil {
-		tmpFile.Close()
-		return "", fmt.Errorf("writing temp .gitmodules: %w", err)
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+		return "", nil, fmt.Errorf("writing temp .gitmodules: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpFile.Name())
+		return "", nil, fmt.Errorf("closing temp .gitmodules: %w", err)
+	}
+	return tmpFile.Name(), func() { _ = os.Remove(tmpFile.Name()) }, nil
+}
 
-	// List all submodule.<name>.path entries to find the section matching our path
-	cmd := exec.Command("git", "config", "-f", tmpFile.Name(), "--get-regexp", `^submodule\..*\.path$`)
+func submoduleSectionForPath(filename, submodulePath string) (string, error) {
+	cmd := exec.Command("git", "config", "-f", filename, "--get-regexp", `^submodule\..*\.path$`)
 	util.SetDetachedProcessGroup(cmd)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -3729,28 +3843,25 @@ func submoduleURL(g *Git, ref, submodulePath string) (string, error) {
 		return "", fmt.Errorf("reading submodule paths from .gitmodules: %w", err)
 	}
 
-	var sectionName string
 	for _, line := range strings.Split(stdout.String(), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Format: submodule.<name>.path <value>
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) == 2 && strings.TrimSpace(parts[1]) == submodulePath {
-			key := parts[0]
-			key = strings.TrimPrefix(key, "submodule.")
-			key = strings.TrimSuffix(key, ".path")
-			sectionName = key
-			break
+		if sectionName, ok := matchingSubmoduleSection(line, submodulePath); ok {
+			return sectionName, nil
 		}
 	}
-	if sectionName == "" {
-		return "", fmt.Errorf("submodule URL not found for path %s", submodulePath)
-	}
+	return "", fmt.Errorf("submodule URL not found for path %s", submodulePath)
+}
 
-	// Get the URL for this section
-	urlCmd := exec.Command("git", "config", "-f", tmpFile.Name(), "--get", "submodule."+sectionName+".url")
+func matchingSubmoduleSection(line, submodulePath string) (string, bool) {
+	parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) != submodulePath {
+		return "", false
+	}
+	key := strings.TrimPrefix(parts[0], "submodule.")
+	return strings.TrimSuffix(key, ".path"), true
+}
+
+func submoduleSectionURL(filename, sectionName, submodulePath string) (string, error) {
+	urlCmd := exec.Command("git", "config", "-f", filename, "--get", "submodule."+sectionName+".url")
 	util.SetDetachedProcessGroup(urlCmd)
 	var urlOut bytes.Buffer
 	urlCmd.Stdout = &urlOut
