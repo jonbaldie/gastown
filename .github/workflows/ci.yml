@@ -180,12 +180,110 @@ jobs:
             --ignore-tests \
             --exclude .claude
 
-  mutago:
-    name: Mutation Tests
+  # Mutago builds coverage profiles serially per package. Keep each shard
+  # package-local and small enough for a hosted runner, while preserving the
+  # complete changed-production-file set across the matrix.
+  mutago-files:
+    name: Prepare mutation test shards
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      has_production_go: ${{ steps.changes.outputs.has_production_go }}
+      matrix: ${{ steps.changes.outputs.matrix }}
+      shard_count: ${{ steps.changes.outputs.shard_count }}
     env:
       BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch PR base
+        run: >-
+          git fetch --no-tags origin
+          "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Detect changed production Go code
+        id: changes
+        run: |
+          set -euo pipefail
+          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          list="$RUNNER_TEMP/mutago-files.txt"
+          # ACMR only: deleted files are gone and cannot be mutated.
+          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
+            '*.go' ':(exclude)*_test.go' > "$list"
+          python3 - "$list" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+          from collections import defaultdict
+          from pathlib import Path
+
+          files = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+          output = Path(sys.argv[2])
+          if not files:
+              output.write_text(
+                  "has_production_go=false\n"
+                  "matrix={\"include\":[]}\n"
+                  "shard_count=0\n",
+                  encoding="utf-8",
+              )
+              print("No production Go code changed; skipping mutago.")
+              raise SystemExit
+
+          # Keep files from one Go package together. A package may span several
+          # shards, but a shard never mixes package coverage profiles. The size
+          # cap bounds mutation work without dropping any changed file.
+          max_bytes = 128_000
+          by_package = defaultdict(list)
+          for filename in files:
+              by_package[str(Path(filename).parent)].append(filename)
+
+          shards = []
+          for package in sorted(by_package):
+              current = []
+              current_bytes = 0
+              for filename in sorted(
+                  by_package[package],
+                  key=lambda name: (-Path(name).stat().st_size, name),
+              ):
+                  file_bytes = Path(filename).stat().st_size
+                  if current and current_bytes + file_bytes > max_bytes:
+                      shards.append(current)
+                      current = []
+                      current_bytes = 0
+                  current.append(filename)
+                  current_bytes += file_bytes
+              if current:
+                  shards.append(current)
+
+          matrix = {
+              "include": [
+                  {"id": index, "files": shard}
+                  for index, shard in enumerate(shards, start=1)
+              ]
+          }
+          with output.open("w", encoding="utf-8") as stream:
+              stream.write("has_production_go=true\n")
+              stream.write("shard_count=%d\n" % len(shards))
+              stream.write("matrix=%s\n" % json.dumps(matrix, separators=(",", ":")))
+          print("Prepared %d package-local mutago shard(s)." % len(shards))
+          for index, shard in enumerate(shards, start=1):
+              print("shard %d (%d file(s)): %s" % (index, len(shard), ", ".join(shard)))
+          PY
+
+  mutago:
+    name: Mutation Tests / shard ${{ matrix.id }}
+    needs: mutago-files
+    if: needs.mutago-files.outputs.has_production_go == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJSON(needs.mutago-files.outputs.matrix) }}
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      MUTAGO_FILES_JSON: ${{ toJSON(matrix.files) }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
       # mutago computes the PR's merge base against the target branch.
@@ -208,42 +306,33 @@ jobs:
           git fetch --no-tags origin
           "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
-      - name: Detect changed production Go code
-        id: changes
+      - name: Write shard file list
         run: |
-          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
-          list="$RUNNER_TEMP/mutago-files.txt"
-          # ACMR only: deleted files are gone and cannot be mutated.
-          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
-            '*.go' ':(exclude)*_test.go' > "$list"
-          if [ ! -s "$list" ]; then
-            echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
-            echo 'No production Go code changed; skipping mutago.'
-            exit 0
-          fi
-          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
-          echo "file_list=$list" >> "$GITHUB_OUTPUT"
-          echo 'Changed production Go files:'
-          cat "$list"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "mutago-shard-files.txt"
+          path.write_text("\n".join(json.loads(os.environ["MUTAGO_FILES_JSON"])) + "\n", encoding="utf-8")
+          PY
 
       - name: Install mutago
-        if: steps.changes.outputs.has_production_go == 'true'
         run: go install github.com/quality-gates/mutago/v2/cmd/mutago@latest
 
-      # Pass the changed files, not the recursive package pattern.
-      # --git-diff-lines restricts mutant execution to the PR diff, while
-      # coverage skips uncovered mutants before test execution. --per-test is
-      # worse here: it launches one go test process per Test* (1500+ in
-      # internal/cmd). The timeout is a multiple of the touched-package
-      # baseline; mutago reuses the coverage run for it.
+      # Every shard still uses the PR's changed production files and the
+      # merge-base line filter. A shard-level score of 80% is reported by
+      # mutago, while the summary job below enforces the weighted PR score.
       - name: Run mutation tests
-        if: steps.changes.outputs.has_production_go == 'true'
+        id: run-mutago
         env:
-          MUTAGO_FILE_LIST: ${{ steps.changes.outputs.file_list }}
+          MUTAGO_FILE_LIST: ${{ runner.temp }}/mutago-shard-files.txt
         run: |
+          set +e
           mapfile -t files < "$MUTAGO_FILE_LIST"
           mutago \
             --coverage \
+            --workers 2 \
             --test-flags=-short \
             --git-diff-lines \
             --git-diff-base "origin/${BASE_REF}" \
@@ -251,9 +340,77 @@ jobs:
             --ignore-msi-with-no-mutations \
             --min-covered-msi 80 \
             --logger-github \
+            --logger-summary-json \
             --quiet \
             --no-diffs \
             "${files[@]}"
+          status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 4 ]; then
+            echo "mutago failed with an execution error (exit $status)"
+            exit "$status"
+          fi
+          if [ "$status" -eq 4 ]; then
+            echo "mutago shard score was below 80%; aggregate PR score is enforced separately"
+          fi
+          mv mutago-summary.json "mutago-summary-${{ matrix.id }}.json"
+
+      - name: Upload mutation summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutago-summary-${{ matrix.id }}
+          path: mutago-summary-${{ matrix.id }}.json
+          if-no-files-found: error
+
+  mutago-summary:
+    name: Mutation Tests / covered MSI
+    needs: [mutago-files, mutago]
+    if: ${{ always() && needs.mutago-files.outputs.has_production_go == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download mutation summaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: mutago-summary-*
+          path: mutago-summaries
+          merge-multiple: true
+
+      - name: Enforce aggregate covered MSI
+        env:
+          EXPECTED_SHARDS: ${{ needs.mutago-files.outputs.shard_count }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          summaries = sorted(Path("mutago-summaries").glob("mutago-summary-*.json"))
+          expected = int(os.environ["EXPECTED_SHARDS"])
+          if len(summaries) != expected:
+              print("Expected %d mutago summaries, found %d" % (expected, len(summaries)), file=sys.stderr)
+              sys.exit(1)
+
+          total = killed = not_covered = 0
+          for path in summaries:
+              stats = json.loads(path.read_text(encoding="utf-8"))
+              total += int(stats["totalMutantsCount"])
+              killed += int(stats["killedCount"]) + int(stats["errorCount"]) + int(stats["skippedCount"])
+              not_covered += int(stats["notCoveredCount"])
+
+          if total == 0:
+              print("No mutations were generated across the changed production Go files.")
+              raise SystemExit(0)
+
+          covered = total - not_covered
+          score = (100.0 * killed / covered) if covered > 0 else 0.0
+          print("Aggregate covered MSI: %.2f%% (%d killed / %d covered; %d total, %d not covered)" % (
+              score, killed, covered, total, not_covered,
+          ))
+          if covered <= 0 or score < 80.0:
+              print("Aggregate covered MSI is below the required 80.00%%", file=sys.stderr)
+              sys.exit(1)
+          PY
 
   integration-shard:
     name: Integration Tests / ${{ matrix.name }}
