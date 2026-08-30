@@ -29,6 +29,9 @@ type execResponse struct {
 	ExitCode int    `json:"exitCode"`
 }
 
+// processExit is the executable's replaceable process-termination boundary.
+var processExit = os.Exit
+
 func main() {
 	if err := run(); err != nil {
 		code := 1
@@ -38,7 +41,7 @@ func main() {
 		} else {
 			fmt.Fprintf(os.Stderr, "gt-proxy-client: %v\n", err)
 		}
-		os.Exit(code)
+		processExit(code)
 	}
 }
 

@@ -25,6 +25,9 @@ var processCleanupStateInstance = sync.OnceValue(func() *processCleanupState {
 	return &processCleanupState{}
 })
 
+// processExit is the test process's replaceable termination boundary.
+var processExit = os.Exit
+
 func processCleanups() *processCleanupState {
 	return processCleanupStateInstance()
 }
@@ -88,7 +91,7 @@ func RunTestMain(m *testing.M, cleanup ...func()) {
 		select {
 		case <-signals:
 			finish()
-			os.Exit(1)
+			processExit(1)
 		case <-done:
 		}
 	}()
@@ -97,5 +100,5 @@ func RunTestMain(m *testing.M, cleanup ...func()) {
 	close(done)
 	signal.Stop(signals)
 	finish()
-	os.Exit(code)
+	processExit(code)
 }

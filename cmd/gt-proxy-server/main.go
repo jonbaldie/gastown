@@ -25,10 +25,13 @@ const defaultAllowedSubcmds = "" +
 	"gt:prime,hook,done,mail,nudge,mol,status,handoff,version,convoy,sling;" +
 	"bd:create,update,close,show,list,ready,dep,export,prime,stats,blocked,doctor"
 
+// processExit is the executable's replaceable process-termination boundary.
+var processExit = os.Exit
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("proxy server error", "err", err)
-		os.Exit(1)
+		processExit(1)
 	}
 }
 

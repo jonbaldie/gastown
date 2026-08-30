@@ -19,6 +19,9 @@ import (
 	"github.com/jonbaldie/gastown/internal/worker"
 )
 
+// processExit is the executable's replaceable process-termination boundary.
+var processExit = os.Exit
+
 func main() {
 	var (
 		townRoot    = flag.String("town", "", "Town root")
@@ -36,14 +39,14 @@ func main() {
 	flag.Parse()
 	if *townRoot == "" || *runID == "" || *sessionID == "" {
 		fmt.Fprintln(os.Stderr, "gt-test-agent: --town, --run-id, and --session are required")
-		os.Exit(2)
+		processExit(2)
 	}
 	if *ctlDir == "" {
 		*ctlDir = filepath.Join(*townRoot, ".runtime", "worker", "agents", strings.ReplaceAll(*sessionID, "/", "_"))
 	}
 	if err := os.MkdirAll(*ctlDir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "gt-test-agent: ctl dir: %v\n", err)
-		os.Exit(1)
+		processExit(1)
 	}
 
 	agent := &testAgent{
@@ -63,7 +66,7 @@ func main() {
 	}
 	if err := agent.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "gt-test-agent: %v\n", err)
-		os.Exit(1)
+		processExit(1)
 	}
 }
 
@@ -301,7 +304,7 @@ func (a *testAgent) applyStoppedCtl(ctx context.Context, fields []string) {
 		Timestamp: time.Now().UTC(),
 		Metadata:  map[string]any{"exit_code": code, "done": done},
 	})
-	os.Exit(code)
+	processExit(code)
 }
 
 func (a *testAgent) applyTelemetryCtl(ctx context.Context, fields []string) {
