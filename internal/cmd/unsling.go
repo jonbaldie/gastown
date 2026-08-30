@@ -51,206 +51,224 @@ func runUnsling(cmd *cobra.Command, args []string) error {
 	return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 }
 
+type unslingRequest struct {
+	targetBeadID string
+	targetAgent  string
+	dryRun       bool
+	force        bool
+}
+
+type unslingContext struct {
+	request   unslingRequest
+	townRoot  string
+	agentID   string
+	beadsPath string
+	beads     *beads.Beads
+}
+
 func runUnslingWith(cmd *cobra.Command, args []string, dryRun, force bool) error {
-	var targetBeadID string
-	var targetAgent string
-
-	// Parse args: [bead-id] [target]
-	switch len(args) {
-	case 0:
-		// No args - unsling self, whatever is hooked
-	case 1:
-		// Could be bead ID or target agent
-		// If it contains "/" or is a known role, treat as target
-		if isAgentTarget(args[0]) {
-			targetAgent = args[0]
-		} else {
-			targetBeadID = args[0]
-		}
-	case 2:
-		targetBeadID = args[0]
-		targetAgent = args[1]
-	}
-
-	// Resolve target agent (default: self)
-	var agentID string
-	var err error
-	if targetAgent != "" {
-		agentID, _, _, err = resolveTargetAgent(targetAgent)
-		if err != nil {
-			return fmt.Errorf("resolving target agent: %w", err)
-		}
-	} else {
-		agentID, _, _, err = resolveSelfTarget()
-		if err != nil {
-			return fmt.Errorf("detecting agent identity: %w", err)
-		}
-	}
-
-	// Find town root and rig path for agent beads
-	townRoot, err := workspace.FindFromCwd()
+	request := parseUnslingRequest(args, dryRun, force)
+	ctx, err := resolveUnslingContext(request)
 	if err != nil {
-		return fmt.Errorf("finding town root: %w", err)
+		return err
 	}
-
-	// Convert agent ID to agent bead ID first, so we can use prefix-based routing
-	agentBeadID := agentIDToBeadID(agentID, townRoot)
-	if agentBeadID == "" {
-		return fmt.Errorf("could not convert agent ID %s to bead ID", agentID)
-	}
-
-	// Resolve the correct beads directory using prefix-based routing.
-	// Town-level agents (mayor, deacon) fall back to townRoot since their
-	// beads use hq- prefix stored at town level.
-	rigName := strings.Split(agentID, "/")[0]
-	var fallbackPath string
-	if rigName == "mayor" || rigName == "deacon" {
-		fallbackPath = townRoot
-	} else {
-		fallbackPath = filepath.Join(townRoot, rigName)
-	}
-	beadsPath := beads.ResolveHookDir(townRoot, agentBeadID, fallbackPath)
-
-	b := beads.New(beadsPath)
-
-	// Find hooked bead by querying status+assignee directly (hq-l6mm5).
-	// The work bead itself is the authoritative source — no need to read
-	// the agent bead's hook_bead slot.
-	hookedBeadID := ""
-	hookedBeads, listErr := b.List(beads.ListOptions{
-		Status:   beads.StatusHooked,
-		Assignee: agentID,
-		Priority: -1,
-	})
-	if listErr == nil && len(hookedBeads) > 0 {
-		hookedBeadID = hookedBeads[0].ID
-	}
-
-	// Town-level fallback: rig-level agents (polecats, crew) may have hooked
-	// HQ beads (hq-* prefix) stored in townRoot/.beads, not the rig's database.
-	// Without this, gt unsling can't find or clear these beads, even though
-	// gt mol status / gt hook (display) can see them. (gt-dtq7)
-	if hookedBeadID == "" && !isTownLevelRole(agentID) && townRoot != "" {
-		townB := beads.New(filepath.Join(townRoot, ".beads"))
-		// Search with the exact agent ID
-		if townHooked, err := townB.List(beads.ListOptions{
-			Status:   beads.StatusHooked,
-			Assignee: agentID,
-			Priority: -1,
-		}); err == nil && len(townHooked) > 0 {
-			hookedBeadID = townHooked[0].ID
-		} else {
-			// Also search with normalized identity (mail beads use normalized form)
-			normalizedID := mailNormalizedAgentID(agentID)
-			if normalizedID != agentID {
-				if townHooked, err := townB.List(beads.ListOptions{
-					Status:   beads.StatusHooked,
-					Assignee: normalizedID,
-					Priority: -1,
-				}); err == nil && len(townHooked) > 0 {
-					hookedBeadID = townHooked[0].ID
-				}
-			}
-		}
-	}
-
+	hookedBeadID := findUnslingHookedBead(ctx)
 	if hookedBeadID == "" {
 		// hook_bead is empty, but there may be stale beads with status "hooked"
 		// still assigned to this agent (e.g., hook_bead was cleared but bead status
 		// wasn't updated). Clean them up so gt hook and gt unsling stay consistent.
-		cleaned := cleanStaleHookedBeads(cmd, b, agentID, targetBeadID, townRoot, beadsPath, dryRun)
-		if !cleaned {
-			if targetAgent != "" {
-				fmt.Printf("%s No work hooked for %s\n", style.Dim.Render("ℹ"), agentID)
-			} else {
-				fmt.Printf("%s Nothing on your hook\n", style.Dim.Render("ℹ"))
-			}
+		if !cleanStaleHookedBeads(cmd, ctx.beads, ctx.agentID, request.targetBeadID, ctx.townRoot, ctx.beadsPath, request.dryRun) {
+			reportNoUnslingWork(request, ctx.agentID)
 		}
 		return nil
 	}
 
-	// If specific bead requested, verify it matches
-	if targetBeadID != "" && hookedBeadID != targetBeadID {
-		return fmt.Errorf("bead %s is not hooked (current hook: %s)", targetBeadID, hookedBeadID)
+	if err := validateUnslingTarget(request, hookedBeadID); err != nil {
+		return err
 	}
 
-	// Get the hooked bead to check completion and show title.
-	// The hooked bead may be in a different database than the agent bead
-	// (e.g., agent in rig db, hooked bead in town db), so resolve its path separately.
-	hookedBeadPath := beads.ResolveHookDir(townRoot, hookedBeadID, beadsPath)
-	hookedB := b
-	if hookedBeadPath != beadsPath {
-		hookedB = beads.New(hookedBeadPath)
-	}
-	hookedBead, err := hookedB.Show(hookedBeadID)
+	hookedB, hookedBead, err := loadUnslingBead(ctx, hookedBeadID)
 	if err != nil {
-		// Bead might be deleted - still allow unsling with --force
-		if !force {
+		if !request.force {
 			return fmt.Errorf("getting hooked bead %s: %w\n  Use --force to unsling anyway", hookedBeadID, err)
 		}
-		// Force mode - proceed without the bead details
 		hookedBead = &beads.Issue{ID: hookedBeadID, Title: "(unknown)"}
 	}
 
-	// Check if work is complete (warn if not, unless --force)
-	isComplete := hookedBead.Status == "closed"
-	if !isComplete && !force {
-		return fmt.Errorf("hooked work %s is incomplete (%s)\n  Use --force to unsling anyway",
-			hookedBeadID, hookedBead.Title)
+	if err := validateUnslingCompletion(hookedBeadID, hookedBead, request.force); err != nil {
+		return err
 	}
 
-	if targetAgent != "" {
-		fmt.Printf("%s Unslinging %s from %s...\n", style.Bold.Render("🪝"), hookedBeadID, agentID)
-	} else {
-		fmt.Printf("%s Unslinging %s...\n", style.Bold.Render("🪝"), hookedBeadID)
-	}
-
-	if dryRun {
-		fmt.Printf("Would unsling hooked bead from %s\n", agentID)
+	announceUnsling(request, ctx.agentID, hookedBeadID)
+	if request.dryRun {
+		fmt.Printf("Would unsling hooked bead from %s\n", ctx.agentID)
 		return nil
 	}
 
-	// No ClearHookBead call needed — agent bead hook slot is no longer maintained (hq-l6mm5).
+	updateUnslingBead(cmd, hookedB, hookedBeadID, hookedBead)
 
-	// Update hooked bead status from "hooked" back to "open".
-	// Previously, only the agent's hook slot was cleared but the bead itself stayed
-	// in "hooked" status forever. Now we update the bead to match the documented
-	// behavior: "The bead's status changes from 'hooked' back to 'open'."
-	if hookedBead.Status == beads.StatusHooked {
-		openStatus := "open"
-		emptyAssignee := ""
-		if err := hookedB.Update(hookedBeadID, beads.UpdateOptions{
-			Status:   &openStatus,
-			Assignee: &emptyAssignee,
-		}); err != nil {
-			// Non-fatal: warn but don't fail the unsling. The hook slot is already
-			// cleared, so the agent is unblocked. The bead status is a bookkeeping
-			// issue that can be fixed manually.
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't update bead %s status: %v\n", hookedBeadID, err)
+	_ = events.LogFeed(events.TypeUnhook, ctx.agentID, events.UnhookPayload(hookedBeadID))
+	notifyUnslingMayor(ctx, hookedBeadID)
+	reportUnslingComplete(ctx.agentID, hookedBeadID)
+	return nil
+}
+
+func parseUnslingRequest(args []string, dryRun, force bool) unslingRequest {
+	request := unslingRequest{dryRun: dryRun, force: force}
+	switch len(args) {
+	case 1:
+		if isAgentTarget(args[0]) {
+			request.targetAgent = args[0]
+		} else {
+			request.targetBeadID = args[0]
 		}
+	case 2:
+		request.targetBeadID = args[0]
+		request.targetAgent = args[1]
 	}
+	return request
+}
 
-	// Log unhook event
-	_ = events.LogFeed(events.TypeUnhook, agentID, events.UnhookPayload(hookedBeadID))
+func resolveUnslingContext(request unslingRequest) (*unslingContext, error) {
+	agentID, err := resolveUnslingAgent(request.targetAgent)
+	if err != nil {
+		return nil, err
+	}
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return nil, fmt.Errorf("finding town root: %w", err)
+	}
+	agentBeadID := agentIDToBeadID(agentID, townRoot)
+	if agentBeadID == "" {
+		return nil, fmt.Errorf("could not convert agent ID %s to bead ID", agentID)
+	}
+	beadsPath := unslingBeadsPath(townRoot, agentID, agentBeadID)
+	return &unslingContext{
+		request:   request,
+		townRoot:  townRoot,
+		agentID:   agentID,
+		beadsPath: beadsPath,
+		beads:     beads.New(beadsPath),
+	}, nil
+}
 
-	// Emit a propulsion signal if the target is the mayor.
-	// This allows the ACP propeller to react to hook changes event-driven.
-	if agentID == "mayor/" {
-		if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
-			session := "hq-mayor"
-			message := fmt.Sprintf("Hook updated: cleared bead %s", hookedBeadID)
-			_ = nudge.Enqueue(townRoot, session, nudge.QueuedNudge{
-				Sender:   "unsling",
-				Message:  message,
-				Priority: nudge.PriorityNormal,
-			})
+func resolveUnslingAgent(targetAgent string) (string, error) {
+	if targetAgent != "" {
+		agentID, _, _, err := resolveTargetAgent(targetAgent)
+		if err != nil {
+			return "", fmt.Errorf("resolving target agent: %w", err)
 		}
+		return agentID, nil
 	}
+	agentID, _, _, err := resolveSelfTarget()
+	if err != nil {
+		return "", fmt.Errorf("detecting agent identity: %w", err)
+	}
+	return agentID, nil
+}
 
+func unslingBeadsPath(townRoot, agentID, agentBeadID string) string {
+	rigName := strings.Split(agentID, "/")[0]
+	fallbackPath := filepath.Join(townRoot, rigName)
+	if rigName == "mayor" || rigName == "deacon" {
+		fallbackPath = townRoot
+	}
+	return beads.ResolveHookDir(townRoot, agentBeadID, fallbackPath)
+}
+
+func findUnslingHookedBead(ctx *unslingContext) string {
+	if hooked := firstHookedBead(ctx.beads, ctx.agentID); hooked != "" {
+		return hooked
+	}
+	if isTownLevelRole(ctx.agentID) || ctx.townRoot == "" {
+		return ""
+	}
+	return findTownHookedBead(ctx.townRoot, ctx.agentID)
+}
+
+func firstHookedBead(b *beads.Beads, agentID string) string {
+	hooked, err := b.List(beads.ListOptions{Status: beads.StatusHooked, Assignee: agentID, Priority: -1})
+	if err != nil || len(hooked) == 0 {
+		return ""
+	}
+	return hooked[0].ID
+}
+
+func findTownHookedBead(townRoot, agentID string) string {
+	townB := beads.New(filepath.Join(townRoot, ".beads"))
+	if hooked := firstHookedBead(townB, agentID); hooked != "" {
+		return hooked
+	}
+	normalizedID := mailNormalizedAgentID(agentID)
+	if normalizedID == agentID {
+		return ""
+	}
+	return firstHookedBead(townB, normalizedID)
+}
+
+func validateUnslingTarget(request unslingRequest, hookedBeadID string) error {
+	if request.targetBeadID != "" && hookedBeadID != request.targetBeadID {
+		return fmt.Errorf("bead %s is not hooked (current hook: %s)", request.targetBeadID, hookedBeadID)
+	}
+	return nil
+}
+
+func loadUnslingBead(ctx *unslingContext, hookedBeadID string) (*beads.Beads, *beads.Issue, error) {
+	hookedBeadPath := beads.ResolveHookDir(ctx.townRoot, hookedBeadID, ctx.beadsPath)
+	hookedB := ctx.beads
+	if hookedBeadPath != ctx.beadsPath {
+		hookedB = beads.New(hookedBeadPath)
+	}
+	hookedBead, err := hookedB.Show(hookedBeadID)
+	return hookedB, hookedBead, err
+}
+
+func validateUnslingCompletion(hookedBeadID string, hookedBead *beads.Issue, force bool) error {
+	if hookedBead.Status == "closed" || force {
+		return nil
+	}
+	return fmt.Errorf("hooked work %s is incomplete (%s)\n  Use --force to unsling anyway", hookedBeadID, hookedBead.Title)
+}
+
+func announceUnsling(request unslingRequest, agentID, hookedBeadID string) {
+	if request.targetAgent != "" {
+		fmt.Printf("%s Unslinging %s from %s...\n", style.Bold.Render("🪝"), hookedBeadID, agentID)
+		return
+	}
+	fmt.Printf("%s Unslinging %s...\n", style.Bold.Render("🪝"), hookedBeadID)
+}
+
+func updateUnslingBead(cmd *cobra.Command, hookedB *beads.Beads, hookedBeadID string, hookedBead *beads.Issue) {
+	if hookedBead.Status != beads.StatusHooked {
+		return
+	}
+	openStatus := "open"
+	emptyAssignee := ""
+	if err := hookedB.Update(hookedBeadID, beads.UpdateOptions{Status: &openStatus, Assignee: &emptyAssignee}); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't update bead %s status: %v\n", hookedBeadID, err)
+	}
+}
+
+func notifyUnslingMayor(ctx *unslingContext, hookedBeadID string) {
+	if ctx.agentID != "mayor/" || ctx.townRoot == "" {
+		return
+	}
+	message := fmt.Sprintf("Hook updated: cleared bead %s", hookedBeadID)
+	_ = nudge.Enqueue(ctx.townRoot, "hq-mayor", nudge.QueuedNudge{Sender: "unsling", Message: message, Priority: nudge.PriorityNormal})
+}
+
+func reportNoUnslingWork(request unslingRequest, agentID string) {
+	if request.targetAgent != "" {
+		fmt.Printf("%s No work hooked for %s\n", style.Dim.Render("ℹ"), agentID)
+		return
+	}
+	fmt.Printf("%s Nothing on your hook\n", style.Dim.Render("ℹ"))
+}
+
+func reportUnslingComplete(agentID, hookedBeadID string) {
 	fmt.Printf("%s Work removed from hook\n", style.Bold.Render("✓"))
 	fmt.Printf("  Agent %s hook cleared (was: %s)\n", agentID, hookedBeadID)
 
-	return nil
 }
 
 // cleanStaleHookedBeads finds and cleans up beads with status "hooked" assigned to
@@ -260,93 +278,88 @@ func runUnslingWith(cmd *cobra.Command, args []string, dryRun, force bool) error
 // stale hook (via fallback query) but gt unsling says "Nothing on your hook".
 // Returns true if any stale beads were cleaned up.
 func cleanStaleHookedBeads(cmd *cobra.Command, b *beads.Beads, agentID, targetBeadID, townRoot, beadsPath string, dryRun bool) bool {
-	// Collect stale beads from local rig beads
-	staleBeads, err := b.List(beads.ListOptions{
-		Status:   beads.StatusHooked,
-		Assignee: agentID,
-		Priority: -1,
-	})
-	if err != nil {
-		staleBeads = nil
-	}
-
-	// Also search town-level beads for rig-level agents (gt-dtq7).
-	// HQ beads (hq-* prefix) live in townRoot/.beads, not the rig database.
-	// Without this, stale HQ beads hooked to crew/polecats are invisible to cleanup.
-	if !isTownLevelRole(agentID) && townRoot != "" {
-		townBeadsPath := filepath.Join(townRoot, ".beads")
-		if townBeadsPath != beadsPath {
-			townB := beads.New(townBeadsPath)
-			// Search with exact agent ID
-			if townStale, err := townB.List(beads.ListOptions{
-				Status:   beads.StatusHooked,
-				Assignee: agentID,
-				Priority: -1,
-			}); err == nil {
-				staleBeads = append(staleBeads, townStale...)
-			}
-			// Also search with normalized identity (mail beads use normalized form)
-			normalizedID := mailNormalizedAgentID(agentID)
-			if normalizedID != agentID {
-				if townStale, err := townB.List(beads.ListOptions{
-					Status:   beads.StatusHooked,
-					Assignee: normalizedID,
-					Priority: -1,
-				}); err == nil {
-					staleBeads = append(staleBeads, townStale...)
-				}
-			}
-		}
-	}
-
+	staleBeads := collectStaleHookedBeads(b, agentID, townRoot, beadsPath)
+	staleBeads = filterStaleHookedBeads(staleBeads, targetBeadID)
 	if len(staleBeads) == 0 {
 		return false
 	}
-
-	// If a specific bead was requested, filter to only that one
-	if targetBeadID != "" {
-		var filtered []*beads.Issue
-		for _, sb := range staleBeads {
-			if sb.ID == targetBeadID {
-				filtered = append(filtered, sb)
-			}
-		}
-		if len(filtered) == 0 {
-			return false
-		}
-		staleBeads = filtered
-	}
-
 	if dryRun {
-		for _, sb := range staleBeads {
-			fmt.Printf("Would clean up stale hooked bead %s (%s)\n", sb.ID, sb.Title)
-		}
+		printStaleHookedDryRun(staleBeads)
 		return true
 	}
-
-	// Clean up each stale hooked bead
 	for _, sb := range staleBeads {
-		fmt.Printf("%s Cleaning up stale hooked bead %s...\n", style.Bold.Render("🪝"), sb.ID)
-
-		// Resolve the correct beads directory for this bead
-		stalePath := beads.ResolveHookDir(townRoot, sb.ID, beadsPath)
-		staleB := b
-		if stalePath != beadsPath {
-			staleB = beads.New(stalePath)
-		}
-
-		openStatus := "open"
-		emptyAssignee := ""
-		if err := staleB.Update(sb.ID, beads.UpdateOptions{
-			Status:   &openStatus,
-			Assignee: &emptyAssignee,
-		}); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't clean up stale bead %s: %v\n", sb.ID, err)
-			continue
-		}
-		fmt.Printf("%s Cleaned up stale bead %s (was hooked, now open)\n", style.Bold.Render("✓"), sb.ID)
+		cleanOneStaleHookedBead(cmd, b, sb, townRoot, beadsPath)
 	}
 	return true
+}
+
+func collectStaleHookedBeads(b *beads.Beads, agentID, townRoot, beadsPath string) []*beads.Issue {
+	staleBeads, err := listStaleHookedBeads(b, agentID)
+	if err != nil {
+		staleBeads = nil
+	}
+	return append(staleBeads, collectTownStaleHookedBeads(agentID, townRoot, beadsPath)...)
+}
+
+func listStaleHookedBeads(b *beads.Beads, agentID string) ([]*beads.Issue, error) {
+	return b.List(beads.ListOptions{Status: beads.StatusHooked, Assignee: agentID, Priority: -1})
+}
+
+func collectTownStaleHookedBeads(agentID, townRoot, beadsPath string) []*beads.Issue {
+	if isTownLevelRole(agentID) || townRoot == "" {
+		return nil
+	}
+	townBeadsPath := filepath.Join(townRoot, ".beads")
+	if townBeadsPath == beadsPath {
+		return nil
+	}
+	townB := beads.New(townBeadsPath)
+	var staleBeads []*beads.Issue
+	if townStale, err := listStaleHookedBeads(townB, agentID); err == nil {
+		staleBeads = append(staleBeads, townStale...)
+	}
+	normalizedID := mailNormalizedAgentID(agentID)
+	if normalizedID != agentID {
+		if townStale, err := listStaleHookedBeads(townB, normalizedID); err == nil {
+			staleBeads = append(staleBeads, townStale...)
+		}
+	}
+	return staleBeads
+}
+
+func filterStaleHookedBeads(staleBeads []*beads.Issue, targetBeadID string) []*beads.Issue {
+	if targetBeadID == "" {
+		return staleBeads
+	}
+	filtered := make([]*beads.Issue, 0, len(staleBeads))
+	for _, stale := range staleBeads {
+		if stale.ID == targetBeadID {
+			filtered = append(filtered, stale)
+		}
+	}
+	return filtered
+}
+
+func printStaleHookedDryRun(staleBeads []*beads.Issue) {
+	for _, stale := range staleBeads {
+		fmt.Printf("Would clean up stale hooked bead %s (%s)\n", stale.ID, stale.Title)
+	}
+}
+
+func cleanOneStaleHookedBead(cmd *cobra.Command, b *beads.Beads, stale *beads.Issue, townRoot, beadsPath string) {
+	fmt.Printf("%s Cleaning up stale hooked bead %s...\n", style.Bold.Render("🪝"), stale.ID)
+	staleB := b
+	stalePath := beads.ResolveHookDir(townRoot, stale.ID, beadsPath)
+	if stalePath != beadsPath {
+		staleB = beads.New(stalePath)
+	}
+	openStatus := "open"
+	emptyAssignee := ""
+	if err := staleB.Update(stale.ID, beads.UpdateOptions{Status: &openStatus, Assignee: &emptyAssignee}); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't clean up stale bead %s: %v\n", stale.ID, err)
+		return
+	}
+	fmt.Printf("%s Cleaned up stale bead %s (was hooked, now open)\n", style.Bold.Render("✓"), stale.ID)
 }
 
 // mailNormalizedAgentID normalizes crew/polecats path to the canonical form
