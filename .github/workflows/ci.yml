@@ -257,8 +257,11 @@ jobs:
 
           # mutago's dry-run count is an upper bound, but it is useful for
           # keeping the expensive test loop bounded. Keep each ordinary shard
-          # below this count and split unusually large files below.
+          # below this count and split unusually large files below. Whole-file
+          # mutator shards use a lower cap because they are the most expensive
+          # partitions and must fit within hosted-runner job limits.
           max_mutations = 1_400
+          max_whole_file_mutations = 1_200
           max_function_bytes = 28_000
           all_mutators = [
               "arithmetic/assign_invert",
@@ -385,7 +388,10 @@ jobs:
               current_mutators = []
               current_mutations = 0
               for name, count in sorted(selected, key=lambda item: (-item[1], item[0])):
-                  if current_mutators and current_mutations + count > max_mutations:
+                  if (
+                      current_mutators
+                      and current_mutations + count > max_whole_file_mutations
+                  ):
                       add_shard(
                           [filename],
                           disable=[
