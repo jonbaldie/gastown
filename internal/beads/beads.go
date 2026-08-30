@@ -567,36 +567,6 @@ type UpdateOptions struct {
 	SetLabels    []string // Labels to set (replaces all existing)
 }
 
-// Beads wraps bd CLI operations for a working directory.
-// When store is non-nil, methods with in-process implementations use the
-// beadsdk.Storage directly instead of shelling out to the bd CLI. This
-// eliminates ~600ms of subprocess overhead per operation.
-type Beads struct {
-	workDir    string
-	beadsDir   string // Optional BEADS_DIR override for cross-database access
-	isolated   bool   // If true, suppress inherited beads env vars (for test isolation)
-	serverPort int    // If set, pass --server-port to bd init and GT_DOLT_PORT to env
-
-	// store is an optional in-process beadsdk.Storage. When set, methods
-	// bypass the bd subprocess and use the store directly. Follows the
-	// pattern in internal/daemon/convoy_manager.go. Callers are responsible
-	// for closing the store.
-	store beadsdk.Storage
-
-	// Lazy-cached town root for routing resolution.
-	// Populated on first call to getTownRoot() to avoid filesystem walk on every operation.
-	townRoot     string
-	townRootOnce sync.Once
-
-	// noRoute disables prefix-based routing for this Beads instance.
-	// Used for agent-bead operations: agent beads (gt:agent label) live in
-	// the town database regardless of their ID prefix, so prefix routing
-	// (which assumes "za-*" → zack DB) misroutes them. When set, Show()
-	// and forIssueID() skip ResolveRoutingTarget and operate against
-	// beadsDir directly.
-	noRoute bool
-}
-
 // New creates a new Beads wrapper for the given directory.
 func New(workDir string) *Beads {
 	return &Beads{workDir: workDir}
@@ -623,48 +593,6 @@ func NewWithBeadsDir(workDir, beadsDir string) *Beads {
 	return &Beads{workDir: workDir, beadsDir: beadsDir}
 }
 
-// ForAgentBead returns a Beads wrapper suitable for operating on agent beads.
-//
-// Agent beads (labeled gt:agent) live in the TOWN database, but their IDs
-// are prefixed with the rig prefix (e.g. "za-zack-polecat-furiosa"). The
-// default prefix routing in routes.jsonl maps "za-" → zack rig database, so
-// any agent-bead operation issued from a rig context (or any context that
-// triggers routing) gets sent to the wrong DB and fails with "issue not
-// found". This silently breaks gt done's hook clearing, agent state
-// transition, completion metadata, etc.
-//
-// ForAgentBead bypasses that:
-//   - Re-roots the wrapper at the town's .beads directory (so bd CLI itself
-//     opens the town/hq Dolt database where agent beads live).
-//   - Sets noRoute=true so the Go-side routing helpers (Show,
-//     ResolveRoutingTarget, forIssueID) do not redirect lookups by prefix.
-//
-// If the town root cannot be determined, returns the original wrapper to
-// preserve current behavior.
-func (b *Beads) ForAgentBead() *Beads {
-	townRoot := b.getTownRoot()
-	if townRoot == "" {
-		return b
-	}
-	townBeadsDir := filepath.Join(townRoot, ".beads")
-	return &Beads{
-		workDir:    townRoot,
-		beadsDir:   townBeadsDir,
-		isolated:   b.isolated,
-		serverPort: b.serverPort,
-		store:      b.store,
-		townRoot:   townRoot,
-		noRoute:    true,
-	}
-}
-
-func (b *Beads) AgentBeadTarget() *Beads {
-	if b.noRoute {
-		return b
-	}
-	return b.ForAgentBead()
-}
-
 // getActor returns the BD_ACTOR value for this context.
 // Returns empty string when in isolated mode (tests) to prevent
 // inherited actors from routing to production databases.
@@ -673,17 +601,6 @@ func (b *Beads) getActor() string {
 		return ""
 	}
 	return os.Getenv("BD_ACTOR")
-}
-
-// getTownRoot returns the Gas Town root directory, using lazy caching.
-// The town root is found by walking up from workDir looking for mayor/town.json.
-// Returns empty string if not in a Gas Town project.
-// Thread-safe: uses sync.Once to prevent races on concurrent access.
-func (b *Beads) getTownRoot() string {
-	b.townRootOnce.Do(func() {
-		b.townRoot = FindTownRoot(b.workDir)
-	})
-	return b.townRoot
 }
 
 // getResolvedBeadsDir returns the beads directory this wrapper is operating on.
