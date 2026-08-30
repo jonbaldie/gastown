@@ -427,11 +427,8 @@ func isTownWorkBead(beadID string) bool {
 // then sling to a rig"; polecats can only execute beads that live in the
 // target rig database. dryRun previews the move without creating or closing beads.
 func prepareTownBeadForRigSling(beadID, targetRig, townRoot string, dryRun bool) (string, error) {
-	if targetRig == "" || townRoot == "" {
-		return beadID, nil
-	}
-	beadID = followMovedBead(beadID, townRoot)
-	if !isTownWorkBead(beadID) {
+	skip, beadID := skipPrepareTownBead(beadID, targetRig, townRoot)
+	if skip {
 		return beadID, nil
 	}
 	targetBeadsDir, ok := resolveTargetRigBeadsDir(townRoot, targetRig)
@@ -441,17 +438,48 @@ func prepareTownBeadForRigSling(beadID, targetRig, townRoot string, dryRun bool)
 	if err := verifyBeadExistsInTargetRigDatabase(beadID, targetRig, townRoot); err == nil {
 		return beadID, nil
 	}
+	return relocateTownBeadForRig(beadID, targetRig, townRoot, targetBeadsDir, dryRun)
+}
+
+func skipPrepareTownBead(beadID, targetRig, townRoot string) (bool, string) {
+	if targetRig == "" || townRoot == "" {
+		return true, beadID
+	}
+	beadID = followMovedBead(beadID, townRoot)
+	if !isTownWorkBead(beadID) {
+		return true, beadID
+	}
+	return false, beadID
+}
+
+func relocateTownBeadForRig(beadID, targetRig, townRoot, targetBeadsDir string, dryRun bool) (string, error) {
+	targetPrefix, err := requireTargetRigPrefix(beadID, targetRig, townRoot)
+	if err != nil {
+		return "", err
+	}
+	if dryRun {
+		return previewTownBeadRelocate(beadID, targetRig, targetPrefix, townRoot)
+	}
+	return moveTownBeadIntoRig(beadID, targetRig, townRoot, targetBeadsDir, targetPrefix)
+}
+
+func requireTargetRigPrefix(beadID, targetRig, townRoot string) (string, error) {
 	targetPrefix := beads.GetPrefixForRig(townRoot, targetRig)
 	if targetPrefix == "" || targetPrefix == beads.TownBeadsPrefix {
 		return "", fmt.Errorf("cannot sling town bead %s to rig %q: no rig prefix is registered\nCreate the work in the target rig first:\n  bd -C %s create --title=...\nor move it explicitly:\n  gt bead move %s <rig-prefix>", beadID, targetRig, targetRig, beadID)
 	}
-	if dryRun {
-		if err := previewBeadMove(beadID, targetPrefix, townRoot); err != nil {
-			return "", err
-		}
-		fmt.Printf("Would move town bead %s into rig %s (prefix %s)\n", beadID, targetRig, normalizeBeadPrefix(targetPrefix))
-		return beadID, nil
+	return targetPrefix, nil
+}
+
+func previewTownBeadRelocate(beadID, targetRig, targetPrefix, townRoot string) (string, error) {
+	if err := previewBeadMove(beadID, targetPrefix, townRoot); err != nil {
+		return "", err
 	}
+	fmt.Printf("Would move town bead %s into rig %s (prefix %s)\n", beadID, targetRig, normalizeBeadPrefix(targetPrefix))
+	return beadID, nil
+}
+
+func moveTownBeadIntoRig(beadID, targetRig, townRoot, targetBeadsDir, targetPrefix string) (string, error) {
 	newID, err := moveBeadToPrefixChecked(beadID, targetPrefix, townRoot, filepath.Dir(targetBeadsDir), func(landedID string) error {
 		if isTownWorkBead(landedID) {
 			return fmt.Errorf("moving town bead %s into rig %q created %s (town prefix); refusing to close the source", beadID, targetRig, landedID)
@@ -508,44 +536,59 @@ func verifyBeadExistsInTargetRigDatabase(beadID, targetRig, townRoot string) err
 	if beadID == "" {
 		return nil
 	}
+	if err := requireBeadTargetContext(beadID, targetRig, townRoot); err != nil {
+		return err
+	}
+	targetBeadsDir, ok := resolveTargetRigBeadsDir(townRoot, targetRig)
+	if !ok {
+		return fmt.Errorf("cannot resolve target rig %q beads database for bead %s; refusing to sling before creating hooks or molecule side effects", targetRig, beadID)
+	}
+	out, err := showBeadInTargetRig(beadID, targetBeadsDir)
+	if beadShowEmpty(out, err) {
+		return missingTargetRigBead(beadID, targetRig, townRoot)
+	}
+	return decodeTargetRigBeadShow(out, beadID, targetRig, townRoot)
+}
+
+func requireBeadTargetContext(beadID, targetRig, townRoot string) error {
 	if targetRig == "" {
 		return fmt.Errorf("cannot verify bead %s in target rig: target rig is empty; refusing to sling before creating hooks or molecule side effects", beadID)
 	}
 	if townRoot == "" {
 		return fmt.Errorf("cannot verify bead %s in target rig %q: town root is unavailable; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
 	}
+	return nil
+}
 
-	targetBeadsDir, ok := resolveTargetRigBeadsDir(townRoot, targetRig)
-	if !ok {
-		return fmt.Errorf("cannot resolve target rig %q beads database for bead %s; refusing to sling before creating hooks or molecule side effects", targetRig, beadID)
-	}
-	targetRigDir := filepath.Dir(targetBeadsDir)
-
-	out, err := BdCmd("show", beadID, "--json").
+func showBeadInTargetRig(beadID, targetBeadsDir string) ([]byte, error) {
+	return BdCmd("show", beadID, "--json").
 		AllowStale().
-		Dir(targetRigDir).
+		Dir(filepath.Dir(targetBeadsDir)).
 		WithBeadsDir(targetBeadsDir).
 		StripBeadsDir().
 		Stderr(io.Discard).
 		Output()
-	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
-		if routedBeadExistsForTargetRig(beadID, targetRig, townRoot) {
-			return nil
-		}
-		return fmt.Errorf("bead %s is not present in target rig %q beads database; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
-	}
+}
 
+func beadShowEmpty(out []byte, err error) bool {
+	return err != nil || len(strings.TrimSpace(string(out))) == 0
+}
+
+func missingTargetRigBead(beadID, targetRig, townRoot string) error {
+	if routedBeadExistsForTargetRig(beadID, targetRig, townRoot) {
+		return nil
+	}
+	return fmt.Errorf("bead %s is not present in target rig %q beads database; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
+}
+
+func decodeTargetRigBeadShow(out []byte, beadID, targetRig, townRoot string) error {
 	var infos []beadInfo
 	if err := json.Unmarshal(out, &infos); err != nil {
 		return fmt.Errorf("checking target rig %q database for bead %s: %w", targetRig, beadID, err)
 	}
 	if len(infos) == 0 {
-		if routedBeadExistsForTargetRig(beadID, targetRig, townRoot) {
-			return nil
-		}
-		return fmt.Errorf("bead %s is not present in target rig %q beads database; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
+		return missingTargetRigBead(beadID, targetRig, townRoot)
 	}
-
 	return nil
 }
 
@@ -855,6 +898,12 @@ func applyAttachmentClears(fields *beads.AttachmentFields, updates beadFieldUpda
 }
 
 func applyAttachmentMetadata(fields *beads.AttachmentFields, updates beadFieldUpdates) {
+	applyAttachmentDispatchFields(fields, updates)
+	applyAttachmentAttachFields(fields, updates)
+	applyAttachmentPolicyFields(fields, updates)
+}
+
+func applyAttachmentDispatchFields(fields *beads.AttachmentFields, updates beadFieldUpdates) {
 	if updates.Dispatcher != "" {
 		fields.DispatchedBy = updates.Dispatcher
 	}
@@ -864,17 +913,30 @@ func applyAttachmentMetadata(fields *beads.AttachmentFields, updates beadFieldUp
 	if len(updates.Vars) > 0 {
 		fields.AttachedVars = append([]string(nil), updates.Vars...)
 	}
+}
+
+func applyAttachmentAttachFields(fields *beads.AttachmentFields, updates beadFieldUpdates) {
 	if updates.AttachedMolecule != "" {
 		fields.AttachedMolecule = updates.AttachedMolecule
 	}
 	if updates.AttachedFormula != "" {
 		fields.AttachedFormula = updates.AttachedFormula
 	}
+	stampAttachmentTime(fields, updates)
+}
+
+func stampAttachmentTime(fields *beads.AttachmentFields, updates beadFieldUpdates) {
 	if updates.AttachedAt != "" {
 		fields.AttachedAt = updates.AttachedAt
-	} else if updates.AttachedMolecule != "" || updates.AttachedFormula != "" || updates.NoMerge || updates.ReviewOnly {
-		fields.AttachedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		return
 	}
+	if updates.AttachedMolecule == "" && updates.AttachedFormula == "" && !updates.NoMerge && !updates.ReviewOnly {
+		return
+	}
+	fields.AttachedAt = time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func applyAttachmentPolicyFields(fields *beads.AttachmentFields, updates beadFieldUpdates) {
 	if updates.NoMerge {
 		fields.NoMerge = true
 	}
@@ -959,61 +1021,63 @@ func getSessionFromPane(pane string) string {
 // accept the bypass permissions warning and give it a moment to finish initializing.
 func ensureAgentReady(sessionName string) error {
 	t := tmux.NewTmux()
-
-	if t.IsAgentRunning(sessionName) {
-		// Agent process is detected, but it may have just started (fresh spawn).
-		// Check session age — if < 15s old, the agent likely isn't ready for input yet.
-		if !isSessionYoung(sessionName, 15*time.Second) {
-			return nil
-		}
-		// Fall through to apply startup delay for young sessions.
-	} else {
-		// Agent not running yet - wait for it to start (shell → program transition)
-		if err := t.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-			return fmt.Errorf("waiting for agent to start: %w", err)
-		}
+	ready, err := waitForAgentProcess(t, sessionName)
+	if err != nil {
+		return err
 	}
+	if ready {
+		return nil
+	}
+	agentName := acceptAgentStartupDialogs(t, sessionName)
+	waitForAgentRuntimeReady(t, sessionName, agentName)
+	return nil
+}
 
-	// Accept startup dialogs (workspace trust + bypass permissions) if they appear
+func waitForAgentProcess(t *tmux.Tmux, sessionName string) (bool, error) {
+	if t.IsAgentRunning(sessionName) {
+		return !isSessionYoung(sessionName, 15*time.Second), nil
+	}
+	if err := t.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
+		return false, fmt.Errorf("waiting for agent to start: %w", err)
+	}
+	return false, nil
+}
+
+func acceptAgentStartupDialogs(t *tmux.Tmux, sessionName string) string {
 	_ = t.AcceptWorkspaceTrustDialog(sessionName)
 	agentName, _ := t.GetEnvironment(sessionName, "GT_AGENT")
 	if shouldAcceptPermissionWarning(agentName) {
 		_ = t.AcceptBypassPermissionsWarning(sessionName)
 	}
+	return agentName
+}
 
-	// Use prompt-detection polling instead of fixed sleep.
-	// For known presets: uses ReadyPromptPrefix (e.g. "❯ " for Claude) polled every 200ms.
-	// For unknown/custom agents: falls back to a 1s fixed delay (mirrors old behavior).
-	// Note: uses preset-only resolution (not ResolveRoleAgentConfig) because
-	// ensureAgentReady lacks rig/town context — only has the session name.
+func waitForAgentRuntimeReady(t *tmux.Tmux, sessionName, agentName string) {
+	rc := agentRuntimeReadyConfig(agentName)
+	if err := t.WaitForRuntimeReady(sessionName, rc, constants.ClaudeStartTimeout); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", sessionName, err)
+	}
+}
+
+func agentRuntimeReadyConfig(agentName string) *config.RuntimeConfig {
 	effectiveName := agentName
 	if effectiveName == "" {
-		effectiveName = "claude" // Default sessions without GT_AGENT are Claude
+		effectiveName = "claude"
 	}
 	var rc *config.RuntimeConfig
 	if preset := config.GetAgentPreset(config.AgentPreset(effectiveName)); preset != nil {
 		rc = config.RuntimeConfigFromPreset(config.AgentPreset(effectiveName))
 	} else {
-		// Unknown agent — use minimal config: no prompt detection, short fixed delay.
 		rc = &config.RuntimeConfig{
 			Tmux: &config.RuntimeTmuxConfig{
 				ReadyDelayMs: 1000,
 			},
 		}
 	}
-	// Ensure a minimum 1s readiness delay for presets without prompt detection.
-	// Without this, agents with ReadyPromptPrefix="" and ReadyDelayMs=0
-	// (e.g. gemini, cursor) would skip the readiness guard entirely,
-	// reintroducing early-input races that this function exists to prevent.
 	if rc.Tmux != nil && rc.Tmux.ReadyPromptPrefix == "" && rc.Tmux.ReadyDelayMs < 1000 {
 		rc.Tmux.ReadyDelayMs = 1000
 	}
-	if err := t.WaitForRuntimeReady(sessionName, rc, constants.ClaudeStartTimeout); err != nil {
-		// Graceful degradation: warn but proceed (matches original behavior of always continuing)
-		fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", sessionName, err)
-	}
-
-	return nil
+	return rc
 }
 
 // isSessionYoung returns true if the tmux session was created less than maxAge ago.
@@ -1054,37 +1118,62 @@ func detectActor() string {
 // Rig-level agents use the rig's configured prefix (default "gt-").
 // townRoot is needed to look up the rig's configured prefix.
 func agentIDToBeadID(agentID, townRoot string) string {
-	// Normalize: strip trailing slash (resolveSelfTarget returns "mayor/" not "mayor")
 	agentID = strings.TrimSuffix(agentID, "/")
+	if id := townAgentBeadID(agentID); id != "" {
+		return id
+	}
+	return pathAgentBeadID(agentID, townRoot)
+}
 
-	// Handle simple cases (town-level agents with hq- prefix)
-	if agentID == "mayor" {
+func townAgentBeadID(agentID string) string {
+	switch agentID {
+	case "mayor":
 		return beads.MayorBeadIDTown()
-	}
-	if agentID == "deacon" {
+	case "deacon":
 		return beads.DeaconBeadIDTown()
+	default:
+		return ""
 	}
+}
 
-	// Parse path-style agent IDs
+func pathAgentBeadID(agentID, townRoot string) string {
 	parts := strings.Split(agentID, "/")
 	if len(parts) < 2 {
 		return ""
 	}
+	if id := twoPartAgentBeadID(parts, townRoot); id != "" {
+		return id
+	}
+	return threePartAgentBeadID(parts, townRoot)
+}
 
+func twoPartAgentBeadID(parts []string, townRoot string) string {
+	if len(parts) != 2 {
+		return ""
+	}
 	rig := parts[0]
 	prefix := beads.GetPrefixForRig(townRoot, rig)
-
-	switch {
-	case len(parts) == 2 && parts[1] == "witness":
+	switch parts[1] {
+	case "witness":
 		return beads.WitnessBeadIDWithPrefix(prefix, rig)
-	case len(parts) == 2 && parts[1] == "refinery":
+	case "refinery":
 		return beads.RefineryBeadIDWithPrefix(prefix, rig)
-	case len(parts) == 3 && parts[1] == "crew":
-		return beads.CrewBeadIDWithPrefix(prefix, rig, parts[2])
-	case len(parts) == 3 && parts[1] == "polecats":
-		return beads.PolecatBeadIDWithPrefix(prefix, rig, parts[2])
-	case len(parts) == 3 && parts[0] == "deacon" && parts[1] == "dogs":
-		// Dogs are town-level agents with hq- prefix
+	default:
+		return ""
+	}
+}
+
+func threePartAgentBeadID(parts []string, townRoot string) string {
+	if len(parts) != 3 {
+		return ""
+	}
+	prefix := beads.GetPrefixForRig(townRoot, parts[0])
+	switch {
+	case parts[1] == "crew":
+		return beads.CrewBeadIDWithPrefix(prefix, parts[0], parts[2])
+	case parts[1] == "polecats":
+		return beads.PolecatBeadIDWithPrefix(prefix, parts[0], parts[2])
+	case parts[0] == "deacon" && parts[1] == "dogs":
 		return beads.DogBeadIDTown(parts[2])
 	default:
 		return ""
@@ -1189,53 +1278,67 @@ func nudgeWitness(rigName, message string) {
 // agent is busy, text buffers in tmux and is processed at next prompt.
 func nudgeRefinery(rigName, message string) {
 	refinerySession := session.RefinerySessionName(session.PrefixFor(rigName))
-
-	// Test hook: log nudge for test observability (same pattern as GT_TEST_ATTACHED_MOLECULE_LOG)
-	if logPath := os.Getenv("GT_TEST_NUDGE_LOG"); logPath != "" {
-		entry := fmt.Sprintf("nudge:%s:%s\n", refinerySession, message)
-		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err == nil {
-			_, _ = f.WriteString(entry)
-			_ = f.Close()
-		}
-		return // Don't actually nudge tmux in tests
+	if logTestNudge(refinerySession, message) {
+		return
 	}
-
-	// Emit a file event so the refinery's await-event unblocks instantly.
-	// This is the programmatic bridge between mq submit and the event system.
 	townRoot, _ := workspace.FindFromCwd()
-	if townRoot != "" {
-		_, _ = channelevents.EmitToTown(townRoot, "refinery", "MQ_SUBMIT", []string{
-			"source=sling",
-			"message=" + message,
-		})
+	emitRefineryMQEvent(townRoot, message)
+	if deliverRefineryWorkerNudge(townRoot, refinerySession, message) {
+		return
 	}
-
-	if townRoot != "" {
-		if w, err := worker.Open(townRoot); err == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_, derr := w.Deliver(ctx, worker.Prompt{
-				RunID:    refinerySession,
-				Content:  message,
-				Priority: worker.PriorityUrgent,
-				Source:   worker.SourceNudge,
-				From:     "mayor",
-			})
-			cancel()
-			if derr == nil {
-				return
-			}
-			if !errors.Is(derr, worker.ErrServerDown) && !errors.Is(derr, worker.ErrUnknownState) && !errors.Is(derr, worker.ErrRunNotFound) {
-				fmt.Fprintf(os.Stderr, "Warning: failed to nudge refinery %s: %v\n", refinerySession, derr)
-				return
-			}
-		}
-	}
-
-	t := tmux.NewTmux()
-	if err := t.NudgeSession(refinerySession, message); err != nil {
+	if err := tmux.NewTmux().NudgeSession(refinerySession, message); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to nudge refinery %s: %v\n", refinerySession, err)
 	}
+}
+
+func logTestNudge(sessionName, message string) bool {
+	logPath := os.Getenv("GT_TEST_NUDGE_LOG")
+	if logPath == "" {
+		return false
+	}
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		_, _ = f.WriteString(fmt.Sprintf("nudge:%s:%s\n", sessionName, message))
+		_ = f.Close()
+	}
+	return true
+}
+
+func emitRefineryMQEvent(townRoot, message string) {
+	if townRoot == "" {
+		return
+	}
+	_, _ = channelevents.EmitToTown(townRoot, "refinery", "MQ_SUBMIT", []string{
+		"source=sling",
+		"message=" + message,
+	})
+}
+
+func deliverRefineryWorkerNudge(townRoot, refinerySession, message string) bool {
+	if townRoot == "" {
+		return false
+	}
+	w, err := worker.Open(townRoot)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, derr := w.Deliver(ctx, worker.Prompt{
+		RunID:    refinerySession,
+		Content:  message,
+		Priority: worker.PriorityUrgent,
+		Source:   worker.SourceNudge,
+		From:     "mayor",
+	})
+	cancel()
+	if derr == nil {
+		return true
+	}
+	if errors.Is(derr, worker.ErrServerDown) || errors.Is(derr, worker.ErrUnknownState) || errors.Is(derr, worker.ErrRunNotFound) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "Warning: failed to nudge refinery %s: %v\n", refinerySession, derr)
+	return true
 }
 
 // isPolecatTarget checks if the target string refers to a polecat.
@@ -1367,38 +1470,47 @@ func parseBondSpawnRootIDWithStatus(bondOut []byte, formulaName, beadID, fallbac
 	if err := json.Unmarshal(bondOut, &bondResult); err != nil {
 		return fallbackID, false
 	}
-
-	if len(bondResult.IDMapping) > 0 {
-		if mappedID := bondResult.IDMapping[formulaName]; mappedID != "" {
-			return mappedID, true
-		}
-		if !strings.HasPrefix(formulaName, "mol-") {
-			if mappedID := bondResult.IDMapping["mol-"+formulaName]; mappedID != "" {
-				return mappedID, true
-			}
-		}
-		var onlySpawned string
-		for _, mappedID := range bondResult.IDMapping {
-			if mappedID == "" || mappedID == beadID {
-				continue
-			}
-			if onlySpawned != "" && onlySpawned != mappedID {
-				onlySpawned = ""
-				break
-			}
-			onlySpawned = mappedID
-		}
-		if onlySpawned != "" {
-			return onlySpawned, true
-		}
+	if id, ok := mappedBondSpawnID(bondResult.IDMapping, formulaName, beadID); ok {
+		return id, true
 	}
-
 	for _, candidate := range []string{bondResult.RootID, bondResult.ResultID, bondResult.NewEpicID} {
 		if candidate != "" && candidate != beadID {
 			return candidate, true
 		}
 	}
 	return fallbackID, true
+}
+
+func mappedBondSpawnID(mapping map[string]string, formulaName, beadID string) (string, bool) {
+	if len(mapping) == 0 {
+		return "", false
+	}
+	if mappedID := mapping[formulaName]; mappedID != "" {
+		return mappedID, true
+	}
+	if !strings.HasPrefix(formulaName, "mol-") {
+		if mappedID := mapping["mol-"+formulaName]; mappedID != "" {
+			return mappedID, true
+		}
+	}
+	return uniqueMappedSpawnID(mapping, beadID)
+}
+
+func uniqueMappedSpawnID(mapping map[string]string, beadID string) (string, bool) {
+	var onlySpawned string
+	for _, mappedID := range mapping {
+		if mappedID == "" || mappedID == beadID {
+			continue
+		}
+		if onlySpawned != "" && onlySpawned != mappedID {
+			return "", false
+		}
+		onlySpawned = mappedID
+	}
+	if onlySpawned == "" {
+		return "", false
+	}
+	return onlySpawned, true
 }
 
 // ensureFormulaRequiredVars appends missing required vars for formulas that enforce
@@ -1515,67 +1627,80 @@ func hookBeadWithRetry(beadID, targetAgent, hookDir string) error {
 }
 
 func hookBeadWithRetryWithTownRoot(beadID, targetAgent, hookDir, townRoot string) error {
-	const maxRetries = 10
-	const baseBackoff = 500 * time.Millisecond
-	const maxBackoff = 30 * time.Second
 	skipVerify := os.Getenv("GT_TEST_SKIP_HOOK_VERIFY") != ""
-
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		out, err := BdCmd("update", beadID, "--status=hooked", "--assignee="+targetAgent).
-			Dir(hookDir).
-			WithAutoCommit().
-			CombinedOutput()
+	for attempt := 1; attempt <= hookBeadMaxRetries; attempt++ {
+		retry, err := tryHookBeadOnce(beadID, targetAgent, hookDir, townRoot, attempt, skipVerify)
 		if err != nil {
-			if len(out) > 0 {
-				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-			}
-			lastErr = err
-			// Fail fast on config/init errors — retrying won't help (gt-2ra)
-			if isSlingConfigError(err) {
-				return fmt.Errorf("hooking bead failed (non-retryable Dolt/beads failure — not retrying): %w\nSafe next action: run `gt dolt status` and `bd show %s` to verify whether a durable hook exists before re-slinging", err, beadID)
-			}
-			if attempt < maxRetries {
-				backoff := slingBackoff(attempt, baseBackoff, maxBackoff)
-				fmt.Printf("%s Hook attempt %d failed, retrying in %v...\n", style.Warning.Render("⚠"), attempt, backoff)
-				time.Sleep(backoff)
-				continue
-			}
-			return fmt.Errorf("hooking bead after %d attempts: %w", maxRetries, err)
+			return err
 		}
-
-		if skipVerify {
-			break
+		if !retry {
+			return nil
 		}
-
-		verifyInfo, verifyErr := getBeadInfoFromTownRoot(townRoot, beadID)
-		if verifyErr != nil {
-			lastErr = fmt.Errorf("verifying hook: %w", verifyErr)
-			if attempt < maxRetries {
-				backoff := slingBackoff(attempt, baseBackoff, maxBackoff)
-				fmt.Printf("%s Hook verification failed, retrying in %v...\n", style.Warning.Render("⚠"), backoff)
-				time.Sleep(backoff)
-				continue
-			}
-			return fmt.Errorf("verifying hook after %d attempts: %w", maxRetries, lastErr)
-		}
-
-		if verifyInfo.Status != "hooked" || verifyInfo.Assignee != targetAgent {
-			lastErr = fmt.Errorf("hook did not stick: status=%s, assignee=%s (expected hooked, %s)",
-				verifyInfo.Status, verifyInfo.Assignee, targetAgent)
-			if attempt < maxRetries {
-				backoff := slingBackoff(attempt, baseBackoff, maxBackoff)
-				fmt.Printf("%s %v, retrying in %v...\n", style.Warning.Render("⚠"), lastErr, backoff)
-				time.Sleep(backoff)
-				continue
-			}
-			return fmt.Errorf("hook failed after %d attempts: %w", maxRetries, lastErr)
-		}
-
-		break
 	}
-
 	return nil
+}
+
+const hookBeadMaxRetries = 10
+const hookBeadBaseBackoff = 500 * time.Millisecond
+const hookBeadMaxBackoff = 30 * time.Second
+
+func tryHookBeadOnce(beadID, targetAgent, hookDir, townRoot string, attempt int, skipVerify bool) (bool, error) {
+	out, err := BdCmd("update", beadID, "--status=hooked", "--assignee="+targetAgent).
+		Dir(hookDir).
+		WithAutoCommit().
+		CombinedOutput()
+	if err != nil {
+		return hookUpdateFailed(beadID, out, err, attempt)
+	}
+	if skipVerify {
+		return false, nil
+	}
+	return verifyHookedBeadAttempt(beadID, targetAgent, townRoot, attempt)
+}
+
+func hookUpdateFailed(beadID string, out []byte, err error, attempt int) (bool, error) {
+	if len(out) > 0 {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if isSlingConfigError(err) {
+		return false, fmt.Errorf("hooking bead failed (non-retryable Dolt/beads failure — not retrying): %w\nSafe next action: run `gt dolt status` and `bd show %s` to verify whether a durable hook exists before re-slinging", err, beadID)
+	}
+	if attempt >= hookBeadMaxRetries {
+		return false, fmt.Errorf("hooking bead after %d attempts: %w", hookBeadMaxRetries, err)
+	}
+	backoff := slingBackoff(attempt, hookBeadBaseBackoff, hookBeadMaxBackoff)
+	fmt.Printf("%s Hook attempt %d failed, retrying in %v...\n", style.Warning.Render("⚠"), attempt, backoff)
+	time.Sleep(backoff)
+	return true, nil
+}
+
+func verifyHookedBeadAttempt(beadID, targetAgent, townRoot string, attempt int) (bool, error) {
+	verifyInfo, verifyErr := getBeadInfoFromTownRoot(townRoot, beadID)
+	if verifyErr != nil {
+		return retryHookVerifyFailed(attempt, fmt.Errorf("verifying hook: %w", verifyErr))
+	}
+	if verifyInfo.Status == "hooked" && verifyInfo.Assignee == targetAgent {
+		return false, nil
+	}
+	lastErr := fmt.Errorf("hook did not stick: status=%s, assignee=%s (expected hooked, %s)",
+		verifyInfo.Status, verifyInfo.Assignee, targetAgent)
+	if attempt >= hookBeadMaxRetries {
+		return false, fmt.Errorf("hook failed after %d attempts: %w", hookBeadMaxRetries, lastErr)
+	}
+	backoff := slingBackoff(attempt, hookBeadBaseBackoff, hookBeadMaxBackoff)
+	fmt.Printf("%s %v, retrying in %v...\n", style.Warning.Render("⚠"), lastErr, backoff)
+	time.Sleep(backoff)
+	return true, nil
+}
+
+func retryHookVerifyFailed(attempt int, err error) (bool, error) {
+	if attempt >= hookBeadMaxRetries {
+		return false, fmt.Errorf("verifying hook after %d attempts: %w", hookBeadMaxRetries, err)
+	}
+	backoff := slingBackoff(attempt, hookBeadBaseBackoff, hookBeadMaxBackoff)
+	fmt.Printf("%s Hook verification failed, retrying in %v...\n", style.Warning.Render("⚠"), backoff)
+	time.Sleep(backoff)
+	return true, nil
 }
 
 var hookBeadWithRetryFn = hookBeadWithRetry
@@ -1609,18 +1734,27 @@ func isSlingConfigError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not initialized") ||
-		strings.Contains(msg, "no such table") ||
-		strings.Contains(msg, "table not found") ||
-		strings.Contains(msg, "issue_prefix") ||
-		strings.Contains(msg, "no database") ||
-		strings.Contains(msg, "database not found") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "circuit breaker") ||
-		strings.Contains(msg, "server appears down") ||
-		strings.Contains(msg, "server down") ||
-		strings.Contains(msg, "server is not running") ||
-		strings.Contains(msg, "server may not be running")
+	for _, frag := range slingConfigErrorFrags {
+		if strings.Contains(msg, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+var slingConfigErrorFrags = []string{
+	"not initialized",
+	"no such table",
+	"table not found",
+	"issue_prefix",
+	"no database",
+	"database not found",
+	"connection refused",
+	"circuit breaker",
+	"server appears down",
+	"server down",
+	"server is not running",
+	"server may not be running",
 }
 
 // loadRigCommandVars reads rig settings and returns --var key=value strings
@@ -1635,59 +1769,54 @@ func loadRigCommandVars(townRoot, rig string) []string {
 	if townRoot == "" || rig == "" {
 		return nil
 	}
-	var vars []string
-
-	// Load default_branch from rig root config.json (single source of truth per 5ee9abcc).
-	// This sets base_branch for formula instantiation so polecats fork from the right branch.
-	rigCfg, err := rigpkg.LoadRigConfig(filepath.Join(townRoot, rig))
-	if err == nil && rigCfg != nil && rigCfg.DefaultBranch != "" {
-		vars = append(vars, fmt.Sprintf("base_branch=%s", rigCfg.DefaultBranch))
-	}
-
-	// Load repo-sourced settings (floor — committed to git, always present after clone)
-	var repoMQ *config.MergeQueueConfig
-	repoRoot := filepath.Join(townRoot, rig, "mayor", "rig")
-	repoSettings, _ := config.LoadRepoSettings(repoRoot)
-	if repoSettings != nil {
-		repoMQ = repoSettings.MergeQueue
-	}
-
-	// Load rig-local settings (override — operator tuning)
-	var localMQ *config.MergeQueueConfig
-	settingsPath := filepath.Join(townRoot, rig, "settings", "config.json")
-	localSettings, err := config.LoadRigSettings(settingsPath)
-	if err == nil && localSettings != nil {
-		localMQ = localSettings.MergeQueue
-	}
-
-	// Merge: repo defaults + local overrides
-	mq := config.MergeSettingsCommand(repoMQ, localMQ)
+	vars := loadRigBaseBranchVar(townRoot, rig)
+	mq := loadMergedRigMQ(townRoot, rig)
 	if mq == nil {
 		return vars
 	}
+	return append(vars, rigMQCommandVars(mq)...)
+}
 
-	if mq.SetupCommand != "" {
-		vars = append(vars, fmt.Sprintf("setup_command=%s", mq.SetupCommand))
+func loadRigBaseBranchVar(townRoot, rig string) []string {
+	rigCfg, err := rigpkg.LoadRigConfig(filepath.Join(townRoot, rig))
+	if err != nil || rigCfg == nil || rigCfg.DefaultBranch == "" {
+		return nil
 	}
-	if mq.TypecheckCommand != "" {
-		vars = append(vars, fmt.Sprintf("typecheck_command=%s", mq.TypecheckCommand))
+	return []string{fmt.Sprintf("base_branch=%s", rigCfg.DefaultBranch)}
+}
+
+func loadMergedRigMQ(townRoot, rig string) *config.MergeQueueConfig {
+	var repoMQ *config.MergeQueueConfig
+	if repoSettings, _ := config.LoadRepoSettings(filepath.Join(townRoot, rig, "mayor", "rig")); repoSettings != nil {
+		repoMQ = repoSettings.MergeQueue
 	}
-	if mq.LintCommand != "" {
-		vars = append(vars, fmt.Sprintf("lint_command=%s", mq.LintCommand))
+	var localMQ *config.MergeQueueConfig
+	localSettings, err := config.LoadRigSettings(filepath.Join(townRoot, rig, "settings", "config.json"))
+	if err == nil && localSettings != nil {
+		localMQ = localSettings.MergeQueue
 	}
-	if mq.TestCommand != "" {
-		vars = append(vars, fmt.Sprintf("test_command=%s", mq.TestCommand))
-	}
-	if mq.BuildCommand != "" {
-		vars = append(vars, fmt.Sprintf("build_command=%s", mq.BuildCommand))
-	}
-	if mq.MergeStrategy != "" {
-		vars = append(vars, fmt.Sprintf("merge_strategy=%s", mq.MergeStrategy))
-	}
+	return config.MergeSettingsCommand(repoMQ, localMQ)
+}
+
+func rigMQCommandVars(mq *config.MergeQueueConfig) []string {
+	var vars []string
+	vars = appendNonEmptyRigVar(vars, "setup_command", mq.SetupCommand)
+	vars = appendNonEmptyRigVar(vars, "typecheck_command", mq.TypecheckCommand)
+	vars = appendNonEmptyRigVar(vars, "lint_command", mq.LintCommand)
+	vars = appendNonEmptyRigVar(vars, "test_command", mq.TestCommand)
+	vars = appendNonEmptyRigVar(vars, "build_command", mq.BuildCommand)
+	vars = appendNonEmptyRigVar(vars, "merge_strategy", mq.MergeStrategy)
 	if config.IsRequireReviewEnabled(mq) {
 		vars = append(vars, "require_review=true")
 	}
 	return vars
+}
+
+func appendNonEmptyRigVar(vars []string, key, value string) []string {
+	if value == "" {
+		return vars
+	}
+	return append(vars, fmt.Sprintf("%s=%s", key, value))
 }
 
 // shouldAcceptPermissionWarning checks if the agent emits a bypass-permissions
