@@ -335,127 +335,34 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		return nil, err
 	}
 	opts = prepared.options
-	rigPath := prepared.rigPath
-	localRepo := prepared.localRepo
-	userProvidedPrefix := prepared.userProvidedPrefix
 	if prepared.warning != "" {
 		fmt.Printf("  Warning: %s\n", prepared.warning)
 	}
-
-	// Create container directory
-	if err := os.MkdirAll(rigPath, 0755); err != nil {
-		return nil, fmt.Errorf("creating rig directory: %w", err)
-	}
-
-	// Stamp the directory so a stale rollback cannot delete a later,
-	// successful re-add of the same rig path.
-	ownershipStamp, err := newAddOwnershipStamp()
+	ownershipStamp, rigConfig, err := initializeRigAddPath(prepared.rigPath, opts, prepared.localRepo, m.saveRigConfig)
 	if err != nil {
-		_ = os.RemoveAll(rigPath)
-		return nil, fmt.Errorf("generating ownership stamp: %w", err)
+		return nil, err
 	}
-	if err := writeAddOwnershipStamp(rigPath, ownershipStamp); err != nil {
-		_ = os.RemoveAll(rigPath)
-		return nil, fmt.Errorf("writing ownership stamp: %w", err)
-	}
-
-	// Track cleanup on failure, but only if this invocation still owns the path.
-	cleanup := func() { removeRigPathIfOwned(rigPath, ownershipStamp) }
 	success := false
 	defer func() {
 		if !success {
-			cleanup()
+			removeRigPathIfOwned(prepared.rigPath, ownershipStamp)
 		}
 	}()
-
-	// Create rig config
-	rigConfig := &RigConfig{
-		Type:        "rig",
-		Version:     CurrentRigConfigVersion,
-		Name:        opts.Name,
-		GitURL:      opts.GitURL,
-		PushURL:     opts.PushURL,
-		UpstreamURL: opts.UpstreamURL,
-		LocalRepo:   localRepo,
-		CreatedAt:   time.Now(),
-		Beads: &BeadsConfig{
-			Prefix: opts.BeadsPrefix,
-		},
-	}
-	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
-		return nil, fmt.Errorf("saving rig config: %w", err)
-	}
-
-	// Create shared bare repo as source of truth for refinery and polecats.
-	// This allows refinery to see polecat branches without pushing to remote.
-	// Mayor remains a separate clone (doesn't need branch visibility).
-	fmt.Printf("  Cloning repository (this may take a moment)...\n")
-	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-	bareGit, defaultBranch, err := setupBareRigRepository(m.git, opts, localRepo, bareRepoPath)
-	if err != nil {
+	if err := provisionRigAddition(m, prepared, &opts, rigConfig); err != nil {
 		return nil, err
 	}
-	rigConfig.DefaultBranch = defaultBranch
-	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
-		return nil, fmt.Errorf("updating rig config with default branch: %w", err)
-	}
-
-	mayorRigPath, err := createMayorRigClone(m.git, opts, rigPath, bareRepoPath, defaultBranch)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := importTrackedRigBeads(m.townRoot, mayorRigPath, opts, userProvidedPrefix, func(prefix string) error {
-		opts.BeadsPrefix = prefix
-		rigConfig.Beads.Prefix = prefix
-		if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
-			return fmt.Errorf("updating rig config with detected prefix: %w", err)
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	// NOTE: No per-directory CLAUDE.md/AGENTS.md is created for any agent.
-	// Only ~/gt/CLAUDE.md (town-root identity anchor) exists on disk.
-	// Full context is injected ephemerally by `gt prime` at session start.
-
-	if err := provisionNewRigBeads(m.townRoot, rigPath, opts.Name, func() error {
-		return m.InitializeRigBeads(rigPath, opts.Name, opts.BeadsPrefix, RigBeadsInitOptions{SkipDoltCheck: opts.SkipDoltCheck})
-	}); err != nil {
-		return nil, err
-	}
-	if err := createNewRigWorkspaces(m.townRoot, rigPath, bareGit, defaultBranch); err != nil {
-		return nil, err
-	}
-
-	// Register route in town-level routes.jsonl BEFORE creating agent beads.
-	// initAgentBeads calls ResolveRoutingTarget which needs the route to exist.
-	// Without this, agent bead creation logs "no route found" warnings (#1424).
-	if err := prepareNewRigRouting(m.townRoot, rigPath, opts.Name, opts.BeadsPrefix); err != nil {
-		return nil, err
-	}
-
-	// Note: we intentionally do NOT seed local rig settings from
-	// .gastown/settings.json here. Repo settings are merged at runtime
-	// by loadRigCommandVars (repo defaults → local overrides → --var flags).
-	// Seeding at rig-add time would fork the config, silently shadowing
-	// any future repo-side updates.
-
 	runNewRigBestEffortSetup(
-		func() error { return m.initAgentBeads(rigPath, opts.Name, opts.BeadsPrefix) },
-		func() error { return m.seedPatrolMolecules(rigPath) },
-		func() error { return m.createPluginDirectories(rigPath) },
+		func() error { return m.initAgentBeads(prepared.rigPath, opts.Name, opts.BeadsPrefix) },
+		func() error { return m.seedPatrolMolecules(prepared.rigPath) },
+		func() error { return m.createPluginDirectories(prepared.rigPath) },
 	)
-	if err := registerNewRig(m.townRoot, m.config, opts, localRepo, func() error {
-		return m.verifyRigIdentity(rigPath, opts.Name)
+	if err := registerNewRig(m.townRoot, m.config, opts, prepared.localRepo, func() error {
+		return m.verifyRigIdentity(prepared.rigPath, opts.Name)
 	}); err != nil {
 		return nil, err
 	}
-
 	success = true
-	// Best-effort cleanup: once the add succeeds, the stamp is no longer needed.
-	_ = clearAddOwnershipStamp(rigPath)
+	_ = clearAddOwnershipStamp(prepared.rigPath)
 	return m.loadRig(opts.Name, m.config.Rigs[opts.Name])
 }
 
@@ -465,6 +372,77 @@ type preparedRigAdd struct {
 	localRepo          string
 	warning            string
 	userProvidedPrefix bool
+}
+
+func initializeRigAddPath(
+	rigPath string,
+	opts AddRigOptions,
+	localRepo string,
+	save func(string, *RigConfig) error,
+) (string, *RigConfig, error) {
+	if err := os.MkdirAll(rigPath, 0755); err != nil {
+		return "", nil, fmt.Errorf("creating rig directory: %w", err)
+	}
+	stamp, err := newAddOwnershipStamp()
+	if err != nil {
+		_ = os.RemoveAll(rigPath)
+		return "", nil, fmt.Errorf("generating ownership stamp: %w", err)
+	}
+	if err := writeAddOwnershipStamp(rigPath, stamp); err != nil {
+		_ = os.RemoveAll(rigPath)
+		return "", nil, fmt.Errorf("writing ownership stamp: %w", err)
+	}
+	cfg := &RigConfig{
+		Type:        "rig",
+		Version:     CurrentRigConfigVersion,
+		Name:        opts.Name,
+		GitURL:      opts.GitURL,
+		PushURL:     opts.PushURL,
+		UpstreamURL: opts.UpstreamURL,
+		LocalRepo:   localRepo,
+		CreatedAt:   time.Now(),
+		Beads:       &BeadsConfig{Prefix: opts.BeadsPrefix},
+	}
+	if err := save(rigPath, cfg); err != nil {
+		return "", nil, fmt.Errorf("saving rig config: %w", err)
+	}
+	return stamp, cfg, nil
+}
+
+func provisionRigAddition(m *Manager, prepared preparedRigAdd, opts *AddRigOptions, cfg *RigConfig) error {
+	fmt.Printf("  Cloning repository (this may take a moment)...\n")
+	bareRepoPath := filepath.Join(prepared.rigPath, ".repo.git")
+	bareGit, defaultBranch, err := setupBareRigRepository(m.git, *opts, prepared.localRepo, bareRepoPath)
+	if err != nil {
+		return err
+	}
+	cfg.DefaultBranch = defaultBranch
+	if err := m.saveRigConfig(prepared.rigPath, cfg); err != nil {
+		return fmt.Errorf("updating rig config with default branch: %w", err)
+	}
+	mayorRigPath, err := createMayorRigClone(m.git, *opts, prepared.rigPath, bareRepoPath, defaultBranch)
+	if err != nil {
+		return err
+	}
+	if err := importTrackedRigBeads(m.townRoot, mayorRigPath, *opts, prepared.userProvidedPrefix, func(prefix string) error {
+		opts.BeadsPrefix = prefix
+		cfg.Beads.Prefix = prefix
+		if err := m.saveRigConfig(prepared.rigPath, cfg); err != nil {
+			return fmt.Errorf("updating rig config with detected prefix: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := provisionNewRigBeads(m.townRoot, prepared.rigPath, opts.Name, func() error {
+		return m.InitializeRigBeads(prepared.rigPath, opts.Name, opts.BeadsPrefix, RigBeadsInitOptions{SkipDoltCheck: opts.SkipDoltCheck})
+	}); err != nil {
+		return err
+	}
+	if err := createNewRigWorkspaces(m.townRoot, prepared.rigPath, bareGit, defaultBranch); err != nil {
+		return err
+	}
+	return prepareNewRigRouting(m.townRoot, prepared.rigPath, opts.Name, opts.BeadsPrefix)
 }
 
 func cloneBareRig(g *git.Git, opts AddRigOptions, localRepo, bareRepoPath string) error {
