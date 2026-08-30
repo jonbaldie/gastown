@@ -350,7 +350,7 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 	// Check rig operational state for rig-level agents (witness, refinery, crew, polecat)
 	// Town-level agents (mayor, deacon) are not affected by rig state
 	if parsed.RigName != "" {
-		if operational, reason := d.isRigOperational(parsed.RigName); !operational {
+		if operational, reason := isRigOperational(d, parsed.RigName); !operational {
 			d.logger.Printf("Skipping session restart for %s: %s", identity, reason)
 			return fmt.Errorf("cannot restart session: %s", reason)
 		}
@@ -1052,10 +1052,10 @@ func mergeAgentBeadJSON(wispJSON, issuesJSON []byte) []byte {
 // The daemon detects these and notifies the relevant Witness for remediation.
 func (d *Daemon) checkGUPPViolations() {
 	// Check if any rigs are operational before querying agent beads
-	rigs := d.getKnownRigs()
+	rigs := getKnownRigs(d)
 	hasOperationalRig := false
 	for _, rigName := range rigs {
-		if operational, _ := d.isRigOperational(rigName); operational {
+		if operational, _ := isRigOperational(d, rigName); operational {
 			hasOperationalRig = true
 			break
 		}
@@ -1169,10 +1169,10 @@ Action needed: Check if agent is alive and responsive. Consider restarting if st
 // Per gt-zecmc: derive agent liveness from tmux, not agent_state.
 func (d *Daemon) checkOrphanedWork() {
 	// Check if any rigs are operational before querying agent beads
-	rigs := d.getKnownRigs()
+	rigs := getKnownRigs(d)
 	hasOperationalRig := false
 	for _, rigName := range rigs {
-		if operational, _ := d.isRigOperational(rigName); operational {
+		if operational, _ := isRigOperational(d, rigName); operational {
 			hasOperationalRig = true
 			break
 		}

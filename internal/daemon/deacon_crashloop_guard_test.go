@@ -92,7 +92,7 @@ func TestCheckDeaconHeartbeat_RespectsCrashLoopGuard(t *testing.T) {
 		},
 	}
 
-	d.checkDeaconHeartbeat()
+	checkDeaconHeartbeat(d)
 
 	data, err := os.ReadFile(tmuxLog)
 	if err != nil {

@@ -58,7 +58,7 @@ printf '[{"id":"gt-123"}]\n'
 		bdPath: bdPath,
 	}
 
-	if !d.hasAssignedOpenWork("gastown", "polecats/rust") {
+	if !hasAssignedOpenWork(d, "gastown", "polecats/rust") {
 		t.Fatal("expected assigned work lookup to succeed")
 	}
 

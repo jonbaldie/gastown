@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestGetKnownRigs_CachedBetweenInvalidations verifies that d.getKnownRigs()
+// TestGetKnownRigs_CachedBetweenInvalidations verifies that getKnownRigs(d)
 // memoizes rigs.json reads and only re-reads after invalidation. This is the
 // regression test for #3463 — without the cache the ~10 per-tick callers each
 // read and parse the file independently.
@@ -25,7 +25,7 @@ func TestGetKnownRigs_CachedBetweenInvalidations(t *testing.T) {
 	d := &Daemon{config: &Config{TownRoot: townRoot}}
 
 	// First call populates the cache.
-	first := d.getKnownRigs()
+	first := getKnownRigs(d)
 	slices.Sort(first)
 	if !slices.Equal(first, []string{"alpha", "beta"}) {
 		t.Fatalf("first call: got %v, want [alpha beta]", first)
@@ -35,15 +35,15 @@ func TestGetKnownRigs_CachedBetweenInvalidations(t *testing.T) {
 	if err := os.Remove(rigsPath); err != nil {
 		t.Fatalf("remove rigs.json: %v", err)
 	}
-	cached := d.getKnownRigs()
+	cached := getKnownRigs(d)
 	slices.Sort(cached)
 	if !slices.Equal(cached, []string{"alpha", "beta"}) {
 		t.Fatalf("cached call after delete: got %v, want [alpha beta] (cache bypassed?)", cached)
 	}
 
 	// Invalidate — next call must re-read from disk (now empty).
-	d.invalidateKnownRigsCache()
-	if got := d.getKnownRigs(); len(got) != 0 {
+	invalidateKnownRigsCache(d)
+	if got := getKnownRigs(d); len(got) != 0 {
 		t.Fatalf("post-invalidate call: got %v, want empty", got)
 	}
 
@@ -51,11 +51,11 @@ func TestGetKnownRigs_CachedBetweenInvalidations(t *testing.T) {
 	if err := os.WriteFile(rigsPath, []byte(`{"rigs":{"gamma":{}}}`), 0o644); err != nil {
 		t.Fatalf("rewrite rigs.json: %v", err)
 	}
-	if got := d.getKnownRigs(); len(got) != 0 {
+	if got := getKnownRigs(d); len(got) != 0 {
 		t.Fatalf("cached-empty call after rewrite: got %v, want empty (cache bypassed?)", got)
 	}
-	d.invalidateKnownRigsCache()
-	if got := d.getKnownRigs(); !slices.Equal(got, []string{"gamma"}) {
+	invalidateKnownRigsCache(d)
+	if got := getKnownRigs(d); !slices.Equal(got, []string{"gamma"}) {
 		t.Fatalf("post-invalidate call after rewrite: got %v, want [gamma]", got)
 	}
 }

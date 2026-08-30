@@ -57,7 +57,7 @@ func (d *Daemon) runCheckpointDog() {
 	mol := d.pourDogMolecule(constants.MolDogCheckpoint, nil)
 	defer mol.Close()
 
-	rigs := d.getKnownRigs()
+	rigs := getKnownRigs(d)
 	totalScanned := 0
 	totalCheckpointed := 0
 

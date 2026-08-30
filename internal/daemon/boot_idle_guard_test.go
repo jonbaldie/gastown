@@ -132,7 +132,7 @@ func TestHasActiveWork(t *testing.T) {
 					daemonPatrolState: daemonPatrolState{beadsStores: tc.stores},
 				},
 			}
-			got := d.hasActiveWork()
+			got := hasActiveWork(d)
 			if got != tc.want {
 				t.Errorf("hasActiveWork() = %v, want %v", got, tc.want)
 			}
@@ -222,7 +222,7 @@ func TestEnsureBootRunning_IdleGuard(t *testing.T) {
 			}
 
 			d := newTestDaemonWithStores(t, townRoot, tc.stores)
-			d.ensureBootRunning()
+			ensureBootRunning(d)
 
 			data, err := os.ReadFile(tmuxLog)
 			if err != nil {

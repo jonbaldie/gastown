@@ -149,7 +149,7 @@ func (d *Daemon) runMainBranchTests() {
 
 	d.logger.Printf("main_branch_test: starting patrol cycle")
 
-	rigNames := d.getKnownRigs()
+	rigNames := getKnownRigs(d)
 	if len(rigNames) == 0 {
 		d.logger.Printf("main_branch_test: no rigs found")
 		return
