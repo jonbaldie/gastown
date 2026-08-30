@@ -256,13 +256,14 @@ jobs:
               raise SystemExit
 
           # mutago's dry-run count is an upper bound, but it is useful for
-          # keeping the expensive test loop bounded. Keep each ordinary shard
-          # below this count and split unusually large files below. Whole-file
-          # mutator shards use a lower cap because they are the most expensive
-          # partitions and must fit within hosted-runner job limits.
-          max_mutations = 1_400
-          max_whole_file_mutations = 800
-          max_function_bytes = 40_000
+          # keeping the expensive test loop bounded. Keep ordinary package
+          # shards below this count and split unusually large files below the
+          # separate file threshold. Whole-file mutators are isolated one per
+          # shard because their test cost is not proportional to the total
+          # mutation count when a file contains many branches.
+          max_mutations = 1_800
+          max_file_mutations = 1_800
+          max_function_bytes = 200_000
           all_mutators = [
               "arithmetic/assign_invert",
               "arithmetic/assignment",
@@ -366,7 +367,7 @@ jobs:
           for filename in sorted(files):
               per_file_counts = mutation_counts.get(filename, {})
               count = sum(per_file_counts.values())
-              if count <= max_mutations:
+              if count <= max_file_mutations:
                   by_package[str(Path(filename).parent)].append((filename, count))
                   continue
 
@@ -377,36 +378,20 @@ jobs:
                   add_shard([filename])
                   continue
 
-              # Run whole-file shards for the mutators that can reach
-              # package-level function literals. Split their counts so these
-              # shards remain bounded too.
+              # Run one whole-file shard per mutator that can reach
+              # package-level function literals. Keeping these mutators apart
+              # avoids a single branch-heavy shard exceeding hosted-runner
+              # limits while preserving complete package-level coverage.
               selected = [
-                  (name, per_file_counts.get(name, 0))
+                  name
                   for name in all_mutators
                   if name in whole_file_mutators and per_file_counts.get(name, 0) > 0
               ]
-              current_mutators = []
-              current_mutations = 0
-              for name, count in sorted(selected, key=lambda item: (-item[1], item[0])):
-                  if (
-                      current_mutators
-                      and current_mutations + count > max_whole_file_mutations
-                  ):
-                      add_shard(
-                          [filename],
-                          disable=[
-                              mutator for mutator in all_mutators if mutator not in current_mutators
-                          ],
-                      )
-                      current_mutators = []
-                      current_mutations = 0
-                  current_mutators.append(name)
-                  current_mutations += count
-              if current_mutators:
+              for name in selected:
                   add_shard(
                       [filename],
                       disable=[
-                          mutator for mutator in all_mutators if mutator not in current_mutators
+                          mutator for mutator in all_mutators if mutator != name
                       ],
                   )
 
