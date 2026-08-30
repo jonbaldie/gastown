@@ -1801,157 +1801,19 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 	if m.RigExists(opts.Name) {
 		return nil, ErrRigExists
 	}
-
-	if strings.ContainsAny(opts.Name, "-. /\\") {
-		sanitized := strings.NewReplacer("-", "_", ".", "_", " ", "_", "/", "_", "\\", "_").Replace(opts.Name)
-		sanitized = strings.TrimLeft(sanitized, "_")
-		sanitized = strings.ToLower(sanitized)
-		return nil, fmt.Errorf("rig name %q contains invalid characters; hyphens, dots, spaces, and path separators are not allowed. Try %q instead (underscores are allowed)", opts.Name, sanitized)
-	}
-
-	if IsReservedName(opts.Name) {
-		return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
-	}
-
-	rigPath := filepath.Join(m.townRoot, opts.Name)
-
-	info, err := os.Stat(rigPath)
-	if os.IsNotExist(err) {
-		return nil, fmt.Errorf("directory does not exist: %s", rigPath)
-	}
+	rigPath, err := validateRigRegistrationPath(m.townRoot, opts.Name)
 	if err != nil {
-		return nil, fmt.Errorf("checking directory: %w", err)
+		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("not a directory: %s", rigPath)
+	result, existingConfig := loadRigRegistration(rigPath, opts)
+	if err := resolveRigRegistration(m, rigPath, opts, result); err != nil {
+		return nil, err
 	}
-
-	result := &RegisterRigResult{Name: opts.Name}
-
-	// Try to load existing config.json
-	existingConfig, err := LoadRigConfig(rigPath)
-	if err == nil && existingConfig != nil {
-		result.FromConfig = true
-		if opts.GitURL == "" {
-			result.GitURL = existingConfig.GitURL
-		}
-		if opts.BeadsPrefix == "" && existingConfig.Beads != nil {
-			result.BeadsPrefix = existingConfig.Beads.Prefix
-		}
-		result.DefaultBranch = existingConfig.DefaultBranch
+	pushURL, authoritative := registrationPushURL(opts, existingConfig, m.detectPushURL(rigPath))
+	if err := configureRegistrationRemotes(rigPath, pushURL, authoritative, opts.UpstreamURL); err != nil {
+		return nil, err
 	}
-
-	// If no git URL, try to detect from git remote
-	if result.GitURL == "" && opts.GitURL == "" {
-		detectedURL, detectErr := m.detectGitURL(rigPath)
-		if detectErr != nil && !opts.Force {
-			return nil, fmt.Errorf("could not detect git URL (use --url to specify, or --force to skip): %w", detectErr)
-		}
-		result.GitURL = detectedURL
-	}
-	if opts.GitURL != "" {
-		result.GitURL = opts.GitURL
-	}
-
-	// Derive beads prefix
-	if result.BeadsPrefix == "" && opts.BeadsPrefix == "" {
-		result.BeadsPrefix = deriveBeadsPrefix(opts.Name)
-	}
-	if opts.BeadsPrefix != "" {
-		result.BeadsPrefix = opts.BeadsPrefix
-	}
-
-	// Check for prefix collision with existing rigs.
-	if err := beads.CheckPrefixAvailable(m.townRoot, result.BeadsPrefix+"-", opts.Name); err != nil {
-		if errors.Is(err, beads.ErrPrefixInUse) {
-			return nil, fmt.Errorf("prefix collision (prefix %q): %w; use --prefix to specify a different prefix", result.BeadsPrefix, err)
-		}
-		return nil, fmt.Errorf("prefix collision (prefix %q): %w", result.BeadsPrefix, err)
-	}
-
-	// Determine push URL: explicit option > existing config > auto-detect from remotes.
-	// Only explicit option and config.json with non-empty push_url are "authoritative"
-	// (trusted for clearing decisions). Auto-detection runs when no authoritative source
-	// provides a push URL — this covers both fresh adopts and legacy configs that predate
-	// the push_url feature. Auto-detection may fail silently (returns empty on git errors)
-	// and must not trigger stale URL clearing.
-	pushURL := ""
-	pushURLAuthoritative := false // whether the source can be trusted for clearing decisions
-	if opts.PushURL != "" {
-		pushURL = opts.PushURL
-		pushURLAuthoritative = true
-	} else if existingConfig != nil && existingConfig.PushURL != "" {
-		// Config.json has an explicit push URL — use it as authoritative
-		pushURL = existingConfig.PushURL
-		pushURLAuthoritative = true
-	} else {
-		// No authoritative push URL source: either no config.json (fresh adopt) or
-		// legacy config without push_url field. Auto-detect from existing git remotes.
-		pushURL = m.detectPushURL(rigPath)
-		// Not authoritative — only use for positive detection, never for clearing
-	}
-
-	// Apply push URL to existing repos (mirrors AddRig behavior).
-	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
-	if pushURL != "" {
-		if _, err := os.Stat(bareRepoPath); err == nil {
-			bareGit := git.NewGitWithDir(bareRepoPath, "")
-			if cfgErr := git.ConfigurePushURL(bareGit, "origin", pushURL); cfgErr != nil {
-				return nil, fmt.Errorf("configuring push URL on bare repo: %w", cfgErr)
-			}
-		}
-		if _, err := os.Stat(mayorRigPath); err == nil {
-			mayorGit := git.NewGit(mayorRigPath)
-			if cfgErr := git.ConfigurePushURL(mayorGit, "origin", pushURL); cfgErr != nil {
-				return nil, fmt.Errorf("configuring mayor push URL: %w", cfgErr)
-			}
-		}
-	} else if pushURLAuthoritative {
-		// Clear stale push URLs only when an authoritative source says "no push URL".
-		// Auto-detection returning empty could be a git error — don't clear in that case.
-		// Note: currently unreachable — authoritative sources always set non-empty pushURL.
-		// Retained for future --no-push-url flag support.
-		if _, err := os.Stat(bareRepoPath); err == nil {
-			bareGit := git.NewGitWithDir(bareRepoPath, "")
-			if clrErr := git.ClearPushURL(bareGit, "origin"); clrErr != nil {
-				return nil, fmt.Errorf("clearing stale push URL on bare repo: %w", clrErr)
-			}
-		}
-		if _, err := os.Stat(mayorRigPath); err == nil {
-			mayorGit := git.NewGit(mayorRigPath)
-			if clrErr := git.ClearPushURL(mayorGit, "origin"); clrErr != nil {
-				return nil, fmt.Errorf("clearing stale mayor push URL: %w", clrErr)
-			}
-		}
-	}
-
-	// Sync push URL to config.json so doctor check sees it
-	if existingConfig != nil && existingConfig.PushURL != pushURL {
-		existingConfig.PushURL = pushURL
-		if saveErr := m.saveRigConfig(rigPath, existingConfig); saveErr != nil {
-			// Non-fatal: town.json has the value, but doctor may flag a mismatch
-			fmt.Fprintf(os.Stderr, "Warning: could not update config.json with push URL: %v\n", saveErr)
-		}
-	}
-
-	// Configure upstream remote if provided (for fork workflows)
-	if opts.UpstreamURL != "" {
-		if _, err := os.Stat(bareRepoPath); err == nil {
-			bareGit := git.NewGitWithDir(bareRepoPath, "")
-			if upErr := git.AddUpstreamRemote(bareGit, opts.UpstreamURL); upErr != nil {
-				return nil, fmt.Errorf("configuring upstream remote on bare repo: %w", upErr)
-			}
-		}
-		if _, err := os.Stat(mayorRigPath); err == nil {
-			mayorGit := git.NewGit(mayorRigPath)
-			if upErr := git.AddUpstreamRemote(mayorGit, opts.UpstreamURL); upErr != nil {
-				return nil, fmt.Errorf("configuring mayor upstream remote: %w", upErr)
-			}
-		}
-	}
-
-	// Register in town config
+	syncRegistrationPushURL(rigPath, existingConfig, pushURL, m.saveRigConfig)
 	m.config.Rigs[opts.Name] = config.RigEntry{
 		GitURL:      result.GitURL,
 		PushURL:     pushURL,
@@ -1963,6 +1825,160 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 	}
 
 	return result, nil
+}
+
+func validateRigRegistrationPath(townRoot, name string) (string, error) {
+	if strings.ContainsAny(name, "-. /\\") {
+		sanitized := strings.NewReplacer("-", "_", ".", "_", " ", "_", "/", "_", "\\", "_").Replace(name)
+		sanitized = strings.ToLower(strings.TrimLeft(sanitized, "_"))
+		return "", fmt.Errorf("rig name %q contains invalid characters; hyphens, dots, spaces, and path separators are not allowed. Try %q instead (underscores are allowed)", name, sanitized)
+	}
+	if IsReservedName(name) {
+		return "", fmt.Errorf("rig name %q is reserved for town-level infrastructure", name)
+	}
+	rigPath := filepath.Join(townRoot, name)
+	info, err := os.Stat(rigPath)
+	if os.IsNotExist(err) {
+		return "", fmt.Errorf("directory does not exist: %s", rigPath)
+	}
+	if err != nil {
+		return "", fmt.Errorf("checking directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", rigPath)
+	}
+	return rigPath, nil
+}
+
+func loadRigRegistration(rigPath string, opts RegisterRigOptions) (*RegisterRigResult, *RigConfig) {
+	result := &RegisterRigResult{Name: opts.Name}
+	cfg, err := LoadRigConfig(rigPath)
+	if err != nil || cfg == nil {
+		return result, nil
+	}
+	result.FromConfig = true
+	if opts.GitURL == "" {
+		result.GitURL = cfg.GitURL
+	}
+	if opts.BeadsPrefix == "" && cfg.Beads != nil {
+		result.BeadsPrefix = cfg.Beads.Prefix
+	}
+	result.DefaultBranch = cfg.DefaultBranch
+	return result, cfg
+}
+
+func resolveRigRegistration(m *Manager, rigPath string, opts RegisterRigOptions, result *RegisterRigResult) error {
+	if result.GitURL == "" && opts.GitURL == "" {
+		detected, err := m.detectGitURL(rigPath)
+		if err != nil && !opts.Force {
+			return fmt.Errorf("could not detect git URL (use --url to specify, or --force to skip): %w", err)
+		}
+		result.GitURL = detected
+	}
+	if opts.GitURL != "" {
+		result.GitURL = opts.GitURL
+	}
+	return resolveRigRegistrationPrefix(m.townRoot, opts, result)
+}
+
+func resolveRigRegistrationPrefix(townRoot string, opts RegisterRigOptions, result *RegisterRigResult) error {
+	if result.BeadsPrefix == "" && opts.BeadsPrefix == "" {
+		result.BeadsPrefix = deriveBeadsPrefix(opts.Name)
+	}
+	if opts.BeadsPrefix != "" {
+		result.BeadsPrefix = opts.BeadsPrefix
+	}
+	if err := beads.CheckPrefixAvailable(townRoot, result.BeadsPrefix+"-", opts.Name); err != nil {
+		if errors.Is(err, beads.ErrPrefixInUse) {
+			return fmt.Errorf("prefix collision (prefix %q): %w; use --prefix to specify a different prefix", result.BeadsPrefix, err)
+		}
+		return fmt.Errorf("prefix collision (prefix %q): %w", result.BeadsPrefix, err)
+	}
+	return nil
+}
+
+func registrationPushURL(opts RegisterRigOptions, cfg *RigConfig, detected string) (string, bool) {
+	if opts.PushURL != "" {
+		return opts.PushURL, true
+	}
+	if cfg != nil && cfg.PushURL != "" {
+		return cfg.PushURL, true
+	}
+	return detected, false
+}
+
+func configureRegistrationRemotes(rigPath, pushURL string, authoritative bool, upstreamURL string) error {
+	bareRepoPath := filepath.Join(rigPath, ".repo.git")
+	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
+	if err := configureRegistrationPushRemotes(bareRepoPath, mayorRigPath, pushURL, authoritative); err != nil {
+		return err
+	}
+	return configureRegistrationUpstreamRemotes(bareRepoPath, mayorRigPath, upstreamURL)
+}
+
+func configureRegistrationPushRemotes(bareRepoPath, mayorRigPath, pushURL string, authoritative bool) error {
+	if pushURL != "" {
+		return applyRegistrationPushURL(bareRepoPath, mayorRigPath, pushURL)
+	}
+	if !authoritative {
+		return nil
+	}
+	return clearRegistrationPushURL(bareRepoPath, mayorRigPath)
+}
+
+func applyRegistrationPushURL(bareRepoPath, mayorRigPath, pushURL string) error {
+	if pathExists(bareRepoPath) {
+		if err := git.ConfigurePushURL(git.NewGitWithDir(bareRepoPath, ""), "origin", pushURL); err != nil {
+			return fmt.Errorf("configuring push URL on bare repo: %w", err)
+		}
+	}
+	if pathExists(mayorRigPath) {
+		if err := git.ConfigurePushURL(git.NewGit(mayorRigPath), "origin", pushURL); err != nil {
+			return fmt.Errorf("configuring mayor push URL: %w", err)
+		}
+	}
+	return nil
+}
+
+func clearRegistrationPushURL(bareRepoPath, mayorRigPath string) error {
+	if pathExists(bareRepoPath) {
+		if err := git.ClearPushURL(git.NewGitWithDir(bareRepoPath, ""), "origin"); err != nil {
+			return fmt.Errorf("clearing stale push URL on bare repo: %w", err)
+		}
+	}
+	if pathExists(mayorRigPath) {
+		if err := git.ClearPushURL(git.NewGit(mayorRigPath), "origin"); err != nil {
+			return fmt.Errorf("clearing stale mayor push URL: %w", err)
+		}
+	}
+	return nil
+}
+
+func configureRegistrationUpstreamRemotes(bareRepoPath, mayorRigPath, upstreamURL string) error {
+	if upstreamURL == "" {
+		return nil
+	}
+	if pathExists(bareRepoPath) {
+		if err := git.AddUpstreamRemote(git.NewGitWithDir(bareRepoPath, ""), upstreamURL); err != nil {
+			return fmt.Errorf("configuring upstream remote on bare repo: %w", err)
+		}
+	}
+	if pathExists(mayorRigPath) {
+		if err := git.AddUpstreamRemote(git.NewGit(mayorRigPath), upstreamURL); err != nil {
+			return fmt.Errorf("configuring mayor upstream remote: %w", err)
+		}
+	}
+	return nil
+}
+
+func syncRegistrationPushURL(rigPath string, cfg *RigConfig, pushURL string, save func(string, *RigConfig) error) {
+	if cfg == nil || cfg.PushURL == pushURL {
+		return
+	}
+	cfg.PushURL = pushURL
+	if err := save(rigPath, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not update config.json with push URL: %v\n", err)
+	}
 }
 
 // detectPushURL attempts to detect a custom push URL from an existing repository.
