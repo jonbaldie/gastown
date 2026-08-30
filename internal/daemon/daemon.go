@@ -730,79 +730,79 @@ func bootSpawnCooldown(d *Daemon) time.Duration {
 }
 
 func ensureBootRunning(d *Daemon) {
-	// Cooldown gate: skip if Boot was spawned recently (fixes #2084)
+	if skipBootSpawn(d) {
+		return
+	}
+	b := boot.New(d.config.TownRoot)
+	if skipIdleBoot(d, b) || runBootWithoutSession(d, b) {
+		return
+	}
+	spawnBootSession(d, b)
+}
+
+func skipBootSpawn(d *Daemon) bool {
 	if !d.bootLastSpawned.IsZero() && time.Since(d.bootLastSpawned) < bootSpawnCooldown(d) {
 		d.logger.Printf("Boot spawned %s ago, within cooldown (%s), skipping",
 			time.Since(d.bootLastSpawned).Round(time.Second), bootSpawnCooldown(d))
-		return
+		return true
 	}
-
-	// Idle guard: skip if Deacon is healthy AND no beads are actively in flight.
-	//
-	// Boot's job is to triage a stuck or unresponsive Deacon and to flag stuck
-	// in_progress/hooked work. If Deacon has written a fresh heartbeat and no
-	// beads are in_progress or hooked, there is nothing to triage.
-	//
-	// We deliberately do NOT update bootLastSpawned on an idle skip: the cooldown
-	// is about rate-limiting real spawns; the idle check should re-run every
-	// heartbeat so Boot fires promptly when work actually appears.
 	hb := deacon.ReadHeartbeat(d.config.TownRoot)
 	if hb != nil && hb.IsFresh() && !hasActiveWork(d) {
 		d.logger.Println("Boot spawn skipped: Deacon is healthy and no active work in flight")
-		return
+		return true
 	}
+	return false
+}
 
-	b := boot.New(d.config.TownRoot)
-
-	// Idle suppression: if Boot's last run found deacon healthy ("nothing"),
-	// suppress spawning for longer to avoid burning API calls. (fixes gt-qu883c)
+func skipIdleBoot(d *Daemon, b *boot.Boot) bool {
 	idleSuppression := d.loadOperationalConfig().GetDaemonConfig().BootIdleSuppressionD()
-	if status, err := b.LoadStatus(); err == nil && status.LastAction == "nothing" {
-		if !status.CompletedAt.IsZero() && time.Since(status.CompletedAt) < idleSuppression {
-			d.logger.Printf("Boot last reported 'nothing' %s ago, within idle suppression (%s), skipping",
-				time.Since(status.CompletedAt).Round(time.Second), idleSuppression)
-			return
-		}
+	status, err := b.LoadStatus()
+	if err != nil || status.LastAction != "nothing" {
+		return false
 	}
+	if status.CompletedAt.IsZero() || time.Since(status.CompletedAt) >= idleSuppression {
+		return false
+	}
+	d.logger.Printf("Boot last reported 'nothing' %s ago, within idle suppression (%s), skipping",
+		time.Since(status.CompletedAt).Round(time.Second), idleSuppression)
+	return true
+}
 
-	// Check for degraded mode
+func runBootWithoutSession(d *Daemon, b *boot.Boot) bool {
 	degraded := os.Getenv("GT_DEGRADED") == "true"
 	if degraded || !d.tmux.IsAvailable() {
-		// In degraded mode, run mechanical triage directly
 		d.logger.Println("Degraded mode: running mechanical Boot triage")
 		runDegradedBootTriage(d, b)
-		return
+		return true
 	}
+	return tryIdleCheckTriage(d, b)
+}
 
-	// Idle check: run gt-idle-check to see if the system needs waking.
-	// If idle (all rigs parked, no polecats, deacon alive), skip the expensive
-	// Claude Boot session and use degraded mechanical triage instead.
-	// This saves ~480 Claude sessions/day when Gas Town is not in active use.
+func tryIdleCheckTriage(d *Daemon, b *boot.Boot) bool {
 	idleCheckBin := filepath.Join(d.config.TownRoot, "bin", "gt-idle-check")
-	if _, err := os.Stat(idleCheckBin); err == nil {
-		//nolint:gosec // G204: path is constructed from config
-		cmd := exec.Command(idleCheckBin)
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s:%s",
-			filepath.Join(d.config.TownRoot, "bin"), os.Getenv("PATH")))
-		if output, err := cmd.CombinedOutput(); err == nil {
-			// Exit 0 = idle, use degraded triage (zero tokens)
-			runDegradedBootTriage(d, b)
-			return
-		} else {
-			// Exit 1 = needs waking, proceed to full Claude Boot
-			d.logger.Printf("Idle check: waking — %s", strings.TrimSpace(string(output)))
-		}
+	if _, err := os.Stat(idleCheckBin); err != nil {
+		return false
 	}
+	//nolint:gosec // G204: path is constructed from config
+	cmd := exec.Command(idleCheckBin)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s:%s",
+		filepath.Join(d.config.TownRoot, "bin"), os.Getenv("PATH")))
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		runDegradedBootTriage(d, b)
+		return true
+	}
+	d.logger.Printf("Idle check: waking — %s", strings.TrimSpace(string(output)))
+	return false
+}
 
-	// Spawn Boot in a fresh tmux session
+func spawnBootSession(d *Daemon, b *boot.Boot) {
 	d.logger.Println("Spawning Boot for triage...")
 	if err := b.Spawn(""); err != nil {
 		d.logger.Printf("Error spawning Boot: %v, falling back to direct Deacon check", err)
-		// Fallback: ensure Deacon is running directly
 		ensureDeaconRunning(d)
 		return
 	}
-
 	d.bootLastSpawned = time.Now()
 	d.logger.Println("Boot spawned successfully")
 }
@@ -1408,73 +1408,77 @@ func killRefinerySessions(d *Daemon) {
 // sessions that correspond to rigs with their own prefix are stale duplicates.
 // Fix for: hq-ouz, hq-eqf, hq-3i4.
 func killDefaultPrefixGhosts(d *Daemon) {
-	reg := session.DefaultRegistry()
-	allRigs := reg.AllRigs() // rigName → shortPrefix
-	if len(allRigs) == 0 {
+	allRigs := session.DefaultRegistry().AllRigs()
+	if len(allRigs) == 0 || defaultPrefixIsLegitimate(allRigs) {
 		return
 	}
+	killDefaultPrefixPatrolGhosts(d)
+	killDefaultPrefixPolecatGhosts(d)
+}
 
-	// Check if any rig actually has "gt" as its registered prefix.
-	// If so, gt-witness is legitimate for that rig — don't kill it.
-	gtIsLegitimate := false
+func defaultPrefixIsLegitimate(allRigs map[string]string) bool {
 	for _, prefix := range allRigs {
 		if prefix == session.DefaultPrefix {
-			gtIsLegitimate = true
-			break
+			return true
 		}
 	}
-	if gtIsLegitimate {
+	return false
+}
+
+func killDefaultPrefixPatrolGhosts(d *Daemon) {
+	for _, role := range []string{"witness", "refinery"} {
+		killGhostSessionIfPresent(d, fmt.Sprintf("%s-%s", session.DefaultPrefix, role))
+	}
+}
+
+func killGhostSessionIfPresent(d *Daemon, ghostName string) {
+	exists, _ := d.tmux.HasSession(ghostName)
+	if !exists {
 		return
 	}
+	d.logger.Printf("Killing ghost session %s (default prefix, stale registry artifact)", ghostName)
+	if err := d.tmux.KillSessionWithProcesses(ghostName); err != nil {
+		d.logger.Printf("Error killing ghost session %s: %v", ghostName, err)
+	}
+}
 
-	// Kill ghost sessions using the default "gt" prefix for patrol roles.
-	for _, role := range []string{"witness", "refinery"} {
-		ghostName := fmt.Sprintf("%s-%s", session.DefaultPrefix, role)
-		exists, _ := d.tmux.HasSession(ghostName)
-		if exists {
-			d.logger.Printf("Killing ghost session %s (default prefix, stale registry artifact)", ghostName)
-			if err := d.tmux.KillSessionWithProcesses(ghostName); err != nil {
-				d.logger.Printf("Error killing ghost session %s: %v", ghostName, err)
-			}
+func killDefaultPrefixPolecatGhosts(d *Daemon) {
+	for _, rigName := range getKnownRigs(d) {
+		killRigDefaultPrefixPolecatGhosts(d, rigName)
+	}
+}
+
+func killRigDefaultPrefixPolecatGhosts(d *Daemon, rigName string) {
+	rigPrefix := session.PrefixFor(rigName)
+	if rigPrefix == session.DefaultPrefix {
+		return
+	}
+	entries, err := os.ReadDir(filepath.Join(d.config.TownRoot, rigName, "polecats"))
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			maybeKillPolecatGhost(d, rigPrefix, entry.Name())
 		}
 	}
+}
 
-	// Also check for ghost polecat sessions: gt-<polecatName> where the polecat
-	// actually belongs to a rig with a different prefix.
-	for _, rigName := range getKnownRigs(d) {
-		rigPrefix := session.PrefixFor(rigName)
-		if rigPrefix == session.DefaultPrefix {
-			continue // This rig uses "gt" — its sessions are fine
-		}
-		rigPath := filepath.Join(d.config.TownRoot, rigName, "polecats")
-		entries, err := os.ReadDir(rigPath)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			polecatName := entry.Name()
-			ghostName := fmt.Sprintf("%s-%s", session.DefaultPrefix, polecatName)
-			exists, _ := d.tmux.HasSession(ghostName)
-			if exists {
-				// Verify the correct session isn't also running (avoid killing legit sessions)
-				correctName := session.PolecatSessionName(rigPrefix, polecatName)
-				correctExists, _ := d.tmux.HasSession(correctName)
-				if !correctExists {
-					// Ghost is the only session — it might be doing real work.
-					// Log but don't kill; the registry reload will prevent new ghosts.
-					d.logger.Printf("Ghost polecat session %s found (should be %s), not killing (may have active work)", ghostName, correctName)
-				} else {
-					// Both exist — ghost is definitely a duplicate, kill it.
-					d.logger.Printf("Killing duplicate ghost polecat session %s (correct session %s exists)", ghostName, correctName)
-					if err := d.tmux.KillSessionWithProcesses(ghostName); err != nil {
-						d.logger.Printf("Error killing ghost session %s: %v", ghostName, err)
-					}
-				}
-			}
-		}
+func maybeKillPolecatGhost(d *Daemon, rigPrefix, polecatName string) {
+	ghostName := fmt.Sprintf("%s-%s", session.DefaultPrefix, polecatName)
+	exists, _ := d.tmux.HasSession(ghostName)
+	if !exists {
+		return
+	}
+	correctName := session.PolecatSessionName(rigPrefix, polecatName)
+	correctExists, _ := d.tmux.HasSession(correctName)
+	if !correctExists {
+		d.logger.Printf("Ghost polecat session %s found (should be %s), not killing (may have active work)", ghostName, correctName)
+		return
+	}
+	d.logger.Printf("Killing duplicate ghost polecat session %s (correct session %s exists)", ghostName, correctName)
+	if err := d.tmux.KillSessionWithProcesses(ghostName); err != nil {
+		d.logger.Printf("Error killing ghost session %s: %v", ghostName, err)
 	}
 }
 
@@ -1604,70 +1608,76 @@ func getPatrolRigs(d *Daemon, patrol string) []string {
 // (daemon cannot import cmd).
 func isRigOperational(d *Daemon, rigName string) (bool, string) {
 	cfg := wisp.NewConfig(d.config.TownRoot, rigName)
+	warnMissingWispConfig(d, cfg, rigName)
+	if ok, reason := wispStatusAllowsRig(cfg); !ok {
+		return false, reason
+	}
+	if ok, reason := rigBeadStatusAllows(d, rigName); !ok {
+		return false, reason
+	}
+	return autoRestartAllowsRig(cfg)
+}
 
-	// Warn if wisp config is missing - parked/docked state may have been lost
+func warnMissingWispConfig(d *Daemon, cfg *wisp.Config, rigName string) {
 	if _, err := os.Stat(cfg.ConfigPath()); os.IsNotExist(err) {
 		d.logger.Printf("Warning: no wisp config for %s - parked state may have been lost", rigName)
 	}
+}
 
-	// Check wisp layer first (local/ephemeral overrides)
-	status := cfg.GetString("status")
-	switch status {
+func wispStatusAllowsRig(cfg *wisp.Config) (bool, string) {
+	switch cfg.GetString("status") {
 	case "parked":
 		return false, "rig is parked"
 	case "docked":
 		return false, "rig is docked"
+	default:
+		return true, ""
 	}
+}
 
-	// Check rig bead labels (global/synced docked status)
-	// This is the persistent docked state set by 'gt rig dock'
-	rigPath := filepath.Join(d.config.TownRoot, rigName)
-
-	// Try to get prefix from rig config.json, fall back to rigs.json registry
-	var prefix string
+func rigOperationalPrefix(d *Daemon, rigName, rigPath string) string {
 	if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.Beads != nil {
-		prefix = rigCfg.Beads.Prefix
-	} else {
-		// Fall back to registry (mayor/rigs.json) when config.json is missing
-		prefix = agentconfig.GetRigPrefix(d.config.TownRoot, rigName)
+		return rigCfg.Beads.Prefix
 	}
+	return agentconfig.GetRigPrefix(d.config.TownRoot, rigName)
+}
 
-	rigBeadID := fmt.Sprintf("%s-rig-%s", prefix, rigName)
-	rigBeadsDir := beads.ResolveBeadsDir(rigPath)
-	bd := beads.NewWithBeadsDir(rigPath, rigBeadsDir)
-	if issue, err := bd.Show(rigBeadID); err == nil {
-		for _, label := range issue.Labels {
-			if label == "status:docked" {
-				return false, "rig is docked (global)"
-			}
-			if label == "status:parked" {
-				return false, "rig is parked (global)"
-			}
-		}
-	} else {
-		// Log when rig bead lookup fails - this helps debug transient Dolt issues
-		// FAIL-SAFE: When we can't verify docked status (Dolt down, network issue, etc.),
-		// assume the rig is NOT operational. This prevents wasting API credits starting
-		// witnesses that might be docked. Better to delay work than burn credits unnecessarily.
+func rigBeadStatusAllows(d *Daemon, rigName string) (bool, string) {
+	rigPath := filepath.Join(d.config.TownRoot, rigName)
+	rigBeadID := fmt.Sprintf("%s-rig-%s", rigOperationalPrefix(d, rigName, rigPath), rigName)
+	bd := beads.NewWithBeadsDir(rigPath, beads.ResolveBeadsDir(rigPath))
+	issue, err := bd.Show(rigBeadID)
+	if err != nil {
 		d.logger.Printf("Warning: failed to check rig bead %s for docked/parked status: %v (assuming not operational)", rigBeadID, err)
 		return false, "cannot verify rig status (Dolt unavailable)"
 	}
+	return rigLabelsAllow(issue.Labels)
+}
 
-	// Check auto_restart config
-	// If explicitly blocked (nil), auto-restart is disabled
+func rigLabelsAllow(labels []string) (bool, string) {
+	for _, label := range labels {
+		if label == "status:docked" {
+			return false, "rig is docked (global)"
+		}
+		if label == "status:parked" {
+			return false, "rig is parked (global)"
+		}
+	}
+	return true, ""
+}
+
+func autoRestartAllowsRig(cfg *wisp.Config) (bool, string) {
 	if cfg.IsBlocked("auto_restart") {
 		return false, "auto_restart is blocked"
 	}
-
-	// If explicitly set to false, auto-restart is disabled
-	// Note: GetBool returns false for unset keys, so we need to check if it's explicitly set
 	val := cfg.Get("auto_restart")
-	if val != nil {
-		if autoRestart, ok := val.(bool); ok && !autoRestart {
-			return false, "auto_restart is disabled"
-		}
+	if val == nil {
+		return true, ""
 	}
-
+	autoRestart, ok := val.(bool)
+	if ok && !autoRestart {
+		return false, "auto_restart is disabled"
+	}
 	return true, ""
 }
 
@@ -1679,52 +1689,56 @@ func processLifecycleRequests(d *Daemon) {
 // shutdown performs graceful shutdown.
 func shutdown(d *Daemon, state *State) error { //nolint:unparam // error return kept for future use
 	d.logger.Println("Daemon shutting down")
+	stopDaemonServices(d)
+	pushAndStopDolt(d)
+	shutdownTelemetry(d)
+	return persistDaemonStopped(d, state)
+}
 
-	// Stop feed curator
+func stopDaemonServices(d *Daemon) {
 	if d.curator != nil {
 		d.curator.Stop()
 		d.logger.Println("Feed curator stopped")
 	}
-
-	// Stop convoy manager (also closes beads stores)
 	if d.convoyManager != nil {
 		d.convoyManager.Stop()
 		d.logger.Println("Convoy manager stopped")
 	}
 	d.beadsStores = nil
-
-	// Stop KRC pruner
 	if d.krcPruner != nil {
 		d.krcPruner.Stop()
 		d.logger.Println("KRC pruner stopped")
 	}
+}
 
-	// Push Dolt remotes before stopping the server (if patrol is enabled)
+func pushAndStopDolt(d *Daemon) {
 	d.pushDoltRemotes()
-
-	// Stop Dolt server if we're managing it
-	if d.doltServer != nil && d.doltServer.IsEnabled() && !d.doltServer.IsExternal() {
-		if err := d.doltServer.Stop(); err != nil {
-			d.logger.Printf("Warning: failed to stop Dolt server: %v", err)
-		} else {
-			d.logger.Println("Dolt server stopped")
-		}
+	if d.doltServer == nil || !d.doltServer.IsEnabled() || d.doltServer.IsExternal() {
+		return
 	}
-
-	// Flush and stop OTel providers (5s deadline to avoid blocking shutdown).
-	if d.otelProvider != nil {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := d.otelProvider.Shutdown(shutCtx); err != nil {
-			d.logger.Printf("Warning: telemetry shutdown: %v", err)
-		}
+	if err := d.doltServer.Stop(); err != nil {
+		d.logger.Printf("Warning: failed to stop Dolt server: %v", err)
+		return
 	}
+	d.logger.Println("Dolt server stopped")
+}
 
+func shutdownTelemetry(d *Daemon) {
+	if d.otelProvider == nil {
+		return
+	}
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.otelProvider.Shutdown(shutCtx); err != nil {
+		d.logger.Printf("Warning: telemetry shutdown: %v", err)
+	}
+}
+
+func persistDaemonStopped(d *Daemon, state *State) error {
 	state.Running = false
 	if err := SaveState(d.config.TownRoot, state); err != nil {
 		d.logger.Printf("Warning: failed to save final state: %v", err)
 	}
-
 	d.logger.Println("Daemon stopped")
 	return nil
 }
