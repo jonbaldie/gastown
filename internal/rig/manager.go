@@ -405,96 +405,15 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		return nil, err
 	}
 
-	inspection, err := InspectTrackedBeadsImport(mayorRigPath)
-	if err != nil {
-		return nil, fmt.Errorf("inspecting tracked Beads import: %w", err)
-	}
-	if err := RequireTrackedBeadsImportConsent(inspection, opts.ImportBeads); err != nil {
+	if err := importTrackedRigBeads(m.townRoot, mayorRigPath, opts, userProvidedPrefix, func(prefix string) error {
+		opts.BeadsPrefix = prefix
+		rigConfig.Beads.Prefix = prefix
+		if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
+			return fmt.Errorf("updating rig config with detected prefix: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return nil, err
-	}
-	if inspection.RequiresConsent() {
-		fmt.Printf("  Importing %d bead(s) from %s (%v); executable hooks: %v\n",
-			inspection.BeadCount, inspection.Source, inspection.JSONLFiles, inspection.ExecutableHooks)
-	}
-
-	// Check if source repo has tracked .beads/ directory.
-	// If so, we need to initialize the database (it doesn't exist after clone since DB files are gitignored).
-	sourceBeadsDir := filepath.Join(mayorRigPath, ".beads")
-	if _, err := os.Stat(sourceBeadsDir); err == nil {
-		// Remove any redirect file that might have been accidentally tracked.
-		// Redirect files are runtime/local config and should not be in git.
-		// If not removed, they can cause circular redirect warnings during rig setup.
-		sourceRedirectFile := filepath.Join(sourceBeadsDir, "redirect")
-		_ = os.Remove(sourceRedirectFile) // Ignore error if doesn't exist
-
-		// Tracked beads exist - try to detect prefix from existing issues
-		sourceBeadsConfig := filepath.Join(sourceBeadsDir, "config.yaml")
-		if sourcePrefix := detectBeadsPrefixFromConfig(sourceBeadsConfig); sourcePrefix != "" {
-			fmt.Printf("  Detected existing beads prefix '%s' from source repo\n", sourcePrefix)
-			// Only error on mismatch if user explicitly provided --prefix
-			if userProvidedPrefix && strings.TrimSuffix(opts.BeadsPrefix, "-") != strings.TrimSuffix(sourcePrefix, "-") {
-				return nil, fmt.Errorf("prefix mismatch: source repo uses '%s' but --prefix '%s' was provided; use --prefix %s to match existing issues", sourcePrefix, opts.BeadsPrefix, sourcePrefix)
-			}
-			// Use detected prefix (overrides derived prefix)
-			opts.BeadsPrefix = sourcePrefix
-			rigConfig.Beads.Prefix = sourcePrefix
-			// Re-save rig config with detected prefix
-			if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
-				return nil, fmt.Errorf("updating rig config with detected prefix: %w", err)
-			}
-		} else {
-			// Detection failed (no issues yet) - use derived/provided prefix
-			fmt.Printf("  Using prefix '%s' for tracked beads (no existing issues to detect from)\n", opts.BeadsPrefix)
-		}
-
-		// Initialize bd database if runtime files are missing.
-		// DB files are gitignored so they won't exist after clone — bd init creates them.
-		// bd init --prefix will create the database on the Dolt server.
-		//
-		// Note: bdDatabaseExists checks for metadata.json which is tracked in git.
-		// When metadata.json exists but the Dolt server database doesn't (fresh clone
-		// to a new workspace), we still need to run bd init to create the server-side
-		// database and set issue_prefix. Always ensure issue_prefix is set afterward.
-		sourceBdEnv := bdSubprocessEnv(sourceBeadsDir, opts.Name)
-		if !bdDatabaseExists(sourceBeadsDir) {
-			initArgs := []string{"init"}
-			if opts.BeadsPrefix != "" {
-				initArgs = append(initArgs, "--prefix", opts.BeadsPrefix)
-			}
-			if opts.Name != "" {
-				initArgs = append(initArgs, "--database", opts.Name)
-			}
-			initArgs = append(initArgs, "--server")
-			// Always pass --server-port so bd connects to gt's central Dolt
-			// server. Without this, bd auto-starts its own server on a random
-			// port, causing "database not found" errors. (GH #2405)
-			initArgs = append(initArgs, "--server-port", strconv.Itoa(bdInitServerPort(m.townRoot)))
-			// If the cloned repo's config.yaml has sync.remote, bd init blocks
-			// waiting for interactive confirmation (stdin is /dev/null here).
-			// Pass explicit flags to bypass the safety check. (GH #3873)
-			if beadsConfigHasSyncRemote(sourceBeadsConfig) {
-				initArgs = append(initArgs,
-					"--reinit-local",
-					"--discard-remote",
-					"--destroy-token=DESTROY-"+opts.BeadsPrefix,
-				)
-			}
-			cmd := beads.Spawn(initArgs...)
-			cmd.Dir = mayorRigPath
-			cmd.Env = sourceBdEnv
-			if output, err := cmd.CombinedOutput(); err != nil {
-				fmt.Printf("  Warning: Could not init bd database: %v (%s)\n", err, strings.TrimSpace(string(output)))
-			}
-			// Drop orphan databases created by bd init (gh#3562, gt-sv1h).
-			// See dropRigOrphanDBs for naming details across bd versions.
-			if err := dropRigOrphanDBs(m.townRoot, opts.BeadsPrefix, opts.Name); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: orphan database cleanup: %v\n", err)
-			}
-		}
-
-		// Do not mutate source repo config.yaml here: tracked-beads source repos
-		// must remain clean after rig add. Canonical rig config is written below
-		// after the shared rig .beads directory and metadata are established.
 	}
 
 	// NOTE: No per-directory CLAUDE.md/AGENTS.md is created for any agent.
@@ -861,6 +780,79 @@ func configureMayorRemotes(mayorGit *git.Git, opts AddRigOptions) error {
 		}
 	}
 	return nil
+}
+
+func importTrackedRigBeads(townRoot, mayorRigPath string, opts AddRigOptions, userProvidedPrefix bool, adoptPrefix func(string) error) error {
+	inspection, err := InspectTrackedBeadsImport(mayorRigPath)
+	if err != nil {
+		return fmt.Errorf("inspecting tracked Beads import: %w", err)
+	}
+	if err := RequireTrackedBeadsImportConsent(inspection, opts.ImportBeads); err != nil {
+		return err
+	}
+	if inspection.RequiresConsent() {
+		fmt.Printf("  Importing %d bead(s) from %s (%v); executable hooks: %v\n",
+			inspection.BeadCount, inspection.Source, inspection.JSONLFiles, inspection.ExecutableHooks)
+	}
+	sourceBeadsDir := filepath.Join(mayorRigPath, ".beads")
+	if !pathExists(sourceBeadsDir) {
+		return nil
+	}
+	_ = os.Remove(filepath.Join(sourceBeadsDir, "redirect"))
+	sourceConfig := filepath.Join(sourceBeadsDir, "config.yaml")
+	prefix, err := adoptTrackedBeadsPrefix(sourceConfig, opts.BeadsPrefix, userProvidedPrefix, adoptPrefix)
+	if err != nil {
+		return err
+	}
+	if bdDatabaseExists(sourceBeadsDir) {
+		return nil
+	}
+	initializeTrackedBeadsDatabase(townRoot, mayorRigPath, sourceBeadsDir, sourceConfig, opts.Name, prefix)
+	return nil
+}
+
+func adoptTrackedBeadsPrefix(configPath, configured string, userProvided bool, adopt func(string) error) (string, error) {
+	source := detectBeadsPrefixFromConfig(configPath)
+	if source == "" {
+		fmt.Printf("  Using prefix '%s' for tracked beads (no existing issues to detect from)\n", configured)
+		return configured, nil
+	}
+	fmt.Printf("  Detected existing beads prefix '%s' from source repo\n", source)
+	if userProvided && strings.TrimSuffix(configured, "-") != strings.TrimSuffix(source, "-") {
+		return "", fmt.Errorf("prefix mismatch: source repo uses '%s' but --prefix '%s' was provided; use --prefix %s to match existing issues", source, configured, source)
+	}
+	if err := adopt(source); err != nil {
+		return "", err
+	}
+	return source, nil
+}
+
+func initializeTrackedBeadsDatabase(townRoot, mayorRigPath, beadsDir, configPath, rigName, prefix string) {
+	args := trackedBeadsInitArgs(townRoot, configPath, rigName, prefix)
+	cmd := beads.Spawn(args...)
+	cmd.Dir = mayorRigPath
+	cmd.Env = bdSubprocessEnv(beadsDir, rigName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		fmt.Printf("  Warning: Could not init bd database: %v (%s)\n", err, strings.TrimSpace(string(output)))
+	}
+	if err := dropRigOrphanDBs(townRoot, prefix, rigName); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: orphan database cleanup: %v\n", err)
+	}
+}
+
+func trackedBeadsInitArgs(townRoot, configPath, rigName, prefix string) []string {
+	args := []string{"init"}
+	if prefix != "" {
+		args = append(args, "--prefix", prefix)
+	}
+	if rigName != "" {
+		args = append(args, "--database", rigName)
+	}
+	args = append(args, "--server", "--server-port", strconv.Itoa(bdInitServerPort(townRoot)))
+	if beadsConfigHasSyncRemote(configPath) {
+		args = append(args, "--reinit-local", "--discard-remote", "--destroy-token=DESTROY-"+prefix)
+	}
+	return args
 }
 
 func (m *Manager) prepareAddRig(opts AddRigOptions) (preparedRigAdd, error) {
