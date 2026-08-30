@@ -1395,57 +1395,58 @@ func Status(g *Git) (*GitStatus, error) {
 		return nil, err
 	}
 	out = strings.TrimRight(out, "\n")
-
 	status := &GitStatus{Clean: true}
 	if out == "" {
 		return status, nil
 	}
-
-	// Get skip-worktree files once (sparse checkout). These appear as 'D' in
-	// --porcelain output but are not real deletions — they are hidden by the
-	// sparse-checkout cone. Filtering them prevents gt done from blocking on
-	// 897+ phantom deletions in polecat sparse worktrees.
-	skipWorktree := skipWorktreeFiles(g)
-
 	status.Clean = false
-	for _, line := range strings.Split(out, "\n") {
-		entry, ok := parsePorcelainStatusEntry(line)
-		if !ok {
-			continue
-		}
-		code := entry.Code
-		file := entry.Path
-
-		switch {
-		case entry.Unmerged:
-			status.Unmerged = append(status.Unmerged, entry.paths()...)
-		case strings.Contains(code, "?"):
-			status.Untracked = append(status.Untracked, file)
-		case strings.ContainsAny(code, "RC"):
-			status.Modified = append(status.Modified, entry.paths()...)
-		case strings.Contains(code, "M"):
-			status.Modified = append(status.Modified, file)
-		case strings.Contains(code, "A"):
-			status.Added = append(status.Added, file)
-		case strings.Contains(code, "D"):
-			// Skip files hidden by sparse-checkout (skip-worktree bit set).
-			if !skipWorktree[file] {
-				status.Deleted = append(status.Deleted, file)
-			}
-		default:
-			// Unknown porcelain statuses still represent local work. Returning the
-			// path is safer than letting cleanup/recovery treat the worktree as clean.
-			status.Modified = append(status.Modified, file)
-		}
-	}
-
-	// Recheck clean: if all entries were skip-worktree deletions, we're actually clean.
-	if len(status.Modified) == 0 && len(status.Added) == 0 &&
-		len(status.Deleted) == 0 && len(status.Untracked) == 0 && len(status.Unmerged) == 0 {
+	applyPorcelainStatus(status, out, skipWorktreeFiles(g))
+	if porcelainStatusEmpty(status) {
 		status.Clean = true
 	}
-
 	return status, nil
+}
+
+func applyPorcelainStatus(status *GitStatus, out string, skipWorktree map[string]bool) {
+	for _, line := range strings.Split(out, "\n") {
+		applyPorcelainStatusLine(status, line, skipWorktree)
+	}
+}
+
+func applyPorcelainStatusLine(status *GitStatus, line string, skipWorktree map[string]bool) {
+	entry, ok := parsePorcelainStatusEntry(line)
+	if !ok {
+		return
+	}
+	applyPorcelainStatusEntry(status, entry, skipWorktree)
+}
+
+func applyPorcelainStatusEntry(status *GitStatus, entry porcelainStatusEntry, skipWorktree map[string]bool) {
+	code := entry.Code
+	file := entry.Path
+	switch {
+	case entry.Unmerged:
+		status.Unmerged = append(status.Unmerged, entry.paths()...)
+	case strings.Contains(code, "?"):
+		status.Untracked = append(status.Untracked, file)
+	case strings.ContainsAny(code, "RC"):
+		status.Modified = append(status.Modified, entry.paths()...)
+	case strings.Contains(code, "M"):
+		status.Modified = append(status.Modified, file)
+	case strings.Contains(code, "A"):
+		status.Added = append(status.Added, file)
+	case strings.Contains(code, "D"):
+		if !skipWorktree[file] {
+			status.Deleted = append(status.Deleted, file)
+		}
+	default:
+		status.Modified = append(status.Modified, file)
+	}
+}
+
+func porcelainStatusEmpty(status *GitStatus) bool {
+	return len(status.Modified) == 0 && len(status.Added) == 0 &&
+		len(status.Deleted) == 0 && len(status.Untracked) == 0 && len(status.Unmerged) == 0
 }
 
 func parsePorcelainStatusEntry(line string) (porcelainStatusEntry, bool) {
@@ -2947,54 +2948,87 @@ func branchPreservationStatus(g *Git, localBranch, remote string, targets []stri
 	if remote == "" {
 		remote = "origin"
 	}
-	var result BranchPreservationStatus
+	seeded, preserved := exactRemotePreservation(g, localBranch, remote, includeExactBranch)
+	if preserved {
+		return seeded, nil
+	}
+	candidates, hasEvidence := preservationCandidates(g, localBranch, remote, targets, includeExactBranch)
+	if len(candidates) == 0 {
+		if hasEvidence {
+			return BranchPreservationStatus{}, fmt.Errorf("no target/custody refs resolved")
+		}
+		return BranchPreservationStatus{}, errNoComparisonRefs
+	}
+	return pickPreservationCandidate(g, candidates, seeded)
+}
+
+func exactRemotePreservation(g *Git, localBranch, remote string, includeExactBranch bool) (BranchPreservationStatus, bool) {
+	if !includeExactBranch || localBranch == "" || localBranch == "HEAD" {
+		return BranchPreservationStatus{}, false
+	}
+	remoteSHA, err := PushRemoteBranchTip(g, remote, localBranch)
+	if err != nil || remoteSHA == "" {
+		return BranchPreservationStatus{}, false
+	}
+	base := remote + "/" + localBranch
+	contains, containsErr := refContainsHead(g, remoteSHA)
+	if containsErr == nil && contains {
+		return BranchPreservationStatus{
+			Preserved:             true,
+			ComparisonBase:        base,
+			UnpreservedPatchCount: 0,
+			Evidence:              "exact_remote_branch",
+		}, true
+	}
+	return BranchPreservationStatus{ComparisonBase: base}, false
+}
+
+func preservationCandidates(g *Git, localBranch, remote string, targets []string, includeExactBranch bool) ([]string, bool) {
 	var candidates []string
 	hasEvidence := len(nonEmptyUnique(targets)) > 0
-
 	if includeExactBranch && localBranch != "" && localBranch != "HEAD" {
 		if remoteSHA, err := PushRemoteBranchTip(g, remote, localBranch); err == nil && remoteSHA != "" {
 			hasEvidence = true
-			result.ComparisonBase = remote + "/" + localBranch
-			if contains, containsErr := refContainsHead(g, remoteSHA); containsErr == nil && contains {
-				result.Preserved = true
-				result.UnpreservedPatchCount = 0
-				result.Evidence = "exact_remote_branch"
-				return result, nil
-			}
 			candidates = append(candidates, remoteSHA)
 		}
 	}
-
 	for _, target := range nonEmptyUnique(targets) {
 		if ref, ok := resolveComparisonRef(g, target, remote); ok {
 			candidates = append(candidates, ref)
 		}
 	}
-
-	if upstream, err := run(g, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err == nil && strings.TrimSpace(upstream) != "" {
-		upstream = strings.TrimSpace(upstream)
-		if includeExactBranch || !isPolecatSelfUpstream(localBranch, remote, upstream) {
-			hasEvidence = true
-			candidates = append(candidates, upstream)
-		}
-	}
-
+	hasEvidence = appendUpstreamCandidate(g, localBranch, remote, includeExactBranch, hasEvidence, &candidates)
 	if !hasEvidence {
-		for _, ref := range []string{remote + "/" + RemoteDefaultBranch(g), remote + "/main", remote + "/master"} {
-			if resolved, ok := resolveComparisonRef(g, ref, remote); ok {
-				candidates = append(candidates, resolved)
-			}
+		appendDefaultRemoteCandidates(g, remote, &candidates)
+	}
+	return nonEmptyUnique(candidates), hasEvidence
+}
+
+func appendUpstreamCandidate(g *Git, localBranch, remote string, includeExactBranch, hasEvidence bool, candidates *[]string) bool {
+	upstream, err := run(g, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if err != nil {
+		return hasEvidence
+	}
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return hasEvidence
+	}
+	if includeExactBranch || !isPolecatSelfUpstream(localBranch, remote, upstream) {
+		*candidates = append(*candidates, upstream)
+		return true
+	}
+	return hasEvidence
+}
+
+func appendDefaultRemoteCandidates(g *Git, remote string, candidates *[]string) {
+	for _, ref := range []string{remote + "/" + RemoteDefaultBranch(g), remote + "/main", remote + "/master"} {
+		if resolved, ok := resolveComparisonRef(g, ref, remote); ok {
+			*candidates = append(*candidates, resolved)
 		}
 	}
+}
 
-	candidates = nonEmptyUnique(candidates)
-	if len(candidates) == 0 {
-		if hasEvidence {
-			return result, fmt.Errorf("no target/custody refs resolved")
-		}
-		return result, errNoComparisonRefs
-	}
-
+func pickPreservationCandidate(g *Git, candidates []string, result BranchPreservationStatus) (BranchPreservationStatus, error) {
 	var lastErr error
 	for _, ref := range candidates {
 		candidate, err := preservationAgainstRef(g, ref)
@@ -3465,68 +3499,56 @@ func PruneStaleBranches(g *Git, pattern string, dryRun bool) ([]PrunedBranch, er
 	if pattern == "" {
 		pattern = "polecat/*"
 	}
-
-	// Get current branch to avoid deleting it
 	currentBranch, _ := CurrentBranch(g)
 	defaultBranch := RemoteDefaultBranch(g)
-
-	// List all local branches matching the pattern
 	branches, err := ListBranches(g, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("listing branches: %w", err)
 	}
-
 	var pruned []PrunedBranch
 	for _, branch := range branches {
-		branch = strings.TrimSpace(branch)
-		if branch == "" || branch == currentBranch || branch == defaultBranch {
-			continue
+		if result, ok := pruneStaleBranch(g, strings.TrimSpace(branch), currentBranch, defaultBranch, dryRun); ok {
+			pruned = append(pruned, result)
 		}
-
-		// Check if the remote tracking branch still exists
-		hasRemote, err := RemoteTrackingBranchExists(g, "origin", branch)
-		if err != nil {
-			continue // Skip on error, don't fail the whole operation
-		}
-
-		// Check if the branch is merged to the default branch
-		merged, err := IsAncestor(g, branch, "origin/"+defaultBranch)
-		if err != nil {
-			// If we can't determine merge status, only prune if remote is gone
-			if hasRemote {
-				continue
-			}
-			// Remote gone and can't check merge status — skip to be safe
-			continue
-		}
-
-		var reason string
-		if merged && !hasRemote {
-			reason = "no-remote-merged"
-		} else if merged {
-			reason = "merged"
-		} else if !hasRemote {
-			reason = "no-remote"
-		} else {
-			continue // Branch has remote and is not merged — keep it
-		}
-
-		if !dryRun {
-			// Use -d (not -D) for safety — only deletes fully merged branches.
-			// For "no-remote" branches that aren't merged, -d will fail safely.
-			if err := DeleteBranch(g, branch, false); err != nil {
-				// If -d fails (not merged), skip this branch
-				continue
-			}
-		}
-
-		pruned = append(pruned, PrunedBranch{
-			Name:   branch,
-			Reason: reason,
-		})
 	}
-
 	return pruned, nil
+}
+
+func pruneStaleBranch(g *Git, branch, currentBranch, defaultBranch string, dryRun bool) (PrunedBranch, bool) {
+	if branch == "" || branch == currentBranch || branch == defaultBranch {
+		return PrunedBranch{}, false
+	}
+	reason, ok := staleBranchReason(g, branch, defaultBranch)
+	if !ok {
+		return PrunedBranch{}, false
+	}
+	if !dryRun {
+		if err := DeleteBranch(g, branch, false); err != nil {
+			return PrunedBranch{}, false
+		}
+	}
+	return PrunedBranch{Name: branch, Reason: reason}, true
+}
+
+func staleBranchReason(g *Git, branch, defaultBranch string) (string, bool) {
+	hasRemote, err := RemoteTrackingBranchExists(g, "origin", branch)
+	if err != nil {
+		return "", false
+	}
+	merged, err := IsAncestor(g, branch, "origin/"+defaultBranch)
+	if err != nil {
+		return "", false
+	}
+	switch {
+	case merged && !hasRemote:
+		return "no-remote-merged", true
+	case merged:
+		return "merged", true
+	case !hasRemote:
+		return "no-remote", true
+	default:
+		return "", false
+	}
 }
 
 // SubmoduleChange represents a changed submodule pointer between two refs.
