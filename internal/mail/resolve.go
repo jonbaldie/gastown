@@ -130,88 +130,115 @@ func (r *Resolver) resolveAgentAddress(address string) ([]Recipient, error) {
 // If neither beads nor townRoot is available, validation is skipped (graceful
 // degradation) and downstream validation in sendToSingle handles it.
 func (r *Resolver) validateAgentAddress(address string) error {
-	// Skip validation when we have no data sources to check against.
-	// This preserves backward compatibility when the Resolver is used
-	// without a fully configured environment.
 	if r.beads == nil && r.townRoot == "" {
 		return nil
 	}
+	return validateAgentAddressSources(r.beads, r.townRoot, address)
+}
+
+func validateAgentAddressSources(b *beads.Beads, townRoot, address string) error {
 	if hasUnsafeAddressSegment(address) {
-		return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
+		return unknownRecipientError(address)
 	}
-
 	normalized := normalizeAddress(strings.TrimSuffix(address, "/"))
-
-	// Well-known town-level singletons always valid
-	switch normalized {
-	case constants.RoleMayor + "/", constants.RoleMayor, constants.RoleDeacon + "/", constants.RoleDeacon, "overseer":
+	handled, validDog, err := validateSpecialAddress(normalized, address)
+	if err != nil {
+		return err
+	}
+	if handled {
 		return nil
 	}
-	validDogAddress := false
-	if _, ok := DogAddressName(normalized); ok {
-		validDogAddress = true
-	} else if isReservedTownSubpath(normalized) {
-		return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
-	}
-
 	parts := strings.SplitN(normalized, "/", 3)
 	if len(parts) < 2 || parts[1] == "" {
-		return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
+		return unknownRecipientError(address)
 	}
-
-	// Well-known rig-level singletons (rig/witness, rig/refinery) are valid
-	// even when the role is not running, but only for an existing rig.
-	if len(parts) == 2 {
-		switch parts[1] {
-		case constants.RoleWitness, constants.RoleRefinery:
-			if r.townRoot == "" || dirExistsAt(filepath.Join(r.townRoot, parts[0])) {
-				return nil
-			}
-			return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
-		}
+	if valid, err := validateResolverRigSingleton(townRoot, parts, address); valid || err != nil {
+		return err
 	}
-
-	// Check agent beads if available
-	if r.beads != nil {
-		agents, err := r.beads.ListAgentBeads()
-		if err == nil {
-			for id := range agents {
-				addr := AgentBeadIDToAddress(id)
-				if addr != "" && normalizeAddress(addr) == normalized {
-					return nil
-				}
-			}
-		}
+	if knownAgentAddress(b, townRoot, normalized, parts, validDog) {
+		return nil
 	}
-
-	// Check workspace directories as fallback
-	if r.townRoot != "" {
-		switch len(parts) {
-		case 2:
-			rig, name := parts[0], parts[1]
-			// Singleton role: rig/name (e.g., gastown/witness)
-			if dirExistsAt(filepath.Join(r.townRoot, rig, name)) {
-				return nil
-			}
-			// Named agent (normalized, could be crew or polecat)
-			for _, role := range []string{"crew", "polecats"} {
-				if dirExistsAt(filepath.Join(r.townRoot, rig, role, name)) {
-					return nil
-				}
-			}
-		case 3:
-			// Explicit: rig/crew/name or rig/polecats/name
-			if (parts[1] == constants.RoleCrew || parts[1] == "polecats") &&
-				dirExistsAt(filepath.Join(r.townRoot, parts[0], parts[1], parts[2])) {
-				return nil
-			}
-			if validDogAddress && dirExistsAt(filepath.Join(r.townRoot, parts[0], parts[1], parts[2])) {
-				return nil
-			}
-		}
-	}
-
 	return fmt.Errorf("%w: %s (no matching agent or workspace found)", ErrUnknownRecipient, address)
+}
+
+func knownAgentAddress(b *beads.Beads, townRoot, normalized string, parts []string, validDog bool) bool {
+	return beadsContainAgent(b, normalized) || workspaceContainsAgent(townRoot, parts, validDog)
+}
+
+func unknownRecipientError(address string) error {
+	return fmt.Errorf("%w: %s", ErrUnknownRecipient, address)
+}
+
+func validateSpecialAddress(normalized, address string) (handled, validDog bool, err error) {
+	switch normalized {
+	case constants.RoleMayor + "/", constants.RoleMayor, constants.RoleDeacon + "/", constants.RoleDeacon, "overseer":
+		return true, false, nil
+	}
+	if _, ok := DogAddressName(normalized); ok {
+		return false, true, nil
+	}
+	if isReservedTownSubpath(normalized) {
+		return false, false, unknownRecipientError(address)
+	}
+	return false, false, nil
+}
+
+func validateResolverRigSingleton(townRoot string, parts []string, address string) (bool, error) {
+	if len(parts) != 2 || (parts[1] != constants.RoleWitness && parts[1] != constants.RoleRefinery) {
+		return false, nil
+	}
+	if townRoot == "" || dirExistsAt(filepath.Join(townRoot, parts[0])) {
+		return true, nil
+	}
+	return true, unknownRecipientError(address)
+}
+
+func beadsContainAgent(b *beads.Beads, normalized string) bool {
+	if b == nil {
+		return false
+	}
+	agents, err := b.ListAgentBeads()
+	if err != nil {
+		return false
+	}
+	for id := range agents {
+		addr := AgentBeadIDToAddress(id)
+		if addr != "" && normalizeAddress(addr) == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceContainsAgent(townRoot string, parts []string, validDog bool) bool {
+	if townRoot == "" {
+		return false
+	}
+	switch len(parts) {
+	case 2:
+		return workspaceContainsNamedAgent(townRoot, parts[0], parts[1])
+	case 3:
+		return workspaceContainsExplicitAgent(townRoot, parts, validDog)
+	default:
+		return false
+	}
+}
+
+func workspaceContainsNamedAgent(townRoot, rig, name string) bool {
+	if dirExistsAt(filepath.Join(townRoot, rig, name)) {
+		return true
+	}
+	for _, role := range []string{"crew", "polecats"} {
+		if dirExistsAt(filepath.Join(townRoot, rig, role, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceContainsExplicitAgent(townRoot string, parts []string, validDog bool) bool {
+	validRole := parts[1] == constants.RoleCrew || parts[1] == "polecats" || (validDog && parts[1] == "dogs")
+	return validRole && dirExistsAt(filepath.Join(townRoot, parts[0], parts[1], parts[2]))
 }
 
 // dirExistsAt returns true if path exists and is a directory.
@@ -274,95 +301,116 @@ func (r *Resolver) resolveAtPatternWithVisited(address string, visited map[strin
 
 // resolveByNameWithVisited looks up a name with cycle detection.
 func (r *Resolver) resolveByNameWithVisited(name string, visited map[string]bool) ([]Recipient, error) {
-	var foundGroup, foundQueue, foundChannel bool
-	var groupFields *beads.GroupFields
+	return resolveByName(r, name, visited)
+}
 
-	// Check for beads-native group
-	if r.beads != nil {
-		_, fields, err := r.beads.LookupGroupByName(name)
-		if err != nil && !errors.Is(err, beads.ErrNotFound) {
-			return nil, err
-		}
-		if err == nil && fields != nil {
-			foundGroup = true
-			groupFields = fields
-		}
+func resolveByName(r *Resolver, name string, visited map[string]bool) ([]Recipient, error) {
+	matches, err := lookupNameMatches(r.beads, r.townRoot, name)
+	if err != nil {
+		return nil, err
 	}
+	return resolveNameMatch(r, name, visited, matches)
+}
 
-	// Check for beads-native queue
-	if r.beads != nil {
-		_, queueFields, err := r.beads.LookupQueueByName(name)
-		if err != nil {
-			return nil, err
-		}
-		if queueFields != nil {
-			foundQueue = true
-		}
-	}
+type nameMatches struct {
+	group   *beads.GroupFields
+	queue   bool
+	channel bool
+}
 
-	// Check for beads-native channel
-	if r.beads != nil {
-		_, channelFields, err := r.beads.LookupChannelByName(name)
-		if err != nil {
-			return nil, err
-		}
-		if channelFields != nil {
-			foundChannel = true
-		}
+func lookupNameMatches(b *beads.Beads, townRoot, name string) (nameMatches, error) {
+	matches, err := lookupBeadsNameMatches(b, name)
+	if err != nil {
+		return nameMatches{}, err
 	}
+	if townRoot == "" {
+		return matches, nil
+	}
+	return addConfigNameMatches(townRoot, name, matches), nil
+}
 
-	// Check for queue/channel in config (legacy)
-	if r.townRoot != "" {
-		cfg, err := config.LoadMessagingConfig(config.MessagingConfigPath(r.townRoot))
-		if err == nil && cfg != nil {
-			if _, ok := cfg.Queues[name]; ok {
-				foundQueue = true
-			}
-			if _, ok := cfg.Announces[name]; ok {
-				foundChannel = true
-			}
-		}
+func lookupBeadsNameMatches(b *beads.Beads, name string) (nameMatches, error) {
+	if b == nil {
+		return nameMatches{}, nil
 	}
+	var matches nameMatches
+	_, fields, err := b.LookupGroupByName(name)
+	if err != nil && !errors.Is(err, beads.ErrNotFound) {
+		return nameMatches{}, err
+	}
+	if err == nil && fields != nil {
+		matches.group = fields
+	}
+	_, queueFields, err := b.LookupQueueByName(name)
+	if err != nil {
+		return nameMatches{}, err
+	}
+	matches.queue = queueFields != nil
+	_, channelFields, err := b.LookupChannelByName(name)
+	if err != nil {
+		return nameMatches{}, err
+	}
+	matches.channel = channelFields != nil
+	return matches, nil
+}
 
-	// Count conflicts
-	conflictCount := 0
-	if foundGroup {
-		conflictCount++
+func addConfigNameMatches(townRoot, name string, matches nameMatches) nameMatches {
+	cfg, err := config.LoadMessagingConfig(config.MessagingConfigPath(townRoot))
+	if err != nil || cfg == nil {
+		return matches
 	}
-	if foundQueue {
-		conflictCount++
+	if _, ok := cfg.Queues[name]; ok {
+		matches.queue = true
 	}
-	if foundChannel {
-		conflictCount++
+	if _, ok := cfg.Announces[name]; ok {
+		matches.channel = true
 	}
+	return matches
+}
 
+func resolveNameMatch(r *Resolver, name string, visited map[string]bool, matches nameMatches) ([]Recipient, error) {
+	conflictCount := countNameMatches(matches)
 	if conflictCount == 0 {
 		return nil, fmt.Errorf("unknown address: %s (not a group, queue, or channel)", name)
 	}
-
 	if conflictCount > 1 {
-		var types []string
-		if foundGroup {
-			types = append(types, "group:"+name)
-		}
-		if foundQueue {
-			types = append(types, "queue:"+name)
-		}
-		if foundChannel {
-			types = append(types, "channel:"+name)
-		}
-		return nil, fmt.Errorf("ambiguous address %q: matches multiple types. Use explicit prefix: %s",
-			name, strings.Join(types, ", "))
+		return nil, ambiguousNameError(name, matches)
 	}
-
-	// Single match - resolve it
-	if foundGroup {
-		return r.expandGroupMembersWithVisited(groupFields, visited)
+	if matches.group != nil {
+		return r.expandGroupMembersWithVisited(matches.group, visited)
 	}
-	if foundQueue {
+	if matches.queue {
 		return r.resolveQueue(name)
 	}
 	return r.resolveChannel(name)
+}
+
+func countNameMatches(matches nameMatches) int {
+	count := 0
+	if matches.group != nil {
+		count++
+	}
+	if matches.queue {
+		count++
+	}
+	if matches.channel {
+		count++
+	}
+	return count
+}
+
+func ambiguousNameError(name string, matches nameMatches) error {
+	var types []string
+	if matches.group != nil {
+		types = append(types, "group:"+name)
+	}
+	if matches.queue {
+		types = append(types, "queue:"+name)
+	}
+	if matches.channel {
+		types = append(types, "channel:"+name)
+	}
+	return fmt.Errorf("ambiguous address %q: matches multiple types. Use explicit prefix: %s", name, strings.Join(types, ", "))
 }
 
 // resolveBeadsGroupWithVisited resolves a beads-native group with cycle detection.
@@ -464,11 +512,17 @@ func AgentBeadIDToAddress(id string) string {
 		return ""
 	}
 
-	switch role {
-	case constants.RoleMayor, constants.RoleDeacon:
+	if role == constants.RoleMayor || role == constants.RoleDeacon {
 		return role + "/"
-	case "dog":
+	}
+	if role == "dog" {
 		return DogAddress(name)
+	}
+	return scopedAgentAddress(rig, role, name)
+}
+
+func scopedAgentAddress(rig, role, name string) string {
+	switch role {
 	case constants.RoleWitness, constants.RoleRefinery:
 		if rig == "" {
 			return ""
