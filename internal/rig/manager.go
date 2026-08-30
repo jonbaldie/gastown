@@ -1053,20 +1053,8 @@ func dropRigOrphanDBs(townRoot, prefix, rigName string) error {
 	candidates := []string{prefix, "beads_" + prefix}
 	var failures []string
 	for _, name := range candidates {
-		if name == rigName || name == "hq" {
-			continue
-		}
-		if !doltserver.DatabaseExists(townRoot, name) {
-			continue
-		}
-		if err := doltserver.RemoveDatabase(townRoot, name, true); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
-			continue
-		}
-		// Re-check: RemoveDatabase may report success but leave files behind
-		// in pathological cases (read-only server, partial DROP).
-		if doltserver.DatabaseExists(townRoot, name) {
-			failures = append(failures, fmt.Sprintf("%s: still present after RemoveDatabase", name))
+		if failure := removeRigOrphanCandidate(townRoot, name, rigName); failure != "" {
+			failures = append(failures, failure)
 		}
 	}
 	if len(failures) > 0 {
@@ -1074,6 +1062,21 @@ func dropRigOrphanDBs(townRoot, prefix, rigName string) error {
 			rigName, prefix, strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+func removeRigOrphanCandidate(townRoot, name, rigName string) string {
+	if name == rigName || name == "hq" || !doltserver.DatabaseExists(townRoot, name) {
+		return ""
+	}
+	if err := doltserver.RemoveDatabase(townRoot, name, true); err != nil {
+		return fmt.Sprintf("%s: %v", name, err)
+	}
+	// Re-check: RemoveDatabase may report success but leave files behind
+	// in pathological cases (read-only server, partial DROP).
+	if doltserver.DatabaseExists(townRoot, name) {
+		return fmt.Sprintf("%s: still present after RemoveDatabase", name)
+	}
+	return ""
 }
 
 // RigBeadsInitOptions controls InitializeRigBeads.
