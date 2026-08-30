@@ -15,6 +15,62 @@ import (
 	"github.com/jonbaldie/gastown/internal/rig"
 )
 
+// RigConfigSyncCheck verifies that all registered rigs have a config.json file,
+// Dolt database, and rig identity bead. This prevents issues where the daemon
+// can't find the beads prefix to check docked/parked status.
+type RigConfigSyncCheck struct {
+	FixableCheck
+	missingConfig    []string
+	prefixMismatches []prefixMismatch
+	missingRigBeads  []rigBeadInfo
+	missingDoltDB    []string
+	missingMetadata  []string
+	missingPrefixCfg []string
+	missingExportCfg []string
+	dbNameMismatches []dbMismatch
+	dbCheckErrors    []string
+}
+
+type prefixMismatch struct {
+	rigName        string
+	configPrefix   string
+	registryPrefix string
+}
+
+type rigBeadInfo struct {
+	rigName string
+	prefix  string
+	gitURL  string
+}
+
+type dbMismatch struct {
+	rigName    string
+	prefix     string
+	currentDB  string
+	expectedDB string
+}
+
+// NewRigConfigSyncCheck creates a new rig config sync check.
+func NewRigConfigSyncCheck() *RigConfigSyncCheck {
+	return &RigConfigSyncCheck{
+		FixableCheck: FixableCheck{
+			BaseCheck: BaseCheck{
+				CheckName:        "rig-config-sync",
+				CheckDescription: "Verify registered rigs have config.json, Dolt DB, and identity beads",
+				CheckCategory:    CategoryConfig,
+			},
+		},
+	}
+}
+
+func (c *RigConfigSyncCheck) Run(ctx *CheckContext) *CheckResult {
+	return runRigConfigSync(c, ctx)
+}
+
+func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
+	return fixRigConfigSync(c, ctx)
+}
+
 func runRigConfigSync(c *RigConfigSyncCheck, ctx *CheckContext) *CheckResult {
 	rigsConfig, err := config.LoadRigsConfig(filepath.Join(ctx.TownRoot, "mayor", "rigs.json"))
 	if err != nil {
