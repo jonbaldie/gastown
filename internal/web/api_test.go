@@ -947,7 +947,7 @@ func TestOptionsCacheConcurrentAccess(t *testing.T) {
 				defer wg.Done()
 				req := httptest.NewRequest(http.MethodGet, "/api/options", nil)
 				w := httptest.NewRecorder()
-				h.handleOptions(w, req)
+				handleOptions(h, w, req)
 				if w.Code != http.StatusOK {
 					t.Errorf("handleOptions returned %d", w.Code)
 				}
@@ -1081,7 +1081,7 @@ esac
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1133,7 +1133,7 @@ esac
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1177,7 +1177,7 @@ func TestHandleOptionsTypeRigsUsesConfigWithoutCommands(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1228,7 +1228,7 @@ func TestHandleOptionsTypeRigsFindsConfigFromSubdir(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1321,7 +1321,7 @@ func TestRunGtCommandSemaphore(t *testing.T) {
 	for i := 0; i < numCmds; i++ {
 		go func() {
 			defer wg.Done()
-			_, _ = h.runGtCommand(context.Background(), 2*time.Second, []string{"0.1"})
+			_, _ = runGtCommand(h, context.Background(), 2*time.Second, []string{"0.1"})
 		}()
 	}
 	wg.Wait()
@@ -1354,7 +1354,7 @@ func TestRunGtCommandSemaphoreContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := h.runGtCommand(ctx, 5*time.Second, []string{"10"})
+	_, err := runGtCommand(h, ctx, 5*time.Second, []string{"10"})
 	if err == nil {
 		t.Fatal("expected error when semaphore full and context cancelled")
 	}
@@ -1386,7 +1386,7 @@ func TestRunGtCommandSemaphoreTimeoutBudget(t *testing.T) {
 	start := time.Now()
 	// Use a background context (no external deadline) but a short timeout.
 	// The timeout should bound the semaphore wait.
-	_, err := h.runGtCommand(context.Background(), 200*time.Millisecond, []string{"10"})
+	_, err := runGtCommand(h, context.Background(), 200*time.Millisecond, []string{"10"})
 	elapsed := time.Since(start)
 
 	// Drain the slot we manually added.
@@ -1450,7 +1450,7 @@ func TestHandleSessionPreviewPrefixValidation(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			rec := httptest.NewRecorder()
 
-			h.handleSessionPreview(rec, req)
+			handleSessionPreview(h, rec, req)
 
 			if tc.wantRejected {
 				if rec.Code != http.StatusBadRequest {

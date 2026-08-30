@@ -108,35 +108,35 @@ func validAPICSRF(h *APIHandler, r *http.Request) bool {
 }
 
 func routeAPI(h *APIHandler, w http.ResponseWriter, r *http.Request, path string) {
-	routes := map[string]func(http.ResponseWriter, *http.Request){
-		http.MethodPost + " /run":            h.handleRun,
-		http.MethodGet + " /commands":        h.handleCommands,
-		http.MethodGet + " /options":         h.handleOptions,
-		http.MethodGet + " /mail/inbox":      h.handleMailInbox,
-		http.MethodGet + " /mail/threads":    h.handleMailThreads,
-		http.MethodGet + " /mail/read":       h.handleMailRead,
-		http.MethodPost + " /mail/send":      h.handleMailSend,
-		http.MethodGet + " /issues/show":     h.handleIssueShow,
-		http.MethodPost + " /issues/create":  h.handleIssueCreate,
-		http.MethodPost + " /issues/close":   h.handleIssueClose,
-		http.MethodPost + " /issues/update":  h.handleIssueUpdate,
-		http.MethodGet + " /pr/show":         h.handlePRShow,
-		http.MethodPost + " /rig/add":        h.handleRigAdd,
-		http.MethodGet + " /crew":            h.handleCrew,
-		http.MethodGet + " /ready":           h.handleReady,
-		http.MethodGet + " /events":          h.handleSSE,
-		http.MethodGet + " /session/preview": h.handleSessionPreview,
+	routes := map[string]func(*APIHandler, http.ResponseWriter, *http.Request){
+		http.MethodPost + " /run":            handleRun,
+		http.MethodGet + " /commands":        handleCommands,
+		http.MethodGet + " /options":         handleOptions,
+		http.MethodGet + " /mail/inbox":      handleMailInbox,
+		http.MethodGet + " /mail/threads":    handleMailThreads,
+		http.MethodGet + " /mail/read":       handleMailRead,
+		http.MethodPost + " /mail/send":      handleMailSend,
+		http.MethodGet + " /issues/show":     handleIssueShow,
+		http.MethodPost + " /issues/create":  handleIssueCreate,
+		http.MethodPost + " /issues/close":   handleIssueClose,
+		http.MethodPost + " /issues/update":  handleIssueUpdate,
+		http.MethodGet + " /pr/show":         handlePRShow,
+		http.MethodPost + " /rig/add":        handleRigAdd,
+		http.MethodGet + " /crew":            handleCrew,
+		http.MethodGet + " /ready":           handleReady,
+		http.MethodGet + " /events":          handleSSE,
+		http.MethodGet + " /session/preview": handleSessionPreview,
 	}
 	handle, ok := routes[r.Method+" "+path]
 	if !ok {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
-	handle(w, r)
+	handle(h, w, r)
 }
 
 // handleRun executes a gt command and returns the result.
-func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
+func handleRun(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req CommandRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -156,7 +156,7 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timeout := h.runCommandTimeout(req.Timeout)
+	timeout := runCommandTimeout(h, req.Timeout)
 
 	// Parse command into args
 	args := parseCommandArgs(req.Command)
@@ -168,7 +168,7 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	// Sanitize args
 	args = SanitizeArgs(args)
 
-	resp := h.executeCommand(r.Context(), req.Command, args, timeout)
+	resp := executeCommand(h, r.Context(), req.Command, args, timeout)
 
 	// Log command execution (but not for safe read-only commands to reduce noise)
 	if !meta.Safe || !resp.Success {
@@ -180,7 +180,7 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *APIHandler) runCommandTimeout(requestedSeconds int) time.Duration {
+func runCommandTimeout(h *APIHandler, requestedSeconds int) time.Duration {
 	if requestedSeconds <= 0 {
 		return h.defaultRunTimeout
 	}
@@ -191,9 +191,9 @@ func (h *APIHandler) runCommandTimeout(requestedSeconds int) time.Duration {
 	return timeout
 }
 
-func (h *APIHandler) executeCommand(ctx context.Context, command string, args []string, timeout time.Duration) CommandResponse {
+func executeCommand(h *APIHandler, ctx context.Context, command string, args []string, timeout time.Duration) CommandResponse {
 	start := time.Now()
-	output, err := h.runGtCommand(ctx, timeout, args)
+	output, err := runGtCommand(h, ctx, timeout, args)
 	resp := CommandResponse{
 		Command:    command,
 		DurationMs: time.Since(start).Milliseconds(),
@@ -207,7 +207,7 @@ func (h *APIHandler) executeCommand(ctx context.Context, command string, args []
 }
 
 // handleCommands returns the list of available commands for the palette.
-func (h *APIHandler) handleCommands(w http.ResponseWriter, _ *http.Request) {
+func handleCommands(_ *APIHandler, w http.ResponseWriter, _ *http.Request) {
 	resp := CommandListResponse{
 		Commands: GetCommandList(),
 	}
@@ -216,7 +216,7 @@ func (h *APIHandler) handleCommands(w http.ResponseWriter, _ *http.Request) {
 }
 
 // runGtCommand executes a gt command with the given args.
-func (h *APIHandler) runGtCommand(ctx context.Context, timeout time.Duration, args []string) (string, error) {
+func runGtCommand(h *APIHandler, ctx context.Context, timeout time.Duration, args []string) (string, error) {
 	// Apply timeout first so it bounds both semaphore wait and command execution.
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -311,11 +311,11 @@ type MailThreadsResponse struct {
 }
 
 // handleMailInbox returns the user's inbox.
-func (h *APIHandler) handleMailInbox(w http.ResponseWriter, r *http.Request) {
-	output, err := h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
+func handleMailInbox(h *APIHandler, w http.ResponseWriter, r *http.Request) {
+	output, err := runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
 	if err != nil {
 		// Try without --json flag
-		output, err = h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox"})
+		output, err = runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox"})
 		if err != nil {
 			h.sendError(w, "Failed to fetch inbox: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -360,11 +360,11 @@ func (h *APIHandler) handleMailInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMailThreads returns the inbox grouped by conversation threads.
-func (h *APIHandler) handleMailThreads(w http.ResponseWriter, r *http.Request) {
-	output, err := h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
+func handleMailThreads(h *APIHandler, w http.ResponseWriter, r *http.Request) {
+	output, err := runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
 	if err != nil {
 		// Fall back to text parsing
-		output, err = h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox"})
+		output, err = runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox"})
 		if err != nil {
 			h.sendError(w, "Failed to fetch inbox: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -483,7 +483,7 @@ func mailThreadFromMessages(key string, msgs []MailMessage) (MailThread, bool) {
 }
 
 // handleMailRead reads a specific message by ID.
-func (h *APIHandler) handleMailRead(w http.ResponseWriter, r *http.Request) {
+func handleMailRead(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	msgID := r.URL.Query().Get("id")
 	if msgID == "" {
 		h.sendError(w, "Missing message ID", http.StatusBadRequest)
@@ -494,7 +494,7 @@ func (h *APIHandler) handleMailRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "read", msgID})
+	output, err := runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "read", msgID})
 	if err != nil {
 		h.sendError(w, "Failed to read message: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -516,7 +516,7 @@ type MailSendRequest struct {
 }
 
 // handleMailSend sends a new message.
-func (h *APIHandler) handleMailSend(w http.ResponseWriter, r *http.Request) {
+func handleMailSend(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req MailSendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -530,7 +530,7 @@ func (h *APIHandler) handleMailSend(w http.ResponseWriter, r *http.Request) {
 
 	args := mailSendArgs(req)
 
-	output, err := h.runGtCommand(r.Context(), 30*time.Second, args)
+	output, err := runGtCommand(h, r.Context(), 30*time.Second, args)
 	if err != nil {
 		h.sendError(w, "Failed to send message: "+err.Error()+"\n"+output, http.StatusInternalServerError)
 		return
@@ -730,21 +730,21 @@ type OptionsResponse struct {
 
 // handleOptions returns dynamic options for command arguments.
 // Results are cached for 30 seconds to avoid slow repeated fetches.
-func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
+func handleOptions(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	optionType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
 
 	if optionType == "rigs" {
 		resp := &OptionsResponse{}
-		resp.Rigs = h.loadRigOptions(r.Context())
+		resp.Rigs = loadRigOptions(h, r.Context())
 		writeOptionsResponse(w, resp, "")
 		return
 	}
 
-	if h.writeCachedOptions(w) {
+	if writeCachedOptions(h, w) {
 		return
 	}
 
-	resp := h.fetchOptions(r.Context())
+	resp := fetchOptions(h, r.Context())
 
 	// Update cache
 	h.optionsCacheMu.Lock()
@@ -755,7 +755,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	writeOptionsResponse(w, resp, "MISS")
 }
 
-func (h *APIHandler) writeCachedOptions(w http.ResponseWriter) bool {
+func writeCachedOptions(h *APIHandler, w http.ResponseWriter) bool {
 	// Serialize under RLock to a buffer so we don't hold the lock while
 	// writing to the ResponseWriter (which can block on slow clients).
 	h.optionsCacheMu.RLock()
@@ -776,7 +776,7 @@ func (h *APIHandler) writeCachedOptions(w http.ResponseWriter) bool {
 	return false
 }
 
-func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
+func fetchOptions(h *APIHandler, ctx context.Context) *OptionsResponse {
 	resp := &OptionsResponse{}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -788,14 +788,14 @@ func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
 	go func() {
 		defer wg.Done()
 		mu.Lock()
-		resp.Rigs = h.loadRigOptions(ctx)
+		resp.Rigs = loadRigOptions(h, ctx)
 		mu.Unlock()
 	}()
 
 	// Fetch polecats
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"polecat", "list", "--all", "--json"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"polecat", "list", "--all", "--json"}); err == nil {
 			mu.Lock()
 			resp.Polecats = parseJSONPaths(output)
 			mu.Unlock()
@@ -807,7 +807,7 @@ func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
 	// Fetch convoys
 	go func() {
 		defer wg.Done()
-		if output, err := h.runBdCommand(ctx, 3*time.Second, []string{"list", "--json", "--limit=0"}); err == nil {
+		if output, err := runBdCommand(h, ctx, 3*time.Second, []string{"list", "--json", "--limit=0"}); err == nil {
 			mu.Lock()
 			resp.Convoys = parseConvoyListJSON(output)
 			mu.Unlock()
@@ -819,7 +819,7 @@ func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
 	// Fetch hooks
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
 			mu.Lock()
 			resp.Hooks = parseHooksListOutput(output)
 			mu.Unlock()
@@ -831,7 +831,7 @@ func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
 	// Fetch mail messages
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
 			mu.Lock()
 			resp.Messages = parseMailInboxOutput(output)
 			mu.Unlock()
@@ -843,7 +843,7 @@ func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
 	// Fetch crew members
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"crew", "list", "--all"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"crew", "list", "--all"}); err == nil {
 			mu.Lock()
 			resp.Crew = parseCrewListOutput(output)
 			mu.Unlock()
@@ -855,7 +855,7 @@ func (h *APIHandler) fetchOptions(ctx context.Context) *OptionsResponse {
 	// Fetch agents - shorter timeout, skip if slow
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(ctx, 5*time.Second, []string{"status", "--json"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 5*time.Second, []string{"status", "--json"}); err == nil {
 			mu.Lock()
 			resp.Agents = parseAgentsFromStatus(output)
 			mu.Unlock()
@@ -876,18 +876,18 @@ func writeOptionsResponse(w http.ResponseWriter, resp *OptionsResponse, cacheSta
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *APIHandler) loadRigOptions(ctx context.Context) []string {
-	if rigs, err := h.loadRigOptionsFromConfig(); err == nil {
+func loadRigOptions(h *APIHandler, ctx context.Context) []string {
+	if rigs, err := loadRigOptionsFromConfig(h); err == nil {
 		return rigs
 	}
 
-	if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"rig", "list", "--json"}); err == nil {
+	if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"rig", "list", "--json"}); err == nil {
 		return parseRigListJSON(output)
 	} else {
 		log.Printf("warning: handleOptions: rig list --json: %v", err)
 	}
 
-	if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"rig", "list"}); err == nil {
+	if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"rig", "list"}); err == nil {
 		return parseRigListOutput(output)
 	} else {
 		log.Printf("warning: handleOptions: rig list fallback: %v", err)
@@ -896,7 +896,7 @@ func (h *APIHandler) loadRigOptions(ctx context.Context) []string {
 	return nil
 }
 
-func (h *APIHandler) loadRigOptionsFromConfig() ([]string, error) {
+func loadRigOptionsFromConfig(h *APIHandler) ([]string, error) {
 	rigsPath, err := findRigsConfigPath(h.workDir)
 	if err != nil {
 		return nil, err
@@ -1156,7 +1156,7 @@ type IssueShowResponse struct {
 }
 
 // handleIssueShow returns details for a specific issue/bead.
-func (h *APIHandler) handleIssueShow(w http.ResponseWriter, r *http.Request) {
+func handleIssueShow(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	issueID := r.URL.Query().Get("id")
 	if issueID == "" {
 		h.sendError(w, "Missing issue ID", http.StatusBadRequest)
@@ -1175,7 +1175,7 @@ func (h *APIHandler) handleIssueShow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try structured JSON output first (preferred — no text parsing needed)
-	output, err := h.runBdCommand(r.Context(), 10*time.Second, []string{"show", showID, "--json"})
+	output, err := runBdCommand(h, r.Context(), 10*time.Second, []string{"show", showID, "--json"})
 	if err == nil {
 		if resp, ok := parseIssueShowJSON(output); ok {
 			// Preserve the original request ID in the response (may be external:prefix:id).
@@ -1188,7 +1188,7 @@ func (h *APIHandler) handleIssueShow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fall back to text parsing
-	output, err = h.runBdCommand(r.Context(), 10*time.Second, []string{"show", showID})
+	output, err = runBdCommand(h, r.Context(), 10*time.Second, []string{"show", showID})
 	if err != nil {
 		h.sendError(w, "Failed to fetch issue: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1218,7 +1218,7 @@ type IssueCreateResponse struct {
 }
 
 // handleIssueCreate creates a new issue via bd create.
-func (h *APIHandler) handleIssueCreate(w http.ResponseWriter, r *http.Request) {
+func handleIssueCreate(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req IssueCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -1236,7 +1236,7 @@ func (h *APIHandler) handleIssueCreate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	output, err := h.runBdCommand(ctx, 12*time.Second, args)
+	output, err := runBdCommand(h, ctx, 12*time.Second, args)
 	resp := issueCreateResponse(output, err)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1313,7 +1313,7 @@ type IssueCloseRequest struct {
 }
 
 // handleIssueClose closes an issue via bd close.
-func (h *APIHandler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
+func handleIssueClose(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req IssueCloseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -1329,7 +1329,7 @@ func (h *APIHandler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := h.runBdCommand(r.Context(), 12*time.Second, []string{"close", req.ID})
+	output, err := runBdCommand(h, r.Context(), 12*time.Second, []string{"close", req.ID})
 
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -1356,7 +1356,7 @@ type IssueUpdateRequest struct {
 }
 
 // handleIssueUpdate updates issue fields via bd update.
-func (h *APIHandler) handleIssueUpdate(w http.ResponseWriter, r *http.Request) {
+func handleIssueUpdate(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req IssueUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -1369,7 +1369,7 @@ func (h *APIHandler) handleIssueUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := h.runBdCommand(r.Context(), 12*time.Second, args)
+	output, err := runBdCommand(h, r.Context(), 12*time.Second, args)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -1450,7 +1450,7 @@ func issueUpdateAssigneeArg(assignee string) (string, string) {
 }
 
 // runBdCommand executes a bd command with the given args.
-func (h *APIHandler) runBdCommand(ctx context.Context, timeout time.Duration, args []string) (string, error) {
+func runBdCommand(h *APIHandler, ctx context.Context, timeout time.Duration, args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1704,7 +1704,7 @@ type PRStats struct {
 }
 
 // handlePRShow returns details for a specific PR.
-func (h *APIHandler) handlePRShow(w http.ResponseWriter, r *http.Request) {
+func handlePRShow(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	repo := r.URL.Query().Get("repo")
 	number := r.URL.Query().Get("number")
 	prURL := r.URL.Query().Get("url")
@@ -1715,7 +1715,7 @@ func (h *APIHandler) handlePRShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := h.runGhCommand(r.Context(), 15*time.Second, args)
+	output, err := runGhCommand(h, r.Context(), 15*time.Second, args)
 	if err != nil {
 		h.sendError(w, "Failed to fetch PR: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1768,7 +1768,7 @@ func validatePRShowURL(prURL string) string {
 }
 
 // runGhCommand executes a gh command with the given args.
-func (h *APIHandler) runGhCommand(ctx context.Context, timeout time.Duration, args []string) (string, error) {
+func runGhCommand(h *APIHandler, ctx context.Context, timeout time.Duration, args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1923,12 +1923,12 @@ type ReadyResponse struct {
 }
 
 // handleCrew returns crew status across all rigs with proper state detection.
-func (h *APIHandler) handleCrew(w http.ResponseWriter, r *http.Request) {
+func handleCrew(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	// Run gt crew list --all --json to get crew across all rigs
-	output, err := h.runGtCommand(ctx, 10*time.Second, []string{"crew", "list", "--all", "--json"})
+	output, err := runGtCommand(h, ctx, 10*time.Second, []string{"crew", "list", "--all", "--json"})
 
 	resp := CrewResponse{
 		Crew:  make([]CrewMember, 0),
@@ -1959,7 +1959,7 @@ func (h *APIHandler) handleCrew(w http.ResponseWriter, r *http.Request) {
 	// Convert to CrewMember format with state detection
 	for _, c := range crewData {
 		sessionName := session.CrewSessionName(session.PrefixFor(c.Rig), c.Name)
-		state, lastActive, sessionStatus := h.detectCrewState(ctx, sessionName, c.Hook)
+		state, lastActive, sessionStatus := detectCrewState(ctx, sessionName, c.Hook)
 
 		member := CrewMember{
 			Name:       c.Name,
@@ -1980,7 +1980,7 @@ func (h *APIHandler) handleCrew(w http.ResponseWriter, r *http.Request) {
 
 // detectCrewState determines crew member state from tmux session.
 // Returns: state (spinning/finished/questions/ready), lastActive string, session status
-func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook string) (string, string, string) {
+func detectCrewState(ctx context.Context, sessionName, hook string) (string, string, string) {
 	// Check if tmux session exists and get activity
 	cmd := tmux.BuildCommandContext(ctx, "list-sessions", "-F", "#{session_name}|#{window_activity}|#{session_attached}")
 	var stdout bytes.Buffer
@@ -2009,14 +2009,14 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 		lastActive := formatTimestamp(time.Unix(activityUnix, 0))
 
 		// Check if Claude is running in the session
-		isClaudeRunning := h.isClaudeRunningInSession(ctx, sessionName)
+		isClaudeRunning := isClaudeRunningInSession(ctx, sessionName)
 
 		// Determine state based on activity and Claude status
 		state := determineCrewState(activityAge, isClaudeRunning, hook)
 
 		// Check for questions if state is potentially finished
 		if crewStateNeedsQuestion(state, hook) {
-			if h.hasQuestionInPane(ctx, sessionName) {
+			if hasQuestionInPane(ctx, sessionName) {
 				state = "questions"
 			}
 		}
@@ -2044,7 +2044,7 @@ func crewStateNeedsQuestion(state, hook string) bool {
 }
 
 // isClaudeRunningInSession checks if Claude/agent is actively running.
-func (h *APIHandler) isClaudeRunningInSession(ctx context.Context, sessionName string) bool {
+func isClaudeRunningInSession(ctx context.Context, sessionName string) bool {
 	// Target pane 0 explicitly (:0.0) to avoid false positives from
 	// user-created split panes running shells or other commands.
 	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", sessionName+":0.0", "-p", "#{pane_current_command}")
@@ -2076,7 +2076,7 @@ func paneCurrentCommandIsAgent(output string) bool {
 }
 
 // hasQuestionInPane checks the last output for question indicators.
-func (h *APIHandler) hasQuestionInPane(ctx context.Context, sessionName string) bool {
+func hasQuestionInPane(ctx context.Context, sessionName string) bool {
 	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-J")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -2137,12 +2137,12 @@ func determineCrewState(activityAge time.Duration, isClaudeRunning bool, hook st
 }
 
 // handleReady returns ready work items across town.
-func (h *APIHandler) handleReady(w http.ResponseWriter, r *http.Request) {
+func handleReady(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	// Run gt ready --json to get ready work
-	output, err := h.runGtCommand(ctx, 12*time.Second, []string{"ready", "--json"})
+	output, err := runGtCommand(h, ctx, 12*time.Second, []string{"ready", "--json"})
 
 	resp := ReadyResponse{
 		Items:    make([]ReadyItem, 0),
@@ -2218,7 +2218,7 @@ type SessionPreviewResponse struct {
 }
 
 // handleSessionPreview returns the last N lines of tmux capture-pane output for a session.
-func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request) {
+func handleSessionPreview(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	sessionName := r.URL.Query().Get("session")
 	if sessionName == "" {
 		h.sendError(w, "Missing session parameter", http.StatusBadRequest)
@@ -2329,7 +2329,7 @@ func (p *commandArgParser) flush() {
 // It polls key dashboard state every 2 seconds and sends an event when
 // changes are detected, allowing the client to trigger a re-render.
 // Falls through gracefully if the client disconnects.
-func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
+func handleSSE(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "SSE not supported", http.StatusInternalServerError)
@@ -2363,7 +2363,7 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
 		case <-ticker.C:
-			hash := h.computeDashboardHash(ctx)
+			hash := computeDashboardHash(h, ctx)
 			if hash != "" && hash != lastHash {
 				lastHash = hash
 				fmt.Fprintf(w, "event: dashboard-update\ndata: %s\n\n", hash)
@@ -2375,7 +2375,7 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 // computeDashboardHash generates a lightweight hash of key dashboard state.
 // It runs quick commands in parallel and hashes their output to detect changes.
-func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
+func computeDashboardHash(h *APIHandler, ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -2388,7 +2388,7 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 	// Check worker/polecat state
 	go func() {
 		defer wg.Done()
-		if out, err := h.runGtCommand(ctx, 3*time.Second, []string{"status", "--json"}); err == nil {
+		if out, err := runGtCommand(h, ctx, 3*time.Second, []string{"status", "--json"}); err == nil {
 			mu.Lock()
 			parts = append(parts, "status:"+out)
 			mu.Unlock()
@@ -2398,7 +2398,7 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 	// Check hooks state
 	go func() {
 		defer wg.Done()
-		if out, err := h.runGtCommand(ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
+		if out, err := runGtCommand(h, ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
 			mu.Lock()
 			parts = append(parts, "hooks:"+out)
 			mu.Unlock()
@@ -2408,7 +2408,7 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 	// Check mail count
 	go func() {
 		defer wg.Done()
-		if out, err := h.runGtCommand(ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
+		if out, err := runGtCommand(h, ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
 			mu.Lock()
 			parts = append(parts, "mail:"+out)
 			mu.Unlock()
@@ -2432,7 +2432,7 @@ type rigAddRequest struct {
 	Local   bool   `json:"local,omitempty"`
 }
 
-func (h *APIHandler) handleRigAdd(w http.ResponseWriter, r *http.Request) {
+func handleRigAdd(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req rigAddRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -2459,7 +2459,7 @@ func (h *APIHandler) handleRigAdd(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	output, err := h.runGtCommand(ctx, 55*time.Second, []string{"rig", "add", req.Name, repoURL})
+	output, err := runGtCommand(h, ctx, 55*time.Second, []string{"rig", "add", req.Name, repoURL})
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
