@@ -199,10 +199,22 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install ICU4C development headers
+        run: sudo apt-get install -y libicu-dev
+
       - name: Fetch PR base
         run: >-
           git fetch --no-tags origin
           "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Install mutago
+        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1
 
       - name: Detect changed production Go code
         id: changes
@@ -210,17 +222,29 @@ jobs:
           set -euo pipefail
           merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
           list="$RUNNER_TEMP/mutago-files.txt"
+          estimates="$RUNNER_TEMP/mutago-estimates.txt"
           # ACMR only: deleted files are gone and cannot be mutated.
           git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
             '*.go' ':(exclude)*_test.go' > "$list"
-          python3 - "$list" "$GITHUB_OUTPUT" <<'PY'
+          if [ -s "$list" ]; then
+            mapfile -t files < "$list"
+            mutago --dry-run \
+              --git-diff-lines \
+              --git-diff-base "origin/${BASE_REF}" \
+              "${files[@]}" > "$estimates"
+          else
+            : > "$estimates"
+          fi
+          python3 - "$list" "$estimates" "$GITHUB_OUTPUT" <<'PY'
           import json
+          import re
           import sys
           from collections import defaultdict
           from pathlib import Path
 
           files = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
-          output = Path(sys.argv[2])
+          estimates = Path(sys.argv[2])
+          output = Path(sys.argv[3])
           if not files:
               output.write_text(
                   "has_production_go=false\n"
@@ -231,35 +255,208 @@ jobs:
               print("No production Go code changed; skipping mutago.")
               raise SystemExit
 
-          # Keep files from one Go package together. A package may span several
-          # shards, but a shard never mixes package coverage profiles. The size
-          # cap bounds mutation work without dropping any changed file.
-          max_bytes = 128_000
-          by_package = defaultdict(list)
-          for filename in files:
-              by_package[str(Path(filename).parent)].append(filename)
+          # mutago's dry-run count is an upper bound, but it is useful for
+          # keeping the expensive test loop bounded. Keep each ordinary shard
+          # below this count and split unusually large files below.
+          max_mutations = 1_400
+          max_function_bytes = 28_000
+          all_mutators = [
+              "arithmetic/assign_invert",
+              "arithmetic/assignment",
+              "arithmetic/base",
+              "arithmetic/bitwise",
+              "arithmetic/negate",
+              "branch/case",
+              "branch/else",
+              "branch/if",
+              "composite/field-clear",
+              "concurrency/goroutine-remove",
+              "conditional/bool-literal",
+              "conditional/negated",
+              "conditional/not",
+              "expression/comparison",
+              "expression/context-nil",
+              "expression/error-guard",
+              "expression/errorf-wrap",
+              "expression/logical",
+              "expression/recover-clear",
+              "expression/remove",
+              "expression/string-literal",
+              "loop/break",
+              "loop/condition",
+              "loop/range_break",
+              "numbers/decrementer",
+              "numbers/float-negate",
+              "numbers/incrementer",
+              "select/case-remove",
+              "select/default-remove",
+              "statement/defer-remove",
+              "statement/remove",
+              "statement/remove-self-assign",
+              "statement/return",
+          ]
+          # These mutators can also find nodes in package-level function
+          # literals and declarations, which --match cannot select. Run them
+          # in whole-file shards and exclude them from function-scoped shards
+          # so every mutation is counted exactly once.
+          whole_file_mutators = {
+              "arithmetic/base",
+              "arithmetic/negate",
+              "branch/if",
+              "composite/field-clear",
+              "conditional/negated",
+              "expression/error-guard",
+              "numbers/decrementer",
+              "numbers/incrementer",
+              "statement/remove",
+              "statement/return",
+          }
+          mutation_counts = {}
+          current_file = None
+          for raw_line in estimates.read_text(encoding="utf-8").splitlines():
+              if raw_line and not raw_line[0].isspace() and raw_line.endswith(":"):
+                  current_file = raw_line[:-1]
+                  mutation_counts[current_file] = {}
+                  continue
+              if current_file is None:
+                  continue
+              match = re.fullmatch(r"\s+[^:]+:\s+(\d+)", raw_line)
+              if match:
+                  mutator_name = raw_line.strip().rsplit(":", 1)[0]
+                  mutation_counts[current_file][mutator_name] = int(match.group(1))
+
+          # --match filters by the function declaration's name. The source
+          # spans are only used to keep a match expression small; duplicate
+          # method names stay in one unit so no mutation is run twice.
+          function_pattern = re.compile(
+              r"(?ms)^\s*func\s+(?:\([^)]*\)\s*)?"
+              r"([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^]]*\])?\s*\("
+          )
+
+          def function_units(filename):
+              source = Path(filename).read_text(encoding="utf-8")
+              matches = list(function_pattern.finditer(source))
+              units = {}
+              for index, function in enumerate(matches):
+                  name = function.group(1)
+                  end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
+                  if name not in units:
+                      units[name] = [function.start(), 0]
+                  units[name][1] += end - function.start()
+              return [
+                  (name, values[1])
+                  for name, values in sorted(units.items(), key=lambda item: item[1][0])
+              ]
 
           shards = []
-          for package in sorted(by_package):
-              current = []
+
+          def add_shard(filenames, match="", disable=()):
+              shards.append(
+                  {
+                      "files": filenames,
+                      "match": match,
+                      "disable": sorted(disable),
+                  }
+              )
+
+          by_package = defaultdict(list)
+          for filename in sorted(files):
+              per_file_counts = mutation_counts.get(filename, {})
+              count = sum(per_file_counts.values())
+              if count <= max_mutations:
+                  by_package[str(Path(filename).parent)].append((filename, count))
+                  continue
+
+              units = function_units(filename)
+              if not units:
+                  # A no-function file cannot be function-scoped. Such files
+                  # normally have no mutators, but retain them if one appears.
+                  add_shard([filename])
+                  continue
+
+              # Run whole-file shards for the mutators that can reach
+              # package-level function literals. Split their counts so these
+              # shards remain bounded too.
+              selected = [
+                  (name, per_file_counts.get(name, 0))
+                  for name in all_mutators
+                  if name in whole_file_mutators and per_file_counts.get(name, 0) > 0
+              ]
+              current_mutators = []
+              current_mutations = 0
+              for name, count in sorted(selected, key=lambda item: (-item[1], item[0])):
+                  if current_mutators and current_mutations + count > max_mutations:
+                      add_shard(
+                          [filename],
+                          disable=[
+                              mutator for mutator in all_mutators if mutator not in current_mutators
+                          ],
+                      )
+                      current_mutators = []
+                      current_mutations = 0
+                  current_mutators.append(name)
+                  current_mutations += count
+              if current_mutators:
+                  add_shard(
+                      [filename],
+                      disable=[
+                          mutator for mutator in all_mutators if mutator not in current_mutators
+                      ],
+                  )
+
+              # The remaining mutators are function-scoped. Keep duplicate
+              # method names in one unit because --match selects by name.
+              current_names = []
               current_bytes = 0
-              for filename in sorted(
-                  by_package[package],
-                  key=lambda name: (-Path(name).stat().st_size, name),
-              ):
-                  file_bytes = Path(filename).stat().st_size
-                  if current and current_bytes + file_bytes > max_bytes:
-                      shards.append(current)
-                      current = []
+              for name, source_bytes in units:
+                  if current_names and current_bytes + source_bytes > max_function_bytes:
+                      add_shard(
+                          [filename],
+                          match="^(?:%s)$" % "|".join(
+                              re.escape(function_name) for function_name in current_names
+                          ),
+                          disable=whole_file_mutators,
+                      )
+                      current_names = []
                       current_bytes = 0
-                  current.append(filename)
-                  current_bytes += file_bytes
-              if current:
-                  shards.append(current)
+                  current_names.append(name)
+                  current_bytes += source_bytes
+              if current_names:
+                  add_shard(
+                      [filename],
+                      match="^(?:%s)$" % "|".join(
+                          re.escape(function_name) for function_name in current_names
+                      ),
+                      disable=whole_file_mutators,
+                  )
+
+          # Keep ordinary files from one Go package together so each shard has
+          # one coverage profile. A package may span several shards, but no
+          # shard mixes packages or exceeds the mutation estimate cap.
+          for package in sorted(by_package):
+              current_files = []
+              current_mutations = 0
+              for filename, count in sorted(
+                  by_package[package], key=lambda item: (-item[1], item[0])
+              ):
+                  if current_files and current_mutations + count > max_mutations:
+                      add_shard(current_files)
+                      current_files = []
+                      current_mutations = 0
+                  current_files.append(filename)
+                  current_mutations += count
+              if current_files:
+                  add_shard(current_files)
+
+          if len(shards) > 256:
+              raise SystemExit(
+                  "Prepared %d shards; GitHub Actions supports at most 256 matrix jobs."
+                  % len(shards)
+              )
 
           matrix = {
               "include": [
-                  {"id": index, "files": shard}
+                  {"id": index, **shard}
                   for index, shard in enumerate(shards, start=1)
               ]
           }
@@ -267,9 +464,11 @@ jobs:
               stream.write("has_production_go=true\n")
               stream.write("shard_count=%d\n" % len(shards))
               stream.write("matrix=%s\n" % json.dumps(matrix, separators=(",", ":")))
-          print("Prepared %d package-local mutago shard(s)." % len(shards))
-          for index, shard in enumerate(shards, start=1):
-              print("shard %d (%d file(s)): %s" % (index, len(shard), ", ".join(shard)))
+          function_shards = sum(1 for shard in shards if shard["match"])
+          print(
+              "Prepared %d mutation-bounded shard(s), including %d function-scoped shard(s)."
+              % (len(shards), function_shards)
+          )
           PY
 
   mutago:
@@ -284,6 +483,8 @@ jobs:
     env:
       BASE_REF: ${{ github.base_ref }}
       MUTAGO_FILES_JSON: ${{ toJSON(matrix.files) }}
+      MUTAGO_MATCH: ${{ matrix.match }}
+      MUTAGO_DISABLE_JSON: ${{ toJSON(matrix.disable) }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
       # mutago computes the PR's merge base against the target branch.
@@ -318,7 +519,7 @@ jobs:
           PY
 
       - name: Install mutago
-        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@latest
+        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1
 
       # Every shard still uses the PR's changed production files and the
       # merge-base line filter. A shard-level score of 80% is reported by
@@ -330,7 +531,7 @@ jobs:
         run: |
           set +e
           mapfile -t files < "$MUTAGO_FILE_LIST"
-          mutago \
+          args=(mutago \
             --coverage \
             --workers 2 \
             --test-flags=-short \
@@ -342,8 +543,19 @@ jobs:
             --logger-github \
             --logger-summary-json \
             --quiet \
-            --no-diffs \
-            "${files[@]}"
+            --no-diffs)
+          mapfile -t disabled < <(
+            python3 -c 'import json, os; print("\n".join(json.loads(os.environ["MUTAGO_DISABLE_JSON"])))'
+          )
+          for mutator in "${disabled[@]}"; do
+            if [ -n "$mutator" ]; then
+              args+=(--disable "$mutator")
+            fi
+          done
+          if [ -n "$MUTAGO_MATCH" ]; then
+            args+=(--match "$MUTAGO_MATCH")
+          fi
+          "${args[@]}" "${files[@]}"
           status=$?
           if [ "$status" -ne 0 ] && [ "$status" -ne 4 ]; then
             echo "mutago failed with an execution error (exit $status)"
