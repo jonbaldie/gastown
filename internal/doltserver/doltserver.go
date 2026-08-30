@@ -2915,97 +2915,121 @@ func jsonKeys(m map[string]json.RawMessage) []string {
 // Returns (serverWasRunning, created, err). created is false when the database
 // already existed on disk (idempotent no-op).
 func InitRig(townRoot, rigName string) (serverWasRunning bool, created bool, err error) {
-	if rigName == "" {
-		return false, false, fmt.Errorf("rig name cannot be empty")
+	if err := validateRigName(rigName); err != nil {
+		return false, false, err
 	}
-
 	config := DefaultConfig(townRoot)
-
-	// Validate rig name (simple alphanumeric + underscore/dash)
-	for _, r := range rigName {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
-			return false, false, fmt.Errorf("invalid rig name %q: must contain only alphanumeric, underscore, or dash", rigName)
-		}
-	}
-
 	rigDir := filepath.Join(config.DataDir, rigName)
-
-	// Check if already exists on disk — idempotent for callers like gt install.
-	// Still run EnsureMetadata to repair missing/corrupt metadata.json.
-	if _, err := os.Stat(filepath.Join(rigDir, ".dolt")); err == nil {
-		running, _, _ := IsRunning(townRoot)
-		if err := EnsureMetadata(townRoot, rigName); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: metadata.json update failed for existing database %q: %v\n", rigName, err)
-		}
-		if err := EnsureRigIssuePrefix(townRoot, rigName, running); err != nil {
-			return running, false, fmt.Errorf("ensuring issue_prefix for existing database %q: %w", rigName, err)
-		}
-		return running, false, nil
+	if handled, running, err := initExistingRigDatabase(townRoot, rigName, rigDir); handled {
+		return running, false, err
 	}
+	running, err := stopOrphanedDoltServerIfNeeded(townRoot, config)
+	if err != nil {
+		return false, false, err
+	}
+	if err := createRigDatabase(townRoot, rigName, rigDir, running); err != nil {
+		return running, false, err
+	}
+	InvalidateDBCache()
+	return finishRigInit(townRoot, rigName, running)
+}
 
-	// Check if server is running
-	running, runningPID, _ := IsRunning(townRoot)
-
-	if running {
-		// If the data directory doesn't exist, the server is orphaned (e.g., user
-		// deleted ~/gt and re-ran gt install while an old server was still running).
-		// Stop the orphaned server and fall through to the offline init path.
-		if _, err := os.Stat(config.DataDir); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: Dolt server (PID %d) is running but data directory %s does not exist — stopping orphaned server\n", runningPID, config.DataDir)
-			if stopErr := Stop(townRoot); stopErr != nil {
-				// Force-kill if graceful stop fails (no PID file for orphaned server)
-				if runningPID > 0 {
-					if proc, err := os.FindProcess(runningPID); err == nil {
-						_ = proc.Kill()
-					}
-				}
-			}
-			running = false
+func validateRigName(rigName string) error {
+	if rigName == "" {
+		return fmt.Errorf("rig name cannot be empty")
+	}
+	for _, r := range rigName {
+		if !validRigNameRune(r) {
+			return fmt.Errorf("invalid rig name %q: must contain only alphanumeric, underscore, or dash", rigName)
 		}
 	}
+	return nil
+}
 
-	if running {
-		// Server is running: use CREATE DATABASE which both creates the
-		// directory and registers the database with the live server.
-		if err := serverExecSQL(townRoot, fmt.Sprintf("CREATE DATABASE `%s`", rigName)); err != nil {
-			return true, false, fmt.Errorf("creating database on running server: %w", err)
-		}
-		// Wait for the new database to appear in the server's in-memory catalog.
-		// CREATE DATABASE returns before the catalog is fully updated, so
-		// subsequent USE/query operations can fail with "Unknown database".
-		// Non-fatal: the database was created, so we log a warning and continue
-		// to EnsureMetadata. The retry wrappers (doltSQLWithRetry) will handle
-		// any residual catalog propagation delays in subsequent operations.
-		if err := waitForCatalog(townRoot, rigName); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: catalog visibility wait timed out (will retry on use): %v\n", err)
-		}
-	} else {
-		// Server not running: create directory and init manually.
-		// The database will be picked up when the server starts.
-		if err := os.MkdirAll(rigDir, 0755); err != nil {
-			return false, false, fmt.Errorf("creating rig directory: %w", err)
-		}
-
-		cmd := exec.Command("dolt", "init")
-		cmd.Dir = rigDir
-		setProcessGroup(cmd)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return false, false, fmt.Errorf("initializing Dolt database: %w\n%s", err, output)
-		}
+func validRigNameRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return true
+	case r >= 'A' && r <= 'Z':
+		return true
+	case r >= '0' && r <= '9':
+		return true
+	case r == '_' || r == '-':
+		return true
+	default:
+		return false
 	}
+}
 
-	InvalidateDBCache() // New database created — bust the cache.
-
-	// Update metadata.json to point to the server
+func initExistingRigDatabase(townRoot, rigName, rigDir string) (bool, bool, error) {
+	if _, err := os.Stat(filepath.Join(rigDir, ".dolt")); err != nil {
+		return false, false, nil
+	}
+	running, _, _ := IsRunning(townRoot)
 	if err := EnsureMetadata(townRoot, rigName); err != nil {
-		// Non-fatal: init succeeded, metadata update failed
+		fmt.Fprintf(os.Stderr, "Warning: metadata.json update failed for existing database %q: %v\n", rigName, err)
+	}
+	if err := EnsureRigIssuePrefix(townRoot, rigName, running); err != nil {
+		return true, running, fmt.Errorf("ensuring issue_prefix for existing database %q: %w", rigName, err)
+	}
+	return true, running, nil
+}
+
+func stopOrphanedDoltServerIfNeeded(townRoot string, config *Config) (bool, error) {
+	running, runningPID, _ := IsRunning(townRoot)
+	if !running {
+		return false, nil
+	}
+	if _, err := os.Stat(config.DataDir); !os.IsNotExist(err) {
+		return true, nil
+	}
+	fmt.Fprintf(os.Stderr, "Warning: Dolt server (PID %d) is running but data directory %s does not exist — stopping orphaned server\n", runningPID, config.DataDir)
+	if stopErr := Stop(townRoot); stopErr != nil && runningPID > 0 {
+		if proc, err := os.FindProcess(runningPID); err == nil {
+			_ = proc.Kill()
+		}
+	}
+	return false, nil
+}
+
+func createRigDatabase(townRoot, rigName, rigDir string, running bool) error {
+	if running {
+		return createRigDatabaseOnServer(townRoot, rigName)
+	}
+	return initRigDatabaseOffline(rigDir)
+}
+
+func createRigDatabaseOnServer(townRoot, rigName string) error {
+	if err := serverExecSQL(townRoot, fmt.Sprintf("CREATE DATABASE `%s`", rigName)); err != nil {
+		return fmt.Errorf("creating database on running server: %w", err)
+	}
+	if err := waitForCatalog(townRoot, rigName); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: catalog visibility wait timed out (will retry on use): %v\n", err)
+	}
+	return nil
+}
+
+func initRigDatabaseOffline(rigDir string) error {
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		return fmt.Errorf("creating rig directory: %w", err)
+	}
+	cmd := exec.Command("dolt", "init")
+	cmd.Dir = rigDir
+	setProcessGroup(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("initializing Dolt database: %w\n%s", err, output)
+	}
+	return nil
+}
+
+func finishRigInit(townRoot, rigName string, running bool) (bool, bool, error) {
+	if err := EnsureMetadata(townRoot, rigName); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: database initialized but metadata.json update failed: %v\n", err)
 	}
 	if err := EnsureRigIssuePrefix(townRoot, rigName, running); err != nil {
 		return running, true, fmt.Errorf("ensuring issue_prefix for database %q: %w", rigName, err)
 	}
-
 	return running, true, nil
 }
 
@@ -3013,18 +3037,31 @@ func InitRig(townRoot, rigName string) (serverWasRunning bool, created bool, err
 // persists config.issue_prefix. This covers direct `gt dolt init-rig` usage,
 // where no later InitBeads call exists to run bd init/config repair.
 func EnsureRigIssuePrefix(townRoot, rigName string, serverMode bool) error {
+	if err := requireRigIssuePrefixArgs(townRoot, rigName); err != nil {
+		return err
+	}
+	prefix := issuePrefixForRigInit(townRoot, rigName)
+	beadsDir, err := FindOrCreateRigBeadsDir(townRoot, rigName)
+	if err != nil {
+		return err
+	}
+	if err := ensureRigBeadsConfig(townRoot, beadsDir, rigName, prefix); err != nil {
+		return err
+	}
+	return bootstrapRigIssuePrefix(townRoot, beadsDir, rigName, prefix, serverMode)
+}
+
+func requireRigIssuePrefixArgs(townRoot, rigName string) error {
 	if townRoot == "" {
 		return fmt.Errorf("townRoot cannot be empty")
 	}
 	if rigName == "" {
 		return fmt.Errorf("rig name cannot be empty")
 	}
+	return nil
+}
 
-	prefix := issuePrefixForRigInit(townRoot, rigName)
-	beadsDir, err := FindOrCreateRigBeadsDir(townRoot, rigName)
-	if err != nil {
-		return err
-	}
+func ensureRigBeadsConfig(townRoot, beadsDir, rigName, prefix string) error {
 	if err := beads.EnsureConfigYAML(beadsDir, prefix); err != nil {
 		return fmt.Errorf("ensuring config.yaml: %w", err)
 	}
@@ -3037,26 +3074,41 @@ func EnsureRigIssuePrefix(townRoot, rigName string, serverMode bool) error {
 	if err := EnsureMetadataForBeadsDir(townRoot, beadsDir, rigName, rigName); err != nil {
 		return fmt.Errorf("ensuring metadata.json: %w", err)
 	}
+	return nil
+}
 
-	// Fresh databases run the full Beads schema bootstrap before SetConfig.
-	// The operator can raise GT_BEADS_SCHEMA_BOOTSTRAP_TIMEOUT when hosts are loaded.
+func bootstrapRigIssuePrefix(townRoot, beadsDir, rigName, prefix string, serverMode bool) error {
 	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageOpening, ""); err != nil {
 		return fmt.Errorf("recording schema bootstrap stage: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), beads.SchemaBootstrapTimeout())
 	defer cancel()
-
-	if !serverMode {
-		if err := Start(townRoot); err != nil {
-			return fmt.Errorf("starting temporary Dolt server: %w", err)
-		}
-		defer func() {
-			if err := Stop(townRoot); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not stop temporary Dolt server after issue_prefix seed: %v\n", err)
-			}
-		}()
+	if err := startTempDoltForPrefix(townRoot, serverMode); err != nil {
+		return err
 	}
+	if !serverMode {
+		defer stopTempDoltForPrefix(townRoot)
+	}
+	return setRigIssuePrefix(ctx, townRoot, beadsDir, rigName, prefix)
+}
 
+func startTempDoltForPrefix(townRoot string, serverMode bool) error {
+	if serverMode {
+		return nil
+	}
+	if err := Start(townRoot); err != nil {
+		return fmt.Errorf("starting temporary Dolt server: %w", err)
+	}
+	return nil
+}
+
+func stopTempDoltForPrefix(townRoot string) {
+	if err := Stop(townRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not stop temporary Dolt server after issue_prefix seed: %v\n", err)
+	}
+}
+
+func setRigIssuePrefix(ctx context.Context, townRoot, beadsDir, rigName, prefix string) error {
 	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageMigrating, ""); err != nil {
 		return fmt.Errorf("recording schema bootstrap stage: %w", err)
 	}
@@ -3065,13 +3117,16 @@ func EnsureRigIssuePrefix(townRoot, rigName string, serverMode bool) error {
 		return schemaBootstrapFailure(beadsDir, beads.SchemaBootstrapStageMigrating, ctx, fmt.Errorf("opening beads database: %w", err))
 	}
 	defer func() { _ = store.Close() }()
-
 	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageSettingPrefix, ""); err != nil {
 		return fmt.Errorf("recording schema bootstrap stage: %w", err)
 	}
 	if err := store.SetConfig(ctx, "issue_prefix", prefix); err != nil {
 		return schemaBootstrapFailure(beadsDir, beads.SchemaBootstrapStageSettingPrefix, ctx, fmt.Errorf("setting issue_prefix: %w", err))
 	}
+	return completeRigIssuePrefix(beadsDir)
+}
+
+func completeRigIssuePrefix(beadsDir string) error {
 	if err := beads.MarkSchemaBootstrapStage(beadsDir, beads.SchemaBootstrapStageComplete, ""); err != nil {
 		return fmt.Errorf("recording schema bootstrap completion: %w", err)
 	}
