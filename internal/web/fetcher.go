@@ -236,134 +236,132 @@ func (f *LiveConvoyFetcher) FetchConvoys() ([]ConvoyRow, error) {
 	if !f.convoyBreaker.allow() {
 		return nil, nil // Backed off — return empty result silently
 	}
-
-	// List all open issues and filter locally so legacy type=convoy beads remain visible.
-	stdout, err := f.runBdCmd(f.townRoot, "list", "--status=open", "--json", "--limit=0")
+	convoys, err := f.listOpenConvoys()
 	if err != nil {
 		f.convoyBreaker.recordFailure()
-		return nil, fmt.Errorf("listing convoys: %w", err)
+		return nil, err
 	}
-
-	var convoys []struct {
-		ID        string   `json:"id"`
-		Title     string   `json:"title"`
-		Status    string   `json:"status"`
-		CreatedAt string   `json:"created_at"`
-		IssueType string   `json:"issue_type"`
-		Labels    []string `json:"labels"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
-		f.convoyBreaker.recordFailure()
-		return nil, fmt.Errorf("parsing convoy list: %w", err)
-	}
-
-	// Build convoy rows with activity data
 	rows := make([]ConvoyRow, 0, len(convoys))
 	for _, c := range convoys {
 		if c.IssueType != "convoy" && !webConvoyHasLabel(c.Labels, "gt:convoy") {
 			continue
 		}
-		row := ConvoyRow{
-			ID:     c.ID,
-			Title:  c.Title,
-			Status: c.Status,
-		}
-
-		// Get tracked issues for progress and activity calculation
-		tracked, err := f.getTrackedIssues(c.ID)
+		row, err := f.convoyRow(c)
 		if err != nil {
 			log.Printf("warning: skipping convoy %s: %v", c.ID, err)
 			continue
 		}
-		row.Total = len(tracked)
-
-		var mostRecentActivity time.Time
-		var mostRecentUpdated time.Time
-		var hasAssignee bool
-		assigneeSet := make(map[string]struct{})
-		for _, t := range tracked {
-			if t.Status == "closed" {
-				row.Completed++
-			} else if t.Assignee != "" {
-				row.InProgress++
-			} else {
-				row.ReadyBeads++
-			}
-			// Track most recent activity from workers
-			if t.LastActivity.After(mostRecentActivity) {
-				mostRecentActivity = t.LastActivity
-			}
-			// Track most recent updated_at as fallback
-			if t.UpdatedAt.After(mostRecentUpdated) {
-				mostRecentUpdated = t.UpdatedAt
-			}
-			if t.Assignee != "" {
-				hasAssignee = true
-				assigneeSet[t.Assignee] = struct{}{}
-			}
-		}
-
-		// Collect unique assignees (sorted for stable display order)
-		row.Assignees = make([]string, 0, len(assigneeSet))
-		for a := range assigneeSet {
-			row.Assignees = append(row.Assignees, a)
-		}
-		sort.Strings(row.Assignees)
-
-		row.Progress = fmt.Sprintf("%d/%d", row.Completed, row.Total)
-		if row.Total > 0 {
-			row.ProgressPct = (row.Completed * 100) / row.Total
-		}
-
-		// Calculate activity info from most recent worker activity
-		if !mostRecentActivity.IsZero() {
-			// Have active tmux session activity from assigned workers
-			row.LastActivity = activity.Calculate(mostRecentActivity)
-		} else if !hasAssignee {
-			// No assignees found in beads - try fallback to any running polecat activity
-			// This handles cases where bd update --assignee didn't persist or wasn't returned
-			if polecatActivity := f.getAllPolecatActivity(); polecatActivity != nil {
-				info := activity.Calculate(*polecatActivity)
-				info.FormattedAge = info.FormattedAge + " (polecat active)"
-				row.LastActivity = info
-			} else if !mostRecentUpdated.IsZero() {
-				// Fall back to issue updated_at if no polecats running
-				info := activity.Calculate(mostRecentUpdated)
-				info.FormattedAge = info.FormattedAge + " (unassigned)"
-				row.LastActivity = info
-			} else {
-				row.LastActivity = activity.Info{
-					FormattedAge: "unassigned",
-					ColorClass:   activity.ColorUnknown,
-				}
-			}
-		} else {
-			// Has assignee but no active session
-			row.LastActivity = activity.Info{
-				FormattedAge: "idle",
-				ColorClass:   activity.ColorUnknown,
-			}
-		}
-
-		// Calculate work status based on progress and activity
-		row.WorkStatus = calculateWorkStatus(row.Completed, row.Total, row.LastActivity.ColorClass)
-
-		// Get tracked issues for expandable view
-		row.TrackedIssues = make([]TrackedIssue, len(tracked))
-		for i, t := range tracked {
-			row.TrackedIssues[i] = TrackedIssue{
-				ID:       t.ID,
-				Title:    t.Title,
-				Status:   t.Status,
-				Assignee: t.Assignee,
-			}
-		}
-
 		rows = append(rows, row)
 	}
-
 	f.convoyBreaker.recordSuccess()
 	return rows, nil
+}
+
+type convoyListItem struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	IssueType string   `json:"issue_type"`
+	Labels    []string `json:"labels"`
+}
+
+func (f *LiveConvoyFetcher) listOpenConvoys() ([]convoyListItem, error) {
+	stdout, err := f.runBdCmd(f.townRoot, "list", "--status=open", "--json", "--limit=0")
+	if err != nil {
+		return nil, fmt.Errorf("listing convoys: %w", err)
+	}
+	var convoys []convoyListItem
+	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
+		return nil, fmt.Errorf("parsing convoy list: %w", err)
+	}
+	return convoys, nil
+}
+
+type convoyStats struct {
+	mostRecentActivity time.Time
+	mostRecentUpdated  time.Time
+	hasAssignee        bool
+	assignees          map[string]struct{}
+}
+
+func (f *LiveConvoyFetcher) convoyRow(c convoyListItem) (ConvoyRow, error) {
+	row := ConvoyRow{ID: c.ID, Title: c.Title, Status: c.Status}
+	tracked, err := f.getTrackedIssues(c.ID)
+	if err != nil {
+		return row, err
+	}
+	stats := summarizeConvoyTracked(&row, tracked)
+	row.Assignees = sortedSet(stats.assignees)
+	row.Progress = fmt.Sprintf("%d/%d", row.Completed, row.Total)
+	if row.Total > 0 {
+		row.ProgressPct = (row.Completed * 100) / row.Total
+	}
+	row.LastActivity = f.convoyActivity(stats)
+	row.WorkStatus = calculateWorkStatus(row.Completed, row.Total, row.LastActivity.ColorClass)
+	row.TrackedIssues = displayTrackedIssues(tracked)
+	return row, nil
+}
+
+func summarizeConvoyTracked(row *ConvoyRow, tracked []trackedIssueInfo) convoyStats {
+	stats := convoyStats{assignees: make(map[string]struct{})}
+	row.Total = len(tracked)
+	for _, issue := range tracked {
+		if issue.Status == "closed" {
+			row.Completed++
+		} else if issue.Assignee != "" {
+			row.InProgress++
+		} else {
+			row.ReadyBeads++
+		}
+		if issue.LastActivity.After(stats.mostRecentActivity) {
+			stats.mostRecentActivity = issue.LastActivity
+		}
+		if issue.UpdatedAt.After(stats.mostRecentUpdated) {
+			stats.mostRecentUpdated = issue.UpdatedAt
+		}
+		if issue.Assignee != "" {
+			stats.hasAssignee = true
+			stats.assignees[issue.Assignee] = struct{}{}
+		}
+	}
+	return stats
+}
+
+func sortedSet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (f *LiveConvoyFetcher) convoyActivity(stats convoyStats) activity.Info {
+	if !stats.mostRecentActivity.IsZero() {
+		return activity.Calculate(stats.mostRecentActivity)
+	}
+	if stats.hasAssignee {
+		return activity.Info{FormattedAge: "idle", ColorClass: activity.ColorUnknown}
+	}
+	if polecatActivity := f.getAllPolecatActivity(); polecatActivity != nil {
+		info := activity.Calculate(*polecatActivity)
+		info.FormattedAge += " (polecat active)"
+		return info
+	}
+	if !stats.mostRecentUpdated.IsZero() {
+		info := activity.Calculate(stats.mostRecentUpdated)
+		info.FormattedAge += " (unassigned)"
+		return info
+	}
+	return activity.Info{FormattedAge: "unassigned", ColorClass: activity.ColorUnknown}
+}
+
+func displayTrackedIssues(tracked []trackedIssueInfo) []TrackedIssue {
+	result := make([]TrackedIssue, len(tracked))
+	for i, issue := range tracked {
+		result[i] = TrackedIssue{ID: issue.ID, Title: issue.Title, Status: issue.Status, Assignee: issue.Assignee}
+	}
+	return result
 }
 
 func webConvoyHasLabel(labels []string, target string) bool {
