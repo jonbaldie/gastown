@@ -43,12 +43,14 @@ func TestDogDispatchInfoClearWorkIfMatchesUsesAssignmentTimestamp(t *testing.T) 
 	})
 
 	staleDispatch := &DogDispatchInfo{
-		DogName:       "alpha",
-		townRoot:      townRoot,
-		workDesc:      "mol-dog-reaper",
-		workStartedAt: workStarted.Add(time.Second),
-		ownsWork:      true,
-		rigsConfig:    rigsConfig,
+		DogName: "alpha",
+		state: dogDispatchState{
+			townRoot:      townRoot,
+			workDesc:      "mol-dog-reaper",
+			workStartedAt: workStarted.Add(time.Second),
+			ownsWork:      true,
+			rigsConfig:    rigsConfig,
+		},
 	}
 	if err := staleDispatch.ClearWorkIfMatches(); err != nil {
 		t.Fatalf("clearWorkIfMatches stale dispatch error = %v", err)
@@ -64,12 +66,14 @@ func TestDogDispatchInfoClearWorkIfMatchesUsesAssignmentTimestamp(t *testing.T) 
 	}
 
 	matchingDispatch := &DogDispatchInfo{
-		DogName:       "alpha",
-		townRoot:      townRoot,
-		workDesc:      "mol-dog-reaper",
-		workStartedAt: workStarted,
-		ownsWork:      true,
-		rigsConfig:    rigsConfig,
+		DogName: "alpha",
+		state: dogDispatchState{
+			townRoot:      townRoot,
+			workDesc:      "mol-dog-reaper",
+			workStartedAt: workStarted,
+			ownsWork:      true,
+			rigsConfig:    rigsConfig,
+		},
 	}
 	if err := matchingDispatch.ClearWorkIfMatches(); err != nil {
 		t.Fatalf("clearWorkIfMatches matching dispatch error = %v", err)
@@ -99,12 +103,14 @@ func TestDogDispatchInfoClearWorkIfMatchesSkipsReusedWork(t *testing.T) {
 	})
 
 	reusedDispatch := &DogDispatchInfo{
-		DogName:       "alpha",
-		townRoot:      townRoot,
-		workDesc:      "mol-dog-reaper",
-		workStartedAt: workStarted,
-		ownsWork:      false,
-		rigsConfig:    rigsConfig,
+		DogName: "alpha",
+		state: dogDispatchState{
+			townRoot:      townRoot,
+			workDesc:      "mol-dog-reaper",
+			workStartedAt: workStarted,
+			ownsWork:      false,
+			rigsConfig:    rigsConfig,
+		},
 	}
 	if err := reusedDispatch.ClearWorkIfMatches(); err != nil {
 		t.Fatalf("clearWorkIfMatches reused dispatch error = %v", err)
@@ -190,10 +196,12 @@ func TestShouldReuseExistingFormulaSkipsStaleHookAfterFreshDogAssignment(t *test
 		Description: "attached_formula: mol-dog-reaper\nattached_at: " + startedAt.Format(time.RFC3339Nano),
 	}
 	reusedDog := &DogDispatchInfo{
-		DogName:       "alpha",
-		workDesc:      "mol-dog-reaper",
-		workStartedAt: startedAt,
-		ownsWork:      false,
+		DogName: "alpha",
+		state: dogDispatchState{
+			workDesc:      "mol-dog-reaper",
+			workStartedAt: startedAt,
+			ownsWork:      false,
+		},
 	}
 
 	if !shouldReuseExistingFormula(existing, nil, false) {
@@ -205,7 +213,7 @@ func TestShouldReuseExistingFormulaSkipsStaleHookAfterFreshDogAssignment(t *test
 	if shouldReuseExistingFormula(existing, reusedDog, false) {
 		t.Fatal("dog dispatch must revalidate reused work against the current hooked formula")
 	}
-	if shouldReuseExistingFormula(existing, &DogDispatchInfo{ownsWork: true}, false) {
+	if shouldReuseExistingFormula(existing, &DogDispatchInfo{state: dogDispatchState{ownsWork: true}}, false) {
 		t.Fatal("fresh dog assignment must not resurrect a stale hooked formula")
 	}
 	if shouldReuseExistingFormula(existing, nil, true) {

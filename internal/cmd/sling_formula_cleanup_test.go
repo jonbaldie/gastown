@@ -71,11 +71,13 @@ func TestCleanupDelayedDogFormulaFailurePreservesWorkAfterWispCleanupError(t *te
 	})
 	dispatch := &DogDispatchInfo{
 		DogName:       "alpha",
-		townRoot:      townRoot,
-		workDesc:      "mol-dog-reaper",
-		workStartedAt: startedAt,
-		ownsWork:      true,
-		rigsConfig:    rigsConfig,
+		state: dogDispatchState{
+			townRoot:      townRoot,
+			workDesc:      "mol-dog-reaper",
+			workStartedAt: startedAt,
+			ownsWork:      true,
+			rigsConfig:    rigsConfig,
+		},
 	}
 
 	err := cleanupDelayedDogFormulaFailure(errors.New("start failed"), dispatch, "gt-wisp", townRoot)

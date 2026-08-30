@@ -342,7 +342,7 @@ func rollbackFailedDogDispatch(dispatch *DogDispatchInfo, townRoot, beadID, hook
 	}
 	clearRolledBackDogAgentHook(dispatch)
 	_ = dog.KillCompletedDogSession(
-		dog.NewManager(dispatch.townRoot, dispatch.rigsConfig),
+		dog.NewManager(dispatch.state.townRoot, dispatch.state.rigsConfig),
 		dispatch.DogName,
 		fmt.Sprintf("hq-dog-%s", dispatch.DogName),
 		tmux.NewTmux().KillSession,
@@ -354,12 +354,12 @@ func rollbackFailedDogDispatch(dispatch *DogDispatchInfo, townRoot, beadID, hook
 }
 
 func clearRolledBackDogAgentHook(dispatch *DogDispatchInfo) {
-	if dispatch == nil || dispatch.townRoot == "" || dispatch.DogName == "" {
+	if dispatch == nil || dispatch.state.townRoot == "" || dispatch.DogName == "" {
 		return
 	}
 	empty := ""
 	agentBeadID := beads.DogBeadIDTown(dispatch.DogName)
-	if err := beads.New(filepath.Join(dispatch.townRoot, ".beads")).UpdateAgentDescriptionFields(agentBeadID, beads.AgentFieldUpdates{HookBead: &empty}); err != nil {
+	if err := beads.New(filepath.Join(dispatch.state.townRoot, ".beads")).UpdateAgentDescriptionFields(agentBeadID, beads.AgentFieldUpdates{HookBead: &empty}); err != nil {
 		fmt.Printf("%s Could not clear dog agent hook after rollback: %v\n", style.Dim.Render("Warning:"), err)
 	}
 }

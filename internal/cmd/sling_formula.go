@@ -291,7 +291,7 @@ func shouldReuseExistingFormula(existing *beads.Issue, delayedDogInfo *DogDispat
 	if delayedDogInfo == nil {
 		return true
 	}
-	if delayedDogInfo.ownsWork {
+	if delayedDogInfo.state.ownsWork {
 		return false
 	}
 	return delayedDogInfo.WorksOnHook(existing)

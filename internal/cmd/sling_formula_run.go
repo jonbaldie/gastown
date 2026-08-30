@@ -202,7 +202,7 @@ func prepareExistingFormulaSling(s *formulaSlingState, existing *beads.Issue) (b
 	if shouldReuseExistingFormula(existing, s.delayedDogInfo, slingState().force) {
 		return true, nil, reuseExistingFormulaSling(s, existing)
 	}
-	if s.delayedDogInfo != nil && !s.delayedDogInfo.ownsWork && !s.delayedDogInfo.WorksOnHook(existing) {
+	if s.delayedDogInfo != nil && !s.delayedDogInfo.state.ownsWork && !s.delayedDogInfo.WorksOnHook(existing) {
 		return true, nil, fmt.Errorf("dog formula reuse became stale before hook verification; retry dispatch")
 	}
 	cleaned, err := cleanupOrMigrateExistingFormula(s, existing)
@@ -256,7 +256,7 @@ func cleanupOrMigrateExistingFormula(s *formulaSlingState, existing *beads.Issue
 	if existing == nil || slingState().force {
 		return false, nil
 	}
-	if s.delayedDogInfo != nil && s.delayedDogInfo.ownsWork {
+	if s.delayedDogInfo != nil && s.delayedDogInfo.state.ownsWork {
 		if err := cleanupStaleDogFormulaWispFn(existing.ID, s.formulaWorkDir); err != nil {
 			return true, fmt.Errorf("cleaning stale dog formula wisp %s: %w", existing.ID, err)
 		}
@@ -377,7 +377,7 @@ func persistFormulaSlingDispatch(s *formulaSlingState) error {
 	s.progress.dispatchBeadID = dispatchBead.ID
 	fmt.Printf("%s Durable dispatch bead created: %s\n", style.Bold.Render("✓"), s.progress.dispatchBeadID)
 	if s.delayedDogInfo != nil {
-		if err := s.delayedDogInfo.persistWorkSource(s.progress.dispatchBeadID); err != nil {
+		if err := persistDogWorkSource(s.delayedDogInfo, s.progress.dispatchBeadID); err != nil {
 			return fmt.Errorf("recording dog formula source: %w", err)
 		}
 	}
