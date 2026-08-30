@@ -220,7 +220,7 @@ func runPolecatIdentityAdd(_ *cobra.Command, args []string) error {
 		polecatGit := git.NewGit(r.Path)
 		t := tmux.NewTmux()
 		mgr := polecat.NewManager(r, polecatGit, t)
-		polecatName, err = mgr.AllocateName()
+		polecatName, err = polecat.AllocateName(mgr)
 		if err != nil {
 			return fmt.Errorf("generating polecat name: %w", err)
 		}
@@ -292,7 +292,7 @@ func polecatIdentityFromAgentBead(rigName, id string, issue *beads.Issue, mgr *p
 	}
 	fields := beads.ParseAgentFields(issue.Description)
 	worktreeExists := false
-	if p, err := mgr.Get(name); err == nil && p != nil {
+	if p, err := polecat.Get(mgr, name); err == nil && p != nil {
 		worktreeExists = true
 	}
 	sessionRunning, _ := polecatMgr.IsRunning(name)
@@ -407,7 +407,7 @@ func loadPolecatIdentityShow(rigName, polecatName string) (*polecatIdentityShow,
 		issue:       issue,
 		fields:      fields,
 	}
-	if p, err := polecat.NewManager(r, nil, t).Get(polecatName); err == nil && p != nil {
+	if p, err := polecat.Get(polecat.NewManager(r, nil, t), polecatName); err == nil && p != nil {
 		details.worktreeExists = true
 		details.clonePath = p.ClonePath
 	}

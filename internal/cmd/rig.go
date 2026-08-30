@@ -356,7 +356,7 @@ var (
 	listPolecatsForWorkCheck = func(r *rig.Rig) ([]*polecat.Polecat, error) {
 		polecatGit := git.NewGit(r.Path)
 		polecatMgr := polecat.NewManager(r, polecatGit, nil) // nil tmux: just listing
-		return polecatMgr.List()
+		return polecat.List(polecatMgr)
 	}
 	checkPolecatWorkStatus = func(clonePath string) (*git.UncommittedWorkStatus, error) {
 		pGit := git.NewGit(clonePath)
@@ -2057,7 +2057,7 @@ func gatherRigStatusData(townRoot string, r *rig.Rig, t *tmux.Tmux) rigStatusDat
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		data.polecats, data.polecatsErr = polecatMgr.List()
+		data.polecats, data.polecatsErr = polecat.List(polecatMgr)
 	}()
 	crewMgr := crew.NewManager(r, git.NewGit(townRoot))
 	wg.Add(1)

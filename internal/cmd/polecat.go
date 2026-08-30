@@ -672,7 +672,7 @@ func runPolecatAdd(_ *cobra.Command, args []string) error {
 
 	fmt.Printf("Adding polecat %s to rig %s...\n", polecatName, rigName)
 
-	p, err := mgr.Add(polecatName)
+	p, err := polecat.Add(mgr, polecatName)
 	if err != nil {
 		return fmt.Errorf("adding polecat: %w", err)
 	}
@@ -693,7 +693,7 @@ func removePolecatTarget(p polecatTarget, t *tmux.Tmux, force bool) (bool, strin
 		}
 	}
 	fmt.Printf("Removing polecat %s/%s...\n", p.rigName, p.polecatName)
-	if err := p.mgr.Remove(p.polecatName, force); err != nil {
+	if err := polecat.Remove(p.mgr, p.polecatName, force); err != nil {
 		if errors.Is(err, polecat.ErrHasChanges) {
 			return false, fmt.Sprintf("%s/%s: has uncommitted changes (use --force)", p.rigName, p.polecatName)
 		}
@@ -773,7 +773,7 @@ func runPolecatStatus(_ *cobra.Command, args []string) error {
 	}
 
 	// Get polecat info
-	p, err := mgr.Get(polecatName)
+	p, err := polecat.Get(mgr, polecatName)
 	if err != nil {
 		return fmt.Errorf("polecat '%s' not found in rig '%s'", polecatName, rigName)
 	}
@@ -917,7 +917,7 @@ func runPolecatGitState(_ *cobra.Command, args []string) error {
 	}
 
 	// Verify polecat exists
-	p, err := mgr.Get(polecatName)
+	p, err := polecat.Get(mgr, polecatName)
 	if err != nil {
 		return fmt.Errorf("polecat '%s' not found in rig '%s'", polecatName, rigName)
 	}
@@ -1056,7 +1056,7 @@ func runPolecatCheckRecovery(_ *cobra.Command, args []string) error {
 	}
 
 	// Verify polecat exists and get info
-	p, err := mgr.Get(polecatName)
+	p, err := polecat.Get(mgr, polecatName)
 	if err != nil {
 		return fmt.Errorf("polecat '%s' not found in rig '%s'", polecatName, rigName)
 	}
@@ -1480,7 +1480,7 @@ func runPolecatGC(_ *cobra.Command, args []string) error {
 	}
 
 	// Actually clean up
-	deleted, err := mgr.CleanupStaleBranches()
+	deleted, err := polecat.CleanupStaleBranches(mgr)
 	if err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
@@ -1506,7 +1506,7 @@ func runPolecatGCDryRun(mgr *polecat.Manager, rigPath string) error {
 		return nil
 	}
 
-	polecats, err := mgr.List()
+	polecats, err := polecat.List(mgr)
 	if err != nil {
 		return fmt.Errorf("listing polecats: %w", err)
 	}
@@ -1693,7 +1693,11 @@ type nukePolecatOptions struct {
 }
 
 func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manager, r *rig.Rig, opts nukePolecatOptions) error {
-	if err := checkNukeActiveMRSafety(mgr, polecatName, rigName, opts.Force); err != nil {
+	var mrChecker activeMRRemovalChecker
+	if mgr != nil {
+		mrChecker = managerActiveMRChecker{mgr}
+	}
+	if err := checkNukeActiveMRSafety(mrChecker, polecatName, rigName, opts.Force); err != nil {
 		return err
 	}
 
@@ -1728,7 +1732,7 @@ func stopPolecatSessionForNuke(polecatName string, r *rig.Rig) {
 }
 
 func polecatNukeInfo(mgr *polecat.Manager, polecatName string) (*polecat.Polecat, string) {
-	polecatInfo, err := mgr.Get(polecatName)
+	polecatInfo, err := polecat.Get(mgr, polecatName)
 	if err != nil || polecatInfo == nil {
 		return polecatInfo, ""
 	}
@@ -1783,7 +1787,7 @@ func polecatNukeGit(polecatInfo *polecat.Polecat, r *rig.Rig) *git.Git {
 }
 
 func removePolecatWorktreeForNuke(mgr *polecat.Manager, polecatName, rigName string, r *rig.Rig, force bool) error {
-	if err := mgr.RemoveWithOptions(polecatName, force, true, false); err != nil {
+	if err := polecat.RemoveWithOptions(mgr, polecatName, force, true, false); err != nil {
 		if errors.Is(err, polecat.ErrPolecatNotFound) {
 			fmt.Printf("  %s worktree already gone\n", style.Dim.Render("○"))
 			resetPolecatAgentBeadForReuse(r, rigName, polecatName)
@@ -1827,6 +1831,12 @@ func shouldPushPolecatBranchBeforeNuke(issue *beads.Issue, pushPolicyKnown bool)
 
 type activeMRRemovalChecker interface {
 	ActiveMRRemovalBlocker(_ string) (activeMR, blocker string)
+}
+
+type managerActiveMRChecker struct{ mgr *polecat.Manager }
+
+func (c managerActiveMRChecker) ActiveMRRemovalBlocker(name string) (string, string) {
+	return polecat.ActiveMRRemovalBlocker(c.mgr, name)
 }
 
 func checkNukeActiveMRSafety(checker activeMRRemovalChecker, polecatName, rigName string, force bool) error {
@@ -1946,7 +1956,7 @@ func runPolecatStale(_ *cobra.Command, args []string) error {
 
 	fmt.Printf("Detecting stale polecats in %s (threshold: %d commits behind main)...\n\n", r.Name, polecatState().staleThreshold)
 
-	staleInfos, err := mgr.DetectStalePolecats(polecatState().staleThreshold)
+	staleInfos, err := polecat.DetectStalePolecats(mgr, polecatState().staleThreshold)
 	if err != nil {
 		return fmt.Errorf("detecting stale polecats: %w", err)
 	}
@@ -2207,7 +2217,7 @@ func runPolecatPoolInit(_ *cobra.Command, args []string) error {
 
 	poolSize, fixedNames := polecatPoolConfig(r.Path)
 
-	existing, err := mgr.List()
+	existing, err := polecat.List(mgr)
 	if err != nil {
 		return fmt.Errorf("listing existing polecats: %w", err)
 	}
@@ -2283,7 +2293,7 @@ func polecatPoolNamesToCreate(mgr *polecat.Manager, existing []*polecat.Polecat,
 		return names, nil
 	}
 
-	namePool := mgr.GetNamePool()
+	namePool := polecat.GetNamePool(mgr)
 	namePool.Reconcile(existingNamesList(existing))
 	var names []string
 	nameCount := 0
@@ -2307,12 +2317,12 @@ func createPolecatPool(mgr *polecat.Manager, names []string) int {
 	created := 0
 	for _, name := range names {
 		fmt.Printf("  %s Creating %s...", style.Dim.Render("→"), name)
-		p, addErr := mgr.Add(name)
+		p, addErr := polecat.Add(mgr, name)
 		if addErr != nil {
 			fmt.Printf(" %s %v\n", style.Warning.Render("FAILED"), addErr)
 			continue
 		}
-		if stateErr := mgr.SetAgentStateWithRetry(name, "idle"); stateErr != nil {
+		if stateErr := polecat.SetAgentStateWithRetry(mgr, name, "idle"); stateErr != nil {
 			fmt.Printf(" %s (created but couldn't set idle state: %v)\n", style.Warning.Render("⚠"), stateErr)
 		} else {
 			fmt.Printf(" %s (%s)\n", style.Success.Render("✓"), style.Dim.Render(p.ClonePath))

@@ -70,7 +70,7 @@ func effectivePolecatDirCap(configured int) int {
 }
 
 func reclaimBrokenIdlePolecatForSling(polecatMgr *polecat.Manager) (bool, error) {
-	polecats, err := polecatMgr.List()
+	polecats, err := polecat.List(polecatMgr)
 	if err != nil {
 		return false, err
 	}
@@ -85,7 +85,7 @@ func reclaimBrokenIdlePolecatForSling(polecatMgr *polecat.Manager) (bool, error)
 		}
 
 		fmt.Printf("  Reclaiming broken idle polecat %s before allocation: %v\n", candidate.Name, verifyErr)
-		if err := polecatMgr.ReclaimBrokenIdlePolecat(candidate.Name); err != nil {
+		if err := polecat.ReclaimBrokenIdlePolecat(polecatMgr, candidate.Name); err != nil {
 			fmt.Printf("  Broken idle polecat %s was not safe to reclaim: %v\n", candidate.Name, err)
 			continue
 		}
@@ -145,10 +145,10 @@ func beginPolecatSlingSpawn(rigName string, opts SlingSpawnOptions) (*polecatSli
 	}
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewManager(r, git.NewGit(r.Path), t)
-	if err := polecatMgr.CheckDoltHealth(); err != nil {
+	if err := polecat.CheckDoltHealth(polecatMgr); err != nil {
 		return nil, fmt.Errorf("pre-spawn health check failed: %w", err)
 	}
-	if err := polecatMgr.CheckDoltServerCapacity(); err != nil {
+	if err := polecat.CheckDoltServerCapacity(polecatMgr); err != nil {
 		return nil, fmt.Errorf("admission control: %w", err)
 	}
 	if err := rejectParkedSlingSpawn(townRoot, rigName); err != nil {
@@ -273,7 +273,7 @@ func detectIntegrationBaseBranch(r *rig.Rig, hookBead string) string {
 }
 
 func reuseIdlePolecatForSling(s *polecatSlingSpawn) (*SpawnedPolecatInfo, bool, error) {
-	idlePolecat, findErr := s.polecatMgr.FindIdlePolecat()
+	idlePolecat, findErr := polecat.FindIdlePolecat(s.polecatMgr)
 	if findErr != nil || idlePolecat == nil {
 		return nil, false, nil
 	}
@@ -293,7 +293,7 @@ func reuseIdlePolecatForSling(s *polecatSlingSpawn) (*SpawnedPolecatInfo, bool, 
 }
 
 func tryReuseIdlePolecat(polecatMgr *polecat.Manager, polecatName string, addOpts polecat.AddOptions) bool {
-	if _, err := polecatMgr.ReuseIdlePolecat(polecatName, addOpts); err != nil {
+	if _, err := polecat.ReuseIdlePolecat(polecatMgr, polecatName, addOpts); err != nil {
 		if errors.Is(err, polecat.ErrPolecatNeedsRecovery) {
 			fmt.Printf("  Idle polecat %s needs recovery before reuse: %v; allocating new...\n", polecatName, err)
 			return false
@@ -305,7 +305,7 @@ func tryReuseIdlePolecat(polecatMgr *polecat.Manager, polecatName string, addOpt
 }
 
 func finishReusedPolecat(s *polecatSlingSpawn, polecatName, baseBranch string) (*SpawnedPolecatInfo, error) {
-	polecatObj, err := s.polecatMgr.Get(polecatName)
+	polecatObj, err := polecat.Get(s.polecatMgr, polecatName)
 	if err != nil {
 		return nil, fmt.Errorf("getting idle polecat after reuse: %w", err)
 	}
@@ -346,17 +346,17 @@ func allocateNewPolecatForSling(s *polecatSlingSpawn) (*SpawnedPolecatInfo, erro
 		BaseBranch:   baseBranch,
 		ResumeBranch: s.opts.ResumeBranch,
 	}
-	polecatName, _, err := s.polecatMgr.AllocateAndAdd(addOpts)
+	polecatName, _, err := polecat.AllocateAndAdd(s.polecatMgr, addOpts)
 	if err != nil {
 		return nil, fmt.Errorf("allocating and creating polecat: %w", err)
 	}
 	fmt.Printf("Created polecat: %s\n", polecatName)
-	polecatObj, err := s.polecatMgr.Get(polecatName)
+	polecatObj, err := polecat.Get(s.polecatMgr, polecatName)
 	if err != nil {
 		return nil, fmt.Errorf("getting polecat after creation: %w", err)
 	}
 	if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
-		_ = s.polecatMgr.Remove(polecatName, true)
+		_ = polecat.Remove(s.polecatMgr, polecatName, true)
 		return nil, fmt.Errorf("worktree verification failed for %s: %w\nHint: try 'gt polecat nuke %s/%s --force' to clean up",
 			polecatName, err, s.rigName, polecatName)
 	}
@@ -446,10 +446,10 @@ func waitSpawnedPolecatRuntime(s *SpawnedPolecatInfo, r *rig.Rig, t *tmux.Tmux) 
 
 func updateSpawnedPolecatWorkingState(s *SpawnedPolecatInfo, r *rig.Rig, t *tmux.Tmux) {
 	polecatMgr := polecat.NewManager(r, git.NewGit(r.Path), t)
-	if err := polecatMgr.SetAgentStateWithRetry(s.PolecatName, "working"); err != nil {
+	if err := polecat.SetAgentStateWithRetry(polecatMgr, s.PolecatName, "working"); err != nil {
 		style.PrintWarning("could not update agent state after retries: %v", err)
 	}
-	if err := polecatMgr.SetState(s.PolecatName, polecat.StateWorking); err != nil {
+	if err := polecat.SetState(polecatMgr, s.PolecatName, polecat.StateWorking); err != nil {
 		style.PrintWarning("could not update issue status to in_progress: %v", err)
 	}
 }

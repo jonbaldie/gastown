@@ -42,7 +42,7 @@ func resolveAllPolecatTargets(args []string) ([]polecatTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	polecats, err := mgr.List()
+	polecats, err := polecat.List(mgr)
 	if err != nil {
 		return nil, fmt.Errorf("listing polecats: %w", err)
 	}
@@ -141,7 +141,7 @@ func loadPolecatSafetyInput(target polecatTarget) polecatSafetyInput {
 		state:     polecat.StateIdle,
 		clonePath: polecat.ClonePathFor(target.r.Path, target.rigName, target.polecatName),
 	}
-	polecatInfo, infoErr := target.mgr.Get(target.polecatName)
+	polecatInfo, infoErr := polecat.Get(target.mgr, target.polecatName)
 	if infoErr == nil && polecatInfo != nil {
 		input.state = polecatInfo.State
 		input.issue = polecatInfo.Issue
@@ -223,7 +223,7 @@ type dryRunSafetyInput struct {
 
 func loadDryRunSafetyInput(target polecatTarget) dryRunSafetyInput {
 	input := dryRunSafetyInput{bd: beads.New(target.r.Path)}
-	input.polecatInfo, input.infoErr = target.mgr.Get(target.polecatName)
+	input.polecatInfo, input.infoErr = polecat.Get(target.mgr, target.polecatName)
 	agentBeadID := polecatBeadIDForRig(target.r, target.rigName, target.polecatName)
 	input.agentIssue, input.fields, input.agentErr = input.bd.GetAgentBead(agentBeadID)
 	return input
