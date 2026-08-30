@@ -25,6 +25,12 @@ type invalidCrew struct {
 	issue     string
 }
 
+type crewState struct {
+	Name      string `json:"name"`
+	Rig       string `json:"rig"`
+	ClonePath string `json:"clone_path"`
+}
+
 // NewCrewStateCheck creates a new crew state check.
 func NewCrewStateCheck() *CrewStateCheck {
 	return &CrewStateCheck{
@@ -53,75 +59,14 @@ func (c *CrewStateCheck) Run(ctx *CheckContext) *CheckResult {
 
 	var validCount int
 	var details []string
-
 	for _, cd := range crewDirs {
-		stateFile := filepath.Join(cd.path, "state.json")
-
-		// Check if state.json exists
-		data, err := os.ReadFile(stateFile)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// Missing state file is OK - code will use defaults
-				validCount++
-				continue
-			}
-			// Other errors are problems
-			issue := fmt.Sprintf("cannot read state.json: %v", err)
-			c.invalidCrews = append(c.invalidCrews, invalidCrew{
-				path:      cd.path,
-				stateFile: stateFile,
-				rigName:   cd.rigName,
-				crewName:  cd.crewName,
-				issue:     issue,
-			})
-			details = append(details, fmt.Sprintf("%s/%s: %s", cd.rigName, cd.crewName, issue))
-			continue
-		}
-
-		// Parse state.json
-		var state struct {
-			Name      string `json:"name"`
-			Rig       string `json:"rig"`
-			ClonePath string `json:"clone_path"`
-		}
-		if err := json.Unmarshal(data, &state); err != nil {
-			issue := "invalid JSON in state.json"
-			c.invalidCrews = append(c.invalidCrews, invalidCrew{
-				path:      cd.path,
-				stateFile: stateFile,
-				rigName:   cd.rigName,
-				crewName:  cd.crewName,
-				issue:     issue,
-			})
-			details = append(details, fmt.Sprintf("%s/%s: %s", cd.rigName, cd.crewName, issue))
-			continue
-		}
-
-		// Check for empty/incomplete state
-		var issues []string
-		if state.Name == "" {
-			issues = append(issues, "missing name")
-		}
-		if state.Rig == "" {
-			issues = append(issues, "missing rig")
-		}
-		if state.ClonePath == "" {
-			issues = append(issues, "missing clone_path")
-		}
-
-		if len(issues) > 0 {
-			issue := strings.Join(issues, ", ")
-			c.invalidCrews = append(c.invalidCrews, invalidCrew{
-				path:      cd.path,
-				stateFile: stateFile,
-				rigName:   cd.rigName,
-				crewName:  cd.crewName,
-				issue:     issue,
-			})
-			details = append(details, fmt.Sprintf("%s/%s: %s", cd.rigName, cd.crewName, issue))
-		} else {
+		invalid, valid := inspectCrewState(cd)
+		if valid {
 			validCount++
+			continue
 		}
+		c.invalidCrews = append(c.invalidCrews, invalid)
+		details = append(details, formatInvalidCrew(invalid))
 	}
 
 	if len(c.invalidCrews) == 0 {
@@ -139,6 +84,55 @@ func (c *CrewStateCheck) Run(ctx *CheckContext) *CheckResult {
 		Details: details,
 		FixHint: "Run 'gt doctor --fix' to regenerate state files",
 	}
+}
+
+func inspectCrewState(cd crewDir) (invalidCrew, bool) {
+	stateFile := filepath.Join(cd.path, "state.json")
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Missing state file is OK - code will use defaults.
+			return invalidCrew{}, true
+		}
+		return invalidCrewFor(cd, stateFile, fmt.Sprintf("cannot read state.json: %v", err)), false
+	}
+
+	var state crewState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return invalidCrewFor(cd, stateFile, "invalid JSON in state.json"), false
+	}
+	if issue := missingCrewStateFields(state); issue != "" {
+		return invalidCrewFor(cd, stateFile, issue), false
+	}
+	return invalidCrew{}, true
+}
+
+func invalidCrewFor(cd crewDir, stateFile, issue string) invalidCrew {
+	return invalidCrew{
+		path:      cd.path,
+		stateFile: stateFile,
+		rigName:   cd.rigName,
+		crewName:  cd.crewName,
+		issue:     issue,
+	}
+}
+
+func missingCrewStateFields(state crewState) string {
+	var issues []string
+	if state.Name == "" {
+		issues = append(issues, "missing name")
+	}
+	if state.Rig == "" {
+		issues = append(issues, "missing rig")
+	}
+	if state.ClonePath == "" {
+		issues = append(issues, "missing clone_path")
+	}
+	return strings.Join(issues, ", ")
+}
+
+func formatInvalidCrew(ic invalidCrew) string {
+	return fmt.Sprintf("%s/%s: %s", ic.rigName, ic.crewName, ic.issue)
 }
 
 // Fix regenerates invalid state.json files with correct values.
@@ -182,37 +176,43 @@ type crewDir struct {
 // findAllCrewDirs finds all crew directories in the workspace.
 func (c *CrewStateCheck) findAllCrewDirs(townRoot string) []crewDir {
 	var dirs []crewDir
+	for _, entry := range townCrewRigEntries(townRoot) {
+		dirs = append(dirs, crewDirsForRig(townRoot, entry.Name())...)
+	}
+	return dirs
+}
 
+func townCrewRigEntries(townRoot string) []os.DirEntry {
 	entries, err := os.ReadDir(townRoot)
 	if err != nil {
-		return dirs
+		return nil
 	}
-
+	var rigs []os.DirEntry
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "mayor" {
-			continue
-		}
-
-		rigName := entry.Name()
-		crewPath := filepath.Join(townRoot, rigName, "crew")
-
-		crewEntries, err := os.ReadDir(crewPath)
-		if err != nil {
-			continue
-		}
-
-		for _, crew := range crewEntries {
-			if !crew.IsDir() || strings.HasPrefix(crew.Name(), ".") {
-				continue
-			}
-			dirs = append(dirs, crewDir{
-				path:     filepath.Join(crewPath, crew.Name()),
-				rigName:  rigName,
-				crewName: crew.Name(),
-			})
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && entry.Name() != "mayor" {
+			rigs = append(rigs, entry)
 		}
 	}
+	return rigs
+}
 
+func crewDirsForRig(townRoot, rigName string) []crewDir {
+	crewPath := filepath.Join(townRoot, rigName, "crew")
+	crewEntries, err := os.ReadDir(crewPath)
+	if err != nil {
+		return nil
+	}
+	var dirs []crewDir
+	for _, crew := range crewEntries {
+		if !crew.IsDir() || strings.HasPrefix(crew.Name(), ".") {
+			continue
+		}
+		dirs = append(dirs, crewDir{
+			path:     filepath.Join(crewPath, crew.Name()),
+			rigName:  rigName,
+			crewName: crew.Name(),
+		})
+	}
 	return dirs
 }
 
@@ -300,67 +300,45 @@ func (c *CrewWorktreeCheck) Fix(ctx *CheckContext) error {
 // indicate they were created via `gt worktree` for cross-rig work.
 func (c *CrewWorktreeCheck) findCrewWorktrees(townRoot string) []staleWorktree {
 	var worktrees []staleWorktree
-
-	entries, err := os.ReadDir(townRoot)
-	if err != nil {
-		return worktrees
+	for _, entry := range townCrewRigEntries(townRoot) {
+		worktrees = append(worktrees, crewWorktreesForRig(townRoot, entry.Name())...)
 	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "mayor" {
-			continue
-		}
-
-		rigName := entry.Name()
-		crewPath := filepath.Join(townRoot, rigName, "crew")
-
-		crewEntries, err := os.ReadDir(crewPath)
-		if err != nil {
-			continue
-		}
-
-		for _, crew := range crewEntries {
-			if !crew.IsDir() || strings.HasPrefix(crew.Name(), ".") {
-				continue
-			}
-
-			name := crew.Name()
-			path := filepath.Join(crewPath, name)
-
-			// Check if it's a worktree (has .git file, not directory)
-			gitPath := filepath.Join(path, ".git")
-			info, err := os.Stat(gitPath)
-			if err != nil || info.IsDir() {
-				// Not a worktree (regular clone or error)
-				continue
-			}
-
-			// Check for hyphenated name pattern: <source-rig>-<crewname>
-			// This indicates a cross-rig worktree created by `gt worktree`
-			parts := strings.SplitN(name, "-", 2)
-			if len(parts) != 2 {
-				// Not a cross-rig worktree pattern
-				continue
-			}
-
-			sourceRig := parts[0]
-			crewName := parts[1]
-
-			// Verify the source rig exists (sanity check)
-			sourceRigPath := filepath.Join(townRoot, sourceRig)
-			if _, err := os.Stat(sourceRigPath); os.IsNotExist(err) {
-				// Source rig doesn't exist - definitely stale
-			}
-
-			worktrees = append(worktrees, staleWorktree{
-				path:      path,
-				rigName:   rigName,
-				name:      name,
-				sourceRig: sourceRig,
-				crewName:  crewName,
-			})
-		}
-	}
-
 	return worktrees
+}
+
+func crewWorktreesForRig(townRoot, rigName string) []staleWorktree {
+	crewPath := filepath.Join(townRoot, rigName, "crew")
+	crewEntries, err := os.ReadDir(crewPath)
+	if err != nil {
+		return nil
+	}
+	var worktrees []staleWorktree
+	for _, crew := range crewEntries {
+		if !crew.IsDir() || strings.HasPrefix(crew.Name(), ".") {
+			continue
+		}
+		if wt, ok := staleWorktreeForCrew(rigName, crewPath, crew.Name()); ok {
+			worktrees = append(worktrees, wt)
+		}
+	}
+	return worktrees
+}
+
+func staleWorktreeForCrew(rigName, crewPath, name string) (staleWorktree, bool) {
+	path := filepath.Join(crewPath, name)
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	if err != nil || info.IsDir() {
+		return staleWorktree{}, false
+	}
+	parts := strings.SplitN(name, "-", 2)
+	if len(parts) != 2 {
+		return staleWorktree{}, false
+	}
+	return staleWorktree{
+		path:      path,
+		rigName:   rigName,
+		name:      name,
+		sourceRig: parts[0],
+		crewName:  parts[1],
+	}, true
 }
