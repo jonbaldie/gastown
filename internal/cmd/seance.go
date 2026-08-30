@@ -103,102 +103,102 @@ func runSeance(cmd *cobra.Command, _ []string) error {
 }
 
 func runSeanceList(opts seanceOptions) error {
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil || townRoot == "" {
-		return fmt.Errorf("not in a Gas Town workspace")
-	}
-
-	// Read session events from our event stream
-	sessions, err := discoverSessions(townRoot)
+	sessions, err := loadSeanceListSessions()
 	if err != nil {
-		return fmt.Errorf("discovering sessions: %w", err)
+		return err
 	}
-
-	// Apply filters
-	var filtered []sessionEvent
-	for _, s := range sessions {
-		if opts.role != "" {
-			actor := strings.ToLower(s.Actor)
-			if !strings.Contains(actor, strings.ToLower(opts.role)) {
-				continue
-			}
-		}
-		if opts.rig != "" {
-			actor := strings.ToLower(s.Actor)
-			if !strings.Contains(actor, strings.ToLower(opts.rig)) {
-				continue
-			}
-		}
-		filtered = append(filtered, s)
-	}
-
-	// Apply limit
+	filtered := filterSeanceSessions(sessions, opts)
 	if opts.recent > 0 && len(filtered) > opts.recent {
 		filtered = filtered[:opts.recent]
 	}
+	return printSeanceList(filtered, opts.json)
+}
 
-	if opts.json {
+func loadSeanceListSessions() ([]sessionEvent, error) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return nil, fmt.Errorf("not in a Gas Town workspace")
+	}
+	sessions, err := discoverSessions(townRoot)
+	if err != nil {
+		return nil, fmt.Errorf("discovering sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+func filterSeanceSessions(sessions []sessionEvent, opts seanceOptions) []sessionEvent {
+	var filtered []sessionEvent
+	for _, s := range sessions {
+		if seanceSessionMatches(s, opts) {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+func seanceSessionMatches(s sessionEvent, opts seanceOptions) bool {
+	actor := strings.ToLower(s.Actor)
+	if opts.role != "" && !strings.Contains(actor, strings.ToLower(opts.role)) {
+		return false
+	}
+	if opts.rig != "" && !strings.Contains(actor, strings.ToLower(opts.rig)) {
+		return false
+	}
+	return true
+}
+
+func printSeanceList(filtered []sessionEvent, jsonOutput bool) error {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(filtered)
 	}
-
 	if len(filtered) == 0 {
 		fmt.Println("No session events found.")
 		fmt.Println(style.Dim.Render("Sessions are discovered from ~/gt/.events.jsonl"))
 		fmt.Println(style.Dim.Render("Ensure SessionStart hooks emit session_start events"))
 		return nil
 	}
+	printSeanceListTable(filtered)
+	return nil
+}
 
-	// Print header
+func printSeanceListTable(filtered []sessionEvent) {
 	fmt.Printf("%s\n\n", style.Bold.Render("Discoverable Sessions"))
-
-	// Column widths
-	idWidth := 12
-	roleWidth := 26
-	timeWidth := 16
-	topicWidth := 28
-
+	idWidth, roleWidth, timeWidth, topicWidth := 12, 26, 16, 28
 	fmt.Printf("%-*s  %-*s  %-*s  %-*s\n",
 		idWidth, "SESSION_ID",
 		roleWidth, "ROLE",
 		timeWidth, "STARTED",
 		topicWidth, "TOPIC")
 	fmt.Printf("%s\n", strings.Repeat("─", idWidth+roleWidth+timeWidth+topicWidth+6))
-
 	for _, s := range filtered {
-		sessionID := getPayloadString(s.Payload, "session_id")
-		if len(sessionID) > idWidth {
-			sessionID = sessionID[:idWidth-1] + "…"
-		}
-
-		role := s.Actor
-		if len(role) > roleWidth {
-			role = role[:roleWidth-1] + "…"
-		}
-
-		timeStr := formatEventTime(s.Timestamp)
-
-		topic := getPayloadString(s.Payload, "topic")
-		if topic == "" {
-			topic = "-"
-		}
-		if len(topic) > topicWidth {
-			topic = topic[:topicWidth-1] + "…"
-		}
-
-		fmt.Printf("%-*s  %-*s  %-*s  %-*s\n",
-			idWidth, sessionID,
-			roleWidth, role,
-			timeWidth, timeStr,
-			topicWidth, topic)
+		printSeanceListRow(s, idWidth, roleWidth, timeWidth, topicWidth)
 	}
-
 	fmt.Printf("\n%s\n", style.Bold.Render("Talk to a predecessor:"))
 	fmt.Printf("  gt seance --talk <session-id>\n")
 	fmt.Printf("  gt seance --talk <session-id> -p \"Where did you put X?\"\n")
+}
 
-	return nil
+func printSeanceListRow(s sessionEvent, idWidth, roleWidth, timeWidth, topicWidth int) {
+	sessionID := truncateSeanceCol(getPayloadString(s.Payload, "session_id"), idWidth)
+	role := truncateSeanceCol(s.Actor, roleWidth)
+	topic := getPayloadString(s.Payload, "topic")
+	if topic == "" {
+		topic = "-"
+	}
+	fmt.Printf("%-*s  %-*s  %-*s  %-*s\n",
+		idWidth, sessionID,
+		roleWidth, role,
+		timeWidth, formatEventTime(s.Timestamp),
+		topicWidth, truncateSeanceCol(topic, topicWidth))
+}
+
+func truncateSeanceCol(value string, width int) string {
+	if len(value) > width {
+		return value[:width-1] + "…"
+	}
+	return value
 }
 
 // resolveSeanceCommand finds the command for an agent that supports --fork-session.
@@ -216,85 +216,80 @@ func resolveSeanceCommand() (string, error) {
 }
 
 func runSeanceTalk(sessionID, prompt string) error {
-	// Resolve the agent command that supports fork session
 	agentCmd, err := resolveSeanceCommand()
 	if err != nil {
 		return err
 	}
-
-	// Clean up any orphaned symlinks from previous interrupted sessions
 	cleanupOrphanedSessionSymlinks()
-
-	// Find workspace root (needed for both prefix resolution and session symlinks)
 	townRoot, _ := workspace.FindFromCwd()
-
-	// Resolve prefix to full session ID if needed
-	if len(sessionID) < 36 {
-		sessionID = strings.TrimSuffix(sessionID, "…")
-		sessionID = strings.TrimSuffix(sessionID, "...")
-		if townRoot != "" {
-			resolved, err := resolveSessionPrefix(townRoot, sessionID)
-			if err != nil {
-				return fmt.Errorf("resolving session ID: %w", err)
-			}
-			sessionID = resolved
-		}
+	sessionID, err = resolveSeanceTalkSessionID(townRoot, sessionID)
+	if err != nil {
+		return err
 	}
-
 	fmt.Printf("%s Summoning session %s...\n\n", style.Bold.Render("🔮"), sessionID)
 	cleanup, err := symlinkSessionToCurrentAccount(townRoot, sessionID)
 	if err != nil {
-		// Not fatal - session might already be in current account
 		fmt.Printf("%s\n", style.Dim.Render("Note: "+err.Error()))
 	}
 	if cleanup != nil {
 		defer cleanup()
 	}
+	return runSeanceTalkCommand(agentCmd, sessionID, prompt)
+}
 
-	// Build the command
-	args := []string{"--fork-session", "--resume", sessionID}
-
-	// Clear CLAUDECODE env var so the subprocess doesn't trigger the nested
-	// session guard. Seance is intentionally spawning a new Claude Code
-	// instance to read a predecessor's context — not a true nested session.
-	env := clearClaudeCodeEnv(os.Environ())
-
-	if prompt != "" {
-		// One-shot mode: -p flag (boolean) makes claude print and exit,
-		// prompt is a positional argument at the end.
-		args = append(args, "-p", prompt)
-
-		cmd := exec.Command(agentCmd, args...)
-		cmd.Env = env
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("seance failed: %w", err)
-		}
-		return nil
+func resolveSeanceTalkSessionID(townRoot, sessionID string) (string, error) {
+	if len(sessionID) >= 36 {
+		return sessionID, nil
 	}
+	sessionID = strings.TrimSuffix(sessionID, "…")
+	sessionID = strings.TrimSuffix(sessionID, "...")
+	if townRoot == "" {
+		return sessionID, nil
+	}
+	resolved, err := resolveSessionPrefix(townRoot, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("resolving session ID: %w", err)
+	}
+	return resolved, nil
+}
 
-	// Interactive mode
+func runSeanceTalkCommand(agentCmd, sessionID, prompt string) error {
+	args := []string{"--fork-session", "--resume", sessionID}
+	env := clearClaudeCodeEnv(os.Environ())
+	if prompt != "" {
+		return runSeanceTalkOneShot(agentCmd, args, env, prompt)
+	}
+	return runSeanceTalkInteractive(agentCmd, args, env)
+}
+
+func runSeanceTalkOneShot(agentCmd string, args, env []string, prompt string) error {
+	args = append(args, "-p", prompt)
+	cmd := exec.Command(agentCmd, args...)
+	cmd.Env = env
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("seance failed: %w", err)
+	}
+	return nil
+}
+
+func runSeanceTalkInteractive(agentCmd string, args, env []string) error {
 	cmd := exec.Command(agentCmd, args...)
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
 	fmt.Printf("%s\n", style.Dim.Render("You are now talking to your predecessor. Ask them anything."))
 	fmt.Printf("%s\n\n", style.Dim.Render("Exit with /exit or Ctrl+C"))
-
 	if err := cmd.Run(); err != nil {
-		// Exit errors are normal when user exits
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if exitErr.ExitCode() == 0 || exitErr.ExitCode() == 130 {
-				return nil // Normal exit or Ctrl+C
+				return nil
 			}
 		}
 		return fmt.Errorf("seance ended: %w", err)
 	}
-
 	return nil
 }
 
@@ -315,9 +310,19 @@ func clearClaudeCodeEnv(environ []string) []string {
 
 // discoverSessions reads session_start events from our event stream.
 func discoverSessions(townRoot string) ([]sessionEvent, error) {
-	eventsPath := filepath.Join(townRoot, events.EventsFile)
+	sessions, err := readSessionStartEvents(townRoot)
+	if err != nil {
+		return nil, err
+	}
+	sessions = append(sessions, workerSessionEvents(townRoot)...)
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].Timestamp > sessions[j].Timestamp
+	})
+	return sessions, nil
+}
 
-	file, err := os.Open(eventsPath)
+func readSessionStartEvents(townRoot string) ([]sessionEvent, error) {
+	file, err := os.Open(filepath.Join(townRoot, events.EventsFile))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -325,51 +330,45 @@ func discoverSessions(townRoot string) ([]sessionEvent, error) {
 		return nil, err
 	}
 	defer file.Close()
-
-	var sessions []sessionEvent
 	scanner := bufio.NewScanner(file)
-
-	// Increase buffer for large lines
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
-
+	var sessions []sessionEvent
 	for scanner.Scan() {
 		var event sessionEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			continue
 		}
-
 		if event.Type == events.TypeSessionStart {
 			sessions = append(sessions, event)
 		}
 	}
+	return sessions, scanner.Err()
+}
 
-	if wev, err := worker.ReadEvents(townRoot); err == nil {
-		for _, ev := range wev {
-			if ev.Type != worker.EventStarted && ev.Type != worker.EventStopped {
-				continue
-			}
-			payload := map[string]interface{}{
+func workerSessionEvents(townRoot string) []sessionEvent {
+	wev, err := worker.ReadEvents(townRoot)
+	if err != nil {
+		return nil
+	}
+	var sessions []sessionEvent
+	for _, ev := range wev {
+		if ev.Type != worker.EventStarted && ev.Type != worker.EventStopped {
+			continue
+		}
+		sessions = append(sessions, sessionEvent{
+			Timestamp: ev.Timestamp.UTC().Format(time.RFC3339),
+			Type:      events.TypeSessionStart,
+			Actor:     ev.SessionID,
+			Payload: map[string]interface{}{
 				"session_id": ev.SessionID,
 				"run_id":     ev.RunID,
 				"bead_id":    ev.BeadID,
 				"topic":      ev.Type,
-			}
-			sessions = append(sessions, sessionEvent{
-				Timestamp: ev.Timestamp.UTC().Format(time.RFC3339),
-				Type:      events.TypeSessionStart,
-				Actor:     ev.SessionID,
-				Payload:   payload,
-			})
-		}
+			},
+		})
 	}
-
-	// Sort by timestamp descending (most recent first)
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].Timestamp > sessions[j].Timestamp
-	})
-
-	return sessions, scanner.Err()
+	return sessions
 }
 
 // resolveSessionPrefix resolves a truncated session ID prefix to the full UUID
@@ -475,97 +474,94 @@ func findSessionLocation(townRoot, sessionID string) *sessionLocation {
 	if townRoot == "" {
 		return nil
 	}
+	if loc := findSessionLocationInAccounts(townRoot, sessionID); loc != nil {
+		return loc
+	}
+	return findSessionLocationInClaudeHome(sessionID)
+}
 
-	// Load accounts config
-	accountsPath := constants.MayorAccountsPath(townRoot)
-	cfg, err := config.LoadAccountsConfig(accountsPath)
-	if err == nil {
-		// Search each account's config directory
-		for _, acct := range cfg.Accounts {
-			if acct.ConfigDir == "" {
-				continue
-			}
-
-			// Expand ~ in path
-			configDir := acct.ConfigDir
-			if strings.HasPrefix(configDir, "~/") {
-				home, _ := os.UserHomeDir()
-				configDir = filepath.Join(home, configDir[2:])
-			}
-
-			// Search all sessions-index.json files in this account
-			projectsDir := filepath.Join(configDir, "projects")
-			if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
-				continue
-			}
-
-			// Walk through project directories
-			entries, err := os.ReadDir(projectsDir)
-			if err != nil {
-				continue
-			}
-
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-
-				indexPath := filepath.Join(projectsDir, entry.Name(), "sessions-index.json")
-				if _, err := os.Stat(indexPath); os.IsNotExist(err) {
-					continue
-				}
-
-				// Read and parse the sessions index
-				data, err := os.ReadFile(indexPath)
-				if err != nil {
-					continue
-				}
-
-				var index sessionsIndex
-				if err := json.Unmarshal(data, &index); err != nil {
-					continue
-				}
-
-				// Check if this index contains our session
-				for _, rawEntry := range index.Entries {
-					var e sessionsIndexEntry
-					if json.Unmarshal(rawEntry, &e) == nil && e.SessionID == sessionID {
-						return &sessionLocation{
-							configDir:  configDir,
-							projectDir: entry.Name(),
-						}
-					}
-				}
-			}
+func findSessionLocationInAccounts(townRoot, sessionID string) *sessionLocation {
+	cfg, err := config.LoadAccountsConfig(constants.MayorAccountsPath(townRoot))
+	if err != nil {
+		return nil
+	}
+	for _, acct := range cfg.Accounts {
+		if acct.ConfigDir == "" {
+			continue
+		}
+		if loc := findSessionInConfigDir(expandSeanceHomePath(acct.ConfigDir), sessionID); loc != nil {
+			return loc
 		}
 	}
+	return nil
+}
 
-	// Fallback: direct scan of ~/.claude/projects/ for single-account setups
-	// where accounts.json is missing or yields no results
+func expandSeanceHomePath(configDir string) string {
+	if !strings.HasPrefix(configDir, "~/") {
+		return configDir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, configDir[2:])
+}
+
+func findSessionInConfigDir(configDir, sessionID string) *sessionLocation {
+	projectsDir := filepath.Join(configDir, "projects")
+	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
+		return nil
+	}
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if sessionIndexContainsID(filepath.Join(projectsDir, entry.Name(), "sessions-index.json"), sessionID) {
+			return &sessionLocation{configDir: configDir, projectDir: entry.Name()}
+		}
+	}
+	return nil
+}
+
+func sessionIndexContainsID(indexPath, sessionID string) bool {
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		return false
+	}
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return false
+	}
+	var index sessionsIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return false
+	}
+	return sessionsIndexHasID(index, sessionID)
+}
+
+func findSessionLocationInClaudeHome(sessionID string) *sessionLocation {
 	home, homeErr := os.UserHomeDir()
-	if homeErr == nil {
-		claudeDir := filepath.Join(home, ".claude")
-		resolved, evalErr := filepath.EvalSymlinks(claudeDir)
-		if evalErr != nil {
-			resolved = claudeDir
+	if homeErr != nil {
+		return nil
+	}
+	claudeDir := filepath.Join(home, ".claude")
+	resolved, evalErr := filepath.EvalSymlinks(claudeDir)
+	if evalErr != nil {
+		resolved = claudeDir
+	}
+	fallbackEntries, readErr := os.ReadDir(filepath.Join(resolved, "projects"))
+	if readErr != nil {
+		return nil
+	}
+	for _, entry := range fallbackEntries {
+		if !entry.IsDir() {
+			continue
 		}
-		fallbackProjectsDir := filepath.Join(resolved, "projects")
-		if fallbackEntries, readErr := os.ReadDir(fallbackProjectsDir); readErr == nil {
-			for _, entry := range fallbackEntries {
-				if !entry.IsDir() {
-					continue
-				}
-				sessionFile := filepath.Join(fallbackProjectsDir, entry.Name(), sessionID+".jsonl")
-				if _, statErr := os.Stat(sessionFile); statErr == nil {
-					return &sessionLocation{
-						configDir:  resolved,
-						projectDir: entry.Name(),
-					}
-				}
-			}
+		sessionFile := filepath.Join(resolved, "projects", entry.Name(), sessionID+".jsonl")
+		if _, statErr := os.Stat(sessionFile); statErr == nil {
+			return &sessionLocation{configDir: resolved, projectDir: entry.Name()}
 		}
 	}
-
 	return nil
 }
 
@@ -589,314 +585,324 @@ func symlinkSessionToCurrentAccount(townRoot, sessionID string) (cleanup func(),
 	return symlinkSessionToConfigDir(townRoot, sessionID, currentConfigDir)
 }
 
-// symlinkSessionToConfigDir symlinks a session file from its source account into the
-// given target config directory, updating the sessions-index.json so Claude can find it.
-// Returns a cleanup function (may be nil if no work was needed) and any error.
 func symlinkSessionToConfigDir(townRoot, sessionID, targetConfigDir string) (cleanup func(), err error) {
-	// Find where the session lives
 	loc := findSessionLocation(townRoot, sessionID)
 	if loc == nil {
 		return nil, fmt.Errorf("session not found in any account")
 	}
+	cleanup, done, err := symlinkSessionInSameAccount(loc, sessionID, targetConfigDir)
+	if done {
+		return cleanup, err
+	}
+	return symlinkSessionAcrossAccounts(loc, sessionID, targetConfigDir)
+}
 
-	// Session in same account but possibly different project dir.
-	// Symlink into cwd-based project dir so Claude can find it via --resume.
-	// Resolve both paths to handle macOS /var → /private/var symlink differences.
+func symlinkSessionInSameAccount(loc *sessionLocation, sessionID, targetConfigDir string) (func(), bool, error) {
 	resolvedLocDir, _ := filepath.EvalSymlinks(loc.configDir)
 	resolvedTargetDir, _ := filepath.EvalSymlinks(targetConfigDir)
-	if resolvedLocDir == resolvedTargetDir {
-		cwd, cwdErr := os.Getwd()
-		if cwdErr != nil {
-			return nil, nil
-		}
-		cwdProjectDir := strings.ReplaceAll(cwd, "/", "-")
-		if cwdProjectDir == loc.projectDir {
-			return nil, nil // Already in correct project dir
-		}
-		sourceFile := filepath.Join(targetConfigDir, "projects", loc.projectDir, sessionID+".jsonl")
-		targetDir := filepath.Join(targetConfigDir, "projects", cwdProjectDir)
-		if mkErr := os.MkdirAll(targetDir, 0755); mkErr != nil {
-			return nil, nil
-		}
-		targetFile := filepath.Join(targetDir, sessionID+".jsonl")
-		if _, lstatErr := os.Lstat(targetFile); lstatErr == nil {
-			return nil, nil // Already exists
-		}
-		if symlinkErr := os.Symlink(sourceFile, targetFile); symlinkErr != nil {
-			return nil, nil
-		}
-		return func() { _ = os.Remove(targetFile) }, nil
+	if resolvedLocDir != resolvedTargetDir {
+		return nil, false, nil
 	}
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		return nil, true, nil
+	}
+	cwdProjectDir := strings.ReplaceAll(cwd, "/", "-")
+	if cwdProjectDir == loc.projectDir {
+		return nil, true, nil
+	}
+	sourceFile := filepath.Join(targetConfigDir, "projects", loc.projectDir, sessionID+".jsonl")
+	targetDir := filepath.Join(targetConfigDir, "projects", cwdProjectDir)
+	if mkErr := os.MkdirAll(targetDir, 0755); mkErr != nil {
+		return nil, true, nil
+	}
+	targetFile := filepath.Join(targetDir, sessionID+".jsonl")
+	if _, lstatErr := os.Lstat(targetFile); lstatErr == nil {
+		return nil, true, nil
+	}
+	if symlinkErr := os.Symlink(sourceFile, targetFile); symlinkErr != nil {
+		return nil, true, nil
+	}
+	return func() { _ = os.Remove(targetFile) }, true, nil
+}
 
-	// Source: the session file in the other account
+func symlinkSessionAcrossAccounts(loc *sessionLocation, sessionID, targetConfigDir string) (func(), error) {
 	sourceSessionFile := filepath.Join(loc.configDir, "projects", loc.projectDir, sessionID+".jsonl")
-
-	// Check source exists
 	if _, err := os.Stat(sourceSessionFile); os.IsNotExist(err) {
 		return nil, fmt.Errorf("session file not found: %s", sourceSessionFile)
 	}
-
-	// Target: the project directory in the target account
 	currentProjectDir := filepath.Join(targetConfigDir, "projects", loc.projectDir)
-
-	// Create project directory if it doesn't exist
 	if err := os.MkdirAll(currentProjectDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating project directory: %w", err)
 	}
-
-	// Symlink the specific session file
 	targetSessionFile := filepath.Join(currentProjectDir, sessionID+".jsonl")
-
-	// Check if target session file already exists
-	if info, err := os.Lstat(targetSessionFile); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			// Already a symlink - check if it points to the right place
-			existing, _ := os.Readlink(targetSessionFile)
-			if existing == sourceSessionFile {
-				// Already symlinked correctly, no cleanup needed
-				return nil, nil
-			}
-			// Different symlink, remove it
-			_ = os.Remove(targetSessionFile)
-		} else {
-			// Real file exists - session already in current account
-			return nil, nil
-		}
+	if done, err := prepareCrossAccountSessionTarget(sourceSessionFile, targetSessionFile); done {
+		return nil, err
 	}
-
-	// Create the symlink to the session file
 	if err := os.Symlink(sourceSessionFile, targetSessionFile); err != nil {
 		return nil, fmt.Errorf("creating symlink: %w", err)
 	}
+	indexModified, err := addSessionToTargetIndex(loc, sessionID, currentProjectDir, targetSessionFile)
+	if err != nil {
+		return nil, err
+	}
+	targetIndexPath := filepath.Join(currentProjectDir, "sessions-index.json")
+	return seanceSessionCleanup(targetSessionFile, targetIndexPath, sessionID, indexModified), nil
+}
 
-	// Also need to update/create sessions-index.json so Claude can find the session
-	// Read source index to get the session entry
+func prepareCrossAccountSessionTarget(sourceSessionFile, targetSessionFile string) (bool, error) {
+	info, err := os.Lstat(targetSessionFile)
+	if err != nil {
+		return false, nil
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return true, nil
+	}
+	existing, _ := os.Readlink(targetSessionFile)
+	if existing == sourceSessionFile {
+		return true, nil
+	}
+	_ = os.Remove(targetSessionFile)
+	return false, nil
+}
+
+func addSessionToTargetIndex(loc *sessionLocation, sessionID, currentProjectDir, targetSessionFile string) (bool, error) {
+	sessionEntry, err := loadSourceSessionIndexEntry(loc, sessionID, targetSessionFile)
+	if err != nil {
+		return false, err
+	}
+	targetIndexPath := filepath.Join(currentProjectDir, "sessions-index.json")
+	lock, err := lockSessionsIndex(targetIndexPath)
+	if err != nil {
+		_ = os.Remove(targetSessionFile)
+		return false, fmt.Errorf("locking sessions index: %w", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+	targetIndex := loadOrInitSessionsIndex(targetIndexPath)
+	if sessionsIndexHasID(targetIndex, sessionID) {
+		return false, nil
+	}
+	targetIndex.Entries = append(targetIndex.Entries, sessionEntry)
+	targetIndexData, err := json.MarshalIndent(targetIndex, "", "  ")
+	if err != nil {
+		_ = os.Remove(targetSessionFile)
+		return false, fmt.Errorf("encoding target sessions index: %w", err)
+	}
+	if err := os.WriteFile(targetIndexPath, targetIndexData, 0600); err != nil {
+		_ = os.Remove(targetSessionFile)
+		return false, fmt.Errorf("writing target sessions index: %w", err)
+	}
+	return true, nil
+}
+
+func loadSourceSessionIndexEntry(loc *sessionLocation, sessionID, targetSessionFile string) (json.RawMessage, error) {
 	sourceIndexPath := filepath.Join(loc.configDir, "projects", loc.projectDir, "sessions-index.json")
 	sourceIndexData, err := os.ReadFile(sourceIndexPath)
 	if err != nil {
-		// Clean up the symlink we just created
 		_ = os.Remove(targetSessionFile)
 		return nil, fmt.Errorf("reading source sessions index: %w", err)
 	}
-
 	var sourceIndex sessionsIndex
 	if err := json.Unmarshal(sourceIndexData, &sourceIndex); err != nil {
 		_ = os.Remove(targetSessionFile)
 		return nil, fmt.Errorf("parsing source sessions index: %w", err)
 	}
-
-	// Find the session entry (as raw JSON to preserve all fields)
-	var sessionEntry json.RawMessage
 	for _, rawEntry := range sourceIndex.Entries {
 		var e sessionsIndexEntry
 		if json.Unmarshal(rawEntry, &e) == nil && e.SessionID == sessionID {
-			sessionEntry = rawEntry
-			break
+			return rawEntry, nil
 		}
 	}
+	_ = os.Remove(targetSessionFile)
+	return nil, fmt.Errorf("session not found in source index")
+}
 
-	if sessionEntry == nil {
-		_ = os.Remove(targetSessionFile)
-		return nil, fmt.Errorf("session not found in source index")
-	}
-
-	// Read or create target index (with file locking to prevent race conditions)
-	targetIndexPath := filepath.Join(currentProjectDir, "sessions-index.json")
-
-	// Acquire lock for read-modify-write operation
-	lock, err := lockSessionsIndex(targetIndexPath)
-	if err != nil {
-		_ = os.Remove(targetSessionFile)
-		return nil, fmt.Errorf("locking sessions index: %w", err)
-	}
-	defer func() { _ = lock.Unlock() }()
-
+func loadOrInitSessionsIndex(path string) sessionsIndex {
 	var targetIndex sessionsIndex
-	if targetIndexData, err := os.ReadFile(targetIndexPath); err == nil {
+	if targetIndexData, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(targetIndexData, &targetIndex)
-	} else {
-		targetIndex.Version = 1
+		return targetIndex
 	}
+	targetIndex.Version = 1
+	return targetIndex
+}
 
-	// Check if session already in target index
-	sessionInIndex := false
-	for _, rawEntry := range targetIndex.Entries {
+func sessionsIndexHasID(idx sessionsIndex, sessionID string) bool {
+	for _, rawEntry := range idx.Entries {
 		var e sessionsIndexEntry
 		if json.Unmarshal(rawEntry, &e) == nil && e.SessionID == sessionID {
-			sessionInIndex = true
-			break
+			return true
 		}
 	}
+	return false
+}
 
-	// Add session to target index if not present
-	indexModified := false
-	if !sessionInIndex {
-		targetIndex.Entries = append(targetIndex.Entries, sessionEntry)
-		indexModified = true
-
-		// Write updated index
-		targetIndexData, err := json.MarshalIndent(targetIndex, "", "  ")
-		if err != nil {
-			_ = os.Remove(targetSessionFile)
-			return nil, fmt.Errorf("encoding target sessions index: %w", err)
-		}
-		if err := os.WriteFile(targetIndexPath, targetIndexData, 0600); err != nil {
-			_ = os.Remove(targetSessionFile)
-			return nil, fmt.Errorf("writing target sessions index: %w", err)
-		}
-	}
-
-	// Return cleanup function
-	cleanup = func() {
+func seanceSessionCleanup(targetSessionFile, targetIndexPath, sessionID string, indexModified bool) func() {
+	return func() {
 		_ = os.Remove(targetSessionFile)
-		// If we modified the index, remove the entry we added
-		if indexModified {
-			// Acquire lock for read-modify-write operation
-			cleanupLock, lockErr := lockSessionsIndex(targetIndexPath)
-			if lockErr == nil {
-				defer func() { _ = cleanupLock.Unlock() }()
-			}
-			// Proceed with best-effort cleanup even without lock,
-			// to avoid leaving stale entries in sessions-index.json
-
-			// Re-read index, remove our entry, write it back
-			if data, err := os.ReadFile(targetIndexPath); err == nil {
-				var idx sessionsIndex
-				if json.Unmarshal(data, &idx) == nil {
-					newEntries := make([]json.RawMessage, 0, len(idx.Entries))
-					for _, rawEntry := range idx.Entries {
-						var e sessionsIndexEntry
-						if json.Unmarshal(rawEntry, &e) == nil && e.SessionID != sessionID {
-							newEntries = append(newEntries, rawEntry)
-						}
-					}
-					idx.Entries = newEntries
-					if newData, err := json.MarshalIndent(idx, "", "  "); err == nil {
-						_ = os.WriteFile(targetIndexPath, newData, 0600)
-					}
-				}
-			}
+		if !indexModified {
+			return
 		}
+		cleanupLock, lockErr := lockSessionsIndex(targetIndexPath)
+		if lockErr == nil {
+			defer func() { _ = cleanupLock.Unlock() }()
+		}
+		removeSessionFromIndexFile(targetIndexPath, sessionID)
 	}
+}
 
-	return cleanup, nil
+func removeSessionFromIndexFile(targetIndexPath, sessionID string) {
+	data, err := os.ReadFile(targetIndexPath)
+	if err != nil {
+		return
+	}
+	var idx sessionsIndex
+	if json.Unmarshal(data, &idx) != nil {
+		return
+	}
+	newEntries := make([]json.RawMessage, 0, len(idx.Entries))
+	for _, rawEntry := range idx.Entries {
+		var e sessionsIndexEntry
+		if json.Unmarshal(rawEntry, &e) == nil && e.SessionID == sessionID {
+			continue
+		}
+		newEntries = append(newEntries, rawEntry)
+	}
+	idx.Entries = newEntries
+	newData, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(targetIndexPath, newData, 0600)
 }
 
 // cleanupOrphanedSessionSymlinks removes stale session symlinks from the current account.
 // This handles cases where a previous seance was interrupted (e.g., SIGKILL) and
 // couldn't run its cleanup function. Call this at the start of seance operations.
 func cleanupOrphanedSessionSymlinks() {
-	home, err := os.UserHomeDir()
+	projectsDir, ok := currentClaudeProjectsDir()
+	if !ok {
+		return
+	}
+	projectEntries, err := os.ReadDir(projectsDir)
 	if err != nil {
 		return
 	}
+	for _, projEntry := range projectEntries {
+		if !projEntry.IsDir() {
+			continue
+		}
+		cleanupOrphanedProjectSymlinks(filepath.Join(projectsDir, projEntry.Name()))
+	}
+}
 
+func currentClaudeProjectsDir() (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
 	claudeDir := filepath.Join(home, ".claude")
 	currentConfigDir, err := filepath.EvalSymlinks(claudeDir)
 	if err != nil {
 		currentConfigDir = claudeDir
 	}
-
 	projectsDir := filepath.Join(currentConfigDir, "projects")
 	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
+		return "", false
+	}
+	return projectsDir, true
+}
+
+func cleanupOrphanedProjectSymlinks(projPath string) {
+	orphanedSessionIDs := collectOrphanedSessionIDs(projPath)
+	if len(orphanedSessionIDs) == 0 {
 		return
 	}
+	removeOrphanedIndexEntries(filepath.Join(projPath, "sessions-index.json"), orphanedSessionIDs)
+}
 
-	// Walk through project directories
-	projectEntries, err := os.ReadDir(projectsDir)
+func collectOrphanedSessionIDs(projPath string) []string {
+	files, err := os.ReadDir(projPath)
+	if err != nil {
+		return nil
+	}
+	var orphanedSessionIDs []string
+	for _, f := range files {
+		if sessionID, ok := orphanedSessionSymlinkID(filepath.Join(projPath, f.Name()), f.Name()); ok {
+			orphanedSessionIDs = append(orphanedSessionIDs, sessionID)
+		}
+	}
+	return orphanedSessionIDs
+}
+
+func orphanedSessionSymlinkID(filePath, name string) (string, bool) {
+	if !strings.HasSuffix(name, ".jsonl") {
+		return "", false
+	}
+	info, err := os.Lstat(filePath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	target, err := os.Readlink(filePath)
+	if err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		return "", false
+	}
+	_ = os.Remove(filePath)
+	return strings.TrimSuffix(name, ".jsonl"), true
+}
+
+func removeOrphanedIndexEntries(indexPath string, orphanedSessionIDs []string) {
+	lock, lockErr := lockSessionsIndex(indexPath)
+	if lockErr != nil {
+		return
+	}
+	defer func() { _ = lock.Unlock() }()
+	index, ok := readSessionsIndexFile(indexPath)
+	if !ok {
+		return
+	}
+	newEntries := filterOrphanedIndexEntries(index.Entries, orphanedSessionIDs)
+	if len(newEntries) == len(index.Entries) {
+		return
+	}
+	index.Entries = newEntries
+	writeSessionsIndexFile(indexPath, index)
+}
+
+func readSessionsIndexFile(indexPath string) (sessionsIndex, bool) {
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return sessionsIndex{}, false
+	}
+	var index sessionsIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return sessionsIndex{}, false
+	}
+	return index, true
+}
+
+func filterOrphanedIndexEntries(entries []json.RawMessage, orphanedSessionIDs []string) []json.RawMessage {
+	orphanedSet := make(map[string]bool, len(orphanedSessionIDs))
+	for _, id := range orphanedSessionIDs {
+		orphanedSet[id] = true
+	}
+	newEntries := make([]json.RawMessage, 0, len(entries))
+	for _, rawEntry := range entries {
+		var e sessionsIndexEntry
+		if json.Unmarshal(rawEntry, &e) == nil && !orphanedSet[e.SessionID] {
+			newEntries = append(newEntries, rawEntry)
+		}
+	}
+	return newEntries
+}
+
+func writeSessionsIndexFile(indexPath string, index sessionsIndex) {
+	newData, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return
 	}
-
-	for _, projEntry := range projectEntries {
-		if !projEntry.IsDir() {
-			continue
-		}
-
-		projPath := filepath.Join(projectsDir, projEntry.Name())
-		files, err := os.ReadDir(projPath)
-		if err != nil {
-			continue
-		}
-
-		var orphanedSessionIDs []string
-
-		for _, f := range files {
-			if !strings.HasSuffix(f.Name(), ".jsonl") {
-				continue
-			}
-
-			filePath := filepath.Join(projPath, f.Name())
-			info, err := os.Lstat(filePath)
-			if err != nil {
-				continue
-			}
-
-			// Only check symlinks
-			if info.Mode()&os.ModeSymlink == 0 {
-				continue
-			}
-
-			// Check if symlink target exists
-			target, err := os.Readlink(filePath)
-			if err != nil {
-				continue
-			}
-
-			if _, err := os.Stat(target); os.IsNotExist(err) {
-				// Target doesn't exist - this is an orphaned symlink
-				sessionID := strings.TrimSuffix(f.Name(), ".jsonl")
-				orphanedSessionIDs = append(orphanedSessionIDs, sessionID)
-				_ = os.Remove(filePath)
-			}
-		}
-
-		// Clean up orphaned entries from sessions-index.json
-		if len(orphanedSessionIDs) > 0 {
-			indexPath := filepath.Join(projPath, "sessions-index.json")
-
-			// Acquire lock for read-modify-write operation
-			lock, lockErr := lockSessionsIndex(indexPath)
-			if lockErr != nil {
-				// Best effort cleanup - skip this project if lock fails
-				continue
-			}
-
-			data, err := os.ReadFile(indexPath)
-			if err != nil {
-				_ = lock.Unlock()
-				continue
-			}
-
-			var index sessionsIndex
-			if err := json.Unmarshal(data, &index); err != nil {
-				_ = lock.Unlock()
-				continue
-			}
-
-			// Build a set of orphaned IDs for fast lookup
-			orphanedSet := make(map[string]bool)
-			for _, id := range orphanedSessionIDs {
-				orphanedSet[id] = true
-			}
-
-			// Filter out orphaned entries
-			newEntries := make([]json.RawMessage, 0, len(index.Entries))
-			for _, rawEntry := range index.Entries {
-				var e sessionsIndexEntry
-				if json.Unmarshal(rawEntry, &e) == nil && !orphanedSet[e.SessionID] {
-					newEntries = append(newEntries, rawEntry)
-				}
-			}
-
-			if len(newEntries) != len(index.Entries) {
-				index.Entries = newEntries
-				if newData, err := json.MarshalIndent(index, "", "  "); err == nil {
-					_ = os.WriteFile(indexPath, newData, 0600)
-				}
-			}
-
-			_ = lock.Unlock()
-		}
-	}
+	_ = os.WriteFile(indexPath, newData, 0600)
 }
