@@ -59,52 +59,71 @@ func (c *DoltMetadataCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	missing, ok := c.scanDoltMetadata(ctx.TownRoot, doltDataDir)
+	return c.doltMetadataResult(missing, ok)
+}
+
+func (c *DoltMetadataCheck) scanDoltMetadata(townRoot, doltDataDir string) ([]string, int) {
 	var missing []string
-	var ok int
+	ok := c.scanTownMetadata(townRoot, doltDataDir, &missing)
 
-	// Check town-level beads (hq database)
-	townBeadsDir := filepath.Join(ctx.TownRoot, ".beads")
-	if _, err := os.Stat(filepath.Join(doltDataDir, "hq")); err == nil {
-		if !c.hasDoltMetadata(townBeadsDir, "hq") {
-			missing = append(missing, "hq (town root .beads/)")
-			c.missingMetadata = append(c.missingMetadata, "hq")
-		} else {
+	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	for rigName := range c.loadRigs(rigsPath) {
+		entry, present := c.scanRigMetadata(townRoot, doltDataDir, rigName)
+		if entry != "" {
+			missing = append(missing, entry)
+		}
+		if present {
 			ok++
 		}
 	}
+	return missing, ok
+}
 
-	// Check rig-level beads
-	rigsPath := filepath.Join(ctx.TownRoot, "mayor", "rigs.json")
-	rigs := c.loadRigs(rigsPath)
-	for rigName := range rigs {
-		// Resolve the expected DB name: some rigs use their prefix as the
-		// database name (e.g., "lc" for laneassist) rather than the rig name.
-		// Check both rig name and prefix in .dolt-data/. (gt-85w7)
-		expectedDB := rigName
-		prefix := config.GetRigPrefix(ctx.TownRoot, rigName)
-		if _, err := os.Stat(filepath.Join(doltDataDir, rigName)); os.IsNotExist(err) {
-			// Rig name not found — check if prefix-named DB exists
-			if _, err := os.Stat(filepath.Join(doltDataDir, prefix)); os.IsNotExist(err) {
-				continue // No database under either name
-			}
-			expectedDB = prefix
-		}
-
-		beadsDir := c.findRigBeadsDir(ctx.TownRoot, rigName)
-		if beadsDir == "" {
-			missing = append(missing, rigName+" (no .beads directory)")
-			c.missingMetadata = append(c.missingMetadata, rigName)
-			continue
-		}
-
-		if !c.hasDoltMetadata(beadsDir, expectedDB) {
-			relPath, _ := filepath.Rel(ctx.TownRoot, beadsDir)
-			missing = append(missing, rigName+" ("+relPath+")")
-			c.missingMetadata = append(c.missingMetadata, rigName)
-		} else {
-			ok++
-		}
+func (c *DoltMetadataCheck) scanTownMetadata(townRoot, doltDataDir string, missing *[]string) int {
+	if _, err := os.Stat(filepath.Join(doltDataDir, "hq")); err != nil {
+		return 0
 	}
+	if c.hasDoltMetadata(filepath.Join(townRoot, ".beads"), "hq") {
+		return 1
+	}
+	*missing = append(*missing, "hq (town root .beads/)")
+	c.missingMetadata = append(c.missingMetadata, "hq")
+	return 0
+}
+
+func (c *DoltMetadataCheck) scanRigMetadata(townRoot, doltDataDir, rigName string) (string, bool) {
+	expectedDB, found := expectedRigDatabase(townRoot, doltDataDir, rigName)
+	if !found {
+		return "", false
+	}
+
+	beadsDir := c.findRigBeadsDir(townRoot, rigName)
+	if beadsDir == "" {
+		c.missingMetadata = append(c.missingMetadata, rigName)
+		return rigName + " (no .beads directory)", false
+	}
+	if c.hasDoltMetadata(beadsDir, expectedDB) {
+		return "", true
+	}
+	relPath, _ := filepath.Rel(townRoot, beadsDir)
+	c.missingMetadata = append(c.missingMetadata, rigName)
+	return rigName + " (" + relPath + ")", false
+}
+
+func expectedRigDatabase(townRoot, doltDataDir, rigName string) (string, bool) {
+	expectedDB := rigName
+	prefix := config.GetRigPrefix(townRoot, rigName)
+	if _, err := os.Stat(filepath.Join(doltDataDir, rigName)); !os.IsNotExist(err) {
+		return expectedDB, true
+	}
+	if _, err := os.Stat(filepath.Join(doltDataDir, prefix)); os.IsNotExist(err) {
+		return "", false
+	}
+	return prefix, true
+}
+
+func (c *DoltMetadataCheck) doltMetadataResult(missing []string, ok int) *CheckResult {
 
 	if len(missing) == 0 {
 		return &CheckResult{
@@ -283,68 +302,18 @@ func (c *DoltServerReachableCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Check connectivity to each unique server address
-	var unreachable []string
-	var missingDatabases []string
-	var details []string
-	totalRigs := 0
-	unreachableRigs := 0
-	for addr, rigs := range rigsByAddr {
-		totalRigs += len(rigs)
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-		if err != nil {
-			unreachable = append(unreachable, addr)
-			unreachableRigs += len(rigs)
-			var rigNames []string
-			for _, rig := range rigs {
-				rigNames = append(rigNames, rig.name)
-			}
-			details = append(details, fmt.Sprintf("Server %s unreachable (rigs: %s)", addr, strings.Join(rigNames, ", ")))
-		} else {
-			_ = conn.Close()
-			cfg := doltserver.DefaultConfig(ctx.TownRoot)
-			cfg.Host = hostForAddr(addr)
-			cfg.Port = portForAddr(addr)
-			var expected []string
-			for _, rig := range rigs {
-				expected = append(expected, rig.database)
-			}
-			_, missing, verifyErr := verifyExpectedDatabasesAtConfig(cfg, expected)
-			if verifyErr != nil {
-				fixHint := "Check the configured Dolt server and verify the expected rig databases are being served"
-				if isLocalDoltAddr(addr) {
-					fixHint = "Repair or quarantine malformed databases in .dolt-data/ before relying on shared-server health"
-				}
-				return &CheckResult{
-					Name:     c.Name(),
-					Status:   StatusError,
-					Message:  fmt.Sprintf("Dolt server reachable but database verification failed at %s", addr),
-					Details:  []string{verifyErr.Error()},
-					FixHint:  fixHint,
-					Category: c.CheckCategory,
-				}
-			}
-			if len(missing) > 0 {
-				expected := make(map[string]string, len(rigs))
-				for _, rig := range rigs {
-					expected[rig.database] = rig.name
-				}
-				for _, db := range missing {
-					if rigName, ok := expected[db]; ok {
-						missingDatabases = append(missingDatabases, fmt.Sprintf("%s (%s)", db, rigName))
-					}
-				}
-			}
-		}
+	scan := c.scanServers(ctx.TownRoot, rigsByAddr)
+	if scan.verificationErr != nil {
+		return c.verificationFailure(scan.verificationAddr, scan.verificationErr)
 	}
 
-	if len(unreachable) > 0 {
+	if len(scan.unreachable) > 0 {
 		return &CheckResult{
 			Name:   c.Name(),
 			Status: StatusError,
 			Message: fmt.Sprintf("SPLIT-BRAIN RISK: %d rig(s) configured for Dolt server mode but server unreachable at %s",
-				unreachableRigs, strings.Join(unreachable, ", ")),
-			Details: append(details,
+				scan.unreachableRigs, strings.Join(scan.unreachable, ", ")),
+			Details: append(scan.details,
 				"bd commands will fail or create isolated local databases",
 				"This is the split-brain scenario — data written now may be invisible to the server later",
 			),
@@ -353,12 +322,12 @@ func (c *DoltServerReachableCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	if len(missingDatabases) > 0 {
+	if len(scan.missingDatabases) > 0 {
 		return &CheckResult{
 			Name:     c.Name(),
 			Status:   StatusError,
-			Message:  fmt.Sprintf("Dolt server reachable but %d expected rig database(s) are missing", len(missingDatabases)),
-			Details:  missingDatabases,
+			Message:  fmt.Sprintf("Dolt server reachable but %d expected rig database(s) are missing", len(scan.missingDatabases)),
+			Details:  scan.missingDatabases,
 			FixHint:  "Repair or recreate the missing rig databases before relying on shared-server health",
 			Category: c.CheckCategory,
 		}
@@ -367,7 +336,102 @@ func (c *DoltServerReachableCheck) Run(ctx *CheckContext) *CheckResult {
 	return &CheckResult{
 		Name:     c.Name(),
 		Status:   StatusOK,
-		Message:  fmt.Sprintf("Dolt server reachable (%d rig(s) in server mode)", totalRigs),
+		Message:  fmt.Sprintf("Dolt server reachable (%d rig(s) in server mode)", scan.totalRigs),
+		Category: c.CheckCategory,
+	}
+}
+
+type serverReachabilityScan struct {
+	totalRigs        int
+	unreachable      []string
+	unreachableRigs  int
+	details          []string
+	missingDatabases []string
+	verificationAddr string
+	verificationErr  error
+}
+
+func (c *DoltServerReachableCheck) scanServers(townRoot string, rigsByAddr map[string][]serverModeRig) serverReachabilityScan {
+	var scan serverReachabilityScan
+	for addr, rigs := range rigsByAddr {
+		scan.totalRigs += len(rigs)
+		probe := c.probeServer(townRoot, addr, rigs)
+		if probe.unreachable {
+			scan.unreachable = append(scan.unreachable, addr)
+			scan.unreachableRigs += len(rigs)
+			scan.details = append(scan.details, fmt.Sprintf("Server %s unreachable (rigs: %s)", addr, serverRigNames(rigs)))
+			continue
+		}
+		if probe.verificationErr != nil {
+			scan.verificationAddr = addr
+			scan.verificationErr = probe.verificationErr
+			return scan
+		}
+		scan.missingDatabases = append(scan.missingDatabases, probe.missingDatabases...)
+	}
+	return scan
+}
+
+type serverProbe struct {
+	unreachable      bool
+	missingDatabases []string
+	verificationErr  error
+}
+
+func (c *DoltServerReachableCheck) probeServer(townRoot, addr string, rigs []serverModeRig) serverProbe {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return serverProbe{unreachable: true}
+	}
+	_ = conn.Close()
+
+	cfg := doltserver.DefaultConfig(townRoot)
+	cfg.Host = hostForAddr(addr)
+	cfg.Port = portForAddr(addr)
+	expected := make([]string, 0, len(rigs))
+	for _, rig := range rigs {
+		expected = append(expected, rig.database)
+	}
+	_, missing, verifyErr := verifyExpectedDatabasesAtConfig(cfg, expected)
+	if verifyErr != nil {
+		return serverProbe{verificationErr: verifyErr}
+	}
+	return serverProbe{missingDatabases: missingDatabaseDetails(missing, rigs)}
+}
+
+func serverRigNames(rigs []serverModeRig) string {
+	names := make([]string, 0, len(rigs))
+	for _, rig := range rigs {
+		names = append(names, rig.name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func missingDatabaseDetails(missing []string, rigs []serverModeRig) []string {
+	expected := make(map[string]string, len(rigs))
+	for _, rig := range rigs {
+		expected[rig.database] = rig.name
+	}
+	details := make([]string, 0, len(missing))
+	for _, db := range missing {
+		if rigName, ok := expected[db]; ok {
+			details = append(details, fmt.Sprintf("%s (%s)", db, rigName))
+		}
+	}
+	return details
+}
+
+func (c *DoltServerReachableCheck) verificationFailure(addr string, err error) *CheckResult {
+	fixHint := "Check the configured Dolt server and verify the expected rig databases are being served"
+	if isLocalDoltAddr(addr) {
+		fixHint = "Repair or quarantine malformed databases in .dolt-data/ before relying on shared-server health"
+	}
+	return &CheckResult{
+		Name:     c.Name(),
+		Status:   StatusError,
+		Message:  fmt.Sprintf("Dolt server reachable but database verification failed at %s", addr),
+		Details:  []string{err.Error()},
+		FixHint:  fixHint,
 		Category: c.CheckCategory,
 	}
 }
