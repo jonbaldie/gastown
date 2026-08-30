@@ -459,7 +459,7 @@ func recoverOrphanedBeads(townRoot string, rigs []string, prefetchedRigs map[str
 	}
 
 	// Flush any pending mail notifications before proceeding.
-	router.WaitPendingNotifications()
+	mail.WaitPendingNotifications(router)
 
 	return services
 }

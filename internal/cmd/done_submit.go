@@ -298,7 +298,7 @@ func notifyNoMergeDispatcher(f *doneFlow, dispatcher, prURL string) {
 		return
 	}
 	townRouter := mail.NewRouter(f.session.townRoot)
-	defer townRouter.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(townRouter)
 	reviewBody := fmt.Sprintf("Branch: %s\nIssue: %s\nReady for review.", f.repo.branch, f.work.issueID)
 	if prURL != "" {
 		reviewBody = fmt.Sprintf("Branch: %s\nIssue: %s\nPR: %s\nReady for review.", f.repo.branch, f.work.issueID, prURL)

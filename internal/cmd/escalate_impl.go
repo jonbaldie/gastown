@@ -305,7 +305,7 @@ func printEscalateStaleDryRunItem(issue *beads.Issue, maxReescalations int) {
 func reescalateStaleIssues(townRoot string, escalationConfig *config.EscalationConfig, stale []*beads.Issue, reescalatedBy string, maxReescalations int) []*beads.ReescalationResult {
 	bd := beads.New(beads.ResolveBeadsDir(townRoot))
 	router := mail.NewRouter(townRoot)
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	var results []*beads.ReescalationResult
 	for _, issue := range stale {
 		result, err := bd.ReescalateEscalation(issue.ID, reescalatedBy, maxReescalations)

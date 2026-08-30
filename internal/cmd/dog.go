@@ -1208,7 +1208,7 @@ func runDogDispatch(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 
 	execution := dogDispatchExecution{
 		townRoot:   ctx.townRoot,
@@ -1370,7 +1370,7 @@ func sendDogPluginMail(townRoot string, targetDog *dog.Dog, p *plugin.Plugin, cl
 		if clearErr := clearAssignment(); clearErr != nil && !jsonOutput {
 			fmt.Printf("  Warning: rollback failed: %v\n", clearErr)
 		}
-		router.WaitPendingNotifications()
+		mail.WaitPendingNotifications(router)
 		return nil, fmt.Errorf("sending plugin mail to dog: %w", err)
 	}
 	return router, nil

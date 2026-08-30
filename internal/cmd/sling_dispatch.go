@@ -206,7 +206,7 @@ func notifyForceClearOldHook(intent sling.Intent, info *beadInfo, targetAgent, t
 	} else {
 		fmt.Printf("  %s Sent LIFECYCLE:Shutdown to %s/witness for %s\n", style.Bold.Render("→"), assigneeParts[0], assigneeParts[2])
 	}
-	router.WaitPendingNotifications()
+	mail.WaitPendingNotifications(router)
 }
 
 func forceClearOldHookRequester(intent sling.Intent) string {

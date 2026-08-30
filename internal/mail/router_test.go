@@ -266,8 +266,6 @@ func TestIsSelfMail(t *testing.T) {
 }
 
 func TestShouldBeWisp(t *testing.T) {
-	r := &Router{}
-
 	tests := []struct {
 		name string
 		msg  *Message
@@ -337,7 +335,7 @@ func TestShouldBeWisp(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := r.shouldBeWisp(tt.msg)
+			got := shouldBeWisp(tt.msg)
 			if got != tt.want {
 				t.Errorf("shouldBeWisp(%v) = %v, want %v", tt.msg.Subject, got, tt.want)
 			}
@@ -348,7 +346,7 @@ func TestShouldBeWisp(t *testing.T) {
 func TestResolveBeadsDir(t *testing.T) {
 	// With town root set
 	r := NewRouterWithTownRoot("/work/dir", "/home/user/gt")
-	got := r.resolveBeadsDir()
+	got := resolveBeadsDir(r)
 	want := "/home/user/gt/.beads"
 	if filepath.ToSlash(got) != want {
 		t.Errorf("resolveBeadsDir with townRoot = %q, want %q", got, want)
@@ -356,7 +354,7 @@ func TestResolveBeadsDir(t *testing.T) {
 
 	// Without town root (fallback to workDir)
 	r2 := &Router{workDir: "/work/dir", townRoot: ""}
-	got2 := r2.resolveBeadsDir()
+	got2 := resolveBeadsDir(r2)
 	want2 := "/work/dir/.beads"
 	if filepath.ToSlash(got2) != want2 {
 		t.Errorf("resolveBeadsDir without townRoot = %q, want %q", got2, want2)
@@ -621,7 +619,7 @@ func TestExpandList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := r.expandList(tt.listName)
+			got, err := expandList(r, tt.listName)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expandList(%q) expected error, got nil", tt.listName)
@@ -649,7 +647,7 @@ func TestExpandList(t *testing.T) {
 
 func TestExpandListNoTownRoot(t *testing.T) {
 	r := &Router{workDir: "/tmp", townRoot: ""}
-	_, err := r.expandList("oncall")
+	_, err := expandList(r, "oncall")
 	if err == nil {
 		t.Error("expandList with no townRoot should error")
 	}
@@ -711,7 +709,7 @@ func TestExpandQueue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := r.expandQueue(tt.queueName)
+			got, err := expandQueue(r, tt.queueName)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expandQueue(%q) expected error, got nil", tt.queueName)
@@ -742,7 +740,7 @@ func TestExpandQueue(t *testing.T) {
 
 func TestExpandQueueNoTownRoot(t *testing.T) {
 	r := &Router{workDir: "/tmp", townRoot: ""}
-	_, err := r.expandQueue("work")
+	_, err := expandQueue(r, "work")
 	if err == nil {
 		t.Error("expandQueue with no townRoot should error")
 	}
@@ -1150,7 +1148,7 @@ func TestExpandAnnounce(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := r.expandAnnounce(tt.announceName)
+			got, err := expandAnnounce(r, tt.announceName)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expandAnnounce(%q) expected error, got nil", tt.announceName)
@@ -1181,7 +1179,7 @@ func TestExpandAnnounce(t *testing.T) {
 
 func TestExpandAnnounceNoTownRoot(t *testing.T) {
 	r := &Router{workDir: "/tmp", townRoot: ""}
-	_, err := r.expandAnnounce("alerts")
+	_, err := expandAnnounce(r, "alerts")
 	if err == nil {
 		t.Error("expandAnnounce with no townRoot should error")
 	}
@@ -1297,7 +1295,7 @@ func TestValidateRecipient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := r.validateRecipient(tt.identity)
+			err := validateRecipient(r, tt.identity)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("validateRecipient(%q) expected error, got nil", tt.identity)
@@ -1341,7 +1339,7 @@ func TestValidateAgentWorkspaceDog(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := r.validateAgentWorkspace(tt.identity)
+			got := validateAgentWorkspace(r, tt.identity)
 			if got != tt.want {
 				t.Errorf("validateAgentWorkspace(%q) = %v, want %v", tt.identity, got, tt.want)
 			}
@@ -1562,7 +1560,7 @@ func TestResolveCrewShorthand(t *testing.T) {
 			if tt.name == "no town root" {
 				router = NewRouterWithTownRoot(tmpDir, "") // empty townRoot
 			}
-			got := router.resolveCrewShorthand(tt.identity)
+			got := resolveCrewShorthand(router, tt.identity)
 			if got != tt.want {
 				t.Errorf("resolveCrewShorthand(%q) = %q, want %q", tt.identity, got, tt.want)
 			}
@@ -1624,7 +1622,7 @@ func TestValidateRecipientFilesystemFallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := r.validateRecipient(tt.identity)
+			err := validateRecipient(r, tt.identity)
 			if tt.wantErr && err == nil {
 				t.Errorf("validateRecipient(%q) expected error, got nil", tt.identity)
 			} else if !tt.wantErr && err != nil {
@@ -1658,7 +1656,7 @@ func TestValidateRecipientFilesystemFallbackWithRouteErrors(t *testing.T) {
 
 	for _, identity := range []string{"sfn1_fast/arch", "sfn1_fast/crew/arch"} {
 		t.Run(identity, func(t *testing.T) {
-			if err := r.validateRecipient(identity); err != nil {
+			if err := validateRecipient(r, identity); err != nil {
 				t.Fatalf("validateRecipient(%q) unexpected error: %v", identity, err)
 			}
 		})
@@ -1845,7 +1843,7 @@ func TestNotifyRecipient_LiveWorkerDoesNotSubmitNewTurn(t *testing.T) {
 		To:      "gastown/crew/worker-mail",
 		Subject: "test worker delivery",
 	}
-	if err := r.notifyRecipient(msg); err != nil {
+	if err := notifyRecipient(r, msg); err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
 
@@ -1879,7 +1877,7 @@ func TestNotifyRecipient_IdleAgentDoesNotSubmitNewTurn(t *testing.T) {
 		Subject: "test idle delivery",
 	}
 
-	if err := r.notifyRecipient(msg); err != nil {
+	if err := notifyRecipient(r, msg); err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
 
@@ -1903,7 +1901,7 @@ func TestNotifyRecipient_NoTownRootDoesNotSubmitNewTurn(t *testing.T) {
 		To:      "gastown/crew/noroottown",
 		Subject: "test no town root",
 	}
-	if err := r.notifyRecipient(msg); err != nil {
+	if err := notifyRecipient(r, msg); err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
 	assertNoSubmittedMailTurn(t, tm, sessionName)
@@ -1947,7 +1945,7 @@ func TestSend_IdleAgentDoesNotSubmitNewTurn(t *testing.T) {
 	if err := r.Send(msg); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	r.WaitPendingNotifications()
+	WaitPendingNotifications(r)
 
 	assertNoSubmittedMailTurn(t, tm, sessionName)
 	assertQueuedMailWakeup(t, townRoot, sessionName)
@@ -1968,7 +1966,7 @@ func TestNotifyRecipient_EnqueueErrorWrapsCause(t *testing.T) {
 		To:      "gastown/crew/wraperr",
 		Subject: "wrap",
 	}
-	err := r.notifyRecipient(msg)
+	err := notifyRecipient(r, msg)
 	if err == nil {
 		t.Fatal("expected enqueue error")
 	}
@@ -2006,7 +2004,7 @@ func TestNotifyRecipient_BusyAgent(t *testing.T) {
 		Subject: "test busy delivery",
 	}
 
-	err := r.notifyRecipient(msg)
+	err := notifyRecipient(r, msg)
 	if err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
@@ -2059,7 +2057,7 @@ func TestNotifyRecipient_CanonicalAliasFansOutToBusyCandidates(t *testing.T) {
 		MessageConversation: MessageConversation{ThreadID: "thread-fanout"},
 	}
 
-	if err := r.notifyRecipient(msg); err != nil {
+	if err := notifyRecipient(r, msg); err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
 
@@ -2100,7 +2098,7 @@ func TestNotifyRecipient_CanonicalAliasQueuesAllHeadlessCandidates(t *testing.T)
 		MessageConversation: MessageConversation{ThreadID: "thread-headless"},
 	}
 
-	if err := r.notifyRecipient(msg); err != nil {
+	if err := notifyRecipient(r, msg); err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
 
@@ -2133,7 +2131,7 @@ func TestNotifyRecipient_DogQueuesDogSessionNotDeacon(t *testing.T) {
 		MessageConversation: MessageConversation{ThreadID: "thread-dog-delivery"},
 	}
 
-	if err := r.notifyRecipient(msg); err != nil {
+	if err := notifyRecipient(r, msg); err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
 
@@ -2178,7 +2176,7 @@ func TestNotifyRecipient_BusyAgentEscalationUsesUrgentQueuedNudge(t *testing.T) 
 		MessageConversation: MessageConversation{ThreadID: "hq-esc123"},
 	}
 
-	if err := r.notifyRecipient(msg); err != nil {
+	if err := notifyRecipient(r, msg); err != nil {
 		t.Fatalf("notifyRecipient returned error: %v", err)
 	}
 
@@ -2222,13 +2220,12 @@ func TestFormatNotificationMessageForEscalation(t *testing.T) {
 }
 
 func TestRouterSendEscalationAddsStructuredLabels(t *testing.T) {
-	r := &Router{}
 	msg := &Message{
 		From:                "deacon/",
 		Type:                TypeEscalation,
 		MessageConversation: MessageConversation{ThreadID: "hq-abc123"},
 	}
-	labels := r.buildLabels(msg)
+	labels := buildLabels(msg)
 	for _, want := range []string{"gt:message", "gt:escalation", "msg-type:escalation", "from:deacon/", "thread:hq-abc123"} {
 		if !containsLabel(labels, want) {
 			t.Fatalf("labels %v missing %q", labels, want)
@@ -2264,7 +2261,7 @@ func TestEnqueueReplyReminder_Basic(t *testing.T) {
 	sessionID := "gt-gastown-crew-alice"
 
 	before := time.Now()
-	r.enqueueReplyReminder(msg, sessionID)
+	enqueueReplyReminder(r, msg, sessionID)
 	after := time.Now()
 
 	// Exactly one nudge should be queued.
@@ -2336,7 +2333,7 @@ func TestEnqueueReplyReminder_SkipsUnreplyableSender(t *testing.T) {
 			}
 			sessionID := session.WitnessSessionName(session.PrefixFor("gastown"))
 
-			r.enqueueReplyReminder(msg, sessionID)
+			enqueueReplyReminder(r, msg, sessionID)
 
 			pending, err := nudge.Pending(townRoot, sessionID)
 			if err != nil {
@@ -2362,7 +2359,7 @@ func TestEnqueueReplyReminder_RoutableSenderStillQueues(t *testing.T) {
 			}
 			sessionID := session.CrewSessionName(session.PrefixFor("gastown"), "bob")
 
-			r.enqueueReplyReminder(msg, sessionID)
+			enqueueReplyReminder(r, msg, sessionID)
 
 			pending, err := nudge.Pending(townRoot, sessionID)
 			if err != nil {
@@ -2476,7 +2473,7 @@ func TestEnqueueReplyReminder_SkipsReply(t *testing.T) {
 		Subject: "re: status",
 		Type:    TypeReply,
 	}
-	r.enqueueReplyReminder(msg, "gt-gastown-crew-alice")
+	enqueueReplyReminder(r, msg, "gt-gastown-crew-alice")
 
 	pending, _ := nudge.Pending(townRoot, "gt-gastown-crew-alice")
 	if pending != 0 {
@@ -2490,7 +2487,7 @@ func TestEnqueueReplyReminder_NoTownRoot(t *testing.T) {
 	r := &Router{workDir: t.TempDir(), townRoot: ""}
 	msg := &Message{From: "mayor/", To: "gastown/crew/bob", Subject: "task"}
 	// Should not panic or error — just silently skip.
-	r.enqueueReplyReminder(msg, "gt-gastown-crew-bob")
+	enqueueReplyReminder(r, msg, "gt-gastown-crew-bob")
 }
 
 // TestEnqueueReplyReminder_DisabledByConfig verifies that setting
@@ -2517,7 +2514,7 @@ func TestEnqueueReplyReminder_DisabledByConfig(t *testing.T) {
 		Subject: "task",
 		Type:    TypeTask,
 	}
-	r.enqueueReplyReminder(msg, "gt-gastown-crew-bob")
+	enqueueReplyReminder(r, msg, "gt-gastown-crew-bob")
 
 	pending, _ := nudge.Pending(townRoot, "gt-gastown-crew-bob")
 	if pending != 0 {

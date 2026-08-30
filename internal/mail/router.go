@@ -68,7 +68,7 @@ func NewRouterWithTownRoot(workDir, townRoot string) *Router {
 // WaitPendingNotifications blocks until all in-flight async notifications
 // have completed. CLI commands should call this before exiting to avoid
 // losing notifications that are still being delivered.
-func (r *Router) WaitPendingNotifications() {
+func WaitPendingNotifications(r *Router) {
 	r.notifyWg.Wait()
 }
 
@@ -137,7 +137,7 @@ func expandFromConfig[T any](r *Router, name string, getter func(*config.Messagi
 
 // expandList returns the recipients for a mailing list.
 // Returns ErrUnknownList if the list is not found.
-func (r *Router) expandList(listName string) ([]string, error) {
+func expandList(r *Router, listName string) ([]string, error) {
 	recipients, err := expandFromConfig(r, listName, func(cfg *config.MessagingConfig) ([]string, bool) {
 		r, ok := cfg.Lists[listName]
 		return r, ok
@@ -155,7 +155,7 @@ func (r *Router) expandList(listName string) ([]string, error) {
 
 // expandQueue returns the QueueConfig for a queue name.
 // Returns ErrUnknownQueue if the queue is not found.
-func (r *Router) expandQueue(queueName string) (*config.QueueConfig, error) {
+func expandQueue(r *Router, queueName string) (*config.QueueConfig, error) {
 	return expandFromConfig(r, queueName, func(cfg *config.MessagingConfig) (*config.QueueConfig, bool) {
 		qc, ok := cfg.Queues[queueName]
 		if !ok {
@@ -167,7 +167,7 @@ func (r *Router) expandQueue(queueName string) (*config.QueueConfig, error) {
 
 // expandAnnounce returns the AnnounceConfig for an announce channel name.
 // Returns ErrUnknownAnnounce if the channel is not found.
-func (r *Router) expandAnnounce(announceName string) (*config.AnnounceConfig, error) {
+func expandAnnounce(r *Router, announceName string) (*config.AnnounceConfig, error) {
 	return expandFromConfig(r, announceName, func(cfg *config.MessagingConfig) (*config.AnnounceConfig, bool) {
 		ac, ok := cfg.Announces[announceName]
 		if !ok {
@@ -207,7 +207,7 @@ func detectTownRoot(startDir string) string {
 //
 // All mail uses town beads ({townRoot}/.beads). Rig-level beads ({rig}/.beads)
 // are for project issues only, not mail.
-func (r *Router) resolveBeadsDir() string {
+func resolveBeadsDir(r *Router) string {
 	// If no town root, fall back to workDir's .beads
 	if r.townRoot == "" {
 		return filepath.Join(r.workDir, ".beads")
@@ -217,14 +217,14 @@ func (r *Router) resolveBeadsDir() string {
 	return filepath.Join(r.townRoot, ".beads")
 }
 
-func (r *Router) ensureCustomTypes(beadsDir string) error {
+func ensureCustomTypes(beadsDir string) error {
 	if err := beads.EnsureCustomTypes(beadsDir); err != nil {
 		return fmt.Errorf("ensuring custom types: %w", err)
 	}
 	return nil
 }
 
-func (r *Router) buildLabels(msg *Message) []string {
+func buildLabels(msg *Message) []string {
 	var labels []string
 	labels = append(labels, "gt:message")
 	if msg.Type == TypeEscalation {
@@ -632,27 +632,27 @@ func (r *Router) ResolveGroupAddress(address string) ([]string, error) {
 	if group == nil {
 		return nil, fmt.Errorf("invalid group address: %s", address)
 	}
-	return r.resolveGroup(group)
+	return resolveGroup(r, group)
 }
 
 // resolveGroup resolves a @group address to individual recipient addresses.
 // Returns the list of resolved addresses and any error.
-func (r *Router) resolveGroup(group *ParsedGroup) ([]string, error) {
+func resolveGroup(r *Router, group *ParsedGroup) ([]string, error) {
 	if group == nil {
 		return nil, errors.New("nil group")
 	}
 
 	switch group.Type {
 	case GroupTypeOverseer:
-		return r.resolveOverseer()
+		return resolveOverseer(r)
 	case GroupTypeTown:
-		return r.resolveTownAgents()
+		return resolveTownAgents(r)
 	case GroupTypeRole:
-		return r.resolveAgentsByRole(group.RoleType, "")
+		return resolveAgentsByRole(r, group.RoleType, "")
 	case GroupTypeRig:
-		return r.resolveAgentsByRig(group.Rig)
+		return resolveAgentsByRig(r, group.Rig)
 	case GroupTypeRigRole:
-		return r.resolveAgentsByRole(group.RoleType, group.Rig)
+		return resolveAgentsByRole(r, group.RoleType, group.Rig)
 	default:
 		return nil, fmt.Errorf("unknown group type: %s", group.Type)
 	}
@@ -660,7 +660,7 @@ func (r *Router) resolveGroup(group *ParsedGroup) ([]string, error) {
 
 // resolveOverseer resolves @overseer to the human operator's address.
 // Loads the overseer config and returns "overseer" as the address.
-func (r *Router) resolveOverseer() ([]string, error) {
+func resolveOverseer(r *Router) ([]string, error) {
 	if r.townRoot == "" {
 		return nil, errors.New("town root not set, cannot resolve @overseer")
 	}
@@ -677,9 +677,9 @@ func (r *Router) resolveOverseer() ([]string, error) {
 }
 
 // resolveTownAgents resolves @town to all town-level agents (mayor, deacon).
-func (r *Router) resolveTownAgents() ([]string, error) {
+func resolveTownAgents(r *Router) ([]string, error) {
 	// Town-level agents have rig=null in their description
-	agents := r.queryAgents("rig: null")
+	agents := queryAgents(r, "rig: null")
 
 	var addresses []string
 	for _, agent := range agents {
@@ -693,10 +693,10 @@ func (r *Router) resolveTownAgents() ([]string, error) {
 
 // resolveAgentsByRole resolves agents by their role_type.
 // If rig is non-empty, also filters by rig.
-func (r *Router) resolveAgentsByRole(roleType, rig string) ([]string, error) {
+func resolveAgentsByRole(r *Router, roleType, rig string) ([]string, error) {
 	// Build query filter
 	query := "role_type: " + roleType
-	agents := r.queryAgents(query)
+	agents := queryAgents(r, query)
 
 	var addresses []string
 	for _, agent := range agents {
@@ -716,10 +716,10 @@ func (r *Router) resolveAgentsByRole(roleType, rig string) ([]string, error) {
 }
 
 // resolveAgentsByRig resolves @rig/<rigname> to all agents in that rig.
-func (r *Router) resolveAgentsByRig(rig string) ([]string, error) {
+func resolveAgentsByRig(r *Router, rig string) ([]string, error) {
 	// Query for agents with matching rig in description
 	query := "rig: " + rig
-	agents := r.queryAgents(query)
+	agents := queryAgents(r, query)
 
 	var addresses []string
 	for _, agent := range agents {
@@ -733,12 +733,12 @@ func (r *Router) resolveAgentsByRig(rig string) ([]string, error) {
 
 // queryAgents queries agent beads using bd list with description filtering.
 // Searches both town-level and rig-level beads to find all agents.
-func (r *Router) queryAgents(descContains string) []*agentBead {
+func queryAgents(r *Router, descContains string) []*agentBead {
 	var allAgents []*agentBead
 
 	// Query town-level beads
-	townBeadsDir := r.resolveBeadsDir()
-	townAgents, err := r.queryAgentsInDir(townBeadsDir, descContains)
+	townBeadsDir := resolveBeadsDir(r)
+	townAgents, err := queryAgentsInDir(townBeadsDir, descContains)
 	if err != nil {
 		// Don't fail yet - rig beads might still have results
 		townAgents = nil
@@ -756,7 +756,7 @@ func (r *Router) queryAgents(descContains string) []*agentBead {
 					continue
 				}
 				rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
-				rigAgents, rigErr := r.queryAgentsInDir(rigBeadsDir, descContains)
+				rigAgents, rigErr := queryAgentsInDir(rigBeadsDir, descContains)
 				if rigErr != nil {
 					continue // Skip rigs with errors
 				}
@@ -780,7 +780,7 @@ func (r *Router) queryAgents(descContains string) []*agentBead {
 
 // queryAgentsInDir queries agent beads in a specific beads directory with optional description filtering.
 // Queries both the issues and wisps tables, merging results.
-func (r *Router) queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, error) {
+func queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, error) {
 	args := agentListArgs(descContains)
 
 	ctx, cancel := bdReadCtx()
@@ -883,15 +883,15 @@ func isAgentBeadEntry(a *agentBead) bool {
 }
 
 // queryAgentsFromDir queries agent beads from a specific beads directory.
-func (r *Router) queryAgentsFromDir(beadsDir string) ([]*agentBead, error) {
-	return r.queryAgentsInDir(beadsDir, "")
+func queryAgentsFromDir(beadsDir string) ([]*agentBead, error) {
+	return queryAgentsInDir(beadsDir, "")
 }
 
 // shouldBeWisp determines if a message should be stored as a wisp.
 // Returns true if:
 // - Message.Wisp is explicitly set
 // - Subject matches lifecycle message patterns (POLECAT_*, NUDGE, etc.)
-func (r *Router) shouldBeWisp(msg *Message) bool {
+func shouldBeWisp(msg *Message) bool {
 	if msg.Wisp {
 		return true
 	}
@@ -927,41 +927,41 @@ func (r *Router) shouldBeWisp(msg *Message) bool {
 func (r *Router) Send(msg *Message) error {
 	// Check for mailing list address
 	if isListAddress(msg.To) {
-		return r.sendToList(msg)
+		return sendToList(r, msg)
 	}
 
 	// Check for queue address - single message for claiming
 	if isQueueAddress(msg.To) {
-		return r.sendToQueue(msg)
+		return sendToQueue(r, msg)
 	}
 
 	// Check for announce address - bulletin board (single copy, no claiming)
 	if isAnnounceAddress(msg.To) {
-		return r.sendToAnnounce(msg)
+		return sendToAnnounce(r, msg)
 	}
 
 	// Check for beads-native channel address - broadcast with retention
 	if isChannelAddress(msg.To) {
-		return r.sendToChannel(msg)
+		return sendToChannel(r, msg)
 	}
 
 	// Check for @group address - resolve and fan-out
 	if isGroupAddress(msg.To) {
-		return r.sendToGroup(msg)
+		return sendToGroup(r, msg)
 	}
 
 	// Single recipient - send directly
-	return r.sendToSingle(msg)
+	return sendToSingle(r, msg)
 }
 
 // sendToGroup resolves a @group address and sends individual messages to each member.
-func (r *Router) sendToGroup(msg *Message) error {
+func sendToGroup(r *Router, msg *Message) error {
 	group := parseGroupAddress(msg.To)
 	if group == nil {
 		return fmt.Errorf("invalid group address: %s", msg.To)
 	}
 
-	recipients, err := r.resolveGroup(group)
+	recipients, err := resolveGroup(r, group)
 	if err != nil {
 		return fmt.Errorf("resolving group %s: %w", msg.To, err)
 	}
@@ -978,7 +978,7 @@ func (r *Router) sendToGroup(msg *Message) error {
 		msgCopy.To = recipient
 		msgCopy.ID = "" // Each fan-out copy gets its own ID from bd create
 
-		if err := r.sendToSingle(&msgCopy); err != nil {
+		if err := sendToSingle(r, &msgCopy); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", recipient, err))
 		}
 	}
@@ -993,7 +993,7 @@ func (r *Router) sendToGroup(msg *Message) error {
 // validateRecipient checks that the recipient identity corresponds to an existing agent.
 // Returns an error if the recipient is invalid or doesn't exist.
 // Queries agents from town-level beads AND all rig-level beads via routes.jsonl.
-func (r *Router) validateRecipient(identity string) error {
+func validateRecipient(r *Router, identity string) error {
 	if hasUnsafeAddressSegment(identity) {
 		return fmt.Errorf("no agent found")
 	}
@@ -1055,7 +1055,7 @@ func validateRecipientFromSources(r *Router, identity string) error {
 
 	// Fall back to workspace directory validation. Agent beads may be missing
 	// (e.g., Dolt DB reset) even though the agent's workspace directory exists.
-	if r.townRoot != "" && r.validateAgentWorkspace(identity) {
+	if r.townRoot != "" && validateAgentWorkspace(r, identity) {
 		return nil
 	}
 	if routeQueryErr != nil {
@@ -1065,7 +1065,7 @@ func validateRecipientFromSources(r *Router, identity string) error {
 }
 
 func queryContainsRecipient(r *Router, identity string) bool {
-	for _, agent := range r.queryAgents("") {
+	for _, agent := range queryAgents(r, "") {
 		if agentBeadToAddress(agent) == identity {
 			return true
 		}
@@ -1103,7 +1103,7 @@ func queryRoutesForRecipient(r *Router, identity string) (bool, error) {
 
 func queryRouteForRecipient(r *Router, identity string, route beads.Route) (bool, error) {
 	rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
-	agents, err := r.queryAgentsFromDir(rigBeadsDir)
+	agents, err := queryAgentsFromDir(rigBeadsDir)
 	if err != nil {
 		return false, err
 	}
@@ -1117,7 +1117,7 @@ func queryRouteForRecipient(r *Router, identity string, route beads.Route) (bool
 
 // validateAgentWorkspace checks if an agent's workspace directory exists on disk.
 // Used as a fallback when the agent isn't found in the bead registry.
-func (r *Router) validateAgentWorkspace(identity string) bool {
+func validateAgentWorkspace(r *Router, identity string) bool {
 	if _, ok := DogAddressName(identity); !ok && isReservedTownSubpath(identity) {
 		return false
 	}
@@ -1179,7 +1179,7 @@ func dirExists(path string) bool {
 // Returns the normalized identity if exactly one rig contains the crew member,
 // or the original identity unchanged if zero or multiple rigs match (to let
 // validation fail with an informative error).
-func (r *Router) resolveCrewShorthand(identity string) string {
+func resolveCrewShorthand(r *Router, identity string) string {
 	if r.townRoot == "" {
 		return identity
 	}
@@ -1232,7 +1232,7 @@ func findCrewShorthand(townRoot, roleDir, name string) (string, bool) {
 }
 
 // sendToSingle sends a message to a single recipient.
-func (r *Router) sendToSingle(msg *Message) error {
+func sendToSingle(r *Router, msg *Message) error {
 	// Ensure message has an ID for in-memory tracking (notifications, logging).
 	// We no longer pass --id to bd create; bd auto-generates the correct prefix.
 	if msg.ID == "" {
@@ -1247,16 +1247,16 @@ func (r *Router) sendToSingle(msg *Message) error {
 	// Convert addresses to beads identities
 	toIdentity := AddressToIdentity(msg.To)
 	// Expand crew/polecats shorthand (e.g., "crew/bob" → "pata/bob")
-	toIdentity = r.resolveCrewShorthand(toIdentity)
+	toIdentity = resolveCrewShorthand(r, toIdentity)
 
 	// Validate recipient exists
-	if err := r.validateRecipient(toIdentity); err != nil {
+	if err := validateRecipient(r, toIdentity); err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 	}
 
 	// Build labels for type, from/thread/reply-to/cc
-	labels := r.buildLabels(msg)
-	args := singleMessageArgs(msg, toIdentity, labels, r.shouldBeWisp(msg))
+	labels := buildLabels(msg)
+	args := singleMessageArgs(msg, toIdentity, labels, shouldBeWisp(msg))
 	if err := sendSingleMessage(r, msg, args); err != nil {
 		return err
 	}
@@ -1272,7 +1272,7 @@ func (r *Router) sendToSingle(msg *Message) error {
 		r.notifyWg.Add(1)
 		go func() {
 			defer r.notifyWg.Done()
-			r.notifyRecipient(&msgCopy) //nolint:errcheck
+			notifyRecipient(r, &msgCopy) //nolint:errcheck
 		}()
 	}
 
@@ -1303,8 +1303,8 @@ func singleMessageArgs(msg *Message, toIdentity string, labels []string, ephemer
 }
 
 func sendSingleMessage(r *Router, msg *Message, args []string) error {
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
@@ -1329,9 +1329,9 @@ func sendSingleMessage(r *Router, msg *Message, args []string) error {
 // sendToList expands a mailing list and sends individual copies to each recipient.
 // Each recipient gets their own message copy with the same content.
 // Collects all delivery errors and reports partial failures.
-func (r *Router) sendToList(msg *Message) error {
+func sendToList(r *Router, msg *Message) error {
 	listName := parseListName(msg.To)
-	recipients, err := r.expandList(listName)
+	recipients, err := expandList(r, listName)
 	if err != nil {
 		return err
 	}
@@ -1363,18 +1363,18 @@ func (r *Router) ExpandListAddress(address string) ([]string, error) {
 	if !isListAddress(address) {
 		return nil, fmt.Errorf("not a list address: %s", address)
 	}
-	return r.expandList(parseListName(address))
+	return expandList(r, parseListName(address))
 }
 
 // sendToQueue delivers a message to a queue for worker claiming.
 // Unlike sendToList, this creates a SINGLE message (no fan-out).
 // The message is stored in town-level beads with queue metadata.
 // Workers claim messages using bd update --claimed-by.
-func (r *Router) sendToQueue(msg *Message) error {
+func sendToQueue(r *Router, msg *Message) error {
 	queueName := parseQueueName(msg.To)
 
 	// Validate queue exists in messaging config
-	_, err := r.expandQueue(queueName)
+	_, err := expandQueue(r, queueName)
 	if err != nil {
 		return err
 	}
@@ -1424,8 +1424,8 @@ func (r *Router) sendToQueue(msg *Message) error {
 	args = append(args, "--", msg.Subject)
 
 	// Queue messages go to town-level beads (shared location)
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
@@ -1443,18 +1443,18 @@ func (r *Router) sendToQueue(msg *Message) error {
 // sendToAnnounce delivers a message to an announce channel (bulletin board).
 // Unlike sendToQueue, no claiming is supported - messages persist until retention limit.
 // ONE copy is stored in town-level beads with announce_channel metadata.
-func (r *Router) sendToAnnounce(msg *Message) error {
+func sendToAnnounce(r *Router, msg *Message) error {
 	announceName := parseAnnounceName(msg.To)
 
 	// Validate announce channel exists and get config
-	announceCfg, err := r.expandAnnounce(announceName)
+	announceCfg, err := expandAnnounce(r, announceName)
 	if err != nil {
 		return err
 	}
 
 	// Apply retention pruning BEFORE creating new message
 	if announceCfg.RetainCount > 0 {
-		if err := r.pruneAnnounce(announceName, announceCfg.RetainCount); err != nil {
+		if err := pruneAnnounce(r, announceName, announceCfg.RetainCount); err != nil {
 			// Log but don't fail - pruning is best-effort
 			// The new message should still be created
 			_ = err
@@ -1502,8 +1502,8 @@ func announceMessageArgs(msg *Message, labels []string) []string {
 
 func sendAnnounceMessage(r *Router, announceName string, args []string) error {
 	// Announce messages go to town-level beads (shared location).
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
@@ -1550,8 +1550,8 @@ func channelMessageArgs(msg *Message, labels []string) []string {
 }
 
 func sendChannelMessage(r *Router, channelName string, args []string) error {
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
@@ -1579,7 +1579,7 @@ func fanOutChannelMessage(r *Router, msg *Message, channelName string, subscribe
 		msgCopy.ID = "" // Each fan-out copy gets its own ID from bd create.
 		msgCopy.Subject = fmt.Sprintf("[channel:%s] %s", channelName, msg.Subject)
 
-		if err := r.sendToSingle(&msgCopy); err != nil {
+		if err := sendToSingle(r, &msgCopy); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", subscriber, err))
 		}
 	}
@@ -1593,7 +1593,7 @@ func fanOutChannelMessage(r *Router, msg *Message, channelName string, subscribe
 // Creates a message with channel:<name> label for channel queries.
 // Also fans out delivery to each subscriber's inbox.
 // Retention is enforced by the channel's EnforceChannelRetention after message creation.
-func (r *Router) sendToChannel(msg *Message) error {
+func sendToChannel(r *Router, msg *Message) error {
 	channelName := parseChannelName(msg.To)
 
 	// Validate channel exists as a beads-native channel
@@ -1626,13 +1626,13 @@ func (r *Router) sendToChannel(msg *Message) error {
 
 // pruneAnnounce deletes oldest messages from an announce channel to enforce retention.
 // If the channel has >= retainCount messages, deletes the oldest until count < retainCount.
-func (r *Router) pruneAnnounce(announceName string, retainCount int) error {
+func pruneAnnounce(r *Router, announceName string, retainCount int) error {
 	if retainCount <= 0 {
 		return nil // No retention limit
 	}
 
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 
@@ -1691,7 +1691,7 @@ func isSelfMail(from, to string) bool {
 // GetMailbox returns a Mailbox for the given address.
 // Routes to the correct beads database based on the address.
 func (r *Router) GetMailbox(address string) (*Mailbox, error) {
-	beadsDir := r.resolveBeadsDir()
+	beadsDir := resolveBeadsDir(r)
 	workDir := filepath.Dir(beadsDir) // Parent of .beads
 	return NewMailboxFromAddress(address, workDir), nil
 }
@@ -1712,7 +1712,7 @@ func (r *Router) GetMailbox(address string) (*Mailbox, error) {
 //
 // Supports mayor/, deacon/, rig/crew/name, rig/polecats/name, and rig/name addresses.
 // Respects agent DND/muted state - skips notification if recipient has DND enabled.
-func (r *Router) notifyRecipient(msg *Message) error {
+func notifyRecipient(r *Router, msg *Message) error {
 	sessionIDs := AddressToSessionIDs(msg.To)
 	if len(sessionIDs) == 0 {
 		return nil
@@ -1735,7 +1735,7 @@ type mailNotifyResult struct {
 func notifyLiveSessions(r *Router, msg *Message, sessionIDs []string, notification, priority string) mailNotifyResult {
 	var result mailNotifyResult
 	for _, sessionID := range sessionIDs {
-		if r.isSessionMuted(sessionID) {
+		if isSessionMuted(r, sessionID) {
 			continue
 		}
 		outcome := notifyOneLiveSession(r, msg, sessionID, notification, priority)
@@ -1794,7 +1794,7 @@ func notifyAgentSession(r *Router, msg *Message, sessionID, notification, priori
 
 func enqueueHeadlessMail(r *Router, msg *Message, sessionIDs []string, notification, priority string, result *mailNotifyResult) {
 	for _, sessionID := range sessionIDs {
-		if r.isSessionMuted(sessionID) {
+		if isSessionMuted(r, sessionID) {
 			continue
 		}
 		if err := enqueueQueuedMail(r.townRoot, sessionID, msg, notification, priority); err != nil {
@@ -1817,7 +1817,7 @@ func finishMailNotify(result mailNotifyResult) error {
 	return fmt.Errorf("mail notification failed: %w", joined)
 }
 
-func (r *Router) isSessionMuted(sessionID string) bool {
+func isSessionMuted(r *Router, sessionID string) bool {
 	if r.townRoot == "" || sessionID == "" || sessionID == session.OverseerSessionName() {
 		return false
 	}
@@ -1871,7 +1871,7 @@ func enqueueMailNotification(r *Router, msg *Message, sessionID, notification, p
 	if err := enqueueQueuedMail(r.townRoot, sessionID, msg, notification, priority); err != nil {
 		return err
 	}
-	r.enqueueReplyReminder(msg, sessionID)
+	enqueueReplyReminder(r, msg, sessionID)
 	return nil
 }
 
@@ -1897,7 +1897,7 @@ func enqueueQueuedMail(townRoot, sessionID string, msg *Message, notification, p
 //   - Message type is TypeReply (recipient is already replying)
 //   - Sender is not a direct mail address that can receive a reply
 //   - Configured delay is zero or negative (feature disabled)
-func (r *Router) enqueueReplyReminder(msg *Message, sessionID string) {
+func enqueueReplyReminder(r *Router, msg *Message, sessionID string) {
 	if r.townRoot == "" {
 		return
 	}
@@ -2019,13 +2019,13 @@ func (r *Router) IsRecipientMuted(address string) bool {
 	if r.townRoot == "" {
 		return false
 	}
-	return r.isRecipientMuted(address)
+	return isRecipientMuted(r, address)
 }
 
 // isRecipientMuted checks if a mail recipient has DND/muted notifications enabled.
 // Returns true if the recipient is muted and should not receive tmux nudges.
 // Fails open (returns false) if the agent bead cannot be found.
-func (r *Router) isRecipientMuted(address string) bool {
+func isRecipientMuted(r *Router, address string) bool {
 	agentBeadID := addressToAgentBeadID(address)
 	if agentBeadID == "" {
 		return false // Can't determine agent bead, allow notification

@@ -855,7 +855,7 @@ func notifyDoneCloseSkipped(townRoot, rigName, sender, issueID, reason string) {
 	}
 
 	router := mail.NewRouter(townRoot)
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	msg := &mail.Message{
 		To:      fmt.Sprintf("%s/witness", rigName),
 		From:    sender,

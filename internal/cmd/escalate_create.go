@@ -177,7 +177,7 @@ func printEscalateDuplicate(opts escalateOptions, existing *beads.Issue, fingerp
 
 func deliverEscalateMail(townRoot, agentID string, issue *beads.Issue, severity, description string, opts escalateOptions, targets []string) []deliveryStatus {
 	router := mail.NewRouter(townRoot)
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	statuses := []deliveryStatus{{Channel: "bead", Created: true, Severity: severity}}
 	for _, target := range targets {
 		statuses = append(statuses, sendEscalateMail(router, townRoot, agentID, issue, severity, description, opts, target))

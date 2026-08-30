@@ -154,7 +154,7 @@ func buildMailReply(msgID, from string, original *mail.Message, messageBody, sub
 }
 
 func sendMailReply(router *mail.Router, from string, original, reply *mail.Message) error {
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	if err := router.Send(reply); err != nil {
 		return fmt.Errorf("sending reply: %w", err)
 	}

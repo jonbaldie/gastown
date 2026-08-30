@@ -240,7 +240,7 @@ func applyMailReply(workDir, from, replyTo string, msg *mail.Message) {
 func sendLegacyMail(workDir, from, to string, msg *mail.Message, subject string) error {
 	// Fall back to legacy routing for infrastructure errors (beads down, etc.).
 	router := mail.NewRouter(workDir)
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	if err := router.Send(msg); err != nil {
 		return fmt.Errorf("sending message: %w", err)
 	}
@@ -252,7 +252,7 @@ func sendLegacyMail(workDir, from, to string, msg *mail.Message, subject string)
 
 func sendResolvedMail(workDir, from, to string, msg *mail.Message, recipients []mail.Recipient, subject string) error {
 	router := mail.NewRouter(workDir)
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	recipientAddrs, sendErrs := sendMailRecipients(router, msg, recipients)
 	if err := reportMailSendErrors(recipientAddrs, sendErrs); err != nil {
 		return err
