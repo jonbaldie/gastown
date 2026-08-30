@@ -6,34 +6,22 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
-	"github.com/jonbaldie/gastown/internal/constants"
-	"github.com/jonbaldie/gastown/internal/crew"
 	"github.com/jonbaldie/gastown/internal/daemon"
-	"github.com/jonbaldie/gastown/internal/deacon"
 	"github.com/jonbaldie/gastown/internal/doltserver"
-	"github.com/jonbaldie/gastown/internal/events"
 	"github.com/jonbaldie/gastown/internal/mail"
-	"github.com/jonbaldie/gastown/internal/mayor"
 	"github.com/jonbaldie/gastown/internal/polecat"
 	"github.com/jonbaldie/gastown/internal/refinery"
 	"github.com/jonbaldie/gastown/internal/rig"
-	"github.com/jonbaldie/gastown/internal/session"
 	"github.com/jonbaldie/gastown/internal/style"
 	"github.com/jonbaldie/gastown/internal/tmux"
-	"github.com/jonbaldie/gastown/internal/util"
 	"github.com/jonbaldie/gastown/internal/witness"
-	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -156,298 +144,14 @@ func init() {
 }
 
 func runUp(cmd *cobra.Command, _ []string) error {
-	quiet := commandBoolFlag(cmd, "quiet")
-	restore := commandBoolFlag(cmd, "restore")
-	jsonOutput := commandBoolFlag(cmd, "json")
-	townRoot, err := workspace.FindFromCwdOrError()
+	u, err := prepareUpRun(cmd)
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return err
 	}
-
-	// Ensure lifecycle defaults are configured. On first run this creates
-	// mayor/daemon.json with sensible defaults for the six-stage Dolt lifecycle.
-	// On subsequent runs it fills in any newly added patrols without touching
-	// existing config. Errors are non-fatal — the town can run without lifecycle
-	// automation, it just won't have automated maintenance.
-	if err := daemon.EnsureLifecycleConfigFile(townRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not configure lifecycle defaults: %v\n", err)
-	}
-
-	// Load daemon.json env vars so services (Dolt, etc.) use the right config.
-	// The daemon does this too, but gt up starts services before the daemon.
-	if patrolCfg := daemon.LoadPatrolConfig(townRoot); patrolCfg != nil {
-		for k, v := range patrolCfg.Env {
-			os.Setenv(k, v)
-		}
-	}
-	config.ApplyConfiguredDoltEnv(townRoot)
-
-	allOK := true
-	var services []ServiceStatus
-
-	// Discover rigs early so we can prefetch while daemon/deacon/mayor start
-	rigs := discoverRigs(townRoot)
-
-	// Safety: bring current agent out of DND on startup so orchestration nudges
-	// are not silently muted after a previous incident/debug session.
-	if changed, err := disableCurrentAgentDND(townRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not reset DND state: %v\n", err)
-	} else if changed && !quiet {
-		fmt.Printf("%s DND was enabled; reset to normal for current agent\n", style.SuccessPrefix)
-	}
-
-	// Start daemon, deacon, mayor, and rig prefetch in parallel
-	var daemonErr error
-	var daemonPID int
-	var deaconResult, mayorResult agentStartResult
-	var prefetchedRigs map[string]*rig.Rig
-	var rigErrors map[string]error
-	var doltOK bool
-	var doltDetail string
-	var doltSkipped bool
-
-	var startupWg sync.WaitGroup
-	startupWg.Add(5)
-
-	// 0. Dolt server (if configured)
-	go func() {
-		defer startupWg.Done()
-		cfg := doltserver.DefaultConfig(townRoot)
-		if _, err := os.Stat(cfg.DataDir); os.IsNotExist(err) {
-			doltSkipped = true
-			return
-		}
-		running, _, _ := doltserver.IsRunning(townRoot)
-		if running {
-			doltOK = true
-			doltDetail = "already running"
-			return
-		}
-		if err := doltserver.Start(townRoot); err != nil {
-			doltDetail = err.Error()
-		} else {
-			doltOK = true
-			doltDetail = fmt.Sprintf("started (port %d)", cfg.Port)
-		}
-	}()
-
-	// 1. Daemon (Go process)
-	go func() {
-		defer startupWg.Done()
-		if err := ensureDaemon(townRoot); err != nil {
-			daemonErr = err
-		} else {
-			running, pid, _ := daemon.IsRunning(townRoot)
-			if running {
-				daemonPID = pid
-			}
-		}
-	}()
-
-	// 2. Deacon
-	go func() {
-		defer startupWg.Done()
-		deaconMgr := deacon.NewManager(townRoot)
-		if err := deaconMgr.Start(""); err != nil {
-			if err == deacon.ErrAlreadyRunning {
-				deaconResult = agentStartResult{name: "Deacon", ok: true, detail: deaconMgr.SessionName()}
-			} else {
-				deaconResult = agentStartResult{name: "Deacon", ok: false, detail: err.Error()}
-			}
-		} else {
-			deaconResult = agentStartResult{name: "Deacon", ok: true, detail: deaconMgr.SessionName()}
-		}
-	}()
-
-	// 3. Mayor
-	go func() {
-		defer startupWg.Done()
-		mayorMgr := mayor.NewManager(townRoot)
-		if err := mayorMgr.Start(""); err != nil {
-			if errors.Is(err, mayor.ErrAlreadyRunning) {
-				mayorResult = agentStartResult{name: "Mayor", ok: true, detail: mayorMgr.SessionName()}
-			} else if errors.Is(err, mayor.ErrACPActive) {
-				mayorResult = agentStartResult{name: "Mayor", ok: true, detail: "ACP active"}
-			} else {
-				mayorResult = agentStartResult{name: "Mayor", ok: false, detail: err.Error()}
-			}
-		} else {
-			mayorResult = agentStartResult{name: "Mayor", ok: true, detail: mayorMgr.SessionName()}
-		}
-	}()
-
-	// 4. Prefetch rig configs (overlaps with daemon/deacon/mayor startup)
-	go func() {
-		defer startupWg.Done()
-		prefetchedRigs, rigErrors = prefetchRigs(rigs)
-	}()
-
-	startupWg.Wait()
-
-	// Ensure beads metadata points to the Dolt server
-	if !doltSkipped && doltOK {
-		_, _ = doltserver.EnsureAllMetadata(townRoot)
-	}
-
-	// Collect Dolt status (if configured)
-	if !doltSkipped {
-		services = append(services, ServiceStatus{Name: "Dolt", Type: "dolt", OK: doltOK, Detail: doltDetail})
-		if !doltOK {
-			allOK = false
-		}
-	}
-
-	// Collect daemon/deacon/mayor results (always append daemon status)
-	if daemonErr != nil {
-		services = append(services, ServiceStatus{Name: "Daemon", Type: "daemon", OK: false, Detail: daemonErr.Error()})
-		allOK = false
-	} else if daemonPID > 0 {
-		services = append(services, ServiceStatus{Name: "Daemon", Type: "daemon", OK: true, Detail: fmt.Sprintf("PID %d", daemonPID)})
-	} else {
-		services = append(services, ServiceStatus{Name: "Daemon", Type: "daemon", OK: true, Detail: "running (PID unknown)"})
-	}
-	services = append(services, ServiceStatus{Name: deaconResult.name, Type: constants.RoleDeacon, OK: deaconResult.ok, Detail: deaconResult.detail})
-	if !deaconResult.ok {
-		allOK = false
-	}
-	services = append(services, ServiceStatus{Name: mayorResult.name, Type: constants.RoleMayor, OK: mayorResult.ok, Detail: mayorResult.detail})
-	if !mayorResult.ok {
-		allOK = false
-	}
-
-	// Ensure Dolt server is fully ready before starting agents that depend on it.
-	// Witnesses and refineries run bd commands on startup (via gt prime → patrol_helpers)
-	// that connect to the Dolt SQL server. Without this gate, they race the server
-	// and get "connection refused" errors. (gt-zou1n)
-	// Only wait if Dolt was actually started (or detected running). If it failed or
-	// was skipped, polling the port would just burn the full timeout. (review finding #1)
-	if !doltSkipped && doltOK {
-		waitForDoltReady(townRoot)
-		// Propagate Dolt connection info to process env so all subsequently spawned
-		// agents (witnesses, refineries, crew) inherit it. Without this,
-		// bd auto-starts rogue Dolt instances in agent tmux sessions. (GH#2412)
-		// Host propagation prevents bd from falling back to 127.0.0.1 when the
-		// Dolt server runs on a remote machine (e.g., mini2 over Tailscale).
-		doltCfg := doltserver.DefaultConfig(townRoot)
-		portStr := fmt.Sprintf("%d", doltCfg.Port)
-		os.Setenv("GT_DOLT_PORT", portStr)
-		os.Setenv("BEADS_DOLT_SERVER_PORT", portStr)
-		os.Setenv("BEADS_DOLT_PORT", portStr)
-		if doltCfg.Host != "" {
-			os.Setenv("GT_DOLT_HOST", doltCfg.Host)
-			os.Setenv("BEADS_DOLT_SERVER_HOST", doltCfg.Host)
-		}
-	}
-
-	// Orphaned bead recovery: detect beads stuck in hooked/in_progress status
-	// assigned to polecats that no longer exist (session dead + directory gone).
-	// After a crash, these beads sit orphaned until someone manually resets them.
-	// Running this before witnesses start avoids duplicate recovery. (gas-udp)
-	if !doltSkipped && doltOK {
-		orphanServices := recoverOrphanedBeads(townRoot, rigs, prefetchedRigs)
-		services = append(services, orphanServices...)
-	}
-
-	// 5 & 6. Witnesses and Refineries (using prefetched rigs)
-	witnessResults, refineryResults := startRigAgentsWithPrefetch(rigs, prefetchedRigs, rigErrors)
-
-	// Collect results in order: all witnesses first, then all refineries
-	for _, rigName := range rigs {
-		if result, ok := witnessResults[rigName]; ok {
-			services = append(services, ServiceStatus{Name: result.name, Type: constants.RoleWitness, Rig: rigName, OK: result.ok, Detail: result.detail})
-			if !result.ok {
-				allOK = false
-			}
-		}
-	}
-	for _, rigName := range rigs {
-		if result, ok := refineryResults[rigName]; ok {
-			services = append(services, ServiceStatus{Name: result.name, Type: constants.RoleRefinery, Rig: rigName, OK: result.ok, Detail: result.detail})
-			if !result.ok {
-				allOK = false
-			}
-		}
-	}
-
-	// 7. Crew (if --restore)
-	if restore {
-		for _, rigName := range rigs {
-			crewStarted, crewErrors := startCrewFromSettings(townRoot, rigName)
-			for _, name := range crewStarted {
-				services = append(services, ServiceStatus{
-					Name:   fmt.Sprintf("Crew (%s/%s)", rigName, name),
-					Type:   constants.RoleCrew,
-					Rig:    rigName,
-					OK:     true,
-					Detail: session.CrewSessionName(session.PrefixFor(rigName), name),
-				})
-			}
-			for name, err := range crewErrors {
-				services = append(services, ServiceStatus{
-					Name:   fmt.Sprintf("Crew (%s/%s)", rigName, name),
-					Type:   constants.RoleCrew,
-					Rig:    rigName,
-					OK:     false,
-					Detail: err.Error(),
-				})
-				allOK = false
-			}
-		}
-
-		// 7. Polecats with pinned work (if --restore)
-		for _, rigName := range rigs {
-			polecatsStarted, polecatErrors := startPolecatsWithWork(townRoot, rigName)
-			for _, name := range polecatsStarted {
-				services = append(services, ServiceStatus{
-					Name:   fmt.Sprintf("Polecat (%s/%s)", rigName, name),
-					Type:   constants.RolePolecat,
-					Rig:    rigName,
-					OK:     true,
-					Detail: session.PolecatSessionName(session.PrefixFor(rigName), name),
-				})
-			}
-			for name, err := range polecatErrors {
-				services = append(services, ServiceStatus{
-					Name:   fmt.Sprintf("Polecat (%s/%s)", rigName, name),
-					Type:   constants.RolePolecat,
-					Rig:    rigName,
-					OK:     false,
-					Detail: err.Error(),
-				})
-				allOK = false
-			}
-		}
-	}
-
-	// Log boot event for both JSON and text paths
-	if allOK {
-		startedServices := []string{"dolt", "daemon", "deacon", "mayor"}
-		for _, rigName := range rigs {
-			startedServices = append(startedServices, fmt.Sprintf("%s/witness", rigName))
-			startedServices = append(startedServices, fmt.Sprintf("%s/refinery", rigName))
-		}
-		_ = events.LogFeed(events.TypeBoot, "gt", events.BootPayload("town", startedServices))
-	}
-
-	// Output JSON or text
-	if jsonOutput {
-		return emitUpJSON(os.Stdout, services)
-	}
-
-	// Text output
-	for _, svc := range services {
-		printStatus(svc.Name, svc.OK, svc.Detail, quiet)
-	}
-
-	fmt.Println()
-	if allOK {
-		fmt.Printf("%s All services running\n", style.Bold.Render("✓"))
-	} else {
-		fmt.Printf("%s Some services failed to start\n", style.Bold.Render("✗"))
-		return fmt.Errorf("not all services started")
-	}
-
-	return nil
+	startUpParallelServices(u)
+	collectUpTownServices(u)
+	startUpRigAndRestore(u)
+	return finishUpRun(u)
 }
 
 func printStatus(name string, ok bool, detail string, quiet bool) {
@@ -505,28 +209,9 @@ func disableCurrentAgentDND(townRoot string) (bool, error) {
 
 // ensureDaemon starts the daemon if not running.
 func ensureDaemon(townRoot string) error {
-	// GH#2656: Don't restart the daemon while gt down is running.
-	// GH#2907: If the sentinel's PID is dead, remove stale sentinel.
-	sentinelPath := filepath.Join(townRoot, ShutdownSentinel)
-	if data, err := os.ReadFile(sentinelPath); err == nil {
-		stale := false
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			if process, err := os.FindProcess(pid); err != nil {
-				stale = true
-			} else if err := process.Signal(syscall.Signal(0)); err != nil {
-				stale = true
-			}
-		} else {
-			// Sentinel exists but has no valid PID — treat as stale.
-			stale = true
-		}
-		if stale {
-			os.Remove(sentinelPath)
-		} else {
-			return fmt.Errorf("shutdown in progress (sentinel exists: %s)", sentinelPath)
-		}
+	if err := clearStaleShutdownSentinel(townRoot); err != nil {
+		return err
 	}
-
 	running, _, err := daemon.IsRunning(townRoot)
 	if err != nil {
 		return err
@@ -534,41 +219,7 @@ func ensureDaemon(townRoot string) error {
 	if running {
 		return nil
 	}
-
-	// Start daemon
-	gtPath, err := os.Executable()
-	if err != nil {
-		return err
-	}
-
-	cmd := exec.Command(gtPath, "daemon", "run")
-	cmd.Dir = townRoot
-	// Detach from parent I/O for background daemon (uses its own logging)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	util.SetDetachedProcessGroup(cmd)
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	// Wait for daemon to initialize
-	time.Sleep(daemonStartupGrace)
-
-	// Verify it started
-	running, _, err = daemon.IsRunning(townRoot)
-	if err != nil {
-		return err
-	}
-	if !running {
-		if msg := readDaemonStartupFailure(townRoot, cmd.Process.Pid); msg != "" {
-			return fmt.Errorf("daemon failed to start: %s", msg)
-		}
-		return fmt.Errorf("daemon failed to start (check logs with 'gt daemon logs')")
-	}
-
-	return nil
+	return startDetachedDaemon(townRoot)
 }
 
 // rigPrefetchResult holds the result of loading a single rig config.
@@ -613,104 +264,17 @@ func prefetchRigs(rigNames []string) (map[string]*rig.Rig, map[string]error) {
 	return rigs, errors
 }
 
-// agentTask represents a unit of work for the agent worker pool.
-type agentTask struct {
-	rigName   string
-	rigObj    *rig.Rig
-	isWitness bool // true for witness, false for refinery
-}
-
-// agentResultMsg carries result back from worker to collector.
-type agentResultMsg struct {
-	rigName   string
-	isWitness bool
-	result    agentStartResult
-}
-
 // startRigAgentsWithPrefetch starts all Witnesses and Refineries using pre-loaded rig configs.
 // Uses a worker pool with fixed goroutine count to limit concurrency and reduce overhead.
 func startRigAgentsWithPrefetch(rigNames []string, prefetchedRigs map[string]*rig.Rig, rigErrors map[string]error) (witnessResults, refineryResults map[string]agentStartResult) {
 	n := len(rigNames)
 	witnessResults = make(map[string]agentStartResult, n)
 	refineryResults = make(map[string]agentStartResult, n)
-
 	if n == 0 {
 		return
 	}
-
-	// Record errors for rigs that failed to load
-	for rigName, err := range rigErrors {
-		errDetail := err.Error()
-		witnessResults[rigName] = agentStartResult{
-			name:   "Witness (" + rigName + ")",
-			ok:     false,
-			detail: errDetail,
-		}
-		refineryResults[rigName] = agentStartResult{
-			name:   "Refinery (" + rigName + ")",
-			ok:     false,
-			detail: errDetail,
-		}
-	}
-
-	numTasks := len(prefetchedRigs) * 2 // witness + refinery per rig
-	if numTasks == 0 {
-		return
-	}
-
-	// Task channel and result channel
-	tasks := make(chan agentTask, numTasks)
-	results := make(chan agentResultMsg, numTasks)
-
-	// Start fixed worker pool (bounded by maxConcurrentAgentStarts)
-	numWorkers := maxConcurrentAgentStarts
-	if numTasks < numWorkers {
-		numWorkers = numTasks
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for task := range tasks {
-				var result agentStartResult
-				if task.isWitness {
-					result = upStartWitness(task.rigName, task.rigObj)
-				} else {
-					result = upStartRefinery(task.rigName, task.rigObj)
-				}
-				results <- agentResultMsg{
-					rigName:   task.rigName,
-					isWitness: task.isWitness,
-					result:    result,
-				}
-			}
-		}()
-	}
-
-	// Enqueue all tasks
-	for rigName, r := range prefetchedRigs {
-		tasks <- agentTask{rigName: rigName, rigObj: r, isWitness: true}
-		tasks <- agentTask{rigName: rigName, rigObj: r, isWitness: false}
-	}
-	close(tasks)
-
-	// Close results channel when workers are done
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect results - no locking needed, single goroutine collects
-	for msg := range results {
-		if msg.isWitness {
-			witnessResults[msg.rigName] = msg.result
-		} else {
-			refineryResults[msg.rigName] = msg.result
-		}
-	}
-
+	recordPrefetchRigErrors(witnessResults, refineryResults, rigErrors)
+	runAgentStartWorkers(prefetchedRigs, witnessResults, refineryResults)
 	return
 }
 
@@ -771,121 +335,31 @@ func upStartRefinery(rigName string, r *rig.Rig) agentStartResult {
 
 // discoverRigs finds all rigs in the town.
 func discoverRigs(townRoot string) []string {
-	var rigs []string
-
-	// Try rigs.json first
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	if rigsConfig, err := config.LoadRigsConfig(rigsConfigPath); err == nil {
+		rigs := make([]string, 0, len(rigsConfig.Rigs))
 		for name := range rigsConfig.Rigs {
 			rigs = append(rigs, name)
 		}
 		return rigs
 	}
-
-	// Fallback: scan directory for rig-like directories
-	entries, err := os.ReadDir(townRoot)
-	if err != nil {
-		return rigs
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		name := entry.Name()
-		// Skip known non-rig directories
-		if name == "mayor" || name == "daemon" || name == "deacon" ||
-			name == ".git" || name == "docs" || name[0] == '.' {
-			continue
-		}
-
-		dirPath := filepath.Join(townRoot, name)
-
-		// Check for .beads directory (indicates a rig)
-		beadsPath := filepath.Join(dirPath, ".beads")
-		if _, err := os.Stat(beadsPath); err == nil {
-			rigs = append(rigs, name)
-			continue
-		}
-
-		// Check for polecats directory (indicates a rig)
-		polecatsPath := filepath.Join(dirPath, "polecats")
-		if _, err := os.Stat(polecatsPath); err == nil {
-			rigs = append(rigs, name)
-		}
-	}
-
-	return rigs
+	return scanTownRigs(townRoot)
 }
 
 // startCrewFromSettings starts crew members based on rig settings.
 // Returns list of started crew names and map of errors.
 func startCrewFromSettings(townRoot, rigName string) ([]string, map[string]error) {
-	started := []string{}
-	errors := map[string]error{}
-
-	rigPath := filepath.Join(townRoot, rigName)
-
-	// Load rig settings
-	settingsPath := filepath.Join(rigPath, "settings", "config.json")
-	settings, err := config.LoadRigSettings(settingsPath)
-	if err != nil {
-		// No settings file or error - skip crew startup
-		return started, errors
+	toStart, crewMgr, ok := loadCrewStartupNames(townRoot, rigName)
+	if !ok {
+		return []string{}, map[string]error{}
 	}
-
-	if settings.Crew == nil || settings.Crew.Startup == "" {
-		// No crew startup preference
-		return started, errors
-	}
-
-	// Get available crew members using helper
-	crewMgr, _, err := getCrewManager(rigName)
-	if err != nil {
-		return started, errors
-	}
-
-	crewWorkers, err := crewMgr.List()
-	if err != nil {
-		return started, errors
-	}
-
-	if len(crewWorkers) == 0 {
-		return started, errors
-	}
-
-	// Extract crew names
-	crewNames := make([]string, len(crewWorkers))
-	for i, w := range crewWorkers {
-		crewNames[i] = w.Name
-	}
-
-	// Parse startup preference and determine which crew to start
-	toStart := parseCrewStartupPreference(settings.Crew.Startup, crewNames)
-
-	// Start each crew member using Manager
-	for _, crewName := range toStart {
-		if err := crewMgr.Start(crewName, crew.StartOptions{}); err != nil {
-			if err == crew.ErrSessionRunning {
-				started = append(started, crewName)
-			} else {
-				errors[crewName] = err
-			}
-		} else {
-			started = append(started, crewName)
-		}
-	}
-
-	return started, errors
+	return startNamedCrewMembers(crewMgr, toStart)
 }
 
 // parseCrewStartupPreference parses the natural language crew startup preference.
 // Examples: "max", "joe and max", "all", "none", "pick one"
 func parseCrewStartupPreference(pref string, available []string) []string {
 	pref = strings.ToLower(strings.TrimSpace(pref))
-
-	// Special keywords
 	switch pref {
 	case "none", "":
 		return []string{}
@@ -897,113 +371,31 @@ func parseCrewStartupPreference(pref string, available []string) []string {
 		}
 		return []string{}
 	}
-
-	// Parse comma/and-separated list
-	// "joe and max" -> ["joe", "max"]
-	// "joe, max" -> ["joe", "max"]
-	// "max" -> ["max"]
-	pref = strings.ReplaceAll(pref, " and ", ",")
-	pref = strings.ReplaceAll(pref, ", but not ", ",-")
-	pref = strings.ReplaceAll(pref, " but not ", ",-")
-
-	parts := strings.Split(pref, ",")
-
-	include := []string{}
-	exclude := map[string]bool{}
-
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		if strings.HasPrefix(part, "-") {
-			// Exclusion
-			exclude[strings.TrimPrefix(part, "-")] = true
-		} else {
-			include = append(include, part)
-		}
-	}
-
-	// Filter to only available crew members
-	result := []string{}
-	for _, name := range include {
-		if exclude[name] {
-			continue
-		}
-		// Check if this crew exists
-		for _, avail := range available {
-			if avail == name {
-				result = append(result, name)
-				break
-			}
-		}
-	}
-
-	return result
+	return parseCrewIncludeExclude(pref, available)
 }
 
 // startPolecatsWithWork starts polecats that have pinned beads (work attached).
 // Returns list of started polecat names and map of errors.
 func startPolecatsWithWork(townRoot, rigName string) ([]string, map[string]error) {
 	started := []string{}
-	errors := map[string]error{}
-
-	rigPath := filepath.Join(townRoot, rigName)
-	polecatsDir := filepath.Join(rigPath, "polecats")
-
-	// List polecat directories
+	errs := map[string]error{}
+	polecatsDir := filepath.Join(townRoot, rigName, "polecats")
 	entries, err := os.ReadDir(polecatsDir)
 	if err != nil {
-		// No polecats directory
-		return started, errors
+		return started, errs
 	}
-
-	// Get polecat session manager
 	_, r, err := getRig(rigName)
 	if err != nil {
-		return started, errors
+		return started, errs
 	}
-	t := tmux.NewTmux()
-	polecatMgr := polecat.NewSessionManager(t, r)
-
+	polecatMgr := polecat.NewSessionManager(tmux.NewTmux(), r)
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-
-		polecatName := entry.Name()
-		polecatPath := filepath.Join(polecatsDir, polecatName)
-
-		// Check if this polecat has a pinned bead (work attached)
-		agentID := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-		b := beads.New(polecatPath)
-		pinnedBeads, err := b.List(beads.ListOptions{
-			Status:   beads.StatusPinned,
-			Assignee: agentID,
-			Priority: -1,
-		})
-		if err != nil || len(pinnedBeads) == 0 {
-			// No pinned beads - skip
-			continue
-		}
-
-		// This polecat has work - start it using SessionManager
-		if err := polecatMgr.Start(polecatName, polecat.SessionStartOptions{}); err != nil {
-			if err == polecat.ErrSessionRunning {
-				started = append(started, polecatName)
-			} else {
-				errors[polecatName] = err
-			}
-		} else {
-			started = append(started, polecatName)
-		}
+		started = startOnePolecatWithWork(polecatMgr, rigName, polecatsDir, entry.Name(), started, errs)
 	}
-
-	return started, errors
+	return started, errs
 }
 
 // doltReadyTimeout is how long gt up waits for the Dolt SQL server to accept
