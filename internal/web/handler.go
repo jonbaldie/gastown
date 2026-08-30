@@ -91,78 +91,47 @@ func NewConvoyHandler(fetcher ConvoyFetcher, fetchTimeout time.Duration, csrfTok
 // requests (htmx auto-refresh, multiple tabs). Only one fetch cycle
 // runs at a time; concurrent requests get the cached response.
 func (h *ConvoyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Check for expand parameter — expanded views render a different template
-	// variant but are still cached to prevent process storms (GH#3117).
 	expandPanel := r.URL.Query().Get("expand")
-
-	// Fast path: serve from cache if fresh.
-	if expandPanel == "" {
-		h.cacheMu.Lock()
-		if len(h.cacheBody) > 0 && time.Since(h.cacheTime) < h.cacheTTL {
-			body := h.cacheBody
-			h.cacheMu.Unlock()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if _, err := w.Write(body); err != nil {
-				log.Printf("dashboard: cached response write failed: %v", err)
-			}
-			return
-		}
-		h.cacheMu.Unlock()
-	} else {
-		// Expanded views: check per-panel cache to prevent process storms
-		h.expandCacheMu.Lock()
-		if entry, ok := h.expandCache[expandPanel]; ok && time.Since(entry.time) < h.cacheTTL {
-			body := entry.body
-			h.expandCacheMu.Unlock()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if _, err := w.Write(body); err != nil {
-				log.Printf("dashboard: cached expand response write failed: %v", err)
-			}
-			return
-		}
-		h.expandCacheMu.Unlock()
+	if h.serveCached(w, expandPanel) {
+		return
 	}
-
-	// Serialize fetch cycles: only one request triggers a full fetch at a time.
-	// Others wait and will likely hit the cache when this one finishes.
 	h.cacheInUse.Lock()
 	defer h.cacheInUse.Unlock()
-
-	// Double-check cache after acquiring lock (another request may have populated it).
-	if expandPanel == "" {
-		h.cacheMu.Lock()
-		if len(h.cacheBody) > 0 && time.Since(h.cacheTime) < h.cacheTTL {
-			body := h.cacheBody
-			h.cacheMu.Unlock()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if _, err := w.Write(body); err != nil {
-				log.Printf("dashboard: cached response write failed: %v", err)
-			}
-			return
-		}
-		h.cacheMu.Unlock()
-	} else {
-		h.expandCacheMu.Lock()
-		if entry, ok := h.expandCache[expandPanel]; ok && time.Since(entry.time) < h.cacheTTL {
-			body := entry.body
-			h.expandCacheMu.Unlock()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if _, err := w.Write(body); err != nil {
-				log.Printf("dashboard: cached expand response write failed: %v", err)
-			}
-			return
-		}
-		h.expandCacheMu.Unlock()
+	if h.serveCached(w, expandPanel) {
+		return
 	}
-
 	body := h.fetchAndRender(r, expandPanel)
 	if body == nil {
 		http.Error(w, "Failed to render template", http.StatusInternalServerError)
 		return
 	}
+	h.storeCached(expandPanel, body)
+	writeDashboardHTML(w, body, "response")
+}
 
-	// Update cache
-	if expandPanel == "" {
+func (h *ConvoyHandler) serveCached(w http.ResponseWriter, panel string) bool {
+	body, ok := h.cachedBody(panel)
+	if !ok {
+		return false
+	}
+	writeDashboardHTML(w, body, "cached response")
+	return true
+}
+
+func (h *ConvoyHandler) cachedBody(panel string) ([]byte, bool) {
+	if panel == "" {
+		h.cacheMu.Lock()
+		defer h.cacheMu.Unlock()
+		return h.cacheBody, len(h.cacheBody) > 0 && time.Since(h.cacheTime) < h.cacheTTL
+	}
+	h.expandCacheMu.Lock()
+	defer h.expandCacheMu.Unlock()
+	entry, ok := h.expandCache[panel]
+	return entry.body, ok && time.Since(entry.time) < h.cacheTTL
+}
+
+func (h *ConvoyHandler) storeCached(panel string, body []byte) {
+	if panel == "" {
 		h.cacheMu.Lock()
 		h.cacheBody = body
 		h.cacheTime = time.Now()
@@ -172,13 +141,15 @@ func (h *ConvoyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.expandCache == nil {
 			h.expandCache = make(map[string]expandCacheEntry)
 		}
-		h.expandCache[expandPanel] = expandCacheEntry{body: body, time: time.Now()}
+		h.expandCache[panel] = expandCacheEntry{body: body, time: time.Now()}
 		h.expandCacheMu.Unlock()
 	}
+}
 
+func writeDashboardHTML(w http.ResponseWriter, body []byte, operation string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if _, err := w.Write(body); err != nil {
-		log.Printf("dashboard: response write failed: %v", err)
+		log.Printf("dashboard: %s write failed: %v", operation, err)
 	}
 }
 
@@ -187,185 +158,8 @@ func (h *ConvoyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *ConvoyHandler) fetchAndRender(r *http.Request, expandPanel string) []byte {
 	ctx, cancel := context.WithTimeout(r.Context(), h.fetchTimeout)
 	defer cancel()
-
-	var (
-		convoys     []ConvoyRow
-		mergeQueue  []MergeQueueRow
-		workers     []WorkerRow
-		mail        []MailRow
-		rigs        []RigRow
-		dogs        []DogRow
-		escalations []EscalationRow
-		health      *HealthRow
-		queues      []QueueRow
-		sessions    []SessionRow
-		hooks       []HookRow
-		mayor       *MayorStatus
-		issues      []IssueRow
-		activity    []ActivityRow
-		wg          sync.WaitGroup
-	)
-
-	// Run all fetches in parallel with error logging
-	wg.Add(14)
-
-	go func() {
-		defer wg.Done()
-		var err error
-		convoys, err = h.fetcher.FetchConvoys()
-		if err != nil {
-			log.Printf("dashboard: FetchConvoys failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		mergeQueue, err = h.fetcher.FetchMergeQueue()
-		if err != nil {
-			log.Printf("dashboard: FetchMergeQueue failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		workers, err = h.fetcher.FetchWorkers()
-		if err != nil {
-			log.Printf("dashboard: FetchWorkers failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		mail, err = h.fetcher.FetchMail()
-		if err != nil {
-			log.Printf("dashboard: FetchMail failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		rigs, err = h.fetcher.FetchRigs()
-		if err != nil {
-			log.Printf("dashboard: FetchRigs failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		dogs, err = h.fetcher.FetchDogs()
-		if err != nil {
-			log.Printf("dashboard: FetchDogs failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		escalations, err = h.fetcher.FetchEscalations()
-		if err != nil {
-			log.Printf("dashboard: FetchEscalations failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		health, err = h.fetcher.FetchHealth()
-		if err != nil {
-			log.Printf("dashboard: FetchHealth failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		queues, err = h.fetcher.FetchQueues()
-		if err != nil {
-			log.Printf("dashboard: FetchQueues failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		sessions, err = h.fetcher.FetchSessions()
-		if err != nil {
-			log.Printf("dashboard: FetchSessions failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		hooks, err = h.fetcher.FetchHooks()
-		if err != nil {
-			log.Printf("dashboard: FetchHooks failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		mayor, err = h.fetcher.FetchMayor()
-		if err != nil {
-			log.Printf("dashboard: FetchMayor failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		issues, err = h.fetcher.FetchIssues()
-		if err != nil {
-			log.Printf("dashboard: FetchIssues failed: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		var err error
-		activity, err = h.fetcher.FetchActivity()
-		if err != nil {
-			log.Printf("dashboard: FetchActivity failed: %v", err)
-		}
-	}()
-
-	// Wait for fetches or timeout
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// All fetches completed
-	case <-ctx.Done():
-		log.Printf("dashboard: fetch timeout")
-		// Goroutines may still be writing to shared result variables.
-		// Wait for them to finish to avoid a data race on read below.
-		<-done
-	}
-
-	// Compute summary from already-fetched data
-	summary := computeSummary(workers, hooks, issues, convoys, escalations, activity)
-
-	data := ConvoyData{
-		Convoys:     convoys,
-		MergeQueue:  mergeQueue,
-		Workers:     workers,
-		Mail:        mail,
-		Rigs:        rigs,
-		Dogs:        dogs,
-		Escalations: escalations,
-		Activity:    activity,
-		ConvoyWorkData: ConvoyWorkData{
-			Queues:   queues,
-			Sessions: sessions,
-			Hooks:    hooks,
-			Issues:   enrichIssuesWithAssignees(issues, hooks),
-		},
-		ConvoyViewState: ConvoyViewState{
-			Health:    health,
-			Mayor:     mayor,
-			Summary:   summary,
-			Expand:    expandPanel,
-			CSRFToken: h.csrfToken,
-		},
-	}
-
+	snapshot := fetchDashboardSnapshot(ctx, h.fetcher)
+	data := snapshot.convoyData(expandPanel, h.csrfToken)
 	var buf bytes.Buffer
 	if err := h.template.ExecuteTemplate(&buf, "convoy.html", data); err != nil {
 		log.Printf("dashboard: template execution failed: %v", err)
@@ -373,6 +167,93 @@ func (h *ConvoyHandler) fetchAndRender(r *http.Request, expandPanel string) []by
 	}
 
 	return buf.Bytes()
+}
+
+type dashboardSnapshot struct {
+	overview   dashboardOverview
+	operations dashboardOperations
+}
+
+type dashboardOverview struct {
+	convoys     []ConvoyRow
+	mergeQueue  []MergeQueueRow
+	workers     []WorkerRow
+	mail        []MailRow
+	rigs        []RigRow
+	dogs        []DogRow
+	escalations []EscalationRow
+	activity    []ActivityRow
+}
+
+type dashboardOperations struct {
+	health   *HealthRow
+	queues   []QueueRow
+	sessions []SessionRow
+	hooks    []HookRow
+	mayor    *MayorStatus
+	issues   []IssueRow
+}
+
+func fetchDashboardSnapshot(ctx context.Context, fetcher ConvoyFetcher) dashboardSnapshot {
+	var result dashboardSnapshot
+	var wg sync.WaitGroup
+	tasks := []struct {
+		name string
+		run  func() error
+	}{
+		{"FetchConvoys", func() (err error) { result.overview.convoys, err = fetcher.FetchConvoys(); return err }},
+		{"FetchMergeQueue", func() (err error) { result.overview.mergeQueue, err = fetcher.FetchMergeQueue(); return err }},
+		{"FetchWorkers", func() (err error) { result.overview.workers, err = fetcher.FetchWorkers(); return err }},
+		{"FetchMail", func() (err error) { result.overview.mail, err = fetcher.FetchMail(); return err }},
+		{"FetchRigs", func() (err error) { result.overview.rigs, err = fetcher.FetchRigs(); return err }},
+		{"FetchDogs", func() (err error) { result.overview.dogs, err = fetcher.FetchDogs(); return err }},
+		{"FetchEscalations", func() (err error) { result.overview.escalations, err = fetcher.FetchEscalations(); return err }},
+		{"FetchHealth", func() (err error) { result.operations.health, err = fetcher.FetchHealth(); return err }},
+		{"FetchQueues", func() (err error) { result.operations.queues, err = fetcher.FetchQueues(); return err }},
+		{"FetchSessions", func() (err error) { result.operations.sessions, err = fetcher.FetchSessions(); return err }},
+		{"FetchHooks", func() (err error) { result.operations.hooks, err = fetcher.FetchHooks(); return err }},
+		{"FetchMayor", func() (err error) { result.operations.mayor, err = fetcher.FetchMayor(); return err }},
+		{"FetchIssues", func() (err error) { result.operations.issues, err = fetcher.FetchIssues(); return err }},
+		{"FetchActivity", func() (err error) { result.overview.activity, err = fetcher.FetchActivity(); return err }},
+	}
+	for _, task := range tasks {
+		wg.Add(1)
+		go runDashboardFetch(&wg, task.name, task.run)
+	}
+	waitForDashboardFetches(ctx, &wg)
+	return result
+}
+
+func runDashboardFetch(wg *sync.WaitGroup, name string, run func() error) {
+	defer wg.Done()
+	if err := run(); err != nil {
+		log.Printf("dashboard: %s failed: %v", name, err)
+	}
+}
+
+func waitForDashboardFetches(ctx context.Context, wg *sync.WaitGroup) {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		log.Printf("dashboard: fetch timeout")
+		<-done
+	}
+}
+
+func (s dashboardSnapshot) convoyData(expandPanel, csrfToken string) ConvoyData {
+	overview, operations := s.overview, s.operations
+	return ConvoyData{
+		Convoys: overview.convoys, MergeQueue: overview.mergeQueue, Workers: overview.workers, Mail: overview.mail,
+		Rigs: overview.rigs, Dogs: overview.dogs, Escalations: overview.escalations, Activity: overview.activity,
+		ConvoyWorkData: ConvoyWorkData{Queues: operations.queues, Sessions: operations.sessions, Hooks: operations.hooks, Issues: enrichIssuesWithAssignees(operations.issues, operations.hooks)},
+		ConvoyViewState: ConvoyViewState{
+			Health: operations.health, Mayor: operations.mayor,
+			Summary: computeSummary(overview.workers, operations.hooks, operations.issues, overview.convoys, overview.escalations, overview.activity),
+			Expand:  expandPanel, CSRFToken: csrfToken,
+		},
+	}
 }
 
 // computeSummary calculates dashboard stats and alerts from fetched data.
