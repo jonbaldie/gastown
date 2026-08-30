@@ -32,15 +32,29 @@ type Manager struct {
 	townRoot   string
 	kennelPath string // ~/gt/deacon/dogs/
 	rigsConfig *config.RigsConfig
+	*lifecycleManager
+	*stateManager
+	*snapshotManager
+	*refreshManager
 }
+
+type lifecycleManager struct{ *Manager }
+type stateManager struct{ *Manager }
+type snapshotManager struct{ *Manager }
+type refreshManager struct{ *Manager }
 
 // NewManager creates a new dog manager.
 func NewManager(townRoot string, rigsConfig *config.RigsConfig) *Manager {
-	return &Manager{
+	m := &Manager{
 		townRoot:   townRoot,
 		kennelPath: filepath.Join(townRoot, "deacon", "dogs"),
 		rigsConfig: rigsConfig,
 	}
+	m.lifecycleManager = &lifecycleManager{Manager: m}
+	m.stateManager = &stateManager{Manager: m}
+	m.snapshotManager = &snapshotManager{Manager: m}
+	m.refreshManager = &refreshManager{Manager: m}
+	return m
 }
 
 // lockDog acquires an exclusive file lock for a specific dog's state operations.
@@ -59,6 +73,25 @@ func (m *Manager) lockDog(name string) (*flock.Flock, error) {
 		return nil, fmt.Errorf("acquiring dog lock for %s: %w", name, err)
 	}
 	return fl, nil
+}
+
+func (m *Manager) lockState(name string) (*flock.Flock, *DogState, error) {
+	if err := validateDogName(name); err != nil {
+		return nil, nil, err
+	}
+	if !m.exists(name) {
+		return nil, nil, ErrDogNotFound
+	}
+	fl, err := m.lockDog(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	state, err := m.loadState(name)
+	if err != nil {
+		_ = fl.Unlock()
+		return nil, nil, fmt.Errorf("loading state: %w", err)
+	}
+	return fl, state, nil
 }
 
 // validateDogName checks that a dog name is safe for use as a directory name.
@@ -94,7 +127,7 @@ func (m *Manager) stateFilePath(name string) string {
 // Add creates a new dog in the kennel with worktrees into each rig.
 // Each dog gets a worktree per rig (e.g., dogs/alpha/gastown/, dogs/alpha/beads/).
 // Worktrees are created from each rig's bare repo (.repo.git) or mayor/rig.
-func (m *Manager) Add(name string) (*Dog, error) {
+func (m *lifecycleManager) Add(name string) (*Dog, error) {
 	if err := validateDogName(name); err != nil {
 		return nil, err
 	}
@@ -172,7 +205,7 @@ func (m *Manager) createRigWorktree(dogPath, dogName, rigName string) (string, e
 	worktreePath := filepath.Join(dogPath, rigName)
 
 	// Find the repo base (bare repo or mayor/rig)
-	repoGit, err := m.findRepoBase(rigPath)
+	repoGit, err := findRepoBase(rigPath)
 	if err != nil {
 		return "", fmt.Errorf("finding repo base for %s: %w", rigName, err)
 	}
@@ -198,7 +231,7 @@ func (m *Manager) createRigWorktree(dogPath, dogName, rigName string) (string, e
 
 // findRepoBase locates the git repo base for a rig.
 // Prefers .repo.git (bare repo), falls back to mayor/rig.
-func (m *Manager) findRepoBase(rigPath string) (*git.Git, error) {
+func findRepoBase(rigPath string) (*git.Git, error) {
 	// Check for shared bare repo
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
 	if info, err := os.Stat(bareRepoPath); err == nil && info.IsDir() {
@@ -215,7 +248,7 @@ func (m *Manager) findRepoBase(rigPath string) (*git.Git, error) {
 
 // Remove deletes a dog from the kennel.
 // Removes all worktrees and the dog directory.
-func (m *Manager) Remove(name string) error {
+func (m *lifecycleManager) Remove(name string) error {
 	if err := validateDogName(name); err != nil {
 		return err
 	}
@@ -235,7 +268,7 @@ func (m *Manager) Remove(name string) error {
 	// Remove worktrees from each rig
 	for rigName, worktreePath := range state.Worktrees {
 		rigPath := filepath.Join(m.townRoot, rigName)
-		repoGit, err := m.findRepoBase(rigPath)
+		repoGit, err := findRepoBase(rigPath)
 		if err != nil {
 			// Log but continue with other rigs
 			style.PrintWarning("could not find repo base for %s: %v", rigName, err)
@@ -261,7 +294,7 @@ func (m *Manager) Remove(name string) error {
 }
 
 // List returns all dogs in the kennel.
-func (m *Manager) List() ([]*Dog, error) {
+func (m *lifecycleManager) List() ([]*Dog, error) {
 	entries, err := os.ReadDir(m.kennelPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -288,7 +321,7 @@ func (m *Manager) List() ([]*Dog, error) {
 
 // Get returns a specific dog by name.
 // Returns ErrDogNotFound if the dog directory or .dog.json state file doesn't exist.
-func (m *Manager) Get(name string) (*Dog, error) {
+func (m *lifecycleManager) Get(name string) (*Dog, error) {
 	if err := validateDogName(name); err != nil {
 		return nil, err
 	}
@@ -318,7 +351,7 @@ func (m *Manager) Get(name string) (*Dog, error) {
 }
 
 // SetState updates a dog's state and last-active timestamp.
-func (m *Manager) SetState(name string, state State) error {
+func (m *stateManager) SetState(name string, state State) error {
 	if err := validateDogName(name); err != nil {
 		return err
 	}
@@ -346,12 +379,12 @@ func (m *Manager) SetState(name string, state State) error {
 }
 
 // AssignWork assigns untyped legacy work to a dog and sets it to working state.
-func (m *Manager) AssignWork(name, work string) error {
+func (m *stateManager) AssignWork(name, work string) error {
 	return m.AssignWorkWithKind(name, work, "")
 }
 
 // AssignWorkWithKind assigns typed work to a dog and sets it to working state.
-func (m *Manager) AssignWorkWithKind(name, work string, kind WorkKind) error {
+func (m *stateManager) AssignWorkWithKind(name, work string, kind WorkKind) error {
 	if err := validateDogName(name); err != nil {
 		return err
 	}
@@ -392,12 +425,12 @@ func applyWorkSourceID(state *DogState, work string, kind WorkKind) {
 
 // AssignWorkIfIdle assigns work only if the dog is still idle, returning the
 // saved state so callers can later perform exact compare-and-clear cleanup.
-func (m *Manager) AssignWorkIfIdle(name, work string) (*DogState, error) {
+func (m *stateManager) AssignWorkIfIdle(name, work string) (*DogState, error) {
 	return m.AssignWorkIfIdleWithKind(name, work, "")
 }
 
 // AssignWorkIfIdleWithKind records whether work is a source bead or formula.
-func (m *Manager) AssignWorkIfIdleWithKind(name, work string, kind WorkKind) (*DogState, error) {
+func (m *stateManager) AssignWorkIfIdleWithKind(name, work string, kind WorkKind) (*DogState, error) {
 	if err := validateDogName(name); err != nil {
 		return nil, err
 	}
@@ -436,7 +469,7 @@ func (m *Manager) AssignWorkIfIdleWithKind(name, work string, kind WorkKind) (*D
 // SetWorkSourceIfMatches records the exact source bead ID for formula work
 // after the source is hooked. Bead dispatches already store the source ID in
 // Work at assignment time.
-func (m *Manager) SetWorkSourceIfMatches(name, expectedWork string, expectedStartedAt time.Time, sourceID string) (bool, error) {
+func (m *stateManager) SetWorkSourceIfMatches(name, expectedWork string, expectedStartedAt time.Time, sourceID string) (bool, error) {
 	if err := validateDogName(name); err != nil {
 		return false, err
 	}
@@ -467,7 +500,7 @@ func (m *Manager) SetWorkSourceIfMatches(name, expectedWork string, expectedStar
 }
 
 // ClearWork clears a dog's work assignment and sets it to idle.
-func (m *Manager) ClearWork(name string) error {
+func (m *stateManager) ClearWork(name string) error {
 	if err := validateDogName(name); err != nil {
 		return err
 	}
@@ -505,7 +538,7 @@ func clearWorkFields(state *DogState) {
 // ClearWorkIfMatches clears a dog's work assignment only if it still matches
 // the expected work and assignment timestamp. The compare-and-clear happens
 // under the dog lock so failed dispatch cleanup cannot erase a newer assignment.
-func (m *Manager) ClearWorkIfMatches(name, expectedWork string, expectedStartedAt time.Time) (bool, error) {
+func (m *snapshotManager) ClearWorkIfMatches(name, expectedWork string, expectedStartedAt time.Time) (bool, error) {
 	if err := validateDogName(name); err != nil {
 		return false, err
 	}
@@ -536,7 +569,7 @@ func (m *Manager) ClearWorkIfMatches(name, expectedWork string, expectedStartedA
 // while holding the dog lock. This lets callers update external authoritative
 // state before making the dog idle, without a concurrent reassignment racing
 // between the two operations. If beforeClear returns false, state is preserved.
-func (m *Manager) ClearWorkIfMatchesAfter(name, expectedWork string, expectedStartedAt time.Time, beforeClear func() bool) (bool, error) {
+func (m *snapshotManager) ClearWorkIfMatchesAfter(name, expectedWork string, expectedStartedAt time.Time, beforeClear func() bool) (bool, error) {
 	if err := validateDogName(name); err != nil {
 		return false, err
 	}
@@ -568,53 +601,55 @@ func (m *Manager) ClearWorkIfMatchesAfter(name, expectedWork string, expectedSta
 
 // RemoveIfMatches removes a dog only if its assignment still matches the
 // caller's snapshot. Idle dogs are matched by empty work and a zero timestamp.
-func (m *Manager) RemoveIfMatches(name, expectedWork string, expectedStartedAt time.Time) (bool, error) {
+func (m *snapshotManager) RemoveIfMatches(name, expectedWork string, expectedStartedAt time.Time) (bool, error) {
 	return m.RemoveIfMatchesAfter(name, expectedWork, expectedStartedAt, nil)
 }
 
 // RemoveIfMatchesAfter runs beforeRemove and removes the dog while holding its
 // assignment lock. Dispatch cannot assign work between session teardown and
 // kennel removal.
-func (m *Manager) RemoveIfMatchesAfter(name, expectedWork string, expectedStartedAt time.Time, beforeRemove func() error) (bool, error) {
+func (m *snapshotManager) RemoveIfMatchesAfter(name, expectedWork string, expectedStartedAt time.Time, beforeRemove func() error) (bool, error) {
 	return m.RemoveIfSnapshotMatchesAfter(name, expectedWork, expectedStartedAt, time.Time{}, beforeRemove)
 }
 
 // RemoveIfSnapshotMatchesAfter also checks LastActive when expectedLastActive
 // is non-zero, preventing a stale idle snapshot from matching a dog that was
 // assigned and completed in the meantime.
-func (m *Manager) RemoveIfSnapshotMatchesAfter(name, expectedWork string, expectedStartedAt, expectedLastActive time.Time, beforeRemove func() error) (bool, error) {
-	if err := validateDogName(name); err != nil {
-		return false, err
-	}
-	if !m.exists(name) {
-		return false, ErrDogNotFound
-	}
-
-	fl, err := m.lockDog(name)
+func (m *snapshotManager) RemoveIfSnapshotMatchesAfter(name, expectedWork string, expectedStartedAt, expectedLastActive time.Time, beforeRemove func() error) (bool, error) {
+	fl, state, err := m.lockState(name)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = fl.Unlock() }()
-
-	state, err := m.loadState(name)
-	if err != nil {
-		return false, fmt.Errorf("loading state: %w", err)
-	}
-	if state.Work != expectedWork || !state.WorkStartedAt.Equal(expectedStartedAt) ||
-		(!expectedLastActive.IsZero() && !state.LastActive.Equal(expectedLastActive)) {
+	if !snapshotMatches(state, expectedWork, expectedStartedAt, expectedLastActive) {
 		return false, nil
 	}
-	if beforeRemove != nil {
-		if err := beforeRemove(); err != nil {
-			return false, err
-		}
+	if err := runBeforeRemove(beforeRemove); err != nil {
+		return false, err
 	}
+	m.removeRegisteredWorktrees(state)
+	if err := os.RemoveAll(m.dogDir(name)); err != nil {
+		return false, fmt.Errorf("removing dog directory: %w", err)
+	}
+	return true, nil
+}
 
-	// Mirror Remove's registered worktree cleanup while the assignment lock is
-	// held, so dispatch cannot race removal between revalidation and deletion.
+func snapshotMatches(state *DogState, expectedWork string, expectedStartedAt, expectedLastActive time.Time) bool {
+	return state.Work == expectedWork && state.WorkStartedAt.Equal(expectedStartedAt) &&
+		(expectedLastActive.IsZero() || state.LastActive.Equal(expectedLastActive))
+}
+
+func runBeforeRemove(beforeRemove func() error) error {
+	if beforeRemove == nil {
+		return nil
+	}
+	return beforeRemove()
+}
+
+func (m *snapshotManager) removeRegisteredWorktrees(state *DogState) {
 	for rigName, worktreePath := range state.Worktrees {
 		rigPath := filepath.Join(m.townRoot, rigName)
-		repoGit, err := m.findRepoBase(rigPath)
+		repoGit, err := findRepoBase(rigPath)
 		if err != nil {
 			style.PrintWarning("could not find repo base for %s: %v", rigName, err)
 			continue
@@ -624,43 +659,26 @@ func (m *Manager) RemoveIfSnapshotMatchesAfter(name, expectedWork string, expect
 		}
 		_ = git.WorktreePrune(repoGit)
 	}
-	if err := os.RemoveAll(m.dogDir(name)); err != nil {
-		return false, fmt.Errorf("removing dog directory: %w", err)
-	}
-	return true, nil
 }
 
 // WithWorkIfMatches runs action under the dog lock only when the assignment
 // still matches the caller's snapshot.
-func (m *Manager) WithWorkIfMatches(name, expectedWork string, expectedStartedAt time.Time, action func() error) (bool, error) {
+func (m *snapshotManager) WithWorkIfMatches(name, expectedWork string, expectedStartedAt time.Time, action func() error) (bool, error) {
 	return m.WithSnapshotIfMatches(name, expectedWork, expectedStartedAt, time.Time{}, action)
 }
 
 // WithSnapshotIfMatches optionally includes LastActive in snapshot matching.
-func (m *Manager) WithSnapshotIfMatches(name, expectedWork string, expectedStartedAt, expectedLastActive time.Time, action func() error) (bool, error) {
-	if err := validateDogName(name); err != nil {
-		return false, err
-	}
-	if !m.exists(name) {
-		return false, ErrDogNotFound
-	}
-	fl, err := m.lockDog(name)
+func (m *snapshotManager) WithSnapshotIfMatches(name, expectedWork string, expectedStartedAt, expectedLastActive time.Time, action func() error) (bool, error) {
+	fl, state, err := m.lockState(name)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = fl.Unlock() }()
-	state, err := m.loadState(name)
-	if err != nil {
-		return false, fmt.Errorf("loading state: %w", err)
-	}
-	if state.Work != expectedWork || !state.WorkStartedAt.Equal(expectedStartedAt) ||
-		(!expectedLastActive.IsZero() && !state.LastActive.Equal(expectedLastActive)) {
+	if !snapshotMatches(state, expectedWork, expectedStartedAt, expectedLastActive) {
 		return false, nil
 	}
-	if action != nil {
-		if err := action(); err != nil {
-			return false, err
-		}
+	if err := runBeforeRemove(action); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -669,7 +687,7 @@ func (m *Manager) WithSnapshotIfMatches(name, expectedWork string, expectedStart
 // This is useful when worktrees have drifted or become stale.
 // Each rig is refreshed atomically with a state save, so a failure at rig N
 // leaves rigs 1..N-1 correctly updated and rigs N+1..M untouched.
-func (m *Manager) Refresh(name string) error {
+func (m *refreshManager) Refresh(name string) error {
 	if err := validateDogName(name); err != nil {
 		return err
 	}
@@ -702,7 +720,7 @@ func (m *Manager) Refresh(name string) error {
 		oldWorktreePath := state.Worktrees[rigName]
 
 		// Find repo base
-		repoGit, err := m.findRepoBase(rigPath)
+		repoGit, err := findRepoBase(rigPath)
 		if err != nil {
 			// Save partial progress before returning
 			state.LastActive = time.Now()
@@ -746,7 +764,7 @@ func (m *Manager) Refresh(name string) error {
 }
 
 // RefreshRig recreates the worktree for a specific rig.
-func (m *Manager) RefreshRig(name, rigName string) error {
+func (m *refreshManager) RefreshRig(name, rigName string) error {
 	if err := validateDogName(name); err != nil {
 		return err
 	}
@@ -780,7 +798,7 @@ func (m *Manager) RefreshRig(name, rigName string) error {
 	oldWorktreePath := state.Worktrees[rigName]
 
 	// Find repo base
-	repoGit, err := m.findRepoBase(rigPath)
+	repoGit, err := findRepoBase(rigPath)
 	if err != nil {
 		return fmt.Errorf("finding repo base: %w", err)
 	}
@@ -816,12 +834,12 @@ func (m *Manager) RefreshRig(name, rigName string) error {
 
 // CleanupStaleBranches removes orphaned dog branches from all rigs.
 // Returns total branches deleted across all rigs.
-func (m *Manager) CleanupStaleBranches() (int, error) {
+func (m *refreshManager) CleanupStaleBranches() (int, error) {
 	totalDeleted := 0
 
 	for rigName := range m.rigsConfig.Rigs {
 		rigPath := filepath.Join(m.townRoot, rigName)
-		repoGit, err := m.findRepoBase(rigPath)
+		repoGit, err := findRepoBase(rigPath)
 		if err != nil {
 			continue
 		}
@@ -838,7 +856,7 @@ func (m *Manager) CleanupStaleBranches() (int, error) {
 }
 
 // cleanupStaleBranchesForRig removes orphaned dog branches in a specific rig.
-func (m *Manager) cleanupStaleBranchesForRig(repoGit *git.Git, rigName string) (int, error) {
+func (m *refreshManager) cleanupStaleBranchesForRig(repoGit *git.Git, rigName string) (int, error) {
 	// List all dog branches
 	branches, err := git.ListBranches(repoGit, "dog/*")
 	if err != nil {
@@ -908,7 +926,7 @@ func (m *Manager) saveState(name string, state *DogState) error {
 
 // GetIdleDog returns an idle dog suitable for work assignment.
 // Returns nil if no idle dogs are available.
-func (m *Manager) GetIdleDog() (*Dog, error) {
+func (m *lifecycleManager) GetIdleDog() (*Dog, error) {
 	dogs, err := m.List()
 	if err != nil {
 		return nil, err
@@ -924,7 +942,7 @@ func (m *Manager) GetIdleDog() (*Dog, error) {
 }
 
 // IdleCount returns the number of idle dogs.
-func (m *Manager) IdleCount() (int, error) {
+func (m *lifecycleManager) IdleCount() (int, error) {
 	dogs, err := m.List()
 	if err != nil {
 		return 0, err
@@ -940,7 +958,7 @@ func (m *Manager) IdleCount() (int, error) {
 }
 
 // WorkingCount returns the number of working dogs.
-func (m *Manager) WorkingCount() (int, error) {
+func (m *lifecycleManager) WorkingCount() (int, error) {
 	dogs, err := m.List()
 	if err != nil {
 		return 0, err
