@@ -172,20 +172,35 @@ func (dm *dogMol) closeRemainingSteps() {
 
 	closed := 0
 	for _, child := range children {
-		if child.ID == "" || child.Status == "" {
-			continue
-		}
-		// Close any child that is still open/hooked/in_progress.
-		if child.Status == "open" || child.Status == "hooked" || child.Status == "in_progress" {
-			if err := dm.closeWisp(child.ID); err != nil {
-				dm.logger.Printf("dog_molecule: closeRemainingSteps: close %s failed after %d attempts: %v", child.ID, dogCloseMaxAttempts, err)
-			} else {
-				closed++
-			}
+		if dm.closeRemainingStep(child) {
+			closed++
 		}
 	}
 	if closed > 0 {
 		dm.logger.Printf("dog_molecule: closeRemainingSteps: closed %d orphan step wisp(s) under %s", closed, dm.rootID)
+	}
+}
+
+func (dm *dogMol) closeRemainingStep(child childInfo) bool {
+	if !shouldCloseDogStep(child) {
+		return false
+	}
+	if err := dm.closeWisp(child.ID); err != nil {
+		dm.logger.Printf("dog_molecule: closeRemainingSteps: close %s failed after %d attempts: %v", child.ID, dogCloseMaxAttempts, err)
+		return false
+	}
+	return true
+}
+
+func shouldCloseDogStep(child childInfo) bool {
+	if child.ID == "" || child.Status == "" {
+		return false
+	}
+	switch child.Status {
+	case "open", "hooked", "in_progress":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -214,48 +229,44 @@ func (dm *dogMol) discoverSteps() {
 	// Map known step slugs from each child's title. The wisp title typically starts
 	// with the step title from the formula.
 	for _, child := range children {
-		if child.ID == "" || child.Title == "" {
-			continue
-		}
+		dm.recordDiscoveredStep(child)
+	}
+}
 
-		titleLower := strings.ToLower(child.Title)
-		switch {
-		case strings.Contains(titleLower, "scan"):
-			dm.stepIDs["scan"] = child.ID
-		case strings.Contains(titleLower, "reap"):
-			dm.stepIDs["reap"] = child.ID
-		case strings.Contains(titleLower, "purge"):
-			dm.stepIDs["purge"] = child.ID
-		case strings.Contains(titleLower, "report"):
-			dm.stepIDs["report"] = child.ID
-		case strings.Contains(titleLower, "export"):
-			dm.stepIDs["export"] = child.ID
-		case strings.Contains(titleLower, "push"):
-			dm.stepIDs["push"] = child.ID
-		case strings.Contains(titleLower, "diagnos"):
-			dm.stepIDs["diagnose"] = child.ID
-		case strings.Contains(titleLower, "backup"):
-			dm.stepIDs["backup"] = child.ID
-		case strings.Contains(titleLower, "probe"):
-			dm.stepIDs["probe"] = child.ID
-		case strings.Contains(titleLower, "inspect"):
-			dm.stepIDs["inspect"] = child.ID
-		case strings.Contains(titleLower, "clean"):
-			dm.stepIDs["clean"] = child.ID
-		case strings.Contains(titleLower, "verif"):
-			dm.stepIDs["verify"] = child.ID
-		case strings.Contains(titleLower, "compact"):
-			dm.stepIDs["compact"] = child.ID
-		case strings.Contains(titleLower, "checkpoint"):
-			dm.stepIDs["checkpoint"] = child.ID
-		case strings.Contains(titleLower, "auto-close") || strings.Contains(titleLower, "auto close"):
-			dm.stepIDs["auto-close"] = child.ID
-		case strings.Contains(titleLower, "sync"):
-			dm.stepIDs["sync"] = child.ID
-		case strings.Contains(titleLower, "offsite"):
-			dm.stepIDs["offsite"] = child.ID
-		case strings.Contains(titleLower, "rotat"):
-			dm.stepIDs["rotate"] = child.ID
+var dogStepKeywords = []struct {
+	keyword string
+	slug    string
+}{
+	{keyword: "scan", slug: "scan"},
+	{keyword: "reap", slug: "reap"},
+	{keyword: "purge", slug: "purge"},
+	{keyword: "report", slug: "report"},
+	{keyword: "export", slug: "export"},
+	{keyword: "push", slug: "push"},
+	{keyword: "diagnos", slug: "diagnose"},
+	{keyword: "backup", slug: "backup"},
+	{keyword: "probe", slug: "probe"},
+	{keyword: "inspect", slug: "inspect"},
+	{keyword: "clean", slug: "clean"},
+	{keyword: "verif", slug: "verify"},
+	{keyword: "compact", slug: "compact"},
+	{keyword: "checkpoint", slug: "checkpoint"},
+	{keyword: "auto-close", slug: "auto-close"},
+	{keyword: "auto close", slug: "auto-close"},
+	{keyword: "sync", slug: "sync"},
+	{keyword: "offsite", slug: "offsite"},
+	{keyword: "rotat", slug: "rotate"},
+}
+
+func (dm *dogMol) recordDiscoveredStep(child childInfo) {
+	if child.ID == "" || child.Title == "" {
+		return
+	}
+	titleLower := strings.ToLower(child.Title)
+	for _, step := range dogStepKeywords {
+		if strings.Contains(titleLower, step.keyword) {
+			dm.stepIDs[step.slug] = child.ID
+			return
 		}
 	}
 }
@@ -278,18 +289,25 @@ func parseChildrenJSON(raw string) ([]childInfo, error) {
 		return nil, fmt.Errorf("empty children JSON")
 	}
 
-	var arr []childInfo
 	if data[0] == '[' {
-		if err := json.Unmarshal(data, &arr); err != nil {
-			return nil, err
-		}
-		return arr, nil
+		return parseChildrenArray(data)
 	}
 
 	if data[0] != '{' {
 		return nil, fmt.Errorf("unrecognized JSON shape: %.200s", raw)
 	}
+	return parseChildrenObject(data)
+}
 
+func parseChildrenArray(data []byte) ([]childInfo, error) {
+	var children []childInfo
+	if err := json.Unmarshal(data, &children); err != nil {
+		return nil, err
+	}
+	return children, nil
+}
+
+func parseChildrenObject(data []byte) ([]childInfo, error) {
 	var wrapped map[string]json.RawMessage
 	if err := json.Unmarshal(data, &wrapped); err != nil {
 		return nil, err
@@ -394,25 +412,34 @@ func parseWispID(output string) string {
 // stripANSI removes ANSI escape codes from a string.
 func stripANSI(s string) string {
 	var result strings.Builder
-	i := 0
 	sLength := len(s)
-	for i < sLength {
-		if s[i] == '\033' {
-			// Skip escape sequence.
-			i++
-			if i < len(s) && s[i] == '[' {
-				i++
-				for i < sLength && !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z')) {
-					i++
-				}
-				if i < len(s) {
-					i++ // Skip the terminating letter.
-				}
-			}
-		} else {
+	for i := 0; i < sLength; {
+		if s[i] != '\033' {
 			result.WriteByte(s[i])
 			i++
+			continue
 		}
+		i = skipANSISequence(s, i)
 	}
 	return result.String()
+}
+
+func skipANSISequence(s string, index int) int {
+	sLength := len(s)
+	index++
+	if index >= sLength || s[index] != '[' {
+		return index
+	}
+	index++
+	for index < sLength && !isANSISequenceTerminator(s[index]) {
+		index++
+	}
+	if index < sLength {
+		index++
+	}
+	return index
+}
+
+func isANSISequenceTerminator(char byte) bool {
+	return (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z')
 }
