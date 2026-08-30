@@ -400,118 +400,117 @@ func GetStats(townRoot string, config *Config) (*Stats, error) {
 		ByAge:        make(map[string]int),
 		TTLBreakdown: make(map[string]TTLInfo),
 	}
-
 	now := time.Now()
-
-	// Process events file
-	eventsPath := filepath.Join(townRoot, events.EventsFile)
-	eventsStats, oldest, newest, err := getFileStats(eventsPath, config, now, stats.ByType, stats.ByAge, stats.TTLBreakdown)
-	if err != nil && !os.IsNotExist(err) {
+	eventsSummary, err := getFileStats(filepath.Join(townRoot, events.EventsFile), config, now, stats)
+	if err := ignoreMissingStatsFile(err); err != nil {
 		return nil, err
 	}
-	stats.EventsFile = eventsStats
-	if !oldest.IsZero() {
-		stats.OldestEvent = oldest
-	}
-	if !newest.IsZero() {
-		stats.NewestEvent = newest
-	}
-
-	// Process feed file
-	feedPath := filepath.Join(townRoot, ".feed.jsonl")
-	feedStats, oldest2, newest2, err := getFileStats(feedPath, config, now, stats.ByType, stats.ByAge, stats.TTLBreakdown)
-	if err != nil && !os.IsNotExist(err) {
+	stats.EventsFile = eventsSummary.file
+	mergeStatsTimes(stats, eventsSummary)
+	feedSummary, err := getFileStats(filepath.Join(townRoot, ".feed.jsonl"), config, now, stats)
+	if err := ignoreMissingStatsFile(err); err != nil {
 		return nil, err
 	}
-	stats.FeedFile = feedStats
-	if !oldest2.IsZero() && (stats.OldestEvent.IsZero() || oldest2.Before(stats.OldestEvent)) {
-		stats.OldestEvent = oldest2
-	}
-	if !newest2.IsZero() && newest2.After(stats.NewestEvent) {
-		stats.NewestEvent = newest2
-	}
-
+	stats.FeedFile = feedSummary.file
+	mergeStatsTimes(stats, feedSummary)
 	return stats, nil
 }
 
-func getFileStats(filePath string, config *Config, now time.Time, byType, byAge map[string]int, ttlBreakdown map[string]TTLInfo) (FileStats, time.Time, time.Time, error) {
-	stats := FileStats{Path: filePath}
-	var oldest, newest time.Time
+type fileStatsSummary struct {
+	file   FileStats
+	oldest time.Time
+	newest time.Time
+}
+
+func ignoreMissingStatsFile(err error) error {
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func mergeStatsTimes(stats *Stats, summary fileStatsSummary) {
+	if !summary.oldest.IsZero() && (stats.OldestEvent.IsZero() || summary.oldest.Before(stats.OldestEvent)) {
+		stats.OldestEvent = summary.oldest
+	}
+	if !summary.newest.IsZero() && summary.newest.After(stats.NewestEvent) {
+		stats.NewestEvent = summary.newest
+	}
+}
+
+func getFileStats(filePath string, config *Config, now time.Time, totals *Stats) (fileStatsSummary, error) {
+	summary := fileStatsSummary{file: FileStats{Path: filePath}}
 
 	info, err := os.Stat(filePath)
 	if err != nil {
-		return stats, oldest, newest, err
+		return summary, err
 	}
-	stats.Size = info.Size()
+	summary.file.Size = info.Size()
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		return stats, oldest, newest, err
+		return summary, err
 	}
 	defer file.Close()
-
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
-		stats.EventCount++
-
-		var event struct {
-			Timestamp string `json:"ts"`
-			Type      string `json:"type"`
-		}
+		summary.file.EventCount++
+		var event krcEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-
-		byType[event.Type]++
-
+		totals.ByType[event.Type]++
 		ts, err := time.Parse(time.RFC3339, event.Timestamp)
 		if err != nil {
 			continue
 		}
-
-		// Track oldest/newest
-		if oldest.IsZero() || ts.Before(oldest) {
-			oldest = ts
-		}
-		if newest.IsZero() || ts.After(newest) {
-			newest = ts
-		}
-
-		// Age bucket
-		age := now.Sub(ts)
-		switch {
-		case age < 24*time.Hour:
-			byAge["0-1d"]++
-		case age < 7*24*time.Hour:
-			byAge["1-7d"]++
-		case age < 30*24*time.Hour:
-			byAge["7-30d"]++
-		default:
-			byAge["30d+"]++
-		}
-
-		// TTL breakdown
-		ttl := config.GetTTL(event.Type)
-		info := ttlBreakdown[event.Type]
-		info.TTL = ttl
-		info.Count++
-		if age > ttl {
-			info.Expired++
-		} else {
-			// Calculate time until this event expires
-			expiresIn := ttl - age
-			if info.ExpiresIn == 0 || expiresIn < info.ExpiresIn {
-				info.ExpiresIn = expiresIn
-			}
-		}
-		ttlBreakdown[event.Type] = info
+		accumulateStatsEvent(&summary, totals, config, event, ts, now)
 	}
+	return summary, scanner.Err()
+}
 
-	return stats, oldest, newest, scanner.Err()
+func accumulateStatsEvent(summary *fileStatsSummary, totals *Stats, config *Config, event krcEvent, ts, now time.Time) {
+	updateSummaryRange(summary, ts)
+	age := now.Sub(ts)
+	totals.ByAge[statsAgeBucket(age)]++
+	updateTTLInfo(totals.TTLBreakdown, event.Type, age, config.GetTTL(event.Type))
+}
+
+func updateSummaryRange(summary *fileStatsSummary, ts time.Time) {
+	if summary.oldest.IsZero() || ts.Before(summary.oldest) {
+		summary.oldest = ts
+	}
+	if summary.newest.IsZero() || ts.After(summary.newest) {
+		summary.newest = ts
+	}
+}
+
+func statsAgeBucket(age time.Duration) string {
+	switch {
+	case age < 24*time.Hour:
+		return "0-1d"
+	case age < 7*24*time.Hour:
+		return "1-7d"
+	case age < 30*24*time.Hour:
+		return "7-30d"
+	default:
+		return "30d+"
+	}
+}
+
+func updateTTLInfo(breakdown map[string]TTLInfo, eventType string, age, ttl time.Duration) {
+	info := breakdown[eventType]
+	info.TTL = ttl
+	info.Count++
+	if age > ttl {
+		info.Expired++
+	} else if expiresIn := ttl - age; info.ExpiresIn == 0 || expiresIn < info.ExpiresIn {
+		info.ExpiresIn = expiresIn
+	}
+	breakdown[eventType] = info
 }
