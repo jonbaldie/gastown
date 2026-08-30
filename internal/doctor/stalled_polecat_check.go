@@ -97,11 +97,11 @@ func (c *StalledPolecatCheck) inspectPolecat(ctx *CheckContext, t *tmux.Tmux, ri
 		return stalledPolecatInfo{}, false
 	}
 	polecatGit := git.NewGit(clonePath)
-	branch, err := polecatGit.CurrentBranch()
+	branch, err := git.CurrentBranch(polecatGit)
 	if err != nil || branch == "" {
 		return stalledPolecatInfo{}, false
 	}
-	pushed, unpushedCount, err := polecatGit.BranchPushedToRemote(branch, "origin")
+	pushed, unpushedCount, err := git.BranchPushedToRemote(polecatGit, branch, "origin")
 	if err != nil || pushed || unpushedCount == 0 {
 		return stalledPolecatInfo{}, false
 	}
@@ -158,7 +158,7 @@ func (c *StalledPolecatCheck) Fix(_ *CheckContext) error {
 	var lastErr error
 	for _, s := range c.stalledPolecats {
 		polecatGit := git.NewGit(s.clonePath)
-		if err := polecatGit.Push("origin", s.branch, false); err != nil {
+		if err := git.Push(polecatGit, "origin", s.branch, false); err != nil {
 			lastErr = fmt.Errorf("pushing %s/%s branch %s: %w", s.rigName, s.name, s.branch, err)
 		}
 	}

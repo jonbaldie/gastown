@@ -198,7 +198,7 @@ func checkWorktreeState(townRoot, assignee string, result *StaleHookResult) {
 	}
 
 	g := git.NewGit(worktreePath)
-	workStatus, err := g.CheckUncommittedWork()
+	workStatus, err := git.CheckUncommittedWork(g)
 	if err != nil {
 		result.WorktreeError = fmt.Sprintf("checking worktree: %v", err)
 		return

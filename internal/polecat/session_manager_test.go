@@ -58,10 +58,10 @@ func setupSessionBranchTestRepo(t *testing.T) (string, *git.Git) {
 	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 		t.Fatalf("write README.md: %v", err)
 	}
-	if err := repoGit.Add("README.md"); err != nil {
+	if err := git.Add(repoGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := repoGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(repoGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -339,23 +339,23 @@ func TestPolecatStartInjectsFallbackEnvVars(t *testing.T) {
 func TestEnsureCanonicalSessionBranch_UsesOriginDefaultBranch(t *testing.T) {
 	workDir, repoGit := setupSessionBranchTestRepo(t)
 
-	baseSHA, err := repoGit.Rev("origin/main")
+	baseSHA, err := git.Rev(repoGit, "origin/main")
 	if err != nil {
 		t.Fatalf("resolve origin/main: %v", err)
 	}
-	if err := repoGit.CheckoutNewBranch("polecat/toast-old", "main"); err != nil {
+	if err := git.CheckoutNewBranch(repoGit, "polecat/toast-old", "main"); err != nil {
 		t.Fatalf("checkout stale polecat branch: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(workDir, "stale.txt"), []byte("stale\n"), 0644); err != nil {
 		t.Fatalf("write stale.txt: %v", err)
 	}
-	if err := repoGit.Add("stale.txt"); err != nil {
+	if err := git.Add(repoGit, "stale.txt"); err != nil {
 		t.Fatalf("git add stale.txt: %v", err)
 	}
-	if err := repoGit.Commit("stale local polecat commit"); err != nil {
+	if err := git.Commit(repoGit, "stale local polecat commit"); err != nil {
 		t.Fatalf("git commit stale.txt: %v", err)
 	}
-	staleSHA, err := repoGit.Rev("HEAD")
+	staleSHA, err := git.Rev(repoGit, "HEAD")
 	if err != nil {
 		t.Fatalf("resolve stale HEAD: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestEnsureCanonicalSessionBranch_UsesOriginDefaultBranch(t *testing.T) {
 		t.Fatalf("fresh session branch = %q, want issue-scoped branch", branch)
 	}
 
-	staleAncestor, err := repoGit.IsAncestor(staleSHA, branch)
+	staleAncestor, err := git.IsAncestor(repoGit, staleSHA, branch)
 	if err != nil {
 		t.Fatalf("check stale ancestry: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestEnsureCanonicalSessionBranch_UsesOriginDefaultBranch(t *testing.T) {
 		t.Fatalf("fresh session branch %q unexpectedly includes stale local commit %s", branch, staleSHA)
 	}
 
-	baseAncestor, err := repoGit.IsAncestor(baseSHA, branch)
+	baseAncestor, err := git.IsAncestor(repoGit, baseSHA, branch)
 	if err != nil {
 		t.Fatalf("check canonical ancestry: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestEnsureCanonicalSessionBranch_KeepsCurrentIssueBranch(t *testing.T) {
 	workDir, repoGit := setupSessionBranchTestRepo(t)
 
 	currentBranch := "polecat/toast/gt-9qb@seed"
-	if err := repoGit.CheckoutNewBranch(currentBranch, "main"); err != nil {
+	if err := git.CheckoutNewBranch(repoGit, currentBranch, "main"); err != nil {
 		t.Fatalf("checkout current issue branch: %v", err)
 	}
 

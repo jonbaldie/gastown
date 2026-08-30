@@ -1963,7 +1963,7 @@ func TestAddRig_UpstreamURL(t *testing.T) {
 
 	t.Run("bare repo upstream remote", func(t *testing.T) {
 		bareGit := git.NewGitWithDir(filepath.Join(rigPath, ".repo.git"), "")
-		got, err := bareGit.GetUpstreamURL()
+		got, err := git.GetUpstreamURL(bareGit)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}
@@ -1974,7 +1974,7 @@ func TestAddRig_UpstreamURL(t *testing.T) {
 
 	t.Run("mayor clone upstream remote", func(t *testing.T) {
 		mayorGit := git.NewGit(filepath.Join(rigPath, "mayor", "rig"))
-		got, err := mayorGit.GetUpstreamURL()
+		got, err := git.GetUpstreamURL(mayorGit)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}
@@ -2078,14 +2078,14 @@ func TestAddRig_BranchFlag(t *testing.T) {
 	bareGit := git.NewGitWithDir(bareRepoPath, "")
 
 	t.Run("bare repo HEAD points to develop", func(t *testing.T) {
-		got := bareGit.DefaultBranch()
+		got := git.DefaultBranch(bareGit)
 		if got != "develop" {
 			t.Errorf("bare repo DefaultBranch() = %q, want %q", got, "develop")
 		}
 	})
 
 	t.Run("origin/develop tracking ref exists in bare repo", func(t *testing.T) {
-		exists, err := bareGit.RefExists("refs/remotes/origin/develop")
+		exists, err := git.RefExists(bareGit, "refs/remotes/origin/develop")
 		if err != nil {
 			t.Fatalf("RefExists: %v", err)
 		}
@@ -2143,7 +2143,7 @@ func TestBareCloneDefaultBranch(t *testing.T) {
 	}
 
 	g := git.NewGit(bareDir)
-	if got := g.DefaultBranch(); got != "master" {
+	if got := git.DefaultBranch(g); got != "master" {
 		t.Errorf("DefaultBranch() = %q, want %q", got, "master")
 	}
 }

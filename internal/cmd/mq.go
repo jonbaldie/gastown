@@ -548,7 +548,7 @@ func runMQPostMerge(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("reading --skip-branch-delete: %w", err)
 		}
 	}
-	result, branchCleanup, err := runVerifiedMQPostMerge(mgr, r.Path, rigGit, mrID, skipBranchDelete)
+	result, branchCleanup, err := runVerifiedMQPostMerge(mgr, r.Path, gitPostMergeAdapter{rigGit}, mrID, skipBranchDelete)
 	if err != nil {
 		return fmt.Errorf("post-merge cleanup: %w", err)
 	}

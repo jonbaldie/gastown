@@ -151,7 +151,7 @@ func runTapPolecatDone(polecatName, branch, reason, cloneDir string, stderr *os.
 
 func polecatStopPendingWork(cloneDir, branch string) (bool, string, error) {
 	g := git.NewGit(cloneDir)
-	workStatus, err := g.CheckUncommittedWork()
+	workStatus, err := git.CheckUncommittedWork(g)
 	if err != nil {
 		return false, "", err
 	}
@@ -163,7 +163,7 @@ func polecatStopPendingWork(cloneDir, branch string) (bool, string, error) {
 		return true, fmt.Sprintf("%d branch stash(es)", workStatus.StashCount), nil
 	}
 
-	targetStatus, err := g.BranchTargetStatus(branch, "origin", nil)
+	targetStatus, err := git.BranchTargetStatus(g, branch, "origin", nil)
 	if err != nil {
 		return false, "", err
 	}

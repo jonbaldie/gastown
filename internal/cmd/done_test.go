@@ -1574,7 +1574,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 		defer os.Remove(implFile)
 
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1594,7 +1594,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		// Verify uncommitted
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1603,15 +1603,15 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		// Simulate the auto-commit safety net
-		if err := g.StageSafetyNet(); err != nil {
+		if err := gitpkg.StageSafetyNet(g); err != nil {
 			t.Fatalf("StageSafetyNet: %v", err)
 		}
-		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+		if err := gitpkg.Commit(g, "fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
 		}
 
 		// Verify clean after auto-commit
-		ws2, err := g.CheckUncommittedWork()
+		ws2, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork after commit: %v", err)
 		}
@@ -1632,7 +1632,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 		defer os.RemoveAll(runtimeDir)
 
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1675,7 +1675,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		writeFile(".beads/.runtime/state.json", "{}\n")
 
 		g := gitpkg.NewGit(repo)
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1683,14 +1683,14 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatal("expected mixed source and runtime changes")
 		}
 
-		if err := g.StageSafetyNet(); err != nil {
+		if err := gitpkg.StageSafetyNet(g); err != nil {
 			t.Fatalf("StageSafetyNet: %v", err)
 		}
-		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+		if err := gitpkg.Commit(g, "fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
 		}
 
-		changed, err := g.DiffNameOnly("HEAD~1", "HEAD")
+		changed, err := gitpkg.DiffNameOnly(g, "HEAD~1", "HEAD")
 		if err != nil {
 			t.Fatalf("DiffNameOnly: %v", err)
 		}
@@ -1698,7 +1698,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatalf("auto-save committed %v, want only src/handler.go", changed)
 		}
 
-		wsAfter, err := g.CheckUncommittedWork()
+		wsAfter, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork after commit: %v", err)
 		}
@@ -1728,7 +1728,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		g := gitpkg.NewGit(repo)
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1736,14 +1736,14 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatal("source plus binary should not be safety-net clean before auto-save")
 		}
 
-		if err := g.StageSafetyNet(); err != nil {
+		if err := gitpkg.StageSafetyNet(g); err != nil {
 			t.Fatalf("StageSafetyNet: %v", err)
 		}
-		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+		if err := gitpkg.Commit(g, "fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
 		}
 
-		changed, err := g.DiffNameOnly("HEAD~1", "HEAD")
+		changed, err := gitpkg.DiffNameOnly(g, "HEAD~1", "HEAD")
 		if err != nil {
 			t.Fatalf("DiffNameOnly: %v", err)
 		}
@@ -1751,7 +1751,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatalf("auto-save committed %v, want only src.go", changed)
 		}
 
-		wsAfter, err := g.CheckUncommittedWork()
+		wsAfter, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork after commit: %v", err)
 		}
@@ -1787,7 +1787,7 @@ func TestSyncGuardWithUncommittedChanges(t *testing.T) {
 	}
 
 	g := gitpkg.NewGit(dir)
-	ws, err := g.CheckUncommittedWork()
+	ws, err := gitpkg.CheckUncommittedWork(g)
 	if err != nil {
 		t.Fatalf("CheckUncommittedWork: %v", err)
 	}

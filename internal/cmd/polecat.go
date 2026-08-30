@@ -995,7 +995,7 @@ func getGitStateWithTargets(worktreePath string, targets []string) (*GitState, e
 	}
 
 	worktreeGit := git.NewGit(worktreePath)
-	workStatus, err := worktreeGit.CheckUncommittedWork()
+	workStatus, err := git.CheckUncommittedWork(worktreeGit)
 	if err != nil {
 		return nil, fmt.Errorf("git status: %w", err)
 	}
@@ -1010,8 +1010,8 @@ func getGitStateWithTargets(worktreePath string, targets []string) (*GitState, e
 		state.Clean = false
 	}
 
-	branch, _ := worktreeGit.CurrentBranch()
-	if preservation, preserveErr := worktreeGit.BranchPreservationStatus(branch, "origin", targets); preserveErr == nil {
+	branch, _ := git.CurrentBranch(worktreeGit)
+	if preservation, preserveErr := git.CheckBranchPreservation(worktreeGit, branch, "origin", targets); preserveErr == nil {
 		state.ComparisonBase = preservation.ComparisonBase
 		state.UnpreservedPatchCount = preservation.UnpreservedPatchCount
 		if preservation.UnpreservedPatchCount > 0 {
@@ -1023,7 +1023,7 @@ func getGitStateWithTargets(worktreePath string, targets []string) (*GitState, e
 	// Check for stashes using Git.StashCount() which filters by current branch.
 	// Without branch filtering, worktrees see repo-wide stashes and produce
 	// false "NEEDS_RECOVERY" verdicts for worktrees with zero stashes of their own.
-	if totalStashes, stashErr := worktreeGit.StashCountAll(); stashErr == nil && totalStashes > state.StashCount {
+	if totalStashes, stashErr := git.StashCountAll(worktreeGit); stashErr == nil && totalStashes > state.StashCount {
 		state.SharedStashCount = totalStashes - state.StashCount
 	}
 
@@ -1219,15 +1219,15 @@ func agentHookBead(agentIssue *beads.Issue, fields *beads.AgentFields) string {
 
 func activeMRGitSafeForWorktree(worktreePath string) bool {
 	g := git.NewGit(worktreePath)
-	branch, err := g.CurrentBranch()
+	branch, err := git.CurrentBranch(g)
 	if err != nil || branch == "" {
 		return false
 	}
-	status, err := g.CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(g)
 	if err != nil || !status.CleanExcludingRuntime() || status.StashCount > 0 || status.UnpushedCommits > 0 {
 		return false
 	}
-	pushed, unpushed, err := g.BranchPushedToRemote(branch, "origin")
+	pushed, unpushed, err := git.BranchPushedToRemote(g, branch, "origin")
 	if err != nil {
 		return false
 	}
@@ -1383,12 +1383,12 @@ func activeMRBlocker(bd issueShower, mrID, sourceHint string, requireGitSafe, gi
 
 func hasSubmittableWorkForRecovery(worktreePath string, targetRefs []string, gitState *GitState, gitErr error) bool {
 	g := git.NewGit(worktreePath)
-	branch, _ := g.CurrentBranch()
-	if status, err := g.BranchTargetStatus(branch, "origin", targetRefs); err == nil {
+	branch, _ := git.CurrentBranch(g)
+	if status, err := git.BranchTargetStatus(g, branch, "origin", targetRefs); err == nil {
 		return status.UnpreservedPatchCount > 0
 	}
-	if branch, err := g.CurrentBranch(); err == nil && branch != "" && !isRecoveryBaseBranch(branch) {
-		if pushed, _, err := g.BranchPushedToRemote(branch, "origin"); err == nil && pushed {
+	if branch, err := git.CurrentBranch(g); err == nil && branch != "" && !isRecoveryBaseBranch(branch) {
+		if pushed, _, err := git.BranchPushedToRemote(g, branch, "origin"); err == nil && pushed {
 			return true
 		}
 	}
@@ -1497,7 +1497,7 @@ func runPolecatGC(_ *cobra.Command, args []string) error {
 func runPolecatGCDryRun(mgr *polecat.Manager, rigPath string) error {
 	// Dry run — list branches that would be deleted.
 	repoGit := git.NewGit(rigPath)
-	branches, err := repoGit.ListBranches("polecat/*")
+	branches, err := git.ListBranches(repoGit, "polecat/*")
 	if err != nil {
 		return fmt.Errorf("listing branches: %w", err)
 	}
@@ -1753,7 +1753,7 @@ func preservePolecatBranchBeforeNuke(branch string, polecatInfo *polecat.Polecat
 		return
 	}
 	refspec := branch + ":" + branch
-	if err := pushGit.Push("origin", refspec, false); err != nil {
+	if err := git.Push(pushGit, "origin", refspec, false); err != nil {
 		fmt.Printf("  %s best-effort push failed (proceeding): %v\n", style.Dim.Render("○"), err)
 		return
 	}
@@ -1805,7 +1805,7 @@ func deletePolecatBranchAfterNuke(branch, rigPath string) {
 	}
 	// Remote branch is preserved for refinery merge; only the local branch is deleted.
 	repoGit := getRepoGitForRig(rigPath)
-	if err := repoGit.DeleteBranch(branch, true); err != nil {
+	if err := git.DeleteBranch(repoGit, branch, true); err != nil {
 		fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
 	} else {
 		fmt.Printf("  %s deleted local branch %s\n", style.Success.Render("✓"), branch)
@@ -2107,7 +2107,7 @@ func polecatPruneRepoGit(rigPath string) *git.Git {
 
 func fetchPolecatPruneOrigin(repoGit *git.Git, remotePrune bool) error {
 	// First, prune stale remote-tracking refs so we detect deleted remote branches.
-	if err := repoGit.FetchPrune("origin"); err != nil {
+	if err := git.FetchPrune(repoGit, "origin"); err != nil {
 		if remotePrune {
 			return fmt.Errorf("refreshing origin before remote prune: %w", err)
 		}
@@ -2117,7 +2117,7 @@ func fetchPolecatPruneOrigin(repoGit *git.Git, remotePrune bool) error {
 }
 
 func pruneAndReportLocalPolecatBranches(repoGit *git.Git, dryRun bool) error {
-	pruned, err := repoGit.PruneStaleBranches("polecat/*", dryRun)
+	pruned, err := git.PruneStaleBranches(repoGit, "polecat/*", dryRun)
 	if err != nil {
 		return fmt.Errorf("pruning local branches: %w", err)
 	}
@@ -2160,14 +2160,14 @@ func pruneAndReportRemotePolecatBranches(repoGit *git.Git, dryRun bool) error {
 }
 
 func pruneRemotePolecatBranches(repoGit *git.Git, dryRun bool) (int, error) {
-	defaultBranch := repoGit.RemoteDefaultBranch()
-	target := repoGit.CleanDefaultBranchBaseRef("origin", defaultBranch)
+	defaultBranch := git.RemoteDefaultBranch(repoGit)
+	target := git.CleanDefaultBranchBaseRef(repoGit, "origin", defaultBranch)
 	if targetRemote := git.RemoteForRef(target); targetRemote != "" && targetRemote != "origin" {
-		if err := repoGit.FetchPrune(targetRemote); err != nil {
+		if err := git.FetchPrune(repoGit, targetRemote); err != nil {
 			return 0, fmt.Errorf("refreshing %s before remote prune: %w", targetRemote, err)
 		}
 	}
-	remoteRefs, lsErr := repoGit.ListPushRemoteRefsWithHashes("origin", "refs/heads/polecat/")
+	remoteRefs, lsErr := git.ListPushRemoteRefsWithHashes(repoGit, "origin", "refs/heads/polecat/")
 	if lsErr != nil {
 		return 0, fmt.Errorf("listing remote refs: %w", lsErr)
 	}
@@ -2187,7 +2187,7 @@ func pruneRemotePolecatBranch(repoGit *git.Git, ref git.RemoteRef, target string
 		return false
 	}
 	branch := strings.TrimPrefix(ref.Name, "refs/heads/")
-	status, statusErr := repoGit.PushRemoteRefTargetStatus("origin", ref, target)
+	status, statusErr := git.PushRemoteRefTargetStatus(repoGit, "origin", ref, target)
 	if statusErr != nil || !status.Preserved {
 		return false
 	}
@@ -2196,7 +2196,7 @@ func pruneRemotePolecatBranch(repoGit *git.Git, ref git.RemoteRef, target string
 		fmt.Printf("  Would delete remote: %s\n", style.Dim.Render(branch))
 		return true
 	}
-	if delErr := repoGit.DeleteRemoteBranchIfAt("origin", branch, ref.Hash); delErr != nil {
+	if delErr := git.DeleteRemoteBranchIfAt(repoGit, "origin", branch, ref.Hash); delErr != nil {
 		fmt.Printf("  %s remote %s: %v\n", style.Warning.Render("⚠"), branch, delErr)
 		return false
 	}

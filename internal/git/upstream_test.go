@@ -10,7 +10,7 @@ func TestGit_UpstreamRemote(t *testing.T) {
 	runGit(t, tmp, "init", "--initial-branch", "main")
 
 	t.Run("initially absent", func(t *testing.T) {
-		has, err := g.HasUpstreamRemote()
+		has, err := HasUpstreamRemote(g)
 		if err != nil {
 			t.Fatalf("HasUpstreamRemote: %v", err)
 		}
@@ -18,7 +18,7 @@ func TestGit_UpstreamRemote(t *testing.T) {
 			t.Fatal("expected no upstream remote initially")
 		}
 
-		url, err := g.GetUpstreamURL()
+		url, err := GetUpstreamURL(g)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}
@@ -30,11 +30,11 @@ func TestGit_UpstreamRemote(t *testing.T) {
 	upstream1 := "https://example.com/upstream1.git"
 
 	t.Run("add", func(t *testing.T) {
-		if err := g.AddUpstreamRemote(upstream1); err != nil {
+		if err := AddUpstreamRemote(g, upstream1); err != nil {
 			t.Fatalf("AddUpstreamRemote: %v", err)
 		}
 
-		has, err := g.HasUpstreamRemote()
+		has, err := HasUpstreamRemote(g)
 		if err != nil {
 			t.Fatalf("HasUpstreamRemote: %v", err)
 		}
@@ -42,7 +42,7 @@ func TestGit_UpstreamRemote(t *testing.T) {
 			t.Fatal("expected upstream remote to exist")
 		}
 
-		url, err := g.GetUpstreamURL()
+		url, err := GetUpstreamURL(g)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}
@@ -52,11 +52,11 @@ func TestGit_UpstreamRemote(t *testing.T) {
 	})
 
 	t.Run("idempotent same URL is true no-op", func(t *testing.T) {
-		if err := g.AddUpstreamRemote(upstream1); err != nil {
+		if err := AddUpstreamRemote(g, upstream1); err != nil {
 			t.Fatalf("AddUpstreamRemote: %v", err)
 		}
 
-		url, err := g.GetUpstreamURL()
+		url, err := GetUpstreamURL(g)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}
@@ -68,11 +68,11 @@ func TestGit_UpstreamRemote(t *testing.T) {
 	upstream2 := "https://example.com/upstream2.git"
 
 	t.Run("update different URL", func(t *testing.T) {
-		if err := g.AddUpstreamRemote(upstream2); err != nil {
+		if err := AddUpstreamRemote(g, upstream2); err != nil {
 			t.Fatalf("AddUpstreamRemote: %v", err)
 		}
 
-		url, err := g.GetUpstreamURL()
+		url, err := GetUpstreamURL(g)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}

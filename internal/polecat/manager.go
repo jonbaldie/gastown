@@ -583,7 +583,7 @@ func buildBranchName(m *Manager, name, issue string) string {
 }
 
 func branchTemplateVariables(m *Manager, name, issue string) map[string]string {
-	userName, err := m.git.ConfigGet("user.name")
+	userName, err := git.ConfigGet(m.git, "user.name")
 	if err != nil || userName == "" {
 		userName = "unknown"
 	}
@@ -741,7 +741,7 @@ func cleanupFailedPolecatAdd(m *Manager, name, polecatDir, clonePath string, wor
 	_ = resetAgentBeadForReuse(m, aid, "spawn rollback")
 	if worktreeCreated {
 		if rg, repoErr := repoBase(m); repoErr == nil {
-			_ = rg.WorktreeRemove(clonePath, true)
+			_ = git.WorktreeRemove(rg, clonePath, true)
 		}
 	}
 	_ = os.RemoveAll(polecatDir)
@@ -762,17 +762,17 @@ func polecatStartPoint(m *Manager, opts AddOptions) string {
 
 func createPolecatWorktree(m *Manager, repoGit *git.Git, clonePath, branchName string, opts AddOptions) (bool, error) {
 	if opts.ResumeBranch != "" {
-		if err := repoGit.FetchBranch("origin", opts.ResumeBranch); err != nil {
+		if err := git.FetchBranch(repoGit, "origin", opts.ResumeBranch); err != nil {
 			style.PrintWarning("could not fetch resume branch %s: %v", opts.ResumeBranch, err)
 		}
-		if err := repoGit.WorktreeAddExistingForce(clonePath, opts.ResumeBranch); err != nil {
+		if err := git.WorktreeAddExistingForce(repoGit, clonePath, opts.ResumeBranch); err != nil {
 			return false, fmt.Errorf("creating worktree on existing branch %s: %w", opts.ResumeBranch, err)
 		}
 		return true, nil
 	}
 
 	startPoint := polecatStartPoint(m, opts)
-	exists, err := repoGit.RefExists(startPoint)
+	exists, err := git.RefExists(repoGit, startPoint)
 	if err != nil {
 		return false, fmt.Errorf("checking ref %s: %w", startPoint, err)
 	}
@@ -785,7 +785,7 @@ func createPolecatWorktree(m *Manager, repoGit *git.Git, clonePath, branchName s
 			"Run 'gt doctor' to diagnose.",
 			startPoint, m.rig.Path, filepath.Join(m.rig.Path, ".repo.git"))
 	}
-	if err := repoGit.WorktreeAddFromRef(clonePath, branchName, startPoint); err != nil {
+	if err := git.WorktreeAddFromRef(repoGit, clonePath, branchName, startPoint); err != nil {
 		return false, fmt.Errorf("creating worktree from %s: %w", startPoint, err)
 	}
 	return true, nil
@@ -849,7 +849,7 @@ func addWithOptionsLockedBody(m *Manager, name string, opts AddOptions, polecatD
 		return nil, fmt.Errorf("finding repo base: %w", err)
 	}
 
-	if err := repoGit.Fetch("origin"); err != nil {
+	if err := git.Fetch(repoGit, "origin"); err != nil {
 		style.PrintWarning("could not fetch origin: %v", err)
 	}
 
@@ -949,7 +949,7 @@ func checkPolecatWorkStatus(m *Manager, name, clonePath string, force bool) erro
 		return checkCleanupStatus(name, cleanupStatus, force)
 	}
 	polecatGit := git.NewGit(clonePath)
-	status, err := polecatGit.CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(polecatGit)
 	if err != nil || status.Clean() {
 		return nil
 	}
@@ -1004,16 +1004,16 @@ func ensureShellSafeForRemoval(m *Manager, name, clonePath, polecatDir string, s
 func prunePolecatRepoBases(rigPath string) {
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
 	if info, err := os.Stat(bareRepoPath); err == nil && info.IsDir() {
-		_ = git.NewGitWithDir(bareRepoPath, "").WorktreePrune()
+		_ = git.WorktreePrune(git.NewGitWithDir(bareRepoPath, ""))
 	}
 	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
 	if info, err := os.Stat(mayorRigPath); err == nil && info.IsDir() {
-		_ = git.NewGit(mayorRigPath).WorktreePrune()
+		_ = git.WorktreePrune(git.NewGit(mayorRigPath))
 	}
 }
 
 func removePolecatWorktree(repoGit *git.Git, clonePath, polecatDir string, force bool) error {
-	if err := repoGit.WorktreeRemove(clonePath, force); err != nil {
+	if err := git.WorktreeRemove(repoGit, clonePath, force); err != nil {
 		if removeErr := os.RemoveAll(clonePath); removeErr != nil {
 			return fmt.Errorf("removing clone path: %w", removeErr)
 		}
@@ -1023,7 +1023,7 @@ func removePolecatWorktree(repoGit *git.Git, clonePath, polecatDir string, force
 	if polecatDir != clonePath {
 		_ = os.RemoveAll(polecatDir)
 	}
-	_ = repoGit.WorktreePrune()
+	_ = git.WorktreePrune(repoGit)
 	return nil
 }
 
@@ -1111,11 +1111,11 @@ func shouldPushBeforeRemoval(d removalPushDecision) bool {
 
 func pushUnpushedBranchBeforeRemoval(m *Manager, name, clonePath string) {
 	polecatGit := git.NewGit(clonePath)
-	branch, brErr := polecatGit.CurrentBranch()
+	branch, brErr := git.CurrentBranch(polecatGit)
 	if brErr != nil || branch == "" {
 		return
 	}
-	pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
+	pushed, unpushedCount, checkErr := git.BranchPushedToRemote(polecatGit, branch, "origin")
 	if checkErr != nil || pushed || unpushedCount == 0 {
 		return
 	}
@@ -1127,7 +1127,7 @@ func pushUnpushedBranchBeforeRemoval(m *Manager, name, clonePath string) {
 			branch, unpushedCount, clonePath)
 		return
 	}
-	if pushErr := polecatGit.Push("origin", branch, false); pushErr != nil {
+	if pushErr := git.Push(polecatGit, "origin", branch, false); pushErr != nil {
 		style.PrintWarning("could not push branch %s before removal (%d unpushed commit(s)): %v",
 			branch, unpushedCount, pushErr)
 		if git.IsNonWritableRemoteError(pushErr) {
@@ -1161,7 +1161,7 @@ func hasWritableLocalRemote(polecatGit *git.Git) bool {
 	if polecatGit == nil {
 		return false
 	}
-	fetchURL, err := polecatGit.RemoteURL("origin")
+	fetchURL, err := git.RemoteURL(polecatGit, "origin")
 	return err == nil && isLocalGitRemote(fetchURL)
 }
 
@@ -1174,7 +1174,7 @@ func hasWritablePushRemote(m *Manager, polecatGit *git.Git) bool {
 	}
 	// A missing push URL on a hosted clone is treated as not-writable. Local
 	// file remotes stay writable so owned-repo shutdown still preserves work.
-	return polecatGit.ForkBackedRemote("origin") || hasWritableLocalRemote(polecatGit)
+	return git.ForkBackedRemote(polecatGit, "origin") || hasWritableLocalRemote(polecatGit)
 }
 
 func removalAgentFlags(m *Manager, name string) (priorPushFail, localMerge bool) {
@@ -1451,7 +1451,7 @@ func checkRepairUncommittedWork(name, clonePath string, force bool) error {
 	if force {
 		return nil
 	}
-	status, err := git.NewGit(clonePath).CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(git.NewGit(clonePath))
 	if err == nil && !status.Clean() {
 		return &UncommittedWorkError{PolecatName: name, Status: status}
 	}
@@ -1459,7 +1459,7 @@ func checkRepairUncommittedWork(name, clonePath string, force bool) error {
 }
 
 func prepareRepairWorktree(m *Manager, repoGit *git.Git, name, polecatDir string, opts AddOptions) (string, string, error) {
-	_ = repoGit.Fetch("origin")
+	_ = git.Fetch(repoGit, "origin")
 	if err := os.MkdirAll(polecatDir, 0755); err != nil {
 		return "", "", fmt.Errorf("creating polecat dir: %w", err)
 	}
@@ -1477,7 +1477,7 @@ func prepareRepairWorktree(m *Manager, repoGit *git.Git, name, polecatDir string
 }
 
 func cleanupRepairWorktree(repoGit *git.Git, clonePath string) {
-	_ = repoGit.WorktreeRemove(clonePath, true)
+	_ = git.WorktreeRemove(repoGit, clonePath, true)
 	_ = os.RemoveAll(clonePath)
 }
 
@@ -1486,7 +1486,7 @@ func replaceOldWorktreeForRepair(m *Manager, repoGit *git.Git, name, oldClonePat
 		cleanupRepairWorktree(repoGit, tmpClonePath)
 		return err
 	}
-	if err := repoGit.WorktreeRemove(oldClonePath, true); err != nil {
+	if err := git.WorktreeRemove(repoGit, oldClonePath, true); err != nil {
 		if removeErr := os.RemoveAll(oldClonePath); removeErr != nil {
 			cleanupRepairWorktree(repoGit, tmpClonePath)
 			return fmt.Errorf("removing old clone path: %w", removeErr)
@@ -1503,8 +1503,8 @@ func resetRepairedPolecatAgent(m *Manager, name string) {
 }
 
 func moveRepairedWorktree(repoGit *git.Git, tmpClonePath, newClonePath string) error {
-	_ = repoGit.WorktreePrune()
-	if err := repoGit.WorktreeMove(tmpClonePath, newClonePath); err != nil {
+	_ = git.WorktreePrune(repoGit)
+	if err := git.WorktreeMove(repoGit, tmpClonePath, newClonePath); err != nil {
 		cleanupRepairWorktree(repoGit, tmpClonePath)
 		return fmt.Errorf("moving repaired worktree to final path: %w", err)
 	}
@@ -1679,11 +1679,11 @@ func runReuseTargetClean(m *Manager, name, clonePath string) {
 func reuseStartPoint(m *Manager, repoGit, polecatGit *git.Git, opts AddOptions) string {
 	if opts.ResumeBranch != "" {
 		if repoGit != nil {
-			if err := repoGit.FetchBranch("origin", opts.ResumeBranch); err != nil {
+			if err := git.FetchBranch(repoGit, "origin", opts.ResumeBranch); err != nil {
 				style.PrintWarning("could not fetch resume branch %s on bare repo: %v", opts.ResumeBranch, err)
 			}
 		}
-		if err := polecatGit.FetchBranch("origin", opts.ResumeBranch); err != nil {
+		if err := git.FetchBranch(polecatGit, "origin", opts.ResumeBranch); err != nil {
 			style.PrintWarning("could not fetch resume branch %s in worktree: %v", opts.ResumeBranch, err)
 		}
 		return "origin/" + opts.ResumeBranch
@@ -1699,7 +1699,7 @@ func reuseStartPoint(m *Manager, repoGit, polecatGit *git.Git, opts AddOptions) 
 }
 
 func validateReuseStartPoint(polecatGit *git.Git, startPoint string) error {
-	exists, err := polecatGit.RefExists(startPoint)
+	exists, err := git.RefExists(polecatGit, startPoint)
 	if err != nil {
 		return fmt.Errorf("checking ref %s: %w", startPoint, err)
 	}
@@ -1718,9 +1718,9 @@ func prepareReuseWorktree(m *Manager, name string, opts AddOptions) (string, *gi
 	polecatGit := git.NewGit(clonePath)
 	repoGit, err := repoBase(m)
 	if err == nil {
-		_ = repoGit.Fetch("origin")
+		_ = git.Fetch(repoGit, "origin")
 	}
-	_ = polecatGit.Fetch("origin")
+	_ = git.Fetch(polecatGit, "origin")
 	startPoint := reuseStartPoint(m, repoGit, polecatGit, opts)
 	if err := validateReuseStartPoint(polecatGit, startPoint); err != nil {
 		return "", nil, "", err
@@ -1730,8 +1730,8 @@ func prepareReuseWorktree(m *Manager, name string, opts AddOptions) (string, *gi
 }
 
 func resetReuseWorktree(m *Manager, name, clonePath, startPoint string, polecatGit *git.Git) {
-	_ = polecatGit.ResetHard(startPoint)
-	_ = polecatGit.CleanForce()
+	_ = git.ResetHard(polecatGit, startPoint)
+	_ = git.CleanForce(polecatGit)
 	reuseRigName := filepath.Base(m.rig.Path)
 	if _, err := templates.CreatePolecatAgentsMD(clonePath, reuseRigName, name); err != nil {
 		style.PrintWarning("could not re-provision polecat instruction pair on reuse: %v", err)
@@ -1742,16 +1742,16 @@ func checkoutReuseBranch(m *Manager, name, startPoint string, opts AddOptions, p
 	branchName := buildBranchName(m, name, opts.HookBead)
 	if opts.ResumeBranch != "" {
 		branchName = opts.ResumeBranch
-		if err := polecatGit.CheckoutResetBranch(branchName, startPoint); err != nil {
+		if err := git.CheckoutResetBranch(polecatGit, branchName, startPoint); err != nil {
 			return "", fmt.Errorf("checking out resume branch %s from %s: %w", branchName, startPoint, err)
 		}
-	} else if err := polecatGit.CheckoutNewBranch(branchName, startPoint); err != nil {
-		_ = polecatGit.Checkout(startPoint)
-		if err2 := polecatGit.CheckoutNewBranch(branchName, startPoint); err2 != nil {
+	} else if err := git.CheckoutNewBranch(polecatGit, branchName, startPoint); err != nil {
+		_ = git.Checkout(polecatGit, startPoint)
+		if err2 := git.CheckoutNewBranch(polecatGit, branchName, startPoint); err2 != nil {
 			return "", fmt.Errorf("creating branch %s from %s (retry after cleanup): %w", branchName, startPoint, err2)
 		}
 	}
-	if actual, err := polecatGit.CurrentBranch(); err == nil && actual != branchName {
+	if actual, err := git.CurrentBranch(polecatGit); err == nil && actual != branchName {
 		return "", fmt.Errorf("branch mismatch after checkout: expected %s, got %s", branchName, actual)
 	}
 	return branchName, nil
@@ -1759,8 +1759,8 @@ func checkoutReuseBranch(m *Manager, name, startPoint string, opts AddOptions, p
 
 func runReuseSetup(m *Manager, clonePath, startPoint string, polecatGit *git.Git) error {
 	if err := runSetupCommand(m, clonePath); err != nil {
-		_ = polecatGit.ResetHard(startPoint)
-		_ = polecatGit.CleanForce()
+		_ = git.ResetHard(polecatGit, startPoint)
+		_ = git.CleanForce(polecatGit)
 		return err
 	}
 	return nil
@@ -1894,7 +1894,7 @@ func reconcilePoolInternal(m *Manager) {
 
 	// Prune any stale git worktree entries (handles manually deleted directories)
 	if repoGit, err := repoBase(m); err == nil {
-		_ = repoGit.WorktreePrune()
+		_ = git.WorktreePrune(repoGit)
 	}
 }
 
@@ -2241,8 +2241,8 @@ func reuseDecisionForPolecat(m *Manager, name string, state State) WorkstateDisp
 
 func hasSubmittableWorkForWorkstate(worktreePath string, targetRefs []string) bool {
 	g := git.NewGit(worktreePath)
-	branch, _ := g.CurrentBranch()
-	status, err := g.BranchTargetStatus(branch, "origin", targetRefs)
+	branch, _ := git.CurrentBranch(g)
+	status, err := git.BranchTargetStatus(g, branch, "origin", targetRefs)
 	return err == nil && status.UnpreservedPatchCount > 0
 }
 
@@ -2537,7 +2537,7 @@ func loadFromBeads(m *Manager, name string) (*Polecat, error) {
 
 func polecatBranch(clonePath, name string) string {
 	// Get actual branch from worktree (branches are now timestamped).
-	branch, err := git.NewGit(clonePath).CurrentBranch()
+	branch, err := git.CurrentBranch(git.NewGit(clonePath))
 	if err == nil {
 		return branch
 	}
@@ -2769,7 +2769,7 @@ func CleanupStaleBranches(m *Manager) (int, error) {
 	}
 
 	// List all polecat branches
-	branches, err := repoGit.ListBranches("polecat/*")
+	branches, err := git.ListBranches(repoGit, "polecat/*")
 	if err != nil {
 		return 0, fmt.Errorf("listing branches: %w", err)
 	}
@@ -2797,7 +2797,7 @@ func CleanupStaleBranches(m *Manager) (int, error) {
 			continue // This branch is in use
 		}
 		// Delete orphaned branch
-		if err := repoGit.DeleteBranch(branch, true); err != nil {
+		if err := git.DeleteBranch(repoGit, branch, true); err != nil {
 			// Log but continue - non-fatal
 			style.PrintWarning("could not delete branch %s: %v", branch, err)
 			continue
@@ -2859,7 +2859,7 @@ func stalenessInfo(m *Manager, p *Polecat, defaultBranch string, threshold int) 
 
 	polecatGit := git.NewGit(p.ClonePath)
 	info.CommitsBehind = countCommitsBehind(polecatGit, defaultBranch)
-	status, err := polecatGit.CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(polecatGit)
 	if err == nil && !status.CleanExcludingBeads() {
 		info.HasUncommittedWork = true
 	}
@@ -2890,7 +2890,7 @@ func countCommitsBehind(g *git.Git, defaultBranch string) int {
 	// Use rev-list to count commits: origin/main..HEAD shows commits ahead,
 	// HEAD..origin/main shows commits behind
 	remoteBranch := "origin/" + defaultBranch
-	count, err := g.CountCommitsBehind(remoteBranch)
+	count, err := git.CountCommitsBehind(g, remoteBranch)
 	if err != nil {
 		return 0 // Can't determine, assume not behind
 	}

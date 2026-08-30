@@ -343,10 +343,10 @@ func RecordAgentInstantiateFromDir(ctx context.Context, info telemetry.AgentInst
 	}
 	branch, commit := "", ""
 	if g := git.NewGit(workDir); g != nil {
-		if b, err := g.CurrentBranch(); err == nil {
+		if b, err := git.CurrentBranch(g); err == nil {
 			branch = b
 		}
-		if c, err := g.Rev("HEAD"); err == nil {
+		if c, err := git.Rev(g, "HEAD"); err == nil {
 			commit = c
 		}
 	}

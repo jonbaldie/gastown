@@ -220,7 +220,7 @@ func planRig(source string) (Rig, error) {
 	name := rig.SanitizeName(filepath.Base(source))
 	g := git.NewGit(source)
 	gitURL := fileURL(source)
-	origin, err := g.ConfiguredRemoteURL("origin")
+	origin, err := git.ConfiguredRemoteURL(g, "origin")
 	switch {
 	case err == nil && strings.TrimSpace(origin) != "":
 		gitURL = strings.TrimSpace(origin)

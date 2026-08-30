@@ -107,18 +107,18 @@ func readMQSubmitPolicyFlags(cmd *cobra.Command, opts *mqSubmitOptions) error {
 }
 
 func resolveMQSubmitCommitSHA(g *git.Git, branch string) (string, error) {
-	return g.Rev(fmt.Sprintf("refs/heads/%s^{commit}", branch))
+	return git.Rev(g, fmt.Sprintf("refs/heads/%s^{commit}", branch))
 }
 
 func verifyMQSubmitPushedBranch(g *git.Git, branch, commitSHA string) error {
 	if commitSHA != "" {
-		if err := g.VerifyPushedCommit("origin", branch, commitSHA); err != nil {
+		if err := git.VerifyPushedCommit(g, "origin", branch, commitSHA); err != nil {
 			return fmt.Errorf("%w\n\nHint: run 'git push origin %s' first (or 'gt done'), then re-run 'gt mq submit'", err, branch)
 		}
 		return nil
 	}
 
-	exists, err := g.PushRemoteBranchExists("origin", branch)
+	exists, err := git.PushRemoteBranchExists(g, "origin", branch)
 	if err != nil {
 		return fmt.Errorf("verify branch on origin: %w\n\nHint: run 'git push origin %s' first (or 'gt done'), then re-run 'gt mq submit'", err, branch)
 	}

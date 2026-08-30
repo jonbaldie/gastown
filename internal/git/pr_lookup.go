@@ -54,8 +54,8 @@ func (p *PullRequestInfo) Merged() bool {
 
 // LookupPullRequest resolves a PR using one authoritative path: recorded URL or
 // number first, otherwise an unambiguous target-repo head lookup.
-func (g *Git) LookupPullRequest(ref PullRequestRef) (*PullRequestInfo, error) {
-	targetRepo, err := g.pullRequestTargetRepo(ref.TargetRepo)
+func LookupPullRequest(g *Git, ref PullRequestRef) (*PullRequestInfo, error) {
+	targetRepo, err := pullRequestTargetRepo(g, ref.TargetRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func lookupRecordedPullRequest(g *Git, ref PullRequestRef, targetRepo string) (*
 }
 
 func viewRecordedPullRequest(g *Git, selector, targetRepo, source, headSHA string) (*PullRequestInfo, bool, error) {
-	pr, err := g.viewPullRequest(selector, targetRepo)
+	pr, err := viewPullRequest(g, selector, targetRepo)
 	if err != nil {
 		return nil, true, err
 	}
@@ -91,15 +91,15 @@ func lookupPullRequestByBranch(g *Git, ref PullRequestRef, targetRepo string) (*
 	}
 	headSHA := strings.TrimSpace(ref.HeadSHA)
 	if owner := strings.TrimSpace(ref.HeadOwner); owner != "" {
-		return g.lookupPullRequestByQualifiedHead(targetRepo, owner, branch, headSHA)
+		return lookupPullRequestByQualifiedHead(g, targetRepo, owner, branch, headSHA)
 	}
-	return g.lookupPullRequestByHead(targetRepo, branch, headSHA)
+	return lookupPullRequestByHead(g, targetRepo, branch, headSHA)
 }
 
 // HasOpenPullRequest checks whether the ref resolves to an open PR. Errors and
 // ambiguity are treated as protected so callers do not delete a branch blindly.
-func (g *Git) HasOpenPullRequest(ref PullRequestRef) bool {
-	pr, err := g.LookupPullRequest(ref)
+func HasOpenPullRequest(g *Git, ref PullRequestRef) bool {
+	pr, err := LookupPullRequest(g, ref)
 	if err != nil {
 		return !errors.Is(err, ErrPullRequestNotFound)
 	}
@@ -107,14 +107,14 @@ func (g *Git) HasOpenPullRequest(ref PullRequestRef) bool {
 }
 
 // FindPRNumber returns the GitHub PR number for the given branch, or 0 if none exists.
-func (g *Git) FindPRNumber(branch string) (int, error) {
-	return g.FindPRNumberForRef(PullRequestRef{Branch: branch})
+func FindPRNumber(g *Git, branch string) (int, error) {
+	return FindPRNumberForRef(g, PullRequestRef{Branch: branch})
 }
 
 // FindPRNumberForRef returns an open GitHub PR number using recorded PR identity
 // before falling back to an unambiguous target-repo branch lookup.
-func (g *Git) FindPRNumberForRef(ref PullRequestRef) (int, error) {
-	pr, err := g.LookupPullRequest(ref)
+func FindPRNumberForRef(g *Git, ref PullRequestRef) (int, error) {
+	pr, err := LookupPullRequest(g, ref)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) {
 			return 0, nil
@@ -127,16 +127,16 @@ func (g *Git) FindPRNumberForRef(ref PullRequestRef) (int, error) {
 	return pr.Number, nil
 }
 
-func (g *Git) pullRequestTargetRepo(explicit string) (string, error) {
+func pullRequestTargetRepo(g *Git, explicit string) (string, error) {
 	if strings.TrimSpace(explicit) != "" {
 		return strings.TrimSpace(explicit), nil
 	}
-	if upstreamURL, err := g.GetUpstreamURL(); err == nil && upstreamURL != "" {
+	if upstreamURL, err := GetUpstreamURL(g); err == nil && upstreamURL != "" {
 		if repo, parseErr := githubRepoFromRemoteURL(upstreamURL); parseErr == nil {
 			return repo, nil
 		}
 	}
-	originURL, err := g.RemoteURL("origin")
+	originURL, err := RemoteURL(g, "origin")
 	if err != nil {
 		return "", fmt.Errorf("resolve target repo from origin remote: %w", err)
 	}
@@ -160,8 +160,8 @@ func githubRepoFromRemoteURL(raw string) (string, error) {
 	return parts[0] + "/" + parts[1], nil
 }
 
-func (g *Git) viewPullRequest(selector, targetRepo string) (*PullRequestInfo, error) {
-	out, err := g.runGH(ghViewPullRequestArgs(selector, targetRepo)...)
+func viewPullRequest(g *Git, selector, targetRepo string) (*PullRequestInfo, error) {
+	out, err := runGH(g, ghViewPullRequestArgs(selector, targetRepo)...)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view %s failed: %w", selector, err)
 	}
@@ -205,8 +205,8 @@ func applyViewedPullRequestRepo(pr *PullRequestInfo, selector, targetRepo string
 	return nil
 }
 
-func (g *Git) lookupPullRequestByHead(targetRepo, branch, headSHA string) (*PullRequestInfo, error) {
-	out, err := g.runGH("pr", "list", "--repo", targetRepo, "--head", branch, "--state", "all", "--json", "number,url,state,mergedAt,headRefName,headRefOid,headRepository,headRepositoryOwner", "--limit", "100")
+func lookupPullRequestByHead(g *Git, targetRepo, branch, headSHA string) (*PullRequestInfo, error) {
+	out, err := runGH(g, "pr", "list", "--repo", targetRepo, "--head", branch, "--state", "all", "--json", "number,url,state,mergedAt,headRefName,headRefOid,headRepository,headRepositoryOwner", "--limit", "100")
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list head %s in %s failed: %w", branch, targetRepo, err)
 	}
@@ -217,8 +217,8 @@ func (g *Git) lookupPullRequestByHead(targetRepo, branch, headSHA string) (*Pull
 	return selectPullRequest(raw, targetRepo, branch, headSHA, "head")
 }
 
-func (g *Git) lookupPullRequestByQualifiedHead(targetRepo, headOwner, branch, headSHA string) (*PullRequestInfo, error) {
-	out, err := g.runGH("api", "-X", "GET", "repos/"+targetRepo+"/pulls", "-f", "state=all", "-f", "head="+headOwner+":"+branch)
+func lookupPullRequestByQualifiedHead(g *Git, targetRepo, headOwner, branch, headSHA string) (*PullRequestInfo, error) {
+	out, err := runGH(g, "api", "-X", "GET", "repos/"+targetRepo+"/pulls", "-f", "state=all", "-f", "head="+headOwner+":"+branch)
 	if err != nil {
 		return nil, fmt.Errorf("gh api pull lookup head %s:%s in %s failed: %w", headOwner, branch, targetRepo, err)
 	}
@@ -233,7 +233,7 @@ func (g *Git) lookupPullRequestByQualifiedHead(targetRepo, headOwner, branch, he
 	return selectPullRequest(prs, targetRepo, branch, headSHA, "qualified-head")
 }
 
-func (g *Git) runGH(args ...string) ([]byte, error) {
+func runGH(g *Git, args ...string) ([]byte, error) {
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = g.workDir
 	out, err := cmd.CombinedOutput()

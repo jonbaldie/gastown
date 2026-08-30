@@ -182,19 +182,19 @@ func createLandWorktree(rigPath, startBranch string) (*git.Git, func(), error) {
 
 	// Clean up any stale worktree from a previous failed run
 	if _, err := os.Stat(landPath); err == nil {
-		_ = bareGit.WorktreeRemove(landPath, true)
+		_ = git.WorktreeRemove(bareGit, landPath, true)
 		_ = os.RemoveAll(landPath)
 	}
 
 	// Create worktree checked out to the target branch.
 	// Use --force because the branch may already be checked out in refinery/rig.
-	if err := bareGit.WorktreeAddExistingForce(landPath, startBranch); err != nil {
+	if err := git.WorktreeAddExistingForce(bareGit, landPath, startBranch); err != nil {
 		_ = fl.Unlock()
 		return nil, noop, fmt.Errorf("creating land worktree: %w", err)
 	}
 
 	cleanup := func() {
-		_ = bareGit.WorktreeRemove(landPath, true)
+		_ = git.WorktreeRemove(bareGit, landPath, true)
 		_ = os.RemoveAll(landPath)
 		_ = fl.Unlock()
 	}
@@ -204,10 +204,10 @@ func createLandWorktree(rigPath, startBranch string) (*git.Git, func(), error) {
 
 // branchNameExists checks if a branch name exists locally or on origin.
 func branchNameExists(g *git.Git, name string) bool {
-	if exists, _ := g.BranchExists(name); exists {
+	if exists, _ := git.BranchExists(g, name); exists {
 		return true
 	}
-	if exists, _ := g.RemoteBranchExists("origin", name); exists {
+	if exists, _ := git.RemoteBranchExists(g, "origin", name); exists {
 		return true
 	}
 	return false
@@ -477,7 +477,7 @@ func printIntegrationNamespaceWarning(branchName string) {
 
 func createMQIntegrationBranch(ctx *mqIntegrationCreateContext, baseBranchOverride string) error {
 	fmt.Printf("Fetching latest from origin...\n")
-	if err := ctx.g.Fetch("origin"); err != nil {
+	if err := git.Fetch(ctx.g, "origin"); err != nil {
 		return fmt.Errorf("fetching from origin: %w", err)
 	}
 	ctx.baseBranchName = ctx.rig.DefaultBranch()
@@ -486,7 +486,7 @@ func createMQIntegrationBranch(ctx *mqIntegrationCreateContext, baseBranchOverri
 	}
 	baseBranch := "origin/" + ctx.baseBranchName
 	fmt.Printf("Creating branch '%s' from %s...\n", ctx.branchName, ctx.baseBranchName)
-	if err := ctx.g.CreateBranchFrom(ctx.branchName, baseBranch); err != nil {
+	if err := git.CreateBranchFrom(ctx.g, ctx.branchName, baseBranch); err != nil {
 		return fmt.Errorf("creating branch: %w", err)
 	}
 	return pushMQIntegrationBranch(ctx)
@@ -494,8 +494,8 @@ func createMQIntegrationBranch(ctx *mqIntegrationCreateContext, baseBranchOverri
 
 func pushMQIntegrationBranch(ctx *mqIntegrationCreateContext) error {
 	fmt.Printf("Pushing to origin...\n")
-	if err := ctx.g.Push("origin", ctx.branchName, false); err != nil {
-		_ = ctx.g.DeleteBranch(ctx.branchName, true)
+	if err := git.Push(ctx.g, "origin", ctx.branchName, false); err != nil {
+		_ = git.DeleteBranch(ctx.g, ctx.branchName, true)
 		return fmt.Errorf("pushing to origin: %w", err)
 	}
 	return nil
@@ -583,7 +583,7 @@ func executeMQIntegrationLand(ctx *mqIntegrationLandContext, skipTests bool) err
 	// Idempotency check: if integration branch is already an ancestor of the
 	// target branch, the merge was already completed (e.g., previous run crashed
 	// after push but before cleanup). Skip directly to branch deletion and epic close.
-	alreadyMerged, err := ctx.g.IsAncestor("origin/"+ctx.branchName, "origin/"+ctx.targetBranch)
+	alreadyMerged, err := git.IsAncestor(ctx.g, "origin/"+ctx.branchName, "origin/"+ctx.targetBranch)
 	if err == nil && alreadyMerged {
 		fmt.Printf("  %s Integration branch already merged into %s — skipping to cleanup\n",
 			style.Bold.Render("✓"), ctx.targetBranch)
@@ -621,7 +621,7 @@ func performMQIntegrationLand(ctx *mqIntegrationLandContext, skipTests bool) err
 
 func pushMQIntegrationLand(ctx *mqIntegrationLandContext, landGit *git.Git) error {
 	fmt.Printf("Pushing %s to origin...\n", ctx.targetBranch)
-	if err := landGit.PushWithEnv("origin", ctx.targetBranch, false, []string{"GT_INTEGRATION_LAND=1"}); err != nil {
+	if err := git.PushWithEnv(landGit, "origin", ctx.targetBranch, false, []string{"GT_INTEGRATION_LAND=1"}); err != nil {
 		return fmt.Errorf("push failed: %w", err)
 	}
 	fmt.Printf("  %s Pushed to origin\n", style.Bold.Render("✓"))
@@ -676,10 +676,10 @@ func loadMQIntegrationLandContext(epicID string) (*mqIntegrationLandContext, err
 
 func resolveMQIntegrationLandBranch(ctx *mqIntegrationLandContext) error {
 	fmt.Printf("Fetching latest from origin...\n")
-	if err := ctx.g.Fetch("origin"); err != nil {
+	if err := git.Fetch(ctx.g, "origin"); err != nil {
 		return fmt.Errorf("fetching from origin: %w", err)
 	}
-	ctx.branchName = resolveEpicBranch(ctx.epic, ctx.rig.Path, ctx.g)
+	ctx.branchName = resolveEpicBranch(ctx.epic, ctx.rig.Path, git.Checker{Git: ctx.g})
 	ctx.targetBranch = beads.GetBaseBranchField(ctx.epic.Description)
 	if ctx.targetBranch == "" {
 		ctx.targetBranch = ctx.rig.DefaultBranch()
@@ -694,11 +694,11 @@ func printMQIntegrationLandHeader(ctx *mqIntegrationLandContext) {
 
 func ensureMQIntegrationLandBranch(ctx *mqIntegrationLandContext) error {
 	fmt.Printf("Checking integration branch...\n")
-	exists, err := ctx.g.BranchExists(ctx.branchName)
+	exists, err := git.BranchExists(ctx.g, ctx.branchName)
 	if err != nil {
 		return fmt.Errorf("checking branch existence: %w", err)
 	}
-	remoteExists, err := ctx.g.RemoteBranchExists("origin", ctx.branchName)
+	remoteExists, err := git.RemoteBranchExists(ctx.g, "origin", ctx.branchName)
 	if err != nil {
 		return fmt.Errorf("checking remote branch: %w", err)
 	}
@@ -710,7 +710,7 @@ func ensureMQIntegrationLandBranch(ctx *mqIntegrationLandContext) error {
 	}
 	if !exists {
 		fmt.Printf("Fetching integration branch from origin...\n")
-		if err := ctx.g.FetchBranch("origin", ctx.branchName); err != nil {
+		if err := git.FetchBranch(ctx.g, "origin", ctx.branchName); err != nil {
 			return fmt.Errorf("fetching branch: %w", err)
 		}
 	}
@@ -807,7 +807,7 @@ func createMQIntegrationLandWorktree(ctx *mqIntegrationLandContext) (*git.Git, f
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("creating land worktree: %w", err)
 	}
-	if err := landGit.Pull("origin", ctx.targetBranch); err != nil {
+	if err := git.Pull(landGit, "origin", ctx.targetBranch); err != nil {
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(pull from origin/%s skipped)", ctx.targetBranch)))
 	}
 	return landGit, cleanup, nil
@@ -816,7 +816,7 @@ func createMQIntegrationLandWorktree(ctx *mqIntegrationLandContext) (*git.Git, f
 func mergeMQIntegrationLandWorktree(ctx *mqIntegrationLandContext, landGit *git.Git) error {
 	fmt.Printf("Merging %s to %s...\n", ctx.branchName, ctx.targetBranch)
 	mergeMsg := fmt.Sprintf("Merge %s: %s\n\nEpic: %s", ctx.branchName, ctx.epic.Title, ctx.epicID)
-	if err := landGit.MergeNoFF("origin/"+ctx.branchName, mergeMsg); err != nil {
+	if err := git.MergeNoFF(landGit, "origin/"+ctx.branchName, mergeMsg); err != nil {
 		return reportMQIntegrationLandMergeFailure(ctx, landGit, err)
 	}
 	fmt.Printf("  %s Merged successfully\n", style.Bold.Render("✓"))
@@ -824,9 +824,9 @@ func mergeMQIntegrationLandWorktree(ctx *mqIntegrationLandContext, landGit *git.
 }
 
 func reportMQIntegrationLandMergeFailure(ctx *mqIntegrationLandContext, landGit *git.Git, mergeErr error) error {
-	conflictPaths, _ := landGit.GetConflictingFiles()
-	_ = landGit.AbortMerge()
-	_ = landGit.ResetHard("HEAD")
+	conflictPaths, _ := git.GetConflictingFiles(landGit)
+	_ = git.AbortMerge(landGit)
+	_ = git.ResetHard(landGit, "HEAD")
 	if len(conflictPaths) > 0 {
 		fmt.Fprintf(os.Stderr, "LAND_FAILED: epic=%s branch=%s target=%s reason=conflict files=%s\n",
 			ctx.epicID, ctx.branchName, ctx.targetBranch, strings.Join(conflictPaths, ","))
@@ -854,7 +854,7 @@ func runMQIntegrationLandTests(ctx *mqIntegrationLandContext, landGit *git.Git, 
 		return nil
 	}
 	fmt.Printf("Running tests: %s\n", testCmd)
-	if err := runTestCommand(landGit.WorkDir(), testCmd); err != nil {
+	if err := runTestCommand(git.WorkDir(landGit), testCmd); err != nil {
 		fmt.Printf("  %s Tests failed\n", style.Bold.Render("✗"))
 		return fmt.Errorf("tests failed: %w", err)
 	}
@@ -864,7 +864,7 @@ func runMQIntegrationLandTests(ctx *mqIntegrationLandContext, landGit *git.Git, 
 
 func verifyMQIntegrationLandMerge(landGit *git.Git, ctx *mqIntegrationLandContext) error {
 	verifyCmd := exec.Command("git", "diff", "--stat", "HEAD~1..HEAD")
-	verifyCmd.Dir = landGit.WorkDir()
+	verifyCmd.Dir = git.WorkDir(landGit)
 	diffOutput, verifyErr := verifyCmd.Output()
 	if verifyErr == nil && len(strings.TrimSpace(string(diffOutput))) == 0 {
 		return fmt.Errorf("merge produced no file changes — integration branch work may have been discarded during conflict resolution\n"+
@@ -884,14 +884,14 @@ func verifyMQIntegrationLandMerge(landGit *git.Git, ctx *mqIntegrationLandContex
 // idempotent re-run, but the epic is already marked done).
 func cleanupIntegrationBranch(g *git.Git, bd *beads.Beads, epicID, branchName, targetBranch string, epicAlreadyClosed bool) []string {
 	var warnings []string
-	branchHead, err := g.PushRemoteBranchTip("origin", branchName)
+	branchHead, err := git.PushRemoteBranchTip(g, "origin", branchName)
 	if err != nil {
 		return append(warnings, fmt.Sprintf("could not read remote integration branch: %v", err))
 	}
 	if strings.TrimSpace(branchHead) == "" {
 		return append(warnings, "remote integration branch missing before cleanup")
 	}
-	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", targetBranch, branchHead); err != nil {
+	if err := git.VerifyPushedCommitReachableFromPushTarget(g, "origin", targetBranch, branchHead); err != nil {
 		return append(warnings, fmt.Sprintf("integration branch is not proven on %s: %v", targetBranch, err))
 	}
 
@@ -910,7 +910,7 @@ func cleanupIntegrationBranch(g *git.Git, bd *beads.Beads, epicID, branchName, t
 	// Delete integration branch (use bare repo git — ref-only operations)
 	fmt.Printf("Deleting integration branch...\n")
 	// Delete remote first
-	if err := g.DeleteRemoteBranchIfAt("origin", branchName, branchHead); err != nil {
+	if err := git.DeleteRemoteBranchIfAt(g, "origin", branchName, branchHead); err != nil {
 		warning := fmt.Sprintf("could not delete remote branch: %v", err)
 		warnings = append(warnings, warning)
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(%s)", warning)))
@@ -918,7 +918,7 @@ func cleanupIntegrationBranch(g *git.Git, bd *beads.Beads, epicID, branchName, t
 		fmt.Printf("  %s Deleted from origin\n", style.Bold.Render("✓"))
 	}
 	// Delete local
-	if err := g.DeleteBranch(branchName, true); err != nil {
+	if err := git.DeleteBranch(g, branchName, true); err != nil {
 		warning := fmt.Sprintf("could not delete local branch: %v", err)
 		warnings = append(warnings, warning)
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(%s)", warning)))
@@ -1075,7 +1075,7 @@ func loadMQIntegrationStatusContext(epicID string) (*mqIntegrationStatusContext,
 	if err != nil {
 		return nil, fmt.Errorf("initializing git: %w", err)
 	}
-	_ = g.Fetch("origin")
+	_ = git.Fetch(g, "origin")
 	epic, err := loadMQIntegrationStatusEpic(bd, epicID)
 	if err != nil {
 		return nil, err
@@ -1095,7 +1095,7 @@ func loadMQIntegrationStatusEpic(bd *beads.Beads, epicID string) (*beads.Issue, 
 }
 
 func resolveMQIntegrationStatusBranch(ctx *mqIntegrationStatusContext) error {
-	ctx.branchName = resolveEpicBranch(ctx.epic, ctx.rig.Path, ctx.g)
+	ctx.branchName = resolveEpicBranch(ctx.epic, ctx.rig.Path, git.Checker{Git: ctx.g})
 	ctx.baseBranch = beads.GetBaseBranchField(ctx.epic.Description)
 	if ctx.baseBranch == "" {
 		ctx.baseBranch = ctx.rig.DefaultBranch()
@@ -1104,8 +1104,8 @@ func resolveMQIntegrationStatusBranch(ctx *mqIntegrationStatusContext) error {
 }
 
 func loadMQIntegrationStatusBranchStats(ctx *mqIntegrationStatusContext) error {
-	localExists, _ := ctx.g.BranchExists(ctx.branchName)
-	remoteExists, _ := ctx.g.RemoteBranchExists("origin", ctx.branchName)
+	localExists, _ := git.BranchExists(ctx.g, ctx.branchName)
+	remoteExists, _ := git.RemoteBranchExists(ctx.g, "origin", ctx.branchName)
 	if !localExists && !remoteExists {
 		return fmt.Errorf("integration branch '%s' does not exist", ctx.branchName)
 	}
@@ -1119,7 +1119,7 @@ func loadMQIntegrationStatusBranchStats(ctx *mqIntegrationStatusContext) error {
 }
 
 func branchCreatedDate(g *git.Git, ref string) string {
-	createdDate, err := g.BranchCreatedDate(ref)
+	createdDate, err := git.BranchCreatedDate(g, ref)
 	if err != nil {
 		return ""
 	}
@@ -1127,7 +1127,7 @@ func branchCreatedDate(g *git.Git, ref string) string {
 }
 
 func commitsAhead(g *git.Git, baseBranch, ref string) int {
-	aheadCount, err := g.CommitsAhead("origin/"+baseBranch, ref)
+	aheadCount, err := git.CommitsAhead(g, "origin/"+baseBranch, ref)
 	if err != nil {
 		return 0
 	}

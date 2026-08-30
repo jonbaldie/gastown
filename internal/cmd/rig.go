@@ -360,7 +360,7 @@ var (
 	}
 	checkPolecatWorkStatus = func(clonePath string) (*git.UncommittedWorkStatus, error) {
 		pGit := git.NewGit(clonePath)
-		return pGit.CheckUncommittedWork()
+		return git.CheckUncommittedWork(pGit)
 	}
 	isStdinTerminal = func() bool {
 		return term.IsTerminal(int(os.Stdin.Fd()))
@@ -2095,8 +2095,8 @@ func collectRigStatusSessions(rigName string, t *tmux.Tmux, data rigStatusData) 
 				sessionName := crewSessionName(rigName, w.Name)
 				cInfos[idx].hasSession = isAgentSessionHealthy(t, sessionName)
 				crewGit := git.NewGit(w.ClonePath)
-				cInfos[idx].branch, _ = crewGit.CurrentBranch()
-				gitStatus, _ := crewGit.Status()
+				cInfos[idx].branch, _ = git.CurrentBranch(crewGit)
+				gitStatus, _ := git.Status(crewGit)
 				if gitStatus != nil && !gitStatus.Clean {
 					cInfos[idx].dirty = true
 				}
@@ -2533,13 +2533,13 @@ func commitTownConfigChanges(townRoot, rigName string) {
 		return
 	}
 
-	if err := g.Add(toAdd...); err != nil {
+	if err := git.Add(g, toAdd...); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not stage town config files: %v\n", err)
 		return
 	}
 
 	msg := fmt.Sprintf("chore: register rig %s in town config", rigName)
-	if err := g.Commit(msg); err != nil {
+	if err := git.Commit(g, msg); err != nil {
 		// If nothing changed (already committed), git commit returns an error — that's fine.
 		if !strings.Contains(err.Error(), "nothing to commit") {
 			fmt.Fprintf(os.Stderr, "  Warning: could not commit town config files: %v\n", err)

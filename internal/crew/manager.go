@@ -243,23 +243,23 @@ func (m *Manager) addLocked(name string, createBranch bool) (*CrewWorker, error)
 	// it differs from the remote's HEAD. Falls back gracefully for new/empty repos.
 	defaultBranch := m.rig.DefaultBranch()
 	if m.rig.LocalRepo != "" {
-		if err := m.git.CloneBranchWithReference(m.rig.GitURL, crewPath, defaultBranch, m.rig.LocalRepo); err != nil {
+		if err := git.CloneBranchWithReference(m.git, m.rig.GitURL, crewPath, defaultBranch, m.rig.LocalRepo); err != nil {
 			style.PrintWarning("could not clone branch %s with reference: %v", defaultBranch, err)
 			// Try branch without reference (network fetch), then reference without branch
-			if err := m.git.CloneBranch(m.rig.GitURL, crewPath, defaultBranch); err != nil {
+			if err := git.CloneBranch(m.git, m.rig.GitURL, crewPath, defaultBranch); err != nil {
 				style.PrintWarning("could not clone branch %s: %v", defaultBranch, err)
-				if err := m.git.CloneWithReference(m.rig.GitURL, crewPath, m.rig.LocalRepo); err != nil {
+				if err := git.CloneWithReference(m.git, m.rig.GitURL, crewPath, m.rig.LocalRepo); err != nil {
 					style.PrintWarning("could not clone with reference: %v", err)
-					if err := m.git.Clone(m.rig.GitURL, crewPath); err != nil {
+					if err := git.Clone(m.git, m.rig.GitURL, crewPath); err != nil {
 						return nil, fmt.Errorf("cloning rig: %w", err)
 					}
 				}
 			}
 		}
 	} else {
-		if err := m.git.CloneBranch(m.rig.GitURL, crewPath, defaultBranch); err != nil {
+		if err := git.CloneBranch(m.git, m.rig.GitURL, crewPath, defaultBranch); err != nil {
 			style.PrintWarning("could not clone branch %s, falling back to default: %v", defaultBranch, err)
-			if err := m.git.Clone(m.rig.GitURL, crewPath); err != nil {
+			if err := git.Clone(m.git, m.rig.GitURL, crewPath); err != nil {
 				return nil, fmt.Errorf("cloning rig: %w", err)
 			}
 		}
@@ -283,11 +283,11 @@ func (m *Manager) addLocked(name string, createBranch bool) (*CrewWorker, error)
 	// Optionally create a working branch
 	if createBranch {
 		branchName = fmt.Sprintf("crew/%s", name)
-		if err := crewGit.CreateBranch(branchName); err != nil {
+		if err := git.CreateBranch(crewGit, branchName); err != nil {
 			_ = os.RemoveAll(crewPath) // best-effort cleanup
 			return nil, fmt.Errorf("creating branch: %w", err)
 		}
-		if err := crewGit.Checkout(branchName); err != nil {
+		if err := git.Checkout(crewGit, branchName); err != nil {
 			_ = os.RemoveAll(crewPath) // best-effort cleanup
 			return nil, fmt.Errorf("checking out branch: %w", err)
 		}
@@ -351,7 +351,7 @@ func (m *Manager) syncRemotesFromRig(crewPath string) error {
 	rigGit := git.NewGit(rigRepoPath)
 	crewGit := git.NewGit(crewPath)
 
-	remotes, err := rigGit.Remotes()
+	remotes, err := git.Remotes(rigGit)
 	if err != nil {
 		return fmt.Errorf("reading rig remotes: %w", err)
 	}
@@ -361,21 +361,21 @@ func (m *Manager) syncRemotesFromRig(crewPath string) error {
 			continue // Skip empty and local-only remotes
 		}
 
-		url, err := rigGit.RemoteURL(remote)
+		url, err := git.RemoteURL(rigGit, remote)
 		if err != nil {
 			continue
 		}
 
 		// Check if remote exists in crew clone
-		existingURL, existErr := crewGit.RemoteURL(remote)
+		existingURL, existErr := git.RemoteURL(crewGit, remote)
 		if existErr != nil {
 			// Remote doesn't exist — add it
-			if _, addErr := crewGit.AddRemote(remote, url); addErr != nil {
+			if _, addErr := git.AddRemote(crewGit, remote, url); addErr != nil {
 				style.PrintWarning("could not add remote %s: %v", remote, addErr)
 			}
 		} else if existingURL != url {
 			// Remote exists but URL differs — update it
-			if _, setErr := crewGit.SetRemoteURL(remote, url); setErr != nil {
+			if _, setErr := git.SetRemoteURL(crewGit, remote, url); setErr != nil {
 				style.PrintWarning("could not update remote %s: %v", remote, setErr)
 			}
 		}
@@ -388,39 +388,39 @@ func (m *Manager) syncRemotesFromRig(crewPath string) error {
 		if remote == "origin" {
 			configPushURL := strings.TrimSpace(m.rig.PushURL)
 			if configPushURL != "" {
-				if cfgErr := crewGit.ConfigurePushURL(remote, configPushURL); cfgErr != nil {
+				if cfgErr := git.ConfigurePushURL(crewGit, remote, configPushURL); cfgErr != nil {
 					return fmt.Errorf("syncing origin push URL: %w", cfgErr)
 				}
 			} else {
 				// Config has no push URL — only clear if crew has a stale custom push URL.
-				crewPush, pushErr := crewGit.GetPushURL(remote)
-				crewFetch, fetchErr := crewGit.RemoteURL(remote)
+				crewPush, pushErr := git.GetPushURL(crewGit, remote)
+				crewFetch, fetchErr := git.RemoteURL(crewGit, remote)
 				if pushErr != nil || fetchErr != nil {
 					style.PrintWarning("could not read crew remote URLs for %s, skipping cleanup: push=%v fetch=%v", remote, pushErr, fetchErr)
 				} else if crewPush != crewFetch {
 					style.PrintWarning("clearing stale push URL for %s (was: %s)", remote, util.RedactURL(crewPush))
-					if clrErr := crewGit.ClearPushURL(remote); clrErr != nil {
+					if clrErr := git.ClearPushURL(crewGit, remote); clrErr != nil {
 						style.PrintWarning("could not clear push URL for %s: %v", remote, clrErr)
 					}
 				}
 			}
 		} else {
-			pushURL, pushErr := rigGit.GetPushURL(remote)
+			pushURL, pushErr := git.GetPushURL(rigGit, remote)
 			if pushErr != nil {
 				style.PrintWarning("could not read push URL for %s, skipping: %v", remote, pushErr)
 			} else if pushURL != "" && pushURL != url {
-				if cfgErr := crewGit.ConfigurePushURL(remote, pushURL); cfgErr != nil {
+				if cfgErr := git.ConfigurePushURL(crewGit, remote, pushURL); cfgErr != nil {
 					style.PrintWarning("could not sync push URL for %s: %v", remote, cfgErr)
 				}
 			} else {
 				// Mayor has no custom push URL — only clear if crew has a stale one.
-				crewPush, cpErr := crewGit.GetPushURL(remote)
-				crewFetch, cfErr := crewGit.RemoteURL(remote)
+				crewPush, cpErr := git.GetPushURL(crewGit, remote)
+				crewFetch, cfErr := git.RemoteURL(crewGit, remote)
 				if cpErr != nil || cfErr != nil {
 					style.PrintWarning("could not read crew remote URLs for %s, skipping cleanup: push=%v fetch=%v", remote, cpErr, cfErr)
 				} else if crewPush != crewFetch {
 					style.PrintWarning("clearing stale push URL for %s (was: %s)", remote, util.RedactURL(crewPush))
-					if clrErr := crewGit.ClearPushURL(remote); clrErr != nil {
+					if clrErr := git.ClearPushURL(crewGit, remote); clrErr != nil {
 						style.PrintWarning("could not clear push URL for %s: %v", remote, clrErr)
 					}
 				}
@@ -449,7 +449,7 @@ func (m *Manager) Remove(name string, force bool) error {
 
 	if !force {
 		crewGit := git.NewGit(crewPath)
-		hasChanges, err := crewGit.HasUncommittedChanges()
+		hasChanges, err := git.HasUncommittedChanges(crewGit)
 		if err == nil && hasChanges {
 			return ErrHasChanges
 		}
@@ -632,14 +632,14 @@ func (m *Manager) Pristine(name string) (*PristineResult, error) {
 	}
 
 	// Check for uncommitted changes
-	hasChanges, err := crewGit.HasUncommittedChanges()
+	hasChanges, err := git.HasUncommittedChanges(crewGit)
 	if err != nil {
 		return nil, fmt.Errorf("checking changes: %w", err)
 	}
 	result.HadChanges = hasChanges
 
 	// Pull latest (use origin and current branch)
-	if err := crewGit.Pull("origin", ""); err != nil {
+	if err := git.Pull(crewGit, "origin", ""); err != nil {
 		result.PullError = err.Error()
 	} else {
 		result.Pulled = true

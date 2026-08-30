@@ -64,17 +64,17 @@ func runPruneBranches(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	g := gitpkg.NewGit(".")
-	if !g.IsRepo() {
+	if !gitpkg.IsRepo(g) {
 		return fmt.Errorf("not a git repository")
 	}
 
 	// Run fetch --prune first to clean up stale remote tracking refs
-	if err := g.FetchPrune("origin"); err != nil {
+	if err := gitpkg.FetchPrune(g, "origin"); err != nil {
 		// Non-fatal: we can still prune based on current state
 		fmt.Printf("%s Warning: git fetch --prune failed: %v\n", style.Warning.Render("⚠"), err)
 	}
 
-	pruned, err := g.PruneStaleBranches(opts.pattern, opts.dryRun)
+	pruned, err := gitpkg.PruneStaleBranches(g, opts.pattern, opts.dryRun)
 	if err != nil {
 		return fmt.Errorf("pruning branches: %w", err)
 	}

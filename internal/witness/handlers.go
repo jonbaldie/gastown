@@ -1005,8 +1005,8 @@ func slotOpenDecision(workDir, townRoot, rigName, polecatName, exitType string) 
 
 func witnessHasSubmittableWork(worktreePath string, targetRefs []string) bool {
 	g := git.NewGit(worktreePath)
-	branch, _ := g.CurrentBranch()
-	status, err := g.BranchTargetStatus(branch, "origin", targetRefs)
+	branch, _ := git.CurrentBranch(g)
+	status, err := git.BranchTargetStatus(g, branch, "origin", targetRefs)
 	return err == nil && status.UnpreservedPatchCount > 0
 }
 
@@ -1225,14 +1225,14 @@ func _verifyCommitOnMain(workDir, rigName, polecatName string) (bool, error) {
 	}
 
 	// Get the current HEAD commit SHA
-	commitSHA, err := ctx.git.Rev("HEAD")
+	commitSHA, err := git.Rev(ctx.git, "HEAD")
 	if err != nil {
 		return false, fmt.Errorf("getting polecat HEAD: %w", err)
 	}
 
 	// Get all configured remotes and check each one for the commit
 	// This handles multi-remote setups where code may be on a remote other than "origin"
-	remotes, err := ctx.git.Remotes()
+	remotes, err := git.Remotes(ctx.git)
 	if err != nil {
 		return verifyCommitOnDefaultBranch(ctx.git, commitSHA, ctx.defaultBranch)
 	}
@@ -1243,12 +1243,12 @@ func _verifyCommitOnMain(workDir, rigName, polecatName string) (bool, error) {
 	}
 
 	// Also try the local default branch (in case we're not tracking a remote).
-	isOnDefaultBranch, err := ctx.git.IsAncestor(commitSHA, ctx.defaultBranch)
+	isOnDefaultBranch, err := git.IsAncestor(ctx.git, commitSHA, ctx.defaultBranch)
 	return err == nil && isOnDefaultBranch, nil
 }
 
 func verifyCommitOnDefaultBranch(g *git.Git, commitSHA, defaultBranch string) (bool, error) {
-	isOnDefaultBranch, err := g.IsAncestor(commitSHA, defaultBranch)
+	isOnDefaultBranch, err := git.IsAncestor(g, commitSHA, defaultBranch)
 	if err != nil {
 		return false, fmt.Errorf("checking if commit is on %s: %w", defaultBranch, err)
 	}
@@ -1258,7 +1258,7 @@ func verifyCommitOnDefaultBranch(g *git.Git, commitSHA, defaultBranch string) (b
 func verifyCommitOnRemoteDefaultBranch(g *git.Git, commitSHA, defaultBranch string, remotes []string) bool {
 	for _, remote := range remotes {
 		remoteBranch := remote + "/" + defaultBranch
-		isOnRemote, err := g.IsAncestor(commitSHA, remoteBranch)
+		isOnRemote, err := git.IsAncestor(g, commitSHA, remoteBranch)
 		if err == nil && isOnRemote {
 			return true
 		}
@@ -1297,12 +1297,12 @@ func _verifyBranchAlreadyMerged(workDir, rigName, polecatName string) (bool, err
 		return false, err
 	}
 
-	remotes, err := ctx.git.Remotes()
+	remotes, err := git.Remotes(ctx.git)
 	if err != nil || len(remotes) == 0 {
 		remotes = []string{"origin"}
 	}
 
-	branch, err := ctx.git.CurrentBranch()
+	branch, err := git.CurrentBranch(ctx.git)
 	if err != nil {
 		return false, err
 	}
@@ -1315,7 +1315,7 @@ func _verifyBranchAlreadyMerged(workDir, rigName, polecatName string) (bool, err
 func branchAlreadyMergedOnRemoteTargets(g *git.Git, branch, defaultBranch string, remotes []string) bool {
 	for _, remote := range remotes {
 		upstream := remote + "/" + defaultBranch
-		status, err := g.BranchTargetStatus(branch, remote, []string{upstream})
+		status, err := git.BranchTargetStatus(g, branch, remote, []string{upstream})
 		if err != nil {
 			continue // try next remote
 		}
@@ -3316,7 +3316,7 @@ func activeMRGitSafe(workDir, rigName, polecatName string) bool {
 		return false
 	}
 	g := git.NewGit(clonePath)
-	branch, err := g.CurrentBranch()
+	branch, err := git.CurrentBranch(g)
 	if err != nil || branch == "" {
 		return false
 	}
@@ -3334,7 +3334,7 @@ func activeMRClonePath(townRoot, rigName, polecatName string) (string, bool) {
 }
 
 func activeMRWorkingTreeClean(g *git.Git) bool {
-	status, err := g.CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(g)
 	if err != nil {
 		return false
 	}
@@ -3342,7 +3342,7 @@ func activeMRWorkingTreeClean(g *git.Git) bool {
 }
 
 func activeMRBranchPushed(g *git.Git, branch string) bool {
-	pushed, unpushed, err := g.BranchPushedToRemote(branch, "origin")
+	pushed, unpushed, err := git.BranchPushedToRemote(g, branch, "origin")
 	if err != nil {
 		return false
 	}

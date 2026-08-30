@@ -62,7 +62,7 @@ func runMQPRStatus(cmd *cobra.Command, args []string) error {
 
 	prURL, prNumber := resolveMQPRIdentity(mr.IssueID, mr.PRURL, mr.PRNumber, r.BeadsPath(), prURLFlag, prNumberFlag)
 
-	pr, err := rigGit.LookupPullRequest(git.PullRequestRef{
+	pr, err := git.LookupPullRequest(rigGit, git.PullRequestRef{
 		URL:        prURL,
 		Number:     prNumber,
 		Branch:     mr.Branch,

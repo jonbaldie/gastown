@@ -229,10 +229,10 @@ func buildResult(inputs runInputs, preparation townPreparation, initialization t
 
 func preflightRepo(repoPath string) error {
 	repoGit := git.NewGit(repoPath)
-	if !repoGit.IsRepo() {
+	if !git.IsRepo(repoGit) {
 		return fmt.Errorf("not a git repository: %s", repoPath)
 	}
-	empty, err := repoGit.IsEmpty()
+	empty, err := git.IsEmpty(repoGit)
 	if err != nil {
 		return fmt.Errorf("checking repository: %w", err)
 	}

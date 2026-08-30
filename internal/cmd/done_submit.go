@@ -283,7 +283,7 @@ func noMergePRBody(f *doneFlow) string {
 			prBodyBuilder.WriteString("\n\n")
 		}
 	}
-	if diffStat, diffErr := f.repo.g.DiffStat(f.repo.baseRef + "..." + f.repo.branch); diffErr == nil && diffStat != "" {
+	if diffStat, diffErr := git.DiffStat(f.repo.g, f.repo.baseRef+"..."+f.repo.branch); diffErr == nil && diffStat != "" {
 		prBodyBuilder.WriteString("## Changes\n\n```\n")
 		prBodyBuilder.WriteString(diffStat)
 		prBodyBuilder.WriteString("```\n\n")
@@ -421,7 +421,7 @@ func applyIntegrationDoneTarget(f *doneFlow) {
 	if !refineryEnabled {
 		return
 	}
-	autoTarget, err := beads.DetectIntegrationBranch(f.work.sourceBD, f.repo.g, f.work.issueID)
+	autoTarget, err := beads.DetectIntegrationBranch(f.work.sourceBD, git.Checker{Git: f.repo.g}, f.work.issueID)
 	if err == nil && autoTarget != "" {
 		f.repo.target = autoTarget
 	}
@@ -485,7 +485,7 @@ func tryResumeDoneMRCheckpoint(f *doneFlow) (resumed bool, notify bool, err erro
 }
 
 func findOrCreateDoneMR(f *doneFlow) {
-	commitSHA, _ := f.repo.g.Rev("HEAD")
+	commitSHA, _ := git.Rev(f.repo.g, "HEAD")
 	existingMR, err := findExistingDoneMR(f, commitSHA)
 	if err != nil {
 		style.PrintWarning("could not check for existing MR: %v", err)
@@ -600,8 +600,8 @@ func doneMRDescription(f *doneFlow, commitSHA string) string {
 	}
 	description += "\npre_verified: true"
 	description += fmt.Sprintf("\npre_verified_at: %s", time.Now().UTC().Format(time.RFC3339))
-	verifiedBaseRef := f.repo.g.CleanBaseRef("origin", f.repo.defaultBranch, f.repo.target)
-	if verifiedBase, baseErr := f.repo.g.Rev(verifiedBaseRef); baseErr == nil {
+	verifiedBaseRef := git.CleanBaseRef(f.repo.g, "origin", f.repo.defaultBranch, f.repo.target)
+	if verifiedBase, baseErr := git.Rev(f.repo.g, verifiedBaseRef); baseErr == nil {
 		description += fmt.Sprintf("\npre_verified_base: %s", verifiedBase)
 		return description
 	} else {

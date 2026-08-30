@@ -256,10 +256,10 @@ func setupCanonicalBranchManagerTest(t *testing.T) (*Manager, string) {
 		t.Fatalf("write README.md: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("README.md"); err != nil {
+	if err := git.Add(mayorGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -282,7 +282,7 @@ func createStalePolecatCommit(t *testing.T, repoPath, startPoint, branchName str
 	t.Helper()
 
 	repoGit := git.NewGit(repoPath)
-	if err := repoGit.CheckoutNewBranch(branchName, startPoint); err != nil {
+	if err := git.CheckoutNewBranch(repoGit, branchName, startPoint); err != nil {
 		t.Fatalf("checkout stale branch %s from %s: %v", branchName, startPoint, err)
 	}
 
@@ -290,14 +290,14 @@ func createStalePolecatCommit(t *testing.T, repoPath, startPoint, branchName str
 	if err := os.WriteFile(filepath.Join(repoPath, fileName), []byte(branchName+"\n"), 0644); err != nil {
 		t.Fatalf("write stale branch marker: %v", err)
 	}
-	if err := repoGit.Add(fileName); err != nil {
+	if err := git.Add(repoGit, fileName); err != nil {
 		t.Fatalf("git add stale branch marker: %v", err)
 	}
-	if err := repoGit.Commit("Create stale polecat branch"); err != nil {
+	if err := git.Commit(repoGit, "Create stale polecat branch"); err != nil {
 		t.Fatalf("git commit stale branch marker: %v", err)
 	}
 
-	sha, err := repoGit.Rev("HEAD")
+	sha, err := git.Rev(repoGit, "HEAD")
 	if err != nil {
 		t.Fatalf("resolve stale branch commit: %v", err)
 	}
@@ -752,10 +752,10 @@ func TestAddWithOptions_HasAgentsMD(t *testing.T) {
 
 	// Commit AGENTS.md so it's part of the repo
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("AGENTS.md"); err != nil {
+	if err := git.Add(mayorGit, "AGENTS.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Add AGENTS.md"); err != nil {
+	if err := git.Commit(mayorGit, "Add AGENTS.md"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -1427,10 +1427,10 @@ func TestAddWithOptions_NoPrimeMDCreatedLocally(t *testing.T) {
 		t.Fatalf("write README.md: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("README.md"); err != nil {
+	if err := git.Add(mayorGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit without PRIME.md"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit without PRIME.md"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -1485,7 +1485,7 @@ func TestAddWithOptions_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 	mgr, mayorRig := setupCanonicalBranchManagerTest(t)
 
 	mayorGit := git.NewGit(mayorRig)
-	baseSHA, err := mayorGit.Rev("origin/main")
+	baseSHA, err := git.Rev(mayorGit, "origin/main")
 	if err != nil {
 		t.Fatalf("resolve origin/main: %v", err)
 	}
@@ -1497,7 +1497,7 @@ func TestAddWithOptions_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 	}
 
 	worktreeGit := git.NewGit(polecat.ClonePath)
-	staleAncestor, err := worktreeGit.IsAncestor(staleSHA, polecat.Branch)
+	staleAncestor, err := git.IsAncestor(worktreeGit, staleSHA, polecat.Branch)
 	if err != nil {
 		t.Fatalf("check stale ancestry: %v", err)
 	}
@@ -1505,7 +1505,7 @@ func TestAddWithOptions_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 		t.Fatalf("new polecat branch %q unexpectedly includes stale local commit %s", polecat.Branch, staleSHA)
 	}
 
-	baseAncestor, err := worktreeGit.IsAncestor(baseSHA, polecat.Branch)
+	baseAncestor, err := git.IsAncestor(worktreeGit, baseSHA, polecat.Branch)
 	if err != nil {
 		t.Fatalf("check canonical ancestry: %v", err)
 	}
@@ -1585,7 +1585,7 @@ func TestReuseIdlePolecat_RunsSetupCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
-	_ = git.NewGit(polecat.ClonePath).CleanForce()
+	_ = git.CleanForce(git.NewGit(polecat.ClonePath))
 	writeWispSetupCommand(t, mgr, setupCommandWriteMarker("reuse-setup-marker"))
 
 	reused, err := ReuseIdlePolecat(mgr, "toast", AddOptions{HookBead: "gt-next"})
@@ -1612,7 +1612,7 @@ func TestReuseIdlePolecat_SetupCommandFailureCleansWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
-	_ = git.NewGit(polecat.ClonePath).CleanForce()
+	_ = git.CleanForce(git.NewGit(polecat.ClonePath))
 	writeWispSetupCommand(t, mgr, setupCommandWriteMarkerAndFail("dirty-setup-marker"))
 
 	_, err = ReuseIdlePolecat(mgr, "toast", AddOptions{HookBead: "gt-next"})
@@ -1668,7 +1668,7 @@ func TestReuseIdlePolecat_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 	mgr, mayorRig := setupCanonicalBranchManagerTest(t)
 
 	mayorGit := git.NewGit(mayorRig)
-	baseSHA, err := mayorGit.Rev("origin/main")
+	baseSHA, err := git.Rev(mayorGit, "origin/main")
 	if err != nil {
 		t.Fatalf("resolve origin/main: %v", err)
 	}
@@ -1685,7 +1685,7 @@ func TestReuseIdlePolecat_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 		t.Fatalf("ReuseIdlePolecat error = %v, want ErrPolecatNeedsRecovery", err)
 	}
 	worktreeGit := git.NewGit(polecat.ClonePath)
-	currentSHA, err := worktreeGit.Rev("HEAD")
+	currentSHA, err := git.Rev(worktreeGit, "HEAD")
 	if err != nil {
 		t.Fatalf("resolve current HEAD: %v", err)
 	}
@@ -1726,7 +1726,7 @@ func TestAddWithOptions_ResumeBranch(t *testing.T) {
 	}
 
 	worktreeGit := git.NewGit(polecat.ClonePath)
-	current, err := worktreeGit.CurrentBranch()
+	current, err := git.CurrentBranch(worktreeGit)
 	if err != nil {
 		t.Fatalf("CurrentBranch: %v", err)
 	}
@@ -1736,7 +1736,7 @@ func TestAddWithOptions_ResumeBranch(t *testing.T) {
 
 	// The PR commit must be reachable from HEAD — proves we attached to the
 	// existing branch rather than starting fresh from main.
-	reachable, err := worktreeGit.IsAncestor(prCommit, "HEAD")
+	reachable, err := git.IsAncestor(worktreeGit, prCommit, "HEAD")
 	if err != nil {
 		t.Fatalf("IsAncestor: %v", err)
 	}
@@ -1823,10 +1823,10 @@ func TestAddWithOptions_NoFilesAddedToRepo(t *testing.T) {
 
 	// Commit everything
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit - clean repo"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit - clean repo"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -1951,10 +1951,10 @@ func TestAddWithOptions_SettingsInstalledInPolecatsDir(t *testing.T) {
 	}
 
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -2263,10 +2263,10 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -2347,10 +2347,10 @@ func TestAddWithOptions_RollbackCleansWorktree(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -2605,10 +2605,10 @@ func TestAllocateAndAdd_NoDuplicateNames(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 	cmdRemote := exec.Command("git", "remote", "add", "origin", "/nonexistent/repo")
@@ -2779,10 +2779,10 @@ func TestRepairWorktreeWithOptions_KillsLiveSession(t *testing.T) {
 		t.Fatalf("write README: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("README.md"); err != nil {
+	if err := git.Add(mayorGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 	cmd = exec.Command("git", "remote", "add", "origin", mayorRig)
@@ -2798,7 +2798,7 @@ func TestRepairWorktreeWithOptions_KillsLiveSession(t *testing.T) {
 
 	polecatName := "toast"
 	oldClonePath := filepath.Join(rigPath, "polecats", polecatName, rigName)
-	if err := mayorGit.WorktreeAddFromRef(oldClonePath, "old-toast", "HEAD"); err != nil {
+	if err := git.WorktreeAddFromRef(mayorGit, oldClonePath, "old-toast", "HEAD"); err != nil {
 		t.Fatalf("create old worktree: %v", err)
 	}
 

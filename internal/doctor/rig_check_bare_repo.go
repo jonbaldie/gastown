@@ -199,8 +199,8 @@ func inspectBareRepoConfigData(c *BareRepoExistsCheck, ctx *CheckContext, config
 
 func inspectBareRepoRemoteURLs(c *BareRepoExistsCheck, ctx *CheckContext, cfgPushURL string) bareRepoPushInspect {
 	bareGit := git.NewGitWithDir(filepath.Join(ctx.RigPath(), ".repo.git"), "")
-	actualPush, pushErr := bareGit.GetPushURL("origin")
-	_, fetchErr := bareGit.RemoteURL("origin")
+	actualPush, pushErr := git.GetPushURL(bareGit, "origin")
+	_, fetchErr := git.RemoteURL(bareGit, "origin")
 	if pushErr != nil || fetchErr != nil {
 		return inspectBareRepoRemoteQueryFail(c, ctx, pushErr, fetchErr)
 	}
@@ -377,7 +377,7 @@ func fixBareRepoPushURL(c *BareRepoExistsCheck, ctx *CheckContext) error {
 	if cfgPushURL == "" {
 		return nil
 	}
-	if err := git.NewGitWithDir(bareRepoPath, "").ConfigurePushURL("origin", cfgPushURL); err != nil {
+	if err := git.ConfigurePushURL(git.NewGitWithDir(bareRepoPath, ""), "origin", cfgPushURL); err != nil {
 		return fmt.Errorf("updating push URL on .repo.git: %w", err)
 	}
 	return nil

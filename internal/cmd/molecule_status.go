@@ -732,16 +732,16 @@ func outputMoleculeStatusProgress(progress *MoleculeProgressInfo) {
 // has diverged from its remote tracking branch, showing a warning if so.
 func showGitDivergenceWarning() {
 	g := git.NewGit(".")
-	if !g.IsRepo() {
+	if !git.IsRepo(g) {
 		return
 	}
 
-	branch, err := g.CurrentBranch()
+	branch, err := git.CurrentBranch(g)
 	if err != nil || branch == "" {
 		return
 	}
 
-	_ = g.Fetch("origin")
+	_ = git.Fetch(g, "origin")
 	remote, ahead, behind, ok := resolveDivergence(g, branch)
 	if !ok || ahead == 0 && behind == 0 {
 		return
@@ -751,14 +751,14 @@ func showGitDivergenceWarning() {
 
 func resolveDivergence(g *git.Git, branch string) (string, int, int, bool) {
 	remote := "origin/" + branch
-	ahead, aheadErr := g.CommitsAhead(remote, "HEAD")
-	behind, behindErr := g.CountCommitsBehind(remote)
+	ahead, aheadErr := git.CommitsAhead(g, remote, "HEAD")
+	behind, behindErr := git.CountCommitsBehind(g, remote)
 	if aheadErr == nil && behindErr == nil {
 		return remote, ahead, behind, true
 	}
 	remote = "origin/main"
-	ahead, aheadErr = g.CommitsAhead(remote, "HEAD")
-	behind, behindErr = g.CountCommitsBehind(remote)
+	ahead, aheadErr = git.CommitsAhead(g, remote, "HEAD")
+	behind, behindErr = git.CountCommitsBehind(g, remote)
 	return remote, ahead, behind, aheadErr == nil && behindErr == nil
 }
 
@@ -782,7 +782,7 @@ func printDivergenceWarning(remote string, ahead, behind int) {
 // Leverages git log and beads to show what happened since last activity.
 func showRecentTrailSummary() {
 	g := git.NewGit(".")
-	if !g.IsRepo() {
+	if !git.IsRepo(g) {
 		return
 	}
 

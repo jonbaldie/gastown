@@ -640,7 +640,7 @@ func (e *Engineer) prepareMerge(mr *MRInfo, branch, target string) (string, Proc
 
 func (e *Engineer) validateMergeSource(mr *MRInfo, branch string) (string, ProcessResult) {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking local branch %s...\n", branch)
-	exists, err := e.git.BranchExists(branch)
+	exists, err := git.BranchExists(e.git, branch)
 	if err != nil {
 		return "", ProcessResult{
 			Success: false,
@@ -663,19 +663,19 @@ func (e *Engineer) validateMergeSource(mr *MRInfo, branch string) (string, Proce
 
 func (e *Engineer) checkoutMergeTarget(target, mergeRef string) ProcessResult {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking out target branch %s...\n", target)
-	if err := e.git.Checkout(target); err != nil {
+	if err := git.Checkout(e.git, target); err != nil {
 		return ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to checkout target %s: %v", target, err),
 		}
 	}
-	if err := e.git.Pull("origin", target); err != nil {
+	if err := git.Pull(e.git, "origin", target); err != nil {
 		// Pull might fail if nothing to pull, that's ok
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: pull from origin/%s: %v (continuing)\n", target, err)
 	}
 
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking for conflicts...\n")
-	conflicts, err := e.git.CheckConflicts(mergeRef, target)
+	conflicts, err := git.CheckConflicts(e.git, mergeRef, target)
 	if err != nil {
 		return ProcessResult{
 			Success:  false,
@@ -694,7 +694,7 @@ func (e *Engineer) checkoutMergeTarget(target, mergeRef string) ProcessResult {
 }
 
 func (e *Engineer) pushSubmoduleChanges(mr *MRInfo, target, mergeRef string) ProcessResult {
-	subChanges, err := e.git.SubmoduleChanges(target, mergeRef)
+	subChanges, err := git.SubmoduleChanges(e.git, target, mergeRef)
 	if err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not check submodule changes: %v\n", err)
 	}
@@ -705,7 +705,7 @@ func (e *Engineer) pushSubmoduleChanges(mr *MRInfo, target, mergeRef string) Pro
 	// Ensure submodules are initialized in the refinery worktree.
 	// Use mayor/rig as reference to avoid re-fetching from remote.
 	mayorRig := filepath.Join(e.rig.Path, "mayor", "rig")
-	if initErr := git.InitSubmodules(e.git.WorkDir(), mayorRig); initErr != nil {
+	if initErr := git.InitSubmodules(git.WorkDir(e.git), mayorRig); initErr != nil {
 		return ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to init submodules in refinery worktree: %v", initErr),
@@ -719,7 +719,7 @@ func (e *Engineer) pushSubmoduleChanges(mr *MRInfo, target, mergeRef string) Pro
 			return eligibility
 		}
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing submodule %s (commit %s)...\n", sc.Path, shortSHA(sc.NewSHA))
-		if pushErr := e.git.PushSubmoduleCommit(sc.Path, sc.NewSHA, "origin"); pushErr != nil {
+		if pushErr := git.PushSubmoduleCommit(e.git, sc.Path, sc.NewSHA, "origin"); pushErr != nil {
 			return ProcessResult{
 				Success: false,
 				Error:   fmt.Sprintf("failed to push submodule %s: %v", sc.Path, pushErr),
@@ -758,17 +758,17 @@ func (e *Engineer) runConfiguredMergeGates(ctx context.Context, shouldSkip bool)
 func (e *Engineer) mergeTarget(ctx context.Context, mr *MRInfo, branch, target, mergeRef string, skipGates bool) (string, ProcessResult) {
 	mergeMsg := e.mergeMessage(branch, target, mr.SourceIssue)
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Merging with message: %s\n", strings.TrimSpace(mergeMsg))
-	if err := e.git.MergeNoFF(mergeRef, mergeMsg); err != nil {
-		conflicts, conflictErr := e.git.GetConflictingFiles()
+	if err := git.MergeNoFF(e.git, mergeRef, mergeMsg); err != nil {
+		conflicts, conflictErr := git.GetConflictingFiles(e.git)
 		if conflictErr == nil && len(conflicts) > 0 {
-			_ = e.git.AbortMerge()
+			_ = git.AbortMerge(e.git)
 			return "", ProcessResult{
 				Success:  false,
 				Conflict: true,
 				Error:    "merge conflict during actual merge",
 			}
 		}
-		_ = e.git.AbortMerge()
+		_ = git.AbortMerge(e.git)
 		return "", ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("merge failed: %v", err),
@@ -778,14 +778,14 @@ func (e *Engineer) mergeTarget(ctx context.Context, mr *MRInfo, branch, target, 
 	if !skipGates {
 		postResult := e.runGatesForPhase(ctx, GatePhasePostSquash)
 		if !postResult.Success {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after post-squash gate failure: %v\n", target, resetErr)
 			}
 			return "", postResult
 		}
 	}
 
-	mergeCommit, err := e.git.Rev("HEAD")
+	mergeCommit, err := git.Rev(e.git, "HEAD")
 	if err != nil {
 		return "", ProcessResult{
 			Success: false,
@@ -796,7 +796,7 @@ func (e *Engineer) mergeTarget(ctx context.Context, mr *MRInfo, branch, target, 
 }
 
 func (e *Engineer) mergeMessage(branch, target, sourceIssue string) string {
-	mergeMsg, err := e.git.GetBranchCommitMessage(branch)
+	mergeMsg, err := git.GetBranchCommitMessage(e.git, branch)
 	if err == nil {
 		return mergeMsg
 	}
@@ -811,7 +811,7 @@ func (e *Engineer) mergeMessage(branch, target, sourceIssue string) string {
 func (e *Engineer) pushMergeResult(ctx context.Context, mr *MRInfo, target, mergeCommit string) ProcessResult {
 	pushHolder, slotErr := e.acquirePushSlot(ctx, target)
 	if slotErr != nil {
-		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after slot failure: %v\n", target, resetErr)
 		}
 		return ProcessResult{
@@ -825,13 +825,13 @@ func (e *Engineer) pushMergeResult(ctx context.Context, mr *MRInfo, target, merg
 	}
 
 	if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)
 		}
 		return eligibility
 	}
 	if err := e.pushAndVerifyMerge(target, mergeCommit); err != nil {
-		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
 		}
 		return ProcessResult{Success: false, Error: err.Error()}
@@ -854,10 +854,10 @@ func (e *Engineer) releasePushSlot(holder string) {
 
 func (e *Engineer) pushAndVerifyMerge(target, mergeCommit string) error {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing to origin/%s...\n", target)
-	if err := e.git.Push("origin", target, false); err != nil {
+	if err := git.Push(e.git, "origin", target, false); err != nil {
 		return fmt.Errorf("failed to push to origin: %w", err)
 	}
-	if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
+	if err := git.VerifyPushedCommit(e.git, "origin", target, mergeCommit); err != nil {
 		return err
 	}
 	return nil
@@ -905,7 +905,7 @@ func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 		}
 	}
 	mergeCommit = e.syncPRMergeTarget(target, mergeCommit)
-	if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
+	if err := git.VerifyPushedCommit(e.git, "origin", target, mergeCommit); err != nil {
 		return ProcessResult{Success: false, Error: err.Error()}
 	}
 
@@ -1008,13 +1008,13 @@ func (e *Engineer) preparePRMerge(mr *MRInfo, branch, target string) (*git.PullR
 }
 
 func (e *Engineer) syncPRMergeTarget(target, mergeCommit string) string {
-	if err := e.git.Checkout(target); err != nil {
+	if err := git.Checkout(e.git, target); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to checkout %s after PR merge: %v\n", target, err)
-	} else if err := e.git.Pull("origin", target); err != nil {
+	} else if err := git.Pull(e.git, "origin", target); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to pull %s after PR merge: %v\n", target, err)
 	}
 	if mergeCommit == "" {
-		if sha, err := e.git.Rev("HEAD"); err == nil {
+		if sha, err := git.Rev(e.git, "HEAD"); err == nil {
 			return sha
 		}
 	}
@@ -1537,7 +1537,7 @@ func (e *Engineer) ProcessMRInfo(ctx context.Context, mr *MRInfo) ProcessResult 
 	if mr.PreVerified && mr.PreVerifiedBase != "" {
 		_, _ = fmt.Fprintf(e.output, "  Pre-verified: yes (base=%s)\n", mr.PreVerifiedBase[:min(8, len(mr.PreVerifiedBase))])
 		// Check if target HEAD still matches the verified base
-		targetHead, err := e.git.Rev("origin/" + mr.Target)
+		targetHead, err := git.Rev(e.git, "origin/"+mr.Target)
 		if err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not resolve origin/%s HEAD: %v (falling through to normal gates)\n", mr.Target, err)
 		} else if targetHead == mr.PreVerifiedBase {
@@ -1640,11 +1640,11 @@ func (e *Engineer) deleteMergedRemoteBranch(mr *MRInfo, isPolecat bool, expected
 	}
 	// Non-polecat branches may belong to contributor forks with open upstream PRs;
 	// deleting them from origin causes GitHub to auto-close those PRs. (GH#2669)
-	if e.git.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: mr.Branch, HeadSHA: expectedHead}) {
+	if git.HasOpenPullRequest(e.git, git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: mr.Branch, HeadSHA: expectedHead}) {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", mr.Branch)
 		return true
 	}
-	if err := e.git.DeleteRemoteBranchIfAt("origin", mr.Branch, expectedHead); err != nil {
+	if err := git.DeleteRemoteBranchIfAt(e.git, "origin", mr.Branch, expectedHead); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s: %v\n", mr.Branch, err)
 		return false
 	}
@@ -1680,7 +1680,7 @@ func (e *Engineer) ensureMRInfoCommitSHA(mr *MRInfo) error {
 	if branch == "" {
 		return fmt.Errorf("missing submitted commit_sha and source branch")
 	}
-	sha, err := e.git.Rev(branch)
+	sha, err := git.Rev(e.git, branch)
 	if err != nil {
 		return fmt.Errorf("resolve submitted head for %s: %w", branch, err)
 	}
@@ -1700,7 +1700,7 @@ func (e *Engineer) submittedBranchHead(mr *MRInfo) (string, error) {
 		return "", fmt.Errorf("missing source branch")
 	}
 	commit := strings.TrimSpace(mr.CommitSHA)
-	localHead, err := e.git.Rev("refs/heads/" + branch + "^{commit}")
+	localHead, err := git.Rev(e.git, "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve source branch %s: %w", branch, err)
 	}
@@ -1720,14 +1720,14 @@ func (e *Engineer) deleteLocalBranchIfAt(branch, expectedHead string) error {
 	if expectedHead == "" {
 		return fmt.Errorf("missing submitted commit_sha")
 	}
-	localHead, err := e.git.Rev("refs/heads/" + branch + "^{commit}")
+	localHead, err := git.Rev(e.git, "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return fmt.Errorf("resolve local branch head: %w", err)
 	}
 	if strings.TrimSpace(localHead) != expectedHead {
 		return fmt.Errorf("local branch head changed from submitted %s to %s", shortSHA(expectedHead), shortSHA(localHead))
 	}
-	return e.git.DeleteBranch(branch, false)
+	return git.DeleteBranch(e.git, branch, false)
 }
 
 func requirePullRequestHead(pr *git.PullRequestInfo, expectedHead string) error {
@@ -1766,7 +1766,7 @@ func (e *Engineer) verifyMRInfoPostMergeProof(mr *MRInfo) error {
 	if commit == "" {
 		return fmt.Errorf("missing submitted commit_sha")
 	}
-	if err := e.git.VerifyPushedCommitReachableFromPushTarget("origin", target, commit); err != nil {
+	if err := git.VerifyPushedCommitReachableFromPushTarget(e.git, "origin", target, commit); err != nil {
 		return fmt.Errorf("target %s does not contain submitted head %s: %w", target, commit, err)
 	}
 	return nil
@@ -1865,7 +1865,7 @@ func (e *Engineer) handleConflictFailure(mr *MRInfo, result ProcessResult) {
 		return
 	}
 	retryCount := mr.RetryCount + 1
-	conflictSHA, revErr := e.git.Rev("origin/" + mr.Target)
+	conflictSHA, revErr := git.Rev(e.git, "origin/"+mr.Target)
 	if revErr != nil {
 		conflictSHA = "unknown-sha"
 	}
@@ -2059,7 +2059,7 @@ func (e *Engineer) releaseConflictResolutionSlot(slotHolder string) {
 }
 
 func (e *Engineer) conflictResolutionMainSHA(mr *MRInfo) string {
-	mainSHA, err := e.git.Rev("origin/" + mr.Target)
+	mainSHA, err := git.Rev(e.git, "origin/"+mr.Target)
 	if err != nil {
 		return "unknown-sha"
 	}
@@ -2441,8 +2441,8 @@ func (e *Engineer) ListAllOpenMRs() ([]*MRInfo, error) {
 		mr := issueToMRInfo(issue, fields)
 
 		// Check branch existence (local + remote tracking refs)
-		mr.BranchExistsLocal, _ = e.git.BranchExists(fields.Branch)
-		mr.BranchExistsRemote, _ = e.git.RemoteTrackingBranchExists("origin", fields.Branch)
+		mr.BranchExistsLocal, _ = git.BranchExists(e.git, fields.Branch)
+		mr.BranchExistsRemote, _ = git.RemoteTrackingBranchExists(e.git, "origin", fields.Branch)
 		mr.BlockedBy = e.firstOpenBlocker(issue)
 
 		mrs = append(mrs, mr)
@@ -2475,11 +2475,11 @@ func (e *Engineer) ListQueueAnomalies(now time.Time) ([]*MRAnomaly, error) {
 	}
 
 	return detectQueueAnomalies(filtered, now, e.config.StaleClaimWarningAfter, func(branch string) (bool, bool, error) {
-		localExists, err := e.git.BranchExists(branch)
+		localExists, err := git.BranchExists(e.git, branch)
 		if err != nil {
 			return false, false, err
 		}
-		remoteTrackingExists, err := e.git.RemoteTrackingBranchExists("origin", branch)
+		remoteTrackingExists, err := git.RemoteTrackingBranchExists(e.git, "origin", branch)
 		if err != nil {
 			return false, false, err
 		}
@@ -2873,10 +2873,10 @@ func (e *Engineer) landConvoySwarm(townRoot string, convoy convoyInfo) {
 
 	// Check if the molecule has an integration branch (swarm/* pattern)
 	integrationBranch := fmt.Sprintf("swarm/%s", moleculeID)
-	branchExists, err := e.git.BranchExists(integrationBranch)
+	branchExists, err := git.BranchExists(e.git, integrationBranch)
 	if err != nil || !branchExists {
 		// Also check remote
-		remoteExists, _ := e.git.RemoteTrackingBranchExists("origin", integrationBranch)
+		remoteExists, _ := git.RemoteTrackingBranchExists(e.git, "origin", integrationBranch)
 		if !remoteExists {
 			return // No integration branch to land
 		}
@@ -2904,7 +2904,7 @@ func (e *Engineer) landConvoySwarm(townRoot string, convoy convoyInfo) {
 // pruneStaleRemoteRefs prunes remote tracking refs that no longer exist on origin.
 // This cleans up refs from branches that were deleted on the remote after merge.
 func (e *Engineer) pruneStaleRemoteRefs() {
-	if err := e.git.FetchPrune("origin"); err != nil {
+	if err := git.FetchPrune(e.git, "origin"); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to prune stale remote refs: %v\n", err)
 	}
 }

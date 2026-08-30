@@ -3,6 +3,7 @@ package refinery
 import (
 	"context"
 	"fmt"
+	"github.com/jonbaldie/gastown/internal/git"
 	"strings"
 	"time"
 )
@@ -100,15 +101,15 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 	}
 
 	// Checkout target and ensure it's up to date
-	if checkoutErr := e.git.Checkout(target); checkoutErr != nil {
+	if checkoutErr := git.Checkout(e.git, target); checkoutErr != nil {
 		return nil, nil, fmt.Errorf("checkout target %s: %w", target, checkoutErr)
 	}
-	if pullErr := e.git.Pull("origin", target); pullErr != nil {
+	if pullErr := git.Pull(e.git, "origin", target); pullErr != nil {
 		_, _ = fmt.Fprintf(e.output, "[Batch] Warning: pull origin/%s: %v (continuing)\n", target, pullErr)
 	}
 
 	// Remember the base SHA to reset on retry
-	baseSHA, err := e.git.Rev("HEAD")
+	baseSHA, err := git.Rev(e.git, "HEAD")
 	if err != nil {
 		return nil, nil, fmt.Errorf("get base SHA: %w", err)
 	}
@@ -118,7 +119,7 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 		_, _ = fmt.Fprintf(e.output, "[Batch] Stacking MR %s (branch %s)...\n", mr.ID, mr.Branch)
 
 		// Check branch exists
-		exists, brErr := e.git.BranchExists(mr.Branch)
+		exists, brErr := git.BranchExists(e.git, mr.Branch)
 		if brErr != nil || !exists {
 			// Branch not found — escalate to mayor (gas-556)
 			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: branch %s not found, escalating to mayor\n", mr.ID, mr.Branch)
@@ -132,13 +133,13 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 		}
 
 		// Check for conflicts before merging
-		conflictFiles, conflictErr := e.git.CheckConflicts(mergeRef, target)
+		conflictFiles, conflictErr := git.CheckConflicts(e.git, mergeRef, target)
 		if conflictErr != nil || len(conflictFiles) > 0 {
 			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: conflicts detected, removing from batch\n", mr.ID)
 			conflicts = append(conflicts, mr)
 
 			// Reset to base and rebuild stack without this MR
-			if resetErr := e.git.ResetHard(baseSHA); resetErr != nil {
+			if resetErr := git.ResetHard(e.git, baseSHA); resetErr != nil {
 				return nil, nil, fmt.Errorf("reset after conflict: %w", resetErr)
 			}
 			// Rebuild the stack with MRs stacked so far (minus the conflicting one)
@@ -148,7 +149,7 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 					return nil, nil, refErr
 				}
 				msg := e.getMergeMessage(prev)
-				if mergeErr := e.git.MergeNoFF(prevRef, msg); mergeErr != nil {
+				if mergeErr := git.MergeNoFF(e.git, prevRef, msg); mergeErr != nil {
 					return nil, nil, fmt.Errorf("rebuild stack for %s: %w", prev.ID, mergeErr)
 				}
 			}
@@ -157,12 +158,12 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 
 		// Merge this MR onto the stack, preserving the submitted head in ancestry.
 		msg := e.getMergeMessage(mr)
-		if mergeErr := e.git.MergeNoFF(mergeRef, msg); mergeErr != nil {
+		if mergeErr := git.MergeNoFF(e.git, mergeRef, msg); mergeErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: merge failed: %v, removing from batch\n", mr.ID, mergeErr)
 			conflicts = append(conflicts, mr)
 
 			// Reset and rebuild without this MR
-			if resetErr := e.git.ResetHard(baseSHA); resetErr != nil {
+			if resetErr := git.ResetHard(e.git, baseSHA); resetErr != nil {
 				return nil, nil, fmt.Errorf("reset after merge failure: %w", resetErr)
 			}
 			for _, prev := range stacked {
@@ -171,7 +172,7 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 					return nil, nil, refErr
 				}
 				prevMsg := e.getMergeMessage(prev)
-				if rebuildErr := e.git.MergeNoFF(prevRef, prevMsg); rebuildErr != nil {
+				if rebuildErr := git.MergeNoFF(e.git, prevRef, prevMsg); rebuildErr != nil {
 					return nil, nil, fmt.Errorf("rebuild stack for %s: %w", prev.ID, rebuildErr)
 				}
 			}
@@ -188,7 +189,7 @@ func (e *Engineer) BuildRebaseStack(_ context.Context, batch []*MRInfo, target s
 // getMergeMessage returns the commit message for a merged MR.
 func (e *Engineer) getMergeMessage(mr *MRInfo) string {
 	// Try to get the original commit message from the branch
-	msg, err := e.git.GetBranchCommitMessage(mr.Branch)
+	msg, err := git.GetBranchCommitMessage(e.git, mr.Branch)
 	if err != nil || strings.TrimSpace(msg) == "" {
 		// Fallback to a descriptive message
 		msg = fmt.Sprintf("Merge %s into %s", mr.Branch, mr.Target)
@@ -397,7 +398,7 @@ func (e *Engineer) verifyAndPush(ctx context.Context, stacked []*MRInfo, target 
 // The working tree must already be on the target branch with all MR merges applied.
 func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, target string, result *BatchResult) *BatchResult {
 	// Get the tip SHA
-	tipSHA, err := e.git.Rev("HEAD")
+	tipSHA, err := git.Rev(e.git, "HEAD")
 	if err != nil {
 		result.Error = fmt.Errorf("get tip SHA: %w", err)
 		return result
@@ -409,7 +410,7 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 		var slotErr error
 		pushHolder, slotErr = e.acquireMainPushSlot(ctx)
 		if slotErr != nil {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 				_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after slot failure: %v\n", target, resetErr)
 			}
 			result.Error = fmt.Errorf("acquire merge slot: %w", slotErr)
@@ -426,7 +427,7 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 
 	for _, mr := range stacked {
 		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 				_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)
 			}
 			if eligibility.NoMerge {
@@ -441,15 +442,15 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 
 	// Push to origin
 	_, _ = fmt.Fprintf(e.output, "[Batch] Pushing %d merged MRs to origin/%s...\n", len(stacked), target)
-	if pushErr := e.git.Push("origin", target, false); pushErr != nil {
-		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+	if pushErr := git.Push(e.git, "origin", target, false); pushErr != nil {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
 		}
 		result.Error = fmt.Errorf("push to origin: %w", pushErr)
 		return result
 	}
-	if verifyErr := e.git.VerifyPushedCommit("origin", target, tipSHA); verifyErr != nil {
-		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+	if verifyErr := git.VerifyPushedCommit(e.git, "origin", target, tipSHA); verifyErr != nil {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after verified-push failure: %v\n", target, resetErr)
 		}
 		result.Error = verifyErr
@@ -608,10 +609,10 @@ func mrIDs(mrs []*MRInfo) []string {
 // resetAndRebuildStack resets the target branch and rebuilds the merge stack.
 func (e *Engineer) resetAndRebuildStack(mrs []*MRInfo, target string) error {
 	// Reset target to origin
-	if err := e.git.Checkout(target); err != nil {
+	if err := git.Checkout(e.git, target); err != nil {
 		return fmt.Errorf("checkout %s: %w", target, err)
 	}
-	if err := e.git.ResetHard("origin/" + target); err != nil {
+	if err := git.ResetHard(e.git, "origin/"+target); err != nil {
 		return fmt.Errorf("reset %s: %w", target, err)
 	}
 
@@ -622,7 +623,7 @@ func (e *Engineer) resetAndRebuildStack(mrs []*MRInfo, target string) error {
 			return refErr
 		}
 		msg := e.getMergeMessage(mr)
-		if err := e.git.MergeNoFF(mergeRef, msg); err != nil {
+		if err := git.MergeNoFF(e.git, mergeRef, msg); err != nil {
 			return fmt.Errorf("merge %s: %w", mr.ID, err)
 		}
 	}

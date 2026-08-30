@@ -189,7 +189,7 @@ func (m *Manager) createRigWorktree(dogPath, dogName, rigName string) (string, e
 	branchName := fmt.Sprintf("dog/%s-%s-%d", dogName, rigName, time.Now().UnixMilli())
 
 	// Create worktree with new branch from default branch
-	if err := repoGit.WorktreeAddFromRef(worktreePath, branchName, startPoint); err != nil {
+	if err := git.WorktreeAddFromRef(repoGit, worktreePath, branchName, startPoint); err != nil {
 		return "", fmt.Errorf("creating worktree from %s: %w", startPoint, err)
 	}
 
@@ -243,13 +243,13 @@ func (m *Manager) Remove(name string) error {
 		}
 
 		// Try to remove worktree properly
-		if err := repoGit.WorktreeRemove(worktreePath, true); err != nil {
+		if err := git.WorktreeRemove(repoGit, worktreePath, true); err != nil {
 			// Log but continue - will remove directory below
 			style.PrintWarning("could not remove worktree %s: %v", worktreePath, err)
 		}
 
 		// Prune stale entries
-		_ = repoGit.WorktreePrune()
+		_ = git.WorktreePrune(repoGit)
 	}
 
 	// Remove dog directory
@@ -619,10 +619,10 @@ func (m *Manager) RemoveIfSnapshotMatchesAfter(name, expectedWork string, expect
 			style.PrintWarning("could not find repo base for %s: %v", rigName, err)
 			continue
 		}
-		if err := repoGit.WorktreeRemove(worktreePath, true); err != nil {
+		if err := git.WorktreeRemove(repoGit, worktreePath, true); err != nil {
 			style.PrintWarning("could not remove worktree %s: %v", worktreePath, err)
 		}
-		_ = repoGit.WorktreePrune()
+		_ = git.WorktreePrune(repoGit)
 	}
 	if err := os.RemoveAll(m.dogDir(name)); err != nil {
 		return false, fmt.Errorf("removing dog directory: %w", err)
@@ -713,13 +713,13 @@ func (m *Manager) Refresh(name string) error {
 
 		// Remove old worktree if it exists
 		if oldWorktreePath != "" {
-			_ = repoGit.WorktreeRemove(oldWorktreePath, true)
+			_ = git.WorktreeRemove(repoGit, oldWorktreePath, true)
 			_ = os.RemoveAll(oldWorktreePath)
-			_ = repoGit.WorktreePrune()
+			_ = git.WorktreePrune(repoGit)
 		}
 
 		// Fetch latest from origin
-		_ = repoGit.Fetch("origin")
+		_ = git.Fetch(repoGit, "origin")
 
 		// Create fresh worktree
 		worktreePath, err := m.createRigWorktree(dogPath, name, rigName)
@@ -787,13 +787,13 @@ func (m *Manager) RefreshRig(name, rigName string) error {
 
 	// Remove old worktree if it exists
 	if oldWorktreePath != "" {
-		_ = repoGit.WorktreeRemove(oldWorktreePath, true)
+		_ = git.WorktreeRemove(repoGit, oldWorktreePath, true)
 		_ = os.RemoveAll(oldWorktreePath)
-		_ = repoGit.WorktreePrune()
+		_ = git.WorktreePrune(repoGit)
 	}
 
 	// Fetch latest
-	_ = repoGit.Fetch("origin")
+	_ = git.Fetch(repoGit, "origin")
 
 	// Create fresh worktree
 	worktreePath, err := m.createRigWorktree(dogPath, name, rigName)
@@ -840,7 +840,7 @@ func (m *Manager) CleanupStaleBranches() (int, error) {
 // cleanupStaleBranchesForRig removes orphaned dog branches in a specific rig.
 func (m *Manager) cleanupStaleBranchesForRig(repoGit *git.Git, rigName string) (int, error) {
 	// List all dog branches
-	branches, err := repoGit.ListBranches("dog/*")
+	branches, err := git.ListBranches(repoGit, "dog/*")
 	if err != nil {
 		return 0, err
 	}
@@ -862,7 +862,7 @@ func (m *Manager) cleanupStaleBranchesForRig(repoGit *git.Git, rigName string) (
 			if worktreePath, ok := dog.Worktrees[rigName]; ok {
 				// Get branch name for this worktree
 				worktreeGit := git.NewGit(worktreePath)
-				if branch, err := worktreeGit.CurrentBranch(); err == nil {
+				if branch, err := git.CurrentBranch(worktreeGit); err == nil {
 					currentBranches[branch] = true
 				}
 			}
@@ -875,7 +875,7 @@ func (m *Manager) cleanupStaleBranchesForRig(repoGit *git.Git, rigName string) (
 		if currentBranches[branch] {
 			continue
 		}
-		if err := repoGit.DeleteBranch(branch, true); err != nil {
+		if err := git.DeleteBranch(repoGit, branch, true); err != nil {
 			style.PrintWarning("could not delete branch %s: %v", branch, err)
 			continue
 		}

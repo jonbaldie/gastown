@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jonbaldie/gastown/internal/beads"
+	"github.com/jonbaldie/gastown/internal/git"
 )
 
 // TestLandConflictError_ErrorsAs verifies that callers (notably the refinery
@@ -642,8 +643,8 @@ func TestGetRigGit(t *testing.T) {
 			t.Fatal("expected non-nil Git")
 		}
 		// When bare repo exists, WorkDir() returns "" (bare repo mode)
-		if g.WorkDir() != "" {
-			t.Errorf("expected empty WorkDir for bare repo, got %q", g.WorkDir())
+		if git.WorkDir(g) != "" {
+			t.Errorf("expected empty WorkDir for bare repo, got %q", git.WorkDir(g))
 		}
 	})
 }
@@ -687,7 +688,7 @@ func TestPostMerge_DeleteRemoteBranchErrorPropagated(t *testing.T) {
 	}
 
 	// No "origin" remote is configured → git push --delete must fail.
-	err = rigGit.DeleteRemoteBranch("origin", "polecat/test/gt-abc")
+	err = git.DeleteRemoteBranch(rigGit, "origin", "polecat/test/gt-abc")
 	if err == nil {
 		t.Error("expected error from DeleteRemoteBranch with no remote, got nil")
 	}

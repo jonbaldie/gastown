@@ -457,7 +457,7 @@ func TestManagerAddSyncsRemotesFromRig(t *testing.T) {
 
 	// Verify crew clone's origin was updated to match mayor/rig's origin (the fork)
 	crewGit := git.NewGit(worker.ClonePath)
-	originURL, err := crewGit.RemoteURL("origin")
+	originURL, err := git.RemoteURL(crewGit, "origin")
 	if err != nil {
 		t.Fatalf("failed to get crew origin URL: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestManagerAddSyncsRemotesFromRig(t *testing.T) {
 	}
 
 	// Verify upstream remote was added
-	upstreamURL, err := crewGit.RemoteURL("upstream")
+	upstreamURL, err := git.RemoteURL(crewGit, "upstream")
 	if err != nil {
 		t.Fatalf("failed to get crew upstream URL: %v", err)
 	}

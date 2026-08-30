@@ -875,7 +875,7 @@ func TestRigAddWithUpstreamURL(t *testing.T) {
 
 	t.Run("bare repo has upstream remote", func(t *testing.T) {
 		bareGit := git.NewGitWithDir(filepath.Join(rigPath, ".repo.git"), "")
-		got, err := bareGit.GetUpstreamURL()
+		got, err := git.GetUpstreamURL(bareGit)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL on bare repo: %v", err)
 		}
@@ -886,7 +886,7 @@ func TestRigAddWithUpstreamURL(t *testing.T) {
 
 	t.Run("mayor clone has upstream remote", func(t *testing.T) {
 		mayorGit := git.NewGit(filepath.Join(rigPath, "mayor", "rig"))
-		got, err := mayorGit.GetUpstreamURL()
+		got, err := git.GetUpstreamURL(mayorGit)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL on mayor: %v", err)
 		}

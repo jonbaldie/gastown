@@ -462,7 +462,7 @@ func inspectPolecatWorktree(polecatsDir, polecatName, rigName, defaultBranch str
 }
 
 func polecatUnmergedBranch(worktreePath, polecatName, defaultBranch string) (string, *skippedPolecat) {
-	branch, err := gitpkg.NewGit(worktreePath).CurrentBranch()
+	branch, err := gitpkg.CurrentBranch(gitpkg.NewGit(worktreePath))
 	if err != nil {
 		return "", &skippedPolecat{polecatName, fmt.Sprintf("cannot determine branch: %v", err)}
 	}
@@ -493,7 +493,7 @@ func polecatWorktreeState(worktreePath, polecatName string) (string, bool, *skip
 	if err != nil {
 		return "", false, &skippedPolecat{polecatName, fmt.Sprintf("git log failed: %v", err)}
 	}
-	gitStatus, err := gitpkg.NewGit(worktreePath).Status()
+	gitStatus, err := gitpkg.Status(gitpkg.NewGit(worktreePath))
 	if err != nil {
 		return "", false, &skippedPolecat{polecatName, fmt.Sprintf("git status failed: %v", err)}
 	}

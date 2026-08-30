@@ -980,7 +980,7 @@ func (result *polecatCleanupResult) merge(other polecatCleanupResult) {
 }
 
 func cleanupPolecat(r *rig.Rig, polecatMgr *polecat.Manager, p *polecat.Polecat, nuclear bool) polecatCleanupResult {
-	status, err := git.NewGit(p.ClonePath).CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(git.NewGit(p.ClonePath))
 	if err != nil && !nuclear {
 		fmt.Printf("  %s %s/%s: could not check status, skipping\n", style.Dim.Render("○"), r.Name, p.Name)
 		return polecatCleanupResult{skipped: 1}
@@ -1000,7 +1000,7 @@ func cleanupPolecat(r *rig.Rig, polecatMgr *polecat.Manager, p *polecat.Polecat,
 	}
 	branchName := fmt.Sprintf("polecat/%s", p.Name)
 	mayorGit := git.NewGit(filepath.Join(r.Path, "mayor", "rig"))
-	_ = mayorGit.DeleteBranch(branchName, true)
+	_ = git.DeleteBranch(mayorGit, branchName, true)
 	fmt.Printf("  %s %s/%s: cleaned up\n", style.Bold.Render("✓"), r.Name, p.Name)
 	return polecatCleanupResult{cleaned: 1}
 }

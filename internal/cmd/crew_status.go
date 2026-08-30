@@ -201,8 +201,8 @@ func buildCrewStatusItems(r *rig.Rig, workers []*crew.CrewWorker, t *tmux.Tmux) 
 
 		// Git status
 		crewGit := git.NewGit(w.ClonePath)
-		gitStatus, _ := crewGit.Status()
-		branch, _ := crewGit.CurrentBranch()
+		gitStatus, _ := git.Status(crewGit)
+		branch, _ := git.CurrentBranch(crewGit)
 
 		gitClean := true
 		var modified, untracked []string

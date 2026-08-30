@@ -154,10 +154,10 @@ func createCrossRigWorktree(targetRigInfo *rig.Rig, worktreePath, sourceRig, cre
 		return fmt.Errorf("creating crew directory: %w", err)
 	}
 
-	if err := g.Fetch("origin"); err != nil {
+	if err := git.Fetch(g, "origin"); err != nil {
 		fmt.Printf("%s Warning: could not fetch from origin: %v\n", style.Warning.Render("⚠"), err)
 	}
-	if err := g.WorktreeAddExistingForce(worktreePath, "main"); err != nil {
+	if err := git.WorktreeAddExistingForce(g, worktreePath, "main"); err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
 
@@ -165,7 +165,7 @@ func createCrossRigWorktree(targetRigInfo *rig.Rig, worktreePath, sourceRig, cre
 	if err := setGitConfig(worktreePath, "user.name", bdActor); err != nil {
 		fmt.Printf("%s Warning: could not set git author name: %v\n", style.Warning.Render("⚠"), err)
 	}
-	if err := git.NewGit(worktreePath).Pull("origin", "main"); err != nil {
+	if err := git.Pull(git.NewGit(worktreePath), "origin", "main"); err != nil {
 		fmt.Printf("%s Warning: could not pull latest: %v\n", style.Warning.Render("⚠"), err)
 	}
 	return nil
@@ -278,7 +278,7 @@ func getGitStatusSummary(dir string) string {
 	g := git.NewGit(dir)
 
 	// Check for uncommitted changes
-	status, err := g.Status()
+	status, err := git.Status(g)
 	if err != nil {
 		return "error"
 	}
@@ -339,7 +339,7 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	g := git.NewGit(targetMayorRig)
 
 	// Remove the worktree
-	if err := g.WorktreeRemove(worktreePath, force); err != nil {
+	if err := git.WorktreeRemove(g, worktreePath, force); err != nil {
 		return fmt.Errorf("removing worktree: %w", err)
 	}
 

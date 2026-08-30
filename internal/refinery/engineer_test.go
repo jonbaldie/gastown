@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
+	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/testutil"
 )
@@ -1131,7 +1132,7 @@ func TestDoMergeDirectPreservesSubmittedHeadForPostMergeProof(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("doMerge failed: %s", result.Error)
 	}
-	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", "main", commit); err != nil {
+	if err := git.VerifyPushedCommitReachableFromPushTarget(g, "origin", "main", commit); err != nil {
 		t.Fatalf("submitted head not reachable after direct merge: %v", err)
 	}
 	run(t, workDir, "git", "remote", "add", "upstream", "https://github.com/example/repo.git")

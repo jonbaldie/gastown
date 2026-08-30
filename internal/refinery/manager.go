@@ -313,17 +313,17 @@ func (m *Manager) repairRefineryWorktree(refineryRigDir string) error {
 
 	// Prune stale worktree entries so git doesn't reject the add
 	bareGit := git.NewGitWithDir(bareRepoPath, "")
-	_ = bareGit.WorktreePrune()
+	_ = git.WorktreePrune(bareGit)
 
 	// Create worktree on the rig's default branch
 	defaultBranch := m.rig.DefaultBranch()
-	if err := bareGit.WorktreeAddExisting(refineryRigDir, defaultBranch); err != nil {
+	if err := git.WorktreeAddExisting(bareGit, refineryRigDir, defaultBranch); err != nil {
 		return fmt.Errorf("git worktree add: %w", err)
 	}
 
 	// Configure hooks path (matches rig add behavior)
 	refineryGit := git.NewGit(refineryRigDir)
-	if err := refineryGit.ConfigureHooksPath(); err != nil {
+	if err := git.ConfigureHooksPath(refineryGit); err != nil {
 		// Non-fatal: worktree is usable without hooks
 		_, _ = fmt.Fprintf(m.output, "⚠ Could not configure hooks for repaired worktree: %v\n", err)
 	}

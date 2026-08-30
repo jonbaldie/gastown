@@ -2362,14 +2362,14 @@ func pruneStaleBranches(d *Daemon) {
 	// pruneInDir prunes stale polecat branches in a single git directory.
 	pruneInDir := func(dir, label string) {
 		g := gitpkg.NewGit(dir)
-		if !g.IsRepo() {
+		if !gitpkg.IsRepo(g) {
 			return
 		}
 
 		// Fetch --prune first to clean up stale remote tracking refs
-		_ = g.FetchPrune("origin")
+		_ = gitpkg.FetchPrune(g, "origin")
 
-		pruned, err := g.PruneStaleBranches("polecat/*", false)
+		pruned, err := gitpkg.PruneStaleBranches(g, "polecat/*", false)
 		if err != nil {
 			d.logger.Printf("Warning: branch prune failed for %s: %v", label, err)
 			return

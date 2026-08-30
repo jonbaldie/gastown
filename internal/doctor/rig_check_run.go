@@ -212,12 +212,12 @@ func createRefineryWorktreeIfNeeded(c *RefineryExistsCheck, refineryDir string) 
 		return fmt.Errorf("cannot auto-create refinery/rig/ worktree: bare repo not found at %s", bareRepoPath)
 	}
 	bareGit := git.NewGitWithDir(bareRepoPath, "")
-	_ = bareGit.WorktreePrune()
+	_ = git.WorktreePrune(bareGit)
 	rigClone := filepath.Join(refineryDir, "rig")
-	if err := bareGit.WorktreeAddExisting(rigClone, refineryDefaultBranch(c.rigPath)); err != nil {
+	if err := git.WorktreeAddExisting(bareGit, rigClone, refineryDefaultBranch(c.rigPath)); err != nil {
 		return fmt.Errorf("creating refinery worktree from bare repo: %w", err)
 	}
-	_ = git.NewGit(rigClone).ConfigureHooksPath()
+	_ = git.ConfigureHooksPath(git.NewGit(rigClone))
 	return nil
 }
 

@@ -54,7 +54,7 @@ func prepareDoneCompleted(flow *doneFlow) (doneCompletedStage, error) {
 		return 0, err
 	}
 	if stripped := stripOverlayInstructionFiles(flow.repo.g, flow.repo.defaultBranch, flow.repo.baseRef); stripped {
-		aheadCount, _ = flow.repo.g.CommitsAhead(flow.repo.baseRef, "HEAD")
+		aheadCount, _ = git.CommitsAhead(flow.repo.g, flow.repo.baseRef, "HEAD")
 	}
 	_ = aheadCount
 	return doneCompletedContinue, nil
@@ -137,7 +137,7 @@ func verifyDoneCompletedBranch(branch, defaultBranch string) error {
 }
 
 func verifyDoneUncommittedForComplete(g *git.Git, cwd string) error {
-	workStatus, err := g.CheckUncommittedWork()
+	workStatus, err := git.CheckUncommittedWork(g)
 	if err != nil {
 		return fmt.Errorf("checking git status: %w", err)
 	}
@@ -148,11 +148,11 @@ func verifyDoneUncommittedForComplete(g *git.Git, cwd string) error {
 }
 
 func doneCommitsAhead(g *git.Git, baseRef, defaultBranch, branch string) int {
-	aheadCount, err := g.CommitsAhead(baseRef, "HEAD")
+	aheadCount, err := git.CommitsAhead(g, baseRef, "HEAD")
 	if err == nil {
 		return aheadCount
 	}
-	aheadCount, err = g.CommitsAhead(defaultBranch, branch)
+	aheadCount, err = git.CommitsAhead(g, defaultBranch, branch)
 	if err != nil {
 		style.PrintWarning("could not check commits ahead of %s: %v", defaultBranch, err)
 		return 1
@@ -204,7 +204,7 @@ func doneBranchAlreadyPushedWithWork(g *git.Git, branch, defaultBranch string) b
 	if branch == defaultBranch {
 		return false
 	}
-	pushed, unpushed, pushErr := g.BranchPushedToRemote(branch, "origin")
+	pushed, unpushed, pushErr := git.BranchPushedToRemote(g, branch, "origin")
 	return pushErr == nil && pushed && unpushed == 0
 }
 
@@ -238,7 +238,7 @@ func closeDoneNoMRWork(flow *doneFlow, isNoMergeTask bool) error {
 
 func doneNoMRCloseReason(flow *doneFlow, isNoMergeTask bool, bd *beads.Beads) (string, error) {
 	closeReason := "Completed with no code changes (already fixed or already merged)"
-	noMRCommitSHA, _ := flow.repo.g.Rev("HEAD")
+	noMRCommitSHA, _ := git.Rev(flow.repo.g, "HEAD")
 	cwd := flow.session.cwd
 	issueID := flow.work.issueID
 	defaultBranch := flow.repo.defaultBranch
@@ -252,10 +252,10 @@ func doneNoMRCloseReason(flow *doneFlow, isNoMergeTask bool, bd *beads.Beads) (s
 	if isNoMergeTask {
 		return closeReason, nil
 	}
-	if flow.repo.g.ForkBackedRemote("origin") {
+	if git.ForkBackedRemote(flow.repo.g, "origin") {
 		return "", fmt.Errorf("cannot close no-MR code bead in fork/upstream mode: %s has no commits ahead of %s; use the fork PR flow instead", flow.repo.branch, flow.repo.baseRef)
 	}
-	if verifyErr := flow.repo.g.VerifyPushedCommitReachableFromPushTarget("origin", defaultBranch, noMRCommitSHA); verifyErr != nil {
+	if verifyErr := git.VerifyPushedCommitReachableFromPushTarget(flow.repo.g, "origin", defaultBranch, noMRCommitSHA); verifyErr != nil {
 		noteVerifiedPushFailure(bd, cwd, issueID, defaultBranch, noMRCommitSHA, verifyErr)
 		return "", fmt.Errorf("cannot close no-MR code bead: %w", verifyErr)
 	}
@@ -267,10 +267,10 @@ func doneNoMRCloseReason(flow *doneFlow, isNoMergeTask bool, bd *beads.Beads) (s
 
 func rebaseDoneIfContaminated(flow *doneFlow, aheadCount int) (int, error) {
 	contaminationBase, fetchRemote := doneContaminationFetchTarget(flow.repo.defaultBranch, flow.repo.baseRef)
-	if fetchErr := flow.repo.g.Fetch(fetchRemote); fetchErr != nil {
+	if fetchErr := git.Fetch(flow.repo.g, fetchRemote); fetchErr != nil {
 		style.PrintWarning("could not fetch %s before contamination check: %v (proceeding with local refs)", fetchRemote, fetchErr)
 	}
-	contam, err := flow.repo.g.CheckBranchContamination(contaminationBase)
+	contam, err := git.CheckBranchContamination(flow.repo.g, contaminationBase)
 	if err != nil || contam.Behind <= 0 {
 		return aheadCount, nil
 	}
@@ -302,13 +302,13 @@ func applyDoneContaminationRebase(flow *doneFlow, contaminationBase, fetchRemote
 		style.PrintWarning("branch is %d commits behind %s — consider rebasing to avoid PR contamination", behind, contaminationBase)
 	}
 	alreadyPushed := flow.work.checkpoints[CheckpointPushed] == flow.repo.branch
-	rebased, skipReason, rebaseErr := autoRebaseOnTarget(flow.repo.g, contaminationBase, behind, doneState().preVerified, alreadyPushed)
+	rebased, skipReason, rebaseErr := autoRebaseOnTarget(gitRebaseAdapter{flow.repo.g}, contaminationBase, behind, doneState().preVerified, alreadyPushed)
 	if rebaseErr != nil {
 		return 0, rebaseErr
 	}
 	if rebased {
 		fmt.Printf("%s Branch rebased onto %s\n", style.Bold.Render("✓"), contaminationBase)
-		aheadCount, _ = flow.repo.g.CommitsAhead(flow.repo.baseRef, "HEAD")
+		aheadCount, _ = git.CommitsAhead(flow.repo.g, flow.repo.baseRef, "HEAD")
 	} else if skipReason != "" {
 		style.PrintWarning("branch is %d commits behind %s but %s; skipping auto-rebase", behind, contaminationBase, skipReason)
 	}
@@ -382,7 +382,7 @@ func doneDirectMergeMessages(defaultBranch string, late bool) doneDirectMessages
 func pushAndCloseDoneDirect(flow *doneFlow, directBd *beads.Beads, msgs doneDirectMessages) (doneDirectResult, error) {
 	pushSubmoduleChanges(flow.repo.g, flow.repo.baseRef)
 	directRefspec := flow.repo.branch + ":" + flow.repo.defaultBranch
-	if directPushErr := flow.repo.g.Push("origin", directRefspec, false); directPushErr != nil {
+	if directPushErr := git.Push(flow.repo.g, "origin", directRefspec, false); directPushErr != nil {
 		errMsg := fmt.Sprintf("direct push to %s failed: %v", flow.repo.defaultBranch, directPushErr)
 		style.PrintWarning("%s", errMsg)
 		return doneDirectResult{pushFailed: true, doneErrors: []string{errMsg}}, nil
@@ -399,12 +399,12 @@ func pushAndCloseDoneDirect(flow *doneFlow, directBd *beads.Beads, msgs doneDire
 }
 
 func verifyDoneDirectPush(flow *doneFlow, directBd *beads.Beads, msgs doneDirectMessages) (doneDirectResult, bool) {
-	directCommitSHA, _ := flow.repo.g.Rev("HEAD")
+	directCommitSHA, _ := git.Rev(flow.repo.g, "HEAD")
 	if doneState().skipVerify {
 		noteVerifiedPushSkipped(directBd, flow.session.cwd, flow.work.issueID, flow.repo.defaultBranch, directCommitSHA, msgs.verifyReason)
 		return doneDirectResult{}, false
 	}
-	verifyErr := flow.repo.g.VerifyPushedCommitReachableFromPushTarget("origin", flow.repo.defaultBranch, directCommitSHA)
+	verifyErr := git.VerifyPushedCommitReachableFromPushTarget(flow.repo.g, "origin", flow.repo.defaultBranch, directCommitSHA)
 	if verifyErr == nil {
 		return doneDirectResult{}, false
 	}
@@ -443,8 +443,8 @@ func pushDoneFeatureBranch(g *git.Git, townRoot, rigName, branch, baseRef, issue
 	pushSubmoduleChanges(g, baseRef)
 	fmt.Printf("Pushing branch to remote...\n")
 	refspec := branch + ":" + branch
-	pushedCommitSHA, _ := g.Rev("HEAD")
-	pushErr := g.Push("origin", refspec, false)
+	pushedCommitSHA, _ := git.Rev(g, "HEAD")
+	pushErr := git.Push(g, "origin", refspec, false)
 	if pushErr != nil {
 		pushErr = retryDonePushFromBareRepo(townRoot, rigName, refspec, pushErr)
 	}
@@ -459,7 +459,7 @@ func pushDoneFeatureBranch(g *git.Git, townRoot, rigName, branch, baseRef, issue
 		return donePushStage{pushFailed: true, doneErrors: []string{errMsg}}, nil
 	}
 	if pushedCommitSHA == "" {
-		pushedCommitSHA, _ = g.Rev("HEAD")
+		pushedCommitSHA, _ = git.Rev(g, "HEAD")
 	}
 	if doneState().skipVerify {
 		noteVerifiedPushSkipped(sourceBD, cwd, issueID, branch, pushedCommitSHA, "--skip-verify on branch push")
@@ -485,7 +485,7 @@ func retryDonePushFromBareRepo(townRoot, rigName, refspec string, pushErr error)
 		return pushErr
 	}
 	bareGit := git.NewGitWithDir(bareRepoPath, "")
-	if fallbackErr := bareGit.Push("origin", refspec, false); fallbackErr != nil {
+	if fallbackErr := git.Push(bareGit, "origin", refspec, false); fallbackErr != nil {
 		style.PrintWarning("bare repo push also failed: %v", fallbackErr)
 		return fallbackErr
 	}

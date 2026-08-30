@@ -1520,10 +1520,10 @@ func warnHandoffGitStatus() {
 		return
 	}
 	g := git.NewGit(cwd)
-	if !g.IsRepo() {
+	if !git.IsRepo(g) {
 		return
 	}
-	status, err := g.CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(g)
 	if err != nil || status.CleanExcludingBeads() {
 		return
 	}
@@ -1703,7 +1703,7 @@ func collectGitState() string {
 	}
 
 	g := git.NewGit(cwd)
-	if !g.IsRepo() {
+	if !git.IsRepo(g) {
 		return ""
 	}
 
@@ -1719,7 +1719,7 @@ func collectGitState() string {
 }
 
 func gitBranchState(g *git.Git) []string {
-	branch, err := g.CurrentBranch()
+	branch, err := git.CurrentBranch(g)
 	if err != nil || branch == "" {
 		return nil
 	}
@@ -1727,7 +1727,7 @@ func gitBranchState(g *git.Git) []string {
 }
 
 func gitWorkState(g *git.Git) []string {
-	work, err := g.CheckUncommittedWork()
+	work, err := git.CheckUncommittedWork(g)
 	if err != nil {
 		return nil
 	}
@@ -1766,7 +1766,7 @@ func compactNonEmptyLines(lines []string) []string {
 }
 
 func gitRecentState(g *git.Git) []string {
-	logStr, err := g.RecentCommits(5)
+	logStr, err := git.RecentCommits(g, 5)
 	if err != nil || logStr == "" {
 		return nil
 	}

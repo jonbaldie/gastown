@@ -108,10 +108,10 @@ func (m *Manager) validateLocalRigName(name string) error {
 }
 
 func validateLocalRepo(absSrc string, srcGit *git.Git) error {
-	if !srcGit.IsRepo() {
+	if !git.IsRepo(srcGit) {
 		return fmt.Errorf("not a git repository: %s", absSrc)
 	}
-	empty, err := srcGit.IsEmpty()
+	empty, err := git.IsEmpty(srcGit)
 	if err != nil {
 		return fmt.Errorf("checking repository: %w", err)
 	}
@@ -142,7 +142,7 @@ func (m *Manager) saveLocalRigConfig(setup localRigSetup, name string) error {
 		CreatedAt: time.Now(),
 		Beads:     &BeadsConfig{Prefix: setup.prefix},
 	}
-	if branch := setup.srcGit.DefaultBranch(); branch != "" {
+	if branch := git.DefaultBranch(setup.srcGit); branch != "" {
 		rigConfig.DefaultBranch = branch
 	}
 	if err := m.saveRigConfig(setup.rigPath, rigConfig); err != nil {
@@ -169,7 +169,7 @@ func (m *Manager) createLocalRigDirs(rigPath string) error {
 
 func (m *Manager) cloneLocalRig(ctx context.Context, setup localRigSetup) error {
 	bareRepoPath := filepath.Join(setup.rigPath, ".repo.git")
-	if err := m.git.CloneBareLocal(ctx, setup.absSrc, bareRepoPath); err != nil {
+	if err := git.CloneBareLocal(m.git, ctx, setup.absSrc, bareRepoPath); err != nil {
 		return fmt.Errorf("sharing local git objects: %w", err)
 	}
 	return nil

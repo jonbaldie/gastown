@@ -107,7 +107,7 @@ func crewListItem(t *tmux.Tmux, r *rig.Rig, w *crew.CrewWorker) CrewListItem {
 
 	workerGit := git.NewGit(w.ClonePath)
 	gitClean := true
-	if status, err := workerGit.Status(); err == nil {
+	if status, err := git.Status(workerGit); err == nil {
 		gitClean = status.Clean
 	}
 

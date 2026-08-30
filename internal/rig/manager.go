@@ -310,11 +310,11 @@ func resolveLocalRepo(path, gitURL string) (string, string) {
 	}
 
 	repoGit := git.NewGit(absPath)
-	if !repoGit.IsRepo() {
+	if !git.IsRepo(repoGit) {
 		return "", fmt.Sprintf("local repo is not a git repository: %s", absPath)
 	}
 
-	origin, err := repoGit.ConfiguredRemoteURL("origin")
+	origin, err := git.ConfiguredRemoteURL(repoGit, "origin")
 	if err != nil {
 		if errors.Is(err, git.ErrRemoteNotConfigured) {
 			return absPath, "local repo has no origin; using it anyway"
@@ -452,23 +452,23 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// single-branch fetch both target the user-specified branch instead of the remote HEAD.
 	cloneBareWith := func(branch string) error {
 		if opts.CloneFilter != "" && localRepo != "" {
-			if err := m.git.CloneBarePartialWithReferenceAndBranch(opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo, branch); err != nil {
+			if err := git.CloneBarePartialWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo, branch); err != nil {
 				fmt.Printf("  Warning: could not use local repo reference with filter: %v\n", err)
 				_ = os.RemoveAll(bareRepoPath)
-				return m.git.CloneBarePartialWithBranch(opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
+				return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
 			}
 			return nil
 		} else if opts.CloneFilter != "" {
-			return m.git.CloneBarePartialWithBranch(opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
+			return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
 		} else if localRepo != "" {
-			if err := m.git.CloneBareWithReferenceAndBranch(opts.GitURL, bareRepoPath, localRepo, branch); err != nil {
+			if err := git.CloneBareWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, localRepo, branch); err != nil {
 				fmt.Printf("  Warning: could not use local repo reference: %v\n", err)
 				_ = os.RemoveAll(bareRepoPath)
-				return m.git.CloneBareWithBranch(opts.GitURL, bareRepoPath, branch)
+				return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
 			}
 			return nil
 		}
-		return m.git.CloneBareWithBranch(opts.GitURL, bareRepoPath, branch)
+		return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
 	}
 
 	emptyRepoError := func() error {
@@ -476,7 +476,7 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	}
 
 	if err := cloneBareWith(opts.DefaultBranch); err != nil {
-		if hasRefs, refsErr := m.git.RemoteHasRefs(opts.GitURL); refsErr == nil && !hasRefs {
+		if hasRefs, refsErr := git.RemoteHasRefs(m.git, opts.GitURL); refsErr == nil && !hasRefs {
 			return nil, emptyRepoError()
 		}
 		return nil, wrapCloneError(err, opts.GitURL)
@@ -491,10 +491,10 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Detect empty repos (no commits) early with a clear diagnostic.
 	// An empty repo has no refs, so RemoteDefaultBranch/DefaultBranch would
 	// return "main" as a fallback, but checkout would fail with an opaque error.
-	if empty, err := bareGit.IsEmpty(); err != nil {
+	if empty, err := git.IsEmpty(bareGit); err != nil {
 		return nil, fmt.Errorf("checking if repository is empty: %w", err)
 	} else if empty {
-		hasRefs, refsErr := m.git.RemoteHasRefs(opts.GitURL)
+		hasRefs, refsErr := git.RemoteHasRefs(m.git, opts.GitURL)
 		if refsErr != nil {
 			return nil, fmt.Errorf("checking if repository is empty: %w", refsErr)
 		}
@@ -507,7 +507,7 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Configure push URL if provided (for read-only upstream repos)
 	// This sets origin's push URL to the fork while keeping fetch URL as upstream
 	if opts.PushURL != "" {
-		if err := bareGit.ConfigurePushURL("origin", opts.PushURL); err != nil {
+		if err := git.ConfigurePushURL(bareGit, "origin", opts.PushURL); err != nil {
 			return nil, fmt.Errorf("configuring push URL: %w", err)
 		}
 		fmt.Printf("   ✓ Configured push URL (fork: %s)\n", util.RedactURL(opts.PushURL)) // fmt.Printf matches AddRig's established success output pattern
@@ -515,7 +515,7 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 
 	// Configure upstream remote if provided (for fork workflows)
 	if opts.UpstreamURL != "" {
-		if err := bareGit.AddUpstreamRemote(opts.UpstreamURL); err != nil {
+		if err := git.AddUpstreamRemote(bareGit, opts.UpstreamURL); err != nil {
 			return nil, fmt.Errorf("configuring upstream remote: %w", err)
 		}
 		fmt.Printf("   ✓ Configured upstream remote: %s\n", util.RedactURL(opts.UpstreamURL))
@@ -529,15 +529,15 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		// Bare repos don't have refs/remotes/origin/* tracking branches,
 		// so detect the default branch from HEAD (which git sets to the
 		// remote's default branch during clone --bare).
-		defaultBranch = bareGit.DefaultBranch()
+		defaultBranch = git.DefaultBranch(bareGit)
 	}
 	// When user specified --default-branch, the shallow single-branch clone may not
 	// have that branch (it only clones the remote HEAD). Fetch it explicitly.
 	if opts.DefaultBranch != "" {
 		ref := fmt.Sprintf("origin/%s", defaultBranch)
-		if exists, _ := bareGit.RefExists(ref); !exists {
+		if exists, _ := git.RefExists(bareGit, ref); !exists {
 			// Branch not in shallow clone — fetch just that branch
-			if err := bareGit.FetchBranchShallow("origin", defaultBranch); err != nil {
+			if err := git.FetchBranchShallow(bareGit, "origin", defaultBranch); err != nil {
 				return nil, fmt.Errorf("branch %q does not exist on remote or could not be fetched: %w", defaultBranch, err)
 			}
 		}
@@ -560,17 +560,17 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		return nil, fmt.Errorf("creating mayor dir: %w", err)
 	}
 	if opts.CloneFilter != "" {
-		if err := m.git.CloneBranchPartialWithReference(opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter, bareRepoPath); err != nil {
+		if err := git.CloneBranchPartialWithReference(m.git, opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter, bareRepoPath); err != nil {
 			fmt.Printf("  Warning: could not use bare repo as reference with filter: %v\n", err)
 			_ = os.RemoveAll(mayorRigPath)
-			if err := m.git.CloneBranchPartial(opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter); err != nil {
+			if err := git.CloneBranchPartial(m.git, opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter); err != nil {
 				return nil, fmt.Errorf("cloning for mayor: %w", err)
 			}
 		}
-	} else if err := m.git.CloneBranchWithReference(opts.GitURL, mayorRigPath, defaultBranch, bareRepoPath); err != nil {
+	} else if err := git.CloneBranchWithReference(m.git, opts.GitURL, mayorRigPath, defaultBranch, bareRepoPath); err != nil {
 		fmt.Printf("  Warning: could not use bare repo as reference: %v\n", err)
 		_ = os.RemoveAll(mayorRigPath)
-		if err := m.git.CloneBranch(opts.GitURL, mayorRigPath, defaultBranch); err != nil {
+		if err := git.CloneBranch(m.git, opts.GitURL, mayorRigPath, defaultBranch); err != nil {
 			return nil, fmt.Errorf("cloning for mayor: %w", err)
 		}
 	}
@@ -587,13 +587,13 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	mayorGit := git.NewGitWithDir("", mayorRigPath)
 	// Configure push URL on mayor clone (separate clone, doesn't inherit from bare repo)
 	if opts.PushURL != "" {
-		if err := mayorGit.ConfigurePushURL("origin", opts.PushURL); err != nil {
+		if err := git.ConfigurePushURL(mayorGit, "origin", opts.PushURL); err != nil {
 			return nil, fmt.Errorf("configuring mayor push URL: %w", err)
 		}
 	}
 	// Configure upstream remote on mayor clone (separate clone, doesn't inherit from bare repo)
 	if opts.UpstreamURL != "" {
-		if err := mayorGit.AddUpstreamRemote(opts.UpstreamURL); err != nil {
+		if err := git.AddUpstreamRemote(mayorGit, opts.UpstreamURL); err != nil {
 			return nil, fmt.Errorf("configuring mayor upstream remote: %w", err)
 		}
 	}
@@ -733,11 +733,11 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	if err := os.MkdirAll(filepath.Dir(refineryRigPath), 0755); err != nil {
 		return nil, fmt.Errorf("creating refinery dir: %w", err)
 	}
-	if err := bareGit.WorktreeAddExisting(refineryRigPath, defaultBranch); err != nil {
+	if err := git.WorktreeAddExisting(bareGit, refineryRigPath, defaultBranch); err != nil {
 		return nil, fmt.Errorf("creating refinery worktree: %w", err)
 	}
 	refineryGit := git.NewGit(refineryRigPath)
-	if err := refineryGit.ConfigureHooksPath(); err != nil {
+	if err := git.ConfigureHooksPath(refineryGit); err != nil {
 		return nil, fmt.Errorf("configuring hooks for refinery: %w", err)
 	}
 	fmt.Printf("   ✓ Created refinery worktree\n")
@@ -1340,8 +1340,8 @@ func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
 		return err
 	}
 	// If bd init failed (not installed or errored), the shared helper below
-		// creates config.yaml with the required defaults as a fallback. Otherwise
-		// configure the Dolt database now.
+	// creates config.yaml with the required defaults as a fallback. Otherwise
+	// configure the Dolt database now.
 	if bdInitErr == nil {
 		// bd init succeeded - configure the Dolt database
 
@@ -1892,13 +1892,13 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 	if pushURL != "" {
 		if _, err := os.Stat(bareRepoPath); err == nil {
 			bareGit := git.NewGitWithDir(bareRepoPath, "")
-			if cfgErr := bareGit.ConfigurePushURL("origin", pushURL); cfgErr != nil {
+			if cfgErr := git.ConfigurePushURL(bareGit, "origin", pushURL); cfgErr != nil {
 				return nil, fmt.Errorf("configuring push URL on bare repo: %w", cfgErr)
 			}
 		}
 		if _, err := os.Stat(mayorRigPath); err == nil {
 			mayorGit := git.NewGit(mayorRigPath)
-			if cfgErr := mayorGit.ConfigurePushURL("origin", pushURL); cfgErr != nil {
+			if cfgErr := git.ConfigurePushURL(mayorGit, "origin", pushURL); cfgErr != nil {
 				return nil, fmt.Errorf("configuring mayor push URL: %w", cfgErr)
 			}
 		}
@@ -1909,13 +1909,13 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 		// Retained for future --no-push-url flag support.
 		if _, err := os.Stat(bareRepoPath); err == nil {
 			bareGit := git.NewGitWithDir(bareRepoPath, "")
-			if clrErr := bareGit.ClearPushURL("origin"); clrErr != nil {
+			if clrErr := git.ClearPushURL(bareGit, "origin"); clrErr != nil {
 				return nil, fmt.Errorf("clearing stale push URL on bare repo: %w", clrErr)
 			}
 		}
 		if _, err := os.Stat(mayorRigPath); err == nil {
 			mayorGit := git.NewGit(mayorRigPath)
-			if clrErr := mayorGit.ClearPushURL("origin"); clrErr != nil {
+			if clrErr := git.ClearPushURL(mayorGit, "origin"); clrErr != nil {
 				return nil, fmt.Errorf("clearing stale mayor push URL: %w", clrErr)
 			}
 		}
@@ -1934,13 +1934,13 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 	if opts.UpstreamURL != "" {
 		if _, err := os.Stat(bareRepoPath); err == nil {
 			bareGit := git.NewGitWithDir(bareRepoPath, "")
-			if upErr := bareGit.AddUpstreamRemote(opts.UpstreamURL); upErr != nil {
+			if upErr := git.AddUpstreamRemote(bareGit, opts.UpstreamURL); upErr != nil {
 				return nil, fmt.Errorf("configuring upstream remote on bare repo: %w", upErr)
 			}
 		}
 		if _, err := os.Stat(mayorRigPath); err == nil {
 			mayorGit := git.NewGit(mayorRigPath)
-			if upErr := mayorGit.AddUpstreamRemote(opts.UpstreamURL); upErr != nil {
+			if upErr := git.AddUpstreamRemote(mayorGit, opts.UpstreamURL); upErr != nil {
 				return nil, fmt.Errorf("configuring mayor upstream remote: %w", upErr)
 			}
 		}
@@ -1985,11 +1985,11 @@ func (m *Manager) detectPushURL(rigPath string) string {
 
 // detectPushURLFrom checks a single git repo for a custom push URL.
 func detectPushURLFrom(g *git.Git) string {
-	fetchURL, fetchErr := g.RemoteURL("origin")
+	fetchURL, fetchErr := git.RemoteURL(g, "origin")
 	if fetchErr != nil {
 		return ""
 	}
-	pushURL, pushErr := g.GetPushURL("origin")
+	pushURL, pushErr := git.GetPushURL(g, "origin")
 	if pushErr != nil || pushURL == "" {
 		return ""
 	}
@@ -2012,7 +2012,7 @@ func (m *Manager) detectGitURL(rigPath string) (string, error) {
 	}
 	for _, p := range possiblePaths {
 		g := git.NewGit(p)
-		url, err := g.RemoteURL("origin")
+		url, err := git.RemoteURL(g, "origin")
 		if err == nil && url != "" {
 			return strings.TrimSpace(url), nil
 		}

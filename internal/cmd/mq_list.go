@@ -344,7 +344,7 @@ func runMQList(cmd *cobra.Command, args []string) error {
 	var gitClient branchVerifier
 	if options.verify {
 		refineryRigPath := filepath.Join(r.Path, "refinery", "rig")
-		gitClient = git.NewGit(refineryRigPath)
+		gitClient = gitBranchVerifier{git.NewGit(refineryRigPath)}
 	}
 	scored := scoreMQListIssues(issues, rigName, r.Path, b, gitClient, options)
 	sort.Slice(scored, func(i, j int) bool {

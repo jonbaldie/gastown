@@ -87,12 +87,12 @@ func NewGitWithDir(gitDir, workDir string) *Git {
 }
 
 // WorkDir returns the working directory for this Git instance.
-func (g *Git) WorkDir() string {
+func WorkDir(g *Git) string {
 	return g.workDir
 }
 
 // IsRepo returns true if the workDir is a git repository.
-func (g *Git) IsRepo() bool {
+func IsRepo(g *Git) bool {
 	_, err := run(g, "rev-parse", "--git-dir")
 	return err == nil
 }
@@ -132,7 +132,7 @@ func runOutput(g *Git, args ...string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		return "", wrapError(g, err, stdout.String(), stderr.String(), args)
+		return "", wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
 	return stdout.String(), nil
@@ -172,7 +172,7 @@ func runWithTimeout(g *Git, timeout time.Duration, args ...string) (_ string, _ 
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("git %s timed out after %v (remote may be unreachable)", args[0], timeout)
 		}
-		return "", wrapError(g, err, stdout.String(), stderr.String(), args)
+		return "", wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
@@ -225,7 +225,7 @@ func runWithEnvAndTimeout(g *Git, args []string, extraEnv []string, timeout time
 				return "", fmt.Errorf("git %s timed out after %v (remote may be unreachable)", args[0], timeout)
 			}
 		}
-		return "", wrapError(g, err, stdout.String(), stderr.String(), args)
+		return "", wrapError(err, stdout.String(), stderr.String(), args)
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
@@ -588,7 +588,7 @@ func samePath(a, b string) bool {
 // wrapError wraps git errors with context.
 // ZFC: Returns GitError with raw output for agent observation.
 // Does not detect or interpret error types - agents should observe and decide.
-func wrapError(g *Git, err error, stdout, stderr string, args []string) error {
+func wrapError(err error, stdout, stderr string, args []string) error {
 	stdout = strings.TrimSpace(stdout)
 	stderr = strings.TrimSpace(stderr)
 
@@ -687,7 +687,7 @@ func cloneInternal(g *Git, url, dest string, opts cloneOptions) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return wrapError(g, err, stdout.String(), stderr.String(), args)
+		return wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
 	// Move to final destination (handles cross-filesystem moves)
@@ -712,68 +712,68 @@ func cloneInternal(g *Git, url, dest string, opts cloneOptions) error {
 
 // Clone clones a repository to the destination.
 // Uses --single-branch --depth 1 for efficiency on repos with many branches.
-func (g *Git) Clone(url, dest string) error {
+func Clone(g *Git, url, dest string) error {
 	return cloneInternal(g, url, dest, cloneOptions{singleBranch: true, depth: 1})
 }
 
 // CloneWithReference clones a repository using a local repo as an object reference.
 // This saves disk by sharing objects without changing remotes.
 // Uses --single-branch --depth 1 for efficiency on repos with many branches.
-func (g *Git) CloneWithReference(url, dest, reference string) error {
+func CloneWithReference(g *Git, url, dest, reference string) error {
 	return cloneInternal(g, url, dest, cloneOptions{reference: reference, singleBranch: true, depth: 1})
 }
 
 // CloneBranch clones a specific branch with --single-branch --depth 1.
 // Use this when you know which branch you need (avoids fetching all branches).
-func (g *Git) CloneBranch(url, dest, branch string) error {
+func CloneBranch(g *Git, url, dest, branch string) error {
 	return cloneInternal(g, url, dest, cloneOptions{singleBranch: true, depth: 1, branch: branch})
 }
 
 // CloneBranchWithReference clones a specific branch using a local repo as reference.
-func (g *Git) CloneBranchWithReference(url, dest, branch, reference string) error {
+func CloneBranchWithReference(g *Git, url, dest, branch, reference string) error {
 	return cloneInternal(g, url, dest, cloneOptions{singleBranch: true, depth: 1, branch: branch, reference: reference})
 }
 
 // CloneBare clones a repository as a bare repo (no working directory).
 // This is used for the shared repo architecture where all worktrees share a single git database.
-func (g *Git) CloneBare(url, dest string) error {
+func CloneBare(g *Git, url, dest string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, singleBranch: true, depth: 1})
 }
 
 // CloneBareWithBranch clones a bare repo, checking out a specific branch.
 // Use this when the desired default branch differs from the remote HEAD.
-func (g *Git) CloneBareWithBranch(url, dest, branch string) error {
+func CloneBareWithBranch(g *Git, url, dest, branch string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, singleBranch: true, depth: 1, branch: branch})
 }
 
 // CloneBarePartial clones a bare repo with a partial clone filter (e.g. "blob:none", "tree:0").
 // Does not use --depth since partial clones handle size reduction via the filter.
-func (g *Git) CloneBarePartial(url, dest, filter string) error {
+func CloneBarePartial(g *Git, url, dest, filter string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, singleBranch: true, filter: filter})
 }
 
 // CloneBarePartialWithBranch clones a bare repo with a partial clone filter and specific branch.
-func (g *Git) CloneBarePartialWithBranch(url, dest, filter, branch string) error {
+func CloneBarePartialWithBranch(g *Git, url, dest, filter, branch string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, singleBranch: true, filter: filter, branch: branch})
 }
 
 // CloneBarePartialWithReference clones a bare repo with a partial clone filter and local reference.
-func (g *Git) CloneBarePartialWithReference(url, dest, filter, reference string) error {
+func CloneBarePartialWithReference(g *Git, url, dest, filter, reference string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, singleBranch: true, filter: filter, reference: reference})
 }
 
 // CloneBarePartialWithReferenceAndBranch clones a bare repo with a partial clone filter, local reference, and specific branch.
-func (g *Git) CloneBarePartialWithReferenceAndBranch(url, dest, filter, reference, branch string) error {
+func CloneBarePartialWithReferenceAndBranch(g *Git, url, dest, filter, reference, branch string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, singleBranch: true, filter: filter, reference: reference, branch: branch})
 }
 
 // CloneBranchPartialWithReference clones a specific branch with a partial clone filter and reference.
-func (g *Git) CloneBranchPartialWithReference(url, dest, branch, filter, reference string) error {
+func CloneBranchPartialWithReference(g *Git, url, dest, branch, filter, reference string) error {
 	return cloneInternal(g, url, dest, cloneOptions{singleBranch: true, filter: filter, branch: branch, reference: reference})
 }
 
 // CloneBranchPartial clones a specific branch with a partial clone filter.
-func (g *Git) CloneBranchPartial(url, dest, branch, filter string) error {
+func CloneBranchPartial(g *Git, url, dest, branch, filter string) error {
 	return cloneInternal(g, url, dest, cloneOptions{singleBranch: true, filter: filter, branch: branch})
 }
 
@@ -798,7 +798,7 @@ func configureHooksPath(repoPath string) error {
 }
 
 // ConfigureHooksPath sets core.hooksPath for the repo/worktree if .githooks exists.
-func (g *Git) ConfigureHooksPath() error {
+func ConfigureHooksPath(g *Git) error {
 	return configureHooksPath(g.workDir)
 }
 
@@ -888,12 +888,12 @@ func configureRefspec(repoPath string, singleBranch bool) error {
 
 // CloneBareWithReference clones a bare repository using a local repo as an object reference.
 // Uses --single-branch --depth 1 for efficiency on repos with many branches.
-func (g *Git) CloneBareWithReference(url, dest, reference string) error {
+func CloneBareWithReference(g *Git, url, dest, reference string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, reference: reference, singleBranch: true, depth: 1})
 }
 
 // CloneBareWithReferenceAndBranch clones a bare repo using a local reference, checking out a specific branch.
-func (g *Git) CloneBareWithReferenceAndBranch(url, dest, reference, branch string) error {
+func CloneBareWithReferenceAndBranch(g *Git, url, dest, reference, branch string) error {
 	return cloneInternal(g, url, dest, cloneOptions{bare: true, reference: reference, singleBranch: true, depth: 1, branch: branch})
 }
 
@@ -902,7 +902,7 @@ func (g *Git) CloneBareWithReferenceAndBranch(url, dest, reference, branch strin
 // It does not fetch from the network. After the clone it materializes
 // refs/remotes/origin/* from the local origin so polecats and doctor can
 // resolve origin/<default-branch> the same way a network CloneBare does.
-func (g *Git) CloneBareLocal(ctx context.Context, src, dest string) error {
+func CloneBareLocal(g *Git, ctx context.Context, src, dest string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -936,7 +936,7 @@ func (g *Git) CloneBareLocal(ctx context.Context, src, dest string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return wrapError(g, err, stdout.String(), stderr.String(), args)
+		return wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
 	if err := os.Rename(tmpDest, dest); err != nil {
@@ -994,7 +994,7 @@ func configureLocalBareRefspec(ctx context.Context, repoPath string) error {
 }
 
 // Checkout checks out the given ref.
-func (g *Git) Checkout(ref string) error {
+func Checkout(g *Git, ref string) error {
 	_, err := run(g, "checkout", ref)
 	return err
 }
@@ -1002,14 +1002,14 @@ func (g *Git) Checkout(ref string) error {
 // CheckoutDetach checks out the given ref without attaching to a local branch.
 // This is useful in shared-worktree repos where the branch may already be
 // checked out by another worktree, but this worktree only needs that commit.
-func (g *Git) CheckoutDetach(ref string) error {
+func CheckoutDetach(g *Git, ref string) error {
 	_, err := run(g, "checkout", "--detach", ref)
 	return err
 }
 
 // CheckoutNewBranch creates a new branch from startPoint and checks it out.
 // Equivalent to: git checkout -b <branch> <startPoint>
-func (g *Git) CheckoutNewBranch(branch, startPoint string) error {
+func CheckoutNewBranch(g *Git, branch, startPoint string) error {
 	_, err := run(g, "checkout", "-b", branch, startPoint)
 	return err
 }
@@ -1018,26 +1018,26 @@ func (g *Git) CheckoutNewBranch(branch, startPoint string) error {
 // Equivalent to: git checkout -B <branch> <startPoint>. Unlike CheckoutNewBranch
 // this does not fail when the branch already exists locally — useful when reusing
 // a worktree that previously had the same branch checked out.
-func (g *Git) CheckoutResetBranch(branch, startPoint string) error {
+func CheckoutResetBranch(g *Git, branch, startPoint string) error {
 	_, err := run(g, "checkout", "-B", branch, startPoint)
 	return err
 }
 
 // Fetch fetches from the remote.
-func (g *Git) Fetch(remote string) error {
+func Fetch(g *Git, remote string) error {
 	_, err := run(g, "fetch", remote)
 	return err
 }
 
 // FetchPrune fetches from the remote and prunes stale remote-tracking refs.
 // This removes remote-tracking branches for branches that no longer exist on the remote.
-func (g *Git) FetchPrune(remote string) error {
+func FetchPrune(g *Git, remote string) error {
 	_, err := run(g, "fetch", "--prune", remote)
 	return err
 }
 
 // FetchBranch fetches a specific branch from the remote.
-func (g *Git) FetchBranch(remote, branch string) error {
+func FetchBranch(g *Git, remote, branch string) error {
 	_, err := run(g, "fetch", remote, branch)
 	return err
 }
@@ -1045,14 +1045,14 @@ func (g *Git) FetchBranch(remote, branch string) error {
 // FetchBranchShallow fetches a single branch with --depth 1 and creates the
 // remote tracking ref (e.g. origin/<branch>). Use this on shallow single-branch
 // clones to add a branch that wasn't included in the initial clone.
-func (g *Git) FetchBranchShallow(remote, branch string) error {
+func FetchBranchShallow(g *Git, remote, branch string) error {
 	refspec := branch + ":refs/remotes/" + remote + "/" + branch
 	_, err := run(g, "fetch", "--depth", "1", remote, refspec)
 	return err
 }
 
 // Pull pulls from the remote branch.
-func (g *Git) Pull(remote, branch string) error {
+func Pull(g *Git, remote, branch string) error {
 	_, err := run(g, "pull", remote, branch)
 	return err
 }
@@ -1060,7 +1060,7 @@ func (g *Git) Pull(remote, branch string) error {
 // ConfigurePushURL sets the push URL for a remote while keeping the fetch URL.
 // This is useful for read-only upstream repos where you want to push to a fork.
 // Example: ConfigurePushURL("origin", "https://github.com/user/fork.git")
-func (g *Git) ConfigurePushURL(remote, pushURL string) error {
+func ConfigurePushURL(g *Git, remote, pushURL string) error {
 	_, err := run(g, "remote", "set-url", remote, "--push", pushURL)
 	return err
 }
@@ -1069,7 +1069,7 @@ func (g *Git) ConfigurePushURL(remote, pushURL string) error {
 // If no custom push URL is set, this is a no-op.
 // Uses --unset-all to handle multi-valued pushurl entries; with --unset-all,
 // exit code 5 unambiguously means "key not found" (safe to ignore).
-func (g *Git) ClearPushURL(remote string) error {
+func ClearPushURL(g *Git, remote string) error {
 	_, err := run(g, "config", "--unset-all", fmt.Sprintf("remote.%s.pushurl", remote))
 	if err != nil {
 		// git config --unset-all returns exit code 5 if the key doesn't exist — that's fine.
@@ -1088,7 +1088,7 @@ func (g *Git) ClearPushURL(remote string) error {
 // GetPushURL returns the effective push URL for a remote.
 // Note: git returns the fetch URL when no custom push URL is configured, so this
 // never returns empty for a valid remote. Compare with RemoteURL to detect custom push URLs.
-func (g *Git) GetPushURL(remote string) (string, error) {
+func GetPushURL(g *Git, remote string) (string, error) {
 	out, err := run(g, "remote", "get-url", "--push", remote)
 	if err != nil {
 		return "", err
@@ -1099,16 +1099,16 @@ func (g *Git) GetPushURL(remote string) (string, error) {
 // ForkBackedRemote reports whether pushes to remote land somewhere other than
 // the canonical fetch base. This covers both split push URLs and fork remotes
 // with a distinct upstream remote.
-func (g *Git) ForkBackedRemote(remote string) bool {
-	fetchURL, fetchErr := g.RemoteURL(remote)
+func ForkBackedRemote(g *Git, remote string) bool {
+	fetchURL, fetchErr := RemoteURL(g, remote)
 	if fetchErr != nil {
 		return false
 	}
-	pushURL, pushErr := g.GetPushURL(remote)
+	pushURL, pushErr := GetPushURL(g, remote)
 	if pushErr == nil && pushURL != "" && !sameGitRemoteURL(fetchURL, pushURL) {
 		return true
 	}
-	upstreamURL, upstreamErr := g.GetUpstreamURL()
+	upstreamURL, upstreamErr := GetUpstreamURL(g)
 	return upstreamErr == nil && upstreamURL != "" && !sameGitRemoteURL(fetchURL, upstreamURL)
 }
 
@@ -1116,12 +1116,12 @@ func (g *Git) ForkBackedRemote(remote string) bool {
 // for default-branch work. In split push-url setups origin still fetches from
 // upstream, so origin/<default> is clean. When origin itself is a fork and a
 // distinct upstream remote is present, upstream/<default> is the clean base.
-func (g *Git) CleanDefaultBranchBaseRef(remote, defaultBranch string) string {
+func CleanDefaultBranchBaseRef(g *Git, remote, defaultBranch string) string {
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
-	fetchURL, fetchErr := g.RemoteURL(remote)
-	upstreamURL, upstreamErr := g.GetUpstreamURL()
+	fetchURL, fetchErr := RemoteURL(g, remote)
+	upstreamURL, upstreamErr := GetUpstreamURL(g)
 	if fetchErr == nil && upstreamErr == nil && upstreamURL != "" && !sameGitRemoteURL(fetchURL, upstreamURL) {
 		return "upstream/" + defaultBranch
 	}
@@ -1131,10 +1131,10 @@ func (g *Git) CleanDefaultBranchBaseRef(remote, defaultBranch string) string {
 // CleanBaseRef returns a fully qualified base ref for a target branch. Explicit
 // origin/ or upstream/ refs are preserved; default-branch targets use the clean
 // fork-aware base.
-func (g *Git) CleanBaseRef(remote, defaultBranch, target string) string {
+func CleanBaseRef(g *Git, remote, defaultBranch, target string) string {
 	target = strings.TrimSpace(target)
 	if target == "" || target == defaultBranch {
-		return g.CleanDefaultBranchBaseRef(remote, defaultBranch)
+		return CleanDefaultBranchBaseRef(g, remote, defaultBranch)
 	}
 	if strings.HasPrefix(target, "origin/") || strings.HasPrefix(target, "upstream/") {
 		return target
@@ -1154,12 +1154,12 @@ func RemoteForRef(ref string) string {
 
 // RefuseForkBackedDefaultPush fails closed before default-branch pushes in a
 // fork/upstream topology. Feature branch pushes to the fork remain allowed.
-func (g *Git) RefuseForkBackedDefaultPush(remote, refspec, defaultBranch string) error {
+func RefuseForkBackedDefaultPush(g *Git, remote, refspec, defaultBranch string) error {
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
 	destination := pushDestinationBranch(refspec)
-	if destination != defaultBranch || !g.ForkBackedRemote(remote) {
+	if destination != defaultBranch || !ForkBackedRemote(g, remote) {
 		return nil
 	}
 	return fmt.Errorf("refusing direct push to %s/%s: fork/upstream rig detected; push a feature branch and use the Mayor-managed fork PR flow to upstream %s (no refs were pushed)", remote, destination, defaultBranch)
@@ -1223,8 +1223,8 @@ func normalizeGitRemoteURL(raw string) string {
 
 // Push pushes to the remote branch with a timeout to prevent indefinite hangs
 // when the remote is unreachable.
-func (g *Git) Push(remote, branch string, force bool) error {
-	if err := g.RefuseForkBackedDefaultPush(remote, branch, g.RemoteDefaultBranch()); err != nil {
+func Push(g *Git, remote, branch string, force bool) error {
+	if err := RefuseForkBackedDefaultPush(g, remote, branch, RemoteDefaultBranch(g)); err != nil {
 		return err
 	}
 	args := []string{"push", remote, branch}
@@ -1238,8 +1238,8 @@ func (g *Git) Push(remote, branch string, force bool) error {
 // PushWithEnv pushes with additional environment variables.
 // Used by gt mq integration land to set GT_INTEGRATION_LAND=1, which the
 // pre-push hook checks to allow integration branch content landing on main.
-func (g *Git) PushWithEnv(remote, branch string, force bool, env []string) error {
-	if err := g.RefuseForkBackedDefaultPush(remote, branch, g.RemoteDefaultBranch()); err != nil {
+func PushWithEnv(g *Git, remote, branch string, force bool, env []string) error {
+	if err := RefuseForkBackedDefaultPush(g, remote, branch, RemoteDefaultBranch(g)); err != nil {
 		return err
 	}
 	args := []string{"push", remote, branch}
@@ -1252,7 +1252,7 @@ func (g *Git) PushWithEnv(remote, branch string, force bool, env []string) error
 
 // Add stages files for commit. Paths are passed after `--` so a filename
 // cannot be interpreted as a git-add flag.
-func (g *Git) Add(paths ...string) error {
+func Add(g *Git, paths ...string) error {
 	if len(paths) == 0 {
 		return nil
 	}
@@ -1264,8 +1264,8 @@ func (g *Git) Add(paths ...string) error {
 // StageSafetyNet stages recoverable implementation work for a safety-net commit.
 // It does not run git add -A. It skips runtime artifacts, tracked-file
 // deletions, and binary files such as a locally built gt executable.
-func (g *Git) StageSafetyNet() error {
-	status, err := g.Status()
+func StageSafetyNet(g *Git) error {
+	status, err := Status(g)
 	if err != nil {
 		return err
 	}
@@ -1285,11 +1285,11 @@ func (g *Git) StageSafetyNet() error {
 	if len(paths) == 0 {
 		return nil
 	}
-	return g.Add(paths...)
+	return Add(g, paths...)
 }
 
 // HasStagedChanges reports whether the index has a staged diff.
-func (g *Git) HasStagedChanges() (bool, error) {
+func HasStagedChanges(g *Git) (bool, error) {
 	out, err := run(g, "diff", "--cached", "--name-only")
 	if err != nil {
 		return false, err
@@ -1298,20 +1298,20 @@ func (g *Git) HasStagedChanges() (bool, error) {
 }
 
 // Commit creates a commit with the given message.
-func (g *Git) Commit(message string) error {
+func Commit(g *Git, message string) error {
 	_, err := run(g, "commit", "-m", message)
 	return err
 }
 
 // CommitAll stages all changes and commits.
-func (g *Git) CommitAll(message string) error {
+func CommitAll(g *Git, message string) error {
 	_, err := run(g, "commit", "-am", message)
 	return err
 }
 
 // ResetFiles unstages files without modifying the working tree.
 // Equivalent to: git reset HEAD -- <paths>
-func (g *Git) ResetFiles(paths ...string) error {
+func ResetFiles(g *Git, paths ...string) error {
 	args := append([]string{"reset", "HEAD", "--"}, paths...)
 	_, err := run(g, args...)
 	return err
@@ -1319,7 +1319,7 @@ func (g *Git) ResetFiles(paths ...string) error {
 
 // StagedDeletions returns the list of tracked files staged for deletion.
 // Used by auto-save to unstage deletions — safety nets should preserve work, not destroy it.
-func (g *Git) StagedDeletions() ([]string, error) {
+func StagedDeletions(g *Git) ([]string, error) {
 	out, err := run(g, "diff", "--cached", "--name-only", "--diff-filter=D")
 	if err != nil {
 		return nil, err
@@ -1333,7 +1333,7 @@ func (g *Git) StagedDeletions() ([]string, error) {
 
 // ShowFile returns the contents of a file at a given ref (e.g., "origin/main:CLAUDE.md").
 // Returns empty string and no error if the file does not exist at that ref.
-func (g *Git) ShowFile(ref, path string) (string, error) {
+func ShowFile(g *Git, ref, path string) (string, error) {
 	out, err := run(g, "show", ref+":"+path)
 	if err != nil {
 		// "does not exist" or "exists on disk, but not in" are expected for missing files
@@ -1344,7 +1344,7 @@ func (g *Git) ShowFile(ref, path string) (string, error) {
 
 // CheckoutFileFromRef restores a file from a given ref (e.g., "origin/main").
 // Equivalent to: git checkout <ref> -- <path>
-func (g *Git) CheckoutFileFromRef(ref string, paths ...string) error {
+func CheckoutFileFromRef(g *Git, ref string, paths ...string) error {
 	args := append([]string{"checkout", ref, "--"}, paths...)
 	_, err := run(g, args...)
 	return err
@@ -1352,7 +1352,7 @@ func (g *Git) CheckoutFileFromRef(ref string, paths ...string) error {
 
 // RmCached removes files from the index without deleting from the working tree.
 // Equivalent to: git rm --cached --force <paths>
-func (g *Git) RmCached(paths ...string) error {
+func RmCached(g *Git, paths ...string) error {
 	args := append([]string{"rm", "--cached", "--force", "--ignore-unmatch"}, paths...)
 	_, err := run(g, args...)
 	return err
@@ -1360,7 +1360,7 @@ func (g *Git) RmCached(paths ...string) error {
 
 // DiffNameOnly returns filenames changed between two refs.
 // Equivalent to: git diff --name-only <base>...<head>
-func (g *Git) DiffNameOnly(base, head string) ([]string, error) {
+func DiffNameOnly(g *Git, base, head string) ([]string, error) {
 	out, err := run(g, "diff", "--name-only", base+"..."+head)
 	if err != nil {
 		return nil, err
@@ -1389,7 +1389,7 @@ type porcelainStatusEntry struct {
 }
 
 // Status returns the current git status.
-func (g *Git) Status() (*GitStatus, error) {
+func Status(g *Git) (*GitStatus, error) {
 	out, err := runOutput(g, "status", "--porcelain", "-uall")
 	if err != nil {
 		return nil, err
@@ -1508,14 +1508,14 @@ func skipWorktreeFiles(g *Git) map[string]bool {
 }
 
 // CurrentBranch returns the current branch name.
-func (g *Git) CurrentBranch() (string, error) {
+func CurrentBranch(g *Git) (string, error) {
 	return run(g, "rev-parse", "--abbrev-ref", "HEAD")
 }
 
 // DefaultBranch returns the default branch name (what HEAD points to).
 // This works for both regular and bare repositories.
 // Returns "main" as fallback if detection fails.
-func (g *Git) DefaultBranch() string {
+func DefaultBranch(g *Git) string {
 	// Try symbolic-ref first (works for bare repos)
 	branch, err := run(g, "symbolic-ref", "--short", "HEAD")
 	if err == nil && branch != "" {
@@ -1529,7 +1529,7 @@ func (g *Git) DefaultBranch() string {
 // This is useful in worktrees where HEAD may not reflect the repo's actual default.
 // Checks origin/HEAD first, then falls back to checking if master/main exists.
 // Returns "main" as final fallback.
-func (g *Git) RemoteDefaultBranch() string {
+func RemoteDefaultBranch(g *Git) string {
 	// Try to get from origin/HEAD symbolic ref
 	out, err := run(g, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err == nil && out != "" {
@@ -1556,8 +1556,8 @@ func (g *Git) RemoteDefaultBranch() string {
 }
 
 // HasUncommittedChanges returns true if there are uncommitted changes.
-func (g *Git) HasUncommittedChanges() (bool, error) {
-	status, err := g.Status()
+func HasUncommittedChanges(g *Git) (bool, error) {
+	status, err := Status(g)
 	if err != nil {
 		return false, err
 	}
@@ -1566,13 +1566,13 @@ func (g *Git) HasUncommittedChanges() (bool, error) {
 
 // RemoteURL returns the URL for the given remote.
 // This applies url.*.insteadOf rewrites from Git config.
-func (g *Git) RemoteURL(remote string) (string, error) {
+func RemoteURL(g *Git, remote string) (string, error) {
 	return run(g, "remote", "get-url", remote)
 }
 
 // ConfiguredRemoteURL returns the remote URL stored in the repository config.
 // Unlike RemoteURL, this does not apply url.*.insteadOf rewrites.
-func (g *Git) ConfiguredRemoteURL(remote string) (string, error) {
+func ConfiguredRemoteURL(g *Git, remote string) (string, error) {
 	out, err := run(g, "config", "--local", "--get", "remote."+remote+".url")
 	if err != nil {
 		if isGitConfigKeyMissing(err) {
@@ -1596,25 +1596,25 @@ func isGitConfigKeyMissing(err error) bool {
 }
 
 // AddRemote adds a new remote with the given name and URL.
-func (g *Git) AddRemote(name, url string) (string, error) {
+func AddRemote(g *Git, name, url string) (string, error) {
 	return run(g, "remote", "add", name, url)
 }
 
 // SetRemoteURL updates the URL for an existing remote.
-func (g *Git) SetRemoteURL(name, url string) (string, error) {
+func SetRemoteURL(g *Git, name, url string) (string, error) {
 	return run(g, "remote", "set-url", name, url)
 }
 
 // AddUpstreamRemote adds or updates the 'upstream' git remote.
 // This is idempotent - if the remote already exists with the same URL, it's a no-op.
 // If the remote exists with a different URL, it's updated.
-func (g *Git) AddUpstreamRemote(upstreamURL string) error {
-	has, err := g.HasUpstreamRemote()
+func AddUpstreamRemote(g *Git, upstreamURL string) error {
+	has, err := HasUpstreamRemote(g)
 	if err != nil {
 		return err
 	}
 	if has {
-		current, err := g.GetUpstreamURL()
+		current, err := GetUpstreamURL(g)
 		if err != nil {
 			return err
 		}
@@ -1630,7 +1630,7 @@ func (g *Git) AddUpstreamRemote(upstreamURL string) error {
 
 // GetUpstreamURL returns the URL of the upstream remote.
 // Returns empty string if upstream remote doesn't exist.
-func (g *Git) GetUpstreamURL() (string, error) {
+func GetUpstreamURL(g *Git) (string, error) {
 	out, err := run(g, "remote", "get-url", "upstream")
 	if err != nil {
 		if strings.Contains(err.Error(), "No such remote") {
@@ -1642,7 +1642,7 @@ func (g *Git) GetUpstreamURL() (string, error) {
 }
 
 // HasUpstreamRemote returns true if an upstream remote is configured.
-func (g *Git) HasUpstreamRemote() (bool, error) {
+func HasUpstreamRemote(g *Git) (bool, error) {
 	_, err := run(g, "remote", "get-url", "upstream")
 	if err != nil {
 		if strings.Contains(err.Error(), "No such remote") {
@@ -1654,13 +1654,13 @@ func (g *Git) HasUpstreamRemote() (bool, error) {
 }
 
 // FetchUpstream fetches from the upstream remote.
-func (g *Git) FetchUpstream() error {
+func FetchUpstream(g *Git) error {
 	_, err := run(g, "fetch", "upstream")
 	return err
 }
 
 // Remotes returns the list of configured remote names.
-func (g *Git) Remotes() ([]string, error) {
+func Remotes(g *Git) ([]string, error) {
 	out, err := run(g, "remote")
 	if err != nil {
 		return nil, err
@@ -1673,7 +1673,7 @@ func (g *Git) Remotes() ([]string, error) {
 
 // ConfigGet returns the value of a git config key.
 // Returns empty string if the key is not set.
-func (g *Git) ConfigGet(key string) (string, error) {
+func ConfigGet(g *Git, key string) (string, error) {
 	out, err := run(g, "config", "--get", key)
 	if err != nil {
 		// git config --get returns exit code 1 if key not found
@@ -1683,13 +1683,13 @@ func (g *Git) ConfigGet(key string) (string, error) {
 }
 
 // Merge merges the given branch into the current branch.
-func (g *Git) Merge(branch string) error {
+func Merge(g *Git, branch string) error {
 	_, err := run(g, "merge", branch)
 	return err
 }
 
 // MergeNoFF merges the given branch with --no-ff flag and a custom message.
-func (g *Git) MergeNoFF(branch, message string) error {
+func MergeNoFF(g *Git, branch, message string) error {
 	_, err := run(g, "merge", "--no-ff", "-m", message, branch)
 	return err
 }
@@ -1697,7 +1697,7 @@ func (g *Git) MergeNoFF(branch, message string) error {
 // MergeFFOnly performs a fast-forward-only merge of the given ref into the current branch.
 // This ensures what you tested is exactly what lands — no merge commits are created.
 // Returns an error if the merge cannot be performed as a fast-forward.
-func (g *Git) MergeFFOnly(ref string) error {
+func MergeFFOnly(g *Git, ref string) error {
 	_, err := run(g, "merge", "--ff-only", ref)
 	return err
 }
@@ -1706,7 +1706,7 @@ func (g *Git) MergeFFOnly(ref string) error {
 // This stages all changes from the branch without creating a merge commit, then commits them
 // as a single commit with the given message. This eliminates redundant merge commits while
 // preserving the original commit message from the source branch.
-func (g *Git) MergeSquash(branch, message string) error {
+func MergeSquash(g *Git, branch, message string) error {
 	// Stage all changes from the branch without committing
 	if _, err := run(g, "merge", "--squash", branch); err != nil {
 		return err
@@ -1719,24 +1719,24 @@ func (g *Git) MergeSquash(branch, message string) error {
 // GetBranchCommitMessage returns the commit message of the HEAD commit on the given branch.
 // This is useful for preserving the original conventional commit message (feat:/fix:) when
 // performing squash merges.
-func (g *Git) GetBranchCommitMessage(branch string) (string, error) {
+func GetBranchCommitMessage(g *Git, branch string) (string, error) {
 	return run(g, "log", "-1", "--format=%B", branch)
 }
 
 // RecentCommits returns the last n commits as one-line summaries (hash + subject).
 // Returns empty string if there are no commits or the repo is empty.
-func (g *Git) RecentCommits(n int) (string, error) {
+func RecentCommits(g *Git, n int) (string, error) {
 	return run(g, "log", "--oneline", fmt.Sprintf("-%d", n))
 }
 
 // DeleteRemoteBranch deletes a branch on the remote.
-func (g *Git) DeleteRemoteBranch(remote, branch string) error {
+func DeleteRemoteBranch(g *Git, remote, branch string) error {
 	_, err := runWithTimeout(g, pushTimeout, "push", remote, "--delete", branch)
 	return err
 }
 
 // DeleteRemoteBranchIfAt deletes a remote branch only if it still points at expectedHash.
-func (g *Git) DeleteRemoteBranchIfAt(remote, branch, expectedHash string) error {
+func DeleteRemoteBranchIfAt(g *Git, remote, branch, expectedHash string) error {
 	ref := "refs/heads/" + branch
 	_, err := runWithTimeout(g, pushTimeout, "push", "--force-with-lease="+ref+":"+expectedHash, remote, ":"+ref)
 	return err
@@ -1744,18 +1744,18 @@ func (g *Git) DeleteRemoteBranchIfAt(remote, branch, expectedHash string) error 
 
 // HasOpenPR checks whether the given branch has an open pull request on GitHub.
 // Errors and ambiguous branch lookups protect the branch from deletion.
-func (g *Git) HasOpenPR(branch string) bool {
-	return g.HasOpenPullRequest(PullRequestRef{Branch: branch})
+func HasOpenPR(g *Git, branch string) bool {
+	return HasOpenPullRequest(g, PullRequestRef{Branch: branch})
 }
 
 // IsPRApproved checks whether a GitHub PR has at least one approving review.
 // Returns true if approved, false if not (or on error).
-func (g *Git) IsPRApproved(prNumber int) (bool, error) {
-	return g.IsPullRequestApproved(&PullRequestInfo{Number: prNumber})
+func IsPRApproved(g *Git, prNumber int) (bool, error) {
+	return IsPullRequestApproved(g, &PullRequestInfo{Number: prNumber})
 }
 
 // IsPullRequestApproved checks whether a resolved GitHub PR has at least one approving review.
-func (g *Git) IsPullRequestApproved(pr *PullRequestInfo) (bool, error) {
+func IsPullRequestApproved(g *Git, pr *PullRequestInfo) (bool, error) {
 	if pr == nil || (pr.Number == 0 && pr.URL == "") {
 		return false, fmt.Errorf("pull request identity is missing")
 	}
@@ -1783,12 +1783,12 @@ func (g *Git) IsPullRequestApproved(pr *PullRequestInfo) (bool, error) {
 // GhPrMerge merges a GitHub PR using the gh CLI, respecting branch protection rules.
 // The method parameter should be "merge", "squash", or "rebase".
 // Returns the merge commit SHA on success.
-func (g *Git) GhPrMerge(prNumber int, method string) (string, error) {
-	return g.GhPrMergePullRequest(&PullRequestInfo{Number: prNumber}, method)
+func GhPrMerge(g *Git, prNumber int, method string) (string, error) {
+	return GhPrMergePullRequest(g, &PullRequestInfo{Number: prNumber}, method)
 }
 
 // GhPrMergePullRequest merges a resolved GitHub PR using its URL when available.
-func (g *Git) GhPrMergePullRequest(pr *PullRequestInfo, method string) (string, error) {
+func GhPrMergePullRequest(g *Git, pr *PullRequestInfo, method string) (string, error) {
 	if pr == nil || (pr.Number == 0 && pr.URL == "") {
 		return "", fmt.Errorf("pull request identity is missing")
 	}
@@ -1812,7 +1812,7 @@ func (g *Git) GhPrMergePullRequest(pr *PullRequestInfo, method string) (string, 
 		return "", nil
 	}
 	// Get the latest commit on HEAD (should be the merge commit)
-	sha, revErr := g.Rev("HEAD")
+	sha, revErr := Rev(g, "HEAD")
 	if revErr != nil {
 		return "", nil // Merge succeeded, just can't determine SHA
 	}
@@ -1831,7 +1831,7 @@ func pullRequestSelector(pr *PullRequestInfo) string {
 
 // FindBitbucketPullRequest returns the open Bitbucket PR for branch.
 // It includes the source commit hash so refinery can merge only the submitted head.
-func (g *Git) FindBitbucketPullRequest(workspace, repoSlug, branch, headSHA string) (*PullRequestInfo, error) {
+func FindBitbucketPullRequest(g *Git, workspace, repoSlug, branch, headSHA string) (*PullRequestInfo, error) {
 	// Use curl since there is no official Bitbucket CLI equivalent to gh.
 	// The BITBUCKET_TOKEN env var provides authentication.
 	token := os.Getenv("BITBUCKET_TOKEN")
@@ -1890,7 +1890,7 @@ func (g *Git) FindBitbucketPullRequest(workspace, repoSlug, branch, headSHA stri
 }
 
 // IsBitbucketPRApproved checks whether a Bitbucket PR has at least one approving reviewer.
-func (g *Git) IsBitbucketPRApproved(workspace, repoSlug string, prID int) (bool, error) {
+func IsBitbucketPRApproved(g *Git, workspace, repoSlug string, prID int) (bool, error) {
 	token := os.Getenv("BITBUCKET_TOKEN")
 	if token == "" {
 		return false, fmt.Errorf("BITBUCKET_TOKEN is required for Bitbucket PR operations")
@@ -1923,7 +1923,7 @@ func (g *Git) IsBitbucketPRApproved(workspace, repoSlug string, prID int) (bool,
 // BitbucketPRMerge merges a Bitbucket PR via the REST API.
 // The strategy parameter should be "merge_commit", "squash", or "fast_forward".
 // Returns the merge commit SHA on success (if available).
-func (g *Git) BitbucketPRMerge(workspace, repoSlug string, prID int, strategy string) (string, error) {
+func BitbucketPRMerge(g *Git, workspace, repoSlug string, prID int, strategy string) (string, error) {
 	token := os.Getenv("BITBUCKET_TOKEN")
 	if token == "" {
 		return "", fmt.Errorf("BITBUCKET_TOKEN is required for Bitbucket PR operations")
@@ -1949,7 +1949,7 @@ func (g *Git) BitbucketPRMerge(workspace, repoSlug string, prID int, strategy st
 	if err := json.Unmarshal(bytes.TrimSpace(out), &resp); err != nil {
 		// Merge may have succeeded but response parsing failed — pull to get SHA.
 		if _, pullErr := run(g, "pull", "origin"); pullErr == nil {
-			if sha, revErr := g.Rev("HEAD"); revErr == nil {
+			if sha, revErr := Rev(g, "HEAD"); revErr == nil {
 				return sha, nil
 			}
 		}
@@ -1963,7 +1963,7 @@ func (g *Git) BitbucketPRMerge(workspace, repoSlug string, prID int, strategy st
 	if resp.MergeCommit.Hash != "" {
 		return resp.MergeCommit.Hash, nil
 	}
-	sha, _ := g.Rev("HEAD")
+	sha, _ := Rev(g, "HEAD")
 	return sha, nil
 }
 
@@ -1976,7 +1976,7 @@ type RemoteRef struct {
 // ListRemoteRefsWithHashes returns remote refs matching a prefix using ls-remote.
 // The prefix filters refs (e.g., "refs/heads/polecat/" for all polecat branches).
 // Returns full ref names like "refs/heads/polecat/furiosa-abc123".
-func (g *Git) ListRemoteRefsWithHashes(remote, prefix string) ([]RemoteRef, error) {
+func ListRemoteRefsWithHashes(g *Git, remote, prefix string) ([]RemoteRef, error) {
 	out, err := run(g, "ls-remote", "--refs", remote, prefix+"*")
 	if err != nil {
 		return nil, err
@@ -2000,8 +2000,8 @@ func (g *Git) ListRemoteRefsWithHashes(remote, prefix string) ([]RemoteRef, erro
 }
 
 // ListRemoteRefs returns remote ref names matching a prefix using ls-remote.
-func (g *Git) ListRemoteRefs(remote, prefix string) ([]string, error) {
-	refsWithHashes, err := g.ListRemoteRefsWithHashes(remote, prefix)
+func ListRemoteRefs(g *Git, remote, prefix string) ([]string, error) {
+	refsWithHashes, err := ListRemoteRefsWithHashes(g, remote, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -2015,7 +2015,7 @@ func (g *Git) ListRemoteRefs(remote, prefix string) ([]string, error) {
 // RemoteHasRefs reports whether a remote has any refs at all. It deliberately
 // includes tags so callers can distinguish a truly empty repo from a non-empty
 // repo with no branch refs or a broken remote HEAD.
-func (g *Git) RemoteHasRefs(remote string) (bool, error) {
+func RemoteHasRefs(g *Git, remote string) (bool, error) {
 	out, err := run(g, "ls-remote", "--refs", remote)
 	if err != nil {
 		return false, err
@@ -2028,8 +2028,8 @@ func (g *Git) RemoteHasRefs(remote string) (bool, error) {
 // pushed to the fork but ls-remote reads from the fetch URL (upstream). This
 // method queries the push URL so cleanup can find branches that were pushed.
 // Falls back to ListRemoteRefs if no custom push URL is configured.
-func (g *Git) ListPushRemoteRefs(remote, prefix string) ([]string, error) {
-	refsWithHashes, err := g.ListPushRemoteRefsWithHashes(remote, prefix)
+func ListPushRemoteRefs(g *Git, remote, prefix string) ([]string, error) {
+	refsWithHashes, err := ListPushRemoteRefsWithHashes(g, remote, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -2041,18 +2041,18 @@ func (g *Git) ListPushRemoteRefs(remote, prefix string) ([]string, error) {
 }
 
 // ListPushRemoteRefsWithHashes is ListPushRemoteRefs with commit hashes.
-func (g *Git) ListPushRemoteRefsWithHashes(remote, prefix string) ([]RemoteRef, error) {
-	return g.ListRemoteRefsWithHashes(pushTarget(g, remote), prefix)
+func ListPushRemoteRefsWithHashes(g *Git, remote, prefix string) ([]RemoteRef, error) {
+	return ListRemoteRefsWithHashes(g, pushTarget(g, remote), prefix)
 }
 
 // Rebase rebases the current branch onto the given ref.
-func (g *Git) Rebase(onto string) error {
+func Rebase(g *Git, onto string) error {
 	_, err := run(g, "rebase", onto)
 	return err
 }
 
 // AbortMerge aborts a merge in progress.
-func (g *Git) AbortMerge() error {
+func AbortMerge(g *Git) error {
 	_, err := run(g, "merge", "--abort")
 	return err
 }
@@ -2063,9 +2063,9 @@ func (g *Git) AbortMerge() error {
 //
 // The caller must ensure the working directory is clean before calling this.
 // After return, the working directory is restored to the target branch.
-func (g *Git) CheckConflicts(source, target string) ([]string, error) {
+func CheckConflicts(g *Git, source, target string) ([]string, error) {
 	// Checkout the target branch
-	if err := g.Checkout(target); err != nil {
+	if err := Checkout(g, target); err != nil {
 		return nil, fmt.Errorf("checkout target %s: %w", target, err)
 	}
 
@@ -2076,15 +2076,15 @@ func (g *Git) CheckConflicts(source, target string) ([]string, error) {
 	if mergeErr != nil {
 		// ZFC: Use git's porcelain output to detect conflicts instead of parsing stderr.
 		// GetConflictingFiles() uses `git diff --diff-filter=U` which is the proper way.
-		conflicts, err := g.GetConflictingFiles()
+		conflicts, err := GetConflictingFiles(g)
 		if err == nil && len(conflicts) > 0 {
 			// Abort the test merge (best-effort cleanup)
-			_ = g.AbortMerge()
+			_ = AbortMerge(g)
 			return conflicts, nil
 		}
 
 		// No unmerged files detected - this is some other merge error
-		_ = g.AbortMerge()
+		_ = AbortMerge(g)
 		return nil, mergeErr
 	}
 
@@ -2112,7 +2112,7 @@ func runMergeCheck(g *Git, args ...string) (string, error) {
 	err := cmd.Run()
 	if err != nil {
 		// ZFC: Return raw output for observation, don't interpret CONFLICT
-		return "", wrapError(g, err, stdout.String(), stderr.String(), args)
+		return "", wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
@@ -2121,7 +2121,7 @@ func runMergeCheck(g *Git, args ...string) (string, error) {
 // GetConflictingFiles returns the list of files with merge conflicts.
 // ZFC: Uses git's porcelain output (diff --diff-filter=U) instead of parsing stderr.
 // This is the proper way to detect conflicts without violating ZFC.
-func (g *Git) GetConflictingFiles() ([]string, error) {
+func GetConflictingFiles(g *Git) ([]string, error) {
 	// git diff --name-only --diff-filter=U shows unmerged files
 	out, err := run(g, "diff", "--name-only", "--diff-filter=U")
 	if err != nil {
@@ -2144,25 +2144,25 @@ func (g *Git) GetConflictingFiles() ([]string, error) {
 }
 
 // AbortRebase aborts a rebase in progress.
-func (g *Git) AbortRebase() error {
+func AbortRebase(g *Git) error {
 	_, err := run(g, "rebase", "--abort")
 	return err
 }
 
 // CreateBranch creates a new branch.
-func (g *Git) CreateBranch(name string) error {
+func CreateBranch(g *Git, name string) error {
 	_, err := run(g, "branch", name)
 	return err
 }
 
 // CreateBranchFrom creates a new branch from a specific ref.
-func (g *Git) CreateBranchFrom(name, ref string) error {
+func CreateBranchFrom(g *Git, name, ref string) error {
 	_, err := run(g, "branch", name, ref)
 	return err
 }
 
 // BranchExists checks if a branch exists locally.
-func (g *Git) BranchExists(name string) (bool, error) {
+func BranchExists(g *Git, name string) (bool, error) {
 	_, err := run(g, "show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	if err != nil {
 		// Exit code 1 means branch doesn't exist
@@ -2176,7 +2176,7 @@ func (g *Git) BranchExists(name string) (bool, error) {
 
 // RefExists checks if a ref exists (works for any ref including origin/<branch>).
 // Uses show-ref for fully-qualified refs, falls back to rev-parse for short refs.
-func (g *Git) RefExists(ref string) (bool, error) {
+func RefExists(g *Git, ref string) (bool, error) {
 	// Fully-qualified refs (refs/...) use show-ref which has a stable exit code contract:
 	// exit 0 = exists, exit 1 = missing, exit >1 = error.
 	if strings.HasPrefix(ref, "refs/") {
@@ -2207,7 +2207,7 @@ func (g *Git) RefExists(ref string) (bool, error) {
 
 // IsEmpty returns true if the repository has no refs (an empty/unborn repo).
 // This is the case for newly-created repos with no commits.
-func (g *Git) IsEmpty() (bool, error) {
+func IsEmpty(g *Git) (bool, error) {
 	out, err := run(g, "show-ref")
 	if err != nil {
 		// git show-ref exits 1 when there are no refs — that means empty
@@ -2222,7 +2222,7 @@ func (g *Git) IsEmpty() (bool, error) {
 // RemoteBranchExists checks if a branch exists on the remote.
 // NOTE: For named remotes with a separate pushurl, this checks the fetch URL.
 // Use PushRemoteBranchExists to verify branches that were pushed.
-func (g *Git) RemoteBranchExists(remote, branch string) (bool, error) {
+func RemoteBranchExists(g *Git, remote, branch string) (bool, error) {
 	out, err := run(g, "ls-remote", "--heads", remote, branch)
 	if err != nil {
 		return false, err
@@ -2232,7 +2232,7 @@ func (g *Git) RemoteBranchExists(remote, branch string) (bool, error) {
 
 // RemoteBranchTip returns the SHA at refs/heads/<branch> on the remote.
 // An empty SHA with nil error means the branch is missing.
-func (g *Git) RemoteBranchTip(remote, branch string) (string, error) {
+func RemoteBranchTip(g *Git, remote, branch string) (string, error) {
 	out, err := run(g, "ls-remote", "--heads", remote, branch)
 	if err != nil {
 		return "", err
@@ -2245,10 +2245,10 @@ func (g *Git) RemoteBranchTip(remote, branch string) (string, error) {
 // the push URL but ls-remote resolves the fetch URL. This method queries the push
 // URL directly so verification matches where the branch was actually pushed.
 // Falls back to RemoteBranchExists when no custom push URL is configured.
-func (g *Git) PushRemoteBranchExists(remote, branch string) (bool, error) {
+func PushRemoteBranchExists(g *Git, remote, branch string) (bool, error) {
 	pushTarget := pushTarget(g, remote)
 	if pushTarget == remote {
-		return g.RemoteBranchExists(remote, branch)
+		return RemoteBranchExists(g, remote, branch)
 	}
 	out, err := run(g, "ls-remote", "--heads", pushTarget, branch)
 	if err != nil {
@@ -2261,17 +2261,17 @@ func (g *Git) PushRemoteBranchExists(remote, branch string) (bool, error) {
 // This mirrors PushRemoteBranchExists: when remote.<name>.pushurl differs from
 // the fetch URL, verification must query the push URL because that is where the
 // preceding git push wrote.
-func (g *Git) PushRemoteBranchTip(remote, branch string) (string, error) {
+func PushRemoteBranchTip(g *Git, remote, branch string) (string, error) {
 	pushTarget := pushTarget(g, remote)
 	if pushTarget == remote {
-		return g.RemoteBranchTip(remote, branch)
+		return RemoteBranchTip(g, remote, branch)
 	}
-	return g.RemoteBranchTip(pushTarget, branch)
+	return RemoteBranchTip(g, pushTarget, branch)
 }
 
 func pushTarget(g *Git, remote string) string {
-	fetchURL, fetchErr := g.RemoteURL(remote)
-	pushURL, pushErr := g.GetPushURL(remote)
+	fetchURL, fetchErr := RemoteURL(g, remote)
+	pushURL, pushErr := GetPushURL(g, remote)
 	if fetchErr != nil || pushErr != nil || pushURL == fetchURL {
 		return remote
 	}
@@ -2282,12 +2282,12 @@ func pushTarget(g *Git, remote string) string {
 // gt/refinery callers invoke this immediately after a push, before closing beads
 // or creating downstream merge artifacts. Exact-tip verification catches the
 // dangerous case where git push exits 0 but leaves the remote branch stale.
-func (g *Git) VerifyPushedCommit(remote, branch, commit string) error {
+func VerifyPushedCommit(g *Git, remote, branch, commit string) error {
 	commit = strings.TrimSpace(commit)
 	if commit == "" {
 		return fmt.Errorf("verified_push_failed: empty commit for %s/%s", remote, branch)
 	}
-	tip, err := g.PushRemoteBranchTip(remote, branch)
+	tip, err := PushRemoteBranchTip(g, remote, branch)
 	if err != nil {
 		return fmt.Errorf("verified_push_failed: unable to read %s/%s: %w", remote, branch, err)
 	}
@@ -2303,12 +2303,12 @@ func (g *Git) VerifyPushedCommit(remote, branch, commit string) error {
 // VerifyPushedCommitReachableFromPushTarget verifies that commit is reachable
 // from the push target branch. Use this only for shared target branches where a
 // later fast-forward push by another actor may legitimately advance the tip.
-func (g *Git) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+func VerifyPushedCommitReachableFromPushTarget(g *Git, remote, branch, commit string) error {
 	commit = strings.TrimSpace(commit)
 	if commit == "" {
 		return fmt.Errorf("verified_push_failed: empty commit for %s/%s", remote, branch)
 	}
-	tip, err := g.PushRemoteBranchTip(remote, branch)
+	tip, err := PushRemoteBranchTip(g, remote, branch)
 	if err != nil {
 		return fmt.Errorf("verified_push_failed: unable to read %s/%s: %w", remote, branch, err)
 	}
@@ -2323,7 +2323,7 @@ func (g *Git) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit s
 	if _, err := run(g, "fetch", "--no-tags", fetchTarget, "refs/heads/"+branch); err != nil {
 		return fmt.Errorf("verified_push_failed: unable to fetch %s/%s for ancestry check: %w", remote, branch, err)
 	}
-	reachable, err := g.IsAncestor(commit, "FETCH_HEAD")
+	reachable, err := IsAncestor(g, commit, "FETCH_HEAD")
 	if err != nil {
 		return fmt.Errorf("verified_push_failed: unable to verify commit %s on %s/%s: %w", shortSHA(commit), remote, branch, err)
 	}
@@ -2360,7 +2360,7 @@ func shortSHA(sha string) string {
 
 // RemoteTrackingBranchExists checks if a remote-tracking branch ref exists locally
 // (e.g. refs/remotes/origin/main), without hitting the network.
-func (g *Git) RemoteTrackingBranchExists(remote, branch string) (bool, error) {
+func RemoteTrackingBranchExists(g *Git, remote, branch string) (bool, error) {
 	ref := fmt.Sprintf("refs/remotes/%s/%s", remote, branch)
 	_, err := run(g, "show-ref", "--verify", "--quiet", ref)
 	if err != nil {
@@ -2373,7 +2373,7 @@ func (g *Git) RemoteTrackingBranchExists(remote, branch string) (bool, error) {
 }
 
 // DeleteBranch deletes a local branch.
-func (g *Git) DeleteBranch(name string, force bool) error {
+func DeleteBranch(g *Git, name string, force bool) error {
 	flag := "-d"
 	if force {
 		flag = "-D"
@@ -2385,7 +2385,7 @@ func (g *Git) DeleteBranch(name string, force bool) error {
 // ListBranches returns all local branches matching a pattern.
 // Pattern uses git's pattern matching (e.g., "polecat/*" matches all polecat branches).
 // Returns branch names without the refs/heads/ prefix.
-func (g *Git) ListBranches(pattern string) ([]string, error) {
+func ListBranches(g *Git, pattern string) ([]string, error) {
 	args := []string{"branch", "--list", "--format=%(refname:short)"}
 	if pattern != "" {
 		args = append(args, pattern)
@@ -2404,32 +2404,32 @@ func (g *Git) ListBranches(pattern string) ([]string, error) {
 // This is useful for resetting stale polecat branches to main.
 // NOTE: This uses `git branch -f` which fails on the currently checked-out branch.
 // Use ResetHard instead when the target branch is checked out.
-func (g *Git) ResetBranch(name, ref string) error {
+func ResetBranch(g *Git, name, ref string) error {
 	_, err := run(g, "branch", "-f", name, ref)
 	return err
 }
 
 // ResetHard resets the current working tree and index to the given ref.
 // Unlike ResetBranch, this works on the currently checked-out branch.
-func (g *Git) ResetHard(ref string) error {
+func ResetHard(g *Git, ref string) error {
 	_, err := run(g, "reset", "--hard", ref)
 	return err
 }
 
 // CleanForce removes untracked files and directories from the working tree.
 // Excludes .runtime/ to preserve agent lock files and session state.
-func (g *Git) CleanForce() error {
+func CleanForce(g *Git) error {
 	_, err := run(g, "clean", "-fd", "--exclude=.runtime")
 	return err
 }
 
 // Rev returns the commit hash for the given ref.
-func (g *Git) Rev(ref string) (string, error) {
+func Rev(g *Git, ref string) (string, error) {
 	return run(g, "rev-parse", ref)
 }
 
 // IsAncestor checks if ancestor is an ancestor of descendant.
-func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
+func IsAncestor(g *Git, ancestor, descendant string) (bool, error) {
 	_, err := run(g, "merge-base", "--is-ancestor", ancestor, descendant)
 	if err != nil {
 		// Exit code 1 means not an ancestor, not an error
@@ -2446,14 +2446,14 @@ func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
 // "+ " (patch not on upstream) or "- " (patch already applied upstream, e.g.
 // via squash merge). Used to detect already-merged work that plain ancestor
 // checks miss. See aa-apw.
-func (g *Git) Cherry(upstream, head string) (string, error) {
+func Cherry(g *Git, upstream, head string) (string, error) {
 	return run(g, "cherry", upstream, head)
 }
 
 // WorktreeAdd creates a new worktree at the given path with a new branch.
 // The new branch is created from the current HEAD.
 // Skips LFS smudge filter during checkout (see WorktreeAddFromRef).
-func (g *Git) WorktreeAdd(path, branch string) error {
+func WorktreeAdd(g *Git, path, branch string) error {
 	if _, err := runWithEnv(g,
 		[]string{"worktree", "add", "-b", branch, path},
 		[]string{"GIT_LFS_SKIP_SMUDGE=1"},
@@ -2468,7 +2468,7 @@ func (g *Git) WorktreeAdd(path, branch string) error {
 // Skips LFS smudge filter during checkout to avoid downloading large LFS objects
 // over NFS (~72s for 473MB). LFS files appear as pointer files initially;
 // callers can run "git lfs pull" later when LFS content is actually needed.
-func (g *Git) WorktreeAddFromRef(path, branch, startPoint string) error {
+func WorktreeAddFromRef(g *Git, path, branch, startPoint string) error {
 	if _, err := runWithEnv(g,
 		[]string{"worktree", "add", "-b", branch, path, startPoint},
 		[]string{"GIT_LFS_SKIP_SMUDGE=1"},
@@ -2480,7 +2480,7 @@ func (g *Git) WorktreeAddFromRef(path, branch, startPoint string) error {
 
 // WorktreeAddDetached creates a new worktree at the given path with a detached HEAD.
 // Skips LFS smudge filter during checkout (see WorktreeAddFromRef).
-func (g *Git) WorktreeAddDetached(path, ref string) error {
+func WorktreeAddDetached(g *Git, path, ref string) error {
 	if _, err := runWithEnv(g,
 		[]string{"worktree", "add", "--detach", path, ref},
 		[]string{"GIT_LFS_SKIP_SMUDGE=1"},
@@ -2492,7 +2492,7 @@ func (g *Git) WorktreeAddDetached(path, ref string) error {
 
 // WorktreeAddExisting creates a new worktree at the given path for an existing branch.
 // Skips LFS smudge filter during checkout (see WorktreeAddFromRef).
-func (g *Git) WorktreeAddExisting(path, branch string) error {
+func WorktreeAddExisting(g *Git, path, branch string) error {
 	if _, err := runWithEnv(g,
 		[]string{"worktree", "add", path, branch},
 		[]string{"GIT_LFS_SKIP_SMUDGE=1"},
@@ -2504,7 +2504,7 @@ func (g *Git) WorktreeAddExisting(path, branch string) error {
 
 // WorktreeAddExistingForce creates a new worktree even if the branch is already checked out elsewhere.
 // This is useful for cross-rig worktrees where multiple clones need to be on main.
-func (g *Git) WorktreeAddExistingForce(path, branch string) error {
+func WorktreeAddExistingForce(g *Git, path, branch string) error {
 	if _, err := run(g, "worktree", "add", "--force", path, branch); err != nil {
 		return err
 	}
@@ -2596,7 +2596,7 @@ func RemoveSparseCheckout(repoPath string) error {
 }
 
 // WorktreeRemove removes a worktree.
-func (g *Git) WorktreeRemove(path string, force bool) error {
+func WorktreeRemove(g *Git, path string, force bool) error {
 	args := []string{"worktree", "remove", path}
 	if force {
 		args = append(args, "--force")
@@ -2608,13 +2608,13 @@ func (g *Git) WorktreeRemove(path string, force bool) error {
 // WorktreeMove moves a worktree to a new path, updating all git references.
 // This is the correct way to relocate a worktree — using os.Rename breaks
 // the .git file and worktree registry references. (GH#2056)
-func (g *Git) WorktreeMove(oldPath, newPath string) error {
+func WorktreeMove(g *Git, oldPath, newPath string) error {
 	_, err := run(g, "worktree", "move", oldPath, newPath)
 	return err
 }
 
 // WorktreePrune removes worktree entries for deleted paths.
-func (g *Git) WorktreePrune() error {
+func WorktreePrune(g *Git) error {
 	_, err := run(g, "worktree", "prune")
 	return err
 }
@@ -2627,7 +2627,7 @@ type Worktree struct {
 }
 
 // WorktreeList returns all worktrees for this repository.
-func (g *Git) WorktreeList() ([]Worktree, error) {
+func WorktreeList(g *Git) ([]Worktree, error) {
 	out, err := run(g, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
@@ -2666,10 +2666,10 @@ func (g *Git) WorktreeList() ([]Worktree, error) {
 // BranchCreatedDate returns the date when a branch was created.
 // This uses the committer date of the first commit on the branch.
 // Returns date in YYYY-MM-DD format.
-func (g *Git) BranchCreatedDate(branch string) (string, error) {
+func BranchCreatedDate(g *Git, branch string) (string, error) {
 	// Get the date of the first commit on the branch that's not on the default branch
 	// Use merge-base to find where the branch diverged
-	defaultBranch := g.RemoteDefaultBranch()
+	defaultBranch := RemoteDefaultBranch(g)
 	mergeBase, err := run(g, "merge-base", defaultBranch, branch)
 	if err != nil {
 		// If merge-base fails, fall back to the branch tip's date
@@ -2703,13 +2703,13 @@ func (g *Git) BranchCreatedDate(branch string) (string, error) {
 
 // CommitsAhead returns the number of commits that branch has ahead of base.
 // DiffStat returns the --stat output for a diff range (e.g., "main...feature").
-func (g *Git) DiffStat(rangeSpec string) (string, error) {
+func DiffStat(g *Git, rangeSpec string) (string, error) {
 	return run(g, "diff", "--stat", rangeSpec)
 }
 
 // For example, CommitsAhead("main", "feature") returns how many commits
 // are on feature that are not on main.
-func (g *Git) CommitsAhead(base, branch string) (int, error) {
+func CommitsAhead(g *Git, base, branch string) (int, error) {
 	out, err := run(g, "rev-list", "--count", base+".."+branch)
 	if err != nil {
 		return 0, err
@@ -2727,7 +2727,7 @@ func (g *Git) CommitsAhead(base, branch string) (int, error) {
 // CountCommitsBehind returns the number of commits that HEAD is behind the given ref.
 // For example, CountCommitsBehind("origin/main") returns how many commits
 // are on origin/main that are not on the current HEAD.
-func (g *Git) CountCommitsBehind(ref string) (int, error) {
+func CountCommitsBehind(g *Git, ref string) (int, error) {
 	out, err := run(g, "rev-list", "--count", "HEAD.."+ref)
 	if err != nil {
 		return 0, err
@@ -2752,16 +2752,16 @@ type BranchContamination struct {
 // significantly from a base ref (typically origin/main). Returns the number
 // of commits behind and ahead, letting callers decide severity thresholds.
 // (GH#2220)
-func (g *Git) CheckBranchContamination(baseRef string) (BranchContamination, error) {
+func CheckBranchContamination(g *Git, baseRef string) (BranchContamination, error) {
 	var result BranchContamination
 
-	behind, err := g.CountCommitsBehind(baseRef)
+	behind, err := CountCommitsBehind(g, baseRef)
 	if err != nil {
 		return result, fmt.Errorf("counting commits behind %s: %w", baseRef, err)
 	}
 	result.Behind = behind
 
-	ahead, err := g.CommitsAhead(baseRef, "HEAD")
+	ahead, err := CommitsAhead(g, baseRef, "HEAD")
 	if err != nil {
 		return result, fmt.Errorf("counting commits ahead of %s: %w", baseRef, err)
 	}
@@ -2776,7 +2776,7 @@ func (g *Git) CheckBranchContamination(baseRef string) (BranchContamination, err
 // a fresh polecat worktree would inherit stash count from siblings, blocking
 // Remove(force=true) on work it never created. Filter by current branch name
 // to only count stashes that actually belong to this worktree.
-func (g *Git) StashCount() (int, error) {
+func StashCount(g *Git) (int, error) {
 	out, err := run(g, "stash", "list")
 	if err != nil {
 		return 0, err
@@ -2789,7 +2789,7 @@ func (g *Git) StashCount() (int, error) {
 	// Get current branch to filter stashes.
 	// If we can't determine the branch (detached HEAD, error), count all
 	// stashes as a safe fallback — better to over-count than silently lose work.
-	branch, branchErr := g.CurrentBranch()
+	branch, branchErr := CurrentBranch(g)
 	filterByBranch := branchErr == nil && branch != "" && branch != "HEAD"
 
 	// Stash reflog lines have the format:
@@ -2819,7 +2819,7 @@ func (g *Git) StashCount() (int, error) {
 // StashCountAll returns the total number of repo-wide stashes visible from the
 // worktree. Git stores stashes in the shared repository, so callers must not use
 // this as per-worktree risk; use StashCount for current-branch risk instead.
-func (g *Git) StashCountAll() (int, error) {
+func StashCountAll(g *Git) (int, error) {
 	out, err := run(g, "stash", "list")
 	if err != nil {
 		return 0, err
@@ -2848,7 +2848,7 @@ type StashEntry struct {
 // Filtering matches StashCount: only entries with ": WIP on <branch>:" or
 // ": On <branch>:" prefixes are returned, since stashes are global to the repo
 // but conceptually belong to the worktree where they were created.
-func (g *Git) StashListForBranch() ([]StashEntry, error) {
+func StashListForBranch(g *Git) ([]StashEntry, error) {
 	out, err := run(g, "stash", "list")
 	if err != nil {
 		return nil, err
@@ -2857,7 +2857,7 @@ func (g *Git) StashListForBranch() ([]StashEntry, error) {
 		return nil, nil
 	}
 
-	branch, branchErr := g.CurrentBranch()
+	branch, branchErr := CurrentBranch(g)
 	filterByBranch := branchErr == nil && branch != "" && branch != "HEAD"
 	wipPrefix := ": WIP on " + branch + ":"
 	onPrefix := ": On " + branch + ":"
@@ -2888,7 +2888,7 @@ func (g *Git) StashListForBranch() ([]StashEntry, error) {
 // StashPop applies the given stash ref to the working tree and drops it on success.
 // Returns an error if the pop has conflicts (working tree is left as-is for manual
 // resolution). Callers should treat conflict errors as "stop, escalate to user".
-func (g *Git) StashPop(ref string) error {
+func StashPop(g *Git, ref string) error {
 	if ref == "" {
 		return fmt.Errorf("stash ref required")
 	}
@@ -2902,13 +2902,13 @@ func (g *Git) StashPop(ref string) error {
 // It prefers the exact remote branch when one exists, because polecat branches may
 // track origin/main while pushing work to origin/<current-branch>.
 // Returns 0 if there is no upstream or exact remote branch configured.
-func (g *Git) UnpushedCommits() (int, error) {
-	branch, branchErr := g.CurrentBranch()
+func UnpushedCommits(g *Git) (int, error) {
+	branch, branchErr := CurrentBranch(g)
 	if branchErr != nil || branch == "" || branch == "HEAD" {
 		branch = ""
 	}
 
-	status, err := g.BranchPreservationStatus(branch, "origin", nil)
+	status, err := CheckBranchPreservation(g, branch, "origin", nil)
 	if err != nil {
 		if errors.Is(err, errNoComparisonRefs) {
 			return 0, nil
@@ -2931,7 +2931,7 @@ type BranchPreservationStatus struct {
 // custody target for the branch. It prefers proof from the exact pushed source
 // branch, then explicit target branches, then upstream. It only falls back to the
 // remote default branch when no target/custody/upstream evidence exists.
-func (g *Git) BranchPreservationStatus(localBranch, remote string, targets []string) (BranchPreservationStatus, error) {
+func CheckBranchPreservation(g *Git, localBranch, remote string, targets []string) (BranchPreservationStatus, error) {
 	return branchPreservationStatus(g, localBranch, remote, targets, true)
 }
 
@@ -2939,7 +2939,7 @@ func (g *Git) BranchPreservationStatus(localBranch, remote string, targets []str
 // target/custody refs. Unlike BranchPreservationStatus, the exact pushed source
 // branch is not enough evidence because pushed-but-unsubmitted work still needs
 // merge-queue recovery.
-func (g *Git) BranchTargetStatus(localBranch, remote string, targets []string) (BranchPreservationStatus, error) {
+func BranchTargetStatus(g *Git, localBranch, remote string, targets []string) (BranchPreservationStatus, error) {
 	return branchPreservationStatus(g, localBranch, remote, targets, false)
 }
 
@@ -2952,7 +2952,7 @@ func branchPreservationStatus(g *Git, localBranch, remote string, targets []stri
 	hasEvidence := len(nonEmptyUnique(targets)) > 0
 
 	if includeExactBranch && localBranch != "" && localBranch != "HEAD" {
-		if remoteSHA, err := g.PushRemoteBranchTip(remote, localBranch); err == nil && remoteSHA != "" {
+		if remoteSHA, err := PushRemoteBranchTip(g, remote, localBranch); err == nil && remoteSHA != "" {
 			hasEvidence = true
 			result.ComparisonBase = remote + "/" + localBranch
 			if contains, containsErr := refContainsHead(g, remoteSHA); containsErr == nil && contains {
@@ -2980,7 +2980,7 @@ func branchPreservationStatus(g *Git, localBranch, remote string, targets []stri
 	}
 
 	if !hasEvidence {
-		for _, ref := range []string{remote + "/" + g.RemoteDefaultBranch(), remote + "/main", remote + "/master"} {
+		for _, ref := range []string{remote + "/" + RemoteDefaultBranch(g), remote + "/main", remote + "/master"} {
 			if resolved, ok := resolveComparisonRef(g, ref, remote); ok {
 				candidates = append(candidates, resolved)
 			}
@@ -3026,14 +3026,14 @@ func isPolecatSelfUpstream(localBranch, remote, upstream string) bool {
 }
 
 func refContainsHead(g *Git, ref string) (bool, error) {
-	head, err := g.Rev("HEAD")
+	head, err := Rev(g, "HEAD")
 	if err != nil {
 		return false, err
 	}
 	if strings.TrimSpace(ref) == strings.TrimSpace(head) {
 		return true, nil
 	}
-	return g.IsAncestor("HEAD", ref)
+	return IsAncestor(g, "HEAD", ref)
 }
 
 func resolveComparisonRef(g *Git, ref, remote string) (string, bool) {
@@ -3042,7 +3042,7 @@ func resolveComparisonRef(g *Git, ref, remote string) (string, bool) {
 		return "", false
 	}
 	for _, candidate := range comparisonRefCandidates(ref, remote) {
-		if ok, err := g.RefExists(candidate); err == nil && ok {
+		if ok, err := RefExists(g, candidate); err == nil && ok {
 			return candidate, true
 		}
 	}
@@ -3068,7 +3068,7 @@ func preservationAgainstRef(g *Git, ref string) (BranchPreservationStatus, error
 
 func preservationOfRefAgainstRef(g *Git, head, ref string) (BranchPreservationStatus, error) {
 	status := BranchPreservationStatus{ComparisonBase: ref}
-	if contains, err := g.IsAncestor(head, ref); err == nil && contains {
+	if contains, err := IsAncestor(g, head, ref); err == nil && contains {
 		status.Preserved = true
 		status.Evidence = "ancestor"
 		return status, nil
@@ -3078,7 +3078,7 @@ func preservationOfRefAgainstRef(g *Git, head, ref string) (BranchPreservationSt
 		status.Evidence = "merge_tree_noop"
 		return status, nil
 	}
-	out, err := g.Cherry(ref, head)
+	out, err := Cherry(g, ref, head)
 	if err != nil {
 		return status, err
 	}
@@ -3106,7 +3106,7 @@ func mergeTreeNoopBetweenRefs(g *Git, head, ref string) (bool, error) {
 // target. It fetches the exact candidate ref first so remote-only tips and split
 // fetch/push remotes are classified against the listed hash, not stale tracking
 // refs.
-func (g *Git) PushRemoteRefTargetStatus(remote string, ref RemoteRef, target string) (BranchPreservationStatus, error) {
+func PushRemoteRefTargetStatus(g *Git, remote string, ref RemoteRef, target string) (BranchPreservationStatus, error) {
 	var status BranchPreservationStatus
 	refName := strings.TrimSpace(ref.Name)
 	expectedHash := strings.TrimSpace(ref.Hash)
@@ -3117,7 +3117,7 @@ func (g *Git) PushRemoteRefTargetStatus(remote string, ref RemoteRef, target str
 	if _, err := run(g, "fetch", "--no-tags", pushTarget(g, remote), refName); err != nil {
 		return status, fmt.Errorf("fetching candidate %s: %w", refName, err)
 	}
-	fetchedHash, err := g.Rev("FETCH_HEAD")
+	fetchedHash, err := Rev(g, "FETCH_HEAD")
 	if err != nil {
 		return status, fmt.Errorf("resolving fetched candidate %s: %w", refName, err)
 	}
@@ -3402,11 +3402,11 @@ func (s *UncommittedWorkStatus) String() string {
 }
 
 // CheckUncommittedWork performs a comprehensive check for uncommitted work.
-func (g *Git) CheckUncommittedWork() (*UncommittedWorkStatus, error) {
+func CheckUncommittedWork(g *Git) (*UncommittedWorkStatus, error) {
 	status := &UncommittedWorkStatus{}
 
 	// Check git status
-	gitStatus, err := g.Status()
+	gitStatus, err := Status(g)
 	if err != nil {
 		return nil, fmt.Errorf("checking git status: %w", err)
 	}
@@ -3417,14 +3417,14 @@ func (g *Git) CheckUncommittedWork() (*UncommittedWorkStatus, error) {
 	status.UnmergedFiles = gitStatus.Unmerged
 
 	// Check stashes
-	stashCount, err := g.StashCount()
+	stashCount, err := StashCount(g)
 	if err != nil {
 		return nil, fmt.Errorf("checking stashes: %w", err)
 	}
 	status.StashCount = stashCount
 
 	// Check unpushed commits
-	unpushed, err := g.UnpushedCommits()
+	unpushed, err := UnpushedCommits(g)
 	if err != nil {
 		return nil, fmt.Errorf("checking unpushed commits: %w", err)
 	}
@@ -3436,8 +3436,8 @@ func (g *Git) CheckUncommittedWork() (*UncommittedWorkStatus, error) {
 // BranchPushedToRemote checks if a branch has been pushed to the remote.
 // Returns (pushed bool, unpushedCount int, err).
 // This handles polecat branches that don't have upstream tracking configured.
-func (g *Git) BranchPushedToRemote(localBranch, remote string) (bool, int, error) {
-	status, err := g.BranchPreservationStatus(localBranch, remote, nil)
+func BranchPushedToRemote(g *Git, localBranch, remote string) (bool, int, error) {
+	status, err := CheckBranchPreservation(g, localBranch, remote, nil)
 	if err != nil {
 		return false, 0, err
 	}
@@ -3461,17 +3461,17 @@ type PrunedBranch struct {
 //
 // Safety: never deletes the current branch or the default branch (main/master).
 // Uses git branch -d (not -D), so only fully-merged branches are deleted.
-func (g *Git) PruneStaleBranches(pattern string, dryRun bool) ([]PrunedBranch, error) {
+func PruneStaleBranches(g *Git, pattern string, dryRun bool) ([]PrunedBranch, error) {
 	if pattern == "" {
 		pattern = "polecat/*"
 	}
 
 	// Get current branch to avoid deleting it
-	currentBranch, _ := g.CurrentBranch()
-	defaultBranch := g.RemoteDefaultBranch()
+	currentBranch, _ := CurrentBranch(g)
+	defaultBranch := RemoteDefaultBranch(g)
 
 	// List all local branches matching the pattern
-	branches, err := g.ListBranches(pattern)
+	branches, err := ListBranches(g, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("listing branches: %w", err)
 	}
@@ -3484,13 +3484,13 @@ func (g *Git) PruneStaleBranches(pattern string, dryRun bool) ([]PrunedBranch, e
 		}
 
 		// Check if the remote tracking branch still exists
-		hasRemote, err := g.RemoteTrackingBranchExists("origin", branch)
+		hasRemote, err := RemoteTrackingBranchExists(g, "origin", branch)
 		if err != nil {
 			continue // Skip on error, don't fail the whole operation
 		}
 
 		// Check if the branch is merged to the default branch
-		merged, err := g.IsAncestor(branch, "origin/"+defaultBranch)
+		merged, err := IsAncestor(g, branch, "origin/"+defaultBranch)
 		if err != nil {
 			// If we can't determine merge status, only prune if remote is gone
 			if hasRemote {
@@ -3514,7 +3514,7 @@ func (g *Git) PruneStaleBranches(pattern string, dryRun bool) ([]PrunedBranch, e
 		if !dryRun {
 			// Use -d (not -D) for safety — only deletes fully merged branches.
 			// For "no-remote" branches that aren't merged, -d will fail safely.
-			if err := g.DeleteBranch(branch, false); err != nil {
+			if err := DeleteBranch(g, branch, false); err != nil {
 				// If -d fails (not merged), skip this branch
 				continue
 			}
@@ -3615,7 +3615,7 @@ func InitSparseCheckout(repoPath string, paths []string) error {
 
 // SubmoduleChanges detects submodule pointer changes between two refs.
 // Returns nil if no submodules changed or if the repo has no submodules.
-func (g *Git) SubmoduleChanges(base, head string) ([]SubmoduleChange, error) {
+func SubmoduleChanges(g *Git, base, head string) ([]SubmoduleChange, error) {
 	// git diff --raw shows mode 160000 for gitlink (submodule) entries
 	out, err := run(g, "diff", "--raw", base, head)
 	if err != nil {
@@ -3745,7 +3745,7 @@ func submoduleURL(g *Git, ref, submodulePath string) (string, error) {
 // PushSubmoduleCommit pushes a specific commit SHA from a submodule to its remote.
 // The submodulePath is relative to the repo working directory.
 // The commit must exist in the submodule's object store (shared via .repo.git/modules/).
-func (g *Git) PushSubmoduleCommit(submodulePath, sha, remote string) error {
+func PushSubmoduleCommit(g *Git, submodulePath, sha, remote string) error {
 	absPath := filepath.Join(g.workDir, submodulePath)
 	// Detect the remote's default branch (don't assume main)
 	defaultBranch, err := submoduleDefaultBranch(absPath, remote)

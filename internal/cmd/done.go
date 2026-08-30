@@ -802,7 +802,7 @@ func runDone(_ *cobra.Command, _ []string) (retErr error) {
 // parent repo push. This prevents the parent's submodule pointer from
 // referencing commits that don't exist on the submodule's remote (gt-dzs).
 func pushSubmoduleChanges(g *git.Git, baseRef string) {
-	subChanges, err := g.SubmoduleChanges(baseRef, "HEAD")
+	subChanges, err := git.SubmoduleChanges(g, baseRef, "HEAD")
 	if err != nil {
 		// Non-fatal: repos without submodules return nil, nil.
 		// Only warn if the error is real (not just "no submodules").
@@ -818,7 +818,7 @@ func pushSubmoduleChanges(g *git.Git, baseRef string) {
 			shortSHA = shortSHA[:8]
 		}
 		fmt.Printf("Pushing submodule %s (%s)...\n", sc.Path, shortSHA)
-		if subPushErr := g.PushSubmoduleCommit(sc.Path, sc.NewSHA, "origin"); subPushErr != nil {
+		if subPushErr := git.PushSubmoduleCommit(g, sc.Path, sc.NewSHA, "origin"); subPushErr != nil {
 			style.PrintWarning("submodule push failed for %s: %v (parent push may fail)", sc.Path, subPushErr)
 		} else {
 			fmt.Printf("%s Submodule %s pushed\n", style.Bold.Render("✓"), sc.Path)
@@ -897,7 +897,7 @@ func noteVerifiedPushSkipped(sourceBD *beads.Beads, cwd, issueID, branch, commit
 }
 
 func verifyPushedCommitWithBareFallback(g *git.Git, townRoot, rigName, branch, commit string) error {
-	verifyErr := g.VerifyPushedCommit("origin", branch, commit)
+	verifyErr := git.VerifyPushedCommit(g, "origin", branch, commit)
 	if verifyErr == nil {
 		return nil
 	}
@@ -907,7 +907,7 @@ func verifyPushedCommitWithBareFallback(g *git.Git, townRoot, rigName, branch, c
 		return verifyErr
 	}
 	bareGit := git.NewGitWithDir(bareRepoPath, "")
-	tip, tipErr := bareGit.Rev("refs/heads/" + branch)
+	tip, tipErr := git.Rev(bareGit, "refs/heads/"+branch)
 	if tipErr == nil && strings.TrimSpace(tip) == strings.TrimSpace(commit) {
 		return nil
 	}
@@ -1513,7 +1513,7 @@ func isPolecatActor(actor string) bool {
 // stripOverlayInstructionFiles removes Gas Town overlay files from the branch
 // before push. The overlay pair may be CLAUDE.md/AGENTS.md or the local pair.
 func stripOverlayInstructionFiles(g *git.Git, defaultBranch, baseRef string) bool {
-	changedFiles, err := g.DiffNameOnly(baseRef, "HEAD")
+	changedFiles, err := git.DiffNameOnly(g, baseRef, "HEAD")
 	if err != nil {
 		return false
 	}
@@ -1533,7 +1533,7 @@ func stripOverlayInstructionFiles(g *git.Git, defaultBranch, baseRef string) boo
 		return false
 	}
 
-	if commitErr := g.Commit("chore: strip Gas Town overlay from instruction files"); commitErr != nil {
+	if commitErr := git.Commit(g, "chore: strip Gas Town overlay from instruction files"); commitErr != nil {
 		style.PrintWarning("failed to create overlay cleanup commit: %v", commitErr)
 		return false
 	}
@@ -1547,20 +1547,20 @@ func stripOverlayCanonical(g *git.Git, defaultBranch, baseRef, name string, chan
 	if !changed {
 		return false
 	}
-	currentContent, showErr := g.ShowFile("HEAD", name)
+	currentContent, showErr := git.ShowFile(g, "HEAD", name)
 	if showErr != nil || !instructions.IsGasTownOverlay(currentContent) {
 		return false
 	}
-	if _, origErr := g.ShowFile(baseRef, name); origErr != nil {
-		if rmErr := g.RmCached(name); rmErr == nil {
+	if _, origErr := git.ShowFile(g, baseRef, name); origErr != nil {
+		if rmErr := git.RmCached(g, name); rmErr == nil {
 			fmt.Printf("%s Removed overlay %s (did not exist on %s)\n",
 				style.Bold.Render("→"), name, defaultBranch)
 			return true
 		}
 		return false
 	}
-	if coErr := g.CheckoutFileFromRef(baseRef, name); coErr == nil {
-		if addErr := g.Add(name); addErr == nil {
+	if coErr := git.CheckoutFileFromRef(g, baseRef, name); coErr == nil {
+		if addErr := git.Add(g, name); addErr == nil {
 			fmt.Printf("%s Restored original %s (stripped Gas Town overlay)\n",
 				style.Bold.Render("→"), name)
 			return true
@@ -1574,12 +1574,12 @@ func stripOverlayLocal(g *git.Git, name string, changed, requireOverlay bool) bo
 		return false
 	}
 	if requireOverlay {
-		currentContent, showErr := g.ShowFile("HEAD", name)
+		currentContent, showErr := git.ShowFile(g, "HEAD", name)
 		if showErr != nil || !instructions.IsGasTownOverlay(currentContent) {
 			return false
 		}
 	}
-	if rmErr := g.RmCached(name); rmErr == nil {
+	if rmErr := git.RmCached(g, name); rmErr == nil {
 		fmt.Printf("%s Removed %s from branch (Gas Town overlay)\n",
 			style.Bold.Render("→"), name)
 		return true

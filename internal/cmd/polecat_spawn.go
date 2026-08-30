@@ -264,7 +264,7 @@ func detectIntegrationBaseBranch(r *rig.Rig, hookBead string) string {
 	if repoErr != nil {
 		return ""
 	}
-	detected, detectErr := beads.DetectIntegrationBranch(beads.New(r.Path), repoGit, hookBead)
+	detected, detectErr := beads.DetectIntegrationBranch(beads.New(r.Path), git.Checker{Git: repoGit}, hookBead)
 	if detectErr != nil || detected == "" {
 		return ""
 	}

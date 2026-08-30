@@ -138,7 +138,7 @@ func applyGitWorkstate(g *workstateGather) {
 }
 
 func applyGitBranchWorkstate(g *workstateGather, repo *git.Git) {
-	branch, branchErr := repo.CurrentBranch()
+	branch, branchErr := git.CurrentBranch(repo)
 	if branchErr != nil {
 		g.input.GitCheckFailed = true
 		g.input.GitCheckFailedReason = fmt.Sprintf("git branch: %v", branchErr)
@@ -153,7 +153,7 @@ func applyGitBranchWorkstate(g *workstateGather, repo *git.Git) {
 }
 
 func applyGitDirtyWorkstate(g *workstateGather, repo *git.Git) {
-	status, err := repo.CheckUncommittedWork()
+	status, err := git.CheckUncommittedWork(repo)
 	if err != nil {
 		g.input.GitCheckFailed = true
 		g.input.GitCheckFailedReason = fmt.Sprintf("git worktree: %v", err)
@@ -168,7 +168,7 @@ func applyGitPreservationWorkstate(g *workstateGather, repo *git.Git) {
 	if g.input.Branch == "" {
 		return
 	}
-	preservation, err := repo.BranchPreservationStatus(g.input.Branch, "origin", g.targetRefs)
+	preservation, err := git.CheckBranchPreservation(repo, g.input.Branch, "origin", g.targetRefs)
 	if err != nil {
 		g.input.GitCheckFailed = true
 		g.input.GitCheckFailedReason = fmt.Sprintf("git preservation: %v", err)

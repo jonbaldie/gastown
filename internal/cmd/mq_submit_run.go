@@ -137,7 +137,7 @@ func resolveMqSubmitBranch(g *git.Git, townRoot, rigName, requested string) (str
 	branch := requested
 	if branch == "" {
 		var err error
-		branch, err = g.CurrentBranch()
+		branch, err = git.CurrentBranch(g)
 		if err != nil {
 			return "", "", fmt.Errorf("getting current branch: %w", err)
 		}
@@ -195,7 +195,7 @@ func resolveMqSubmitTarget(r *mqSubmitRun) error {
 	if !mqSubmitRefineryEnabled(r.townRoot, r.rigName) {
 		return nil
 	}
-	autoTarget, err := beads.DetectIntegrationBranch(r.sourceBD, r.g, r.issueID)
+	autoTarget, err := beads.DetectIntegrationBranch(r.sourceBD, git.Checker{Git: r.g}, r.issueID)
 	if err != nil {
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(note: %v)", err)))
 		return nil

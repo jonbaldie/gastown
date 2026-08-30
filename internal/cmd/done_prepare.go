@@ -32,7 +32,7 @@ func setupDoneFlow(exitType string) (*doneFlow, error) {
 		return nil, err
 	}
 	g := git.NewGit(worktree.cwd)
-	branch, err := g.CurrentBranch()
+	branch, err := git.CurrentBranch(g)
 	if err != nil {
 		return nil, fmt.Errorf("getting current branch: %w", err)
 	}
@@ -47,7 +47,7 @@ func setupDoneFlow(exitType string) (*doneFlow, error) {
 	}
 	touchDoneExitingHeartbeat(worktree.townRoot, issueCtx.issueID)
 	defaultBranch := doneDefaultBranch(worktree.townRoot, worktree.rigName)
-	baseRef := g.CleanBaseRef("origin", defaultBranch, doneState().target)
+	baseRef := git.CleanBaseRef(g, "origin", defaultBranch, doneState().target)
 	return newDoneFlow(exitType, worktree, g, branch, defaultBranch, baseRef, issueCtx), nil
 }
 
@@ -80,12 +80,12 @@ func autoDetectDoneCleanupStatus(g *git.Git, cwd, branch string) {
 	if doneState().cleanupStatus != "" {
 		return
 	}
-	workStatus, err := g.CheckUncommittedWork()
+	workStatus, err := git.CheckUncommittedWork(g)
 	if err != nil {
 		style.PrintWarning("could not auto-detect cleanup status: %v", err)
 		return
 	}
-	pushed, unpushedCount, pushErr := g.BranchPushedToRemote(branch, "origin")
+	pushed, unpushedCount, pushErr := git.BranchPushedToRemote(g, branch, "origin")
 	if pushErr != nil {
 		style.PrintWarning("could not check if branch is pushed: %v", pushErr)
 	}
@@ -96,7 +96,7 @@ func autoPopDoneStashes(g *git.Git) {
 	if doneState().cleanupStatus != "stash" {
 		return
 	}
-	entries, err := g.StashListForBranch()
+	entries, err := git.StashListForBranch(g)
 	if err != nil {
 		style.PrintWarning("auto-pop: could not list stashes: %v — orphaned stashes may remain", err)
 		return
@@ -109,7 +109,7 @@ func autoPopDoneStashes(g *git.Git) {
 	if !popDoneStashesOldestFirst(g, entries) {
 		return
 	}
-	workStatus, wsErr := g.CheckUncommittedWork()
+	workStatus, wsErr := git.CheckUncommittedWork(g)
 	if wsErr == nil && workStatus.HasUncommittedChanges {
 		doneState().cleanupStatus = "uncommitted"
 		fmt.Printf("%s Stash content moved to working tree — will auto-commit below.\n",
@@ -123,13 +123,13 @@ func popDoneStashesOldestFirst(g *git.Git, entries []git.StashEntry) bool {
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
 		fmt.Printf("  popping %s — %s\n", e.Ref, e.Message)
-		if popErr := g.StashPop(e.Ref); popErr != nil {
+		if popErr := git.StashPop(g, e.Ref); popErr != nil {
 			style.PrintWarning("auto-pop %s failed (likely conflict): %v", e.Ref, popErr)
 			style.PrintWarning("stopping pop chain — resolve conflict manually then re-run gt done")
 			return false
 		}
 		var err error
-		entries, err = g.StashListForBranch()
+		entries, err = git.StashListForBranch(g)
 		if err != nil || len(entries) == 0 {
 			break
 		}
@@ -141,7 +141,7 @@ func autoCommitDoneUncommittedWork(g *git.Git, cwd, branch string) error {
 	if doneState().cleanupStatus != "uncommitted" {
 		return nil
 	}
-	workStatus, err := g.CheckUncommittedWork()
+	workStatus, err := git.CheckUncommittedWork(g)
 	if err != nil || !workStatus.HasUncommittedChanges || workStatus.CleanExcludingSafetyNet(cwd) {
 		return nil
 	}
@@ -151,7 +151,7 @@ func autoCommitDoneUncommittedWork(g *git.Git, cwd, branch string) error {
 
 	fmt.Printf("\n%s Uncommitted changes detected — auto-saving to prevent work loss\n", style.Bold.Render("⚠"))
 	fmt.Printf("  Files: %s\n\n", workStatus.String())
-	if addErr := g.StageSafetyNet(); addErr != nil {
+	if addErr := git.StageSafetyNet(g); addErr != nil {
 		style.PrintWarning("auto-commit: git add failed: %v — uncommitted work may be at risk", addErr)
 		return nil
 	}
@@ -161,15 +161,15 @@ func autoCommitDoneUncommittedWork(g *git.Git, cwd, branch string) error {
 }
 
 func unstageDoneOverlayFiles(g *git.Git, cwd string) {
-	_ = g.ResetFiles("CLAUDE.local.md")
-	_ = g.ResetFiles("AGENTS.local.md")
+	_ = git.ResetFiles(g, "CLAUDE.local.md")
+	_ = git.ResetFiles(g, "AGENTS.local.md")
 	for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
 		data, readErr := os.ReadFile(filepath.Join(cwd, name))
 		if readErr != nil {
 			continue
 		}
 		if instructions.IsGasTownOverlay(string(data)) {
-			_ = g.ResetFiles(name)
+			_ = git.ResetFiles(g, name)
 		}
 	}
 }
@@ -179,7 +179,7 @@ func commitDoneSafetyNet(g *git.Git, branch string) {
 	if issueFromBranch := parseBranchName(branch).Issue; issueFromBranch != "" {
 		autoMsg = fmt.Sprintf("fix: auto-save uncommitted implementation work (%s, gt-pvx safety net)", issueFromBranch)
 	}
-	staged, stagedErr := g.HasStagedChanges()
+	staged, stagedErr := git.HasStagedChanges(g)
 	if stagedErr != nil {
 		style.PrintWarning("auto-commit: checking staged changes failed: %v — uncommitted work may be at risk", stagedErr)
 		return
@@ -188,7 +188,7 @@ func commitDoneSafetyNet(g *git.Git, branch string) {
 		fmt.Printf("  No source changes to auto-save (binaries and runtime artifacts stay uncommitted).\n\n")
 		return
 	}
-	if commitErr := g.Commit(autoMsg); commitErr != nil {
+	if commitErr := git.Commit(g, autoMsg); commitErr != nil {
 		style.PrintWarning("auto-commit: git commit failed: %v — uncommitted work may be at risk", commitErr)
 		return
 	}

@@ -46,7 +46,7 @@ func initForceEnabled(cmd *cobra.Command) bool {
 
 func ensureInitRepository(cwd string) error {
 	g := git.NewGit(cwd)
-	if _, err := g.CurrentBranch(); err != nil {
+	if _, err := git.CurrentBranch(g); err != nil {
 		return fmt.Errorf("not a git repository (run 'git init' first)")
 	}
 	return nil
