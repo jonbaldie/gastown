@@ -159,6 +159,27 @@ jobs:
           version: v2.11.4
           args: --timeout=5m
 
+  messgo:
+    name: Production Go quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install messgo
+        run: go install github.com/quality-gates/messgo/cmd/messgo@latest
+
+      - name: Run messgo on production Go
+        run: |
+          messgo . github unusedcode,design,codesize \
+            --ignore-tests \
+            --exclude .claude
+
   mutago:
     name: Mutation Tests
     if: github.event_name == 'pull_request'
