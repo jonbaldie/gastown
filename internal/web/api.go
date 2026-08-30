@@ -92,61 +92,47 @@ func NewAPIHandler(defaultRunTimeout, maxRunTimeout time.Duration, csrfToken str
 
 // ServeHTTP routes API requests to the appropriate handler.
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// No CORS headers — the dashboard is served from the same origin.
-	// Omitting Access-Control-Allow-Origin prevents cross-origin requests.
-
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	// Validate CSRF token on all POST requests.
-	if r.Method == http.MethodPost && h.csrfToken != "" {
-		if r.Header.Get("X-Dashboard-Token") != h.csrfToken {
-			h.sendError(w, "Invalid or missing dashboard token", http.StatusForbidden)
-			return
-		}
+	if !validAPICSRF(h, r) {
+		h.sendError(w, "Invalid or missing dashboard token", http.StatusForbidden)
+		return
 	}
+	routeAPI(h, w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
 
-	path := strings.TrimPrefix(r.URL.Path, "/api")
-	switch {
-	case path == "/run" && r.Method == http.MethodPost:
-		h.handleRun(w, r)
-	case path == "/commands" && r.Method == http.MethodGet:
-		h.handleCommands(w, r)
-	case path == "/options" && r.Method == http.MethodGet:
-		h.handleOptions(w, r)
-	case path == "/mail/inbox" && r.Method == http.MethodGet:
-		h.handleMailInbox(w, r)
-	case path == "/mail/threads" && r.Method == http.MethodGet:
-		h.handleMailThreads(w, r)
-	case path == "/mail/read" && r.Method == http.MethodGet:
-		h.handleMailRead(w, r)
-	case path == "/mail/send" && r.Method == http.MethodPost:
-		h.handleMailSend(w, r)
-	case path == "/issues/show" && r.Method == http.MethodGet:
-		h.handleIssueShow(w, r)
-	case path == "/issues/create" && r.Method == http.MethodPost:
-		h.handleIssueCreate(w, r)
-	case path == "/issues/close" && r.Method == http.MethodPost:
-		h.handleIssueClose(w, r)
-	case path == "/issues/update" && r.Method == http.MethodPost:
-		h.handleIssueUpdate(w, r)
-	case path == "/pr/show" && r.Method == http.MethodGet:
-		h.handlePRShow(w, r)
-	case path == "/rig/add" && r.Method == http.MethodPost:
-		h.handleRigAdd(w, r)
-	case path == "/crew" && r.Method == http.MethodGet:
-		h.handleCrew(w, r)
-	case path == "/ready" && r.Method == http.MethodGet:
-		h.handleReady(w, r)
-	case path == "/events" && r.Method == http.MethodGet:
-		h.handleSSE(w, r)
-	case path == "/session/preview" && r.Method == http.MethodGet:
-		h.handleSessionPreview(w, r)
-	default:
+func validAPICSRF(h *APIHandler, r *http.Request) bool {
+	return r.Method != http.MethodPost || h.csrfToken == "" || r.Header.Get("X-Dashboard-Token") == h.csrfToken
+}
+
+func routeAPI(h *APIHandler, w http.ResponseWriter, r *http.Request, path string) {
+	routes := map[string]func(http.ResponseWriter, *http.Request){
+		http.MethodPost + " /run":            h.handleRun,
+		http.MethodGet + " /commands":        h.handleCommands,
+		http.MethodGet + " /options":         h.handleOptions,
+		http.MethodGet + " /mail/inbox":      h.handleMailInbox,
+		http.MethodGet + " /mail/threads":    h.handleMailThreads,
+		http.MethodGet + " /mail/read":       h.handleMailRead,
+		http.MethodPost + " /mail/send":      h.handleMailSend,
+		http.MethodGet + " /issues/show":     h.handleIssueShow,
+		http.MethodPost + " /issues/create":  h.handleIssueCreate,
+		http.MethodPost + " /issues/close":   h.handleIssueClose,
+		http.MethodPost + " /issues/update":  h.handleIssueUpdate,
+		http.MethodGet + " /pr/show":         h.handlePRShow,
+		http.MethodPost + " /rig/add":        h.handleRigAdd,
+		http.MethodGet + " /crew":            h.handleCrew,
+		http.MethodGet + " /ready":           h.handleReady,
+		http.MethodGet + " /events":          h.handleSSE,
+		http.MethodGet + " /session/preview": h.handleSessionPreview,
+	}
+	handle, ok := routes[r.Method+" "+path]
+	if !ok {
 		http.Error(w, "Not found", http.StatusNotFound)
+		return
 	}
+	handle(w, r)
 }
 
 // handleRun executes a gt command and returns the result.
