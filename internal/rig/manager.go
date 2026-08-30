@@ -420,126 +420,20 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Only ~/gt/CLAUDE.md (town-root identity anchor) exists on disk.
 	// Full context is injected ephemerally by `gt prime` at session start.
 
-	// Initialize beads at rig level BEFORE creating worktrees.
-	// This ensures rig/.beads exists so worktree redirects can point to it.
-	if err := m.InitializeRigBeads(rigPath, opts.Name, opts.BeadsPrefix, RigBeadsInitOptions{
-		SkipDoltCheck: opts.SkipDoltCheck,
+	if err := provisionNewRigBeads(m.townRoot, rigPath, opts.Name, func() error {
+		return m.InitializeRigBeads(rigPath, opts.Name, opts.BeadsPrefix, RigBeadsInitOptions{SkipDoltCheck: opts.SkipDoltCheck})
 	}); err != nil {
 		return nil, err
 	}
-
-	// Auto-create DoltHub remote for the rig's beads database.
-	// Requires DOLTHUB_TOKEN and DOLTHUB_ORG environment variables.
-	// Non-fatal: sync will work without a remote; user can add one manually later.
-	if token := doltserver.DoltHubToken(); token != "" {
-		if org := doltserver.DoltHubOrg(); org != "" {
-			dbName := "beads_" + opts.Name
-			dbDir := doltserver.RigDatabaseDir(m.townRoot, dbName)
-			fmt.Printf("  Setting up DoltHub remote for %s/%s...\n", org, doltserver.DoltHubRepoName(dbName))
-			if err := doltserver.SetupDoltHubRemote(dbDir, org, dbName, token); err != nil {
-				fmt.Printf("  Warning: DoltHub remote setup failed: %v\n", err)
-				fmt.Printf("  You can set up the remote manually later with 'gt dolt sync'.\n")
-			} else {
-				fmt.Printf("   ✓ DoltHub remote configured and initial push complete\n")
-			}
-		}
+	if err := createNewRigWorkspaces(m.townRoot, rigPath, bareGit, defaultBranch); err != nil {
+		return nil, err
 	}
-
-	resolvedBeadsPath := beads.ResolveBeadsDir(rigPath)
-	if err := beads.ProvisionPrimeMD(resolvedBeadsPath); err != nil {
-		fmt.Printf("  Warning: Could not provision PRIME.md: %v\n", err)
-	}
-
-	// Create refinery as worktree from bare repo on default branch.
-	// Refinery needs to see polecat branches (shared .repo.git) and merges them.
-	// Being on the default branch allows direct merge workflow.
-	fmt.Printf("  Creating refinery worktree...\n")
-	refineryRigPath := filepath.Join(rigPath, "refinery", "rig")
-	if err := os.MkdirAll(filepath.Dir(refineryRigPath), 0755); err != nil {
-		return nil, fmt.Errorf("creating refinery dir: %w", err)
-	}
-	if err := git.WorktreeAddExisting(bareGit, refineryRigPath, defaultBranch); err != nil {
-		return nil, fmt.Errorf("creating refinery worktree: %w", err)
-	}
-	refineryGit := git.NewGit(refineryRigPath)
-	if err := git.ConfigureHooksPath(refineryGit); err != nil {
-		return nil, fmt.Errorf("configuring hooks for refinery: %w", err)
-	}
-	fmt.Printf("   ✓ Created refinery worktree\n")
-	if err := Provision(rigPath, refineryRigPath, "refinery"); err != nil {
-		fmt.Printf("  Warning: Could not provision refinery workspace: %v\n", err)
-	}
-
-	// Create empty crew directory with README (crew members added via gt crew add)
-	crewPath := filepath.Join(rigPath, "crew")
-	if err := os.MkdirAll(crewPath, 0755); err != nil {
-		return nil, fmt.Errorf("creating crew dir: %w", err)
-	}
-	// Create README with instructions
-	readmePath := filepath.Join(crewPath, "README.md")
-	readmeContent := `# Crew Directory
-
-This directory contains crew worker workspaces.
-
-## Adding a Crew Member
-
-` + "```bash" + `
-gt crew add <name>    # Creates crew/<name>/ with a git clone
-` + "```" + `
-
-## Crew vs Polecats
-
-- **Crew**: Persistent, user-managed workspaces (never auto-garbage-collected)
-- **Polecats**: Transient, witness-managed workers (cleaned up after work completes)
-
-Use crew for your own workspace. Polecats are for batch work dispatch.
-`
-	if err := os.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
-		return nil, fmt.Errorf("creating crew README: %w", err)
-	}
-	// Create witness directory (no clone needed)
-	witnessPath := filepath.Join(rigPath, "witness")
-	if err := os.MkdirAll(witnessPath, 0755); err != nil {
-		return nil, fmt.Errorf("creating witness dir: %w", err)
-	}
-	// NOTE: Witness hooks are installed by witness/manager.go:Start() via EnsureSettingsForRole.
-	// No need to create patrol hooks here — agents self-install at startup.
-
-	// Create polecats directory with agent settings scaffold.
-	// Settings are passed to the agent via --settings flag (Claude) or installed
-	// in workDir (other agents). Scaffolding here ensures the settings file exists
-	// before the first polecat session starts, preventing startup failures.
-	polecatsPath := filepath.Join(rigPath, "polecats")
-	if err := os.MkdirAll(polecatsPath, 0755); err != nil {
-		return nil, fmt.Errorf("creating polecats dir: %w", err)
-	}
-	// Use the town's default_agent for scaffolding, falling back to claude.
-	// This ensures that when the town is configured with opencode (or another agent),
-	// the polecat directory gets the correct config dir (e.g. .opencode/) instead of .claude/.
-	scaffoldPolecatWorkspace(m.townRoot, polecatsPath)
 
 	// Register route in town-level routes.jsonl BEFORE creating agent beads.
 	// initAgentBeads calls ResolveRoutingTarget which needs the route to exist.
 	// Without this, agent bead creation logs "no route found" warnings (#1424).
-	if opts.BeadsPrefix != "" {
-		routePath := opts.Name
-		mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
-		if _, err := os.Stat(mayorRigBeads); err == nil {
-			routePath = opts.Name + "/mayor/rig"
-		}
-		route := beads.Route{
-			Prefix: opts.BeadsPrefix + "-",
-			Path:   routePath,
-		}
-		if err := beads.AppendRoute(m.townRoot, route); err != nil {
-			fmt.Printf("  Warning: Could not update routes.jsonl: %v\n", err)
-		}
-	}
-
-	// Create rig-level settings directory (used by gt config for rig overrides)
-	rigSettingsPath := filepath.Join(rigPath, constants.DirSettings)
-	if err := os.MkdirAll(rigSettingsPath, 0755); err != nil {
-		return nil, fmt.Errorf("creating settings dir: %w", err)
+	if err := prepareNewRigRouting(m.townRoot, rigPath, opts.Name, opts.BeadsPrefix); err != nil {
+		return nil, err
 	}
 
 	// Note: we intentionally do NOT seed local rig settings from
@@ -548,55 +442,15 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	// Seeding at rig-add time would fork the config, silently shadowing
 	// any future repo-side updates.
 
-	// Create rig-level agent beads (witness, refinery) in rig beads.
-	// Town-level agents (mayor, deacon) are created by gt install in town beads.
-	if err := m.initAgentBeads(rigPath, opts.Name, opts.BeadsPrefix); err != nil {
-		// Non-fatal: log warning but continue
-		fmt.Fprintf(os.Stderr, "  Warning: Could not create agent beads: %v\n", err)
-	}
-
-	// Seed patrol molecules for this rig
-	if err := m.seedPatrolMolecules(rigPath); err != nil {
-		// Non-fatal: log warning but continue
-		fmt.Fprintf(os.Stderr, "  Warning: Could not seed patrol molecules: %v\n", err)
-	}
-
-	// Create plugin directories
-	if err := m.createPluginDirectories(rigPath); err != nil {
-		// Non-fatal: log warning but continue
-		fmt.Fprintf(os.Stderr, "  Warning: Could not create plugin directories: %v\n", err)
-	}
-
-	// Register in town config
-	m.config.Rigs[opts.Name] = config.RigEntry{
-		GitURL:      opts.GitURL,
-		PushURL:     opts.PushURL,
-		UpstreamURL: opts.UpstreamURL,
-		LocalRepo:   localRepo,
-		AddedAt:     time.Now(),
-		BeadsConfig: &config.BeadsConfig{
-			Prefix: opts.BeadsPrefix,
-		},
-	}
-
-	// Post-init identity verification (gas-tc4): verify metadata.json points
-	// to the correct database. This catches identity mismatches caused by bd init
-	// writing the wrong database name, before the rig is considered ready.
-	if err := m.verifyRigIdentity(rigPath, opts.Name); err != nil {
-		// Non-fatal but loud: the rig was created, but identity may be wrong.
-		// gt doctor --fix can repair this.
-		fmt.Fprintf(os.Stderr, "  ⚠ Identity verification warning: %v\n", err)
-		fmt.Fprintf(os.Stderr, "  Run 'gt doctor --fix' to repair if needed.\n")
-	}
-
-	// Persist rigs.json atomically before marking success.
-	// This ensures directory creation and rigs.json registration are an atomic unit:
-	// if the save fails, success remains false and the deferred cleanup removes the dir.
-	// Without this, a failure after AddRig returns (but before the caller saves) would
-	// leave a directory that is not registered in rigs.json.
-	rigsPath := filepath.Join(m.townRoot, "mayor", "rigs.json")
-	if err := config.SaveRigsConfig(rigsPath, m.config); err != nil {
-		return nil, fmt.Errorf("registering rig in rigs.json: %w", err)
+	runNewRigBestEffortSetup(
+		func() error { return m.initAgentBeads(rigPath, opts.Name, opts.BeadsPrefix) },
+		func() error { return m.seedPatrolMolecules(rigPath) },
+		func() error { return m.createPluginDirectories(rigPath) },
+	)
+	if err := registerNewRig(m.townRoot, m.config, opts, localRepo, func() error {
+		return m.verifyRigIdentity(rigPath, opts.Name)
+	}); err != nil {
+		return nil, err
 	}
 
 	success = true
@@ -853,6 +707,144 @@ func trackedBeadsInitArgs(townRoot, configPath, rigName, prefix string) []string
 		args = append(args, "--reinit-local", "--discard-remote", "--destroy-token=DESTROY-"+prefix)
 	}
 	return args
+}
+
+func provisionNewRigBeads(townRoot, rigPath, rigName string, initialize func() error) error {
+	if err := initialize(); err != nil {
+		return err
+	}
+	setupRigDoltHubRemote(townRoot, rigName)
+	if err := beads.ProvisionPrimeMD(beads.ResolveBeadsDir(rigPath)); err != nil {
+		fmt.Printf("  Warning: Could not provision PRIME.md: %v\n", err)
+	}
+	return nil
+}
+
+func setupRigDoltHubRemote(townRoot, rigName string) {
+	token := doltserver.DoltHubToken()
+	org := doltserver.DoltHubOrg()
+	if token == "" || org == "" {
+		return
+	}
+	dbName := "beads_" + rigName
+	dbDir := doltserver.RigDatabaseDir(townRoot, dbName)
+	fmt.Printf("  Setting up DoltHub remote for %s/%s...\n", org, doltserver.DoltHubRepoName(dbName))
+	if err := doltserver.SetupDoltHubRemote(dbDir, org, dbName, token); err != nil {
+		fmt.Printf("  Warning: DoltHub remote setup failed: %v\n", err)
+		fmt.Printf("  You can set up the remote manually later with 'gt dolt sync'.\n")
+		return
+	}
+	fmt.Printf("   ✓ DoltHub remote configured and initial push complete\n")
+}
+
+func createNewRigWorkspaces(townRoot, rigPath string, bareGit *git.Git, defaultBranch string) error {
+	if err := createRefineryWorkspace(rigPath, bareGit, defaultBranch); err != nil {
+		return err
+	}
+	crewPath := filepath.Join(rigPath, "crew")
+	if err := os.MkdirAll(crewPath, 0755); err != nil {
+		return fmt.Errorf("creating crew dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(crewPath, "README.md"), []byte(crewDirectoryReadme), 0644); err != nil {
+		return fmt.Errorf("creating crew README: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(rigPath, "witness"), 0755); err != nil {
+		return fmt.Errorf("creating witness dir: %w", err)
+	}
+	polecatsPath := filepath.Join(rigPath, "polecats")
+	if err := os.MkdirAll(polecatsPath, 0755); err != nil {
+		return fmt.Errorf("creating polecats dir: %w", err)
+	}
+	scaffoldPolecatWorkspace(townRoot, polecatsPath)
+	return nil
+}
+
+func createRefineryWorkspace(rigPath string, bareGit *git.Git, defaultBranch string) error {
+	fmt.Printf("  Creating refinery worktree...\n")
+	refineryPath := filepath.Join(rigPath, "refinery", "rig")
+	if err := os.MkdirAll(filepath.Dir(refineryPath), 0755); err != nil {
+		return fmt.Errorf("creating refinery dir: %w", err)
+	}
+	if err := git.WorktreeAddExisting(bareGit, refineryPath, defaultBranch); err != nil {
+		return fmt.Errorf("creating refinery worktree: %w", err)
+	}
+	if err := git.ConfigureHooksPath(git.NewGit(refineryPath)); err != nil {
+		return fmt.Errorf("configuring hooks for refinery: %w", err)
+	}
+	fmt.Printf("   ✓ Created refinery worktree\n")
+	if err := Provision(rigPath, refineryPath, "refinery"); err != nil {
+		fmt.Printf("  Warning: Could not provision refinery workspace: %v\n", err)
+	}
+	return nil
+}
+
+func prepareNewRigRouting(townRoot, rigPath, rigName, prefix string) error {
+	if prefix != "" {
+		routePath := rigName
+		if pathExists(filepath.Join(rigPath, "mayor", "rig", ".beads")) {
+			routePath = rigName + "/mayor/rig"
+		}
+		if err := beads.AppendRoute(townRoot, beads.Route{Prefix: prefix + "-", Path: routePath}); err != nil {
+			fmt.Printf("  Warning: Could not update routes.jsonl: %v\n", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(rigPath, constants.DirSettings), 0755); err != nil {
+		return fmt.Errorf("creating settings dir: %w", err)
+	}
+	return nil
+}
+
+const crewDirectoryReadme = `# Crew Directory
+
+This directory contains crew worker workspaces.
+
+## Adding a Crew Member
+
+` + "```bash" + `
+gt crew add <name>    # Creates crew/<name>/ with a git clone
+` + "```" + `
+
+## Crew vs Polecats
+
+- **Crew**: Persistent, user-managed workspaces (never auto-garbage-collected)
+- **Polecats**: Transient, witness-managed workers (cleaned up after work completes)
+
+Use crew for your own workspace. Polecats are for batch work dispatch.
+`
+
+func runNewRigBestEffortSetup(createAgents, seedPatrols, createPlugins func() error) {
+	steps := []struct {
+		label string
+		run   func() error
+	}{
+		{"create agent beads", createAgents},
+		{"seed patrol molecules", seedPatrols},
+		{"create plugin directories", createPlugins},
+	}
+	for _, step := range steps {
+		if err := step.run(); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: Could not %s: %v\n", step.label, err)
+		}
+	}
+}
+
+func registerNewRig(townRoot string, rigsConfig *config.RigsConfig, opts AddRigOptions, localRepo string, verifyIdentity func() error) error {
+	rigsConfig.Rigs[opts.Name] = config.RigEntry{
+		GitURL:      opts.GitURL,
+		PushURL:     opts.PushURL,
+		UpstreamURL: opts.UpstreamURL,
+		LocalRepo:   localRepo,
+		AddedAt:     time.Now(),
+		BeadsConfig: &config.BeadsConfig{Prefix: opts.BeadsPrefix},
+	}
+	if err := verifyIdentity(); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ Identity verification warning: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Run 'gt doctor --fix' to repair if needed.\n")
+	}
+	if err := config.SaveRigsConfig(filepath.Join(townRoot, "mayor", "rigs.json"), rigsConfig); err != nil {
+		return fmt.Errorf("registering rig in rigs.json: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) prepareAddRig(opts AddRigOptions) (preparedRigAdd, error) {
