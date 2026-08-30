@@ -20,11 +20,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/jonbaldie/gastown/internal/beads"
 	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jonbaldie/gastown/internal/beads"
 )
 
 // MigrateWispsResult holds migration statistics.
@@ -46,76 +46,74 @@ type MigrateWispsResult struct {
 // beads database (typically the rig's .beads directory or a directory with a redirect).
 func MigrateAgentBeadsToWisps(townRoot, workDir string, dryRun bool) (*MigrateWispsResult, error) {
 	result := &MigrateWispsResult{}
+	if err := prepareWispTables(workDir, result); err != nil {
+		return nil, err
+	}
+	syncWispTablesToGTServer(townRoot, workDir, result)
+	if dryRun {
+		result.AgentsCopied, _ = bdSQLCount(workDir, "SELECT COUNT(*) as cnt FROM issues WHERE issue_type = 'agent' AND status = 'open'")
+		return result, nil
+	}
+	if err := migrateAgentData(workDir, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
 
-	// Step 1: Ensure bd migrate has been run (sets up dolt_ignore entries)
+func prepareWispTables(workDir string, result *MigrateWispsResult) error {
 	if err := bdExec(workDir, "migrate", "--yes"); err != nil {
-		// Non-fatal: might already be up to date
 		if !strings.Contains(err.Error(), "already") {
 			fmt.Printf("  Note: bd migrate returned: %v\n", err)
 		}
 	}
-
-	// Step 2: Create wisps table if it doesn't exist (in bd's database)
 	created, err := ensureWispsTable(workDir)
 	if err != nil {
-		return nil, fmt.Errorf("creating wisps table: %w", err)
+		return fmt.Errorf("creating wisps table: %w", err)
 	}
 	result.WispsTableCreated = created
-
-	// Step 3: Create auxiliary tables (in bd's database)
 	auxTables, err := ensureWispAuxTables(workDir)
 	if err != nil {
-		return nil, fmt.Errorf("creating auxiliary tables: %w", err)
+		return fmt.Errorf("creating auxiliary tables: %w", err)
 	}
 	result.AuxTablesCreated = auxTables
 	if err := ensureWispDependencySchema(workDir); err != nil {
-		return nil, fmt.Errorf("updating wisp dependency schema: %w", err)
+		return fmt.Errorf("updating wisp dependency schema: %w", err)
 	}
+	return nil
+}
 
-	// Step 3b: Ensure wisps tables also exist on the gt Dolt server.
-	// The reaper connects directly to the gt Dolt server (port 3307), which is
-	// a separate process from bd's Dolt instance. Without this step, bd creates
-	// the tables on its own server but the reaper fails with "table not found".
+func syncWispTablesToGTServer(townRoot, workDir string, result *MigrateWispsResult) {
 	gtConfig := DefaultConfig(townRoot)
 	dbName := deriveDBName(townRoot, workDir)
-	if dbName != "" {
-		gtCreated, gtAux, err := ensureWispsOnGTServer(gtConfig.Host, gtConfig.Port, dbName)
-		if err != nil {
-			fmt.Printf("  Note: gt Dolt server table creation failed: %v\n", err)
-		} else {
-			if gtCreated {
-				result.WispsTableCreated = true
-				fmt.Printf("  ✓ Created wisps table on gt Dolt server (%s:%d/%s)\n", gtConfig.Host, gtConfig.Port, dbName)
-			}
-			for _, t := range gtAux {
-				result.AuxTablesCreated = append(result.AuxTablesCreated, t+" (gt server)")
-				fmt.Printf("  ✓ Created %s on gt Dolt server\n", t)
-			}
-		}
+	if dbName == "" {
+		return
 	}
-
-	if dryRun {
-		cnt, _ := bdSQLCount(workDir, "SELECT COUNT(*) as cnt FROM issues WHERE issue_type = 'agent' AND status = 'open'")
-		result.AgentsCopied = cnt
-		return result, nil
+	gtCreated, gtAux, err := ensureWispsOnGTServer(gtConfig.Host, gtConfig.Port, dbName)
+	if err != nil {
+		fmt.Printf("  Note: gt Dolt server table creation failed: %v\n", err)
+		return
 	}
+	if gtCreated {
+		result.WispsTableCreated = true
+		fmt.Printf("  ✓ Created wisps table on gt Dolt server (%s:%d/%s)\n", gtConfig.Host, gtConfig.Port, dbName)
+	}
+	for _, table := range gtAux {
+		result.AuxTablesCreated = append(result.AuxTablesCreated, table+" (gt server)")
+		fmt.Printf("  ✓ Created %s on gt Dolt server\n", table)
+	}
+}
 
-	// Step 4: Copy agent beads from issues to wisps
+func migrateAgentData(workDir string, result *MigrateWispsResult) error {
 	if err := copyAgentBeadsToWisps(workDir, result); err != nil {
-		return nil, fmt.Errorf("copying agent beads: %w", err)
+		return fmt.Errorf("copying agent beads: %w", err)
 	}
-
-	// Step 5: Copy auxiliary data
 	if err := copyAuxiliaryData(workDir, result); err != nil {
-		return nil, fmt.Errorf("copying auxiliary data: %w", err)
+		return fmt.Errorf("copying auxiliary data: %w", err)
 	}
-
-	// Step 6: Close originals in issues table
 	if err := closeOriginalAgentBeads(workDir, result); err != nil {
-		return nil, fmt.Errorf("closing originals: %w", err)
+		return fmt.Errorf("closing originals: %w", err)
 	}
-
-	return result, nil
+	return nil
 }
 
 // bdSQL executes a SQL query via `bd sql`.
@@ -300,38 +298,29 @@ func copyAgentBeadsToWisps(workDir string, result *MigrateWispsResult) error {
 
 // copyAuxiliaryData copies labels, comments, events, and dependencies for agent beads.
 func copyAuxiliaryData(workDir string, result *MigrateWispsResult) error {
-	// Copy labels
-	if err := bdSQL(workDir,
-		"INSERT IGNORE INTO wisp_labels (issue_id, label) SELECT l.issue_id, l.label FROM labels l INNER JOIN wisps w ON l.issue_id = w.id"); err != nil {
-		// Non-fatal if no matching labels
-		if !strings.Contains(err.Error(), "nothing") {
-			return fmt.Errorf("copying labels: %w", err)
+	counts := []*int{&result.LabelsCopied, &result.CommentsCopied, &result.EventsCopied}
+	copies := []struct{ name, insert, count string }{
+		{"labels", "INSERT IGNORE INTO wisp_labels (issue_id, label) SELECT l.issue_id, l.label FROM labels l INNER JOIN wisps w ON l.issue_id = w.id", "SELECT COUNT(*) as cnt FROM wisp_labels"},
+		{"comments", "INSERT IGNORE INTO wisp_comments (issue_id, author, text, created_at) SELECT c.issue_id, c.author, c.text, c.created_at FROM comments c INNER JOIN wisps w ON c.issue_id = w.id", "SELECT COUNT(*) as cnt FROM wisp_comments"},
+		{"events", "INSERT IGNORE INTO wisp_events (issue_id, event_type, actor, old_value, new_value, comment, created_at) SELECT e.issue_id, e.event_type, e.actor, e.old_value, e.new_value, e.comment, e.created_at FROM events e INNER JOIN wisps w ON e.issue_id = w.id", "SELECT COUNT(*) as cnt FROM wisp_events"},
+	}
+	for i, copy := range copies {
+		if err := copyAuxiliaryTable(workDir, copy.name, copy.insert, copy.count, counts[i]); err != nil {
+			return err
 		}
 	}
-	cnt, _ := bdSQLCount(workDir, "SELECT COUNT(*) as cnt FROM wisp_labels")
-	result.LabelsCopied = cnt
+	return copyDependencyData(workDir, result)
+}
 
-	// Copy comments
-	if err := bdSQL(workDir,
-		"INSERT IGNORE INTO wisp_comments (issue_id, author, text, created_at) SELECT c.issue_id, c.author, c.text, c.created_at FROM comments c INNER JOIN wisps w ON c.issue_id = w.id"); err != nil {
-		if !strings.Contains(err.Error(), "nothing") {
-			return fmt.Errorf("copying comments: %w", err)
-		}
+func copyAuxiliaryTable(workDir, name, insertQuery, countQuery string, count *int) error {
+	if err := bdSQL(workDir, insertQuery); err != nil && !strings.Contains(err.Error(), "nothing") {
+		return fmt.Errorf("copying %s: %w", name, err)
 	}
-	cnt, _ = bdSQLCount(workDir, "SELECT COUNT(*) as cnt FROM wisp_comments")
-	result.CommentsCopied = cnt
+	*count, _ = bdSQLCount(workDir, countQuery)
+	return nil
+}
 
-	// Copy events
-	if err := bdSQL(workDir,
-		"INSERT IGNORE INTO wisp_events (issue_id, event_type, actor, old_value, new_value, comment, created_at) SELECT e.issue_id, e.event_type, e.actor, e.old_value, e.new_value, e.comment, e.created_at FROM events e INNER JOIN wisps w ON e.issue_id = w.id"); err != nil {
-		if !strings.Contains(err.Error(), "nothing") {
-			return fmt.Errorf("copying events: %w", err)
-		}
-	}
-	cnt, _ = bdSQLCount(workDir, "SELECT COUNT(*) as cnt FROM wisp_events")
-	result.EventsCopied = cnt
-
-	// Copy dependencies
+func copyDependencyData(workDir string, result *MigrateWispsResult) error {
 	if err := bdSQL(workDir,
 		"INSERT IGNORE INTO wisp_dependencies (issue_id, depends_on_issue_id, depends_on_wisp_id, depends_on_external, type, created_at, created_by, metadata, thread_id) SELECT d.issue_id, CASE WHEN target_wisp.id IS NULL THEN d.depends_on_issue_id ELSE NULL END, CASE WHEN target_wisp.id IS NOT NULL THEN d.depends_on_issue_id ELSE d.depends_on_wisp_id END, d.depends_on_external, d.type, d.created_at, d.created_by, d.metadata, d.thread_id FROM dependencies d INNER JOIN wisps w ON d.issue_id = w.id LEFT JOIN wisps target_wisp ON target_wisp.id = d.depends_on_issue_id"); err != nil {
 		if !strings.Contains(err.Error(), "nothing") {
@@ -350,9 +339,7 @@ func copyAuxiliaryData(workDir string, result *MigrateWispsResult) error {
 			return fmt.Errorf("retargeting dependency targets: %w", err)
 		}
 	}
-	cnt, _ = bdSQLCount(workDir, "SELECT COUNT(*) as cnt FROM wisp_dependencies")
-	result.DepsCopied = cnt
-
+	result.DepsCopied, _ = bdSQLCount(workDir, "SELECT COUNT(*) as cnt FROM wisp_dependencies")
 	return nil
 }
 
@@ -394,38 +381,53 @@ func ensureWispsOnGTServer(host string, port int, dbName string) (wispsCreated b
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Check if wisps table exists
-	if !gtTableExists(ctx, db, dbName, "wisps") {
-		if _, err := db.ExecContext(ctx, wispsCreateDDL); err != nil {
-			return false, nil, fmt.Errorf("create wisps: %w", err)
-		}
-		wispsCreated = true
+	wispsCreated, err = ensureGTTable(ctx, db, dbName, "wisps", wispsCreateDDL)
+	if err != nil {
+		return false, nil, err
 	}
-
-	// Create auxiliary tables
-	for _, t := range wispAuxTableDDLs {
-		if gtTableExists(ctx, db, dbName, t.name) {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, t.ddl); err != nil {
-			return wispsCreated, auxCreated, fmt.Errorf("create %s: %w", t.name, err)
-		}
-		auxCreated = append(auxCreated, t.name)
+	auxCreated, err = ensureGTAuxTables(ctx, db, dbName)
+	if err != nil {
+		return wispsCreated, auxCreated, err
 	}
-
-	// Commit the DDL changes to Dolt history
-	if wispsCreated || len(auxCreated) > 0 {
-		commitMsg := fmt.Sprintf("migrate-wisps: create wisps tables in %s", dbName)
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_COMMIT('-Am', '%s')", commitMsg)); err != nil {
-			// Non-fatal: tables are created in working set even without commit
-			fmt.Printf("  Note: dolt commit after table creation: %v\n", err)
-		}
-	}
+	commitGTTableCreation(ctx, db, dbName, wispsCreated, auxCreated)
 	if err := ensureWispDependencySchemaOnGT(ctx, db, dbName); err != nil {
 		return wispsCreated, auxCreated, err
 	}
 
 	return wispsCreated, auxCreated, nil
+}
+
+func ensureGTAuxTables(ctx context.Context, db *sql.DB, dbName string) ([]string, error) {
+	var createdTables []string
+	for _, t := range wispAuxTableDDLs {
+		created, err := ensureGTTable(ctx, db, dbName, t.name, t.ddl)
+		if err != nil {
+			return createdTables, err
+		}
+		if created {
+			createdTables = append(createdTables, t.name)
+		}
+	}
+	return createdTables, nil
+}
+
+func commitGTTableCreation(ctx context.Context, db *sql.DB, dbName string, wispsCreated bool, auxCreated []string) {
+	if wispsCreated || len(auxCreated) > 0 {
+		commitMsg := fmt.Sprintf("migrate-wisps: create wisps tables in %s", dbName)
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_COMMIT('-Am', '%s')", commitMsg)); err != nil {
+			fmt.Printf("  Note: dolt commit after table creation: %v\n", err)
+		}
+	}
+}
+
+func ensureGTTable(ctx context.Context, db *sql.DB, dbName, tableName, ddl string) (bool, error) {
+	if gtTableExists(ctx, db, dbName, tableName) {
+		return false, nil
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return false, fmt.Errorf("create %s: %w", tableName, err)
+	}
+	return true, nil
 }
 
 // gtTableExists checks if a table exists on the gt Dolt server.
