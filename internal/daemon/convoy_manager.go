@@ -160,7 +160,7 @@ func (m *ConvoyManager) Start() error {
 		return nil
 	}
 	m.wg.Add(2)
-	go m.runEventPoll()
+	go runEventPoll(m)
 	go m.runStrandedScan()
 	// Run a one-shot sweep to catch convoys that completed during any previous
 	// outage or while the daemon was stopped.
@@ -192,15 +192,10 @@ func (m *ConvoyManager) Stop() {
 // runEventPoll polls GetAllEventsSince every 5s and processes close events.
 // If stores aren't available at startup (e.g., Dolt not ready), retries
 // lazily via the openStores callback until stores become available.
-func (m *ConvoyManager) runEventPoll() {
+func runEventPoll(m *ConvoyManager) {
 	defer m.wg.Done()
 
-	m.storesMu.Lock()
-	hasStores := len(m.stores) > 0
-	hasOpener := m.openStores != nil
-	m.storesMu.Unlock()
-
-	if !hasStores && !hasOpener {
+	if !eventPollingEnabled(m) {
 		m.logger("Convoy: no beads stores and no opener, event polling disabled")
 		return
 	}
@@ -210,49 +205,68 @@ func (m *ConvoyManager) runEventPoll() {
 	defer ticker.Stop()
 
 	for {
-		select {
-		case <-m.ctx.Done():
+		if !waitForEventPollTick(m.ctx, ticker) {
 			return
-		case <-ticker.C:
-			m.storesMu.Lock()
-			// Lazy store initialization: retry if stores not yet available
-			if len(m.stores) == 0 {
-				if m.openStores != nil {
-					m.stores = m.openStores()
-				}
-				if len(m.stores) == 0 {
-					m.storesMu.Unlock()
-					continue // still not ready, try next tick
-				}
-			}
-			// Take a snapshot of stores for this tick to avoid holding the
-			// lock across potentially slow network/Dolt calls.
-			snapshot := make(map[string]beadsdk.Storage, len(m.stores))
-			for k, v := range m.stores {
-				snapshot[k] = v
-			}
-			m.storesMu.Unlock()
-
-			hadError := m.pollStoresSnapshot(snapshot)
-			// Exponential backoff on consecutive errors to avoid hammering
-			// a recovering Dolt server. Reset on success. (GH#2686)
-			if hadError {
-				newInterval := currentInterval * 2
-				if newInterval > eventPollMaxBackoff {
-					newInterval = eventPollMaxBackoff
-				}
-				if newInterval != currentInterval {
-					currentInterval = newInterval
-					ticker.Reset(currentInterval)
-					m.logger("Convoy: poll backoff → %s", currentInterval)
-				}
-			} else if currentInterval != eventPollInterval {
-				currentInterval = eventPollInterval
-				ticker.Reset(currentInterval)
-				m.logger("Convoy: poll recovered, interval reset to %s", currentInterval)
-			}
 		}
+		snapshot, ready := eventPollStoreSnapshot(m)
+		if !ready {
+			continue
+		}
+		hadError := m.pollStoresSnapshot(snapshot)
+		currentInterval = adjustEventPollInterval(m, ticker, currentInterval, hadError)
 	}
+}
+
+func eventPollingEnabled(m *ConvoyManager) bool {
+	m.storesMu.Lock()
+	defer m.storesMu.Unlock()
+	return len(m.stores) > 0 || m.openStores != nil
+}
+
+func waitForEventPollTick(ctx context.Context, ticker *time.Ticker) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-ticker.C:
+		return true
+	}
+}
+
+func eventPollStoreSnapshot(m *ConvoyManager) (map[string]beadsdk.Storage, bool) {
+	m.storesMu.Lock()
+	defer m.storesMu.Unlock()
+	if len(m.stores) == 0 && m.openStores != nil {
+		m.stores = m.openStores()
+	}
+	if len(m.stores) == 0 {
+		return nil, false
+	}
+	snapshot := make(map[string]beadsdk.Storage, len(m.stores))
+	for k, v := range m.stores {
+		snapshot[k] = v
+	}
+	return snapshot, true
+}
+
+func adjustEventPollInterval(m *ConvoyManager, ticker *time.Ticker, current time.Duration, hadError bool) time.Duration {
+	if hadError {
+		newInterval := current * 2
+		if newInterval > eventPollMaxBackoff {
+			newInterval = eventPollMaxBackoff
+		}
+		if newInterval != current {
+			ticker.Reset(newInterval)
+			m.logger("Convoy: poll backoff → %s", newInterval)
+			return newInterval
+		}
+		return current
+	}
+	if current == eventPollInterval {
+		return current
+	}
+	ticker.Reset(eventPollInterval)
+	m.logger("Convoy: poll recovered, interval reset to %s", eventPollInterval)
+	return eventPollInterval
 }
 
 // pollStoresSnapshot polls events from all non-parked stores in the snapshot.
@@ -268,7 +282,7 @@ func (m *ConvoyManager) pollStoresSnapshot(stores map[string]beadsdk.Storage) bo
 		if name != "hq" && m.isRigParked(name) {
 			continue
 		}
-		if err := m.pollStore(name, store, stores, seen); err != nil {
+		if err := pollStore(m, name, store, stores, seen); err != nil {
 			hadError = true
 		}
 	}
@@ -281,120 +295,113 @@ func (m *ConvoyManager) pollStoresSnapshot(stores map[string]beadsdk.Storage) bo
 // The stores snapshot is passed to avoid accessing m.stores without the lock.
 // The seen set deduplicates issueIDs across stores within a poll cycle.
 // Returns an error if the poll failed (used by caller for backoff decisions).
-func (m *ConvoyManager) pollStore(name string, store beadsdk.Storage, stores map[string]beadsdk.Storage, seen map[string]bool) error {
-	// Load per-store high-water mark.
-	// Default to Unix epoch (not zero time) because Go's zero time.Time
-	// (0001-01-01) causes Dolt's SQL driver to produce +Inf when converting
-	// to a float parameter, triggering "Error 1366: +Inf is not a valid
-	// value for double". Unix epoch is safe for all SQL backends.
-	highWater := time.Unix(0, 0).UTC()
-	if v, ok := m.lastEventIDs.Load(name); ok {
-		highWater = v.(time.Time)
-	}
-	querySince := highWater
-	if !highWater.Equal(time.Unix(0, 0).UTC()) {
-		querySince = highWater.Add(-eventPollLookback)
-		if querySince.Before(time.Unix(0, 0).UTC()) {
-			querySince = time.Unix(0, 0).UTC()
-		}
-	}
-
+func pollStore(m *ConvoyManager, name string, store beadsdk.Storage, stores map[string]beadsdk.Storage, seen map[string]bool) error {
+	highWater := pollHighWater(m, name)
+	querySince := pollQuerySince(highWater)
 	events, err := store.GetAllEventsSince(m.ctx, querySince)
 	if err != nil {
-		if isInfNaNError(err) {
-			// A corrupted row in the events table has +Inf/-Inf/NaN stored in a
-			// double column (e.g. created_at serialized from Go's zero time.Time).
-			// Advance the high-water mark to now so future polls skip past the
-			// bad row entirely. Events before now are missed, but the stranded
-			// convoy scanner will catch any completions that were lost.
-			now := time.Now().UTC()
-			m.lastEventIDs.Store(name, now)
-			m.logger("Convoy: event poll (%s): +Inf/NaN row detected, advancing HWM to %s to skip corrupt data", name, now.Format(time.RFC3339))
-			return nil
-		}
-		m.logger("Convoy: event poll error (%s): %v", name, err)
-		// Signal recovery mode so the stranded scan shortens its interval and
-		// retries quickly once Dolt comes back.
-		m.recoveryMode.Store(true)
-		return err
+		return handlePollStoreError(m, name, err)
 	}
 
-	// Advance high-water mark from all events
-	for _, e := range events {
-		if e.CreatedAt.After(highWater) {
-			highWater = e.CreatedAt
-		}
-	}
+	highWater = latestEventTime(highWater, events)
 	m.lastEventIDs.Store(name, highWater)
 
-	// First poll cycle is warm-up only: advance marks, skip processing.
-	// This prevents replaying the entire event history on daemon restart.
 	if !m.seeded.Load() {
-		for _, e := range events {
-			if e.ID == "" {
-				continue
-			}
-			if isCloseEvent(e) || isReopenEvent(e) {
-				m.processedLifecycleEvents.Store(e.ID, true)
-			}
-		}
+		seedLifecycleEvents(m, events)
 		return nil
 	}
 
-	// Use hq store for convoy lookups (convoys are hq-* prefixed)
 	hqStore := stores["hq"]
 	if hqStore == nil {
 		m.logger("Convoy: hq store unavailable, skipping convoy lookups for %s events", name)
 		return nil
 	}
 
-	for _, e := range events {
-		issueID := e.IssueID
-		if issueID == "" {
-			continue
-		}
-
-		if isCloseEvent(e) || isReopenEvent(e) {
-			if _, alreadyHandled := m.processedLifecycleEvents.LoadOrStore(e.ID, true); alreadyHandled {
-				continue
-			}
-		}
-
-		if isReopenEvent(e) {
-			// Reopening starts a new close epoch for this issue. Clear both the
-			// per-cycle and cross-cycle dedup so a later close is processed again.
-			delete(seen, issueID)
-			m.processedCloses.Delete(issueID)
-			continue
-		}
-
-		if !isCloseEvent(e) {
-			continue
-		}
-
-		// Deduplicate: skip if already processed this issueID in this poll cycle
-		// (same close may appear in multiple stores or as multiple event types).
-		// Reopen events clear this marker so close→reopen→close can be processed
-		// twice even when all three events land in the same poll cycle.
-		if seen[issueID] {
-			continue
-		}
-		seen[issueID] = true
-
-		// Cross-cycle dedup: skip if this issue's close was already processed
-		// in a previous poll cycle. The same close event can appear from
-		// multiple stores (replication) or across poll cycles when high-water
-		// marks don't perfectly filter. See GH #1798.
-		if _, alreadyProcessed := m.processedCloses.LoadOrStore(issueID, true); alreadyProcessed {
-			continue
-		}
-
-		m.logger("Convoy: close detected: %s (from %s)", issueID, name)
-		resolver := convoy.NewStoreResolver(m.townRoot, stores)
-		convoy.CheckConvoysForIssue(m.ctx, hqStore, m.townRoot, issueID, "Convoy", m.logger, m.gtPath, m.isRigParked, resolver)
-		convoy.FireCrossRigDepNotifications(m.ctx, issueID, m.townRoot, stores, m.logger)
-	}
+	processPollStoreEvents(m, name, events, hqStore, stores, seen)
 	return nil
+}
+
+func pollHighWater(m *ConvoyManager, name string) time.Time {
+	defaultTime := time.Unix(0, 0).UTC()
+	if value, ok := m.lastEventIDs.Load(name); ok {
+		return value.(time.Time)
+	}
+	return defaultTime
+}
+
+func pollQuerySince(highWater time.Time) time.Time {
+	epoch := time.Unix(0, 0).UTC()
+	if highWater.Equal(epoch) {
+		return epoch
+	}
+	querySince := highWater.Add(-eventPollLookback)
+	if querySince.Before(epoch) {
+		return epoch
+	}
+	return querySince
+}
+
+func handlePollStoreError(m *ConvoyManager, name string, err error) error {
+	if isInfNaNError(err) {
+		now := time.Now().UTC()
+		m.lastEventIDs.Store(name, now)
+		m.logger("Convoy: event poll (%s): +Inf/NaN row detected, advancing HWM to %s to skip corrupt data", name, now.Format(time.RFC3339))
+		return nil
+	}
+	m.logger("Convoy: event poll error (%s): %v", name, err)
+	m.recoveryMode.Store(true)
+	return err
+}
+
+func latestEventTime(highWater time.Time, events []*beadsdk.Event) time.Time {
+	for _, event := range events {
+		if event.CreatedAt.After(highWater) {
+			highWater = event.CreatedAt
+		}
+	}
+	return highWater
+}
+
+func seedLifecycleEvents(m *ConvoyManager, events []*beadsdk.Event) {
+	for _, event := range events {
+		if event.ID != "" && (isCloseEvent(event) || isReopenEvent(event)) {
+			m.processedLifecycleEvents.Store(event.ID, true)
+		}
+	}
+}
+
+func processPollStoreEvents(m *ConvoyManager, name string, events []*beadsdk.Event, hqStore beadsdk.Storage, stores map[string]beadsdk.Storage, seen map[string]bool) {
+	for _, e := range events {
+		processPollStoreEvent(m, name, e, hqStore, stores, seen)
+	}
+}
+
+func processPollStoreEvent(m *ConvoyManager, name string, event *beadsdk.Event, hqStore beadsdk.Storage, stores map[string]beadsdk.Storage, seen map[string]bool) {
+	issueID := event.IssueID
+	if issueID == "" {
+		return
+	}
+	if isCloseEvent(event) || isReopenEvent(event) {
+		if _, alreadyHandled := m.processedLifecycleEvents.LoadOrStore(event.ID, true); alreadyHandled {
+			return
+		}
+	}
+	if isReopenEvent(event) {
+		delete(seen, issueID)
+		m.processedCloses.Delete(issueID)
+		return
+	}
+	if !isCloseEvent(event) || seen[issueID] {
+		return
+	}
+	seen[issueID] = true
+	if _, alreadyProcessed := m.processedCloses.LoadOrStore(issueID, true); alreadyProcessed {
+		return
+	}
+	m.logger("Convoy: close detected: %s (from %s)", issueID, name)
+	resolver := convoy.NewStoreResolver(m.townRoot, stores)
+	convoy.CheckConvoysForIssue(m.ctx, hqStore, m.townRoot, issueID, "Convoy", m.logger, m.gtPath, m.isRigParked, resolver)
+	convoy.FireCrossRigDepNotifications(m.ctx, issueID, m.townRoot, stores, m.logger)
 }
 
 // isInfNaNError reports whether err is a Dolt/SQL error about an invalid float
