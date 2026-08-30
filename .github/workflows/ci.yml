@@ -261,8 +261,8 @@ jobs:
           # mutator shards use a lower cap because they are the most expensive
           # partitions and must fit within hosted-runner job limits.
           max_mutations = 1_400
-          max_whole_file_mutations = 1_200
-          max_function_bytes = 28_000
+          max_whole_file_mutations = 800
+          max_function_bytes = 40_000
           all_mutators = [
               "arithmetic/assign_invert",
               "arithmetic/assignment",
