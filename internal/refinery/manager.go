@@ -59,12 +59,20 @@ func NewForkRigError(rigName, upstreamURL string) error {
 	return &ForkRigError{RigName: rigName, UpstreamURL: upstreamURL}
 }
 
+// managerOperations owns merge-request operations separately from the
+// lifecycle facade. Its promoted methods keep Manager's public API stable
+// while giving each responsibility a smaller module boundary.
+type managerOperations struct {
+	manager *Manager
+}
+
 // Manager handles refinery lifecycle and queue operations.
 type Manager struct {
 	rig     *rig.Rig
 	workDir string
 	output  io.Writer // Output destination for user-facing messages
 	tmux    tmuxOps
+	managerOperations
 }
 
 type scoredIssue struct {
@@ -80,12 +88,14 @@ type tmuxOps interface {
 
 // NewManager creates a new refinery manager for a rig.
 func NewManager(r *rig.Rig) *Manager {
-	return &Manager{
+	m := &Manager{
 		rig:     r,
 		workDir: r.Path,
 		output:  os.Stdout,
 		tmux:    tmux.NewTmux(),
 	}
+	m.managerOperations.manager = m
+	return m
 }
 
 // SetOutput sets the output writer for user-facing messages.
@@ -151,117 +161,114 @@ func (m *Manager) StartAllowingForkRig(foreground bool, agentOverride string) er
 }
 
 func (m *Manager) start(foreground bool, agentOverride string, allowForkRig bool) error {
-	t := m.tmux
-	sessionID := m.SessionName()
-
-	if foreground {
-		// Foreground mode is deprecated - the Refinery agent handles merge processing
-		return fmt.Errorf("foreground mode is deprecated; use background mode (remove --foreground flag)")
+	if err := validateStartOptions(m, foreground, allowForkRig); err != nil {
+		return err
 	}
-
-	if !allowForkRig {
-		if err := m.blockForkRigStart(t); err != nil {
-			return err
-		}
-	}
-
 	townRoot := filepath.Dir(m.rig.Path)
-	stop, err := ActiveSafetyStop(townRoot, m.rig.Name)
-	if err != nil {
-		return fmt.Errorf("checking refinery safety stop: %w", err)
+	if err := checkStartSafety(m, townRoot); err != nil {
+		return err
 	}
-	if stop != nil {
-		if running, _ := t.HasSession(sessionID); running {
-			_, _ = fmt.Fprintf(m.output, "Refinery %s is safety-stopped; killing leftover session %s.\n", m.rig.Name, sessionID)
-			if err := session.StopSession(t, townRoot, sessionID, false); err != nil && !errors.Is(err, session.ErrNotFound) {
-				return fmt.Errorf("%w: killing leftover refinery session: %v", NewSafetyStoppedError(stop), err)
-			}
-		}
-		return NewSafetyStoppedError(stop)
-	}
-
-	// Check if session already exists
-	if _, err := session.KillExistingSession(t, townRoot, sessionID, true); err != nil {
+	sessionID := m.SessionName()
+	if _, err := session.KillExistingSession(m.tmux, townRoot, sessionID, true); err != nil {
 		if errors.Is(err, session.ErrSessionAlive) {
 			return ErrAlreadyRunning
 		}
 		return err
 	}
 
-	// Background mode: spawn a Claude agent in a tmux session
-	// The Claude agent handles MR processing using git commands and beads
+	refineryRigDir := resolveRefineryWorktree(m)
+	runtimeConfigDir := resolveRuntimeConfigDir(townRoot)
+	if err := rig.Provision(m.rig.Path, refineryRigDir, "refinery"); err != nil {
+		style.PrintWarning("could not provision refinery workspace: %v", err)
+	}
+	result, err := startRefinerySession(m, sessionID, townRoot, refineryRigDir, runtimeConfigDir, agentOverride)
+	if err != nil {
+		return err
+	}
+	if _, pollerErr := nudge.StartPoller(townRoot, sessionID); pollerErr != nil {
+		log.Printf("warning: could not start nudge poller for %s: %v", sessionID, pollerErr)
+	}
+	startRefineryRuntimeFallback(m, sessionID, result.RuntimeConfig)
+	return nil
+}
 
-	// Working directory is the refinery worktree (shares .git with mayor/polecats).
-	// If the worktree is missing (pruned, deleted, or corrupted), auto-repair it
-	// from the shared bare repo (.repo.git) instead of falling back to mayor/rig.
-	// Falling back to mayor/rig causes the refinery to operate in the mayor's
-	// clone, which can interfere with mayor operations and confuse agents.
-	//
-	// Rigs using a standard .git clone (e.g. beads) never have a .repo.git bare
-	// repo, so the repair path is not applicable for them. Fall back to mayor/rig
-	// silently in that case — the fallback is correct and the warning would be noise.
-	refineryRigDir := filepath.Join(m.rig.Path, "refinery", "rig")
-	if _, err := os.Stat(refineryRigDir); os.IsNotExist(err) {
-		bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
-		_, bareErr := os.Stat(bareRepoPath)
-		standardGitPath := filepath.Join(m.rig.Path, ".git")
-		_, standardGitErr := os.Stat(standardGitPath)
-		if os.IsNotExist(bareErr) && standardGitErr == nil {
-			// Rig uses standard .git layout — worktree repair is not applicable.
-			// Fall back to mayor/rig silently; the fallback works correctly here.
-			refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
-		} else if repairErr := m.repairRefineryWorktree(refineryRigDir); repairErr != nil {
-			// Repair failed — fall back to mayor/rig as last resort.
-			_, _ = fmt.Fprintf(m.output, "⚠ Could not repair refinery worktree: %v (falling back to mayor/rig)\n", repairErr)
-			refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
+func validateStartOptions(m *Manager, foreground, allowForkRig bool) error {
+	if foreground {
+		return fmt.Errorf("foreground mode is deprecated; use background mode (remove --foreground flag)")
+	}
+	if allowForkRig {
+		return nil
+	}
+	return m.blockForkRigStart(m.tmux)
+}
+
+func checkStartSafety(m *Manager, townRoot string) error {
+	stop, err := ActiveSafetyStop(townRoot, m.rig.Name)
+	if err != nil {
+		return fmt.Errorf("checking refinery safety stop: %w", err)
+	}
+	if stop == nil {
+		return nil
+	}
+	sessionID := m.SessionName()
+	if running, _ := m.tmux.HasSession(sessionID); running {
+		_, _ = fmt.Fprintf(m.output, "Refinery %s is safety-stopped; killing leftover session %s.\n", m.rig.Name, sessionID)
+		if err := session.StopSession(m.tmux, townRoot, sessionID, false); err != nil && !errors.Is(err, session.ErrNotFound) {
+			return fmt.Errorf("%w: killing leftover refinery session: %v", NewSafetyStoppedError(stop), err)
 		}
 	}
+	return NewSafetyStoppedError(stop)
+}
 
+func resolveRefineryWorktree(m *Manager) string {
+	refineryRigDir := filepath.Join(m.rig.Path, "refinery", "rig")
+	if _, err := os.Stat(refineryRigDir); !os.IsNotExist(err) {
+		return refineryRigDir
+	}
+	bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
+	_, bareErr := os.Stat(bareRepoPath)
+	standardGitPath := filepath.Join(m.rig.Path, ".git")
+	_, standardGitErr := os.Stat(standardGitPath)
+	if os.IsNotExist(bareErr) && standardGitErr == nil {
+		return filepath.Join(m.rig.Path, "mayor", "rig")
+	}
+	if repairErr := m.repairRefineryWorktree(refineryRigDir); repairErr != nil {
+		_, _ = fmt.Fprintf(m.output, "⚠ Could not repair refinery worktree: %v (falling back to mayor/rig)\n", repairErr)
+		return filepath.Join(m.rig.Path, "mayor", "rig")
+	}
+	return refineryRigDir
+}
+
+func resolveRuntimeConfigDir(townRoot string) string {
 	accountsPath := constants.MayorAccountsPath(townRoot)
 	runtimeConfigDir, _, _ := config.ResolveAccountConfigDir(accountsPath, "")
 	if runtimeConfigDir == "" {
 		runtimeConfigDir = os.Getenv("CLAUDE_CONFIG_DIR")
 	}
+	return runtimeConfigDir
+}
 
-	// Ensure .gitignore has required Gas Town patterns
-	if err := rig.Provision(m.rig.Path, refineryRigDir, "refinery"); err != nil {
-		style.PrintWarning("could not provision refinery workspace: %v", err)
-	}
-
-	beacon := session.BeaconConfig{
-		Recipient: session.BeaconRecipient("refinery", "", m.rig.Name),
-		Sender:    "deacon",
-		Topic:     "patrol",
-	}
-	result, err := session.StartSession(t, "refinery", session.Work{
-		SessionID:        sessionID,
-		WorkDir:          refineryRigDir,
-		TownRoot:         townRoot,
-		RigPath:          m.rig.Path,
-		RigName:          m.rig.Name,
-		AgentName:        "refinery",
-		AgentOverride:    agentOverride,
-		RuntimeConfigDir: runtimeConfigDir,
-		ExtraEnv:         map[string]string{"GT_REFINERY": "1"},
-		Theme:            tmux.ResolveSessionTheme(townRoot, m.rig.Name, "refinery", ""),
-		Beacon:           beacon,
-		Instructions:     "Run `gt prime --hook` and begin patrol.",
+func startRefinerySession(m *Manager, sessionID, townRoot, workDir, runtimeConfigDir, agentOverride string) (*session.StartResult, error) {
+	beacon := session.BeaconConfig{Recipient: session.BeaconRecipient("refinery", "", m.rig.Name), Sender: "deacon", Topic: "patrol"}
+	result, err := session.StartSession(m.tmux, "refinery", session.Work{
+		SessionID: sessionID, WorkDir: workDir, TownRoot: townRoot, RigPath: m.rig.Path,
+		RigName: m.rig.Name, AgentName: "refinery", AgentOverride: agentOverride,
+		RuntimeConfigDir: runtimeConfigDir, ExtraEnv: map[string]string{"GT_REFINERY": "1"},
+		Theme: tmux.ResolveSessionTheme(townRoot, m.rig.Name, "refinery", ""), Beacon: beacon,
+		Instructions: "Run `gt prime --hook` and begin patrol.",
 	})
-	if err != nil {
-		return err
-	}
+	return result, err
+}
 
-	if _, pollerErr := nudge.StartPoller(townRoot, sessionID); pollerErr != nil {
-		log.Printf("warning: could not start nudge poller for %s: %v", sessionID, pollerErr)
+func startRefineryRuntimeFallback(m *Manager, sessionID string, runtimeConfig *config.RuntimeConfig) {
+	real, ok := m.tmux.(*tmux.Tmux)
+	if !ok {
+		return
 	}
-
-	if real, ok := t.(*tmux.Tmux); ok {
-		_ = runtime.RunStartupFallback(real, sessionID, "refinery", result.RuntimeConfig)
-		initialPrompt := session.BuildStartupPrompt(beacon, "Run `gt prime --hook` and begin patrol.")
-		_ = runtime.DeliverStartupPromptFallback(real, sessionID, initialPrompt, result.RuntimeConfig, constants.ClaudeStartTimeout)
-	}
-
-	return nil
+	_ = runtime.RunStartupFallback(real, sessionID, "refinery", runtimeConfig)
+	beacon := session.BeaconConfig{Recipient: session.BeaconRecipient("refinery", "", m.rig.Name), Sender: "deacon", Topic: "patrol"}
+	initialPrompt := session.BuildStartupPrompt(beacon, "Run `gt prime --hook` and begin patrol.")
+	_ = runtime.DeliverStartupPromptFallback(real, sessionID, initialPrompt, runtimeConfig, constants.ClaudeStartTimeout)
 }
 
 // ForkRigStartError returns ErrForkRig when the rig config has upstream_url.
@@ -348,30 +355,39 @@ func (m *Manager) Stop() error {
 // Queue returns the current merge queue.
 // Uses beads merge-request issues as the source of truth (not git branches).
 // ZFC-compliant: beads is the source of truth, no state file.
-func (m *Manager) Queue() ([]QueueItem, error) {
-	// Query beads for open merge-request issues
-	// BeadsPath() returns the git-synced beads location
+func (ops *managerOperations) Queue() ([]QueueItem, error) {
+	m := ops.manager
+	issues, err := loadRefineryQueueIssues(m)
+	if err != nil {
+		return nil, err
+	}
+	scored := scoreRefineryQueueIssues(m, issues, time.Now())
+	sort.Slice(scored, func(i, j int) bool {
+		return compareScoredIssues(scored[i], scored[j])
+	})
+	return queueItemsFromScoredIssues(m, scored), nil
+}
+
+func loadRefineryQueueIssues(m *Manager) ([]*beads.Issue, error) {
 	b := beads.New(m.rig.BeadsPath())
 	issues, err := b.ListMergeRequests(beads.ListOptions{
 		Label:    "gt:merge-request",
 		Status:   "open",
-		Priority: -1, // No priority filter
+		Priority: -1,
 		Rig:      m.rig.Name,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("querying merge queue from beads: %w", err)
 	}
+	return issues, nil
+}
 
-	// Score and sort issues by priority score (highest first)
-	now := time.Now()
+func scoreRefineryQueueIssues(m *Manager, issues []*beads.Issue, now time.Time) []scoredIssue {
 	scored := make([]scoredIssue, 0, len(issues))
 	for _, issue := range issues {
-		// Defensive filter: bd status filters can drift; queue must only include open MRs.
 		if issue == nil || issue.Status != "open" {
 			continue
 		}
-
-		// Filter by rig — wisps are shared across all rigs (GH#2718).
 		fields := beads.ParseMRFields(issue)
 		if fields != nil && fields.Rig != "" && !strings.EqualFold(fields.Rig, m.rig.Name) {
 			continue
@@ -380,12 +396,10 @@ func (m *Manager) Queue() ([]QueueItem, error) {
 		score := m.calculateIssueScore(issue, now)
 		scored = append(scored, scoredIssue{issue: issue, score: score})
 	}
+	return scored
+}
 
-	sort.Slice(scored, func(i, j int) bool {
-		return compareScoredIssues(scored[i], scored[j])
-	})
-
-	// Convert scored issues to queue items
+func queueItemsFromScoredIssues(m *Manager, scored []scoredIssue) []QueueItem {
 	var items []QueueItem
 	pos := 1
 	for _, s := range scored {
@@ -399,8 +413,7 @@ func (m *Manager) Queue() ([]QueueItem, error) {
 			pos++
 		}
 	}
-
-	return items, nil
+	return items
 }
 
 func compareScoredIssues(a, b scoredIssue) bool {
@@ -540,13 +553,13 @@ var (
 // GetMR returns a merge request by ID.
 // ZFC-compliant: delegates to FindMR which uses beads as source of truth.
 // Deprecated: Use FindMR directly for more flexible matching.
-func (m *Manager) GetMR(id string) (*MergeRequest, error) {
-	return m.FindMR(id)
+func (ops *managerOperations) GetMR(id string) (*MergeRequest, error) {
+	return ops.FindMR(id)
 }
 
 // FindMR finds a merge request by ID or branch name in the queue.
-func (m *Manager) FindMR(idOrBranch string) (*MergeRequest, error) {
-	queue, err := m.Queue()
+func (ops *managerOperations) FindMR(idOrBranch string) (*MergeRequest, error) {
+	queue, err := ops.Queue()
 	if err != nil {
 		return nil, err
 	}
@@ -572,8 +585,9 @@ func (m *Manager) FindMR(idOrBranch string) (*MergeRequest, error) {
 	return nil, ErrMRNotFound
 }
 
-func (m *Manager) findMRForTerminalCleanup(idOrBranch string, b *beads.Beads) (*MergeRequest, error) {
-	mr, err := m.FindMR(idOrBranch)
+func (ops *managerOperations) findMRForTerminalCleanup(idOrBranch string, b *beads.Beads) (*MergeRequest, error) {
+	m := ops.manager
+	mr, err := ops.FindMR(idOrBranch)
 	if err == nil {
 		return mr, nil
 	}
@@ -593,15 +607,17 @@ func (m *Manager) findMRForTerminalCleanup(idOrBranch string, b *beads.Beads) (*
 
 // FindMRForPostMerge resolves an MR using the same open/terminal lookup rules
 // as PostMerge, so callers can prove the merge before closing beads.
-func (m *Manager) FindMRForPostMerge(idOrBranch string) (*MergeRequest, error) {
+func (ops *managerOperations) FindMRForPostMerge(idOrBranch string) (*MergeRequest, error) {
+	m := ops.manager
 	b := beads.New(m.rig.BeadsPath())
-	return m.findMRForTerminalCleanup(idOrBranch, b)
+	return ops.findMRForTerminalCleanup(idOrBranch, b)
 }
 
 // Retry is deprecated - the Refinery agent handles retry logic autonomously.
 // ZFC-compliant: no state file, agent uses beads issue status.
 // The agent will automatically retry failed MRs in its patrol cycle.
-func (m *Manager) Retry(_ string, _ bool) error {
+func (ops *managerOperations) Retry(_ string, _ bool) error {
+	m := ops.manager
 	_, _ = fmt.Fprintln(m.output, "Note: Retry is deprecated. The Refinery agent handles retries autonomously via beads.")
 	return nil
 }
@@ -609,20 +625,35 @@ func (m *Manager) Retry(_ string, _ bool) error {
 // RegisterMR is deprecated - MRs are registered via beads merge-request issues.
 // ZFC-compliant: beads is the source of truth, not state file.
 // Use 'gt mr create' or create a merge-request type bead directly.
-func (m *Manager) RegisterMR(_ *MergeRequest) error {
+func (ops *managerOperations) RegisterMR(_ *MergeRequest) error {
 	return fmt.Errorf("RegisterMR is deprecated: use beads to create merge-request issues")
 }
 
 // RejectMR manually rejects a merge request.
 // It closes the MR with rejected status and optionally notifies the worker.
 // Returns the rejected MR for display purposes.
-func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*MergeRequest, error) {
+func (ops *managerOperations) RejectMR(idOrBranch string, reason string, notify bool) (*MergeRequest, error) {
+	m := ops.manager
 	b := beads.New(m.rig.BeadsPath())
-	mr, err := m.findMRForTerminalCleanup(idOrBranch, b)
+	mr, err := ops.findMRForTerminalCleanup(idOrBranch, b)
 	if err != nil {
 		return nil, err
 	}
 
+	closeResult, err := rejectMRBead(b, mr, reason)
+	if err != nil {
+		return nil, err
+	}
+	if err := updateRejectedMRState(m, mr, closeResult, reason); err != nil {
+		return nil, err
+	}
+	if notify && !closeResult.AlreadyTerminal {
+		ops.notifyWorkerRejected(mr, reason)
+	}
+	return mr, nil
+}
+
+func rejectMRBead(b *beads.Beads, mr *MergeRequest, reason string) (*terminalMRCloseResult, error) {
 	closeResult, err := closeTerminalMR(b, mr.ID, terminalMRCloseOptions{
 		Reason:        "rejected: " + reason,
 		AgentBeadHint: mr.AgentBead,
@@ -630,6 +661,10 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 	if err != nil {
 		return nil, fmt.Errorf("failed to close MR bead: %w", err)
 	}
+	return closeResult, nil
+}
+
+func updateRejectedMRState(m *Manager, mr *MergeRequest, closeResult *terminalMRCloseResult, reason string) error {
 	if closeResult.AgentBead != "" {
 		mr.AgentBead = closeResult.AgentBead
 	}
@@ -646,16 +681,10 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 	} else if closeResult.AlreadyTerminal {
 		mr.Status = MRClosed
 	} else {
-		return nil, fmt.Errorf("failed to close MR bead: MR %s status is not open or terminal", mr.ID)
+		return fmt.Errorf("failed to close MR bead: MR %s status is not open or terminal", mr.ID)
 	}
 	mr.Error = reason
-
-	// Optionally notify worker
-	if notify && !closeResult.AlreadyTerminal {
-		m.notifyWorkerRejected(mr, reason)
-	}
-
-	return mr, nil
+	return nil
 }
 
 // PostMergeResult holds the result of a post-merge cleanup operation.
@@ -670,26 +699,29 @@ type PostMergeResult struct {
 // PostMerge performs post-merge cleanup for a successfully merged MR.
 // It closes the MR bead and its source issue. Branch deletion is handled
 // by the caller since the Manager doesn't have git access.
-func (m *Manager) PostMerge(idOrBranch string) (*PostMergeResult, error) {
+func (ops *managerOperations) PostMerge(idOrBranch string) (*PostMergeResult, error) {
+	m := ops.manager
 	b := beads.New(m.rig.BeadsPath())
-	mr, err := m.findMRForTerminalCleanup(idOrBranch, b)
+	mr, err := ops.findMRForTerminalCleanup(idOrBranch, b)
 	if err != nil {
 		return nil, err
 	}
-	return m.postMergeMR(b, mr)
+	return ops.postMergeMR(b, mr)
 }
 
 // PostMergeMR performs post-merge cleanup for an MR snapshot that the caller has
 // already verified. This keeps proof and side effects on the same MR metadata.
-func (m *Manager) PostMergeMR(mr *MergeRequest) (*PostMergeResult, error) {
+func (ops *managerOperations) PostMergeMR(mr *MergeRequest) (*PostMergeResult, error) {
 	if mr == nil {
 		return nil, ErrMRNotFound
 	}
+	m := ops.manager
 	b := beads.New(m.rig.BeadsPath())
-	return m.postMergeMR(b, mr)
+	return ops.postMergeMR(b, mr)
 }
 
-func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResult, error) {
+func (ops *managerOperations) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResult, error) {
+	m := ops.manager
 	workBeadID := resolveMergedWorkBead(b.ForAgentBead(), mergedWorkBeadCloseRequest{
 		MRID:        mr.ID,
 		Branch:      mr.Branch,
@@ -754,7 +786,8 @@ func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResul
 }
 
 // notifyWorkerRejected sends a rejection notification to a polecat.
-func (m *Manager) notifyWorkerRejected(mr *MergeRequest, reason string) {
+func (ops *managerOperations) notifyWorkerRejected(mr *MergeRequest, reason string) {
+	m := ops.manager
 	// Nudge polecat about rejection instead of sending permanent mail.
 	polecatName := strings.TrimPrefix(mr.Worker, "polecats/")
 	target := fmt.Sprintf("%s/%s", m.rig.Name, polecatName)
