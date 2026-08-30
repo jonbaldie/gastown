@@ -148,74 +148,13 @@ func (d *Daemon) runCompactorDog() {
 
 	mol.CloseStep("inspect")
 
-	compacted := 0
-	skipped := 0
-	errors := 0
-
+	result := compactorCycleResult{}
 	for _, dbName := range databases {
-		commitCount, err := d.compactorCountCommits(dbName)
-		if err != nil {
-			d.logger.Printf("compactor_dog: %s: error counting commits: %v", dbName, err)
-			errors++
-			continue
-		}
-
-		if commitCount < threshold {
-			d.logger.Printf("compactor_dog: %s: %d commits (below threshold %d), skipping",
-				dbName, commitCount, threshold)
-			skipped++
-			continue
-		}
-
-		d.logger.Printf("compactor_dog: %s: %d commits (threshold %d) — compacting (mode=%s)",
-			dbName, commitCount, threshold, mode)
-
-		// Pre-flight: fetch from remote and verify local ≥ remote before
-		// compacting. Flatten rewrites the commit graph, so force-push after
-		// compaction would overwrite any remote-only commits. Skip compaction
-		// if the remote has diverged.
-		diverged, fetchErr := d.compactorFetchAndVerify(dbName)
-		if fetchErr != nil {
-			d.logger.Printf("compactor_dog: %s: pre-flight fetch failed: %v (skipping)", dbName, fetchErr)
-			skipped++
-			continue
-		}
-		if diverged {
-			d.logger.Printf("compactor_dog: %s: remote has diverged — skipping compaction to avoid data loss", dbName)
-			skipped++
-			continue
-		}
-
-		var compactErr error
-		if mode == "surgical" {
-			keepRecent := compactorDogKeepRecent(d.patrolConfig)
-			compactErr = d.surgicalRebase(dbName, keepRecent)
-		} else {
-			compactErr = d.compactDatabase(dbName)
-		}
-		if compactErr != nil {
-			d.logger.Printf("compactor_dog: %s: compaction FAILED: %v", dbName, compactErr)
-			d.escalate("compactor_dog", fmt.Sprintf("Compaction failed for %s: %v", dbName, compactErr))
-			errors++
-		} else {
-			compacted++
-			// Run gc after successful compaction to reclaim unreferenced chunks.
-			// Order matters: rebase first (compactDatabase), gc second.
-			if err := d.compactorRunGC(dbName); err != nil {
-				d.logger.Printf("compactor_dog: %s: gc after compaction failed: %v", dbName, err)
-			}
-			// Force-push to DoltHub remote after compaction. Flatten rewrites
-			// the commit graph, so standard push always fails with non-fast-forward.
-			// Safe because compactorFetchAndVerify confirmed local ≥ remote
-			// before compaction, and compactDatabase verified integrity.
-			if err := d.compactorForcePush(dbName); err != nil {
-				d.logger.Printf("compactor_dog: %s: force-push failed: %v", dbName, err)
-			}
-		}
+		result.add(d.compactConfiguredDatabase(dbName, threshold, mode))
 	}
 
-	if errors > 0 {
-		mol.FailStep("compact", fmt.Sprintf("%d databases had errors", errors))
+	if result.errors > 0 {
+		mol.FailStep("compact", fmt.Sprintf("%d databases had errors", result.errors))
 	} else {
 		mol.CloseStep("compact")
 	}
@@ -223,8 +162,73 @@ func (d *Daemon) runCompactorDog() {
 	mol.CloseStep("verify")
 
 	d.logger.Printf("compactor_dog: cycle complete — compacted=%d skipped=%d errors=%d",
-		compacted, skipped, errors)
+		result.compacted, result.skipped, result.errors)
 	mol.CloseStep("report")
+}
+
+type compactorCycleResult struct {
+	compacted int
+	skipped   int
+	errors    int
+}
+
+func (r *compactorCycleResult) add(other compactorCycleResult) {
+	r.compacted += other.compacted
+	r.skipped += other.skipped
+	r.errors += other.errors
+}
+
+func (d *Daemon) compactConfiguredDatabase(dbName string, threshold int, mode string) compactorCycleResult {
+	commitCount, err := d.compactorCountCommits(dbName)
+	if err != nil {
+		d.logger.Printf("compactor_dog: %s: error counting commits: %v", dbName, err)
+		return compactorCycleResult{errors: 1}
+	}
+	if commitCount < threshold {
+		d.logger.Printf("compactor_dog: %s: %d commits (below threshold %d), skipping", dbName, commitCount, threshold)
+		return compactorCycleResult{skipped: 1}
+	}
+	d.logger.Printf("compactor_dog: %s: %d commits (threshold %d) — compacting (mode=%s)", dbName, commitCount, threshold, mode)
+	preflight := d.compactorPreflight(dbName)
+	if preflight.skipped > 0 {
+		return preflight
+	}
+	if compactErr := d.runConfiguredCompaction(dbName, mode); compactErr != nil {
+		d.logger.Printf("compactor_dog: %s: compaction FAILED: %v", dbName, compactErr)
+		d.escalate("compactor_dog", fmt.Sprintf("Compaction failed for %s: %v", dbName, compactErr))
+		return compactorCycleResult{errors: 1}
+	}
+	d.finishCompactorDatabase(dbName)
+	return compactorCycleResult{compacted: 1}
+}
+
+func (d *Daemon) compactorPreflight(dbName string) compactorCycleResult {
+	diverged, err := d.compactorFetchAndVerify(dbName)
+	if err != nil {
+		d.logger.Printf("compactor_dog: %s: pre-flight fetch failed: %v (skipping)", dbName, err)
+		return compactorCycleResult{skipped: 1}
+	}
+	if diverged {
+		d.logger.Printf("compactor_dog: %s: remote has diverged — skipping compaction to avoid data loss", dbName)
+		return compactorCycleResult{skipped: 1}
+	}
+	return compactorCycleResult{}
+}
+
+func (d *Daemon) runConfiguredCompaction(dbName, mode string) error {
+	if mode == "surgical" {
+		return d.surgicalRebase(dbName, compactorDogKeepRecent(d.patrolConfig))
+	}
+	return d.compactDatabase(dbName)
+}
+
+func (d *Daemon) finishCompactorDatabase(dbName string) {
+	if err := d.compactorRunGC(dbName); err != nil {
+		d.logger.Printf("compactor_dog: %s: gc after compaction failed: %v", dbName, err)
+	}
+	if err := d.compactorForcePush(dbName); err != nil {
+		d.logger.Printf("compactor_dog: %s: force-push failed: %v", dbName, err)
+	}
 }
 
 // compactorDatabases returns the list of databases to consider for compaction.
@@ -275,50 +279,60 @@ func (d *Daemon) compactDatabase(dbName string) error {
 		return err
 	}
 	defer db.Close()
+	return d.compactDatabaseConnection(db, dbName)
+}
 
-	// Step 1: Record pre-flight state — row counts for integrity verification.
+func (d *Daemon) compactDatabaseConnection(db *sql.DB, dbName string) error {
 	preCounts, err := d.compactorGetRowCounts(db, dbName)
 	if err != nil {
 		return fmt.Errorf("pre-flight row counts: %w", err)
 	}
 	d.logger.Printf("compactor_dog: %s: pre-flight tables=%d", dbName, len(preCounts))
 
-	// Step 2: Find the root commit (earliest in history).
 	rootHash, err := d.compactorGetRootCommit(db, dbName)
 	if err != nil {
 		return fmt.Errorf("find root commit: %w", err)
 	}
 	d.logger.Printf("compactor_dog: %s: root commit=%s", dbName, shortHash(rootHash))
 
-	// Step 3: USE database for session-scoped operations.
 	ctx, cancel := context.WithTimeout(context.Background(), compactorQueryTimeout)
 	defer cancel()
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("USE `%s`", dbName)); err != nil {
-		return fmt.Errorf("use database: %w", err)
+	if err := compactorUseDatabase(ctx, db, dbName); err != nil {
+		return err
 	}
-
-	// Step 4: Soft-reset to root commit on main — all data remains staged.
-	// This is trivially cheap: just moves the parent pointer (Tim Sehn).
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_RESET('--soft', '%s')", rootHash)); err != nil {
-		return fmt.Errorf("soft reset to root: %w", err)
+	if err := compactorFlattenCommit(ctx, db, dbName, rootHash); err != nil {
+		return err
 	}
-	d.logger.Printf("compactor_dog: %s: soft-reset to root %s", dbName, shortHash(rootHash))
-
-	// Step 5: Commit all data as a single commit.
-	commitMsg := fmt.Sprintf("compaction: flatten %s history to single commit", dbName)
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_COMMIT('-Am', '%s')", commitMsg)); err != nil {
-		return fmt.Errorf("commit flattened data: %w", err)
-	}
-	d.logger.Printf("compactor_dog: %s: committed flattened data", dbName)
-
-	// Step 6: Verify integrity — row counts must not decrease (data loss).
-	// Concurrent writes may increase counts during compaction — this is safe
-	// since the flattened commit includes those rows.
 	postCounts, err := d.compactorGetRowCounts(db, dbName)
 	if err != nil {
 		return fmt.Errorf("post-compact row counts: %w", err)
 	}
+	if err := verifyCompactorRowCounts(d, dbName, preCounts, postCounts); err != nil {
+		return err
+	}
+	d.logCompactorFinalCount(dbName)
+	return nil
+}
 
+func compactorUseDatabase(ctx context.Context, db *sql.DB, dbName string) error {
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("USE `%s`", dbName)); err != nil {
+		return fmt.Errorf("use database: %w", err)
+	}
+	return nil
+}
+
+func compactorFlattenCommit(ctx context.Context, db *sql.DB, dbName, rootHash string) error {
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_RESET('--soft', '%s')", rootHash)); err != nil {
+		return fmt.Errorf("soft reset to root: %w", err)
+	}
+	commitMsg := fmt.Sprintf("compaction: flatten %s history to single commit", dbName)
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_COMMIT('-Am', '%s')", commitMsg)); err != nil {
+		return fmt.Errorf("commit flattened data: %w", err)
+	}
+	return nil
+}
+
+func verifyCompactorRowCounts(d *Daemon, dbName string, preCounts, postCounts map[string]int) error {
 	for table, preCount := range preCounts {
 		postCount, ok := postCounts[table]
 		if !ok {
@@ -333,16 +347,16 @@ func (d *Daemon) compactDatabase(dbName string) error {
 		}
 	}
 	d.logger.Printf("compactor_dog: %s: integrity verified (%d tables match)", dbName, len(preCounts))
+	return nil
+}
 
-	// Step 7: Verify final commit count.
+func (d *Daemon) logCompactorFinalCount(dbName string) {
 	finalCount, err := d.compactorCountCommits(dbName)
 	if err != nil {
 		d.logger.Printf("compactor_dog: %s: warning: could not verify final commit count: %v", dbName, err)
-	} else {
-		d.logger.Printf("compactor_dog: %s: compaction complete — %d commits remain", dbName, finalCount)
+		return
 	}
-
-	return nil
+	d.logger.Printf("compactor_dog: %s: compaction complete — %d commits remain", dbName, finalCount)
 }
 
 // surgicalRebase performs interactive rebase on a single database:
@@ -400,146 +414,170 @@ func (d *Daemon) surgicalRebaseOnce(dbName string, keepRecent int) error {
 		return err
 	}
 	defer db.Close()
+	state, err := d.prepareSurgicalRebase(db, dbName, keepRecent)
+	if err != nil {
+		return err
+	}
+	defer state.cancel()
+	if err := d.startSurgicalRebase(state); err != nil {
+		return err
+	}
+	continueRebase, err := d.configureSurgicalRebase(state, keepRecent)
+	if err != nil || !continueRebase {
+		return err
+	}
+	if err := d.executeSurgicalRebase(state); err != nil {
+		return err
+	}
+	if err := d.verifySurgicalRebase(state); err != nil {
+		return err
+	}
+	return d.finishSurgicalRebase(state)
+}
 
-	// Pre-flight: record state.
+type surgicalRebaseState struct {
+	db         *sql.DB
+	ctx        context.Context
+	cancel     context.CancelFunc
+	dbName     string
+	preHead    string
+	preCounts  map[string]int
+	rootHash   string
+	baseBranch string
+	workBranch string
+}
+
+func (d *Daemon) prepareSurgicalRebase(db *sql.DB, dbName string, keepRecent int) (*surgicalRebaseState, error) {
 	preHead, err := d.compactorGetHead(db, dbName)
 	if err != nil {
-		return fmt.Errorf("pre-flight HEAD: %w", err)
+		return nil, fmt.Errorf("pre-flight HEAD: %w", err)
 	}
 	preCounts, err := d.compactorGetRowCounts(db, dbName)
 	if err != nil {
-		return fmt.Errorf("pre-flight row counts: %w", err)
+		return nil, fmt.Errorf("pre-flight row counts: %w", err)
 	}
-	d.logger.Printf("compactor_dog: %s: surgical rebase pre-flight HEAD=%s, tables=%d, keep_recent=%d",
-		dbName, shortHash(preHead), len(preCounts), keepRecent)
-
+	d.logger.Printf("compactor_dog: %s: surgical rebase pre-flight HEAD=%s, tables=%d, keep_recent=%d", dbName, shortHash(preHead), len(preCounts), keepRecent)
 	rootHash, err := d.compactorGetRootCommit(db, dbName)
 	if err != nil {
-		return fmt.Errorf("find root commit: %w", err)
+		return nil, fmt.Errorf("find root commit: %w", err)
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("USE `%s`", dbName)); err != nil {
-		return fmt.Errorf("use database: %w", err)
+	if err := compactorUseDatabase(ctx, db, dbName); err != nil {
+		cancel()
+		return nil, err
 	}
+	state := &surgicalRebaseState{db: db, ctx: ctx, cancel: cancel, dbName: dbName, preHead: preHead, preCounts: preCounts, rootHash: rootHash, baseBranch: "compact-base", workBranch: "compact-work"}
+	d.surgicalCleanup(db, state.baseBranch, state.workBranch)
+	return state, nil
+}
 
-	const baseBranch = "compact-base"
-	const workBranch = "compact-work"
-
-	// Clean up leftover branches.
-	d.surgicalCleanup(db, baseBranch, workBranch)
-
-	// Step 1: Create anchor branch at root commit.
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', '%s')", baseBranch, rootHash)); err != nil {
+func (d *Daemon) startSurgicalRebase(state *surgicalRebaseState) error {
+	if _, err := state.db.ExecContext(state.ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', '%s')", state.baseBranch, state.rootHash)); err != nil {
 		return fmt.Errorf("create base branch: %w", err)
 	}
-
-	// Step 2: Create work branch from main.
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', 'main')", workBranch)); err != nil {
-		d.surgicalCleanupBase(db, baseBranch)
+	if _, err := state.db.ExecContext(state.ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', 'main')", state.workBranch)); err != nil {
+		d.surgicalCleanupBase(state.db, state.baseBranch)
 		return fmt.Errorf("create work branch: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_CHECKOUT('%s')", workBranch)); err != nil {
-		d.surgicalCleanup(db, baseBranch, workBranch)
+	if _, err := state.db.ExecContext(state.ctx, fmt.Sprintf("CALL DOLT_CHECKOUT('%s')", state.workBranch)); err != nil {
+		d.surgicalCleanup(state.db, state.baseBranch, state.workBranch)
 		return fmt.Errorf("checkout work branch: %w", err)
 	}
-
-	// Step 3: Start interactive rebase.
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_REBASE('--interactive', '%s')", baseBranch)); err != nil {
-		d.surgicalCleanup(db, baseBranch, workBranch)
+	if _, err := state.db.ExecContext(state.ctx, fmt.Sprintf("CALL DOLT_REBASE('--interactive', '%s')", state.baseBranch)); err != nil {
+		d.surgicalCleanup(state.db, state.baseBranch, state.workBranch)
 		return fmt.Errorf("start interactive rebase: %w", err)
 	}
-	d.logger.Printf("compactor_dog: %s: interactive rebase started", dbName)
+	d.logger.Printf("compactor_dog: %s: interactive rebase started", state.dbName)
+	return nil
+}
 
-	// Step 4: Read rebase plan bounds and mark old commits as squash.
-	// Dolt returns rebase_order as DECIMAL — the MySQL driver delivers it as
-	// []uint8 (e.g. "1.00") which cannot be scanned directly into int.
+func (d *Daemon) configureSurgicalRebase(state *surgicalRebaseState, keepRecent int) (bool, error) {
 	var minOrderStr, maxOrderStr string
-	if err := db.QueryRowContext(ctx, "SELECT MIN(rebase_order), MAX(rebase_order) FROM dolt_rebase").Scan(&minOrderStr, &maxOrderStr); err != nil {
-		d.surgicalAbortAndCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("read rebase bounds: %w", err)
+	if err := state.db.QueryRowContext(state.ctx, "SELECT MIN(rebase_order), MAX(rebase_order) FROM dolt_rebase").Scan(&minOrderStr, &maxOrderStr); err != nil {
+		d.surgicalAbortAndCleanup(state.db, state.baseBranch, state.workBranch)
+		return false, fmt.Errorf("read rebase bounds: %w", err)
 	}
 	minOrder, maxOrder, err := parseRebaseOrder2(minOrderStr, maxOrderStr)
 	if err != nil {
-		d.surgicalAbortAndCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("parse rebase bounds: %w", err)
+		d.surgicalAbortAndCleanup(state.db, state.baseBranch, state.workBranch)
+		return false, fmt.Errorf("parse rebase bounds: %w", err)
 	}
-
 	squashThreshold := maxOrder - keepRecent
 	if squashThreshold <= minOrder {
-		d.logger.Printf("compactor_dog: %s: nothing to squash (all commits recent), aborting rebase", dbName)
-		d.surgicalAbortAndCleanup(db, baseBranch, workBranch)
-		return nil
+		d.logger.Printf("compactor_dog: %s: nothing to squash (all commits recent), aborting rebase", state.dbName)
+		d.surgicalAbortAndCleanup(state.db, state.baseBranch, state.workBranch)
+		return false, nil
 	}
-
-	result, err := db.ExecContext(ctx, fmt.Sprintf(
-		"UPDATE dolt_rebase SET action = 'squash' WHERE rebase_order > %d AND rebase_order <= %d",
-		minOrder, squashThreshold))
+	result, err := state.db.ExecContext(state.ctx, fmt.Sprintf("UPDATE dolt_rebase SET action = 'squash' WHERE rebase_order > %d AND rebase_order <= %d", minOrder, squashThreshold))
 	if err != nil {
-		d.surgicalAbortAndCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("update rebase plan: %w", err)
+		d.surgicalAbortAndCleanup(state.db, state.baseBranch, state.workBranch)
+		return false, fmt.Errorf("update rebase plan: %w", err)
 	}
 	affected, _ := result.RowsAffected()
-	d.logger.Printf("compactor_dog: %s: marked %d commits as squash", dbName, affected)
+	d.logger.Printf("compactor_dog: %s: marked %d commits as squash", state.dbName, affected)
+	return true, nil
+}
 
-	// Step 5: Execute the rebase.
-	if _, err := db.ExecContext(ctx, "CALL DOLT_REBASE('--continue')"); err != nil {
-		d.surgicalCleanup(db, baseBranch, workBranch)
+func (d *Daemon) executeSurgicalRebase(state *surgicalRebaseState) error {
+	if _, err := state.db.ExecContext(state.ctx, "CALL DOLT_REBASE('--continue')"); err != nil {
+		d.surgicalCleanup(state.db, state.baseBranch, state.workBranch)
 		return fmt.Errorf("rebase execution failed: %w", err)
 	}
-	d.logger.Printf("compactor_dog: %s: rebase executed successfully", dbName)
+	d.logger.Printf("compactor_dog: %s: rebase executed successfully", state.dbName)
+	return nil
+}
 
-	// Step 6: Verify integrity — row counts must not decrease (data loss).
-	// Concurrent writes may increase counts during rebase — this is safe.
-	postCounts, err := d.compactorGetRowCounts(db, dbName)
+func (d *Daemon) verifySurgicalRebase(state *surgicalRebaseState) error {
+	postCounts, err := d.compactorGetRowCounts(state.db, state.dbName)
 	if err != nil {
-		d.logger.Printf("compactor_dog: %s: WARNING: could not verify row counts after rebase: %v", dbName, err)
-	} else {
-		for table, preCount := range preCounts {
-			postCount, ok := postCounts[table]
-			if !ok {
-				d.surgicalCleanup(db, baseBranch, workBranch)
-				return fmt.Errorf("integrity: table %q missing after rebase", table)
-			}
-			if postCount < preCount {
-				d.surgicalCleanup(db, baseBranch, workBranch)
-				return fmt.Errorf("integrity: table %q lost rows: pre=%d post=%d", table, preCount, postCount)
-			}
-			if postCount > preCount {
-				d.logger.Printf("compactor_dog: %s: table %q gained %d rows during rebase (concurrent write, safe)",
-					dbName, table, postCount-preCount)
-			}
-		}
-		d.logger.Printf("compactor_dog: %s: integrity verified (%d tables)", dbName, len(preCounts))
+		d.logger.Printf("compactor_dog: %s: WARNING: could not verify row counts after rebase: %v", state.dbName, err)
+	} else if err := verifySurgicalRowCounts(d, state, postCounts); err != nil {
+		return err
 	}
-
-	// Step 7: Concurrency check.
-	currentHead, err := d.compactorGetHead(db, dbName)
+	currentHead, err := d.compactorGetHead(state.db, state.dbName)
 	if err != nil {
-		d.surgicalCleanup(db, baseBranch, workBranch)
+		d.surgicalCleanup(state.db, state.baseBranch, state.workBranch)
 		return fmt.Errorf("concurrency check: %w", err)
 	}
-	if currentHead != preHead {
-		d.surgicalCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("concurrency abort: main HEAD moved from %s to %s", shortHash(preHead), shortHash(currentHead))
+	if currentHead != state.preHead {
+		d.surgicalCleanup(state.db, state.baseBranch, state.workBranch)
+		return fmt.Errorf("concurrency abort: main HEAD moved from %s to %s", shortHash(state.preHead), shortHash(currentHead))
 	}
+	return nil
+}
 
-	// Step 8: Swap branches — make compact-work the new main.
-	if _, err := db.ExecContext(ctx, "CALL DOLT_BRANCH('-D', 'main')"); err != nil {
+func verifySurgicalRowCounts(d *Daemon, state *surgicalRebaseState, postCounts map[string]int) error {
+	for table, preCount := range state.preCounts {
+		postCount, ok := postCounts[table]
+		if !ok {
+			d.surgicalCleanup(state.db, state.baseBranch, state.workBranch)
+			return fmt.Errorf("integrity: table %q missing after rebase", table)
+		}
+		if postCount < preCount {
+			d.surgicalCleanup(state.db, state.baseBranch, state.workBranch)
+			return fmt.Errorf("integrity: table %q lost rows: pre=%d post=%d", table, preCount, postCount)
+		}
+		if postCount > preCount {
+			d.logger.Printf("compactor_dog: %s: table %q gained %d rows during rebase (concurrent write, safe)", state.dbName, table, postCount-preCount)
+		}
+	}
+	d.logger.Printf("compactor_dog: %s: integrity verified (%d tables)", state.dbName, len(state.preCounts))
+	return nil
+}
+
+func (d *Daemon) finishSurgicalRebase(state *surgicalRebaseState) error {
+	if _, err := state.db.ExecContext(state.ctx, "CALL DOLT_BRANCH('-D', 'main')"); err != nil {
 		return fmt.Errorf("delete old main: %w (compact-work preserved for recovery)", err)
 	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('-m', '%s', 'main')", workBranch)); err != nil {
+	if _, err := state.db.ExecContext(state.ctx, fmt.Sprintf("CALL DOLT_BRANCH('-m', '%s', 'main')", state.workBranch)); err != nil {
 		return fmt.Errorf("rename work to main: %w", err)
 	}
-	_, _ = db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('-D', '%s')", baseBranch))
-	if _, err := db.ExecContext(ctx, "CALL DOLT_CHECKOUT('main')"); err != nil {
+	_, _ = state.db.ExecContext(state.ctx, fmt.Sprintf("CALL DOLT_BRANCH('-D', '%s')", state.baseBranch))
+	if _, err := state.db.ExecContext(state.ctx, "CALL DOLT_CHECKOUT('main')"); err != nil {
 		return fmt.Errorf("checkout new main: %w", err)
 	}
-
-	finalCount, _ := d.compactorCountCommits(dbName)
-	d.logger.Printf("compactor_dog: %s: surgical rebase complete — %d commits remain", dbName, finalCount)
+	finalCount, _ := d.compactorCountCommits(state.dbName)
+	d.logger.Printf("compactor_dog: %s: surgical rebase complete — %d commits remain", state.dbName, finalCount)
 	return nil
 }
 
