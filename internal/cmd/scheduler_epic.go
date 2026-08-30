@@ -23,113 +23,121 @@ type epicScheduleOpts struct {
 	NoBoot      bool
 }
 
-// runEpicScheduleByID schedules all open children of an epic.
 func runEpicScheduleByID(epicID string, opts epicScheduleOpts) error {
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
+	run, err := beginEpicChildWork(epicID, opts)
+	if err != nil || run == nil {
 		return err
 	}
+	candidates, skips := collectEpicScheduleCandidates(run)
+	return finishEpicSchedule(run, candidates, skips)
+}
 
-	if err := verifyBeadExists(epicID); err != nil {
-		return fmt.Errorf("epic '%s' not found", epicID)
+type epicChildWork struct {
+	id       string
+	opts     epicScheduleOpts
+	townRoot string
+	children []epicChild
+}
+
+func beginEpicChildWork(epicID string, opts epicScheduleOpts) (*epicChildWork, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return nil, err
 	}
-
+	if err := verifyBeadExists(epicID); err != nil {
+		return nil, fmt.Errorf("epic '%s' not found", epicID)
+	}
 	children, err := getEpicChildren(epicID)
 	if err != nil {
-		return fmt.Errorf("listing children of %s: %w", epicID, err)
+		return nil, fmt.Errorf("listing children of %s: %w", epicID, err)
 	}
-
 	if len(children) == 0 {
 		fmt.Printf("Epic %s has no child issues.\n", epicID)
-		return nil
+		return nil, nil
 	}
+	return &epicChildWork{id: epicID, opts: opts, townRoot: townRoot, children: children}, nil
+}
 
-	type scheduleCandidate struct {
-		ID      string
-		Title   string
-		RigName string
-	}
-	var candidates []scheduleCandidate
-	skippedClosed := 0
-	skippedAssigned := 0
-	skippedScheduled := 0
-	skippedNoRig := 0
-
-	// Batch-check scheduling status for all children (single DB query).
+func collectEpicScheduleCandidates(run *epicChildWork) ([]convoyWorkCandidate, convoySkipCounts) {
 	var childIDs []string
-	for _, c := range children {
+	for _, c := range run.children {
 		childIDs = append(childIDs, c.ID)
 	}
 	scheduledSet := areScheduled(childIDs)
-
-	for _, c := range children {
-		if c.Status == "closed" || c.Status == "tombstone" {
-			skippedClosed++
+	var candidates []convoyWorkCandidate
+	var skips convoySkipCounts
+	for _, c := range run.children {
+		if candidate, skip := epicCandidateFromChild(run.townRoot, c, run.opts.Force, scheduledSet); skip != "" {
+			countConvoySkip(&skips, skip)
 			continue
+		} else if candidate != nil {
+			candidates = append(candidates, *candidate)
 		}
-
-		if c.Assignee != "" && !opts.Force {
-			skippedAssigned++
-			continue
-		}
-
-		if scheduledSet[c.ID] {
-			skippedScheduled++
-			continue
-		}
-
-		rigName := resolveRigForBead(townRoot, c.ID)
-		if rigName == "" {
-			skippedNoRig++
-			prefix := beads.ExtractPrefix(c.ID)
-			fmt.Printf("  %s %s: cannot resolve rig from prefix %q (town-root or unknown)\n",
-				style.Dim.Render("○"), c.ID, prefix)
-			continue
-		}
-
-		candidates = append(candidates, scheduleCandidate{ID: c.ID, Title: c.Title, RigName: rigName})
 	}
+	return candidates, skips
+}
 
+func epicCandidateFromChild(townRoot string, c epicChild, force bool, scheduledSet map[string]bool) (*convoyWorkCandidate, string) {
+	if c.Status == "closed" || c.Status == "tombstone" {
+		return nil, "closed"
+	}
+	if c.Assignee != "" && !force {
+		return nil, "assigned"
+	}
+	if scheduledSet != nil && scheduledSet[c.ID] {
+		return nil, "scheduled"
+	}
+	rigName := resolveRigForBead(townRoot, c.ID)
+	if rigName == "" {
+		fmt.Printf("  %s %s: cannot resolve rig from prefix %q (town-root or unknown)\n",
+			style.Dim.Render("○"), c.ID, beads.ExtractPrefix(c.ID))
+		return nil, "norig"
+	}
+	return &convoyWorkCandidate{ID: c.ID, Title: c.Title, RigName: rigName}, ""
+}
+
+func finishEpicSchedule(run *epicChildWork, candidates []convoyWorkCandidate, skips convoySkipCounts) error {
 	if len(candidates) == 0 {
-		fmt.Printf("No children to schedule from epic %s", epicID)
-		if skippedClosed > 0 || skippedAssigned > 0 || skippedScheduled > 0 || skippedNoRig > 0 {
-			fmt.Printf(" (%d closed, %d assigned, %d already scheduled, %d no rig)",
-				skippedClosed, skippedAssigned, skippedScheduled, skippedNoRig)
+		fmt.Printf("No children to schedule from epic %s", run.id)
+		if convoyScheduleHasSkips(skips) {
+			fmt.Printf(" (%s)", convoyScheduleSkipSummary(skips))
 		}
 		fmt.Println()
 		return nil
 	}
-
-	formula := opts.Formula
-
-	if opts.DryRun {
-		fmt.Printf("%s Would schedule %d child(ren) from epic %s:\n",
-			style.Bold.Render("DRY-RUN"), len(candidates), epicID)
-		if formula != "" {
-			fmt.Printf("  Formula: %s\n", formula)
-		} else {
-			fmt.Printf("  Hook raw beads (no formula)\n")
-		}
-		for _, c := range candidates {
-			fmt.Printf("  Would schedule: %s -> %s (%s)\n", c.ID, c.RigName, c.Title)
-		}
-		if skippedClosed > 0 || skippedAssigned > 0 || skippedScheduled > 0 || skippedNoRig > 0 {
-			fmt.Printf("\nSkipped: %d closed, %d assigned, %d already scheduled, %d no rig\n",
-				skippedClosed, skippedAssigned, skippedScheduled, skippedNoRig)
-		}
+	if run.opts.DryRun {
+		printEpicScheduleDryRun(run, candidates, skips)
 		return nil
 	}
+	return executeEpicSchedule(run, candidates, skips)
+}
 
+func printEpicScheduleDryRun(run *epicChildWork, candidates []convoyWorkCandidate, skips convoySkipCounts) {
+	fmt.Printf("%s Would schedule %d child(ren) from epic %s:\n",
+		style.Bold.Render("DRY-RUN"), len(candidates), run.id)
+	if run.opts.Formula != "" {
+		fmt.Printf("  Formula: %s\n", run.opts.Formula)
+	} else {
+		fmt.Printf("  Hook raw beads (no formula)\n")
+	}
+	for _, c := range candidates {
+		fmt.Printf("  Would schedule: %s -> %s (%s)\n", c.ID, c.RigName, c.Title)
+	}
+	if convoyScheduleHasSkips(skips) {
+		fmt.Printf("\nSkipped: %s\n", convoyScheduleSkipSummary(skips))
+	}
+}
+
+func executeEpicSchedule(run *epicChildWork, candidates []convoyWorkCandidate, skips convoySkipCounts) error {
 	fmt.Printf("%s Scheduling %d child(ren) from epic %s...\n",
-		style.Bold.Render("📋"), len(candidates), epicID)
-
+		style.Bold.Render("📋"), len(candidates), run.id)
 	successCount := 0
 	for _, c := range candidates {
 		err := scheduleBead(c.ID, c.RigName, ScheduleOptions{
-			ScheduleWork: ScheduleWork{Formula: formula},
-			Force:        opts.Force,
-			HookRawBead:  opts.HookRawBead,
-			NoConvoy:     true, // Epic is the organizing structure
+			ScheduleWork: ScheduleWork{Formula: run.opts.Formula},
+			Force:        run.opts.Force,
+			HookRawBead:  run.opts.HookRawBead,
+			NoConvoy:     true,
 		})
 		if err != nil {
 			fmt.Printf("  %s %s: %v\n", style.Dim.Render("✗"), c.ID, err)
@@ -137,153 +145,126 @@ func runEpicScheduleByID(epicID string, opts epicScheduleOpts) error {
 		}
 		successCount++
 	}
-
 	fmt.Printf("\n%s Scheduled %d/%d child(ren) from epic %s\n",
-		style.Bold.Render("📊"), successCount, len(candidates), epicID)
-	if skippedClosed > 0 || skippedAssigned > 0 || skippedScheduled > 0 || skippedNoRig > 0 {
-		fmt.Printf("  Skipped: %d closed, %d assigned, %d already scheduled, %d no rig\n",
-			skippedClosed, skippedAssigned, skippedScheduled, skippedNoRig)
+		style.Bold.Render("📊"), successCount, len(candidates), run.id)
+	if convoyScheduleHasSkips(skips) {
+		fmt.Printf("  Skipped: %s\n", convoyScheduleSkipSummary(skips))
 	}
-
 	if successCount == 0 {
-		return fmt.Errorf("all %d schedule attempts failed for epic %s", len(candidates), epicID)
+		return fmt.Errorf("all %d schedule attempts failed for epic %s", len(candidates), run.id)
 	}
 	return nil
 }
 
-// runEpicSlingByID immediately dispatches all open children of an epic.
-// Used when max_polecats=-1 (direct dispatch mode). Each child goes through
-// the deep Slinging lifecycle. Respects --max-concurrent throttling.
 func runEpicSlingByID(epicID string, opts epicScheduleOpts) error {
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
+	run, err := beginEpicChildWork(epicID, opts)
+	if err != nil || run == nil {
 		return err
 	}
+	candidates, skips := collectEpicSlingCandidates(run)
+	return finishEpicSling(run, candidates, skips)
+}
 
-	if err := verifyBeadExists(epicID); err != nil {
-		return fmt.Errorf("epic '%s' not found", epicID)
-	}
-
-	children, err := getEpicChildren(epicID)
-	if err != nil {
-		return fmt.Errorf("listing children of %s: %w", epicID, err)
-	}
-
-	if len(children) == 0 {
-		fmt.Printf("Epic %s has no child issues.\n", epicID)
-		return nil
-	}
-
-	type slingCandidate struct {
-		ID      string
-		Title   string
-		RigName string
-	}
-	var candidates []slingCandidate
-	skippedClosed := 0
-	skippedAssigned := 0
-	skippedNoRig := 0
-
-	for _, c := range children {
-		if c.Status == "closed" || c.Status == "tombstone" {
-			skippedClosed++
+func collectEpicSlingCandidates(run *epicChildWork) ([]convoyWorkCandidate, convoySkipCounts) {
+	var candidates []convoyWorkCandidate
+	var skips convoySkipCounts
+	for _, c := range run.children {
+		if candidate, skip := epicCandidateFromChild(run.townRoot, c, run.opts.Force, nil); skip != "" {
+			countConvoySkip(&skips, skip)
 			continue
+		} else if candidate != nil {
+			candidates = append(candidates, *candidate)
 		}
-		if c.Assignee != "" && !opts.Force {
-			skippedAssigned++
-			continue
-		}
-		rigName := resolveRigForBead(townRoot, c.ID)
-		if rigName == "" {
-			skippedNoRig++
-			prefix := beads.ExtractPrefix(c.ID)
-			fmt.Printf("  %s %s: cannot resolve rig from prefix %q (town-root or unknown)\n",
-				style.Dim.Render("○"), c.ID, prefix)
-			continue
-		}
-		candidates = append(candidates, slingCandidate{ID: c.ID, Title: c.Title, RigName: rigName})
 	}
+	return candidates, skips
+}
 
+func finishEpicSling(run *epicChildWork, candidates []convoyWorkCandidate, skips convoySkipCounts) error {
 	if len(candidates) == 0 {
-		fmt.Printf("No children to dispatch from epic %s", epicID)
-		if skippedClosed > 0 || skippedAssigned > 0 || skippedNoRig > 0 {
-			fmt.Printf(" (%d closed, %d assigned, %d no rig)",
-				skippedClosed, skippedAssigned, skippedNoRig)
+		fmt.Printf("No children to dispatch from epic %s", run.id)
+		if convoySlingHasSkips(skips) {
+			fmt.Printf(" (%s)", convoySlingSkipSummary(skips))
 		}
 		fmt.Println()
 		return nil
 	}
-
-	formula := opts.Formula
-
-	if opts.DryRun {
-		fmt.Printf("%s Would dispatch %d child(ren) from epic %s:\n",
-			style.Bold.Render("DRY-RUN"), len(candidates), epicID)
-		for _, c := range candidates {
-			fmt.Printf("  Would dispatch: %s -> %s (%s)\n", c.ID, c.RigName, c.Title)
-		}
-		if skippedClosed > 0 || skippedAssigned > 0 || skippedNoRig > 0 {
-			fmt.Printf("\nSkipped: %d closed, %d assigned, %d no rig\n",
-				skippedClosed, skippedAssigned, skippedNoRig)
-		}
+	if run.opts.DryRun {
+		printEpicSlingDryRun(run, candidates, skips)
 		return nil
 	}
+	return executeEpicSling(run, candidates, skips)
+}
 
+func printEpicSlingDryRun(run *epicChildWork, candidates []convoyWorkCandidate, skips convoySkipCounts) {
+	fmt.Printf("%s Would dispatch %d child(ren) from epic %s:\n",
+		style.Bold.Render("DRY-RUN"), len(candidates), run.id)
+	for _, c := range candidates {
+		fmt.Printf("  Would dispatch: %s -> %s (%s)\n", c.ID, c.RigName, c.Title)
+	}
+	if convoySlingHasSkips(skips) {
+		fmt.Printf("\nSkipped: %s\n", convoySlingSkipSummary(skips))
+	}
+}
+
+func executeEpicSling(run *epicChildWork, candidates []convoyWorkCandidate, skips convoySkipCounts) error {
 	fmt.Printf("%s Dispatching %d child(ren) from epic %s...\n",
-		style.Bold.Render("▶"), len(candidates), epicID)
+		style.Bold.Render("▶"), len(candidates), run.id)
+	successCount, successfulRigs := dispatchEpicSlingCandidates(run, candidates)
+	if !run.opts.NoBoot {
+		for rig := range successfulRigs {
+			wakeRigAgents(rig)
+		}
+	}
+	return summarizeEpicSling(run, candidates, skips, successCount)
+}
 
+func dispatchEpicSlingCandidates(run *epicChildWork, candidates []convoyWorkCandidate) (int, map[string]bool) {
 	successCount := 0
 	successfulRigs := make(map[string]bool)
 	for i, c := range candidates {
-		if slingState().maxConcurrent > 0 && i >= slingState().maxConcurrent {
-			fmt.Printf("  %s Reached --max-concurrent spawn batch size (%d), remaining will be scheduled next cycle\n", style.Dim.Render("○"), slingState().maxConcurrent)
+		if hitConvoySlingBatchLimit(i) {
 			break
 		}
-
 		fmt.Printf("\n[%d/%d] Dispatching %s → %s...\n", i+1, len(candidates), c.ID, c.RigName)
-		_, err := executeDeepSling(context.Background(), sling.Intent{
-			BeadID:  c.ID,
-			RigName: c.RigName,
-			Formula: formula,
-			IntentExecutionOptions: sling.IntentExecutionOptions{
-				Force:         opts.Force,
-				HookRawBead:   opts.HookRawBead,
-				NoConvoy:      true, // Epic is the organizing structure
-				NoBoot:        true, // coalesced after the loop
-				CallerContext: "epic-sling",
-				TownRoot:      townRoot,
-				BeadsDir:      filepath.Join(townRoot, ".beads"),
-			},
-		})
-		if err != nil {
+		if err := dispatchEpicSlingCandidate(run, c); err != nil {
 			fmt.Printf("  %s %s: %v\n", style.Dim.Render("✗"), c.ID, err)
 			continue
 		}
 		successCount++
 		successfulRigs[c.RigName] = true
-
-		// Brief delay between spawns to avoid Dolt contention
 		if i < len(candidates)-1 {
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
+	return successCount, successfulRigs
+}
 
-	// Wake rig agents for each unique rig that had successful dispatches
-	if !opts.NoBoot {
-		for rig := range successfulRigs {
-			wakeRigAgents(rig)
-		}
-	}
+func dispatchEpicSlingCandidate(run *epicChildWork, c convoyWorkCandidate) error {
+	_, err := executeDeepSling(context.Background(), sling.Intent{
+		BeadID:  c.ID,
+		RigName: c.RigName,
+		Formula: run.opts.Formula,
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			Force:         run.opts.Force,
+			HookRawBead:   run.opts.HookRawBead,
+			NoConvoy:      true,
+			NoBoot:        true,
+			CallerContext: "epic-sling",
+			TownRoot:      run.townRoot,
+			BeadsDir:      filepath.Join(run.townRoot, ".beads"),
+		},
+	})
+	return err
+}
 
+func summarizeEpicSling(run *epicChildWork, candidates []convoyWorkCandidate, skips convoySkipCounts, successCount int) error {
 	fmt.Printf("\n%s Dispatched %d/%d child(ren) from epic %s\n",
-		style.Bold.Render("📊"), successCount, len(candidates), epicID)
-	if skippedClosed > 0 || skippedAssigned > 0 || skippedNoRig > 0 {
-		fmt.Printf("  Skipped: %d closed, %d assigned, %d no rig\n",
-			skippedClosed, skippedAssigned, skippedNoRig)
+		style.Bold.Render("📊"), successCount, len(candidates), run.id)
+	if convoySlingHasSkips(skips) {
+		fmt.Printf("  Skipped: %s\n", convoySlingSkipSummary(skips))
 	}
-
 	if successCount == 0 {
-		return fmt.Errorf("all %d dispatch attempts failed for epic %s", len(candidates), epicID)
+		return fmt.Errorf("all %d dispatch attempts failed for epic %s", len(candidates), run.id)
 	}
 	return nil
 }
