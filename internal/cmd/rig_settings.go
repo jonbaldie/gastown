@@ -264,96 +264,103 @@ func setNestedValue(obj interface{}, keyPath string, value interface{}) error {
 		return fmt.Errorf("empty key path")
 	}
 
-	// Convert to map for manipulation
-	data, err := json.Marshal(obj)
+	m, err := objectMap(obj)
 	if err != nil {
-		return fmt.Errorf("marshaling object: %w", err)
+		return err
 	}
-
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return fmt.Errorf("unmarshaling object: %w", err)
+	current, err := nestedParentMap(m, keys[:len(keys)-1])
+	if err != nil {
+		return err
 	}
-
-	// Navigate to the parent of the target key
-	current := m
-	parentKeys := keys[:len(keys)-1]
-	for _, key := range parentKeys {
-		if val, ok := current[key]; ok {
-			// Check if it's a map
-			if nestedMap, ok := val.(map[string]interface{}); ok {
-				current = nestedMap
-			} else {
-				// Convert to map if it's not already
-				valData, err := json.Marshal(val)
-				if err != nil {
-					return fmt.Errorf("marshaling nested value: %w", err)
-				}
-				var newMap map[string]interface{}
-				if err := json.Unmarshal(valData, &newMap); err != nil {
-					return fmt.Errorf("cannot set nested key %s: parent is not an object", key)
-				}
-				current[key] = newMap
-				current = newMap
-			}
-		} else {
-			// Create new nested map
-			newMap := make(map[string]interface{})
-			current[key] = newMap
-			current = newMap
-		}
-	}
-
-	// Set the final value
 	finalKey := keys[len(keys)-1]
 	current[finalKey] = value
+	if err := applyNestedValue(obj, m, current, finalKey, value); err != nil {
+		return err
+	}
+	return verifyNestedValue(obj, keys, keyPath)
+}
 
-	// Convert back to the original type
-	data, err = json.Marshal(m)
+func objectMap(obj interface{}) (map[string]interface{}, error) {
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling object: %w", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("unmarshaling object: %w", err)
+	}
+	return m, nil
+}
+
+func nestedParentMap(root map[string]interface{}, keys []string) (map[string]interface{}, error) {
+	current := root
+	for _, key := range keys {
+		next, err := nestedChildMap(current, key)
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func nestedChildMap(current map[string]interface{}, key string) (map[string]interface{}, error) {
+	val, ok := current[key]
+	if !ok {
+		nested := make(map[string]interface{})
+		current[key] = nested
+		return nested, nil
+	}
+	if nested, ok := val.(map[string]interface{}); ok {
+		return nested, nil
+	}
+	valData, err := json.Marshal(val)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling nested value: %w", err)
+	}
+	var nested map[string]interface{}
+	if err := json.Unmarshal(valData, &nested); err != nil {
+		return nil, fmt.Errorf("cannot set nested key %s: parent is not an object", key)
+	}
+	current[key] = nested
+	return nested, nil
+}
+
+func applyNestedValue(obj interface{}, m, current map[string]interface{}, finalKey string, value interface{}) error {
+	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("marshaling result: %w", err)
 	}
-
-	// Unmarshal back into the original struct.
-	// If this fails (e.g., parseValue inferred bool/number but the target field
-	// is a string), fall back to the string representation of the value.
-	if err := json.Unmarshal(data, obj); err != nil {
-		if _, isString := value.(string); !isString {
-			strVal := fmt.Sprintf("%v", value)
-			current[finalKey] = strVal
-			value = strVal
-			data, marshalErr := json.Marshal(m)
-			if marshalErr != nil {
-				return fmt.Errorf("marshaling result: %w", marshalErr)
-			}
-			if retryErr := json.Unmarshal(data, obj); retryErr != nil {
-				return fmt.Errorf("unmarshaling result: %w", err)
-			}
-		} else {
+	if err := json.Unmarshal(data, obj); err == nil {
+		return nil
+	} else if _, isString := value.(string); isString {
+		return fmt.Errorf("unmarshaling result: %w", err)
+	} else {
+		current[finalKey] = fmt.Sprintf("%v", value)
+		data, marshalErr := json.Marshal(m)
+		if marshalErr != nil {
+			return fmt.Errorf("marshaling result: %w", marshalErr)
+		}
+		if retryErr := json.Unmarshal(data, obj); retryErr != nil {
 			return fmt.Errorf("unmarshaling result: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Verify the value was actually set by marshaling back and checking.
-	// Unknown fields are silently dropped by json.Unmarshal, so we need to
-	// confirm the key exists in the output.
-	var verifyMap map[string]interface{}
+func verifyNestedValue(obj interface{}, keys []string, keyPath string) error {
 	checkData, err := json.Marshal(obj)
 	if err != nil {
 		return fmt.Errorf("marshaling for verification: %w", err)
 	}
+	var verifyMap map[string]interface{}
 	if err := json.Unmarshal(checkData, &verifyMap); err != nil {
 		return fmt.Errorf("unmarshaling for verification: %w", err)
 	}
-
-	// Navigate to the key in the verified output
-	verifyCurrent := verifyMap
+	current := verifyMap
 	for i, key := range keys {
 		if i == len(keys)-1 {
-			// This is the final key - check if it exists
-			if _, exists := verifyCurrent[key]; !exists {
-				// The field doesn't exist in the struct definition
-				// List all valid top-level keys from RigSettings
+			if _, exists := current[key]; !exists {
 				validKeys := []string{
 					"type", "version",
 					"merge_queue", "theme", "namepool", "crew", "workflow",
@@ -361,16 +368,14 @@ func setNestedValue(obj interface{}, keyPath string, value interface{}) error {
 				}
 				return fmt.Errorf("unknown key %q (valid top-level keys: %s)", keyPath, strings.Join(validKeys, ", "))
 			}
-			break
+			return nil
 		}
-		// Navigate deeper
-		next, ok := verifyCurrent[key].(map[string]interface{})
+		next, ok := current[key].(map[string]interface{})
 		if !ok {
 			return fmt.Errorf("invalid key path %q: %s is not an object", keyPath, key)
 		}
-		verifyCurrent = next
+		current = next
 	}
-
 	return nil
 }
 
@@ -381,41 +386,48 @@ func unsetNestedValue(obj interface{}, keyPath string) error {
 		return fmt.Errorf("empty key path")
 	}
 
-	// Convert to map for manipulation
-	data, err := json.Marshal(obj)
+	m, err := objectMap(obj)
 	if err != nil {
-		return fmt.Errorf("marshaling object: %w", err)
+		return err
 	}
-
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return fmt.Errorf("unmarshaling object: %w", err)
+	current, err := existingParentMap(m, keys[:len(keys)-1], keyPath)
+	if err != nil {
+		return err
 	}
-
-	// Navigate to the parent of the target key
-	current := m
-	parentKeys := keys[:len(keys)-1]
-	for _, key := range parentKeys {
-		if val, ok := current[key]; ok {
-			if nestedMap, ok := val.(map[string]interface{}); ok {
-				current = nestedMap
-			} else {
-				return fmt.Errorf("cannot unset nested key %s: parent is not an object", key)
-			}
-		} else {
-			return fmt.Errorf("key path %s not found", keyPath)
-		}
-	}
-
-	// Remove the final key
 	finalKey := keys[len(keys)-1]
-	if _, ok := current[finalKey]; !ok {
+	if _, exists := current[finalKey]; !exists {
 		return fmt.Errorf("key %s not found", keyPath)
 	}
 	delete(current, finalKey)
+	return replaceObject(obj, m)
+}
 
-	// Convert back to the original type
-	data, err = json.Marshal(m)
+func existingParentMap(root map[string]interface{}, keys []string, keyPath string) (map[string]interface{}, error) {
+	current := root
+	for _, key := range keys {
+		next, err := existingChildMap(current, key, keyPath)
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func existingChildMap(current map[string]interface{}, key, keyPath string) (map[string]interface{}, error) {
+	val, ok := current[key]
+	if !ok {
+		return nil, fmt.Errorf("key path %s not found", keyPath)
+	}
+	nested, ok := val.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("cannot unset nested key %s: parent is not an object", key)
+	}
+	return nested, nil
+}
+
+func replaceObject(obj interface{}, m map[string]interface{}) error {
+	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("marshaling result: %w", err)
 	}
@@ -426,7 +438,6 @@ func unsetNestedValue(obj interface{}, keyPath string) error {
 	// (and omitempty fields are truly absent on re-serialization).
 	reflect.ValueOf(obj).Elem().Set(reflect.Zero(reflect.ValueOf(obj).Elem().Type()))
 
-	// Unmarshal back into the zeroed struct
 	if err := json.Unmarshal(data, obj); err != nil {
 		return fmt.Errorf("unmarshaling result: %w", err)
 	}
