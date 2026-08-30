@@ -99,7 +99,7 @@ func TestProxy_ExtractSessionID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewProxy()
-			p.extractSessionID(tt.msg)
+			extractSessionID(p, tt.msg)
 
 			if sid := p.SessionID(); sid != tt.wantSID {
 				t.Errorf("expected session ID %q, got %q", tt.wantSID, sid)
@@ -177,8 +177,8 @@ func TestProxy_MarkDone(t *testing.T) {
 	p := NewProxy()
 	p.done = make(chan struct{})
 
-	p.markDone()
-	p.markDone()
+	markDone(p)
+	markDone(p)
 
 	select {
 	case <-p.done:
@@ -445,7 +445,7 @@ func TestIntegration_HandshakeSequence(t *testing.T) {
 		ID:      1,
 		Result:  json.RawMessage(`{"protocolVersion":1,"capabilities":{}}`),
 	}
-	p.extractSessionID(initResp)
+	extractSessionID(p, initResp)
 
 	if sid := p.SessionID(); sid != "" {
 		t.Errorf("expected empty session ID after init, got %q", sid)
@@ -456,7 +456,7 @@ func TestIntegration_HandshakeSequence(t *testing.T) {
 		ID:      2,
 		Result:  json.RawMessage(`{"sessionId":"test-session-12345"}`),
 	}
-	p.extractSessionID(sessionResp)
+	extractSessionID(p, sessionResp)
 
 	if sid := p.SessionID(); sid != "test-session-12345" {
 		t.Errorf("expected session ID test-session-12345, got %q", sid)
@@ -823,7 +823,7 @@ func TestProxy_HandshakeWithMockAgent(t *testing.T) {
 
 	// Run forwardFromAgent to process responses from the mock agent
 	p.wg.Add(1)
-	go p.forwardFromAgent()
+	go forwardFromAgent(p)
 
 	// 1. Send initialize
 	initReq := &JSONRPCMessage{
@@ -937,7 +937,7 @@ func TestIntegration_FullLoop(t *testing.T) {
 	p.ctx = childCtx
 	p.cancel = childCancel
 	p.wg.Add(1)
-	go p.forwardAgentStderr()
+	go forwardAgentStderr(p)
 
 	// Send messages from the UI side
 	go func() {

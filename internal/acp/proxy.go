@@ -96,7 +96,7 @@ func (p *Proxy) SetTownRoot(townRoot string) {
 	p.townRoot = townRoot
 }
 
-func (p *Proxy) SetPropelled(propelled bool) {
+func setPropelled(p *Proxy, propelled bool) {
 	p.Propelled.Store(propelled)
 }
 
@@ -185,6 +185,10 @@ func (p *Proxy) getStartupPromptState() string {
 }
 
 func (p *Proxy) Start(ctx context.Context, agentPath string, agentArgs []string, cwd string) error {
+	return startProxy(p, ctx, agentPath, agentArgs, cwd)
+}
+
+func startProxy(p *Proxy, ctx context.Context, agentPath string, agentArgs []string, cwd string) error {
 	childCtx, cancel := context.WithCancel(ctx)
 	p.ctx = childCtx
 	p.cancel = cancel
@@ -242,12 +246,16 @@ func (p *Proxy) Start(ctx context.Context, agentPath string, agentArgs []string,
 
 	// Start goroutine to capture agent stderr and write to acp.log
 	p.wg.Add(1)
-	go p.forwardAgentStderr()
+	go forwardAgentStderr(p)
 
 	return nil
 }
 
 func (p *Proxy) writeToAgent(msg any) error {
+	return writeToAgent(p, msg)
+}
+
+func writeToAgent(p *Proxy, msg any) error {
 	method := "unknown"
 	var id any
 	if m, ok := msg.(*JSONRPCMessage); ok {
@@ -312,6 +320,10 @@ func (p *Proxy) markPromptBusy(msg any) bool {
 }
 
 func (p *Proxy) Forward() error {
+	return forwardProxy(p)
+}
+
+func forwardProxy(p *Proxy) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, signalsToHandle()...)
 	defer signal.Stop(sigChan)
@@ -320,18 +332,18 @@ func (p *Proxy) Forward() error {
 
 	errChan := make(chan error, 1)
 	p.wg.Add(3)
-	go p.forwardToAgent()
-	go p.forwardFromAgent()
+	go forwardToAgent(p)
+	go forwardFromAgent(p)
 
 	keepAliveTicker := time.NewTicker(30 * time.Second)
 	defer keepAliveTicker.Stop()
-	go p.runKeepAlive(keepAliveTicker.C)
+	go runKeepAlive(p, keepAliveTicker.C)
 
 	if p.pidFilePath != "" {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.monitorPIDFile(p.ctx)
+			monitorPIDFile(p, p.ctx)
 		}()
 	}
 
@@ -373,7 +385,7 @@ func (p *Proxy) Forward() error {
 	return nil
 }
 
-func (p *Proxy) forwardToAgent() {
+func forwardToAgent(p *Proxy) {
 	defer p.wg.Done()
 	defer func() {
 		debugLog(p.townRoot, "[Proxy] forwardToAgent: exiting, triggering Shutdown()")
@@ -394,7 +406,7 @@ func (p *Proxy) forwardToAgent() {
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			p.handleInputReadError(err, receivedInput)
+			handleInputReadError(p, err, receivedInput)
 			return
 		}
 
@@ -410,20 +422,20 @@ func (p *Proxy) forwardToAgent() {
 			debugLog(p.townRoot, "[Proxy] forwardToAgent: large message received (size=%d, method=%s)", len(line), msg.Method)
 		}
 
-		p.trackHandshakeRequest(&msg)
+		trackHandshakeRequest(p, &msg)
 
 		if err := p.writeToAgent(&msg); err != nil {
 			debugLog(p.townRoot, "[Proxy] forwardToAgent: writeToAgent failed: %v", err)
-			p.markDone()
+			markDone(p)
 			return
 		}
 	}
 }
 
-func (p *Proxy) handleInputReadError(err error, receivedInput bool) {
+func handleInputReadError(p *Proxy, err error, receivedInput bool) {
 	if err != io.EOF {
 		debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin read error: %v", err)
-		p.markDone()
+		markDone(p)
 		return
 	}
 	if !receivedInput && p.handshakeState == handshakeInit {
@@ -435,7 +447,7 @@ func (p *Proxy) handleInputReadError(err error, receivedInput bool) {
 	debugLog(p.townRoot, "[Proxy] forwardToAgent: stdin EOF (client disconnected)")
 }
 
-func (p *Proxy) trackHandshakeRequest(msg *JSONRPCMessage) {
+func trackHandshakeRequest(p *Proxy, msg *JSONRPCMessage) {
 	if msg.Method == "" {
 		return
 	}
@@ -449,120 +461,133 @@ func (p *Proxy) trackHandshakeRequest(msg *JSONRPCMessage) {
 	}
 }
 
-func (p *Proxy) forwardFromAgent() {
+func forwardFromAgent(p *Proxy) {
 	defer p.wg.Done()
-
-	// Use large buffer to handle bursts of large JSON messages (e.g. build logs)
 	reader := bufio.NewReaderSize(p.agentStdout, 1024*1024)
-
 	for {
-		select {
-		case <-p.done:
-			debugLog(p.townRoot, "[Proxy] forwardFromAgent: done channel closed, exiting")
+		if proxyDone(p) {
 			return
-		default:
 		}
-
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
-				debugLog(p.townRoot, "[Proxy] forwardFromAgent: agent stdout EOF (agent terminated)")
-				p.logCrashDiagnostics("agent stdout EOF")
-				logEvent(p.townRoot, "acp_shutdown", "agent stdout EOF - agent terminated gracefully")
-				p.markDone()
-			} else {
-				logEvent(p.townRoot, "acp_error", fmt.Sprintf("agent stdout read error: %v", err))
-				debugLog(p.townRoot, "[Proxy] forwardFromAgent: agent stdout read error: %v", err)
-				p.logCrashDiagnostics(fmt.Sprintf("read error: %v", err))
-				p.markDone()
-			}
+			handleAgentReadError(p, err)
 			return
 		}
-
-		var msg JSONRPCMessage
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			// Check for raw propulsion triggers if not valid JSON
-			p.propulsionBuffer += line
-			if len(p.propulsionBuffer) > 2000 {
-				p.propulsionBuffer = p.propulsionBuffer[len(p.propulsionBuffer)-2000:]
-			}
-
-			if isPropulsionTrigger(p.propulsionBuffer) {
-				debugLog(p.townRoot, "[Proxy] forwardFromAgent: propulsion trigger detected in raw output")
-				p.SetPropelled(true)
-				p.propulsionBuffer = "" // Reset after detection
-			}
-			debugLog(p.townRoot, "[Proxy] forwardFromAgent: failed to parse JSON (size=%d): %v", len(line), err)
-			continue
-		}
-
-		// Log large messages that might cause issues
-		if len(line) > 50000 {
-			debugLog(p.townRoot, "[Proxy] forwardFromAgent: large message received (size=%d, method=%s)", len(line), msg.Method)
-		}
-
-		p.lastActivity.Store(time.Now().UnixNano())
-		p.extractSessionID(&msg)
-		shouldInjectPrompt := p.trackHandshakeResponse(&msg)
-		p.trackPromptResponse(&msg)
-
-		// Check for propulsion triggers in JSON messages (e.g. session/update)
-		if checkPropulsionTrigger(&msg) {
-			debugLog(p.townRoot, "[Proxy] forwardFromAgent: propulsion trigger detected in JSON message")
-			p.SetPropelled(true)
-		}
-
-		// Filter out responses to injected prompts so the UI doesn't get confused
-		isInjectedResponse := false
-		idStr := ""
-		if id, ok := msg.ID.(string); ok && strings.HasPrefix(id, "gt-inject-") {
-			isInjectedResponse = true
-			idStr = id
-		}
-
-		if isInjectedResponse && msg.Error != nil {
-			debugLog(p.townRoot, "[Proxy] Injected prompt %v failed: %d %s", msg.ID, msg.Error.Code, msg.Error.Message)
-
-			// If heartbeat method fails, disable heartbeat to avoid repeated failures
-			if strings.Contains(idStr, "keepalive") {
-				debugLog(p.townRoot, "[Proxy] Heartbeat method failed, disabling heartbeat")
-				p.heartbeatSupported.Store(false)
-			}
-		}
-
-		// Log successful heartbeat responses at debug level
-		if isInjectedResponse && msg.Error == nil {
-			debugLog(p.townRoot, "[Proxy] Heartbeat successful (id=%v)", msg.ID)
-		}
-
-		// Filter out redacted thought chunks - they shouldn't be shown to the UI
-		// as they create a confusing "Thinking" state when the agent has finished
-		if isRedactedThought(&msg) {
-			debugLog(p.townRoot, "[Proxy] forwardFromAgent: filtering out redacted thought chunk")
-			continue
-		}
-
-		if !isInjectedResponse && !p.Propelled.Load() {
-			p.stdoutMux.Lock()
-			err = p.uiEncoder.Encode(&msg)
-			p.stdoutMux.Unlock()
-		}
-		if err != nil {
-			logEvent(p.townRoot, "acp_error", fmt.Sprintf("failed to forward message to UI: %v", err))
-			debugLog(p.townRoot, "[Proxy] forwardFromAgent: failed to forward to UI: %v", err)
-			p.markDone()
+		if !processAgentLine(p, line) {
 			return
-		}
-
-		if shouldInjectPrompt {
-			if err := p.injectStartupPrompt(); err != nil {
-				style.PrintWarning("failed to inject startup prompt: %v", err)
-			}
 		}
 	}
 }
 
-func (p *Proxy) forwardAgentStderr() {
+func proxyDone(p *Proxy) bool {
+	select {
+	case <-p.done:
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: done channel closed, exiting")
+		return true
+	default:
+		return false
+	}
+}
+
+func handleAgentReadError(p *Proxy, err error) {
+	if err == io.EOF {
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: agent stdout EOF (agent terminated)")
+		logCrashDiagnostics(p, "agent stdout EOF")
+		logEvent(p.townRoot, "acp_shutdown", "agent stdout EOF - agent terminated gracefully")
+	} else {
+		logEvent(p.townRoot, "acp_error", fmt.Sprintf("agent stdout read error: %v", err))
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: agent stdout read error: %v", err)
+		logCrashDiagnostics(p, fmt.Sprintf("read error: %v", err))
+	}
+	markDone(p)
+}
+
+func processAgentLine(p *Proxy, line string) bool {
+	var msg JSONRPCMessage
+	if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		handleRawAgentOutput(p, line, err)
+		return true
+	}
+	if len(line) > 50000 {
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: large message received (size=%d, method=%s)", len(line), msg.Method)
+	}
+	shouldInjectPrompt := trackAgentMessage(p, &msg)
+	injected := handleInjectedResponse(p, &msg)
+	if isRedactedThought(&msg) {
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: filtering out redacted thought chunk")
+		return true
+	}
+	if err := forwardMessageToUI(p, &msg, injected); err != nil {
+		logEvent(p.townRoot, "acp_error", fmt.Sprintf("failed to forward message to UI: %v", err))
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: failed to forward to UI: %v", err)
+		markDone(p)
+		return false
+	}
+	injectStartupPromptIfReady(p, shouldInjectPrompt)
+	return true
+}
+
+func handleRawAgentOutput(p *Proxy, line string, parseErr error) {
+	p.propulsionBuffer += line
+	if len(p.propulsionBuffer) > 2000 {
+		p.propulsionBuffer = p.propulsionBuffer[len(p.propulsionBuffer)-2000:]
+	}
+	if isPropulsionTrigger(p.propulsionBuffer) {
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: propulsion trigger detected in raw output")
+		setPropelled(p, true)
+		p.propulsionBuffer = ""
+	}
+	debugLog(p.townRoot, "[Proxy] forwardFromAgent: failed to parse JSON (size=%d): %v", len(line), parseErr)
+}
+
+func trackAgentMessage(p *Proxy, msg *JSONRPCMessage) bool {
+	p.lastActivity.Store(time.Now().UnixNano())
+	extractSessionID(p, msg)
+	shouldInjectPrompt := trackHandshakeResponse(p, msg)
+	trackPromptResponse(p, msg)
+	if checkPropulsionTrigger(msg) {
+		debugLog(p.townRoot, "[Proxy] forwardFromAgent: propulsion trigger detected in JSON message")
+		setPropelled(p, true)
+	}
+	return shouldInjectPrompt
+}
+
+func handleInjectedResponse(p *Proxy, msg *JSONRPCMessage) bool {
+	id, ok := msg.ID.(string)
+	if !ok || !strings.HasPrefix(id, "gt-inject-") {
+		return false
+	}
+	if msg.Error == nil {
+		debugLog(p.townRoot, "[Proxy] Heartbeat successful (id=%v)", msg.ID)
+		return true
+	}
+	debugLog(p.townRoot, "[Proxy] Injected prompt %v failed: %d %s", msg.ID, msg.Error.Code, msg.Error.Message)
+	if strings.Contains(id, "keepalive") {
+		debugLog(p.townRoot, "[Proxy] Heartbeat method failed, disabling heartbeat")
+		p.heartbeatSupported.Store(false)
+	}
+	return true
+}
+
+func forwardMessageToUI(p *Proxy, msg *JSONRPCMessage, injected bool) error {
+	if injected || p.Propelled.Load() {
+		return nil
+	}
+	p.stdoutMux.Lock()
+	defer p.stdoutMux.Unlock()
+	return p.uiEncoder.Encode(msg)
+}
+
+func injectStartupPromptIfReady(p *Proxy, ready bool) {
+	if !ready {
+		return
+	}
+	if err := injectStartupPrompt(p); err != nil {
+		style.PrintWarning("failed to inject startup prompt: %v", err)
+	}
+}
+
+func forwardAgentStderr(p *Proxy) {
 	defer p.wg.Done()
 	reader := bufio.NewReader(p.agentStderr)
 
@@ -573,10 +598,10 @@ func (p *Proxy) forwardAgentStderr() {
 	for {
 		select {
 		case <-p.done:
-			p.logStderrStatistics()
+			logStderrStatistics(p)
 			return
 		case <-statsTicker.C:
-			p.logStderrStatistics()
+			logStderrStatistics(p)
 		default:
 		}
 
@@ -593,13 +618,13 @@ func (p *Proxy) forwardAgentStderr() {
 			continue
 		}
 
-		if p.writeStderrLine(line) {
+		if writeStderrLine(p, line) {
 			continue
 		}
 	}
 }
 
-func (p *Proxy) writeStderrLine(line string) bool {
+func writeStderrLine(p *Proxy, line string) bool {
 	lineLen := len(line)
 	if lineLen > 50000 {
 		p.stderrBytesDropped.Add(int64(lineLen))
@@ -623,7 +648,7 @@ func (p *Proxy) writeStderrLine(line string) bool {
 	return false
 }
 
-func (p *Proxy) logStderrStatistics() {
+func logStderrStatistics(p *Proxy) {
 	dropped := p.stderrBytesDropped.Load()
 	truncated := p.stderrLinesTruncated.Load()
 	if dropped > 0 || truncated > 0 {
@@ -631,7 +656,7 @@ func (p *Proxy) logStderrStatistics() {
 	}
 }
 
-func (p *Proxy) runKeepAlive(tickerChan <-chan time.Time) {
+func runKeepAlive(p *Proxy, tickerChan <-chan time.Time) {
 	defer p.wg.Done()
 	debugLog(p.townRoot, "[Proxy] runKeepAlive: loop started")
 
@@ -654,16 +679,16 @@ func (p *Proxy) runKeepAlive(tickerChan <-chan time.Time) {
 			last := p.lastActivity.Load()
 			idleTime := time.Since(time.Unix(0, last))
 
-			if p.keepAliveBusy(idleTime) {
+			if keepAliveBusy(p, idleTime) {
 				continue
 			}
 
-			p.sendKeepAliveIfIdle(idleTime)
+			sendKeepAliveIfIdle(p, idleTime)
 		}
 	}
 }
 
-func (p *Proxy) sendKeepAliveIfIdle(idleTime time.Duration) {
+func sendKeepAliveIfIdle(p *Proxy, idleTime time.Duration) {
 	if idleTime <= 45*time.Second {
 		debugLog(p.townRoot, "[Proxy] runKeepAlive: skipping heartbeat, idle time (%v) < threshold (45s)", idleTime)
 		return
@@ -682,12 +707,12 @@ func (p *Proxy) sendKeepAliveIfIdle(idleTime time.Duration) {
 	p.modeMux.RLock()
 	method, modeID := p.heartbeatMethod, p.currentModeID
 	p.modeMux.RUnlock()
-	if err := p.writeToAgent(p.keepAliveMessage(sessionID, method, modeID, idleTime)); err != nil {
+	if err := p.writeToAgent(keepAliveMessage(p, sessionID, method, modeID, idleTime)); err != nil {
 		debugLog(p.townRoot, "[Proxy] runKeepAlive: heartbeat failed: %v", err)
 	}
 }
 
-func (p *Proxy) keepAliveBusy(idleTime time.Duration) bool {
+func keepAliveBusy(p *Proxy, idleTime time.Duration) bool {
 	p.promptMux.Lock()
 	busyID := p.activePromptID
 	if busyID != "" && idleTime > 60*time.Second {
@@ -703,7 +728,7 @@ func (p *Proxy) keepAliveBusy(idleTime time.Duration) bool {
 	return true
 }
 
-func (p *Proxy) keepAliveMessage(sessionID, method, modeID string, idleTime time.Duration) *JSONRPCMessage {
+func keepAliveMessage(p *Proxy, sessionID, method, modeID string, idleTime time.Duration) *JSONRPCMessage {
 	id := fmt.Sprintf("gt-inject-keepalive-%d", time.Now().UnixNano())
 	if method == "set_mode" && modeID != "" {
 		paramsBytes, _ := json.Marshal(map[string]any{"sessionId": sessionID, "modeId": modeID})
@@ -714,7 +739,7 @@ func (p *Proxy) keepAliveMessage(sessionID, method, modeID string, idleTime time
 	return &JSONRPCMessage{JSONRPC: "2.0", Method: "_ping", ID: id, Params: json.RawMessage("{}")}
 }
 
-func (p *Proxy) trackPromptResponse(msg *JSONRPCMessage) {
+func trackPromptResponse(p *Proxy, msg *JSONRPCMessage) {
 	if msg.ID == nil {
 		return
 	}
@@ -740,7 +765,7 @@ func (p *Proxy) trackPromptResponse(msg *JSONRPCMessage) {
 		// Reset propulsion mode when a prompt completes (Turn ends)
 		if p.Propelled.Load() {
 			debugLog(p.townRoot, "[Proxy] trackPromptResponse: resetting Propelled flag and buffer")
-			p.SetPropelled(false)
+			setPropelled(p, false)
 			p.propulsionBuffer = ""
 		}
 
@@ -750,7 +775,7 @@ func (p *Proxy) trackPromptResponse(msg *JSONRPCMessage) {
 	}
 }
 
-func (p *Proxy) trackHandshakeResponse(msg *JSONRPCMessage) bool {
+func trackHandshakeResponse(p *Proxy, msg *JSONRPCMessage) bool {
 	if msg.ID == nil || msg.Result == nil {
 		return false
 	}
@@ -771,7 +796,7 @@ func (p *Proxy) trackHandshakeResponse(msg *JSONRPCMessage) bool {
 	return false
 }
 
-func (p *Proxy) injectStartupPrompt() error {
+func injectStartupPrompt(p *Proxy) error {
 	prompt := p.getStartupPrompt()
 	if prompt == "" {
 		p.setStartupPromptState(startupPromptStateIdle)
@@ -810,7 +835,7 @@ func (p *Proxy) injectStartupPrompt() error {
 	return nil
 }
 
-func (p *Proxy) extractSessionID(msg *JSONRPCMessage) {
+func extractSessionID(p *Proxy, msg *JSONRPCMessage) {
 	if msg.ID != nil && msg.Result != nil {
 		var result SessionNewResult
 		if err := json.Unmarshal(msg.Result, &result); err == nil && result.SessionID != "" {
@@ -880,6 +905,10 @@ func notificationMessage(method, sessionID string, params any) JSONRPCMessage {
 }
 
 func (p *Proxy) InjectPrompt(prompt string) error {
+	return injectPrompt(p, prompt)
+}
+
+func injectPrompt(p *Proxy, prompt string) error {
 	if p.isShuttingDown.Load() {
 		return fmt.Errorf("proxy is shutting down")
 	}
@@ -936,6 +965,10 @@ func (p *Proxy) SessionID() string {
 }
 
 func (p *Proxy) WaitForSessionID(ctx context.Context) error {
+	return waitForSessionID(p, ctx)
+}
+
+func waitForSessionID(p *Proxy, ctx context.Context) error {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -959,6 +992,10 @@ func (p *Proxy) WaitForSessionID(ctx context.Context) error {
 }
 
 func (p *Proxy) WaitForReady(ctx context.Context) error {
+	return waitForReady(p, ctx)
+}
+
+func waitForReady(p *Proxy, ctx context.Context) error {
 	if err := p.WaitForSessionID(ctx); err != nil {
 		return err
 	}
@@ -971,7 +1008,7 @@ func (p *Proxy) WaitForReady(ctx context.Context) error {
 			return fmt.Errorf("proxy is shutting down")
 		}
 
-		if p.readyForInteraction() {
+		if readyForInteraction(p) {
 			return nil
 		}
 
@@ -985,7 +1022,7 @@ func (p *Proxy) WaitForReady(ctx context.Context) error {
 	}
 }
 
-func (p *Proxy) readyForInteraction() bool {
+func readyForInteraction(p *Proxy) bool {
 	if p.IsBusy() {
 		return false
 	}
@@ -1025,7 +1062,7 @@ func (p *Proxy) SendCancelNotification() error {
 	return p.writeToAgent(&notification)
 }
 
-func (p *Proxy) monitorPIDFile(ctx context.Context) {
+func monitorPIDFile(p *Proxy, ctx context.Context) {
 	if p.pidFilePath == "" {
 		return
 	}
@@ -1052,10 +1089,14 @@ func (p *Proxy) monitorPIDFile(ctx context.Context) {
 }
 
 func (p *Proxy) Shutdown() {
+	shutdownProxy(p)
+}
+
+func shutdownProxy(p *Proxy) {
 	p.shutdownOnce.Do(func() {
 		debugLog(p.townRoot, "[Proxy] Shutdown: initiating graceful shutdown")
 		p.isShuttingDown.Store(true)
-		p.markDone()
+		markDone(p)
 
 		if p.cancel != nil {
 			p.cancel()
@@ -1077,7 +1118,7 @@ func (p *Proxy) Shutdown() {
 	})
 }
 
-func (p *Proxy) logCrashDiagnostics(reason string) {
+func logCrashDiagnostics(p *Proxy, reason string) {
 	// Gather comprehensive crash diagnostics
 	p.sessionMux.RLock()
 	sessionID := p.sessionID
@@ -1110,7 +1151,7 @@ func (p *Proxy) logCrashDiagnostics(reason string) {
 	debugLog(p.townRoot, "[Proxy] =========================")
 }
 
-func (p *Proxy) markDone() {
+func markDone(p *Proxy) {
 	p.doneOnce.Do(func() {
 		close(p.done)
 	})
