@@ -192,10 +192,10 @@ func (r *Report) PrintSummaryOnly(w io.Writer, verbose bool, slowThreshold time.
 
 	// Print separator and summary
 	_, _ = fmt.Fprintln(w, ui.RenderSeparator())
-	r.printSummary(w, slowThreshold)
+	printSummary(w, r.Summary, slowThreshold)
 
 	// Print warnings/errors section with fixes
-	r.printWarningsSection(w, warnings)
+	printWarningsSection(w, warnings, r.Checks)
 
 	// Print details for non-OK checks in verbose mode
 	if verbose && len(warnings) > 0 {
@@ -216,84 +216,70 @@ func (r *Report) Print(w io.Writer, verbose bool, slowThreshold time.Duration) {
 	// Print header with version placeholder (caller should set via PrintWithVersion)
 	_, _ = fmt.Fprintln(w)
 
-	// Group checks by category
-	checksByCategory := make(map[string][]*CheckResult)
-	for _, check := range r.Checks {
-		cat := check.Category
-		if cat == "" {
-			cat = "Other"
-		}
-		checksByCategory[cat] = append(checksByCategory[cat], check)
-	}
-
-	// Track warnings/errors for summary section
-	var warnings []*CheckResult
-
-	// Print checks by category in defined order
-	for _, category := range CategoryOrder {
-		checks, exists := checksByCategory[category]
-		if !exists || len(checks) == 0 {
-			continue
-		}
-
-		// Print category header
-		_, _ = fmt.Fprintln(w, ui.RenderCategory(category))
-
-		// Print each check in this category
-		for _, check := range checks {
-			r.printCheck(w, check, verbose, slowThreshold)
-			if check.Status != StatusOK {
-				warnings = append(warnings, check)
-			}
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Print any checks without a category
-	if otherChecks, exists := checksByCategory["Other"]; exists && len(otherChecks) > 0 {
-		_, _ = fmt.Fprintln(w, ui.RenderCategory("Other"))
-		for _, check := range otherChecks {
-			r.printCheck(w, check, verbose, slowThreshold)
-			if check.Status != StatusOK {
-				warnings = append(warnings, check)
-			}
-		}
-		_, _ = fmt.Fprintln(w)
-	}
+	warnings := printChecksByCategory(w, r, verbose, slowThreshold)
 
 	// Print separator and summary
 	_, _ = fmt.Fprintln(w, ui.RenderSeparator())
-	r.printSummary(w, slowThreshold)
+	printSummary(w, r.Summary, slowThreshold)
 
 	// Print warnings/errors section with fixes
-	r.printWarningsSection(w, warnings)
+	printWarningsSection(w, warnings, r.Checks)
+}
+
+func printChecksByCategory(w io.Writer, r *Report, verbose bool, slowThreshold time.Duration) []*CheckResult {
+	checksByCategory := groupChecksByCategory(r.Checks)
+	warnings := printOrderedCategories(w, r, checksByCategory, verbose, slowThreshold)
+	return append(warnings, printCategory(w, r, checksByCategory["Other"], "Other", verbose, slowThreshold)...)
+}
+
+func groupChecksByCategory(checks []*CheckResult) map[string][]*CheckResult {
+	grouped := make(map[string][]*CheckResult)
+	for _, check := range checks {
+		category := check.Category
+		if category == "" {
+			category = "Other"
+		}
+		grouped[category] = append(grouped[category], check)
+	}
+	return grouped
+}
+
+func printOrderedCategories(w io.Writer, r *Report, grouped map[string][]*CheckResult, verbose bool, slowThreshold time.Duration) []*CheckResult {
+	var warnings []*CheckResult
+	for _, category := range CategoryOrder {
+		warnings = append(warnings, printCategory(w, r, grouped[category], category, verbose, slowThreshold)...)
+	}
+	return warnings
+}
+
+func printCategory(w io.Writer, r *Report, checks []*CheckResult, category string, verbose bool, slowThreshold time.Duration) []*CheckResult {
+	if len(checks) == 0 {
+		return nil
+	}
+	_, _ = fmt.Fprintln(w, ui.RenderCategory(category))
+	warnings := make([]*CheckResult, 0)
+	for _, check := range checks {
+		printCheck(w, r, check, verbose, slowThreshold)
+		if check.Status != StatusOK {
+			warnings = append(warnings, check)
+		}
+	}
+	_, _ = fmt.Fprintln(w)
+	return warnings
 }
 
 // printCheck outputs a single check result with semantic styling.
-func (r *Report) printCheck(w io.Writer, check *CheckResult, verbose bool, slowThreshold time.Duration) {
-	var statusIcon string
-	switch check.Status {
-	case StatusOK:
-		statusIcon = ui.RenderPassIcon()
-	case StatusWarning:
-		statusIcon = ui.RenderWarnIcon()
-	case StatusError:
-		statusIcon = ui.RenderFailIcon()
-	}
-
-	// Add hourglass for slow checks (only when --slow is enabled)
+func printCheck(w io.Writer, r *Report, check *CheckResult, verbose bool, slowThreshold time.Duration) {
 	isSlow := slowThreshold > 0 && check.Elapsed >= slowThreshold
 	if isSlow {
 		r.Summary.Slow++ // Count slow checks during print
 	}
 
-	// Print check line: icon + name + muted message + optional timing
-	// For slow checks, hourglass replaces spaces to maintain alignment
 	slowIndicator := "  "
 	if isSlow {
 		slowIndicator = "⏳"
 	}
-	_, _ = fmt.Fprintf(w, "  %s%s%s", statusIcon, slowIndicator, check.Name)
+	_, _ = fmt.Fprintf(w, "  %s%s%s", checkStatusIcon(check.Status), slowIndicator, check.Name)
 	if check.Message != "" {
 		_, _ = fmt.Fprintf(w, "%s", ui.RenderMuted(" "+check.Message))
 	}
@@ -302,11 +288,28 @@ func (r *Report) printCheck(w io.Writer, check *CheckResult, verbose bool, slowT
 	}
 	_, _ = fmt.Fprintln(w)
 
-	// Print details in verbose mode or for non-OK results (with tree connector)
-	if len(check.Details) > 0 && (verbose || check.Status != StatusOK) {
-		for _, detail := range check.Details {
-			_, _ = fmt.Fprintf(w, "     %s%s\n", ui.MutedStyle.Render(ui.TreeLast), ui.RenderMuted(detail))
-		}
+	printCheckDetails(w, check, verbose)
+}
+
+func checkStatusIcon(status CheckStatus) string {
+	switch status {
+	case StatusOK:
+		return ui.RenderPassIcon()
+	case StatusWarning:
+		return ui.RenderWarnIcon()
+	case StatusError:
+		return ui.RenderFailIcon()
+	default:
+		return ""
+	}
+}
+
+func printCheckDetails(w io.Writer, check *CheckResult, verbose bool) {
+	if len(check.Details) == 0 || (!verbose && check.Status == StatusOK) {
+		return
+	}
+	for _, detail := range check.Details {
+		_, _ = fmt.Fprintf(w, "     %s%s\n", ui.MutedStyle.Render(ui.TreeLast), ui.RenderMuted(detail))
 	}
 }
 
@@ -333,29 +336,43 @@ func formatDuration(d time.Duration) string {
 }
 
 // printSummary outputs the summary line with semantic icons.
-func (r *Report) printSummary(w io.Writer, slowThreshold time.Duration) {
+func printSummary(w io.Writer, summaryData ReportSummary, slowThreshold time.Duration) {
 	summary := fmt.Sprintf("%s %d passed  %s %d warnings  %s %d failed",
-		ui.RenderPassIcon(), r.Summary.OK,
-		ui.RenderWarnIcon(), r.Summary.Warnings,
-		ui.RenderFailIcon(), r.Summary.Errors,
+		ui.RenderPassIcon(), summaryData.OK,
+		ui.RenderWarnIcon(), summaryData.Warnings,
+		ui.RenderFailIcon(), summaryData.Errors,
 	)
-	if r.Summary.Fixed > 0 {
-		summary += fmt.Sprintf("  🔧 %d fixed", r.Summary.Fixed)
+	if summaryData.Fixed > 0 {
+		summary += fmt.Sprintf("  🔧 %d fixed", summaryData.Fixed)
 	}
-	if slowThreshold > 0 && r.Summary.Slow > 0 {
+	if slowThreshold > 0 && summaryData.Slow > 0 {
 		summary += fmt.Sprintf("  ⏳ %d slow (slowest: %s %s)",
-			r.Summary.Slow,
-			r.Summary.SlowestName,
-			formatDuration(r.Summary.SlowestTime),
+			summaryData.Slow,
+			summaryData.SlowestName,
+			formatDuration(summaryData.SlowestTime),
 		)
 	}
 	_, _ = fmt.Fprintln(w, summary)
 }
 
 // printWarningsSection outputs separate sections for failures, warnings, and fixed items.
-func (r *Report) printWarningsSection(w io.Writer, issues []*CheckResult) {
-	// Separate into categories
-	var failures, warnings, fixed []*CheckResult
+func printWarningsSection(w io.Writer, issues, allChecks []*CheckResult) {
+	failures, warnings, fixed := splitIssues(issues, allChecks)
+	if len(failures) == 0 && len(warnings) == 0 && len(fixed) == 0 {
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, ui.RenderPass(ui.IconPass+" All checks passed"))
+		return
+	}
+	printIssueSection(w, failures, ui.IconFail+"  FAILURES", ui.RenderFail, ui.RenderFailIcon(), true)
+	printIssueSection(w, warnings, ui.IconWarn+"  WARNINGS", ui.RenderWarn, ui.RenderWarnIcon(), false)
+	printFixedSection(w, fixed)
+	if len(failures) == 0 && len(warnings) == 0 {
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, ui.RenderPass(ui.IconPass+" All remaining checks passed"))
+	}
+}
+
+func splitIssues(issues, allChecks []*CheckResult) (failures, warnings, fixed []*CheckResult) {
 	for _, check := range issues {
 		if check.Fixed {
 			fixed = append(fixed, check)
@@ -365,60 +382,40 @@ func (r *Report) printWarningsSection(w io.Writer, issues []*CheckResult) {
 			warnings = append(warnings, check)
 		}
 	}
-
-	// Also collect fixed items from all checks (not just issues)
-	for _, check := range r.Checks {
+	for _, check := range allChecks {
 		if check.Fixed && check.Status == StatusOK {
 			fixed = append(fixed, check)
 		}
 	}
+	return failures, warnings, fixed
+}
 
-	// If nothing to report, show success message
-	if len(failures) == 0 && len(warnings) == 0 && len(fixed) == 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, ui.RenderPass(ui.IconPass+" All checks passed"))
+func printIssueSection(w io.Writer, checks []*CheckResult, heading string, render func(string) string, icon string, styleLine bool) {
+	if len(checks) == 0 {
 		return
 	}
-
-	// Print FAILURES section
-	if len(failures) > 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, ui.RenderFail(ui.IconFail+"  FAILURES"))
-		for i, check := range failures {
-			line := fmt.Sprintf("%s: %s", check.Name, check.Message)
-			_, _ = fmt.Fprintf(w, "  %s  %s %s\n", ui.RenderFailIcon(), ui.RenderFail(fmt.Sprintf("%d.", i+1)), ui.RenderFail(line))
-			if check.FixHint != "" {
-				_, _ = fmt.Fprintf(w, "        %s%s\n", ui.MutedStyle.Render(ui.TreeLast), check.FixHint)
-			}
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, render(heading))
+	for i, check := range checks {
+		line := fmt.Sprintf("%s: %s", check.Name, check.Message)
+		if styleLine {
+			line = render(line)
+		}
+		_, _ = fmt.Fprintf(w, "  %s  %s %s\n", icon, render(fmt.Sprintf("%d.", i+1)), line)
+		if check.FixHint != "" {
+			_, _ = fmt.Fprintf(w, "        %s%s\n", ui.MutedStyle.Render(ui.TreeLast), check.FixHint)
 		}
 	}
+}
 
-	// Print WARNINGS section
-	if len(warnings) > 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, ui.RenderWarn(ui.IconWarn+"  WARNINGS"))
-		for i, check := range warnings {
-			line := fmt.Sprintf("%s: %s", check.Name, check.Message)
-			_, _ = fmt.Fprintf(w, "  %s  %s %s\n", ui.RenderWarnIcon(), ui.RenderWarn(fmt.Sprintf("%d.", i+1)), line)
-			if check.FixHint != "" {
-				_, _ = fmt.Fprintf(w, "        %s%s\n", ui.MutedStyle.Render(ui.TreeLast), check.FixHint)
-			}
-		}
+func printFixedSection(w io.Writer, checks []*CheckResult) {
+	if len(checks) == 0 {
+		return
 	}
-
-	// Print FIXED section
-	if len(fixed) > 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, ui.RenderPass("🔧  FIXED"))
-		for i, check := range fixed {
-			line := fmt.Sprintf("%s: %s", check.Name, check.Message)
-			_, _ = fmt.Fprintf(w, "  %s  %s %s\n", ui.RenderPassIcon(), ui.RenderMuted(fmt.Sprintf("%d.", i+1)), ui.RenderMuted(line))
-		}
-	}
-
-	// If only fixed items, show success message
-	if len(failures) == 0 && len(warnings) == 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, ui.RenderPass(ui.IconPass+" All remaining checks passed"))
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, ui.RenderPass("🔧  FIXED"))
+	for i, check := range checks {
+		line := fmt.Sprintf("%s: %s", check.Name, check.Message)
+		_, _ = fmt.Fprintf(w, "  %s  %s %s\n", ui.RenderPassIcon(), ui.RenderMuted(fmt.Sprintf("%d.", i+1)), ui.RenderMuted(line))
 	}
 }
