@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -42,13 +43,24 @@ type WLCommonsStore interface {
 
 // WLCommons implements WLCommonsStore using the real Dolt server.
 type WLCommons struct {
+	*wlCommonsCore
+	*wlWantedStore
+	*wlStampStore
+	*wlLeaderboardStore
+}
+
+type wlCommonsCore struct {
 	townRoot string
 	dbName   string // Dolt database name; defaults to WLCommonsDB if empty.
 }
 
+type wlWantedStore struct{ *wlCommonsCore }
+type wlStampStore struct{ *wlCommonsCore }
+type wlLeaderboardStore struct{ *wlCommonsCore }
+
 // NewWLCommons creates a WLCommonsStore backed by the real Dolt server.
 func NewWLCommons(townRoot string) *WLCommons {
-	return &WLCommons{townRoot: townRoot, dbName: WLCommonsDB}
+	return newWLCommons(townRoot, WLCommonsDB)
 }
 
 // NewWLCommonsWithDB creates a WLCommonsStore using the specified database name.
@@ -56,22 +68,36 @@ func NewWLCommonsWithDB(townRoot, dbName string) *WLCommons {
 	if dbName == "" {
 		dbName = WLCommonsDB
 	}
-	return &WLCommons{townRoot: townRoot, dbName: dbName}
+	return newWLCommons(townRoot, dbName)
+}
+
+func newWLCommons(townRoot, dbName string) *WLCommons {
+	core := &wlCommonsCore{townRoot: townRoot, dbName: dbName}
+	return &WLCommons{
+		wlCommonsCore:      core,
+		wlWantedStore:      &wlWantedStore{core},
+		wlStampStore:       &wlStampStore{core},
+		wlLeaderboardStore: &wlLeaderboardStore{core},
+	}
 }
 
 // DBName returns the Dolt database name for this store.
 func (w *WLCommons) DBName() string {
-	if w.dbName == "" {
-		return WLCommonsDB
-	}
-	return w.dbName
+	return effectiveWLDBName(w.dbName)
 }
 
-func (w *WLCommons) EnsureDB() error { return EnsureWLCommons(w.townRoot) }
+func effectiveWLDBName(dbName string) string {
+	if dbName == "" {
+		return WLCommonsDB
+	}
+	return dbName
+}
+
+func (w *wlCommonsCore) EnsureDB() error { return EnsureWLCommons(w.townRoot) }
 
 // DatabaseExists checks whether db exists. Tries the host filesystem first;
 // falls back to a live SHOW DATABASES query so containerised Dolt is handled.
-func (w *WLCommons) DatabaseExists(db string) bool {
+func (w *wlCommonsCore) DatabaseExists(db string) bool {
 	if DatabaseExists(w.townRoot, db) {
 		return true
 	}
@@ -87,36 +113,36 @@ func (w *WLCommons) DatabaseExists(db string) bool {
 	}
 	return false
 }
-func (w *WLCommons) InsertWanted(item *WantedItem) error { return InsertWanted(w.townRoot, item) }
-func (w *WLCommons) ClaimWanted(wantedID, rigHandle string) error {
+func (w *wlWantedStore) InsertWanted(item *WantedItem) error { return InsertWanted(w.townRoot, item) }
+func (w *wlWantedStore) ClaimWanted(wantedID, rigHandle string) error {
 	return ClaimWanted(w.townRoot, wantedID, rigHandle)
 }
-func (w *WLCommons) SubmitCompletion(completionID, wantedID, rigHandle, evidence string) error {
+func (w *wlWantedStore) SubmitCompletion(completionID, wantedID, rigHandle, evidence string) error {
 	return SubmitCompletion(w.townRoot, completionID, wantedID, rigHandle, evidence)
 }
-func (w *WLCommons) QueryWanted(wantedID string) (*WantedItem, error) {
+func (w *wlWantedStore) QueryWanted(wantedID string) (*WantedItem, error) {
 	return QueryWanted(w.townRoot, wantedID)
 }
-func (w *WLCommons) QueryWantedFull(wantedID string) (*WantedItem, error) {
+func (w *wlWantedStore) QueryWantedFull(wantedID string) (*WantedItem, error) {
 	return QueryWantedFull(w.townRoot, wantedID)
 }
-func (w *WLCommons) InsertStamp(stamp *StampRecord) error {
+func (w *wlStampStore) InsertStamp(stamp *StampRecord) error {
 	return InsertStamp(w.townRoot, stamp)
 }
-func (w *WLCommons) QueryLastStampForSubject(subject string) (*StampRecord, error) {
+func (w *wlStampStore) QueryLastStampForSubject(subject string) (*StampRecord, error) {
 	return QueryLastStampForSubject(w.townRoot, subject)
 }
-func (w *WLCommons) QueryStampsForSubject(subject string) ([]StampRecord, error) {
-	return queryStampsForSubjectDB(w.townRoot, w.DBName(), subject)
+func (w *wlStampStore) QueryStampsForSubject(subject string) ([]StampRecord, error) {
+	return queryStampsForSubjectDB(w.townRoot, effectiveWLDBName(w.dbName), subject)
 }
-func (w *WLCommons) QueryBadges(handle string) ([]BadgeRecord, error) {
-	return queryBadgesDB(w.townRoot, w.DBName(), handle)
+func (w *wlLeaderboardStore) QueryBadges(handle string) ([]BadgeRecord, error) {
+	return queryBadgesDB(w.townRoot, effectiveWLDBName(w.dbName), handle)
 }
-func (w *WLCommons) QueryAllSubjects() ([]string, error) {
-	return queryAllSubjectsDB(w.townRoot, w.DBName())
+func (w *wlLeaderboardStore) QueryAllSubjects() ([]string, error) {
+	return queryAllSubjectsDB(w.townRoot, effectiveWLDBName(w.dbName))
 }
-func (w *WLCommons) UpsertLeaderboard(entry *LeaderboardEntry) error {
-	return upsertLeaderboardDB(w.townRoot, w.DBName(), entry)
+func (w *wlLeaderboardStore) UpsertLeaderboard(entry *LeaderboardEntry) error {
+	return upsertLeaderboardDB(w.townRoot, effectiveWLDBName(w.dbName), entry)
 }
 
 // WantedItem represents a row in the wanted table.
@@ -197,8 +223,7 @@ func EnsureWLCommons(townRoot string) error {
 	return nil
 }
 
-func initWLCommonsSchema(townRoot string) error {
-	schema := fmt.Sprintf(`USE %s;
+var wlCommonsSchema = fmt.Sprintf(`USE %s;
 
 CREATE TABLE IF NOT EXISTS _meta (
     %s VARCHAR(64) PRIMARY KEY,
@@ -313,9 +338,10 @@ CREATE TABLE IF NOT EXISTS chain_meta (
 CALL DOLT_ADD('-A');
 CALL DOLT_COMMIT('--allow-empty', '-m', 'Initialize wl-commons schema v1.0');
 `, WLCommonsDB,
-		backtickKey(), backtickKey(), backtickKey())
+	backtickKey(), backtickKey(), backtickKey())
 
-	return doltSQLScriptWithRetry(townRoot, schema)
+func initWLCommonsSchema(townRoot string) error {
+	return doltSQLScriptWithRetry(townRoot, wlCommonsSchema)
 }
 
 func backtickKey() string {
@@ -324,52 +350,10 @@ func backtickKey() string {
 
 // InsertWanted inserts a new wanted item into the wl-commons database.
 func InsertWanted(townRoot string, item *WantedItem) error {
-	if item.ID == "" {
-		return fmt.Errorf("wanted item ID cannot be empty")
+	if err := validateWantedItem(item); err != nil {
+		return err
 	}
-	if item.Title == "" {
-		return fmt.Errorf("wanted item title cannot be empty")
-	}
-
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
-
-	tagsJSON := "NULL"
-	if len(item.Tags) > 0 {
-		escaped := make([]string, len(item.Tags))
-		for i, t := range item.Tags {
-			t = strings.ReplaceAll(t, `\`, `\\`)
-			t = strings.ReplaceAll(t, `"`, `\"`)
-			t = strings.ReplaceAll(t, "'", "''")
-			escaped[i] = t
-		}
-		tagsJSON = fmt.Sprintf("'[\"%s\"]'", strings.Join(escaped, `","`))
-	}
-
-	descField := "NULL"
-	if item.Description != "" {
-		descField = fmt.Sprintf("'%s'", EscapeSQL(item.Description))
-	}
-	projectField := "NULL"
-	if item.Project != "" {
-		projectField = fmt.Sprintf("'%s'", EscapeSQL(item.Project))
-	}
-	typeField := "NULL"
-	if item.Type != "" {
-		typeField = fmt.Sprintf("'%s'", EscapeSQL(item.Type))
-	}
-	postedByField := "NULL"
-	if item.PostedBy != "" {
-		postedByField = fmt.Sprintf("'%s'", EscapeSQL(item.PostedBy))
-	}
-	effortField := "'medium'"
-	if item.EffortLevel != "" {
-		effortField = fmt.Sprintf("'%s'", EscapeSQL(item.EffortLevel))
-	}
-	status := "'open'"
-	if item.Status != "" {
-		status = fmt.Sprintf("'%s'", EscapeSQL(item.Status))
-	}
-
 	script := fmt.Sprintf(`USE %s;
 
 INSERT INTO wanted (id, title, description, project, type, priority, tags, posted_by, status, effort_level, created_at, updated_at)
@@ -379,12 +363,49 @@ CALL DOLT_ADD('-A');
 CALL DOLT_COMMIT('-m', 'wl post: %s');
 `,
 		WLCommonsDB,
-		EscapeSQL(item.ID), EscapeSQL(item.Title), descField, projectField, typeField,
-		item.Priority, tagsJSON, postedByField, status, effortField,
+		EscapeSQL(item.ID), EscapeSQL(item.Title), nullableSQL(item.Description), nullableSQL(item.Project), nullableSQL(item.Type),
+		item.Priority, wantedTagsSQL(item.Tags), nullableSQL(item.PostedBy), defaultedSQL(item.Status, "open"), defaultedSQL(item.EffortLevel, "medium"),
 		now, now,
 		EscapeSQL(item.Title))
 
 	return doltSQLScriptWithRetry(townRoot, script)
+}
+
+func validateWantedItem(item *WantedItem) error {
+	if item.ID == "" {
+		return fmt.Errorf("wanted item ID cannot be empty")
+	}
+	if item.Title == "" {
+		return fmt.Errorf("wanted item title cannot be empty")
+	}
+	return nil
+}
+
+func wantedTagsSQL(tags []string) string {
+	if len(tags) == 0 {
+		return "NULL"
+	}
+	escaped := make([]string, len(tags))
+	for i, tag := range tags {
+		tag = strings.ReplaceAll(tag, `\`, `\\`)
+		tag = strings.ReplaceAll(tag, `"`, `\"`)
+		escaped[i] = strings.ReplaceAll(tag, "'", "''")
+	}
+	return fmt.Sprintf("'[\"%s\"]'", strings.Join(escaped, `","`))
+}
+
+func nullableSQL(value string) string {
+	if value == "" {
+		return "NULL"
+	}
+	return fmt.Sprintf("'%s'", EscapeSQL(value))
+}
+
+func defaultedSQL(value, fallback string) string {
+	if value == "" {
+		value = fallback
+	}
+	return nullableSQL(value)
 }
 
 // ClaimWanted updates a wanted item's status to claimed.
@@ -578,31 +599,12 @@ func parseSimpleCSV(data string) []map[string]string {
 
 // parseCSVLine parses a single CSV line, handling quoted fields.
 func parseCSVLine(line string) []string {
-	var fields []string
-	var field strings.Builder
-	inQuote := false
-
-	lineLength := len(line)
-	for i := 0; i < lineLength; i++ {
-		ch := line[i]
-		switch {
-		case ch == '"' && !inQuote:
-			inQuote = true
-		case ch == '"' && inQuote:
-			if i+1 < len(line) && line[i+1] == '"' {
-				field.WriteByte('"')
-				i++
-			} else {
-				inQuote = false
-			}
-		case ch == ',' && !inQuote:
-			fields = append(fields, field.String())
-			field.Reset()
-		default:
-			field.WriteByte(ch)
-		}
+	reader := csv.NewReader(strings.NewReader(line))
+	reader.FieldsPerRecord = -1
+	fields, err := reader.Read()
+	if err != nil {
+		return []string{line}
 	}
-	fields = append(fields, field.String())
 	return fields
 }
 
@@ -627,54 +629,9 @@ type StampRecord struct {
 
 // InsertStamp inserts a new stamp record into the wl-commons stamps table.
 func InsertStamp(townRoot string, s *StampRecord) error {
-	if s.ID == "" {
-		return fmt.Errorf("stamp ID cannot be empty")
+	if err := validateStamp(s); err != nil {
+		return err
 	}
-	if s.Author == "" || s.Subject == "" {
-		return fmt.Errorf("stamp author and subject are required")
-	}
-	if s.Author == s.Subject {
-		return fmt.Errorf("stamp author cannot equal subject")
-	}
-
-	now := time.Now().UTC().Format("2006-01-02 15:04:05")
-	if s.CreatedAt != "" {
-		now = s.CreatedAt
-	}
-
-	contextID := "NULL"
-	if s.ContextID != "" {
-		contextID = fmt.Sprintf("'%s'", EscapeSQL(s.ContextID))
-	}
-	contextType := "NULL"
-	if s.ContextType != "" {
-		contextType = fmt.Sprintf("'%s'", EscapeSQL(s.ContextType))
-	}
-	stampType := "NULL"
-	if s.StampType != "" {
-		stampType = fmt.Sprintf("'%s'", EscapeSQL(s.StampType))
-	}
-	pilotCohort := "NULL"
-	if s.PilotCohort != "" {
-		pilotCohort = fmt.Sprintf("'%s'", EscapeSQL(s.PilotCohort))
-	}
-	skillTags := "NULL"
-	if s.SkillTags != "" {
-		skillTags = fmt.Sprintf("'%s'", EscapeSQL(s.SkillTags))
-	}
-	message := "NULL"
-	if s.Message != "" {
-		message = fmt.Sprintf("'%s'", EscapeSQL(s.Message))
-	}
-	prevHash := "NULL"
-	if s.PrevStampHash != "" {
-		prevHash = fmt.Sprintf("'%s'", EscapeSQL(s.PrevStampHash))
-	}
-	stampIdx := "NULL"
-	if s.StampIndex >= 0 {
-		stampIdx = fmt.Sprintf("%d", s.StampIndex)
-	}
-
 	script := fmt.Sprintf(`USE %s;
 
 INSERT INTO stamps (id, author, subject, valence, confidence, severity, context_id, context_type, stamp_type, pilot_cohort, skill_tags, message, prev_stamp_hash, stamp_index, created_at)
@@ -686,11 +643,38 @@ CALL DOLT_COMMIT('-m', 'wl stamp: %s stamps %s');
 		WLCommonsDB,
 		EscapeSQL(s.ID), EscapeSQL(s.Author), EscapeSQL(s.Subject),
 		EscapeSQL(s.Valence), s.Confidence, EscapeSQL(s.Severity),
-		contextID, contextType, stampType, pilotCohort, skillTags, message,
-		prevHash, stampIdx, now,
+		nullableSQL(s.ContextID), nullableSQL(s.ContextType), nullableSQL(s.StampType), nullableSQL(s.PilotCohort), nullableSQL(s.SkillTags), nullableSQL(s.Message),
+		nullableSQL(s.PrevStampHash), stampIndexSQL(s.StampIndex), stampCreatedAt(s),
 		EscapeSQL(s.Author), EscapeSQL(s.Subject))
 
 	return doltSQLScriptWithRetry(townRoot, script)
+}
+
+func validateStamp(stamp *StampRecord) error {
+	if stamp.ID == "" {
+		return fmt.Errorf("stamp ID cannot be empty")
+	}
+	if stamp.Author == "" || stamp.Subject == "" {
+		return fmt.Errorf("stamp author and subject are required")
+	}
+	if stamp.Author == stamp.Subject {
+		return fmt.Errorf("stamp author cannot equal subject")
+	}
+	return nil
+}
+
+func stampIndexSQL(index int) string {
+	if index < 0 {
+		return "NULL"
+	}
+	return fmt.Sprintf("%d", index)
+}
+
+func stampCreatedAt(stamp *StampRecord) string {
+	if stamp.CreatedAt != "" {
+		return stamp.CreatedAt
+	}
+	return time.Now().UTC().Format("2006-01-02 15:04:05")
 }
 
 // QueryLastStampForSubject fetches the most recent stamp for a subject rig,
