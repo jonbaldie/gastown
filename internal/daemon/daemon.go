@@ -935,115 +935,92 @@ func deaconGracePeriod(d *Daemon) time.Duration {
 // - Grace period only applies if heartbeat is from BEFORE we started Deacon
 // - If heartbeat is from AFTER start but stale, Deacon is stuck
 func checkDeaconHeartbeat(d *Daemon) {
-	// Respect crash-loop guard: if the restart tracker says Deacon is in a
-	// crash loop, do not kill the session — the guard is deliberately holding
-	// off restarts to break the cycle. (Fixes #2086)
-	if d.restartTracker != nil && d.restartTracker.IsInCrashLoop("deacon") {
-		d.logger.Printf("Deacon is in crash-loop state, skipping heartbeat kill check")
+	if skipDeaconHeartbeatCheck(d) {
 		return
 	}
-
-	// Always read heartbeat first (PATCH-005)
 	hb := deacon.ReadHeartbeat(d.config.TownRoot)
-
 	sessionName := getDeaconSessionName()
-
-	// Check if we recently started a Deacon
-	if !d.deaconLastStarted.IsZero() {
-		timeSinceStart := time.Since(d.deaconLastStarted)
-
-		if hb == nil {
-			// No heartbeat file exists
-			if timeSinceStart < deaconGracePeriod(d) {
-				d.logger.Printf("Deacon started %s ago, awaiting first heartbeat...",
-					timeSinceStart.Round(time.Second))
-				return
-			}
-			// Grace period expired without any heartbeat - Deacon failed to start
-			// Stuck-agent-dog: kill and restart
-			d.logger.Printf("STUCK DEACON: started %s ago but hasn't written heartbeat (session: %s)",
-				timeSinceStart.Round(time.Minute), sessionName)
-			restartStuckDeacon(d, sessionName, fmt.Sprintf("no heartbeat after %s", timeSinceStart.Round(time.Minute)))
-			return
-		}
-
-		// Heartbeat exists - check if it's from BEFORE we started this Deacon
-		if hb.Timestamp.Before(d.deaconLastStarted) {
-			// Heartbeat is stale (from before restart)
-			if timeSinceStart < deaconGracePeriod(d) {
-				d.logger.Printf("Deacon started %s ago, heartbeat is pre-restart, awaiting fresh heartbeat...",
-					timeSinceStart.Round(time.Second))
-				return
-			}
-			// Grace period expired but heartbeat still from before start
-			// Stuck-agent-dog: kill and restart
-			d.logger.Printf("STUCK DEACON: started %s ago but heartbeat still pre-restart (session: %s)",
-				timeSinceStart.Round(time.Minute), sessionName)
-			restartStuckDeacon(d, sessionName, fmt.Sprintf("heartbeat pre-restart after %s", timeSinceStart.Round(time.Minute)))
-			return
-		}
-
-		// Heartbeat is from AFTER we started - Deacon has written at least one heartbeat
-		// Fall through to normal staleness check
+	if handleRecentDeaconStart(d, hb, sessionName) {
+		return
 	}
+	checkDeaconHeartbeatAge(d, hb, sessionName)
+}
 
-	// No recent start tracking or Deacon has written fresh heartbeat - check normally
+func skipDeaconHeartbeatCheck(d *Daemon) bool {
+	if d.restartTracker == nil || !d.restartTracker.IsInCrashLoop("deacon") {
+		return false
+	}
+	d.logger.Printf("Deacon is in crash-loop state, skipping heartbeat kill check")
+	return true
+}
+
+func handleRecentDeaconStart(d *Daemon, hb *deacon.Heartbeat, sessionName string) bool {
+	if d.deaconLastStarted.IsZero() {
+		return false
+	}
+	timeSinceStart := time.Since(d.deaconLastStarted)
 	if hb == nil {
-		// No heartbeat file - Deacon hasn't started a cycle yet
+		return handleMissingDeaconHeartbeat(d, sessionName, timeSinceStart)
+	}
+	if hb.Timestamp.Before(d.deaconLastStarted) {
+		return handlePreRestartDeaconHeartbeat(d, sessionName, timeSinceStart)
+	}
+	return false
+}
+
+func handleMissingDeaconHeartbeat(d *Daemon, sessionName string, timeSinceStart time.Duration) bool {
+	if timeSinceStart < deaconGracePeriod(d) {
+		d.logger.Printf("Deacon started %s ago, awaiting first heartbeat...",
+			timeSinceStart.Round(time.Second))
+		return true
+	}
+	d.logger.Printf("STUCK DEACON: started %s ago but hasn't written heartbeat (session: %s)",
+		timeSinceStart.Round(time.Minute), sessionName)
+	restartStuckDeacon(d, sessionName, fmt.Sprintf("no heartbeat after %s", timeSinceStart.Round(time.Minute)))
+	return true
+}
+
+func handlePreRestartDeaconHeartbeat(d *Daemon, sessionName string, timeSinceStart time.Duration) bool {
+	if timeSinceStart < deaconGracePeriod(d) {
+		d.logger.Printf("Deacon started %s ago, heartbeat is pre-restart, awaiting fresh heartbeat...",
+			timeSinceStart.Round(time.Second))
+		return true
+	}
+	d.logger.Printf("STUCK DEACON: started %s ago but heartbeat still pre-restart (session: %s)",
+		timeSinceStart.Round(time.Minute), sessionName)
+	restartStuckDeacon(d, sessionName, fmt.Sprintf("heartbeat pre-restart after %s", timeSinceStart.Round(time.Minute)))
+	return true
+}
+
+func checkDeaconHeartbeatAge(d *Daemon, hb *deacon.Heartbeat, sessionName string) {
+	if hb == nil || hb.IsFresh() {
 		return
 	}
-
 	age := hb.Age()
-
-	// If heartbeat is fresh (< 5 min), nothing to do
-	if hb.IsFresh() {
-		return
-	}
-
 	d.logger.Printf("Deacon heartbeat is stale (%s old), checking session...", age.Round(time.Minute))
-
-	// Check if session exists
 	hasSession, err := d.tmux.HasSession(sessionName)
 	if err != nil {
 		d.logger.Printf("Error checking Deacon session: %v", err)
 		return
 	}
-
-	if !hasSession {
-		// Session doesn't exist - ensureDeaconRunning already ran earlier
-		// in heartbeat, so Deacon should be starting
-		return
+	if hasSession {
+		respondToStaleDeacon(d, hb, sessionName, age)
 	}
+}
 
-	// Session exists but heartbeat is stale - Deacon may be stuck.
-	// Two-tier response: nudge for stale (5-20 min), kill and restart
-	// only for very stale (>= 20 min). Kill threshold must be > backoff-max
-	// to avoid false positive kills during legitimate await-signal sleep.
+func respondToStaleDeacon(d *Daemon, hb *deacon.Heartbeat, sessionName string, age time.Duration) {
 	if hb.IsVeryStale() {
-		// Stuck-agent-dog: kill and restart
 		d.logger.Printf("STUCK DEACON: heartbeat stale for %s, session %s needs restart", age.Round(time.Minute), sessionName)
 		restartStuckDeacon(d, sessionName, fmt.Sprintf("heartbeat stale for %s", age.Round(time.Minute)))
-	} else {
-		// Stale but not very stale (5-20 min) - nudge to wake up (unless idle).
-		//
-		// Idle guard: skip nudge if no beads are actively in flight.
-		// This mirrors the Boot idle guard (ensureBootRunning). When the Deacon's
-		// heartbeat has gone stale during an await-signal backoff sleep, sending a
-		// nudge interrupts the exponential backoff for no reason — the Deacon will
-		// wake naturally at its next timeout. Only nudge if work is actually in
-		// flight (in_progress or hooked) that the Deacon may need to act on.
-		// Conservative: on store errors hasActiveWork returns true, so nudge fires.
-		// See also: runtime/runtime.go:99-101 — session-started nudge was removed
-		// for the same reason (it interrupted the deacon's await-signal backoff).
-		if !hasActiveWork(d) {
-			d.logger.Println("Deacon nudge skipped: no active work in flight, await-signal will fire naturally")
-			return
-		}
-
-		d.logger.Printf("Deacon stuck for %s - nudging session", age.Round(time.Minute))
-		if err := d.tmux.NudgeSession(sessionName, "HEALTH_CHECK: heartbeat stale, respond to confirm responsiveness"); err != nil {
-			d.logger.Printf("Error nudging stuck Deacon: %v", err)
-		}
+		return
+	}
+	if !hasActiveWork(d) {
+		d.logger.Println("Deacon nudge skipped: no active work in flight, await-signal will fire naturally")
+		return
+	}
+	d.logger.Printf("Deacon stuck for %s - nudging session", age.Round(time.Minute))
+	if err := d.tmux.NudgeSession(sessionName, "HEALTH_CHECK: heartbeat stale, respond to confirm responsiveness"); err != nil {
+		d.logger.Printf("Error nudging stuck Deacon: %v", err)
 	}
 }
 
@@ -1051,62 +1028,59 @@ func checkDeaconHeartbeat(d *Daemon) {
 // Uses RestartTracker for exponential backoff and crash-loop prevention.
 // Notifies via gt-notify (zero token cost) if the notify script exists.
 func restartStuckDeacon(d *Daemon, sessionName, reason string) {
+	if skipStuckDeaconRestart(d, sessionName, reason) {
+		return
+	}
+	killAndRespawnDeacon(d, sessionName, reason)
+}
+
+func skipStuckDeaconRestart(d *Daemon, sessionName, reason string) bool {
 	const agentID = "deacon"
-
-	// Check restart tracker before acting
-	if d.restartTracker != nil {
-		if d.restartTracker.IsInCrashLoop(agentID) {
-			d.logger.Printf("Stuck-agent-dog: Deacon in crash loop, not restarting (use 'gt daemon clear-backoff deacon')")
-			notifySlack(d, "admin", "critical", fmt.Sprintf("Deacon crash loop detected — manual intervention required. Reason: %s", reason))
-			return
-		}
-		if !d.restartTracker.CanRestart(agentID) {
-			remaining := d.restartTracker.GetBackoffRemaining(agentID)
-			d.logger.Printf("Stuck-agent-dog: Deacon restart in backoff, %s remaining", remaining.Round(time.Second))
-			return
-		}
+	if d.restartTracker != nil && d.restartTracker.IsInCrashLoop(agentID) {
+		d.logger.Printf("Stuck-agent-dog: Deacon in crash loop, not restarting (use 'gt daemon clear-backoff deacon')")
+		notifySlack(d, "admin", "critical", fmt.Sprintf("Deacon crash loop detected — manual intervention required. Reason: %s", reason))
+		return true
 	}
-
-	// Distinguish a usage-limit pause from a true crash. If Claude is sitting
-	// at a rate-limit prompt the heartbeat will go stale, looking identical
-	// to a crash — but killing and respawning won't help (the new session
-	// hits the same limit) and the repeated kills burn the crash-loop budget.
-	// Detect the rate-limit signature in the pane and let quota_dog handle
-	// account rotation instead.
-	if d.tmux != nil {
-		if pane, err := d.tmux.CapturePane(sessionName, 30); err == nil && IsClaudeUsageLimit(pane) {
-			d.logger.Printf("Stuck-agent-dog: Deacon paused — Claude usage-limit detected, skipping kill (quota_dog will rotate accounts). Reason: %s", reason)
-			if d.restartTracker != nil {
-				d.restartTracker.RecordPause(agentID)
-				if err := d.restartTracker.Save(); err != nil {
-					d.logger.Printf("Warning: failed to save restart state: %v", err)
-				}
-			}
-			return
-		}
+	if d.restartTracker != nil && !d.restartTracker.CanRestart(agentID) {
+		remaining := d.restartTracker.GetBackoffRemaining(agentID)
+		d.logger.Printf("Stuck-agent-dog: Deacon restart in backoff, %s remaining", remaining.Round(time.Second))
+		return true
 	}
+	return pauseDeaconForUsageLimit(d, sessionName, reason)
+}
 
-	// Kill the stuck session
+func pauseDeaconForUsageLimit(d *Daemon, sessionName, reason string) bool {
+	if d.tmux == nil {
+		return false
+	}
+	pane, err := d.tmux.CapturePane(sessionName, 30)
+	if err != nil || !IsClaudeUsageLimit(pane) {
+		return false
+	}
+	d.logger.Printf("Stuck-agent-dog: Deacon paused — Claude usage-limit detected, skipping kill (quota_dog will rotate accounts). Reason: %s", reason)
+	if d.restartTracker == nil {
+		return true
+	}
+	d.restartTracker.RecordPause("deacon")
+	if err := d.restartTracker.Save(); err != nil {
+		d.logger.Printf("Warning: failed to save restart state: %v", err)
+	}
+	return true
+}
+
+func killAndRespawnDeacon(d *Daemon, sessionName, reason string) {
 	d.logger.Printf("Stuck-agent-dog: killing stuck Deacon session %s (reason: %s)", sessionName, reason)
 	if err := d.tmux.KillSession(sessionName); err != nil {
 		d.logger.Printf("Stuck-agent-dog: error killing session %s: %v", sessionName, err)
-		// Continue — session may already be dead
 	}
-
-	// Brief pause for tmux cleanup
 	time.Sleep(2 * time.Second)
-
-	// Respawn via ensureDeaconRunning (which uses deacon.Manager)
 	ensureDeaconRunning(d)
-
-	// Verify it came back
 	hasSession, err := d.tmux.HasSession(sessionName)
 	if err != nil || !hasSession {
 		d.logger.Printf("Stuck-agent-dog: FAILED to respawn Deacon after kill")
 		notifySlack(d, "admin", "critical", fmt.Sprintf("Deacon restart FAILED — session did not respawn. Reason: %s", reason))
 		return
 	}
-
 	d.logger.Printf("Stuck-agent-dog: Deacon restarted successfully")
 	notifySlack(d, "admin", "high", fmt.Sprintf("Deacon was stuck (%s) — auto-restarted successfully", reason))
 }
@@ -1220,89 +1194,77 @@ func ensureRefineriesRunning(d *Daemon) {
 // ensureRefineryRunning ensures the refinery for a specific rig is running.
 // Discover, don't track: uses Manager.Start() which checks tmux directly (gt-zecmc).
 func ensureRefineryRunning(d *Daemon, rigName string) {
-	// Check rig operational state before auto-starting
+	if skipRefineryStart(d, rigName) {
+		return
+	}
+	startRefinerySession(d, rigName)
+}
+
+func skipRefineryStart(d *Daemon, rigName string) bool {
 	if operational, reason := isRigOperational(d, rigName); !operational {
 		d.logger.Printf("Skipping refinery auto-start for %s: %s", rigName, reason)
-		// Kill leftover refinery session if rig is not operational (docked/parked).
-		// Without this, sessions started before the rig was docked survive until
-		// the next explicit 'gt rig dock' command. (hq-snx61)
-		name := session.RefinerySessionName(session.PrefixFor(rigName))
-		if exists, _ := d.tmux.HasSession(name); exists {
-			d.logger.Printf("Killing leftover refinery %s (rig %s)", name, reason)
-			if err := d.tmux.KillSessionWithProcesses(name); err != nil {
-				d.logger.Printf("Error killing leftover refinery %s: %v", name, err)
-			}
-		}
-		return
+		killLeftoverRefinery(d, rigName, "rig "+reason)
+		return true
 	}
-	if stop, err := refinery.ActiveSafetyStop(d.config.TownRoot, rigName); err != nil {
+	stop, err := refinery.ActiveSafetyStop(d.config.TownRoot, rigName)
+	if err != nil {
 		d.logger.Printf("Skipping refinery auto-start for %s: cannot verify safety stop: %v", rigName, err)
-		return
-	} else if stop != nil {
+		return true
+	}
+	if stop != nil {
 		d.logger.Printf("Skipping refinery auto-start for %s: %s", rigName, stop.Reason())
-		name := session.RefinerySessionName(session.PrefixFor(rigName))
-		if exists, _ := d.tmux.HasSession(name); exists {
-			d.logger.Printf("Killing leftover refinery %s (%s)", name, stop.Reason())
-			if err := d.tmux.KillSessionWithProcesses(name); err != nil {
-				d.logger.Printf("Error killing leftover refinery %s: %v", name, err)
-			}
-		}
+		killLeftoverRefinery(d, rigName, stop.Reason())
+		return true
+	}
+	return skipEmptyRefinerySpawn(d, rigName)
+}
+
+func killLeftoverRefinery(d *Daemon, rigName, reason string) {
+	name := session.RefinerySessionName(session.PrefixFor(rigName))
+	exists, _ := d.tmux.HasSession(name)
+	if !exists {
 		return
 	}
-
-	// Event gate: don't spawn a new Claude session when there's nothing to process.
-	// If a refinery session is already running, Start() returns ErrAlreadyRunning (cheap).
-	// But spawning a NEW session with an empty queue burns API credits for nothing.
-	// The refinery formula uses await-event internally, so it will wake when events appear.
-	if !hasPendingEvents(d, "refinery") {
-		// Check if session already exists before skipping — let running sessions continue
-		r := &rig.Rig{
-			Name: rigName,
-			Path: filepath.Join(d.config.TownRoot, rigName),
-		}
-		mgr := refinery.NewManager(r)
-		if running, _ := mgr.IsRunning(); !running {
-			d.logger.Printf("No pending refinery events and no session running for %s, skipping spawn", rigName)
-			return
-		}
+	d.logger.Printf("Killing leftover refinery %s (%s)", name, reason)
+	if err := d.tmux.KillSessionWithProcesses(name); err != nil {
+		d.logger.Printf("Error killing leftover refinery %s: %v", name, err)
 	}
+}
 
-	// Manager.Start() handles: zombie detection, session creation, env vars, theming,
-	// WaitForClaudeReady, and crucially - startup/propulsion nudges (GUPP).
-	// It returns ErrAlreadyRunning if Claude is already running in tmux.
-	r := &rig.Rig{
-		Name: rigName,
-		Path: filepath.Join(d.config.TownRoot, rigName),
+func skipEmptyRefinerySpawn(d *Daemon, rigName string) bool {
+	if hasPendingEvents(d, "refinery") {
+		return false
 	}
+	r := &rig.Rig{Name: rigName, Path: filepath.Join(d.config.TownRoot, rigName)}
+	running, _ := refinery.NewManager(r).IsRunning()
+	if running {
+		return false
+	}
+	d.logger.Printf("No pending refinery events and no session running for %s, skipping spawn", rigName)
+	return true
+}
+
+func startRefinerySession(d *Daemon, rigName string) {
+	r := &rig.Rig{Name: rigName, Path: filepath.Join(d.config.TownRoot, rigName)}
 	mgr := refinery.NewManager(r)
-
-	// NOTE: Hung session detection removed for refineries (serial killer bug).
-	// Idle refineries legitimately produce no tmux output while waiting for MRs.
-	// The deacon's patrol health-scan step handles stuck detection with proper
-	// context (checks for active work before declaring something stuck).
-	// See: daemon.log "is hung (no activity for 30m0s), killing for restart"
-
 	if err := mgr.Start(false, ""); err != nil {
-		if errors.Is(err, refinery.ErrAlreadyRunning) {
-			// Already running - this is the expected case when fix is working
-			d.logger.Printf("Refinery for %s already running, skipping spawn", rigName)
-			return
-		}
-		if errors.Is(err, refinery.ErrSafetyStopped) {
-			d.logger.Printf("Skipping refinery auto-start for %s: %v", rigName, err)
-			return
-		}
-		if errors.Is(err, refinery.ErrForkRig) {
-			d.logger.Printf("Skipping refinery auto-start for %s: %v", rigName, err)
-			return
-		}
-		d.logger.Printf("Error starting refinery for %s: %v", rigName, err)
+		logRefineryStartError(d, rigName, err)
 		return
 	}
-
 	d.metrics.RecordRestart(d.ctx, "refinery")
 	telemetry.RecordDaemonRestart(d.ctx, "refinery-"+rigName)
 	d.logger.Printf("Refinery session for %s started successfully", rigName)
+}
+
+func logRefineryStartError(d *Daemon, rigName string, err error) {
+	switch {
+	case errors.Is(err, refinery.ErrAlreadyRunning):
+		d.logger.Printf("Refinery for %s already running, skipping spawn", rigName)
+	case errors.Is(err, refinery.ErrSafetyStopped), errors.Is(err, refinery.ErrForkRig):
+		d.logger.Printf("Skipping refinery auto-start for %s: %v", rigName, err)
+	default:
+		d.logger.Printf("Error starting refinery for %s: %v", rigName, err)
+	}
 }
 
 // ensureMayorRunning ensures the Mayor is running.
@@ -2056,111 +2018,80 @@ func listPolecatWorktrees(polecatsDir string) ([]string, error) {
 // checkPolecatHealth checks a single polecat's session health.
 // If the polecat has work-on-hook but the tmux session is dead, it's restarted.
 func checkPolecatHealth(d *Daemon, rigName, polecatName string) {
-	// Build the expected tmux session name
 	sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
+	if polecatSessionAlive(d, sessionName) {
+		return
+	}
+	info, ok := polecatCrashHookInfo(d, rigName, polecatName)
+	if !ok || skipPolecatCrashDetection(d, rigName, polecatName, sessionName, info) {
+		return
+	}
+	reportCrashedPolecat(d, rigName, polecatName, sessionName, info)
+}
 
-	// Check if tmux session exists
+func polecatSessionAlive(d *Daemon, sessionName string) bool {
 	sessionAlive, err := d.tmux.HasSession(sessionName)
 	if err != nil {
 		d.logger.Printf("Error checking session %s: %v", sessionName, err)
-		return
+		return true
 	}
+	return sessionAlive
+}
 
-	if sessionAlive {
-		// Session is alive - nothing to do
-		return
-	}
-
-	// Session is dead. Check if the polecat has work-on-hook.
+func polecatCrashHookInfo(d *Daemon, rigName, polecatName string) (*AgentBeadInfo, bool) {
 	prefix := beads.GetPrefixForRig(d.config.TownRoot, rigName)
-	agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
-	info, err := d.getAgentBeadInfo(agentBeadID)
-	if err != nil {
-		// Agent bead doesn't exist or error - polecat might not be registered
-		return
+	info, err := d.getAgentBeadInfo(beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName))
+	if err != nil || info.HookBead == "" {
+		return nil, false
 	}
+	return info, true
+}
 
-	// Check if polecat has hooked work
-	if info.HookBead == "" {
-		// No hooked work - this polecat is orphaned (should have self-nuked).
-		// Self-cleaning model: polecats nuke themselves on completion.
-		// An orphan with a dead session doesn't need restart - it needs cleanup.
-		// Let the Witness handle orphan detection/cleanup during patrol.
-		return
-	}
-
-	// Terminal state guard: skip polecats in intentional shutdown states.
-	// agent_state='done' means normal completion; agent_state='nuked' means forced shutdown.
-	// Their sessions being dead is expected, not a crash. Without this check,
-	// the dead session + open hook_bead combination can fire false CRASHED_POLECAT
-	// alerts during the race window before the hook_bead is closed.
-	// This check is pure in-memory (info.State is already populated), so it runs before
-	// the more expensive isBeadClosed subprocess call.
+func skipPolecatCrashDetection(d *Daemon, rigName, polecatName, sessionName string, info *AgentBeadInfo) bool {
 	agentState := beads.AgentState(info.State)
 	if agentState == beads.AgentStateDone || agentState == beads.AgentStateNuked {
 		d.logger.Printf("Skipping crash detection for %s/%s: agent_state=%s (intentional shutdown, not a crash)",
 			rigName, polecatName, info.State)
-		return
+		return true
 	}
-
-	// Stale hook guard: skip polecats whose hook_bead is already closed.
-	// When a polecat completes work normally (gt done), the hook_bead gets closed
-	// but may not be cleared from the agent bead before the session stops.
-	// Without this check, every heartbeat cycle fires a false CRASHED_POLECAT alert
-	// for the dead session + non-empty hook_bead combination.
 	if isBeadClosed(d, info.HookBead) {
 		d.logger.Printf("Skipping crash detection for %s/%s: hook_bead %s is already closed (work completed normally)",
 			rigName, polecatName, info.HookBead)
-		return
+		return true
 	}
-
-	// Spawning guard: skip polecats being actively started by gt sling.
-	// agent_state='spawning' means the polecat bead was created (with hook_bead
-	// set atomically) but the tmux session hasn't been launched yet. Restarting
-	// here would create a second Claude process alongside the one gt sling is
-	// about to start, causing the double-spawn bug (issue #1752).
-	//
-	// Time-bound: only skip if the bead was updated recently (within 5 minutes).
-	// If gt sling crashed during spawn, the polecat would be stuck in 'spawning'
-	// indefinitely. The Witness patrol also catches spawning-as-zombie, but a
-	// time-bound here makes the daemon self-sufficient for this edge case.
-	if beads.AgentState(info.State) == beads.AgentStateSpawning {
-		if updatedAt, err := time.Parse(time.RFC3339, info.LastUpdate); err == nil {
-			if time.Since(updatedAt) < 5*time.Minute {
-				d.logger.Printf("Skipping restart for %s/%s: agent_state=spawning (gt sling in progress, updated %s ago)",
-					rigName, polecatName, time.Since(updatedAt).Round(time.Second))
-				return
-			}
-			d.logger.Printf("Spawning guard expired for %s/%s: agent_state=spawning but last updated %s ago (>5m), proceeding with crash detection",
-				rigName, polecatName, time.Since(updatedAt).Round(time.Second))
-		} else {
-			// Can't parse timestamp — be safe, skip restart during spawning
-			d.logger.Printf("Skipping restart for %s/%s: agent_state=spawning (gt sling in progress, unparseable updated_at)",
-				rigName, polecatName)
-			return
-		}
+	if skipSpawningPolecat(d, rigName, polecatName, info) {
+		return true
 	}
-
-	// TOCTOU guard: re-verify session is still dead before restarting.
-	// Between the initial check and now, the session may have been restarted
-	// by another heartbeat cycle, witness, or the polecat itself.
 	sessionRevived, err := d.tmux.HasSession(sessionName)
-	if err == nil && sessionRevived {
-		return // Session came back - no restart needed
-	}
+	return err == nil && sessionRevived
+}
 
-	// Polecat has work but session is dead - this is a crash!
+func skipSpawningPolecat(d *Daemon, rigName, polecatName string, info *AgentBeadInfo) bool {
+	if beads.AgentState(info.State) != beads.AgentStateSpawning {
+		return false
+	}
+	updatedAt, err := time.Parse(time.RFC3339, info.LastUpdate)
+	if err != nil {
+		d.logger.Printf("Skipping restart for %s/%s: agent_state=spawning (gt sling in progress, unparseable updated_at)",
+			rigName, polecatName)
+		return true
+	}
+	if time.Since(updatedAt) < 5*time.Minute {
+		d.logger.Printf("Skipping restart for %s/%s: agent_state=spawning (gt sling in progress, updated %s ago)",
+			rigName, polecatName, time.Since(updatedAt).Round(time.Second))
+		return true
+	}
+	d.logger.Printf("Spawning guard expired for %s/%s: agent_state=spawning but last updated %s ago (>5m), proceeding with crash detection",
+		rigName, polecatName, time.Since(updatedAt).Round(time.Second))
+	return false
+}
+
+func reportCrashedPolecat(d *Daemon, rigName, polecatName, sessionName string, info *AgentBeadInfo) {
 	d.logger.Printf("CRASH DETECTED: polecat %s/%s has hook_bead=%s but session %s is dead",
 		rigName, polecatName, info.HookBead, sessionName)
-
-	// Track this death for mass death detection
 	recordSessionDeath(d, sessionName)
-
-	// Emit session_death event for audit trail / feed visibility
 	_ = events.LogFeed(events.TypeSessionDeath, sessionName,
 		events.SessionDeathPayload(sessionName, rigName+"/polecats/"+polecatName, "crash detected by daemon health check", "daemon"))
-
-	// Notify witness — stuck-agent-dog plugin handles context-aware restart
 	notifyWitnessOfCrashedPolecat(d, rigName, polecatName, info.HookBead)
 }
 
@@ -2326,85 +2257,56 @@ func reapRigIdlePolecats(d *Daemon, rigName string, timeout time.Duration) {
 //     so after gt done finishes the heartbeat shows "working" with a stale timestamp.
 func reapIdlePolecat(d *Daemon, rigName, polecatName string, timeout time.Duration) {
 	sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
-
-	// Only check sessions that are actually alive
 	alive, err := d.tmux.HasSession(sessionName)
 	if err != nil || !alive {
 		return
 	}
-
-	// Read heartbeat to check state and idle duration
 	hb := polecat.ReadSessionHeartbeat(d.config.TownRoot, sessionName)
 	if hb == nil {
-		return // No heartbeat file — can't determine state
+		return
 	}
-
 	staleDuration := time.Since(hb.Timestamp)
 	if staleDuration < timeout {
-		return // Heartbeat is fresh — polecat is active
+		return
 	}
+	reapStalePolecat(d, rigName, polecatName, sessionName, hb, staleDuration, timeout)
+}
 
+func reapStalePolecat(d *Daemon, rigName, polecatName, sessionName string, hb *polecat.SessionHeartbeat, staleDuration, timeout time.Duration) {
 	state := hb.EffectiveState()
-
-	// Explicitly idle or exiting — safe to reap
 	if state == polecat.HeartbeatIdle || state == polecat.HeartbeatExiting {
 		killIdlePolecat(d, rigName, polecatName, sessionName, staleDuration, timeout, string(state))
 		return
 	}
-
-	// Heartbeat says "working" but is stale — check if polecat actually has hooked work.
-	// If agent_state=idle in beads and no hook_bead, the polecat finished gt done
-	// and is sitting idle (heartbeat wasn't updated to "idle" because persistentPreRun
-	// resets to "working" on every gt sub-command during gt done).
 	if state == polecat.HeartbeatWorking {
-		prefix := beads.GetPrefixForRig(d.config.TownRoot, rigName)
-		agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
-		info, err := d.getAgentBeadInfo(agentBeadID)
-		if err != nil {
-			// Agent bead lookup failed — use the authoritative work bead assignee
-			// to determine whether the polecat has real work before reaping.
-			// Bead infrastructure failures (Dolt issues, version mismatches) cause
-			// spurious lookup errors while the polecat is actively working (GH#3342).
-			assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-			if hasAssignedOpenWork(d, rigName, assignee) {
-				return
-			}
-			// No assigned work and agent not running — safe to reap.
-			// Use 3x threshold (not 2x) to avoid killing polecats during transient
-			// infrastructure degradation when the agent process is alive but not
-			// detectable (e.g. long thinking sessions, slow process inspection).
-			if staleDuration >= timeout*3 || !d.tmux.IsAgentAlive(sessionName) && staleDuration >= timeout*2 {
-				killIdlePolecat(d, rigName, polecatName, sessionName, staleDuration, timeout, "working-bead-lookup-failed")
-			}
-			return
-		}
+		reapStaleWorkingPolecat(d, rigName, polecatName, sessionName, staleDuration, timeout)
+	}
+}
 
-		// If polecat has hooked work that is still open, it might be stuck (not idle).
-		// Don't reap — let checkPolecatSessionHealth handle stuck polecats.
-		// But if the hook_bead is closed, the work is done and this is just an idle
-		// polecat with a stale hook reference — safe to reap.
-		if info.HookBead != "" && !isBeadClosed(d, info.HookBead) {
-			return
-		}
+func reapStaleWorkingPolecat(d *Daemon, rigName, polecatName, sessionName string, staleDuration, timeout time.Duration) {
+	prefix := beads.GetPrefixForRig(d.config.TownRoot, rigName)
+	info, err := d.getAgentBeadInfo(beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName))
+	if err != nil {
+		reapAfterBeadLookupFailure(d, rigName, polecatName, sessionName, staleDuration, timeout)
+		return
+	}
+	if info.HookBead != "" && !isBeadClosed(d, info.HookBead) {
+		return
+	}
+	assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
+	if hasAssignedOpenWork(d, rigName, assignee) || d.tmux.IsAgentAlive(sessionName) {
+		return
+	}
+	killIdlePolecat(d, rigName, polecatName, sessionName, staleDuration, timeout, "working-no-hook")
+}
 
-		// Fallback: agent bead hook_bead may be stale (updateAgentHookBead is a
-		// no-op since the sling code declared work bead assignee as authoritative).
-		// Before killing, check if any work bead is assigned to this polecat with
-		// a non-terminal status. This prevents the reaper from killing polecats
-		// whose agent bead hook_bead points to a closed bead from a previous swarm
-		// while the polecat is actively working on a newly-slung bead.
-		assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-		if hasAssignedOpenWork(d, rigName, assignee) {
-			return
-		}
-
-		// No hooked work + stale heartbeat — but check if the agent process
-		// is still actively running before reaping. A failed gt sling rollback
-		// can clear the hook while the agent is still working (GH#3342).
-		if d.tmux.IsAgentAlive(sessionName) {
-			return
-		}
-		killIdlePolecat(d, rigName, polecatName, sessionName, staleDuration, timeout, "working-no-hook")
+func reapAfterBeadLookupFailure(d *Daemon, rigName, polecatName, sessionName string, staleDuration, timeout time.Duration) {
+	assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
+	if hasAssignedOpenWork(d, rigName, assignee) {
+		return
+	}
+	if staleDuration >= timeout*3 || !d.tmux.IsAgentAlive(sessionName) && staleDuration >= timeout*2 {
+		killIdlePolecat(d, rigName, polecatName, sessionName, staleDuration, timeout, "working-bead-lookup-failed")
 	}
 }
 
