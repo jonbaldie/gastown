@@ -330,62 +330,16 @@ func resolveLocalRepo(path, gitURL string) (string, string) {
 //	├── polecats/              # Worker directories (empty)
 //	└── crew/<crew>/           # Default human workspace
 func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
-	if m.RigExists(opts.Name) {
-		return nil, ErrRigExists
+	prepared, err := m.prepareAddRig(opts)
+	if err != nil {
+		return nil, err
 	}
-
-	// Validate rig name: reject characters that break agent ID parsing
-	// Agent IDs use format <prefix>-<rig>-<role>[-<name>] with hyphens as delimiters
-	if strings.ContainsAny(opts.Name, "-. /\\") {
-		sanitized := strings.NewReplacer("-", "_", ".", "_", " ", "_", "/", "_", "\\", "_").Replace(opts.Name)
-		sanitized = strings.TrimLeft(sanitized, "_")
-		sanitized = strings.ToLower(sanitized)
-		return nil, fmt.Errorf("rig name %q contains invalid characters; hyphens, dots, spaces, and path separators are not allowed. Try %q instead (underscores are allowed)", opts.Name, sanitized)
-	}
-
-	// Reject reserved names that collide with town-level infrastructure.
-	// "hq" is special-cased by EnsureMetadata and dolt routing as the town-level alias.
-	if IsReservedName(opts.Name) {
-		return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
-	}
-
-	// Dolt server is required — refuse to proceed without it.
-	// Check early to fail fast before expensive clone operations.
-	if !opts.SkipDoltCheck {
-		if running, _, err := doltserver.IsRunning(m.townRoot); err != nil {
-			return nil, fmt.Errorf("checking Dolt server: %w", err)
-		} else if !running {
-			return nil, fmt.Errorf("Dolt server is not running (required for beads init); start it with 'gt up' or 'gt dolt start'")
-		}
-	}
-
-	rigPath := filepath.Join(m.townRoot, opts.Name)
-
-	// Check if directory already exists
-	if _, err := os.Stat(rigPath); err == nil {
-		return nil, fmt.Errorf("directory already exists: %s\n\nTo adopt an existing directory, use --adopt:\n  gt rig add %s --adopt", rigPath, opts.Name)
-	}
-
-	// Track whether user explicitly provided --prefix (before deriving)
-	userProvidedPrefix := opts.BeadsPrefix != ""
-	opts.BeadsPrefix = strings.TrimSuffix(opts.BeadsPrefix, "-")
-
-	// Derive defaults
-	if opts.BeadsPrefix == "" {
-		opts.BeadsPrefix = deriveBeadsPrefix(opts.Name)
-	}
-
-	// Check for prefix collision with existing rigs before expensive operations.
-	if err := beads.CheckPrefixAvailable(m.townRoot, opts.BeadsPrefix+"-", opts.Name); err != nil {
-		if errors.Is(err, beads.ErrPrefixInUse) {
-			return nil, fmt.Errorf("prefix collision (derived prefix %q): %w; use --prefix to specify a different prefix", opts.BeadsPrefix, err)
-		}
-		return nil, fmt.Errorf("prefix collision (derived prefix %q): %w", opts.BeadsPrefix, err)
-	}
-
-	localRepo, warn := resolveLocalRepo(opts.LocalRepo, opts.GitURL)
-	if warn != "" {
-		fmt.Printf("  Warning: %s\n", warn)
+	opts = prepared.options
+	rigPath := prepared.rigPath
+	localRepo := prepared.localRepo
+	userProvidedPrefix := prepared.userProvidedPrefix
+	if prepared.warning != "" {
+		fmt.Printf("  Warning: %s\n", prepared.warning)
 	}
 
 	// Create container directory
@@ -868,6 +822,73 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	// Best-effort cleanup: once the add succeeds, the stamp is no longer needed.
 	_ = clearAddOwnershipStamp(rigPath)
 	return m.loadRig(opts.Name, m.config.Rigs[opts.Name])
+}
+
+type preparedRigAdd struct {
+	options            AddRigOptions
+	rigPath            string
+	localRepo          string
+	warning            string
+	userProvidedPrefix bool
+}
+
+func (m *Manager) prepareAddRig(opts AddRigOptions) (preparedRigAdd, error) {
+	if m.RigExists(opts.Name) {
+		return preparedRigAdd{}, ErrRigExists
+	}
+	if err := validateNewRigName(opts.Name); err != nil {
+		return preparedRigAdd{}, err
+	}
+	if err := m.requireAddRigDolt(opts.SkipDoltCheck); err != nil {
+		return preparedRigAdd{}, err
+	}
+	rigPath := filepath.Join(m.townRoot, opts.Name)
+	if pathExists(rigPath) {
+		return preparedRigAdd{}, fmt.Errorf("directory already exists: %s\n\nTo adopt an existing directory, use --adopt:\n  gt rig add %s --adopt", rigPath, opts.Name)
+	}
+	userProvidedPrefix := opts.BeadsPrefix != ""
+	opts.BeadsPrefix = strings.TrimSuffix(opts.BeadsPrefix, "-")
+	if opts.BeadsPrefix == "" {
+		opts.BeadsPrefix = deriveBeadsPrefix(opts.Name)
+	}
+	if err := beads.CheckPrefixAvailable(m.townRoot, opts.BeadsPrefix+"-", opts.Name); err != nil {
+		return preparedRigAdd{}, prefixCollisionError(opts.BeadsPrefix, err)
+	}
+	localRepo, warning := resolveLocalRepo(opts.LocalRepo, opts.GitURL)
+	return preparedRigAdd{opts, rigPath, localRepo, warning, userProvidedPrefix}, nil
+}
+
+func validateNewRigName(name string) error {
+	if strings.ContainsAny(name, "-. /\\") {
+		sanitized := strings.NewReplacer("-", "_", ".", "_", " ", "_", "/", "_", "\\", "_").Replace(name)
+		sanitized = strings.ToLower(strings.TrimLeft(sanitized, "_"))
+		return fmt.Errorf("rig name %q contains invalid characters; hyphens, dots, spaces, and path separators are not allowed. Try %q instead (underscores are allowed)", name, sanitized)
+	}
+	if IsReservedName(name) {
+		return fmt.Errorf("rig name %q is reserved for town-level infrastructure", name)
+	}
+	return nil
+}
+
+func (m *Manager) requireAddRigDolt(skip bool) error {
+	if skip {
+		return nil
+	}
+	running, _, err := doltserver.IsRunning(m.townRoot)
+	if err != nil {
+		return fmt.Errorf("checking Dolt server: %w", err)
+	}
+	if !running {
+		return fmt.Errorf("Dolt server is not running (required for beads init); start it with 'gt up' or 'gt dolt start'")
+	}
+	return nil
+}
+
+func prefixCollisionError(prefix string, err error) error {
+	if errors.Is(err, beads.ErrPrefixInUse) {
+		return fmt.Errorf("prefix collision (derived prefix %q): %w; use --prefix to specify a different prefix", prefix, err)
+	}
+	return fmt.Errorf("prefix collision (derived prefix %q): %w", prefix, err)
 }
 
 // addOwnershipStampFile marks which AddRig invocation currently owns the path.
