@@ -3498,83 +3498,98 @@ func readExistingDoltDatabase(beadsDir string) string {
 //   - broad scan of metadata.json files under town root
 func collectReferencedDatabases(townRoot string) map[string]bool {
 	referenced := make(map[string]bool)
+	collectTownBeadsReference(townRoot, referenced)
+	collectRigsJSONReferences(townRoot, referenced)
+	collectRoutesJSONLReferences(townRoot, referenced)
+	collectTopLevelDirReferences(townRoot, referenced)
+	collectPrefixReferences(townRoot, referenced)
+	return referenced
+}
 
-	// Check town-level beads (hq)
-	townBeadsDir := filepath.Join(townRoot, ".beads")
-	if db := readExistingDoltDatabase(townBeadsDir); db != "" {
+func collectTownBeadsReference(townRoot string, referenced map[string]bool) {
+	if db := readExistingDoltDatabase(filepath.Join(townRoot, ".beads")); db != "" {
 		referenced[db] = true
 	}
+}
 
-	// Check all rigs from rigs.json
-	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	data, err := os.ReadFile(rigsPath)
-	if err == nil {
-		var config struct {
-			Rigs map[string]interface{} `json:"rigs"`
+func collectRigsJSONReferences(townRoot string, referenced map[string]bool) {
+	for rigName := range loadTownRigsMap(townRoot) {
+		beadsDir := FindRigBeadsDir(townRoot, rigName)
+		if beadsDir == "" {
+			continue
 		}
-		if err := json.Unmarshal(data, &config); err == nil {
-			for rigName := range config.Rigs {
-				beadsDir := FindRigBeadsDir(townRoot, rigName)
-				if beadsDir == "" {
-					continue
-				}
-				if db := readExistingDoltDatabase(beadsDir); db != "" {
-					referenced[db] = true
-				}
-			}
+		if db := readExistingDoltDatabase(beadsDir); db != "" {
+			referenced[db] = true
 		}
 	}
+}
 
-	// Also check routes.jsonl — catches rigs that have routes but aren't in
-	// rigs.json yet (e.g., hop before gt rig add). (gt-q8f6n fix)
-	routesPath := filepath.Join(townRoot, ".beads", "routes.jsonl")
-	if routesData, readErr := os.ReadFile(routesPath); readErr == nil {
-		for _, line := range strings.Split(string(routesData), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			var route struct {
-				Path string `json:"path"`
-			}
-			if json.Unmarshal([]byte(line), &route) != nil || route.Path == "" {
-				continue
-			}
-			// route.Path is relative to town root, e.g., "hop", "beads/mayor/rig"
-			beadsDir := filepath.Join(townRoot, route.Path, ".beads")
-			if db := readExistingDoltDatabase(beadsDir); db != "" {
-				referenced[db] = true
-			}
-		}
+func collectRoutesJSONLReferences(townRoot string, referenced map[string]bool) {
+	routesData, err := os.ReadFile(filepath.Join(townRoot, ".beads", "routes.jsonl"))
+	if err != nil {
+		return
 	}
-
-	// Scan top-level directories for any .beads/metadata.json with dolt_database.
-	// This catches rigs that exist on disk but aren't in rigs.json or routes.jsonl.
-	if entries, readErr := os.ReadDir(townRoot); readErr == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() || entry.Name() == ".beads" || entry.Name() == "mayor" {
-				continue
-			}
-			// Check <rig>/.beads/metadata.json
-			if db := readExistingDoltDatabase(filepath.Join(townRoot, entry.Name(), ".beads")); db != "" {
-				referenced[db] = true
-			}
-			// Check <rig>/mayor/rig/.beads/metadata.json
-			if db := readExistingDoltDatabase(filepath.Join(townRoot, entry.Name(), "mayor", "rig", ".beads")); db != "" {
-				referenced[db] = true
-			}
-		}
+	for _, line := range strings.Split(string(routesData), "\n") {
+		addRouteLineReference(townRoot, line, referenced)
 	}
+}
 
-	// Safety net: also mark all rig prefixes from rigs.json as referenced.
-	// Some rigs use their prefix as the database name (e.g., "lc" for laneassist,
-	// "gt" for gastown). If metadata.json is missing or corrupted, the prefix-named
-	// DB would appear orphaned without this fallback. (gt-85w7)
+func addRouteLineReference(townRoot, line string, referenced map[string]bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	var route struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal([]byte(line), &route) != nil || route.Path == "" {
+		return
+	}
+	if db := readExistingDoltDatabase(filepath.Join(townRoot, route.Path, ".beads")); db != "" {
+		referenced[db] = true
+	}
+}
+
+func collectTopLevelDirReferences(townRoot string, referenced map[string]bool) {
+	entries, err := os.ReadDir(townRoot)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		addTopLevelDirReference(townRoot, entry, referenced)
+	}
+}
+
+func addTopLevelDirReference(townRoot string, entry os.DirEntry, referenced map[string]bool) {
+	if !entry.IsDir() || entry.Name() == ".beads" || entry.Name() == "mayor" {
+		return
+	}
+	if db := readExistingDoltDatabase(filepath.Join(townRoot, entry.Name(), ".beads")); db != "" {
+		referenced[db] = true
+	}
+	if db := readExistingDoltDatabase(filepath.Join(townRoot, entry.Name(), "mayor", "rig", ".beads")); db != "" {
+		referenced[db] = true
+	}
+}
+
+func collectPrefixReferences(townRoot string, referenced map[string]bool) {
 	for _, prefix := range configpkg.AllRigPrefixes(townRoot) {
 		referenced[prefix] = true
 	}
+}
 
-	return referenced
+func loadTownRigsMap(townRoot string) map[string]interface{} {
+	data, err := os.ReadFile(filepath.Join(townRoot, "mayor", "rigs.json"))
+	if err != nil {
+		return nil
+	}
+	var config struct {
+		Rigs map[string]interface{} `json:"rigs"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+	return config.Rigs
 }
 
 // CollectDatabaseOwners returns a map from database name to a human-readable
@@ -3583,83 +3598,95 @@ func collectReferencedDatabases(townRoot string) map[string]bool {
 // accidental drops of production databases. (GH#2252)
 func CollectDatabaseOwners(townRoot string) map[string]string {
 	owners := make(map[string]string)
+	collectTownBeadsOwner(townRoot, owners)
+	collectRigsJSONOwners(townRoot, owners)
+	collectRoutesJSONLOwners(townRoot, owners)
+	collectTopLevelDirOwners(townRoot, owners)
+	collectProtectedSharedOwners(townRoot, owners)
+	return owners
+}
 
-	// Check town-level beads (hq)
-	townBeadsDir := filepath.Join(townRoot, ".beads")
-	if db := readExistingDoltDatabase(townBeadsDir); db != "" {
+func collectTownBeadsOwner(townRoot string, owners map[string]string) {
+	if db := readExistingDoltDatabase(filepath.Join(townRoot, ".beads")); db != "" {
 		owners[db] = "town beads"
 	}
+}
 
-	// Check all rigs from rigs.json
-	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	data, err := os.ReadFile(rigsPath)
-	if err == nil {
-		var config struct {
-			Rigs map[string]interface{} `json:"rigs"`
+func collectRigsJSONOwners(townRoot string, owners map[string]string) {
+	for rigName := range loadTownRigsMap(townRoot) {
+		beadsDir := FindRigBeadsDir(townRoot, rigName)
+		if beadsDir == "" {
+			continue
 		}
-		if err := json.Unmarshal(data, &config); err == nil {
-			for rigName := range config.Rigs {
-				beadsDir := FindRigBeadsDir(townRoot, rigName)
-				if beadsDir == "" {
-					continue
-				}
-				if db := readExistingDoltDatabase(beadsDir); db != "" {
-					owners[db] = rigName + " rig beads"
-				}
-			}
+		if db := readExistingDoltDatabase(beadsDir); db != "" {
+			owners[db] = rigName + " rig beads"
 		}
 	}
+}
 
-	// Also check routes.jsonl
-	routesPath := filepath.Join(townRoot, ".beads", "routes.jsonl")
-	if routesData, readErr := os.ReadFile(routesPath); readErr == nil {
-		for _, line := range strings.Split(string(routesData), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			var route struct {
-				Prefix string `json:"prefix"`
-				Path   string `json:"path"`
-			}
-			if json.Unmarshal([]byte(line), &route) != nil || route.Path == "" {
-				continue
-			}
-			beadsDir := filepath.Join(townRoot, route.Path, ".beads")
-			if db := readExistingDoltDatabase(beadsDir); db != "" {
-				if _, already := owners[db]; !already {
-					// Derive a name from the route path
-					parts := strings.Split(route.Path, "/")
-					owners[db] = parts[0] + " rig beads"
-				}
-			}
-		}
+func collectRoutesJSONLOwners(townRoot string, owners map[string]string) {
+	routesData, err := os.ReadFile(filepath.Join(townRoot, ".beads", "routes.jsonl"))
+	if err != nil {
+		return
 	}
-
-	// Scan top-level directories for any .beads/metadata.json
-	if entries, readErr := os.ReadDir(townRoot); readErr == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() || entry.Name() == ".beads" || entry.Name() == "mayor" {
-				continue
-			}
-			dirName := entry.Name()
-			if db := readExistingDoltDatabase(filepath.Join(townRoot, dirName, ".beads")); db != "" {
-				if _, already := owners[db]; !already {
-					owners[db] = dirName + " rig beads"
-				}
-			}
-			if db := readExistingDoltDatabase(filepath.Join(townRoot, dirName, "mayor", "rig", ".beads")); db != "" {
-				if _, already := owners[db]; !already {
-					owners[db] = dirName + " rig beads"
-				}
-			}
-		}
+	for _, line := range strings.Split(string(routesData), "\n") {
+		addRouteLineOwner(townRoot, line, owners)
 	}
+}
 
-	// Label protected shared-server databases so `gt dolt list` doesn't render
-	// them as orphans. Only labels protected DBs that actually exist on disk —
-	// otherwise we'd advertise a phantom owner. Never overwrites a rig-derived
-	// label if one is already present.
+func addRouteLineOwner(townRoot, line string, owners map[string]string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	var route struct {
+		Prefix string `json:"prefix"`
+		Path   string `json:"path"`
+	}
+	if json.Unmarshal([]byte(line), &route) != nil || route.Path == "" {
+		return
+	}
+	db := readExistingDoltDatabase(filepath.Join(townRoot, route.Path, ".beads"))
+	if db == "" {
+		return
+	}
+	if _, already := owners[db]; already {
+		return
+	}
+	parts := strings.Split(route.Path, "/")
+	owners[db] = parts[0] + " rig beads"
+}
+
+func collectTopLevelDirOwners(townRoot string, owners map[string]string) {
+	entries, err := os.ReadDir(townRoot)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		addTopLevelDirOwner(townRoot, entry, owners)
+	}
+}
+
+func addTopLevelDirOwner(townRoot string, entry os.DirEntry, owners map[string]string) {
+	if !entry.IsDir() || entry.Name() == ".beads" || entry.Name() == "mayor" {
+		return
+	}
+	dirName := entry.Name()
+	setOwnerIfAbsent(owners, readExistingDoltDatabase(filepath.Join(townRoot, dirName, ".beads")), dirName+" rig beads")
+	setOwnerIfAbsent(owners, readExistingDoltDatabase(filepath.Join(townRoot, dirName, "mayor", "rig", ".beads")), dirName+" rig beads")
+}
+
+func setOwnerIfAbsent(owners map[string]string, db, label string) {
+	if db == "" {
+		return
+	}
+	if _, already := owners[db]; already {
+		return
+	}
+	owners[db] = label
+}
+
+func collectProtectedSharedOwners(townRoot string, owners map[string]string) {
 	config := DefaultConfig(townRoot)
 	for dbName, label := range protectedSharedServerDatabases() {
 		if _, already := owners[dbName]; already {
@@ -3669,8 +3696,6 @@ func CollectDatabaseOwners(townRoot string) map[string]string {
 			owners[dbName] = label
 		}
 	}
-
-	return owners
 }
 
 // RemoveDatabase removes an orphaned database directory from .dolt-data/.
@@ -3941,48 +3966,55 @@ func EnsureMetadata(townRoot, rigName string, doltDatabase ...string) error {
 // database to exist, so callers can leave a recoverable rig behind after partial
 // initialization failures.
 func EnsureMetadataForBeadsDir(townRoot, beadsDir, rigName string, doltDatabase ...string) error {
+	if err := requireMetadataBeadsArgs(beadsDir, rigName); err != nil {
+		return err
+	}
+	explicitDB, effectiveDB := resolveEffectiveDoltDB(rigName, doltDatabase...)
+	if err := beads.EnsureDir(beadsDir); err != nil {
+		return fmt.Errorf("creating beads directory: %w", err)
+	}
+	metadataPath := filepath.Join(beadsDir, "metadata.json")
+	mu := getMetadataMu(metadataPath)
+	mu.Lock()
+	defer mu.Unlock()
+	existing := loadExistingMetadata(metadataPath)
+	changed := patchMetadataIdentity(existing, townRoot, effectiveDB, explicitDB)
+	changed = patchMetadataServerFields(existing, DefaultConfig(townRoot)) || changed
+	return writeMetadataIfChanged(metadataPath, existing, changed)
+}
+
+func requireMetadataBeadsArgs(beadsDir, rigName string) error {
 	if beadsDir == "" {
 		return fmt.Errorf("beads directory is required")
 	}
 	if rigName == "" {
 		return fmt.Errorf("rig name is required")
 	}
+	return nil
+}
 
-	// Determine the Dolt database name to write when the field is absent.
-	// Default: rigName (correct when db-name == rig-dir-name, e.g. "gastown").
-	// Callers from EnsureAllMetadata pass the actual DB prefix ("at", "be") so
-	// that rigs with short prefixes get the correct database name, not the full
-	// rig directory name.
+func resolveEffectiveDoltDB(rigName string, doltDatabase ...string) (bool, string) {
 	explicitDB := len(doltDatabase) > 0 && doltDatabase[0] != ""
-	effectiveDB := rigName
 	if explicitDB {
-		effectiveDB = doltDatabase[0]
+		return true, doltDatabase[0]
 	}
+	return false, rigName
+}
 
-	if err := beads.EnsureDir(beadsDir); err != nil {
-		return fmt.Errorf("creating beads directory: %w", err)
-	}
-
-	metadataPath := filepath.Join(beadsDir, "metadata.json")
-
-	// Acquire per-path mutex for goroutine synchronization.
-	// EnsureAllMetadata calls EnsureMetadata concurrently; flock (inter-process)
-	// cannot reliably synchronize goroutines within the same process.
-	mu := getMetadataMu(metadataPath)
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Load existing metadata if present (preserve any extra fields)
+func loadExistingMetadata(metadataPath string) map[string]interface{} {
 	existing := make(map[string]interface{})
 	if data, err := os.ReadFile(metadataPath); err == nil {
-		_ = json.Unmarshal(data, &existing) // best effort
+		_ = json.Unmarshal(data, &existing)
 	}
+	return existing
+}
 
-	// Resolve the authoritative server config (config.yaml > env > daemon.json > default).
-	config := DefaultConfig(townRoot)
+func patchMetadataIdentity(existing map[string]interface{}, townRoot, effectiveDB string, explicitDB bool) bool {
+	changed := patchMetadataBackendFields(existing)
+	return patchMetadataDatabaseName(existing, townRoot, effectiveDB, explicitDB) || changed
+}
 
-	// Patch dolt server fields. Only write when values actually change so tracked
-	// metadata.json files in source repos stay clean.
+func patchMetadataBackendFields(existing map[string]interface{}) bool {
 	changed := false
 	if existing["database"] != "dolt" {
 		existing["database"] = "dolt"
@@ -3996,33 +4028,30 @@ func EnsureMetadataForBeadsDir(townRoot, beadsDir, rigName string, doltDatabase 
 		existing["dolt_mode"] = "server"
 		changed = true
 	}
-	// Fix wrong dolt_database values (not just empty). After a crash or rig
-	// addition, metadata.json can end up pointing to the wrong database name
-	// (e.g., "beads_gt" instead of "gastown"), causing PROJECT IDENTITY MISMATCH
-	// errors that are hard to diagnose and recover from. (gas-tc4)
+	return changed
+}
+
+func patchMetadataDatabaseName(existing map[string]interface{}, townRoot, effectiveDB string, explicitDB bool) bool {
 	if existing["dolt_database"] == nil || existing["dolt_database"] == "" {
 		existing["dolt_database"] = effectiveDB
-		changed = true
-	} else if dbStr, ok := existing["dolt_database"].(string); ok && dbStr != effectiveDB {
-		// The existing value differs from what we'd write. When the caller
-		// provided an explicit dbName (from EnsureAllMetadata, which resolves
-		// the canonical name from rigs.json), always correct. When no explicit
-		// dbName was given (effectiveDB == rigName), only correct if the
-		// existing value is not a real database — this prevents flip-flop
-		// between "at" and "atomize" when two code paths disagree. (gt-9c4)
-		if explicitDB || !DatabaseExists(townRoot, dbStr) {
-			fmt.Fprintf(os.Stderr, "Warning: metadata.json dolt_database was %q, correcting to %q (identity mismatch repair)\n", dbStr, effectiveDB)
-			existing["dolt_database"] = effectiveDB
-			changed = true
-		}
+		return true
 	}
+	dbStr, ok := existing["dolt_database"].(string)
+	if !ok || dbStr == effectiveDB {
+		return false
+	}
+	if !explicitDB && DatabaseExists(townRoot, dbStr) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "Warning: metadata.json dolt_database was %q, correcting to %q (identity mismatch repair)\n", dbStr, effectiveDB)
+	existing["dolt_database"] = effectiveDB
+	return true
+}
 
-	// Ensure server connection fields match the authoritative config.
-	// bd reads dolt_server_host and dolt_server_port from metadata.json to
-	// connect to the Dolt server. Stale values (e.g., port 13729 from a
-	// previous bd init) cause "connection refused" errors.
+func patchMetadataServerFields(existing map[string]interface{}, config *Config) bool {
 	wantHost := config.EffectiveHost()
-	wantPort := float64(config.Port) // JSON numbers are float64
+	wantPort := float64(config.Port)
+	changed := false
 	if existing["dolt_server_host"] != wantHost {
 		existing["dolt_server_host"] = wantHost
 		changed = true
@@ -4031,21 +4060,20 @@ func EnsureMetadataForBeadsDir(townRoot, beadsDir, rigName string, doltDatabase 
 		existing["dolt_server_port"] = wantPort
 		changed = true
 	}
+	return changed
+}
 
-	// Fast path: avoid rewriting metadata.json when already correct.
+func writeMetadataIfChanged(metadataPath string, existing map[string]interface{}, changed bool) error {
 	if !changed {
 		return nil
 	}
-
 	data, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling metadata: %w", err)
 	}
-
 	if err := atomicfile.WriteFile(metadataPath, append(data, '\n'), 0600); err != nil {
 		return fmt.Errorf("writing metadata.json: %w", err)
 	}
-
 	return nil
 }
 
