@@ -48,64 +48,85 @@ func ParseAddress(address string) (*AgentIdentity, error) {
 	if address == "" {
 		return nil, fmt.Errorf("empty address")
 	}
-
-	if address == string(RoleMayor) || address == string(RoleMayor)+"/" {
-		return &AgentIdentity{Role: RoleMayor}, nil
+	if identity, handled, err := parseTownAddress(address); handled {
+		return identity, err
 	}
-	if address == string(RoleDeacon) || address == string(RoleDeacon)+"/" {
-		return &AgentIdentity{Role: RoleDeacon}, nil
-	}
-	if address == "overseer" {
-		return nil, fmt.Errorf("overseer has no session")
-	}
-
 	address = strings.TrimSuffix(address, "/")
 	parts := strings.Split(address, "/")
-	if len(parts) < 2 {
+	if !validAddressParts(parts) {
 		return nil, fmt.Errorf("invalid address %q", address)
+	}
+	identity, ok := parseRigAddress(parts)
+	if !ok {
+		return nil, fmt.Errorf("invalid address %q", address)
+	}
+	return identity, nil
+}
+
+func parseTownAddress(address string) (*AgentIdentity, bool, error) {
+	switch address {
+	case string(RoleMayor), string(RoleMayor) + "/":
+		return &AgentIdentity{Role: RoleMayor}, true, nil
+	case string(RoleDeacon), string(RoleDeacon) + "/":
+		return &AgentIdentity{Role: RoleDeacon}, true, nil
+	case string(RoleOverseer):
+		return nil, true, fmt.Errorf("overseer has no session")
+	default:
+		return nil, false, nil
+	}
+}
+
+func validAddressParts(parts []string) bool {
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
 	}
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." || strings.Contains(part, `\`) {
-			return nil, fmt.Errorf("invalid address %q", address)
+			return false
 		}
 	}
+	return true
+}
 
+func parseRigAddress(parts []string) (*AgentIdentity, bool) {
 	rig := parts[0]
 	prefix := PrefixFor(rig)
 	switch len(parts) {
 	case 2:
-		name := parts[1]
-		switch name {
-		case string(RoleWitness):
-			return &AgentIdentity{Role: RoleWitness, Rig: rig, Prefix: prefix}, nil
-		case string(RoleRefinery):
-			return &AgentIdentity{Role: RoleRefinery, Rig: rig, Prefix: prefix}, nil
-		case string(RoleCrew), "polecats":
-			return nil, fmt.Errorf("invalid address %q", address)
-		case "dogs":
-			// Canonical dog addresses are deacon/dogs/<name>. The pool path is invalid.
-			return nil, fmt.Errorf("invalid address %q", address)
-		default:
-			return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, nil
-		}
+		return parseShortRigAddress(rig, prefix, parts[1])
 	case 3:
-		role := parts[1]
-		name := parts[2]
-		switch role {
-		case string(RoleCrew):
-			return &AgentIdentity{Role: RoleCrew, Rig: rig, Name: name, Prefix: prefix}, nil
-		case "polecats":
-			return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, nil
-		case "dogs":
-			if rig != string(RoleDeacon) || !safeDogName(name) {
-				return nil, fmt.Errorf("invalid address %q", address)
-			}
-			return &AgentIdentity{Role: RoleDog, Name: name}, nil
-		default:
-			return nil, fmt.Errorf("invalid address %q", address)
-		}
+		return parseLongRigAddress(rig, prefix, parts[1], parts[2])
 	default:
-		return nil, fmt.Errorf("invalid address %q", address)
+		return nil, false
+	}
+}
+
+func parseShortRigAddress(rig, prefix, name string) (*AgentIdentity, bool) {
+	switch name {
+	case string(RoleWitness):
+		return &AgentIdentity{Role: RoleWitness, Rig: rig, Prefix: prefix}, true
+	case string(RoleRefinery):
+		return &AgentIdentity{Role: RoleRefinery, Rig: rig, Prefix: prefix}, true
+	case string(RoleCrew), "polecats", "dogs":
+		return nil, false
+	default:
+		return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, true
+	}
+}
+
+func parseLongRigAddress(rig, prefix, role, name string) (*AgentIdentity, bool) {
+	switch role {
+	case string(RoleCrew):
+		return &AgentIdentity{Role: RoleCrew, Rig: rig, Name: name, Prefix: prefix}, true
+	case "polecats":
+		return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, true
+	case "dogs":
+		if rig == string(RoleDeacon) && safeDogName(name) {
+			return &AgentIdentity{Role: RoleDog, Name: name}, true
+		}
+		return nil, false
+	default:
+		return nil, false
 	}
 }
 
@@ -143,91 +164,67 @@ func ParseSessionNameWithRegistry(session string, registry *PrefixRegistry) (*Ag
 	if registry == nil {
 		registry = NewPrefixRegistry()
 	}
-
-	// Check for town-level roles (hq- prefix).
-	// Note: "hq" may also be a registered rig prefix (e.g., knjn uses "hq").
-	// Known town-level roles are matched first; unknown suffixes fall through
-	// to rig-level parsing so that hq-witness, hq-refinery, hq-<polecat> etc.
-	// resolve correctly when "hq" is a rig prefix.
-	if strings.HasPrefix(session, HQPrefix) {
-		suffix := strings.TrimPrefix(session, HQPrefix)
-		switch suffix {
-		case string(RoleMayor):
-			return &AgentIdentity{Role: RoleMayor}, nil
-		case string(RoleDeacon):
-			return &AgentIdentity{Role: RoleDeacon}, nil
-		case "boot":
-			return &AgentIdentity{Role: RoleDeacon, Name: "boot"}, nil
-		case "overseer":
-			return &AgentIdentity{Role: RoleOverseer}, nil
-		default:
-			// Dogs: hq-dog-<name>
-			if strings.HasPrefix(suffix, "dog-") {
-				name := suffix[4:] // len("dog-") = 4
-				if name == "" {
-					return nil, fmt.Errorf("invalid session name %q: empty dog name", session)
-				}
-				return &AgentIdentity{Role: RoleDog, Name: name}, nil
-			}
-			// Fall through to rig-level parsing — "hq" may be a rig prefix.
-		}
+	if identity, handled, err := parseTownSessionName(session); handled {
+		return identity, err
 	}
-
-	// Rig-level roles: <prefix>-<rest>
-	// Use registry to identify the prefix boundary
 	prefix, rest, _ := registry.MatchPrefix(session)
 	if prefix == "" || rest == "" {
 		return nil, fmt.Errorf("invalid session name %q: cannot determine prefix", session)
 	}
+	return parseRigSessionName(session, registry.RigForPrefix(prefix), prefix, rest)
+}
 
-	rig := registry.RigForPrefix(prefix)
-
-	// Check for witness (suffix marker)
-	if rest == string(RoleWitness) {
-		return &AgentIdentity{Role: RoleWitness, Rig: rig, Prefix: prefix}, nil
+func parseTownSessionName(session string) (*AgentIdentity, bool, error) {
+	if !strings.HasPrefix(session, HQPrefix) {
+		return nil, false, nil
 	}
-
-	// Check for refinery (suffix marker)
-	if rest == string(RoleRefinery) {
-		return &AgentIdentity{Role: RoleRefinery, Rig: rig, Prefix: prefix}, nil
+	suffix := strings.TrimPrefix(session, HQPrefix)
+	switch suffix {
+	case string(RoleMayor):
+		return &AgentIdentity{Role: RoleMayor}, true, nil
+	case string(RoleDeacon):
+		return &AgentIdentity{Role: RoleDeacon}, true, nil
+	case "boot":
+		return &AgentIdentity{Role: RoleDeacon, Name: "boot"}, true, nil
+	case string(RoleOverseer):
+		return &AgentIdentity{Role: RoleOverseer}, true, nil
 	}
-
-	// Polecat names beginning with "crew-" use an explicit marker to avoid
-	// colliding with Crew session names.
-	if strings.HasPrefix(rest, "polecat_crew-") {
-		name := strings.TrimPrefix(rest, "polecat_")
-		return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: name, Prefix: prefix}, nil
+	if !strings.HasPrefix(suffix, "dog-") {
+		return nil, false, nil
 	}
+	name := strings.TrimPrefix(suffix, "dog-")
+	if name == "" {
+		return nil, true, fmt.Errorf("invalid session name %q: empty dog name", session)
+	}
+	return &AgentIdentity{Role: RoleDog, Name: name}, true, nil
+}
 
-	// Check for crew (marker in rest)
-	if strings.HasPrefix(rest, "crew-") {
-		name := rest[5:] // len("crew-") = 5
-		if name == "" {
+func parseRigSessionName(session, rig, prefix, rest string) (*AgentIdentity, error) {
+	identity := &AgentIdentity{Rig: rig, Prefix: prefix}
+	switch {
+	case rest == string(RoleWitness):
+		identity.Role = RoleWitness
+	case rest == string(RoleRefinery):
+		identity.Role = RoleRefinery
+	case strings.HasPrefix(rest, "polecat_crew-"):
+		identity.Role, identity.Name = RolePolecat, strings.TrimPrefix(rest, "polecat_")
+	case strings.HasPrefix(rest, "crew-"):
+		identity.Role, identity.Name = RoleCrew, strings.TrimPrefix(rest, "crew-")
+		if identity.Name == "" {
 			return nil, fmt.Errorf("invalid session name %q: empty crew name", session)
 		}
-		return &AgentIdentity{Role: RoleCrew, Rig: rig, Name: name, Prefix: prefix}, nil
+	default:
+		identity.Role, identity.Name = RolePolecat, rest
 	}
-
-	// Default: polecat
-	// rest is the polecat name (may contain dashes)
-	if rest == "" {
-		return nil, fmt.Errorf("invalid session name %q: empty polecat name", session)
-	}
-	return &AgentIdentity{Role: RolePolecat, Rig: rig, Name: rest, Prefix: prefix}, nil
+	return identity, nil
 }
 
 // SessionName returns the tmux session name for this identity.
 func (a *AgentIdentity) SessionName() string {
+	if name, ok := a.townSessionName(); ok {
+		return name
+	}
 	switch a.Role {
-	case RoleMayor:
-		return MayorSessionName()
-	case RoleDeacon:
-		if a.Name == "boot" {
-			return BootSessionName()
-		}
-		return DeaconSessionName()
-	case RoleOverseer:
-		return OverseerSessionName()
 	case RoleWitness:
 		return WitnessSessionName(a.prefix())
 	case RoleRefinery:
@@ -240,6 +237,22 @@ func (a *AgentIdentity) SessionName() string {
 		return DogSessionName(a.Name)
 	default:
 		return ""
+	}
+}
+
+func (a *AgentIdentity) townSessionName() (string, bool) {
+	switch a.Role {
+	case RoleMayor:
+		return MayorSessionName(), true
+	case RoleDeacon:
+		if a.Name == "boot" {
+			return BootSessionName(), true
+		}
+		return DeaconSessionName(), true
+	case RoleOverseer:
+		return OverseerSessionName(), true
+	default:
+		return "", false
 	}
 }
 

@@ -362,42 +362,52 @@ var ErrNotFound = errors.New("session not found")
 // marks the Worker run stopped, stops the agent-log watcher, and kills the
 // tmux session. Role managers call this instead of writing their own stop body.
 func StopSession(t TmuxOps, townRoot, sessionID string, graceful bool) error {
-	if townRoot != "" {
-		if pollerErr := nudge.StopPoller(townRoot, sessionID); pollerErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not stop nudge poller for %s: %v\n", sessionID, pollerErr)
-		}
-	}
-
+	stopSessionPoller(townRoot, sessionID)
 	running, err := t.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
 	}
-
-	var stopErr error
-	if running {
-		if graceful {
-			_ = t.SendKeysRaw(sessionID, "C-c")
-			WaitForSessionExit(t, sessionID, constants.GracefulShutdownTimeout)
-		}
-
-		DeactivateAgentLogging(sessionID)
-
-		if err := t.KillSessionWithProcesses(sessionID); err != nil {
-			stopErr = fmt.Errorf("killing session: %w", err)
-		}
-	}
-
-	if townRoot != "" {
-		if err := worker.MarkSessionStopped(townRoot, sessionID); err != nil && stopErr == nil {
-			stopErr = fmt.Errorf("recording stopped worker run: %w", err)
-		}
-	}
-
+	stopErr := stopRunningSession(t, sessionID, running, graceful)
+	stopErr = recordStoppedSession(townRoot, sessionID, stopErr)
 	if stopErr != nil {
 		return stopErr
 	}
 	if !running {
 		return fmt.Errorf("%w: %s", ErrNotFound, sessionID)
+	}
+	return nil
+}
+
+func stopSessionPoller(townRoot, sessionID string) {
+	if townRoot == "" {
+		return
+	}
+	if err := nudge.StopPoller(townRoot, sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not stop nudge poller for %s: %v\n", sessionID, err)
+	}
+}
+
+func stopRunningSession(t TmuxOps, sessionID string, running, graceful bool) error {
+	if !running {
+		return nil
+	}
+	if graceful {
+		_ = t.SendKeysRaw(sessionID, "C-c")
+		WaitForSessionExit(t, sessionID, constants.GracefulShutdownTimeout)
+	}
+	DeactivateAgentLogging(sessionID)
+	if err := t.KillSessionWithProcesses(sessionID); err != nil {
+		return fmt.Errorf("killing session: %w", err)
+	}
+	return nil
+}
+
+func recordStoppedSession(townRoot, sessionID string, stopErr error) error {
+	if townRoot == "" || stopErr != nil {
+		return stopErr
+	}
+	if err := worker.MarkSessionStopped(townRoot, sessionID); err != nil {
+		return fmt.Errorf("recording stopped worker run: %w", err)
 	}
 	return nil
 }
@@ -432,28 +442,25 @@ func MergeRuntimeLivenessEnv(envVars map[string]string, runtimeConfig *config.Ru
 		envVars["GT_AGENT"] = runtimeConfig.ResolvedAgent
 	}
 
-	if _, hasProcessNames := envVars["GT_PROCESS_NAMES"]; !hasProcessNames {
-		agentForLookup := runtimeConfig.ResolvedAgent
-		commandForLookup := runtimeConfig.Command
-		argsForLookup := runtimeConfig.Args
-		if existing, ok := envVars["GT_AGENT"]; ok && existing != "" {
-			agentForLookup = existing
-			// When GT_AGENT was set by AgentOverride (differs from the
-			// workspace-resolved agent), the runtimeConfig.Command/Args
-			// belong to the workspace agent, not the override. Pass empty
-			// command so ResolveProcessNames uses the preset's own command.
-			if existing != runtimeConfig.ResolvedAgent {
-				commandForLookup = ""
-				argsForLookup = nil
-			}
-		}
-		processNames := config.ResolveProcessNames(agentForLookup, commandForLookup, argsForLookup...)
-		if len(processNames) > 0 {
-			envVars["GT_PROCESS_NAMES"] = strings.Join(processNames, ",")
-		}
+	if _, exists := envVars["GT_PROCESS_NAMES"]; !exists {
+		setRuntimeProcessNames(envVars, runtimeConfig)
 	}
-
 	return envVars
+}
+
+func setRuntimeProcessNames(envVars map[string]string, runtimeConfig *config.RuntimeConfig) {
+	agent, command, args := runtimeProcessLookup(envVars["GT_AGENT"], runtimeConfig)
+	processNames := config.ResolveProcessNames(agent, command, args...)
+	if len(processNames) > 0 {
+		envVars["GT_PROCESS_NAMES"] = strings.Join(processNames, ",")
+	}
+}
+
+func runtimeProcessLookup(existingAgent string, runtimeConfig *config.RuntimeConfig) (string, string, []string) {
+	if existingAgent == "" || existingAgent == runtimeConfig.ResolvedAgent {
+		return runtimeConfig.ResolvedAgent, runtimeConfig.Command, runtimeConfig.Args
+	}
+	return existingAgent, "", nil
 }
 
 // ErrSessionAlive is returned by KillExistingSession when checkAlive is true
