@@ -437,17 +437,7 @@ type OrphanedProcess struct {
 // Additionally, processes must be older than minOrphanAge seconds to be considered
 // orphaned. This prevents race conditions with newly spawned processes.
 func FindOrphanedClaudeProcesses() ([]OrphanedProcess, error) {
-	// Get PIDs belonging to valid Gas Town tmux sessions.
-	// These should not be killed even if they show TTY "?" during startup.
-	protectedPIDs := getTmuxSessionPIDs()
-
-	// Also protect ACP sessions (opencode agents running outside tmux)
-	// ACP sessions have their own lifecycle management and should not be killed
-	acpPIDs := getACPSessionPIDs()
-	for pid := range acpPIDs {
-		protectedPIDs[pid] = true
-	}
-
+	protectedPIDs := protectedAgentPIDs()
 	table, err := process.Capture()
 	if err != nil {
 		return nil, fmt.Errorf("listing processes: %w", err)
@@ -455,37 +445,39 @@ func FindOrphanedClaudeProcesses() ([]OrphanedProcess, error) {
 
 	var orphans []OrphanedProcess
 	for _, p := range table.All() {
-		tty := p.TTY
-		if tty != "?" && tty != "??" {
-			continue
+		if candidate, ok := detachedAgentCandidate(p, protectedPIDs); ok {
+			orphans = append(orphans, OrphanedProcess{PID: p.PID, Cmd: p.Name, Age: candidate.age, TownRoot: candidate.townRoot})
 		}
-		if !isAgentOrphanCommName(strings.ToLower(p.Name)) {
-			continue
-		}
-		if protectedPIDs[p.PID] {
-			continue
-		}
-		if isIDEClaudeProcess(p.PID) {
-			continue
-		}
-		age := int(p.Elapsed / time.Second)
-		if age < minOrphanAge {
-			continue
-		}
-		townRoot := resolveTownRoot(p.PID)
-		if townRoot == "" {
-			continue
-		}
-
-		orphans = append(orphans, OrphanedProcess{
-			PID:      p.PID,
-			Cmd:      p.Name,
-			Age:      age,
-			TownRoot: townRoot,
-		})
 	}
-
 	return orphans, nil
+}
+
+type detachedAgent struct {
+	age      int
+	townRoot string
+}
+
+func protectedAgentPIDs() map[int]bool {
+	protected := getTmuxSessionPIDs()
+	for pid := range getACPSessionPIDs() {
+		protected[pid] = true
+	}
+	return protected
+}
+
+func detachedAgentCandidate(proc process.Proc, protected map[int]bool) (detachedAgent, bool) {
+	if proc.TTY != "?" && proc.TTY != "??" {
+		return detachedAgent{}, false
+	}
+	if !isAgentOrphanCommName(strings.ToLower(proc.Name)) || protected[proc.PID] || isIDEClaudeProcess(proc.PID) {
+		return detachedAgent{}, false
+	}
+	age := int(proc.Elapsed / time.Second)
+	if age < minOrphanAge {
+		return detachedAgent{}, false
+	}
+	townRoot := resolveTownRoot(proc.PID)
+	return detachedAgent{age: age, townRoot: townRoot}, townRoot != ""
 }
 
 // CleanupResult describes what happened to an orphaned process.
@@ -509,29 +501,13 @@ type ZombieProcess struct {
 // has died. Processes with a real TTY (e.g. pts/*) are skipped because those
 // are interactive terminal sessions, not zombies.
 func FindZombieClaudeProcesses() ([]ZombieProcess, error) {
-	// Get ALL valid PIDs (panes + their children) from active tmux sessions
-	validPIDs := getTmuxSessionPIDs()
-
-	// Also protect ACP sessions (opencode agents running outside tmux)
-	// ACP sessions have their own lifecycle management and should not be killed
-	acpPIDs := getACPSessionPIDs()
-	for pid := range acpPIDs {
-		validPIDs[pid] = true
-	}
-
-	// SAFETY CHECK: If no valid PIDs found, tmux might be down or no sessions exist.
-	// Returning empty is safer than marking all Claude processes as zombies.
+	validPIDs := protectedAgentPIDs()
 	if len(validPIDs) == 0 {
-		// Check if tmux is even running
 		if err := tmux.BuildCommand("list-sessions").Run(); err != nil {
 			return nil, fmt.Errorf("tmux not available: %w", err)
 		}
-		// tmux is running but no gt-*/hq-* sessions - that's a valid state,
-		// but we can't safely determine zombies without reference sessions.
-		// Return empty rather than marking everything as zombie.
 		return nil, nil
 	}
-
 	table, err := process.Capture()
 	if err != nil {
 		return nil, fmt.Errorf("listing processes: %w", err)
@@ -539,36 +515,10 @@ func FindZombieClaudeProcesses() ([]ZombieProcess, error) {
 
 	var zombies []ZombieProcess
 	for _, p := range table.All() {
-		if !isAgentOrphanCommName(strings.ToLower(p.Name)) {
-			continue
+		if candidate, ok := detachedAgentCandidate(p, validPIDs); ok {
+			zombies = append(zombies, ZombieProcess{PID: p.PID, Cmd: p.Name, Age: candidate.age, TTY: p.TTY, TownRoot: candidate.townRoot})
 		}
-		if validPIDs[p.PID] {
-			continue
-		}
-		if p.TTY != "?" && p.TTY != "??" {
-			continue
-		}
-		if isIDEClaudeProcess(p.PID) {
-			continue
-		}
-		age := int(p.Elapsed / time.Second)
-		if age < minOrphanAge {
-			continue
-		}
-		townRoot := resolveTownRoot(p.PID)
-		if townRoot == "" {
-			continue
-		}
-
-		zombies = append(zombies, ZombieProcess{
-			PID:      p.PID,
-			Cmd:      p.Name,
-			Age:      age,
-			TTY:      p.TTY,
-			TownRoot: townRoot,
-		})
 	}
-
 	return zombies, nil
 }
 
@@ -604,92 +554,14 @@ func CleanupZombieClaudeProcesses() ([]ZombieCleanupResult, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	state := loadZombieState()
-	now := time.Now()
-
-	var results []ZombieCleanupResult
-	var lastErr error
-
-	activeZombies := make(map[int]bool)
-	for _, z := range zombies {
-		activeZombies[z.PID] = true
+	adapter := cleanupAdapter[ZombieProcess, ZombieCleanupResult]{
+		pid:         func(process ZombieProcess) int { return process.PID },
+		placeholder: func(pid int) ZombieProcess { return ZombieProcess{PID: pid, Cmd: "claude"} },
+		result: func(process ZombieProcess, signal string, err error) ZombieCleanupResult {
+			return ZombieCleanupResult{Process: process, Signal: signal, Error: err}
+		},
 	}
-
-	// Check state for PIDs that died or need escalation
-	for pid, s := range state {
-		if !activeZombies[pid] {
-			delete(state, pid)
-			continue
-		}
-
-		elapsed := now.Sub(s.Timestamp).Seconds()
-
-		if s.Signal == "SIGKILL" {
-			results = append(results, ZombieCleanupResult{
-				Process: ZombieProcess{PID: pid, Cmd: "claude"},
-				Signal:  "UNKILLABLE",
-				Error:   fmt.Errorf("process %d survived SIGKILL", pid),
-			})
-			delete(state, pid)
-			delete(activeZombies, pid)
-			continue
-		}
-
-		if s.Signal == "SIGTERM" && elapsed >= float64(sigkillGracePeriod) {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-				if err != syscall.ESRCH {
-					lastErr = fmt.Errorf("SIGKILL PID %d: %w", pid, err)
-				}
-				delete(state, pid)
-				delete(activeZombies, pid)
-				continue
-			}
-			state[pid] = signalState{Signal: "SIGKILL", Timestamp: now}
-			results = append(results, ZombieCleanupResult{
-				Process: ZombieProcess{PID: pid, Cmd: "claude"},
-				Signal:  "SIGKILL",
-			})
-			delete(activeZombies, pid)
-		}
-	}
-
-	// Send SIGTERM to new zombies
-	for _, zombie := range zombies {
-		if !activeZombies[zombie.PID] {
-			continue
-		}
-		if _, exists := state[zombie.PID]; exists {
-			continue
-		}
-
-		// TOCTOU guard: re-verify this process is still a zombie before signaling.
-		// Between FindZombieClaudeProcesses() and now, the process may have
-		// joined a tmux session or been adopted by an active session.
-		if !isProcessStillOrphaned(zombie.PID) {
-			continue
-		}
-
-		if err := syscall.Kill(zombie.PID, syscall.SIGTERM); err != nil {
-			if err != syscall.ESRCH {
-				lastErr = fmt.Errorf("SIGTERM PID %d: %w", zombie.PID, err)
-			}
-			continue
-		}
-		state[zombie.PID] = signalState{Signal: "SIGTERM", Timestamp: now}
-		results = append(results, ZombieCleanupResult{
-			Process: zombie,
-			Signal:  "SIGTERM",
-		})
-	}
-
-	if err := saveZombieState(state); err != nil {
-		if lastErr == nil {
-			lastErr = fmt.Errorf("saving zombie state: %w", err)
-		}
-	}
-
-	return results, lastErr
+	return cleanupProcesses(zombies, loadZombieState(), saveZombieState, "zombie", adapter)
 }
 
 // CleanupOrphanedClaudeProcesses finds and kills orphaned claude/codex processes.
@@ -706,100 +578,109 @@ func CleanupOrphanedClaudeProcesses() ([]CleanupResult, error) {
 		return nil, err
 	}
 
-	// Load previous state
-	state := loadOrphanState()
-	now := time.Now()
-
-	var results []CleanupResult
-	var lastErr error
-
-	// Track which PIDs we're still working on
-	activeOrphans := make(map[int]bool)
-	for _, o := range orphans {
-		activeOrphans[o.PID] = true
+	adapter := cleanupAdapter[OrphanedProcess, CleanupResult]{
+		pid:         func(process OrphanedProcess) int { return process.PID },
+		placeholder: func(pid int) OrphanedProcess { return OrphanedProcess{PID: pid, Cmd: "claude"} },
+		result: func(process OrphanedProcess, signal string, err error) CleanupResult {
+			return CleanupResult{Process: process, Signal: signal, Error: err}
+		},
 	}
+	return cleanupProcesses(orphans, loadOrphanState(), saveOrphanState, "orphan", adapter)
+}
 
-	// First pass: check state for PIDs that died (cleanup) or need escalation
-	for pid, s := range state {
-		if !activeOrphans[pid] {
-			// Process died, remove from state
+type cleanupAdapter[T, R any] struct {
+	pid         func(T) int
+	placeholder func(int) T
+	result      func(T, string, error) R
+}
+
+func cleanupProcesses[T, R any](processes []T, state map[int]signalState, save func(map[int]signalState) error, label string, adapter cleanupAdapter[T, R]) ([]R, error) {
+	now := time.Now()
+	active := activeCleanupPIDs(processes, adapter.pid)
+	results, lastErr := reconcileCleanupState(state, active, now, adapter)
+	newResults, signalErr := signalNewCleanupProcesses(processes, state, active, now, adapter)
+	results = append(results, newResults...)
+	lastErr = latestError(lastErr, signalErr)
+	if err := save(state); err != nil && lastErr == nil {
+		lastErr = fmt.Errorf("saving %s state: %w", label, err)
+	}
+	return results, lastErr
+}
+
+func activeCleanupPIDs[T any](processes []T, pid func(T) int) map[int]bool {
+	active := make(map[int]bool, len(processes))
+	for _, process := range processes {
+		active[pid(process)] = true
+	}
+	return active
+}
+
+func reconcileCleanupState[T, R any](state map[int]signalState, active map[int]bool, now time.Time, adapter cleanupAdapter[T, R]) ([]R, error) {
+	var results []R
+	var lastErr error
+	for pid, previous := range state {
+		if !active[pid] {
 			delete(state, pid)
 			continue
 		}
-
-		// Process still alive - check if we need to escalate
-		elapsed := now.Sub(s.Timestamp).Seconds()
-
-		if s.Signal == "SIGKILL" {
-			// Already sent SIGKILL and it's still alive - unkillable
-			results = append(results, CleanupResult{
-				Process: OrphanedProcess{PID: pid, Cmd: "claude"},
-				Signal:  "UNKILLABLE",
-				Error:   fmt.Errorf("process %d survived SIGKILL", pid),
-			})
-			delete(state, pid) // Remove from tracking, nothing more we can do
-			delete(activeOrphans, pid)
+		if previous.Signal == "SIGKILL" {
+			results = append(results, adapter.result(adapter.placeholder(pid), "UNKILLABLE", fmt.Errorf("process %d survived SIGKILL", pid)))
+			delete(state, pid)
+			delete(active, pid)
 			continue
 		}
-
-		if s.Signal == "SIGTERM" && elapsed >= float64(sigkillGracePeriod) {
-			// Sent SIGTERM but still alive after grace period - escalate to SIGKILL
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-				if err != syscall.ESRCH {
-					lastErr = fmt.Errorf("SIGKILL PID %d: %w", pid, err)
-				}
-				delete(state, pid)
-				delete(activeOrphans, pid)
-				continue
-			}
-			state[pid] = signalState{Signal: "SIGKILL", Timestamp: now}
-			results = append(results, CleanupResult{
-				Process: OrphanedProcess{PID: pid, Cmd: "claude"},
-				Signal:  "SIGKILL",
-			})
-			delete(activeOrphans, pid)
-		}
-		// If SIGTERM was recent, leave it alone - check again next cycle
-	}
-
-	// Second pass: send SIGTERM to new orphans not yet in state
-	for _, orphan := range orphans {
-		if !activeOrphans[orphan.PID] {
-			continue // Already handled above
-		}
-		if _, exists := state[orphan.PID]; exists {
-			continue // Already in state, waiting for grace period
-		}
-
-		// TOCTOU guard: re-verify this process is still orphaned before signaling.
-		// Between FindOrphanedClaudeProcesses() and now, the process may have
-		// joined a tmux session or acquired a TTY.
-		if !isProcessStillOrphaned(orphan.PID) {
+		if previous.Signal != "SIGTERM" || now.Sub(previous.Timestamp) < sigkillGracePeriod {
 			continue
 		}
-
-		// New orphan - send SIGTERM
-		if err := syscall.Kill(orphan.PID, syscall.SIGTERM); err != nil {
-			if err != syscall.ESRCH {
-				lastErr = fmt.Errorf("SIGTERM PID %d: %w", orphan.PID, err)
-			}
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+			lastErr = nonMissingProcessError(lastErr, "SIGKILL", pid, err)
+			delete(state, pid)
+			delete(active, pid)
 			continue
 		}
-		state[orphan.PID] = signalState{Signal: "SIGTERM", Timestamp: now}
-		results = append(results, CleanupResult{
-			Process: orphan,
-			Signal:  "SIGTERM",
-		})
+		state[pid] = signalState{Signal: "SIGKILL", Timestamp: now}
+		results = append(results, adapter.result(adapter.placeholder(pid), "SIGKILL", nil))
+		delete(active, pid)
 	}
-
-	// Save updated state
-	if err := saveOrphanState(state); err != nil {
-		if lastErr == nil {
-			lastErr = fmt.Errorf("saving orphan state: %w", err)
-		}
-	}
-
 	return results, lastErr
+}
+
+func signalNewCleanupProcesses[T, R any](processes []T, state map[int]signalState, active map[int]bool, now time.Time, adapter cleanupAdapter[T, R]) ([]R, error) {
+	var results []R
+	var lastErr error
+	for _, process := range processes {
+		pid := adapter.pid(process)
+		if !active[pid] {
+			continue
+		}
+		if _, exists := state[pid]; exists {
+			continue
+		}
+		if !isProcessStillOrphaned(pid) {
+			continue
+		}
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			lastErr = nonMissingProcessError(lastErr, "SIGTERM", pid, err)
+			continue
+		}
+		state[pid] = signalState{Signal: "SIGTERM", Timestamp: now}
+		results = append(results, adapter.result(process, "SIGTERM", nil))
+	}
+	return results, lastErr
+}
+
+func nonMissingProcessError(previous error, signal string, pid int, err error) error {
+	if err == syscall.ESRCH {
+		return previous
+	}
+	return fmt.Errorf("%s PID %d: %w", signal, pid, err)
+}
+
+func latestError(previous, next error) error {
+	if next != nil {
+		return next
+	}
+	return previous
 }
 
 // isProcessStillOrphaned re-checks whether a process is still orphaned/zombie.
