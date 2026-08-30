@@ -391,7 +391,7 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Mayor remains a separate clone (doesn't need branch visibility).
 	fmt.Printf("  Cloning repository (this may take a moment)...\n")
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-	bareGit, defaultBranch, err := m.setupBareRigRepository(opts, localRepo, bareRepoPath)
+	bareGit, defaultBranch, err := setupBareRigRepository(m.git, opts, localRepo, bareRepoPath)
 	if err != nil {
 		return nil, err
 	}
@@ -400,55 +400,10 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		return nil, fmt.Errorf("updating rig config with default branch: %w", err)
 	}
 
-	// Create mayor as regular clone (separate from bare repo).
-	// Mayor doesn't need to see polecat branches - that's refinery's job.
-	// This also allows mayor to stay on the default branch without conflicting with refinery.
-	// Uses --reference to borrow objects from the bare repo we just created,
-	// avoiding a redundant download from the remote (GH#1059).
-	fmt.Printf("  Creating mayor clone...\n")
-	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
-	if err := os.MkdirAll(filepath.Dir(mayorRigPath), 0755); err != nil {
-		return nil, fmt.Errorf("creating mayor dir: %w", err)
+	mayorRigPath, err := createMayorRigClone(m.git, opts, rigPath, bareRepoPath, defaultBranch)
+	if err != nil {
+		return nil, err
 	}
-	if opts.CloneFilter != "" {
-		if err := git.CloneBranchPartialWithReference(m.git, opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter, bareRepoPath); err != nil {
-			fmt.Printf("  Warning: could not use bare repo as reference with filter: %v\n", err)
-			_ = os.RemoveAll(mayorRigPath)
-			if err := git.CloneBranchPartial(m.git, opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter); err != nil {
-				return nil, fmt.Errorf("cloning for mayor: %w", err)
-			}
-		}
-	} else if err := git.CloneBranchWithReference(m.git, opts.GitURL, mayorRigPath, defaultBranch, bareRepoPath); err != nil {
-		fmt.Printf("  Warning: could not use bare repo as reference: %v\n", err)
-		_ = os.RemoveAll(mayorRigPath)
-		if err := git.CloneBranch(m.git, opts.GitURL, mayorRigPath, defaultBranch); err != nil {
-			return nil, fmt.Errorf("cloning for mayor: %w", err)
-		}
-	}
-
-	// Set up sparse checkout on mayor clone if requested
-	if len(opts.SparseCheckout) > 0 {
-		if err := git.InitSparseCheckout(mayorRigPath, opts.SparseCheckout); err != nil {
-			return nil, fmt.Errorf("initializing sparse checkout for mayor: %w", err)
-		}
-		fmt.Printf("   ✓ Configured sparse checkout: %v\n", opts.SparseCheckout)
-	}
-
-	// No explicit checkout needed - --branch already checked out the default branch
-	mayorGit := git.NewGitWithDir("", mayorRigPath)
-	// Configure push URL on mayor clone (separate clone, doesn't inherit from bare repo)
-	if opts.PushURL != "" {
-		if err := git.ConfigurePushURL(mayorGit, "origin", opts.PushURL); err != nil {
-			return nil, fmt.Errorf("configuring mayor push URL: %w", err)
-		}
-	}
-	// Configure upstream remote on mayor clone (separate clone, doesn't inherit from bare repo)
-	if opts.UpstreamURL != "" {
-		if err := git.AddUpstreamRemote(mayorGit, opts.UpstreamURL); err != nil {
-			return nil, fmt.Errorf("configuring mayor upstream remote: %w", err)
-		}
-	}
-	fmt.Printf("   ✓ Created mayor clone\n")
 
 	inspection, err := InspectTrackedBeadsImport(mayorRigPath)
 	if err != nil {
@@ -739,42 +694,42 @@ type preparedRigAdd struct {
 	userProvidedPrefix bool
 }
 
-func (m *Manager) cloneBareRig(opts AddRigOptions, localRepo, bareRepoPath string) error {
+func cloneBareRig(g *git.Git, opts AddRigOptions, localRepo, bareRepoPath string) error {
 	branch := opts.DefaultBranch
 	if opts.CloneFilter != "" && localRepo != "" {
-		if err := git.CloneBarePartialWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo, branch); err == nil {
+		if err := git.CloneBarePartialWithReferenceAndBranch(g, opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo, branch); err == nil {
 			return nil
 		} else {
 			fmt.Printf("  Warning: could not use local repo reference with filter: %v\n", err)
 		}
 		_ = os.RemoveAll(bareRepoPath)
-		return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
+		return git.CloneBarePartialWithBranch(g, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
 	}
 	if opts.CloneFilter != "" {
-		return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
+		return git.CloneBarePartialWithBranch(g, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
 	}
 	if localRepo == "" {
-		return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
+		return git.CloneBareWithBranch(g, opts.GitURL, bareRepoPath, branch)
 	}
-	if err := git.CloneBareWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, localRepo, branch); err == nil {
+	if err := git.CloneBareWithReferenceAndBranch(g, opts.GitURL, bareRepoPath, localRepo, branch); err == nil {
 		return nil
 	} else {
 		fmt.Printf("  Warning: could not use local repo reference: %v\n", err)
 	}
 	_ = os.RemoveAll(bareRepoPath)
-	return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
+	return git.CloneBareWithBranch(g, opts.GitURL, bareRepoPath, branch)
 }
 
-func (m *Manager) setupBareRigRepository(opts AddRigOptions, localRepo, bareRepoPath string) (*git.Git, string, error) {
-	if err := m.cloneBareRig(opts, localRepo, bareRepoPath); err != nil {
-		if hasRefs, refsErr := git.RemoteHasRefs(m.git, opts.GitURL); refsErr == nil && !hasRefs {
+func setupBareRigRepository(g *git.Git, opts AddRigOptions, localRepo, bareRepoPath string) (*git.Git, string, error) {
+	if err := cloneBareRig(g, opts, localRepo, bareRepoPath); err != nil {
+		if hasRefs, refsErr := git.RemoteHasRefs(g, opts.GitURL); refsErr == nil && !hasRefs {
 			return nil, "", emptyRigRepositoryError(opts.GitURL)
 		}
 		return nil, "", wrapCloneError(err, opts.GitURL)
 	}
 	printBareCloneSuccess(opts.CloneFilter)
 	bareGit := git.NewGitWithDir(bareRepoPath, "")
-	if err := m.validateBareRigRepository(bareGit, opts.GitURL); err != nil {
+	if err := validateBareRigRepository(g, bareGit, opts.GitURL); err != nil {
 		return nil, "", err
 	}
 	if err := configureRigRemotes(bareGit, opts); err != nil {
@@ -799,7 +754,7 @@ func printBareCloneSuccess(filter string) {
 	fmt.Printf("   ✓ Created shared bare repo (partial: --filter=%s)\n", filter)
 }
 
-func (m *Manager) validateBareRigRepository(bareGit *git.Git, gitURL string) error {
+func validateBareRigRepository(g, bareGit *git.Git, gitURL string) error {
 	empty, err := git.IsEmpty(bareGit)
 	if err != nil {
 		return fmt.Errorf("checking if repository is empty: %w", err)
@@ -807,7 +762,7 @@ func (m *Manager) validateBareRigRepository(bareGit *git.Git, gitURL string) err
 	if !empty {
 		return nil
 	}
-	hasRefs, err := git.RemoteHasRefs(m.git, gitURL)
+	hasRefs, err := git.RemoteHasRefs(g, gitURL)
 	if err != nil {
 		return fmt.Errorf("checking if repository is empty: %w", err)
 	}
@@ -845,6 +800,67 @@ func resolveRigDefaultBranch(bareGit *git.Git, requested string) (string, error)
 		return "", fmt.Errorf("branch %q does not exist on remote or could not be fetched: %w", requested, err)
 	}
 	return requested, nil
+}
+
+func createMayorRigClone(g *git.Git, opts AddRigOptions, rigPath, bareRepoPath, defaultBranch string) (string, error) {
+	fmt.Printf("  Creating mayor clone...\n")
+	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
+	if err := os.MkdirAll(filepath.Dir(mayorRigPath), 0755); err != nil {
+		return "", fmt.Errorf("creating mayor dir: %w", err)
+	}
+	if err := cloneMayorRig(g, opts, mayorRigPath, bareRepoPath, defaultBranch); err != nil {
+		return "", err
+	}
+	if len(opts.SparseCheckout) > 0 {
+		if err := git.InitSparseCheckout(mayorRigPath, opts.SparseCheckout); err != nil {
+			return "", fmt.Errorf("initializing sparse checkout for mayor: %w", err)
+		}
+		fmt.Printf("   ✓ Configured sparse checkout: %v\n", opts.SparseCheckout)
+	}
+	if err := configureMayorRemotes(git.NewGitWithDir("", mayorRigPath), opts); err != nil {
+		return "", err
+	}
+	fmt.Printf("   ✓ Created mayor clone\n")
+	return mayorRigPath, nil
+}
+
+func cloneMayorRig(g *git.Git, opts AddRigOptions, mayorRigPath, bareRepoPath, defaultBranch string) error {
+	if opts.CloneFilter != "" {
+		if err := git.CloneBranchPartialWithReference(g, opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter, bareRepoPath); err == nil {
+			return nil
+		} else {
+			fmt.Printf("  Warning: could not use bare repo as reference with filter: %v\n", err)
+		}
+		_ = os.RemoveAll(mayorRigPath)
+		if err := git.CloneBranchPartial(g, opts.GitURL, mayorRigPath, defaultBranch, opts.CloneFilter); err != nil {
+			return fmt.Errorf("cloning for mayor: %w", err)
+		}
+		return nil
+	}
+	if err := git.CloneBranchWithReference(g, opts.GitURL, mayorRigPath, defaultBranch, bareRepoPath); err == nil {
+		return nil
+	} else {
+		fmt.Printf("  Warning: could not use bare repo as reference: %v\n", err)
+	}
+	_ = os.RemoveAll(mayorRigPath)
+	if err := git.CloneBranch(g, opts.GitURL, mayorRigPath, defaultBranch); err != nil {
+		return fmt.Errorf("cloning for mayor: %w", err)
+	}
+	return nil
+}
+
+func configureMayorRemotes(mayorGit *git.Git, opts AddRigOptions) error {
+	if opts.PushURL != "" {
+		if err := git.ConfigurePushURL(mayorGit, "origin", opts.PushURL); err != nil {
+			return fmt.Errorf("configuring mayor push URL: %w", err)
+		}
+	}
+	if opts.UpstreamURL != "" {
+		if err := git.AddUpstreamRemote(mayorGit, opts.UpstreamURL); err != nil {
+			return fmt.Errorf("configuring mayor upstream remote: %w", err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) prepareAddRig(opts AddRigOptions) (preparedRigAdd, error) {
