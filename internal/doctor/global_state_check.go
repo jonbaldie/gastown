@@ -28,29 +28,18 @@ func NewGlobalStateCheck() *GlobalStateCheck {
 }
 
 func (c *GlobalStateCheck) Run(_ *CheckContext) *CheckResult {
-	result := &CheckResult{
-		Name:   c.Name(),
-		Status: StatusOK,
-	}
-
-	var details []string
-	var warnings []string
-	var errors []string
-
 	s, err := state.Load()
 	if err != nil {
 		if os.IsNotExist(err) {
-			result.Message = "Global state not initialized"
-			result.FixHint = "Run: gt enable"
-			result.Status = StatusWarning
-			return result
+			return &CheckResult{Name: c.Name(), Status: StatusWarning, Message: "Global state not initialized", FixHint: "Run: gt enable"}
 		}
-		result.Message = "Cannot read global state"
-		result.Details = []string{err.Error()}
-		result.Status = StatusError
-		return result
+		return &CheckResult{Name: c.Name(), Status: StatusError, Message: "Cannot read global state", Details: []string{err.Error()}}
 	}
+	details, warnings, errors := inspectGlobalState(s)
+	return globalStateResult(c.Name(), s, details, warnings, errors)
+}
 
+func inspectGlobalState(s *state.State) (details, warnings, errors []string) {
 	if s.Enabled {
 		details = append(details, "Gas Town: enabled")
 	} else {
@@ -81,9 +70,11 @@ func (c *GlobalStateCheck) Run(_ *CheckContext) *CheckResult {
 			errors = append(errors, "Hook script missing but shell integration installed")
 		}
 	}
+	return details, warnings, errors
+}
 
-	result.Details = details
-
+func globalStateResult(name string, s *state.State, details, warnings, errors []string) *CheckResult {
+	result := &CheckResult{Name: name, Status: StatusOK, Details: details}
 	if len(errors) > 0 {
 		result.Status = StatusError
 		result.Message = errors[0]
@@ -99,7 +90,6 @@ func (c *GlobalStateCheck) Run(_ *CheckContext) *CheckResult {
 	} else {
 		result.Message = "Global state healthy"
 	}
-
 	return result
 }
 
@@ -133,23 +123,37 @@ func checkSourceChain(filePath string, markers []string, visited map[string]bool
 	}
 	content := string(data)
 
-	for _, marker := range markers {
-		if strings.Contains(content, marker) {
-			return true
-		}
+	if containsAnyMarker(content, markers) {
+		return true
 	}
 
 	homeDir, _ := os.UserHomeDir()
 	vars := extractShellVars(content, homeDir)
 
 	for _, line := range strings.Split(content, "\n") {
-		for _, sourced := range resolveSourcePaths(line, homeDir, vars) {
-			if checkSourceChain(sourced, markers, visited, depth+1) {
-				return true
-			}
+		if sourceChainLineHasMarker(line, homeDir, vars, markers, visited, depth) {
+			return true
 		}
 	}
 
+	return false
+}
+
+func containsAnyMarker(content string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceChainLineHasMarker(line, homeDir string, vars map[string]string, markers []string, visited map[string]bool, depth int) bool {
+	for _, sourced := range resolveSourcePaths(line, homeDir, vars) {
+		if checkSourceChain(sourced, markers, visited, depth+1) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -196,15 +200,18 @@ func isShellVarName(s string) bool {
 		return false
 	}
 	for i, c := range s {
-		if c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
-			continue
+		if !isShellVarChar(i, c) {
+			return false
 		}
-		if i > 0 && c >= '0' && c <= '9' {
-			continue
-		}
-		return false
 	}
 	return true
+}
+
+func isShellVarChar(index int, c rune) bool {
+	if c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+		return true
+	}
+	return index > 0 && c >= '0' && c <= '9'
 }
 
 func unquoteShell(s string) string {
@@ -245,43 +252,44 @@ func expandShellVars(s string, vars map[string]string, homeDir string) string {
 // expanding variables and falling back to glob patterns for unresolved
 // variables.
 func resolveSourcePaths(line, homeDir string, vars map[string]string) []string {
-	line = strings.TrimSpace(line)
-	if strings.HasPrefix(line, "#") {
+	raw, ok := sourceDirectivePath(line)
+	if !ok {
 		return nil
 	}
+	resolved := expandShellVars(raw, vars, homeDir)
+	if !strings.Contains(resolved, "$") {
+		return []string{resolved}
+	}
+	return globUnresolvedSource(resolved)
+}
 
-	// Strip conditional prefixes: [[ ... ]] && source ..., [[ ! ... ]] || source ...
+func sourceDirectivePath(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "#") {
+		return "", false
+	}
 	for _, sep := range []string{"&& source ", "|| source ", "&& . ", "|| . "} {
 		if idx := strings.Index(line, sep); idx != -1 {
 			line = strings.TrimSpace(line[idx+3:])
 			break
 		}
 	}
-
-	var raw string
 	switch {
 	case strings.HasPrefix(line, "source "):
-		raw = strings.TrimSpace(line[7:])
+		line = strings.TrimSpace(line[7:])
 	case strings.HasPrefix(line, ". "):
-		raw = strings.TrimSpace(line[2:])
+		line = strings.TrimSpace(line[2:])
 	default:
-		return nil
+		return "", false
 	}
-
-	raw = unquoteShell(raw)
-
-	// Strip trailing inline comment
-	if idx := strings.Index(raw, " #"); idx != -1 {
-		raw = strings.TrimSpace(raw[:idx])
+	line = unquoteShell(line)
+	if idx := strings.Index(line, " #"); idx != -1 {
+		line = strings.TrimSpace(line[:idx])
 	}
+	return line, true
+}
 
-	resolved := expandShellVars(raw, vars, homeDir)
-
-	if !strings.Contains(resolved, "$") {
-		return []string{resolved}
-	}
-
-	// Unresolved variables remain — try glob by replacing $VAR with *
+func globUnresolvedSource(resolved string) []string {
 	globbed := replaceUnresolvedVars(resolved)
 	if strings.ContainsAny(globbed, "?[") {
 		return nil
@@ -297,30 +305,49 @@ func resolveSourcePaths(line, homeDir string, vars map[string]string) []string {
 // so the path can be used as a glob pattern.
 func replaceUnresolvedVars(s string) string {
 	var b strings.Builder
-	i := 0
 	sLength := len(s)
-	for i < sLength {
-		if s[i] == '$' {
-			if i+1 < len(s) && s[i+1] == '{' {
-				end := strings.Index(s[i:], "}")
-				if end != -1 {
-					b.WriteByte('*')
-					i += end + 1
-					continue
-				}
-			}
-			j := i + 1
-			for j < sLength && (s[j] == '_' || (s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= 'a' && s[j] <= 'z') || (j > i+1 && s[j] >= '0' && s[j] <= '9')) {
-				j++
-			}
-			if j > i+1 {
-				b.WriteByte('*')
-				i = j
-				continue
-			}
+	for i := 0; i < sLength; {
+		if s[i] != '$' {
+			b.WriteByte(s[i])
+			i++
+			continue
 		}
-		b.WriteByte(s[i])
+		if length := unresolvedVariableLength(s[i:]); length > 0 {
+			b.WriteByte('*')
+			i += length
+			continue
+		}
+		b.WriteByte('$')
 		i++
 	}
 	return b.String()
+}
+
+func unresolvedVariableLength(s string) int {
+	if len(s) < 2 {
+		return 0
+	}
+	if s[1] == '{' {
+		if end := strings.IndexByte(s, '}'); end >= 2 {
+			return end + 1
+		}
+		return 0
+	}
+	if !isShellVarStart(s[1]) {
+		return 0
+	}
+	j := 2
+	sLength := len(s)
+	for j < sLength && isShellVarPart(s[j]) {
+		j++
+	}
+	return j
+}
+
+func isShellVarStart(c byte) bool {
+	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func isShellVarPart(c byte) bool {
+	return isShellVarStart(c) || (c >= '0' && c <= '9')
 }
