@@ -391,104 +391,11 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Mayor remains a separate clone (doesn't need branch visibility).
 	fmt.Printf("  Cloning repository (this may take a moment)...\n")
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-	// cloneBareWith selects the right CloneBare variant based on filter/reference/branch.
-	// When branch is non-empty, git clone --branch is passed so HEAD and the initial
-	// single-branch fetch both target the user-specified branch instead of the remote HEAD.
-	cloneBareWith := func(branch string) error {
-		if opts.CloneFilter != "" && localRepo != "" {
-			if err := git.CloneBarePartialWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo, branch); err != nil {
-				fmt.Printf("  Warning: could not use local repo reference with filter: %v\n", err)
-				_ = os.RemoveAll(bareRepoPath)
-				return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
-			}
-			return nil
-		} else if opts.CloneFilter != "" {
-			return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
-		} else if localRepo != "" {
-			if err := git.CloneBareWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, localRepo, branch); err != nil {
-				fmt.Printf("  Warning: could not use local repo reference: %v\n", err)
-				_ = os.RemoveAll(bareRepoPath)
-				return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
-			}
-			return nil
-		}
-		return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
+	bareGit, defaultBranch, err := m.setupBareRigRepository(opts, localRepo, bareRepoPath)
+	if err != nil {
+		return nil, err
 	}
-
-	emptyRepoError := func() error {
-		return fmt.Errorf("repository %s is empty (no commits). Push at least one commit before adding it as a rig", opts.GitURL)
-	}
-
-	if err := cloneBareWith(opts.DefaultBranch); err != nil {
-		if hasRefs, refsErr := git.RemoteHasRefs(m.git, opts.GitURL); refsErr == nil && !hasRefs {
-			return nil, emptyRepoError()
-		}
-		return nil, wrapCloneError(err, opts.GitURL)
-	}
-	if opts.CloneFilter != "" {
-		fmt.Printf("   ✓ Created shared bare repo (partial: --filter=%s)\n", opts.CloneFilter)
-	} else {
-		fmt.Printf("   ✓ Created shared bare repo\n")
-	}
-	bareGit := git.NewGitWithDir(bareRepoPath, "")
-
-	// Detect empty repos (no commits) early with a clear diagnostic.
-	// An empty repo has no refs, so RemoteDefaultBranch/DefaultBranch would
-	// return "main" as a fallback, but checkout would fail with an opaque error.
-	if empty, err := git.IsEmpty(bareGit); err != nil {
-		return nil, fmt.Errorf("checking if repository is empty: %w", err)
-	} else if empty {
-		hasRefs, refsErr := git.RemoteHasRefs(m.git, opts.GitURL)
-		if refsErr != nil {
-			return nil, fmt.Errorf("checking if repository is empty: %w", refsErr)
-		}
-		if !hasRefs {
-			return nil, emptyRepoError()
-		}
-		return nil, fmt.Errorf("repository %s has refs, but no default branch could be cloned. Ensure the remote HEAD points to a branch, or pass --branch <branch>", opts.GitURL)
-	}
-
-	// Configure push URL if provided (for read-only upstream repos)
-	// This sets origin's push URL to the fork while keeping fetch URL as upstream
-	if opts.PushURL != "" {
-		if err := git.ConfigurePushURL(bareGit, "origin", opts.PushURL); err != nil {
-			return nil, fmt.Errorf("configuring push URL: %w", err)
-		}
-		fmt.Printf("   ✓ Configured push URL (fork: %s)\n", util.RedactURL(opts.PushURL)) // fmt.Printf matches AddRig's established success output pattern
-	}
-
-	// Configure upstream remote if provided (for fork workflows)
-	if opts.UpstreamURL != "" {
-		if err := git.AddUpstreamRemote(bareGit, opts.UpstreamURL); err != nil {
-			return nil, fmt.Errorf("configuring upstream remote: %w", err)
-		}
-		fmt.Printf("   ✓ Configured upstream remote: %s\n", util.RedactURL(opts.UpstreamURL))
-	}
-
-	// Determine default branch: use provided value or auto-detect from remote
-	var defaultBranch string
-	if opts.DefaultBranch != "" {
-		defaultBranch = opts.DefaultBranch
-	} else {
-		// Bare repos don't have refs/remotes/origin/* tracking branches,
-		// so detect the default branch from HEAD (which git sets to the
-		// remote's default branch during clone --bare).
-		defaultBranch = git.DefaultBranch(bareGit)
-	}
-	// When user specified --default-branch, the shallow single-branch clone may not
-	// have that branch (it only clones the remote HEAD). Fetch it explicitly.
-	if opts.DefaultBranch != "" {
-		ref := fmt.Sprintf("origin/%s", defaultBranch)
-		if exists, _ := git.RefExists(bareGit, ref); !exists {
-			// Branch not in shallow clone — fetch just that branch
-			if err := git.FetchBranchShallow(bareGit, "origin", defaultBranch); err != nil {
-				return nil, fmt.Errorf("branch %q does not exist on remote or could not be fetched: %w", defaultBranch, err)
-			}
-		}
-	}
-
 	rigConfig.DefaultBranch = defaultBranch
-	// Re-save config with default branch
 	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
 		return nil, fmt.Errorf("updating rig config with default branch: %w", err)
 	}
@@ -830,6 +737,114 @@ type preparedRigAdd struct {
 	localRepo          string
 	warning            string
 	userProvidedPrefix bool
+}
+
+func (m *Manager) cloneBareRig(opts AddRigOptions, localRepo, bareRepoPath string) error {
+	branch := opts.DefaultBranch
+	if opts.CloneFilter != "" && localRepo != "" {
+		if err := git.CloneBarePartialWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo, branch); err == nil {
+			return nil
+		} else {
+			fmt.Printf("  Warning: could not use local repo reference with filter: %v\n", err)
+		}
+		_ = os.RemoveAll(bareRepoPath)
+		return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
+	}
+	if opts.CloneFilter != "" {
+		return git.CloneBarePartialWithBranch(m.git, opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
+	}
+	if localRepo == "" {
+		return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
+	}
+	if err := git.CloneBareWithReferenceAndBranch(m.git, opts.GitURL, bareRepoPath, localRepo, branch); err == nil {
+		return nil
+	} else {
+		fmt.Printf("  Warning: could not use local repo reference: %v\n", err)
+	}
+	_ = os.RemoveAll(bareRepoPath)
+	return git.CloneBareWithBranch(m.git, opts.GitURL, bareRepoPath, branch)
+}
+
+func (m *Manager) setupBareRigRepository(opts AddRigOptions, localRepo, bareRepoPath string) (*git.Git, string, error) {
+	if err := m.cloneBareRig(opts, localRepo, bareRepoPath); err != nil {
+		if hasRefs, refsErr := git.RemoteHasRefs(m.git, opts.GitURL); refsErr == nil && !hasRefs {
+			return nil, "", emptyRigRepositoryError(opts.GitURL)
+		}
+		return nil, "", wrapCloneError(err, opts.GitURL)
+	}
+	printBareCloneSuccess(opts.CloneFilter)
+	bareGit := git.NewGitWithDir(bareRepoPath, "")
+	if err := m.validateBareRigRepository(bareGit, opts.GitURL); err != nil {
+		return nil, "", err
+	}
+	if err := configureRigRemotes(bareGit, opts); err != nil {
+		return nil, "", err
+	}
+	branch, err := resolveRigDefaultBranch(bareGit, opts.DefaultBranch)
+	if err != nil {
+		return nil, "", err
+	}
+	return bareGit, branch, nil
+}
+
+func emptyRigRepositoryError(gitURL string) error {
+	return fmt.Errorf("repository %s is empty (no commits). Push at least one commit before adding it as a rig", gitURL)
+}
+
+func printBareCloneSuccess(filter string) {
+	if filter == "" {
+		fmt.Printf("   ✓ Created shared bare repo\n")
+		return
+	}
+	fmt.Printf("   ✓ Created shared bare repo (partial: --filter=%s)\n", filter)
+}
+
+func (m *Manager) validateBareRigRepository(bareGit *git.Git, gitURL string) error {
+	empty, err := git.IsEmpty(bareGit)
+	if err != nil {
+		return fmt.Errorf("checking if repository is empty: %w", err)
+	}
+	if !empty {
+		return nil
+	}
+	hasRefs, err := git.RemoteHasRefs(m.git, gitURL)
+	if err != nil {
+		return fmt.Errorf("checking if repository is empty: %w", err)
+	}
+	if !hasRefs {
+		return emptyRigRepositoryError(gitURL)
+	}
+	return fmt.Errorf("repository %s has refs, but no default branch could be cloned. Ensure the remote HEAD points to a branch, or pass --branch <branch>", gitURL)
+}
+
+func configureRigRemotes(bareGit *git.Git, opts AddRigOptions) error {
+	if opts.PushURL != "" {
+		if err := git.ConfigurePushURL(bareGit, "origin", opts.PushURL); err != nil {
+			return fmt.Errorf("configuring push URL: %w", err)
+		}
+		fmt.Printf("   ✓ Configured push URL (fork: %s)\n", util.RedactURL(opts.PushURL))
+	}
+	if opts.UpstreamURL != "" {
+		if err := git.AddUpstreamRemote(bareGit, opts.UpstreamURL); err != nil {
+			return fmt.Errorf("configuring upstream remote: %w", err)
+		}
+		fmt.Printf("   ✓ Configured upstream remote: %s\n", util.RedactURL(opts.UpstreamURL))
+	}
+	return nil
+}
+
+func resolveRigDefaultBranch(bareGit *git.Git, requested string) (string, error) {
+	if requested == "" {
+		return git.DefaultBranch(bareGit), nil
+	}
+	ref := fmt.Sprintf("origin/%s", requested)
+	if exists, _ := git.RefExists(bareGit, ref); exists {
+		return requested, nil
+	}
+	if err := git.FetchBranchShallow(bareGit, "origin", requested); err != nil {
+		return "", fmt.Errorf("branch %q does not exist on remote or could not be fetched: %w", requested, err)
+	}
+	return requested, nil
 }
 
 func (m *Manager) prepareAddRig(opts AddRigOptions) (preparedRigAdd, error) {
