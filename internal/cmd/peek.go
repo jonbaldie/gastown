@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jonbaldie/gastown/internal/polecat"
 	"github.com/jonbaldie/gastown/internal/session"
 	"github.com/jonbaldie/gastown/internal/tmux"
 	"github.com/jonbaldie/gastown/internal/workspace"
@@ -123,7 +124,7 @@ func runPeek(cmd *cobra.Command, args []string) error {
 		return peekAddressError(address, err)
 	}
 
-	output, err := mgr.CaptureSession(sessionName, lines)
+	output, err := polecat.CaptureSession(mgr, sessionName, lines)
 	if err != nil {
 		return fmt.Errorf("capturing output: %w", err)
 	}

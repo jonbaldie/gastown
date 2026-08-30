@@ -545,7 +545,7 @@ func runSessionInject(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := polecatMgr.Inject(polecatName, message); err != nil {
+	if err := polecat.Inject(polecatMgr, polecatName, message); err != nil {
 		return fmt.Errorf("injecting message: %w", err)
 	}
 
