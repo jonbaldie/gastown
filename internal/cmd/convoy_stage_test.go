@@ -818,6 +818,76 @@ func TestUpdateJSONGatedWarnings(t *testing.T) {
 	}
 }
 
+func TestNormalizeStageResult(t *testing.T) {
+	result := &StageResult{
+		Errors: []FindingJSON{{Category: "cycle"}},
+	}
+	normalizeStageResult(result)
+
+	if result.Errors == nil || result.Warnings == nil || result.Waves == nil || result.Tree == nil {
+		t.Fatalf("normalizeStageResult() left a nil collection: %#v", result)
+	}
+	if len(result.Errors) != 1 || result.Errors[0].BeadIDs == nil {
+		t.Fatalf("normalized errors = %#v, want preserved error with non-nil bead IDs", result.Errors)
+	}
+	if len(result.Warnings) != 0 || len(result.Waves) != 0 || len(result.Tree) != 0 {
+		t.Fatalf("normalized empty collections changed contents: %#v", result)
+	}
+}
+
+func TestNormalizeStageResultPreservesCollections(t *testing.T) {
+	warnings := []FindingJSON{{Category: "gated", BeadIDs: []string{"task-1"}}}
+	waves := []WaveJSON{{Number: 1}}
+	tree := []TreeNodeJSON{{ID: "task-1"}}
+	result := &StageResult{Warnings: warnings, Waves: waves, Tree: tree}
+
+	normalizeStageResult(result)
+
+	if !reflect.DeepEqual(result.Warnings, warnings) || !reflect.DeepEqual(result.Waves, waves) || !reflect.DeepEqual(result.Tree, tree) {
+		t.Fatalf("normalizeStageResult() changed non-nil collections: %#v", result)
+	}
+}
+
+func TestGatedWaveTasksSortsTasksAndOpenBlockers(t *testing.T) {
+	dag := &ConvoyDAG{Nodes: map[string]*ConvoyDAGNode{
+		"task-b":    {ID: "task-b", BlockedBy: []string{"closed", "open-b", "open-a"}},
+		"task-a":    {ID: "task-a", BlockedBy: []string{"tombstone"}},
+		"closed":    {ID: "closed", Status: "closed"},
+		"tombstone": {ID: "tombstone", Status: "tombstone"},
+		"open-a":    {ID: "open-a", Status: "open"},
+		"open-b":    {ID: "open-b", Status: "open"},
+	}}
+	slingable := map[string]*ConvoyDAGNode{
+		"task-a": dag.Nodes["task-a"],
+		"task-b": dag.Nodes["task-b"],
+	}
+
+	got := gatedWaveTasks(dag, slingable, map[string]int{"task-b": 1, "task-a": 1})
+	want := []GatedTask{
+		{TaskID: "task-a", GatedBy: nil},
+		{TaskID: "task-b", GatedBy: []string{"open-a", "open-b"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gatedWaveTasks() = %#v, want %#v", got, want)
+	}
+}
+
+func TestProcessWaveReturnsProcessedCount(t *testing.T) {
+	slingable := map[string]*ConvoyDAGNode{
+		"task-a": {ID: "task-a", Blocks: []string{"task-c"}},
+		"task-b": {ID: "task-b", Blocks: []string{"task-c"}},
+		"task-c": {ID: "task-c"},
+	}
+	inDegree := map[string]int{"task-a": 0, "task-b": 0, "task-c": 2}
+
+	if got := processWave(slingable, inDegree, []string{"task-a", "task-b"}); got != 2 {
+		t.Fatalf("processWave() = %d, want 2", got)
+	}
+	if !reflect.DeepEqual(inDegree, map[string]int{"task-c": 0}) {
+		t.Fatalf("remaining in-degree = %#v, want task-c ready", inDegree)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // buildConvoyDAG tests (U-15 through U-19)
 // ---------------------------------------------------------------------------
