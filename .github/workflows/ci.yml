@@ -545,6 +545,7 @@ jobs:
           mapfile -t files < "$MUTAGO_FILE_LIST"
           args=(mutago \
             --coverage \
+            --per-test \
             --workers 2 \
             --test-flags=-short \
             --git-diff-lines \
