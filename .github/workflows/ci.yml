@@ -355,12 +355,13 @@ jobs:
 
           shards = []
 
-          def add_shard(filenames, match="", disable=()):
+          def add_shard(filenames, match="", disable=(), per_test=True):
               shards.append(
                   {
                       "files": filenames,
                       "match": match,
                       "disable": sorted(disable),
+                      "per_test": per_test,
                   }
               )
 
@@ -401,6 +402,7 @@ jobs:
                               for mutator in all_mutators
                               if mutator not in current_mutators
                           ],
+                          per_test=current_mutations > 25,
                       )
                       current_mutators = []
                       current_mutations = 0
@@ -414,6 +416,7 @@ jobs:
                           for mutator in all_mutators
                           if mutator not in current_mutators
                       ],
+                      per_test=current_mutations > 25,
                   )
 
               # The remaining mutators are function-scoped. Keep duplicate
@@ -497,6 +500,7 @@ jobs:
       MUTAGO_FILES_JSON: ${{ toJSON(matrix.files) }}
       MUTAGO_MATCH: ${{ matrix.match }}
       MUTAGO_DISABLE_JSON: ${{ toJSON(matrix.disable) }}
+      MUTAGO_PER_TEST: ${{ matrix.per_test }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
       # mutago computes the PR's merge base against the target branch.
@@ -545,8 +549,7 @@ jobs:
           mapfile -t files < "$MUTAGO_FILE_LIST"
           args=(mutago \
             --coverage \
-            --per-test \
-            --workers 4 \
+            --workers 2 \
             --test-flags=-short \
             --git-diff-lines \
             --git-diff-base "origin/${BASE_REF}" \
@@ -557,6 +560,9 @@ jobs:
             --logger-summary-json \
             --quiet \
             --no-diffs)
+          if [ "$MUTAGO_PER_TEST" = "true" ]; then
+            args+=(--per-test)
+          fi
           mapfile -t disabled < <(
             python3 -c 'import json, os; print("\n".join(json.loads(os.environ["MUTAGO_DISABLE_JSON"])))'
           )
