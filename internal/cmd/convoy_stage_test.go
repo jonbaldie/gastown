@@ -696,6 +696,38 @@ func TestConvoyStageInput_MultipleTasksOK(t *testing.T) {
 	if input.Kind != StageInputTasks {
 		t.Errorf("expected StageInputTasks, got %v", input.Kind)
 	}
+	if !reflect.DeepEqual(input.IDs, []string{"gt-a", "gt-b", "gt-c"}) || !reflect.DeepEqual(input.RawArgs, input.IDs) {
+		t.Fatalf("resolved IDs = %v, raw args = %v; want sorted matching IDs", input.IDs, input.RawArgs)
+	}
+}
+
+func TestConvoyStageOptionsFromCommand(t *testing.T) {
+	if got := convoyStageOptionsFromCommand(nil); got != (convoyStageOptions{}) {
+		t.Fatalf("nil command options = %#v, want zero value", got)
+	}
+
+	cmd := &cobra.Command{Use: "stage"}
+	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().Bool("launch", false, "")
+	cmd.Flags().String("title", "", "")
+	cmd.Flags().Bool("no-validate", false, "")
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("launch", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("title", "Release convoy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("no-validate", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := convoyStageOptions{json: true, launch: true, title: "Release convoy", noValidate: true}
+	if got := convoyStageOptionsFromCommand(cmd); got != want {
+		t.Fatalf("command options = %#v, want %#v", got, want)
+	}
 }
 
 func TestStageRestageState(t *testing.T) {
@@ -885,6 +917,24 @@ func TestProcessWaveReturnsProcessedCount(t *testing.T) {
 	}
 	if !reflect.DeepEqual(inDegree, map[string]int{"task-c": 0}) {
 		t.Fatalf("remaining in-degree = %#v, want task-c ready", inDegree)
+	}
+}
+
+func TestCrossRigFindingIncludesRoutingDetails(t *testing.T) {
+	node := &ConvoyDAGNode{ID: "task-1", Type: "task", Rig: "secondary"}
+	finding, ok := crossRigFinding(node, "primary")
+
+	if !ok {
+		t.Fatal("crossRigFinding() did not report a cross-rig task")
+	}
+	if finding.Severity != "warning" || finding.Category != "cross-rig" || !reflect.DeepEqual(finding.BeadIDs, []string{"task-1"}) {
+		t.Fatalf("crossRigFinding() metadata = %#v", finding)
+	}
+	if !strings.Contains(finding.Message, "secondary") || !strings.Contains(finding.Message, "primary") {
+		t.Fatalf("crossRigFinding() message = %q, want both rig names", finding.Message)
+	}
+	if !strings.Contains(finding.SuggestedFix, "task-1") || !strings.Contains(finding.SuggestedFix, "primary") {
+		t.Fatalf("crossRigFinding() suggested fix = %q, want task and primary rig", finding.SuggestedFix)
 	}
 }
 
