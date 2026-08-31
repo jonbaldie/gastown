@@ -282,7 +282,6 @@ jobs:
       - name: Run mutation tests
         run: |
           mapfile -t files < <(jq -r '.[]' <<< "$MUTAGO_FILES")
-          set +e
           mutago \
             --config .github/mutago.yml \
             --coverage \
@@ -293,23 +292,18 @@ jobs:
             --git-diff-base "origin/${BASE_REF}" \
             --timeout-coefficient 3 \
             --ignore-msi-with-no-mutations \
-            --min-covered-msi 80 \
             --logger-github \
             --logger-summary-json \
             --quiet \
             --no-diffs \
             "${files[@]}"
-          mutago_status=$?
-          set -e
 
-          if [ "$mutago_status" -eq 4 ]; then
-            covered_mutants="$(jq '.totalMutantsCount - .notCoveredCount' mutago-summary.json)"
-            if [ "$covered_mutants" -eq 0 ]; then
-              echo 'No covered mutants in this batch; covered-MSI is not applicable.'
-              exit 0
-            fi
-          fi
-          exit "$mutago_status"
+      - name: Upload mutation summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutago-summary-${{ strategy.job-index }}
+          path: mutago-summary.json
+          retention-days: 1
 
   mutago:
     name: Mutation Tests
@@ -317,6 +311,13 @@ jobs:
     needs: [mutago-changes, mutago-package]
     runs-on: ubuntu-latest
     steps:
+      - name: Download mutation summaries
+        if: needs.mutago-changes.outputs.has_production_go == 'true' && needs.mutago-package.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: mutago-summary-*
+          path: mutago-summaries
+
       - name: Verify mutation packages
         env:
           CHANGES_RESULT: ${{ needs.mutago-changes.result }}
@@ -333,6 +334,28 @@ jobs:
           fi
           if [ "$PACKAGE_RESULT" != 'success' ]; then
             echo "Mutation package result: $PACKAGE_RESULT" >&2
+            exit 1
+          fi
+
+          summaries="$(find mutago-summaries -name mutago-summary.json -type f | wc -l | tr -d ' ')"
+          if [ "$summaries" -eq 0 ]; then
+            echo 'No mutation summaries found.' >&2
+            exit 1
+          fi
+
+          read -r killed covered < <(jq -sr '
+            [map(.killedCount) | add // 0, map(.totalMutantsCount - .notCoveredCount) | add // 0] |
+            @tsv
+          ' mutago-summaries/*/mutago-summary.json)
+          if [ "$covered" -eq 0 ]; then
+            echo 'No covered mutants in the PR diff; covered-MSI is not applicable.'
+            exit 0
+          fi
+
+          awk -v killed="$killed" -v covered="$covered" \
+            'BEGIN { printf "PR covered-MSI: %.2f%% (%d/%d)\n", 100 * killed / covered, killed, covered }'
+          if [ "$((killed * 100))" -lt "$((covered * 80))" ]; then
+            echo 'PR covered-MSI is below the required 80%.' >&2
             exit 1
           fi
 
