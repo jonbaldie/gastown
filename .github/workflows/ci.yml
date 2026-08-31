@@ -214,7 +214,15 @@ jobs:
           "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
       - name: Install mutago
-        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1
+        run: |
+          for attempt in 1 2 3; do
+            go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1 && exit 0
+            if [ "$attempt" -lt 3 ]; then
+              echo "mutago install attempt $attempt failed; retrying"
+              sleep 5
+            fi
+          done
+          exit 1
 
       - name: Detect changed production Go code
         id: changes
@@ -530,7 +538,15 @@ jobs:
           PY
 
       - name: Install mutago
-        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1
+        run: |
+          for attempt in 1 2 3; do
+            go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1 && exit 0
+            if [ "$attempt" -lt 3 ]; then
+              echo "mutago install attempt $attempt failed; retrying"
+              sleep 5
+            fi
+          done
+          exit 1
 
       # Every shard still uses the PR's changed production files and the
       # merge-base line filter. A shard-level score of 80% is reported by
