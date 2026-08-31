@@ -274,6 +274,7 @@ jobs:
           max_whole_file_mutations = 500
           max_function_bytes = 50_000
           max_cmd_function_bytes = 10_000
+          max_convoy_function_bytes = 2_500
           all_mutators = [
               "arithmetic/assign_invert",
               "arithmetic/assignment",
@@ -365,9 +366,11 @@ jobs:
           def add_shard(filenames, match="", disable=()):
               # internal/cmd has many individually fast tests. Building its
               # 1,000+ entry per-test coverage map costs more than running the
-              # package suite for each bounded mutation shard.
-              per_test = not all(
-                  str(Path(filename).parent) == "internal/cmd"
+              # package suite for each bounded shard. The large convoy file is
+              # the exception: keep its map, then mutate very small slices.
+              per_test = any(
+                  filename == "internal/cmd/convoy_stage.go"
+                  or str(Path(filename).parent) != "internal/cmd"
                   for filename in filenames
               )
               shards.append(
@@ -433,11 +436,12 @@ jobs:
 
               # The remaining mutators are function-scoped. Keep duplicate
               # method names in one unit because --match selects by name.
-              function_byte_limit = (
-                  max_cmd_function_bytes
-                  if str(Path(filename).parent) == "internal/cmd"
-                  else max_function_bytes
-              )
+              if filename == "internal/cmd/convoy_stage.go":
+                  function_byte_limit = max_convoy_function_bytes
+              elif str(Path(filename).parent) == "internal/cmd":
+                  function_byte_limit = max_cmd_function_bytes
+              else:
+                  function_byte_limit = max_function_bytes
               current_names = []
               current_bytes = 0
               for name, source_bytes in units:
