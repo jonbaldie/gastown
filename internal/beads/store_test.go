@@ -702,13 +702,17 @@ func TestStoreUpdateSetLabels(t *testing.T) {
 
 func TestStoreUpdateSetLabelsGetError(t *testing.T) {
 	store := newMockStorage()
-	store.getLabelsErr = errors.New("get labels failed")
+	getLabelsErr := errors.New("get labels failed")
+	store.getLabelsErr = getLabelsErr
 	b := newTestBeads(store)
 
 	store.CreateIssue(context.Background(), &beadsdk.Issue{Title: "x"}, "test")
 	err := b.Update("test-1", UpdateOptions{SetLabels: []string{"new"}})
 	if err == nil {
 		t.Fatal("expected error from get labels")
+	}
+	if !errors.Is(err, getLabelsErr) {
+		t.Fatalf("expected wrapped get-labels error, got %v", err)
 	}
 }
 
