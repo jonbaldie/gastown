@@ -274,7 +274,7 @@ jobs:
           max_whole_file_mutations = 500
           max_function_bytes = 50_000
           max_cmd_function_bytes = 10_000
-          max_convoy_function_bytes = 2_500
+          max_convoy_function_bytes = 3_000
           all_mutators = [
               "arithmetic/assign_invert",
               "arithmetic/assignment",
