@@ -3,11 +3,18 @@ package acp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
+}
 
 func TestNewProxyInitializesProtocolAndStreams(t *testing.T) {
 	p := NewProxy()
@@ -150,5 +157,18 @@ func TestForwardMessageToUI(t *testing.T) {
 	p.Propelled.Store(true)
 	if err := forwardMessageToUI(p, msg, false); err != nil || out.Len() != 0 {
 		t.Fatalf("propelled message forwarded: err=%v output=%q", err, out.String())
+	}
+}
+
+func TestProcessAgentLineStopsAfterUIWriteFailure(t *testing.T) {
+	p := NewProxy()
+	p.uiEncoder = json.NewEncoder(errorWriter{})
+	if processAgentLine(p, `{"jsonrpc":"2.0","method":"event"}`) {
+		t.Fatal("processAgentLine() = true after UI write failure")
+	}
+	select {
+	case <-p.done:
+	default:
+		t.Fatal("UI write failure did not mark proxy done")
 	}
 }
