@@ -1,2 +1,8 @@
-disable_mutators:
-  - statement/remove
+enable_mutators:
+  - branch/*
+  - conditional/*
+  - expression/comparison
+  - expression/error-guard
+  - expression/errorf-wrap
+  - expression/logical
+  - statement/return
