@@ -180,348 +180,12 @@ jobs:
             --ignore-tests \
             --exclude .claude
 
-  # Mutago builds coverage profiles serially per package. Keep each shard
-  # package-local and small enough for a hosted runner, while preserving the
-  # complete changed-production-file set across the matrix.
-  mutago-files:
-    name: Prepare mutation test shards
+  mutago:
+    name: Mutation Tests
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    outputs:
-      has_production_go: ${{ steps.changes.outputs.has_production_go }}
-      matrix: ${{ steps.changes.outputs.matrix }}
-      shard_count: ${{ steps.changes.outputs.shard_count }}
     env:
       BASE_REF: ${{ github.base_ref }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install ICU4C development headers
-        run: sudo apt-get install -y libicu-dev
-
-      - name: Fetch PR base
-        run: >-
-          git fetch --no-tags origin
-          "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-
-      - name: Install mutago
-        run: |
-          for attempt in 1 2 3; do
-            go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1 && exit 0
-            if [ "$attempt" -lt 3 ]; then
-              echo "mutago install attempt $attempt failed; retrying"
-              sleep 5
-            fi
-          done
-          exit 1
-
-      - name: Detect changed production Go code
-        id: changes
-        run: |
-          set -euo pipefail
-          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
-          list="$RUNNER_TEMP/mutago-files.txt"
-          estimates="$RUNNER_TEMP/mutago-estimates.txt"
-          # ACMR only: deleted files are gone and cannot be mutated.
-          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
-            '*.go' ':(exclude)*_test.go' > "$list"
-          if [ -s "$list" ]; then
-            mapfile -t files < "$list"
-            mutago --dry-run \
-              --git-diff-lines \
-              --git-diff-base "origin/${BASE_REF}" \
-              "${files[@]}" > "$estimates"
-          else
-            : > "$estimates"
-          fi
-          python3 - "$list" "$estimates" "$GITHUB_OUTPUT" <<'PY'
-          import json
-          import re
-          import sys
-          from collections import defaultdict
-          from pathlib import Path
-
-          files = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
-          estimates = Path(sys.argv[2])
-          output = Path(sys.argv[3])
-          if not files:
-              output.write_text(
-                  "has_production_go=false\n"
-                  "matrix={\"include\":[]}\n"
-                  "shard_count=0\n",
-                  encoding="utf-8",
-              )
-              print("No production Go code changed; skipping mutago.")
-              raise SystemExit
-
-          # mutago's dry-run count is an upper bound, but it is useful for
-          # keeping the expensive test loop bounded. Keep ordinary package
-          # shards below this count and split unusually large files below the
-          # separate file threshold. Whole-file mutator groups use a lower cap
-          # because their test cost is not proportional to the total mutation
-          # count when a file contains many branches.
-          max_mutations = 1_800
-          max_file_mutations = 1_600
-          max_whole_file_mutations = 500
-          max_function_bytes = 50_000
-          max_cmd_function_bytes = 10_000
-          max_convoy_function_bytes = 3_000
-          all_mutators = [
-              "arithmetic/assign_invert",
-              "arithmetic/assignment",
-              "arithmetic/base",
-              "arithmetic/bitwise",
-              "arithmetic/negate",
-              "branch/case",
-              "branch/else",
-              "branch/if",
-              "composite/field-clear",
-              "concurrency/goroutine-remove",
-              "conditional/bool-literal",
-              "conditional/negated",
-              "conditional/not",
-              "expression/comparison",
-              "expression/context-nil",
-              "expression/error-guard",
-              "expression/errorf-wrap",
-              "expression/logical",
-              "expression/recover-clear",
-              "expression/remove",
-              "expression/string-literal",
-              "loop/break",
-              "loop/condition",
-              "loop/range_break",
-              "numbers/decrementer",
-              "numbers/float-negate",
-              "numbers/incrementer",
-              "select/case-remove",
-              "select/default-remove",
-              "statement/defer-remove",
-              "statement/remove",
-              "statement/remove-self-assign",
-              "statement/return",
-          ]
-          # These mutators can also find nodes in package-level function
-          # literals and declarations, which --match cannot select. Run them
-          # in whole-file shards and exclude them from function-scoped shards
-          # so every mutation is counted exactly once.
-          whole_file_mutators = {
-              "arithmetic/base",
-              "arithmetic/negate",
-              "composite/field-clear",
-              "conditional/negated",
-              "expression/error-guard",
-              "numbers/decrementer",
-              "numbers/incrementer",
-              "statement/return",
-          }
-          mutation_counts = {}
-          current_file = None
-          for raw_line in estimates.read_text(encoding="utf-8").splitlines():
-              if raw_line and not raw_line[0].isspace() and raw_line.endswith(":"):
-                  current_file = raw_line[:-1]
-                  mutation_counts[current_file] = {}
-                  continue
-              if current_file is None:
-                  continue
-              match = re.fullmatch(r"\s+[^:]+:\s+(\d+)", raw_line)
-              if match:
-                  mutator_name = raw_line.strip().rsplit(":", 1)[0]
-                  mutation_counts[current_file][mutator_name] = int(match.group(1))
-
-          # --match filters by the function declaration's name. The source
-          # spans are only used to keep a match expression small; duplicate
-          # method names stay in one unit so no mutation is run twice.
-          function_pattern = re.compile(
-              r"(?ms)^\s*func\s+(?:\([^)]*\)\s*)?"
-              r"([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^]]*\])?\s*\("
-          )
-
-          def function_units(filename):
-              source = Path(filename).read_text(encoding="utf-8")
-              matches = list(function_pattern.finditer(source))
-              units = {}
-              for index, function in enumerate(matches):
-                  name = function.group(1)
-                  end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
-                  if name not in units:
-                      units[name] = [function.start(), 0]
-                  units[name][1] += end - function.start()
-              return [
-                  (name, values[1])
-                  for name, values in sorted(units.items(), key=lambda item: item[1][0])
-              ]
-
-          shards = []
-
-          def add_shard(filenames, match="", disable=()):
-              # internal/cmd has many individually fast tests. Building its
-              # 1,000+ entry per-test coverage map costs more than running the
-              # package suite for each bounded shard. The large convoy file is
-              # the exception: keep its map, then mutate very small slices.
-              per_test = any(
-                  filename == "internal/cmd/convoy_stage.go"
-                  or str(Path(filename).parent) != "internal/cmd"
-                  for filename in filenames
-              )
-              shards.append(
-                  {
-                      "files": filenames,
-                      "match": match,
-                      "disable": sorted(disable),
-                      "per_test": per_test,
-                  }
-              )
-
-          by_package = defaultdict(list)
-          for filename in sorted(files):
-              per_file_counts = mutation_counts.get(filename, {})
-              count = sum(per_file_counts.values())
-              if count <= max_file_mutations:
-                  by_package[str(Path(filename).parent)].append((filename, count))
-                  continue
-
-              units = function_units(filename)
-              if not units:
-                  # A no-function file cannot be function-scoped. Such files
-                  # normally have no mutators, but retain them if one appears.
-                  add_shard([filename])
-                  continue
-
-              # Run bounded whole-file shards for the mutators that can reach
-              # package-level function literals. Keep these groups separate
-              # from function-scoped shards so every mutation is counted once.
-              selected = [
-                  (name, per_file_counts.get(name, 0))
-                  for name in all_mutators
-                  if name in whole_file_mutators and per_file_counts.get(name, 0) > 0
-              ]
-              current_mutators = []
-              current_mutations = 0
-              for name, count in sorted(selected, key=lambda item: (-item[1], item[0])):
-                  if (
-                      current_mutators
-                      and current_mutations + count > max_whole_file_mutations
-                  ):
-                      add_shard(
-                          [filename],
-                          disable=[
-                              mutator
-                              for mutator in all_mutators
-                              if mutator not in current_mutators
-                          ],
-                      )
-                      current_mutators = []
-                      current_mutations = 0
-                  current_mutators.append(name)
-                  current_mutations += count
-              if current_mutators:
-                  add_shard(
-                      [filename],
-                      disable=[
-                          mutator
-                          for mutator in all_mutators
-                          if mutator not in current_mutators
-                      ],
-                  )
-
-              # The remaining mutators are function-scoped. Keep duplicate
-              # method names in one unit because --match selects by name.
-              if filename == "internal/cmd/convoy_stage.go":
-                  function_byte_limit = max_convoy_function_bytes
-              elif str(Path(filename).parent) == "internal/cmd":
-                  function_byte_limit = max_cmd_function_bytes
-              else:
-                  function_byte_limit = max_function_bytes
-              current_names = []
-              current_bytes = 0
-              for name, source_bytes in units:
-                  if current_names and current_bytes + source_bytes > function_byte_limit:
-                      add_shard(
-                          [filename],
-                          match="^(?:%s)$" % "|".join(
-                              re.escape(function_name) for function_name in current_names
-                          ),
-                          disable=whole_file_mutators,
-                      )
-                      current_names = []
-                      current_bytes = 0
-                  current_names.append(name)
-                  current_bytes += source_bytes
-              if current_names:
-                  add_shard(
-                      [filename],
-                      match="^(?:%s)$" % "|".join(
-                          re.escape(function_name) for function_name in current_names
-                      ),
-                      disable=whole_file_mutators,
-                  )
-
-          # Keep ordinary files from one Go package together so each shard has
-          # one coverage profile. A package may span several shards, but no
-          # shard mixes packages or exceeds the mutation estimate cap.
-          for package in sorted(by_package):
-              current_files = []
-              current_mutations = 0
-              for filename, count in sorted(
-                  by_package[package], key=lambda item: (-item[1], item[0])
-              ):
-                  if current_files and current_mutations + count > max_mutations:
-                      add_shard(current_files)
-                      current_files = []
-                      current_mutations = 0
-                  current_files.append(filename)
-                  current_mutations += count
-              if current_files:
-                  add_shard(current_files)
-
-          if len(shards) > 256:
-              raise SystemExit(
-                  "Prepared %d shards; GitHub Actions supports at most 256 matrix jobs."
-                  % len(shards)
-              )
-
-          matrix = {
-              "include": [
-                  {"id": index, **shard}
-                  for index, shard in enumerate(shards, start=1)
-              ]
-          }
-          with output.open("w", encoding="utf-8") as stream:
-              stream.write("has_production_go=true\n")
-              stream.write("shard_count=%d\n" % len(shards))
-              stream.write("matrix=%s\n" % json.dumps(matrix, separators=(",", ":")))
-          function_shards = sum(1 for shard in shards if shard["match"])
-          print(
-              "Prepared %d mutation-bounded shard(s), including %d function-scoped shard(s)."
-              % (len(shards), function_shards)
-          )
-          PY
-
-  mutago:
-    name: Mutation Tests / shard ${{ matrix.id }}
-    needs: mutago-files
-    if: needs.mutago-files.outputs.has_production_go == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 20
-      matrix: ${{ fromJSON(needs.mutago-files.outputs.matrix) }}
-    env:
-      BASE_REF: ${{ github.base_ref }}
-      MUTAGO_FILES_JSON: ${{ toJSON(matrix.files) }}
-      MUTAGO_MATCH: ${{ matrix.match }}
-      MUTAGO_DISABLE_JSON: ${{ toJSON(matrix.disable) }}
-      MUTAGO_PER_TEST: ${{ matrix.per_test }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
       # mutago computes the PR's merge base against the target branch.
@@ -544,41 +208,42 @@ jobs:
           git fetch --no-tags origin
           "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
-      - name: Write shard file list
+      - name: Detect changed production Go code
+        id: changes
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          path = Path(os.environ["RUNNER_TEMP"]) / "mutago-shard-files.txt"
-          path.write_text("\n".join(json.loads(os.environ["MUTAGO_FILES_JSON"])) + "\n", encoding="utf-8")
-          PY
+          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          list="$RUNNER_TEMP/mutago-files.txt"
+          # ACMR only: deleted files are gone and cannot be mutated.
+          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
+            '*.go' ':(exclude)*_test.go' > "$list"
+          if [ ! -s "$list" ]; then
+            echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
+            echo 'No production Go code changed; skipping mutago.'
+            exit 0
+          fi
+          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
+          echo "file_list=$list" >> "$GITHUB_OUTPUT"
+          echo 'Changed production Go files:'
+          cat "$list"
 
       - name: Install mutago
-        run: |
-          for attempt in 1 2 3; do
-            go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1 && exit 0
-            if [ "$attempt" -lt 3 ]; then
-              echo "mutago install attempt $attempt failed; retrying"
-              sleep 5
-            fi
-          done
-          exit 1
+        if: steps.changes.outputs.has_production_go == 'true'
+        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1
 
-      # Every shard still uses the PR's changed production files and the
-      # merge-base line filter. A shard-level score of 80% is reported by
-      # mutago, while the summary job below enforces the weighted PR score.
+      # Pass the changed files, not the recursive package pattern.
+      # --git-diff-lines restricts mutant execution to the PR diff, while
+      # coverage skips uncovered mutants before test execution. --per-test is
+      # worse here: it launches one go test process per Test* (1500+ in
+      # internal/cmd). The timeout is a multiple of the touched-package
+      # baseline; mutago reuses the coverage run for it.
       - name: Run mutation tests
-        id: run-mutago
+        if: steps.changes.outputs.has_production_go == 'true'
         env:
-          MUTAGO_FILE_LIST: ${{ runner.temp }}/mutago-shard-files.txt
+          MUTAGO_FILE_LIST: ${{ steps.changes.outputs.file_list }}
         run: |
-          set +e
           mapfile -t files < "$MUTAGO_FILE_LIST"
-          args=(mutago \
+          mutago \
             --coverage \
-            --workers 2 \
             --test-flags=-short \
             --git-diff-lines \
             --git-diff-base "origin/${BASE_REF}" \
@@ -586,102 +251,9 @@ jobs:
             --ignore-msi-with-no-mutations \
             --min-covered-msi 80 \
             --logger-github \
-            --logger-summary-json \
             --quiet \
-            --no-diffs)
-          if [ "$MUTAGO_PER_TEST" = "true" ]; then
-            args+=(--per-test)
-          fi
-          mapfile -t disabled < <(
-            python3 -c 'import json, os; print("\n".join(json.loads(os.environ["MUTAGO_DISABLE_JSON"])))'
-          )
-          for mutator in "${disabled[@]}"; do
-            if [ -n "$mutator" ]; then
-              args+=(--disable "$mutator")
-            fi
-          done
-          if [ -n "$MUTAGO_MATCH" ]; then
-            args+=(--match "$MUTAGO_MATCH")
-          fi
-          # Keep emitting progress while a large shard runs.  Some hosted
-          # runners terminate silent steps even though the mutation process is
-          # still healthy.
-          "${args[@]}" "${files[@]}" &
-          mutago_pid=$!
-          while kill -0 "$mutago_pid" 2>/dev/null; do
-            sleep 30
-            if kill -0 "$mutago_pid" 2>/dev/null; then
-              echo "mutago shard ${{ matrix.id }} still running"
-            fi
-          done
-          wait "$mutago_pid"
-          status=$?
-          if [ "$status" -ne 0 ] && [ "$status" -ne 4 ]; then
-            echo "mutago failed with an execution error (exit $status)"
-            exit "$status"
-          fi
-          if [ "$status" -eq 4 ]; then
-            echo "mutago shard score was below 80%; aggregate PR score is enforced separately"
-          fi
-          mv mutago-summary.json "mutago-summary-${{ matrix.id }}.json"
-
-      - name: Upload mutation summary
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: mutago-summary-${{ matrix.id }}
-          path: mutago-summary-${{ matrix.id }}.json
-          if-no-files-found: error
-
-  mutago-summary:
-    name: Mutation Tests / covered MSI
-    needs: [mutago-files, mutago]
-    if: ${{ always() && needs.mutago-files.outputs.has_production_go == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download mutation summaries
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: mutago-summary-*
-          path: mutago-summaries
-          merge-multiple: true
-
-      - name: Enforce aggregate covered MSI
-        env:
-          EXPECTED_SHARDS: ${{ needs.mutago-files.outputs.shard_count }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-          from pathlib import Path
-
-          summaries = sorted(Path("mutago-summaries").glob("mutago-summary-*.json"))
-          expected = int(os.environ["EXPECTED_SHARDS"])
-          if len(summaries) != expected:
-              print("Expected %d mutago summaries, found %d" % (expected, len(summaries)), file=sys.stderr)
-              sys.exit(1)
-
-          total = killed = not_covered = 0
-          for path in summaries:
-              stats = json.loads(path.read_text(encoding="utf-8"))
-              total += int(stats["totalMutantsCount"])
-              killed += int(stats["killedCount"]) + int(stats["errorCount"]) + int(stats["skippedCount"])
-              not_covered += int(stats["notCoveredCount"])
-
-          if total == 0:
-              print("No mutations were generated across the changed production Go files.")
-              raise SystemExit(0)
-
-          covered = total - not_covered
-          score = (100.0 * killed / covered) if covered > 0 else 0.0
-          print("Aggregate covered MSI: %.2f%% (%d killed / %d covered; %d total, %d not covered)" % (
-              score, killed, covered, total, not_covered,
-          ))
-          if covered <= 0 or score < 80.0:
-              print("Aggregate covered MSI is below the required 80.00%%", file=sys.stderr)
-              sys.exit(1)
-          PY
+            --no-diffs \
+            "${files[@]}"
 
   integration-shard:
     name: Integration Tests / ${{ matrix.name }}
