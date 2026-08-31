@@ -624,6 +624,23 @@ func TestConvoyStageInput_ClassifyTask(t *testing.T) {
 	}
 }
 
+func TestStageInputKindLabel(t *testing.T) {
+	tests := []struct {
+		kind StageInputKind
+		want string
+	}{
+		{kind: StageInputEpic, want: "epic"},
+		{kind: StageInputConvoy, want: "convoy"},
+		{kind: StageInputTasks, want: "task"},
+	}
+
+	for _, tt := range tests {
+		if got := stageInputKindLabel(tt.kind); got != tt.want {
+			t.Errorf("stageInputKindLabel(%v) = %q, want %q", tt.kind, got, tt.want)
+		}
+	}
+}
+
 // TestConvoyStageInput_MixedTypes verifies mixed input types are rejected.
 func TestConvoyStageInput_MixedTypes(t *testing.T) {
 	types := map[string]string{"gt-epic": "epic", "gt-task": "task"}
@@ -642,6 +659,17 @@ func TestConvoyStageInput_MultipleEpicsError(t *testing.T) {
 	_, err := resolveInputKind(types)
 	if err == nil {
 		t.Fatal("expected error for multiple epics")
+	}
+}
+
+func TestConvoyStageInput_MultipleConvoysError(t *testing.T) {
+	types := map[string]string{"gt-convoy1": "convoy", "gt-convoy2": "convoy"}
+	_, err := resolveInputKind(types)
+	if err == nil {
+		t.Fatal("expected error for multiple convoys")
+	}
+	if !strings.Contains(err.Error(), "only one convoy ID allowed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
