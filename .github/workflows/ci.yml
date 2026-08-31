@@ -320,7 +320,6 @@ jobs:
               "expression/error-guard",
               "numbers/decrementer",
               "numbers/incrementer",
-              "statement/remove",
               "statement/return",
           }
           mutation_counts = {}
