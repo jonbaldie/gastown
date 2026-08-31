@@ -241,7 +241,7 @@ jobs:
           cat "$list"
 
   mutago-package:
-    name: Mutation package / ${{ matrix.package }} #${{ matrix.batch }}
+    name: "Mutation package / ${{ matrix.package }} #${{ matrix.batch }}"
     needs: mutago-changes
     if: needs.mutago-changes.outputs.has_production_go == 'true'
     runs-on: ubuntu-latest
