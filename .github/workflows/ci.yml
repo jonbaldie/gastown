@@ -768,8 +768,17 @@ jobs:
           tmpdir="$(mktemp -d)"
           mkdir -p "$tmpdir/bin" "$tmpdir/work"
           cd "$tmpdir/work"
-          GOWORK=off CGO_ENABLED=0 GOBIN="$tmpdir/bin" \
-            go install "github.com/jonbaldie/gastown/cmd/gt@$REF"
+          for attempt in 1 2 3; do
+            if GOWORK=off CGO_ENABLED=0 GOBIN="$tmpdir/bin" \
+              go install "github.com/jonbaldie/gastown/cmd/gt@$REF"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "public go install attempt $attempt failed; retrying"
+            sleep 5
+          done
           go version -m "$tmpdir/bin/gt" | grep 'github.com/jonbaldie/gastown/cmd/gt'
           go version -m "$tmpdir/bin/gt" | grep 'mod[[:space:]]\+github.com/jonbaldie/gastown[[:space:]]'
           "$tmpdir/bin/gt" version
