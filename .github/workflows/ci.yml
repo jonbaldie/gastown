@@ -180,15 +180,79 @@ jobs:
             --ignore-tests \
             --exclude .claude
 
-  mutago:
-    name: Mutation Tests
+  mutago-changes:
+    name: Detect mutation packages
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      has_production_go: ${{ steps.changes.outputs.has_production_go }}
+      matrix: ${{ steps.changes.outputs.matrix }}
     env:
       BASE_REF: ${{ github.base_ref }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
       # mutago computes the PR's merge base against the target branch.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch PR base
+        run: >-
+          git fetch --no-tags origin
+          "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Detect changed production Go code
+        id: changes
+        run: |
+          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          list="$RUNNER_TEMP/mutago-files.txt"
+          # ACMR only: deleted files are gone and cannot be mutated.
+          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
+            '*.go' ':(exclude)*_test.go' > "$list"
+          if [ ! -s "$list" ]; then
+            echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
+            echo 'matrix={"include":[{"package":"none","files":[]}]}' >> "$GITHUB_OUTPUT"
+            echo 'No production Go code changed; skipping mutago.'
+            exit 0
+          fi
+
+          matrix="$(jq -Rsc '
+            def package:
+              (split("/") | .[0:-1] | join("/")) |
+              if . == "" then "." else . end;
+            split("\n") |
+            map(select(length > 0)) |
+            sort_by(package) |
+            group_by(package) |
+            {include: [
+              .[] as $files |
+              range(0; $files | length; 20) as $start |
+              {
+                package: ($files[0] | package),
+                batch: (($start / 20) + 1),
+                files: $files[$start:$start + 20]
+              }
+            ]}
+          ' "$list")"
+          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo 'Changed production Go files:'
+          cat "$list"
+
+  mutago-package:
+    name: Mutation package / ${{ matrix.package }} #${{ matrix.batch }}
+    needs: mutago-changes
+    if: needs.mutago-changes.outputs.has_production_go == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.mutago-changes.outputs.matrix) }}
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      MUTAGO_FILES: ${{ toJSON(matrix.files) }}
+    steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -208,40 +272,12 @@ jobs:
           git fetch --no-tags origin
           "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
-      - name: Detect changed production Go code
-        id: changes
-        run: |
-          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
-          list="$RUNNER_TEMP/mutago-files.txt"
-          # ACMR only: deleted files are gone and cannot be mutated.
-          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
-            '*.go' ':(exclude)*_test.go' > "$list"
-          if [ ! -s "$list" ]; then
-            echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
-            echo 'No production Go code changed; skipping mutago.'
-            exit 0
-          fi
-          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
-          echo "file_list=$list" >> "$GITHUB_OUTPUT"
-          echo 'Changed production Go files:'
-          cat "$list"
-
       - name: Install mutago
-        if: steps.changes.outputs.has_production_go == 'true'
         run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.1
 
-      # Pass the changed files, not the recursive package pattern.
-      # --git-diff-lines restricts mutant execution to the PR diff, while
-      # coverage skips uncovered mutants before test execution. --per-test is
-      # worse here: it launches one go test process per Test* (1500+ in
-      # internal/cmd). The timeout is a multiple of the touched-package
-      # baseline; mutago reuses the coverage run for it.
       - name: Run mutation tests
-        if: steps.changes.outputs.has_production_go == 'true'
-        env:
-          MUTAGO_FILE_LIST: ${{ steps.changes.outputs.file_list }}
         run: |
-          mapfile -t files < "$MUTAGO_FILE_LIST"
+          mapfile -t files < <(jq -r '.[]' <<< "$MUTAGO_FILES")
           mutago \
             --coverage \
             --test-flags=-short \
@@ -254,6 +290,31 @@ jobs:
             --quiet \
             --no-diffs \
             "${files[@]}"
+
+  mutago:
+    name: Mutation Tests
+    if: always() && github.event_name == 'pull_request'
+    needs: [mutago-changes, mutago-package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify mutation packages
+        env:
+          CHANGES_RESULT: ${{ needs.mutago-changes.result }}
+          HAS_PRODUCTION_GO: ${{ needs.mutago-changes.outputs.has_production_go }}
+          PACKAGE_RESULT: ${{ needs.mutago-package.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != 'success' ]; then
+            echo "Mutation change detection result: $CHANGES_RESULT" >&2
+            exit 1
+          fi
+          if [ "$HAS_PRODUCTION_GO" != 'true' ]; then
+            echo 'No production Go code changed; mutation gate passes.'
+            exit 0
+          fi
+          if [ "$PACKAGE_RESULT" != 'success' ]; then
+            echo "Mutation package result: $PACKAGE_RESULT" >&2
+            exit 1
+          fi
 
   integration-shard:
     name: Integration Tests / ${{ matrix.name }}
