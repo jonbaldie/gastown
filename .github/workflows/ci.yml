@@ -363,11 +363,19 @@ jobs:
           shards = []
 
           def add_shard(filenames, match="", disable=()):
+              # internal/cmd has many individually fast tests. Building its
+              # 1,000+ entry per-test coverage map costs more than running the
+              # package suite for each bounded mutation shard.
+              per_test = not all(
+                  str(Path(filename).parent) == "internal/cmd"
+                  for filename in filenames
+              )
               shards.append(
                   {
                       "files": filenames,
                       "match": match,
                       "disable": sorted(disable),
+                      "per_test": per_test,
                   }
               )
 
@@ -509,6 +517,7 @@ jobs:
       MUTAGO_FILES_JSON: ${{ toJSON(matrix.files) }}
       MUTAGO_MATCH: ${{ matrix.match }}
       MUTAGO_DISABLE_JSON: ${{ toJSON(matrix.disable) }}
+      MUTAGO_PER_TEST: ${{ matrix.per_test }}
     steps:
       # Check out the PR head rather than GitHub's synthetic merge commit so
       # mutago computes the PR's merge base against the target branch.
@@ -565,7 +574,6 @@ jobs:
           mapfile -t files < "$MUTAGO_FILE_LIST"
           args=(mutago \
             --coverage \
-            --per-test \
             --workers 2 \
             --test-flags=-short \
             --git-diff-lines \
@@ -577,6 +585,9 @@ jobs:
             --logger-summary-json \
             --quiet \
             --no-diffs)
+          if [ "$MUTAGO_PER_TEST" = "true" ]; then
+            args+=(--per-test)
+          fi
           mapfile -t disabled < <(
             python3 -c 'import json, os; print("\n".join(json.loads(os.environ["MUTAGO_DISABLE_JSON"])))'
           )
