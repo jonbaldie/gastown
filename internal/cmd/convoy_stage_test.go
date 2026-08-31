@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -767,6 +768,53 @@ func TestCheckStageOverlapSkipsExistingConvoys(t *testing.T) {
 				t.Fatalf("checkStageOverlap() = (%v, %v, %q), want (nil, false, empty)", ids, autoRestage, convoyID)
 			}
 		})
+	}
+}
+
+func TestAppendJSONValidationWaveSkipsNonEpicAndDisabledValidation(t *testing.T) {
+	waves := []Wave{{Number: 1, Tasks: []string{"task-1"}}}
+	tests := []struct {
+		name       string
+		input      *StageInput
+		noValidate bool
+	}{
+		{
+			name:  "task input",
+			input: &StageInput{Kind: StageInputTasks, IDs: []string{"task-1"}},
+		},
+		{
+			name:       "validation disabled",
+			input:      &StageInput{Kind: StageInputEpic, IDs: []string{"epic-1"}},
+			noValidate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotWaves, validationID, err := appendJSONValidationWave(nil, tt.input, waves, tt.noValidate)
+			if err != nil {
+				t.Fatalf("appendJSONValidationWave() error = %v", err)
+			}
+			if !reflect.DeepEqual(gotWaves, waves) || validationID != "" {
+				t.Fatalf("appendJSONValidationWave() = (%v, %q), want unchanged waves and no validation ID", gotWaves, validationID)
+			}
+		})
+	}
+}
+
+func TestUpdateJSONGatedWarnings(t *testing.T) {
+	result := &StageResult{}
+	gated := []GatedTask{{TaskID: "task-1", GatedBy: []string{"blocker-1"}}}
+	warns, status := updateJSONGatedWarnings(result, nil, gated, nil, "ready")
+
+	if status != "staged_warnings" {
+		t.Fatalf("status = %q, want staged_warnings", status)
+	}
+	if len(warns) != 1 || warns[0].Category != "gated" || !reflect.DeepEqual(warns[0].BeadIDs, []string{"task-1"}) {
+		t.Fatalf("warnings = %#v, want gated warning for task-1", warns)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("result warnings = %#v, want one warning", result.Warnings)
 	}
 }
 
