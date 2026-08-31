@@ -402,7 +402,9 @@ jobs:
                               for mutator in all_mutators
                               if mutator not in current_mutators
                           ],
-                          per_test=current_mutations > 25,
+                          # Branch-only shards can finish their few covered
+                          # mutations faster than profiling every package test.
+                          per_test=current_mutators != ["branch/if"],
                       )
                       current_mutators = []
                       current_mutations = 0
@@ -416,7 +418,7 @@ jobs:
                           for mutator in all_mutators
                           if mutator not in current_mutators
                       ],
-                      per_test=current_mutations > 25,
+                      per_test=current_mutators != ["branch/if"],
                   )
 
               # The remaining mutators are function-scoped. Keep duplicate
