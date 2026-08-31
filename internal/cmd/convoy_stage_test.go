@@ -669,6 +669,79 @@ func TestConvoyStageInput_MultipleTasksOK(t *testing.T) {
 	}
 }
 
+func TestStageRestageState(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       *StageInput
+		results     map[string]*bdShowResult
+		wantRestage bool
+		wantID      string
+	}{
+		{
+			name:  "task input is never a restage",
+			input: &StageInput{Kind: StageInputTasks, IDs: []string{"task-1"}},
+		},
+		{
+			name:  "open convoy is not a restage",
+			input: &StageInput{Kind: StageInputConvoy, IDs: []string{"convoy-1"}},
+			results: map[string]*bdShowResult{
+				"convoy-1": {Status: "open"},
+			},
+		},
+		{
+			name:  "staged convoy is a restage",
+			input: &StageInput{Kind: StageInputConvoy, IDs: []string{"convoy-1"}},
+			results: map[string]*bdShowResult{
+				"convoy-1": {Status: "staged_ready"},
+			},
+			wantRestage: true,
+			wantID:      "convoy-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRestage, gotID := stageRestageState(tt.input, tt.results)
+			if gotRestage != tt.wantRestage || gotID != tt.wantID {
+				t.Fatalf("stageRestageState() = (%v, %q), want (%v, %q)", gotRestage, gotID, tt.wantRestage, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestCheckStageOverlapSkipsExistingConvoys(t *testing.T) {
+	dag := &ConvoyDAG{Nodes: map[string]*ConvoyDAGNode{
+		"task-1": {ID: "task-1", Type: "task"},
+	}}
+	tests := []struct {
+		name      string
+		input     *StageInput
+		isRestage bool
+	}{
+		{
+			name:      "restaging task input",
+			input:     &StageInput{Kind: StageInputTasks, IDs: []string{"task-1"}},
+			isRestage: true,
+		},
+		{
+			name:  "convoy input",
+			input: &StageInput{Kind: StageInputConvoy, IDs: []string{"convoy-1"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ids, autoRestage, convoyID, err := checkStageOverlap(dag, tt.input, tt.isRestage, false)
+			if err != nil {
+				t.Fatalf("checkStageOverlap() error = %v", err)
+			}
+			if ids != nil || autoRestage || convoyID != "" {
+				t.Fatalf("checkStageOverlap() = (%v, %v, %q), want (nil, false, empty)", ids, autoRestage, convoyID)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // buildConvoyDAG tests (U-15 through U-19)
 // ---------------------------------------------------------------------------
