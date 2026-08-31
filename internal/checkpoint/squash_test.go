@@ -62,6 +62,28 @@ func TestGitOutputReportsStderr(t *testing.T) {
 	}
 }
 
+func TestCommitsSinceBasePropagatesMergeBaseError(t *testing.T) {
+	dir := initTestRepo(t)
+	mergeBase, subjects, err := commitsSinceBase(dir, "missing-base")
+	if err == nil || !strings.Contains(err.Error(), "finding merge-base") {
+		t.Fatalf("commitsSinceBase() error = %v, want finding merge-base error", err)
+	}
+	if mergeBase != "" || subjects != nil {
+		t.Fatalf("error result = (%q, %v), want empty values", mergeBase, subjects)
+	}
+}
+
+func TestCommitsSinceBaseReturnsMergeBaseWithNoCommits(t *testing.T) {
+	dir := initTestRepo(t)
+	mergeBase, subjects, err := commitsSinceBase(dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mergeBase == "" || subjects != nil {
+		t.Fatalf("result = (%q, %v), want merge base and nil subjects", mergeBase, subjects)
+	}
+}
+
 // initTestRepo creates a fresh git repo with an initial commit and returns its path.
 func initTestRepo(t *testing.T) string {
 	t.Helper()
