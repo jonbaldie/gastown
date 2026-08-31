@@ -134,6 +134,68 @@ func TestCheckUncommittedWork_PolecatStatusErrorBlocks(t *testing.T) {
 	if !strings.Contains(output, "alpha") {
 		t.Fatalf("expected polecat name in warning, got: %q", output)
 	}
+	if !strings.Contains(output, "git status failed") {
+		t.Fatalf("expected status error in warning, got: %q", output)
+	}
+}
+
+func TestCollectPolecatWorkPreservesProblemsAndErrors(t *testing.T) {
+	dirtyStatus := &git.UncommittedWorkStatus{
+		HasUncommittedChanges: true,
+		ModifiedFiles:         []string{"README.md"},
+	}
+	checkErr := errors.New("git status failed")
+	stubUncommittedWorkCheckDeps(
+		t,
+		func(*rig.Rig) ([]*polecat.Polecat, error) { return nil, nil },
+		func(clonePath string) (*git.UncommittedWorkStatus, error) {
+			switch clonePath {
+			case "/tmp/dirty":
+				return dirtyStatus, nil
+			case "/tmp/broken":
+				return nil, checkErr
+			default:
+				t.Fatalf("unexpected clone path: %q", clonePath)
+				return nil, nil
+			}
+		},
+		func() bool { return false },
+		func(string) bool { return false },
+	)
+
+	problems, checkErrors := collectPolecatWork([]*polecat.Polecat{
+		{Name: "dirty", ClonePath: "/tmp/dirty"},
+		{Name: "broken", ClonePath: "/tmp/broken"},
+	})
+	if len(problems) != 1 {
+		t.Fatalf("problem count = %d, want 1", len(problems))
+	}
+	if problems[0].name != "dirty" || problems[0].status != dirtyStatus {
+		t.Fatalf("problem = %#v, want dirty polecat and original status", problems[0])
+	}
+	if len(checkErrors) != 1 {
+		t.Fatalf("check error count = %d, want 1", len(checkErrors))
+	}
+	if checkErrors[0].name != "broken" || !errors.Is(checkErrors[0].err, checkErr) {
+		t.Fatalf("check error = %#v, want broken polecat and original error", checkErrors[0])
+	}
+}
+
+func TestCheckUncommittedWork_NoPolecatsProceeds(t *testing.T) {
+	stubUncommittedWorkCheckDeps(
+		t,
+		func(*rig.Rig) ([]*polecat.Polecat, error) { return nil, nil },
+		func(string) (*git.UncommittedWorkStatus, error) {
+			t.Fatal("status check should not run without polecats")
+			return nil, nil
+		},
+		func() bool { return false },
+		func(string) bool { return false },
+	)
+
+	if !checkUncommittedWork(testRig(), "testrig", "stop", false) {
+		t.Fatal("empty polecat list should be safe")
+	}
 }
 
 func TestCheckUncommittedWork_DirtyForceNonTTYBlocks(t *testing.T) {
