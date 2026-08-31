@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestClaudeProjectDirFor(t *testing.T) {
@@ -97,6 +98,112 @@ func TestParseClaudeCodeLine_InvalidJSON(t *testing.T) {
 	events := parseClaudeCodeLine("not json", "s1", "claudecode", "test-uuid")
 	if len(events) != 0 {
 		t.Errorf("expected 0 events for invalid JSON, got %d", len(events))
+	}
+}
+
+func TestDecodeConversationEntry(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "assistant", line: `{"type":"assistant","message":{"role":"assistant"}}`, want: true},
+		{name: "user", line: `{"type":"user","message":{"role":"user"}}`, want: true},
+		{name: "unsupported type", line: `{"type":"summary","message":{"role":"assistant"}}`},
+		{name: "missing message", line: `{"type":"assistant"}`},
+		{name: "invalid JSON", line: `{`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var entry ccEntry
+			if got := decodeConversationEntry(tt.line, &entry); got != tt.want {
+				t.Fatalf("decodeConversationEntry() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEntryTimestamp(t *testing.T) {
+	want := time.Date(2026, time.February, 23, 10, 0, 0, 0, time.UTC)
+	if got := entryTimestamp("2026-02-23T10:00:00Z"); !got.Equal(want) {
+		t.Fatalf("valid timestamp = %s, want %s", got, want)
+	}
+
+	before := time.Now()
+	got := entryTimestamp("invalid")
+	after := time.Now()
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("invalid timestamp fallback = %s, want between %s and %s", got, before, after)
+	}
+}
+
+func TestContentEventsPreservesMetadata(t *testing.T) {
+	timestamp := time.Date(2026, time.February, 23, 10, 0, 0, 0, time.UTC)
+	metadata := eventMetadata{
+		agentType:       "claudecode",
+		sessionID:       "session-1",
+		nativeSessionID: "native-1",
+		role:            "assistant",
+		timestamp:       timestamp,
+	}
+	events := contentEvents([]ccContent{{Type: "text", Text: "hello"}}, metadata)
+	if len(events) != 1 {
+		t.Fatalf("contentEvents() returned %d events, want 1", len(events))
+	}
+	want := AgentEvent{
+		AgentType:       "claudecode",
+		SessionID:       "session-1",
+		NativeSessionID: "native-1",
+		EventType:       "text",
+		Role:            "assistant",
+		Content:         "hello",
+		Timestamp:       timestamp,
+	}
+	if events[0] != want {
+		t.Fatalf("content event = %#v, want %#v", events[0], want)
+	}
+}
+
+func TestAppendUsageEventTokenSources(t *testing.T) {
+	timestamp := time.Date(2026, time.February, 23, 10, 0, 0, 0, time.UTC)
+	metadata := eventMetadata{
+		agentType:       "claudecode",
+		sessionID:       "session-1",
+		nativeSessionID: "native-1",
+		timestamp:       timestamp,
+	}
+	tests := []struct {
+		name  string
+		usage ccUsage
+	}{
+		{name: "input", usage: ccUsage{InputTokens: 1}},
+		{name: "output", usage: ccUsage{OutputTokens: 1}},
+		{name: "cache read", usage: ccUsage{CacheReadInputTokens: 1}},
+		{name: "cache creation", usage: ccUsage{CacheCreationInputTokens: 1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := ccEntry{Type: "assistant", Message: &ccMessage{Usage: &tt.usage}}
+			events := appendUsageEvent(nil, entry, metadata)
+			if len(events) != 1 {
+				t.Fatalf("appendUsageEvent() returned %d events, want 1", len(events))
+			}
+			event := events[0]
+			if event.AgentType != "claudecode" || event.SessionID != "session-1" || event.NativeSessionID != "native-1" || event.EventType != "usage" || event.Role != "assistant" || !event.Timestamp.Equal(timestamp) {
+				t.Fatalf("usage event metadata = %#v", event)
+			}
+		})
+	}
+
+	zeroUsage := ccUsage{}
+	if got := appendUsageEvent(nil, ccEntry{Type: "assistant", Message: &ccMessage{Usage: &zeroUsage}}, metadata); len(got) != 0 {
+		t.Fatalf("zero usage produced events: %#v", got)
+	}
+	inputUsage := ccUsage{InputTokens: 1}
+	if got := appendUsageEvent(nil, ccEntry{Type: "user", Message: &ccMessage{Usage: &inputUsage}}, metadata); len(got) != 0 {
+		t.Fatalf("user usage produced events: %#v", got)
 	}
 }
 

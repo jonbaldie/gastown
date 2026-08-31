@@ -278,6 +278,7 @@ jobs:
       - name: Run mutation tests
         run: |
           mapfile -t files < <(jq -r '.[]' <<< "$MUTAGO_FILES")
+          set +e
           mutago \
             --coverage \
             --test-flags=-short \
@@ -287,9 +288,21 @@ jobs:
             --ignore-msi-with-no-mutations \
             --min-covered-msi 80 \
             --logger-github \
+            --logger-summary-json \
             --quiet \
             --no-diffs \
             "${files[@]}"
+          mutago_status=$?
+          set -e
+
+          if [ "$mutago_status" -eq 4 ]; then
+            covered_mutants="$(jq '.totalMutantsCount - .notCoveredCount' mutago-summary.json)"
+            if [ "$covered_mutants" -eq 0 ]; then
+              echo 'No covered mutants in this batch; covered-MSI is not applicable.'
+              exit 0
+            fi
+          fi
+          exit "$mutago_status"
 
   mutago:
     name: Mutation Tests
