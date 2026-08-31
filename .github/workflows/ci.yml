@@ -284,6 +284,7 @@ jobs:
           mapfile -t files < <(jq -r '.[]' <<< "$MUTAGO_FILES")
           set +e
           mutago \
+            --config .github/mutago.yml \
             --coverage \
             --per-test \
             --workers 2 \
