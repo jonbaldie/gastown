@@ -286,6 +286,7 @@ jobs:
           mutago \
             --coverage \
             --per-test \
+            --workers 2 \
             --test-flags=-short \
             --git-diff-lines \
             --git-diff-base "origin/${BASE_REF}" \
