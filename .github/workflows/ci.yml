@@ -272,7 +272,8 @@ jobs:
           max_mutations = 1_800
           max_file_mutations = 1_600
           max_whole_file_mutations = 500
-          max_function_bytes = 25_000
+          max_function_bytes = 50_000
+          max_cmd_function_bytes = 10_000
           all_mutators = [
               "arithmetic/assign_invert",
               "arithmetic/assignment",
@@ -424,10 +425,15 @@ jobs:
 
               # The remaining mutators are function-scoped. Keep duplicate
               # method names in one unit because --match selects by name.
+              function_byte_limit = (
+                  max_cmd_function_bytes
+                  if str(Path(filename).parent) == "internal/cmd"
+                  else max_function_bytes
+              )
               current_names = []
               current_bytes = 0
               for name, source_bytes in units:
-                  if current_names and current_bytes + source_bytes > max_function_bytes:
+                  if current_names and current_bytes + source_bytes > function_byte_limit:
                       add_shard(
                           [filename],
                           match="^(?:%s)$" % "|".join(
