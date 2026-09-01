@@ -31,6 +31,7 @@ type Manager struct {
 	tmux        tmuxOps
 	startPoller func(townRoot, session string) (int, error)
 	stopPoller  func(townRoot, session string) error
+	sleep       func(time.Duration)
 }
 
 // NewManager creates a new deacon manager for a town.
@@ -40,6 +41,7 @@ func NewManager(townRoot string) *Manager {
 		tmux:        tmux.NewTmux(),
 		startPoller: nudge.StartPoller,
 		stopPoller:  nudge.StopPoller,
+		sleep:       time.Sleep,
 	}
 }
 
@@ -118,7 +120,7 @@ func (m *Manager) start(agentOverride string) error {
 	}
 
 	m.startNudgePoller(sessionID)
-	time.Sleep(constants.ShutdownNotifyDelay)
+	m.sleep(constants.ShutdownNotifyDelay)
 	return nil
 }
 

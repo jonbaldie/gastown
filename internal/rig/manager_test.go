@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/doltserver"
 	"github.com/jonbaldie/gastown/internal/git"
@@ -1086,6 +1087,52 @@ esac
 		}
 	}
 	assertBeadsDirLog(t, beadsDirLog, rigBeadsDir)
+}
+
+func TestFinalizeRigBeadsRoutesAndWarnsWhenAgentBeadsFail(t *testing.T) {
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "demo")
+	resolvedBeadsDir := filepath.Join(rigPath, ".beads")
+	for _, dir := range []string{filepath.Join(townRoot, ".beads"), resolvedBeadsDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	binDir := writeFakeBD(t, "#!/bin/sh\nexit 1\n", "@echo off\r\nexit /b 1\r\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager := &Manager{townRoot: townRoot}
+	var finalizeErr error
+	stderr := captureStderr(t, func() {
+		finalizeErr = finalizeRigBeads(manager, rigPath, "demo", "dm", resolvedBeadsDir)
+	})
+	if finalizeErr != nil {
+		t.Fatalf("finalizeRigBeads() error = %v, want nil", finalizeErr)
+	}
+	if !strings.Contains(stderr, "Warning: Could not create agent beads:") {
+		t.Fatalf("finalizeRigBeads() stderr = %q, want agent beads warning", stderr)
+	}
+
+	routes, err := beads.LoadRoutes(filepath.Join(townRoot, ".beads"))
+	if err != nil {
+		t.Fatalf("LoadRoutes: %v", err)
+	}
+	if len(routes) != 1 || routes[0].Prefix != "dm-" || routes[0].Path != "demo" {
+		t.Fatalf("routes = %#v, want dm- routed to demo", routes)
+	}
+}
+
+func TestConfigureRigBeadsReturnsResolvedDirectory(t *testing.T) {
+	rigPath := t.TempDir()
+	want := filepath.Join(rigPath, ".beads")
+	if err := os.MkdirAll(want, 0755); err != nil {
+		t.Fatalf("mkdir beads directory: %v", err)
+	}
+
+	if got := configureRigBeads(rigPath, "dm"); got != want {
+		t.Fatalf("configureRigBeads() = %q, want %q", got, want)
+	}
 }
 
 func TestIsValidBeadsPrefix(t *testing.T) {
@@ -2365,6 +2412,27 @@ func captureStdout(t *testing.T, fn func()) string {
 	_ = w.Close()
 	<-done
 	os.Stdout = old
+	return buf.String()
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+	fn()
+	_ = w.Close()
+	<-done
+	os.Stderr = old
 	return buf.String()
 }
 
