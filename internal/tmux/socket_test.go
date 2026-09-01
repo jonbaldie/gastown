@@ -6,8 +6,8 @@ import (
 
 func TestSetGetDefaultSocket(t *testing.T) {
 	// Save and restore
-	orig := defaultSocket
-	defer func() { defaultSocket = orig }()
+	orig := GetDefaultSocket()
+	defer SetDefaultSocket(orig)
 
 	// Initially empty
 	SetDefaultSocket("")
@@ -22,8 +22,8 @@ func TestSetGetDefaultSocket(t *testing.T) {
 }
 
 func TestNewTmuxInheritsSocket(t *testing.T) {
-	orig := defaultSocket
-	defer func() { defaultSocket = orig }()
+	orig := GetDefaultSocket()
+	defer SetDefaultSocket(orig)
 
 	SetDefaultSocket("testtown")
 	tmx := NewTmux()
@@ -40,8 +40,8 @@ func TestNewTmuxWithSocket(t *testing.T) {
 }
 
 func TestBuildCommandNoSocket(t *testing.T) {
-	orig := defaultSocket
-	defer func() { defaultSocket = orig }()
+	orig := GetDefaultSocket()
+	defer SetDefaultSocket(orig)
 
 	SetDefaultSocket("")
 	cmd := BuildCommand("list-sessions")
@@ -59,8 +59,8 @@ func TestBuildCommandNoSocket(t *testing.T) {
 }
 
 func TestBuildCommandWithSocket(t *testing.T) {
-	orig := defaultSocket
-	defer func() { defaultSocket = orig }()
+	orig := GetDefaultSocket()
+	defer SetDefaultSocket(orig)
 
 	SetDefaultSocket("mytown")
 	cmd := BuildCommand("has-session", "-t", "hq-mayor")

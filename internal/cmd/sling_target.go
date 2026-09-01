@@ -82,41 +82,47 @@ func resolveSelfTarget() (agentID string, pane string, hookRoot string, err erro
 	if err != nil {
 		return "", "", "", fmt.Errorf("detecting role: %w", err)
 	}
-
-	// Build agent identity from role
-	// Town-level agents use trailing slash to match addressToIdentity() normalization
-	switch roleInfo.Role {
-	case RoleMayor:
-		agentID = "mayor/"
-	case RoleDeacon:
-		agentID = "deacon/"
-	case RoleBoot:
-		agentID = "deacon/boot"
-	case RoleWitness:
-		agentID = fmt.Sprintf("%s/witness", roleInfo.Rig)
-	case RoleRefinery:
-		agentID = fmt.Sprintf("%s/refinery", roleInfo.Rig)
-	case RolePolecat:
-		agentID = fmt.Sprintf("%s/polecats/%s", roleInfo.Rig, roleInfo.Polecat)
-	case RoleCrew:
-		agentID = fmt.Sprintf("%s/crew/%s", roleInfo.Rig, roleInfo.Polecat)
-	case RoleDog:
-		agentID = fmt.Sprintf("deacon/dogs/%s", roleInfo.Polecat)
-	default:
-		return "", "", "", fmt.Errorf("cannot determine agent identity (role: %s)", roleInfo.Role)
+	agentID, err = selfTargetAgentID(roleInfo)
+	if err != nil {
+		return "", "", "", err
 	}
-
 	pane = os.Getenv("TMUX_PANE")
-	hookRoot = roleInfo.Home
-	if hookRoot == "" {
-		// Fallback to git root if home not determined
-		hookRoot, err = detectCloneRoot()
-		if err != nil {
-			return "", "", "", fmt.Errorf("detecting clone root: %w", err)
-		}
+	hookRoot, err = selfTargetHookRoot(roleInfo)
+	if err != nil {
+		return "", "", "", err
 	}
-
 	return agentID, pane, hookRoot, nil
+}
+
+func selfTargetAgentID(roleInfo RoleInfo) (string, error) {
+	builder, ok := selfTargetAgentBuilders[roleInfo.Role]
+	if !ok {
+		return "", fmt.Errorf("cannot determine agent identity (role: %s)", roleInfo.Role)
+	}
+	return builder(roleInfo), nil
+}
+
+// Town-level agents use trailing slash to match addressToIdentity() normalization.
+var selfTargetAgentBuilders = map[Role]func(RoleInfo) string{
+	RoleMayor:    func(RoleInfo) string { return "mayor/" },
+	RoleDeacon:   func(RoleInfo) string { return "deacon/" },
+	RoleBoot:     func(RoleInfo) string { return "deacon/boot" },
+	RoleWitness:  func(r RoleInfo) string { return fmt.Sprintf("%s/witness", r.Rig) },
+	RoleRefinery: func(r RoleInfo) string { return fmt.Sprintf("%s/refinery", r.Rig) },
+	RolePolecat:  func(r RoleInfo) string { return fmt.Sprintf("%s/polecats/%s", r.Rig, r.Polecat) },
+	RoleCrew:     func(r RoleInfo) string { return fmt.Sprintf("%s/crew/%s", r.Rig, r.Polecat) },
+	RoleDog:      func(r RoleInfo) string { return fmt.Sprintf("deacon/dogs/%s", r.Polecat) },
+}
+
+func selfTargetHookRoot(roleInfo RoleInfo) (string, error) {
+	if roleInfo.Home != "" {
+		return roleInfo.Home, nil
+	}
+	hookRoot, err := detectCloneRoot()
+	if err != nil {
+		return "", fmt.Errorf("detecting clone root: %w", err)
+	}
+	return hookRoot, nil
 }
 
 // ResolveTargetOptions controls target resolution behavior.
@@ -153,213 +159,222 @@ type ResolvedTarget struct {
 // existing agents (with dead polecat fallback).
 func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, error) {
 	result := &ResolvedTarget{BeadID: opts.BeadID}
-
-	// Empty target or "." = self-sling
 	if target == "" || target == "." {
-		agentID, pane, workDir, err := resolveSelfTarget()
-		if err != nil {
-			if target == "." {
-				return nil, fmt.Errorf("resolving self for '.' target: %w", err)
-			}
-			return nil, err
-		}
-		result.Agent = agentID
-		result.Pane = pane
-		result.WorkDir = workDir
-		result.IsSelfSling = true
-		return result, nil
+		return resolveSelfSlingTarget(target, result)
 	}
-
-	// Dog target
 	if dogName, isDog := IsDogTarget(target); isDog {
-		if opts.DryRun {
-			if dogName == "" {
-				fmt.Printf("Would dispatch to idle dog in kennel\n")
-				result.Agent = "deacon/dogs/<idle>"
-			} else {
-				fmt.Printf("Would dispatch to dog '%s'\n", dogName)
-				result.Agent = fmt.Sprintf("deacon/dogs/%s", dogName)
-			}
-			result.Pane = "<dog-pane>"
-			return result, nil
-		}
-		workDesc := opts.WorkDesc
-		if workDesc == "" {
-			workDesc = opts.HookBead
-		}
-		workKind := dog.WorkKindFormula
-		if opts.HookBead != "" && workDesc == opts.HookBead {
-			workKind = dog.WorkKindBead
-		}
-		dispatchOpts := DogDispatchOptions{
-			Create:            opts.Create,
-			WorkDesc:          workDesc,
-			WorkKind:          workKind,
-			DelaySessionStart: true,
-			AgentOverride:     opts.Agent,
-		}
-		dispatchInfo, err := DispatchToDog(dogName, dispatchOpts)
-		if err != nil {
-			return nil, fmt.Errorf("dispatching to dog: %w", err)
-		}
-		result.Agent = dispatchInfo.AgentID
-		result.DelayedDogInfo = dispatchInfo
-		fmt.Printf("Dispatched to dog %s (session start delayed)\n", dispatchInfo.DogName)
-		return result, nil
+		return resolveDogSlingTarget(dogName, opts, result)
 	}
 
-	// Rig target (auto-spawn polecat)
 	if rigName, isRig := IsRigName(target); isRig {
-		// Check if rig is parked or docked before dispatching (gt-4owfd.1, gt-11y)
-		townRoot := opts.TownRoot
-		if townRoot == "" {
-			townRoot, _ = workspace.FindFromCwd()
-		}
-		if townRoot != "" {
-			if blocked, reason := IsRigParkedOrDocked(townRoot, rigName); blocked {
-				undoCmd := "gt rig unpark"
-				if reason == "docked" {
-					undoCmd = "gt rig undock"
-				}
-				return nil, fmt.Errorf("cannot sling to %s rig %q\n%s %s", reason, rigName, undoCmd, rigName)
-			}
-		}
+		return resolveRigSlingTarget(rigName, &opts, result)
+	}
+	return resolveNamedSlingTarget(target, &opts, result)
+}
 
-		if opts.BeadID != "" {
-			originalBeadID := opts.BeadID
-			movedID, err := ensureBeadInTargetRig(opts.BeadID, rigName, opts.TownRoot, opts.DryRun)
-			if err != nil {
-				return nil, err
-			}
-			opts.BeadID = movedID
-			result.BeadID = movedID
-			if opts.HookBead == "" || opts.HookBead == originalBeadID {
-				opts.HookBead = movedID
-			}
+func resolveSelfSlingTarget(target string, result *ResolvedTarget) (*ResolvedTarget, error) {
+	agentID, pane, workDir, err := resolveSelfTarget()
+	if err != nil {
+		if target == "." {
+			return nil, fmt.Errorf("resolving self for '.' target: %w", err)
 		}
-		if opts.BeadID != "" && !opts.Force {
-			if err := checkCrossRigGuard(opts.BeadID, rigName+"/polecats/_", opts.TownRoot); err != nil {
-				return nil, err
-			}
-		}
-		if opts.DryRun {
-			fmt.Printf("Would spawn fresh polecat in rig '%s'\n", rigName)
-			result.Agent = fmt.Sprintf("%s/polecats/<new>", rigName)
-			result.Pane = "<new-pane>"
-			return result, nil
-		}
-		fmt.Printf("Target is rig '%s', spawning fresh polecat...\n", rigName)
-		spawnOpts := SlingSpawnOptions{
-			TownRoot:      opts.TownRoot,
-			Force:         opts.Force,
-			Account:       opts.Account,
-			Create:        opts.Create,
-			HookBead:      opts.HookBead,
-			Agent:         opts.Agent,
-			BaseBranch:    opts.BaseBranch,
-			ResumeBranch:  opts.ResumeBranch,
-			SkipAdmission: opts.SkipPolecatAdmission,
-		}
-		spawnInfo, err := spawnPolecatForSling(rigName, spawnOpts)
-		if err != nil {
-			return nil, fmt.Errorf("spawning polecat: %w", err)
-		}
-		result.Agent = spawnInfo.AgentID()
-		result.NewPolecatInfo = spawnInfo
-		result.WorkDir = spawnInfo.ClonePath
-		result.HookSetAtomically = opts.HookBead != ""
-		if !opts.NoBoot {
-			wakeRigAgents(rigName)
-		}
+		return nil, err
+	}
+	result.Agent = agentID
+	result.Pane = pane
+	result.WorkDir = workDir
+	result.IsSelfSling = true
+	return result, nil
+}
+
+func resolveDogSlingTarget(dogName string, opts ResolveTargetOptions, result *ResolvedTarget) (*ResolvedTarget, error) {
+	if opts.DryRun {
+		return dryRunDogSlingTarget(dogName, result)
+	}
+	workDesc := opts.WorkDesc
+	if workDesc == "" {
+		workDesc = opts.HookBead
+	}
+	workKind := dog.WorkKindFormula
+	if opts.HookBead != "" && workDesc == opts.HookBead {
+		workKind = dog.WorkKindBead
+	}
+	dispatchInfo, err := DispatchToDog(dogName, DogDispatchOptions{
+		Create:            opts.Create,
+		WorkDesc:          workDesc,
+		WorkKind:          workKind,
+		DelaySessionStart: true,
+		AgentOverride:     opts.Agent,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dispatching to dog: %w", err)
+	}
+	result.Agent = dispatchInfo.AgentID
+	result.DelayedDogInfo = dispatchInfo
+	fmt.Printf("Dispatched to dog %s (session start delayed)\n", dispatchInfo.DogName)
+	return result, nil
+}
+
+func dryRunDogSlingTarget(dogName string, result *ResolvedTarget) (*ResolvedTarget, error) {
+	if dogName == "" {
+		fmt.Printf("Would dispatch to idle dog in kennel\n")
+		result.Agent = "deacon/dogs/<idle>"
+	} else {
+		fmt.Printf("Would dispatch to dog '%s'\n", dogName)
+		result.Agent = fmt.Sprintf("deacon/dogs/%s", dogName)
+	}
+	result.Pane = "<dog-pane>"
+	return result, nil
+}
+
+func resolveRigSlingTarget(rigName string, opts *ResolveTargetOptions, result *ResolvedTarget) (*ResolvedTarget, error) {
+	if err := rejectParkedOrDockedRig(opts.TownRoot, rigName); err != nil {
+		return nil, err
+	}
+	if err := moveBeadForSlingTarget(opts, result, rigName); err != nil {
+		return nil, err
+	}
+	if err := guardCrossRigSling(opts, rigName); err != nil {
+		return nil, err
+	}
+	if opts.DryRun {
+		fmt.Printf("Would spawn fresh polecat in rig '%s'\n", rigName)
+		result.Agent = fmt.Sprintf("%s/polecats/<new>", rigName)
+		result.Pane = "<new-pane>"
 		return result, nil
 	}
+	fmt.Printf("Target is rig '%s', spawning fresh polecat...\n", rigName)
+	return spawnSlingPolecat(rigName, opts, result, false)
+}
 
+func rejectParkedOrDockedRig(townRoot, rigName string) error {
+	if townRoot == "" {
+		townRoot, _ = workspace.FindFromCwd()
+	}
+	if townRoot == "" {
+		return nil
+	}
+	blocked, reason := IsRigParkedOrDocked(townRoot, rigName)
+	if !blocked {
+		return nil
+	}
+	undoCmd := "gt rig unpark"
+	if reason == "docked" {
+		undoCmd = "gt rig undock"
+	}
+	return fmt.Errorf("cannot sling to %s rig %q\n%s %s", reason, rigName, undoCmd, rigName)
+}
+
+func moveBeadForSlingTarget(opts *ResolveTargetOptions, result *ResolvedTarget, rigName string) error {
+	if opts.BeadID == "" {
+		return nil
+	}
+	originalBeadID := opts.BeadID
+	movedID, err := ensureBeadInTargetRig(opts.BeadID, rigName, opts.TownRoot, opts.DryRun)
+	if err != nil {
+		return err
+	}
+	opts.BeadID = movedID
+	result.BeadID = movedID
+	if opts.HookBead == "" || opts.HookBead == originalBeadID {
+		opts.HookBead = movedID
+	}
+	return nil
+}
+
+func guardCrossRigSling(opts *ResolveTargetOptions, rigName string) error {
+	if opts.BeadID == "" || opts.Force {
+		return nil
+	}
+	return checkCrossRigGuard(opts.BeadID, rigName+"/polecats/_", opts.TownRoot)
+}
+
+func spawnSlingPolecat(rigName string, opts *ResolveTargetOptions, result *ResolvedTarget, replaceDead bool) (*ResolvedTarget, error) {
+	spawnInfo, err := spawnPolecatForSling(rigName, SlingSpawnOptions{
+		TownRoot:      opts.TownRoot,
+		Force:         opts.Force,
+		Account:       opts.Account,
+		Create:        opts.Create,
+		HookBead:      opts.HookBead,
+		Agent:         opts.Agent,
+		BaseBranch:    opts.BaseBranch,
+		ResumeBranch:  opts.ResumeBranch,
+		SkipAdmission: opts.SkipPolecatAdmission,
+	})
+	if err != nil {
+		if replaceDead {
+			return nil, fmt.Errorf("spawning polecat to replace dead polecat: %w", err)
+		}
+		return nil, fmt.Errorf("spawning polecat: %w", err)
+	}
+	result.Agent = spawnInfo.AgentID()
+	result.NewPolecatInfo = spawnInfo
+	result.WorkDir = spawnInfo.ClonePath
+	result.HookSetAtomically = opts.HookBead != ""
+	if !opts.NoBoot {
+		wakeRigAgents(rigName)
+	}
+	return result, nil
+}
+
+func resolveNamedSlingTarget(target string, opts *ResolveTargetOptions, result *ResolvedTarget) (*ResolvedTarget, error) {
 	// Existing agent (with dead polecat fallback).
 	// Uses resolveTargetAgentFn seam — crew, mayor, and all existing agents
 	// resolve here, getting their pane for nudge delivery (gt-in7b).
 	agentID, pane, workDir, err := resolveTargetAgentFn(target)
 	if err != nil {
-		if rigName, crewName, crewDir, ok := stoppedCrewTarget(target, opts.TownRoot); ok {
-			if opts.DryRun {
-				fmt.Printf("Would start stopped crew member '%s/crew/%s'\n", rigName, crewName)
-				result.Agent = fmt.Sprintf("%s/crew/%s", rigName, crewName)
-				result.Pane = "<crew-pane>"
-				result.WorkDir = crewDir
-				return result, nil
-			}
-			fmt.Printf("Target crew member has no active session, starting '%s/crew/%s'...\n", rigName, crewName)
-			townRoot := opts.TownRoot
-			if townRoot == "" {
-				townRoot = filepath.Dir(filepath.Dir(filepath.Dir(crewDir)))
-			}
-			if startErr := startCrewMemberForSling(rigName, crewName, townRoot); startErr != nil {
-				return nil, fmt.Errorf("starting stopped crew member: %w", startErr)
-			}
-			agentID, pane, workDir, err = resolveTargetAgentFn(target)
-			if err != nil {
-				return nil, fmt.Errorf("resolving target after starting crew member: %w", err)
-			}
-		} else if rigName, ok := missingPolecatTargetRig(target, opts.Create, opts.TownRoot); ok {
-			if opts.BeadID != "" {
-				originalBeadID := opts.BeadID
-				movedID, err := ensureBeadInTargetRig(opts.BeadID, rigName, opts.TownRoot, opts.DryRun)
-				if err != nil {
-					return nil, err
-				}
-				opts.BeadID = movedID
-				result.BeadID = movedID
-				if opts.HookBead == "" || opts.HookBead == originalBeadID {
-					opts.HookBead = movedID
-				}
-			}
-			if opts.BeadID != "" && !opts.Force {
-				if err := checkCrossRigGuard(opts.BeadID, rigName+"/polecats/_", opts.TownRoot); err != nil {
-					return nil, err
-				}
-			}
-			fmt.Printf("Target polecat has no active session, spawning fresh polecat in rig '%s'...\n", rigName)
-			spawnOpts := SlingSpawnOptions{
-				TownRoot:      opts.TownRoot,
-				Force:         opts.Force,
-				Account:       opts.Account,
-				Create:        opts.Create,
-				HookBead:      opts.HookBead,
-				Agent:         opts.Agent,
-				BaseBranch:    opts.BaseBranch,
-				ResumeBranch:  opts.ResumeBranch,
-				SkipAdmission: opts.SkipPolecatAdmission,
-			}
-			spawnInfo, spawnErr := spawnPolecatForSling(rigName, spawnOpts)
-			if spawnErr != nil {
-				return nil, fmt.Errorf("spawning polecat to replace dead polecat: %w", spawnErr)
-			}
-			result.Agent = spawnInfo.AgentID()
-			result.NewPolecatInfo = spawnInfo
-			result.WorkDir = spawnInfo.ClonePath
-			result.HookSetAtomically = opts.HookBead != ""
-			if !opts.NoBoot {
-				wakeRigAgents(rigName)
-			}
-			return result, nil
-		} else {
-			return nil, fmt.Errorf("resolving target: %w", err)
-		}
+		return resolveFallbackSlingTarget(target, opts, result, err)
 	}
-	if opts.BeadID != "" && isPolecatTarget(agentID) {
-		parts := strings.Split(agentID, "/")
-		if len(parts) >= 3 && parts[1] == "polecats" {
-			rigName := parts[0]
-			originalBeadID := opts.BeadID
-			movedID, err := ensureBeadInTargetRig(opts.BeadID, rigName, opts.TownRoot, opts.DryRun)
-			if err != nil {
-				return nil, err
-			}
-			opts.BeadID = movedID
-			result.BeadID = movedID
-			if opts.HookBead == "" || opts.HookBead == originalBeadID {
-				opts.HookBead = movedID
-			}
-		}
+	return finishResolvedAgentTarget(agentID, pane, workDir, opts, result)
+}
+
+func resolveFallbackSlingTarget(target string, opts *ResolveTargetOptions, result *ResolvedTarget, resolveErr error) (*ResolvedTarget, error) {
+	if rigName, crewName, crewDir, ok := stoppedCrewTarget(target, opts.TownRoot); ok {
+		return startStoppedCrewSlingTarget(target, rigName, crewName, crewDir, opts, result)
+	}
+	if rigName, ok := missingPolecatTargetRig(target, opts.Create, opts.TownRoot); ok {
+		return spawnReplacementPolecatSlingTarget(rigName, opts, result)
+	}
+	return nil, fmt.Errorf("resolving target: %w", resolveErr)
+}
+
+func startStoppedCrewSlingTarget(target, rigName, crewName, crewDir string, opts *ResolveTargetOptions, result *ResolvedTarget) (*ResolvedTarget, error) {
+	if opts.DryRun {
+		fmt.Printf("Would start stopped crew member '%s/crew/%s'\n", rigName, crewName)
+		result.Agent = fmt.Sprintf("%s/crew/%s", rigName, crewName)
+		result.Pane = "<crew-pane>"
+		result.WorkDir = crewDir
+		return result, nil
+	}
+	fmt.Printf("Target crew member has no active session, starting '%s/crew/%s'...\n", rigName, crewName)
+	townRoot := opts.TownRoot
+	if townRoot == "" {
+		townRoot = filepath.Dir(filepath.Dir(filepath.Dir(crewDir)))
+	}
+	if startErr := startCrewMemberForSling(rigName, crewName, townRoot); startErr != nil {
+		return nil, fmt.Errorf("starting stopped crew member: %w", startErr)
+	}
+	agentID, pane, workDir, err := resolveTargetAgentFn(target)
+	if err != nil {
+		return nil, fmt.Errorf("resolving target after starting crew member: %w", err)
+	}
+	return finishResolvedAgentTarget(agentID, pane, workDir, opts, result)
+}
+
+func spawnReplacementPolecatSlingTarget(rigName string, opts *ResolveTargetOptions, result *ResolvedTarget) (*ResolvedTarget, error) {
+	if err := moveBeadForSlingTarget(opts, result, rigName); err != nil {
+		return nil, err
+	}
+	if err := guardCrossRigSling(opts, rigName); err != nil {
+		return nil, err
+	}
+	fmt.Printf("Target polecat has no active session, spawning fresh polecat in rig '%s'...\n", rigName)
+	return spawnSlingPolecat(rigName, opts, result, true)
+}
+
+func finishResolvedAgentTarget(agentID, pane, workDir string, opts *ResolveTargetOptions, result *ResolvedTarget) (*ResolvedTarget, error) {
+	if err := moveBeadForExistingPolecat(opts, result, agentID); err != nil {
+		return nil, err
 	}
 	result.Agent = agentID
 	result.Pane = pane
@@ -371,6 +386,17 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 		result.IsSelfSling = true
 	}
 	return result, nil
+}
+
+func moveBeadForExistingPolecat(opts *ResolveTargetOptions, result *ResolvedTarget, agentID string) error {
+	if opts.BeadID == "" || !isPolecatTarget(agentID) {
+		return nil
+	}
+	parts := strings.Split(agentID, "/")
+	if len(parts) < 3 || parts[1] != "polecats" {
+		return nil
+	}
+	return moveBeadForSlingTarget(opts, result, parts[0])
 }
 
 func stoppedCrewTarget(target, townRoot string) (rigName, crewName, crewDir string, ok bool) {

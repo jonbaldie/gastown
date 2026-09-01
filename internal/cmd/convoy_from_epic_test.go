@@ -67,7 +67,6 @@ func TestConvoyCreate_InvalidMergeFlag(t *testing.T) {
 			t.Errorf("merge=%q: unexpected error: %v", tt.value, err)
 		}
 	}
-	convoyMerge = "" // reset
 }
 
 // ---------------------------------------------------------------------------
@@ -76,8 +75,12 @@ func TestConvoyCreate_InvalidMergeFlag(t *testing.T) {
 
 func TestConvoyCreate_NoArgsNoFlag(t *testing.T) {
 	// Reset flags
-	convoyFromEpic = ""
-	convoyMerge = ""
+	if err := convoyCreateCmd.Flags().Set("from-epic", ""); err != nil {
+		t.Fatalf("reset --from-epic: %v", err)
+	}
+	if err := convoyCreateCmd.Flags().Set("merge", ""); err != nil {
+		t.Fatalf("reset --merge: %v", err)
+	}
 
 	err := runConvoyCreate(convoyCreateCmd, []string{})
 	if err == nil {

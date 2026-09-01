@@ -27,62 +27,81 @@ type execResponse struct {
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	req, ok := s.readExecRequest(w, r)
+	if !ok {
 		return
 	}
-
-	// Limit request body to prevent a misbehaving client from exhausting memory.
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
-
-	// Extract identity from client cert CN (format: gt-<rig>-<name>).
+	cmd0, ok := s.validateExecRequest(w, req)
+	if !ok {
+		return
+	}
 	identity := extractIdentity(r, s.cfg.TownRoot)
+	if !s.reserveExec(w, identity) {
+		return
+	}
+	defer func() { <-s.execSem }()
+	argv, envOverride := s.prepareExecArgv(req.Argv, cmd0)
+	execCtx, cancel := s.commandContext(r.Context())
+	defer cancel()
+	out, errOut, exitCode := runCommand(execCtx, argv, identity, envOverride)
+	s.logExecResult(identity, cmd0, req.Argv, exitCode)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(execResponse{Stdout: out, Stderr: errOut, ExitCode: exitCode})
+}
 
+func (s *Server) readExecRequest(w http.ResponseWriter, r *http.Request) (execRequest, bool) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return execRequest{}, false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
-		return
+		return execRequest{}, false
 	}
-
 	if len(req.Argv) == 0 {
 		http.Error(w, "argv is empty", http.StatusBadRequest)
-		return
+		return execRequest{}, false
 	}
+	return req, true
+}
 
-	// Validate argv[0] is in the allowlist.
+func (s *Server) validateExecRequest(w http.ResponseWriter, req execRequest) (string, bool) {
 	cmd0 := req.Argv[0]
 	if !s.isAllowed(cmd0) {
 		http.Error(w, fmt.Sprintf("command not allowed: %q", cmd0), http.StatusForbidden)
-		return
+		return "", false
 	}
-
-	// Validate argv[1] (subcommand) if this command has a subcommand allowlist.
-	if subs, ok := s.allowedSubs[cmd0]; ok {
-		sub, ok := allowedSubcommand(cmd0, req.Argv)
-		if !ok {
-			http.Error(w, "subcommand required", http.StatusForbidden)
-			return
-		}
-		if cmd0 == "bd" && beads.HasBDTargetSelectorFlag(req.Argv) {
-			http.Error(w, "bd target-selector global flags are not allowed", http.StatusForbidden)
-			return
-		}
-		if !subs[sub] {
-			http.Error(w, fmt.Sprintf("subcommand not allowed: %q %q", cmd0, sub), http.StatusForbidden)
-			return
-		}
+	subs, restricted := s.allowedSubs[cmd0]
+	if !restricted {
+		return cmd0, true
 	}
+	sub, ok := allowedSubcommand(cmd0, req.Argv)
+	if !ok {
+		http.Error(w, "subcommand required", http.StatusForbidden)
+		return "", false
+	}
+	if cmd0 == "bd" && beads.HasBDTargetSelectorFlag(req.Argv) {
+		http.Error(w, "bd target-selector global flags are not allowed", http.StatusForbidden)
+		return "", false
+	}
+	if !subs[sub] {
+		http.Error(w, fmt.Sprintf("subcommand not allowed: %q %q", cmd0, sub), http.StatusForbidden)
+		return "", false
+	}
+	return cmd0, true
+}
 
-	// Build argv as a copy of req.Argv to avoid mutating the decoded request.
-	argv := append([]string(nil), req.Argv...)
-	envOverride := []string(nil)
-	argv, envOverride = s.rewriteBDCreateRepo(argv)
-	// Use the resolved absolute binary path to prevent PATH hijacking after startup.
+func (s *Server) prepareExecArgv(requested []string, cmd0 string) ([]string, []string) {
+	argv, env := s.rewriteBDCreateRepo(append([]string(nil), requested...))
 	if resolved, ok := s.resolvedPaths[cmd0]; ok {
 		argv[0] = resolved
 	}
+	return argv, env
+}
 
-	// Per-client rate limiting: identified by cert CN (or "unknown" if absent).
+func (s *Server) reserveExec(w http.ResponseWriter, identity string) bool {
 	rateKey := identity
 	if rateKey == "" {
 		rateKey = "unknown"
@@ -90,47 +109,31 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	if !s.limiterFor(rateKey).Allow() {
 		s.log.Warn("exec rate limit exceeded", "identity", identity)
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
-		return
+		return false
 	}
-
-	// Global concurrency cap: reject immediately if all slots are busy.
 	select {
 	case s.execSem <- struct{}{}:
-		defer func() { <-s.execSem }()
+		return true
 	default:
 		s.log.Warn("exec concurrency limit exceeded", "identity", identity)
 		http.Error(w, "server busy", http.StatusServiceUnavailable)
+		return false
+	}
+}
+
+func (s *Server) commandContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if s.execTimeout > 0 {
+		return context.WithTimeout(parent, s.execTimeout)
+	}
+	return context.WithCancel(parent)
+}
+
+func (s *Server) logExecResult(identity, command string, argv []string, exitCode int) {
+	if exitCode == 0 {
+		s.log.Info("exec", "identity", identity, "cmd", command, "sub", subForLog(argv), "exit", exitCode)
 		return
 	}
-
-	execCtx := r.Context()
-	if s.execTimeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(execCtx, s.execTimeout)
-		defer cancel()
-	}
-	out, errOut, exitCode := runCommand(execCtx, argv, identity, envOverride)
-
-	// Audit log (do not log full argv — it may contain tokens or secrets).
-	if exitCode == 0 {
-		s.log.Info("exec", "identity", identity, "cmd", cmd0,
-			"sub", subForLog(req.Argv), "exit", exitCode)
-	} else {
-		s.log.Warn("exec failed", "identity", identity, "cmd", cmd0,
-			"sub", subForLog(req.Argv), "exit", exitCode)
-	}
-
-	// The handler always returns HTTP 200 even when the subprocess exits
-	// non-zero. This is intentional: the RPC call itself succeeded (the request was
-	// well-formed, the command was allowed, and the subprocess ran). The subprocess's
-	// outcome is reported in the JSON body via exitCode. Callers must inspect exitCode
-	// rather than the HTTP status to determine whether the command succeeded.
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(execResponse{
-		Stdout:   out,
-		Stderr:   errOut,
-		ExitCode: exitCode,
-	})
+	s.log.Warn("exec failed", "identity", identity, "cmd", command, "sub", subForLog(argv), "exit", exitCode)
 }
 
 // subForLog returns a truncated argv[1] if present, otherwise "".
@@ -183,24 +186,7 @@ func cnToIdentityInTown(cn, townRoot string) string {
 		return cnToIdentity(cn)
 	}
 
-	type candidate struct {
-		rig  string
-		name string
-	}
-	var candidates []candidate
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := polecatNameForRig(cn, entry.Name())
-		if name == "" {
-			continue
-		}
-		if info, statErr := os.Stat(filepath.Join(townRoot, entry.Name(), "polecats", name)); statErr == nil && info.IsDir() {
-			return entry.Name() + "/" + name
-		}
-		candidates = append(candidates, candidate{rig: entry.Name(), name: name})
-	}
+	candidates := identityCandidates(cn, townRoot, entries)
 	if len(candidates) == 0 {
 		return cnToIdentity(cn)
 	}
@@ -211,6 +197,29 @@ func cnToIdentityInTown(cn, townRoot string) string {
 		}
 	}
 	return best.rig + "/" + best.name
+}
+
+type identityCandidate struct {
+	rig  string
+	name string
+}
+
+func identityCandidates(cn, townRoot string, entries []os.DirEntry) []identityCandidate {
+	var candidates []identityCandidate
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := polecatNameForRig(cn, entry.Name())
+		if name == "" {
+			continue
+		}
+		if info, statErr := os.Stat(filepath.Join(townRoot, entry.Name(), "polecats", name)); statErr == nil && info.IsDir() {
+			return []identityCandidate{{rig: entry.Name(), name: name}}
+		}
+		candidates = append(candidates, identityCandidate{rig: entry.Name(), name: name})
+	}
+	return candidates
 }
 
 // polecatName extracts the polecat name from a CN of the form "gt-<rig>-<name>".
@@ -259,11 +268,11 @@ func (s *Server) isAllowed(cmd string) bool {
 // Acceptable for typical deployments (dozens of polecats); consider adding a
 // periodic sweep if the server handles thousands of unique certs.
 func (s *Server) limiterFor(identity string) *rate.Limiter {
-	if v, ok := s.rateLimiters.Load(identity); ok {
+	if v, ok := s.RateLimiters.Load(identity); ok {
 		return v.(*rate.Limiter)
 	}
-	l := rate.NewLimiter(s.rateLimit, s.rateBurst)
-	v, _ := s.rateLimiters.LoadOrStore(identity, l)
+	l := rate.NewLimiter(rate.Limit(s.rateLimit), s.rateBurst)
+	v, _ := s.RateLimiters.LoadOrStore(identity, l)
 	return v.(*rate.Limiter)
 }
 

@@ -27,28 +27,30 @@ func TestIsMergeRequestReadyForSelection(t *testing.T) {
 		{
 			name: "open issue with blocking dependency is not ready",
 			issue: &beads.Issue{
-				Status:       "open",
-				Dependencies: []beads.IssueDep{{ID: "gt-blocker", Status: "open", DependencyType: "blocks"}},
+				Status:                "open",
+				IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "gt-blocker", Status: "open", DependencyType: "blocks"}}},
 			},
 		},
 		{
 			name:  "open issue with unhydrated dependency count is not ready",
-			issue: &beads.Issue{Status: "open", DependencyCount: 1},
+			issue: &beads.Issue{Status: "open", IssueDependencyFields: beads.IssueDependencyFields{DependencyCount: 1}},
 		},
 		{
 			name: "closed dependency overrides stale blocked count",
 			issue: &beads.Issue{
-				Status:         "open",
-				BlockedByCount: 1,
-				Dependencies:   []beads.IssueDep{{ID: "gt-closed", Status: "closed", DependencyType: "blocks"}},
+				Status: "open",
+				IssueDependencyFields: beads.IssueDependencyFields{
+					BlockedByCount: 1,
+					Dependencies:   []beads.IssueDep{{ID: "gt-closed", Status: "closed", DependencyType: "blocks"}},
+				},
 			},
 			want: true,
 		},
 		{
 			name: "unmerged merge-block remains not ready",
 			issue: &beads.Issue{
-				Status:       "open",
-				Dependencies: []beads.IssueDep{{ID: "gt-closed-only", Status: "closed", DependencyType: "merge-blocks"}},
+				Status:                "open",
+				IssueDependencyFields: beads.IssueDependencyFields{Dependencies: []beads.IssueDep{{ID: "gt-closed-only", Status: "closed", DependencyType: "merge-blocks"}}},
 			},
 		},
 	}

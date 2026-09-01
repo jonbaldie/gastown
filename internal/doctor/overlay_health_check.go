@@ -103,39 +103,47 @@ func (c *OverlayHealthCheck) Fix(ctx *CheckContext) error {
 	files := c.scanOverlays(ctx.TownRoot)
 
 	for _, f := range files {
-		if f.ParseErr != nil || len(f.StaleIDs) == 0 {
-			continue
-		}
-
-		// Build set of stale IDs for quick lookup.
-		staleSet := make(map[string]bool, len(f.StaleIDs))
-		for _, id := range f.StaleIDs {
-			staleSet[id] = true
-		}
-
-		// Filter out stale overrides.
-		var kept []formula.StepOverride
-		for _, so := range f.Overlay.StepOverrides {
-			if !staleSet[so.StepID] {
-				kept = append(kept, so)
-			}
-		}
-
-		if len(kept) == 0 {
-			// All overrides were stale — remove the file entirely.
-			if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("removing empty overlay %s: %w", f.Path, err)
-			}
-			continue
-		}
-
-		// Re-encode with remaining overrides.
-		f.Overlay.StepOverrides = kept
-		if err := writeOverlayFile(f.Path, f.Overlay); err != nil {
-			return fmt.Errorf("writing overlay %s: %w", f.Path, err)
+		if err := fixOverlayFile(f); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+func fixOverlayFile(f overlayFile) error {
+	if f.ParseErr != nil || len(f.StaleIDs) == 0 {
+		return nil
+	}
+	kept := keptOverlayOverrides(f)
+	if len(kept) == 0 {
+		return removeEmptyOverlay(f.Path)
+	}
+	f.Overlay.StepOverrides = kept
+	if err := writeOverlayFile(f.Path, f.Overlay); err != nil {
+		return fmt.Errorf("writing overlay %s: %w", f.Path, err)
+	}
+	return nil
+}
+
+func keptOverlayOverrides(f overlayFile) []formula.StepOverride {
+	staleSet := make(map[string]bool, len(f.StaleIDs))
+	for _, id := range f.StaleIDs {
+		staleSet[id] = true
+	}
+	kept := make([]formula.StepOverride, 0, len(f.Overlay.StepOverrides))
+	for _, so := range f.Overlay.StepOverrides {
+		if !staleSet[so.StepID] {
+			kept = append(kept, so)
+		}
+	}
+	return kept
+}
+
+func removeEmptyOverlay(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing empty overlay %s: %w", path, err)
+	}
 	return nil
 }
 
@@ -167,69 +175,61 @@ func scanOverlayDir(dir string) []overlayFile {
 
 	var results []overlayFile
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".toml") {
+		if !isOverlayFile(entry) {
 			continue
 		}
-
 		path := filepath.Join(dir, entry.Name())
 		formulaName := strings.TrimSuffix(entry.Name(), ".toml")
-
-		of := overlayFile{
-			Path:        path,
-			FormulaName: formulaName,
-		}
-
-		// Parse the overlay file.
-		data, err := os.ReadFile(path) //nolint:gosec // G304: trusted overlay directory
-		if err != nil {
-			of.ParseErr = err
-			results = append(results, of)
-			continue
-		}
-
-		var overlay formula.FormulaOverlay
-		if _, err := toml.Decode(string(data), &overlay); err != nil {
-			of.ParseErr = fmt.Errorf("parsing TOML: %w", err)
-			results = append(results, of)
-			continue
-		}
-		of.Overlay = &overlay
-
-		// Load the embedded formula to get valid step IDs.
-		embeddedContent, err := formula.GetEmbeddedFormulaContent(formulaName)
-		if err != nil {
-			// Formula not found in embedded binary — all step IDs are stale.
-			for _, so := range overlay.StepOverrides {
-				of.StaleIDs = append(of.StaleIDs, so.StepID)
-			}
-			results = append(results, of)
-			continue
-		}
-
-		f, err := formula.Parse(embeddedContent)
-		if err != nil {
-			// Embedded formula can't be parsed — skip validation.
-			results = append(results, of)
-			continue
-		}
-
-		// Build set of valid IDs from the formula.
-		validIDs := make(map[string]bool)
-		for _, id := range f.GetAllIDs() {
-			validIDs[id] = true
-		}
-
-		// Check each override step_id.
-		for _, so := range overlay.StepOverrides {
-			if !validIDs[so.StepID] {
-				of.StaleIDs = append(of.StaleIDs, so.StepID)
-			}
-		}
-
-		results = append(results, of)
+		results = append(results, parseOverlayFile(path, formulaName))
 	}
 
 	return results
+}
+
+func isOverlayFile(entry os.DirEntry) bool {
+	return !entry.IsDir() && strings.HasSuffix(entry.Name(), ".toml")
+}
+
+func parseOverlayFile(path, formulaName string) overlayFile {
+	of := overlayFile{Path: path, FormulaName: formulaName}
+	data, err := os.ReadFile(path) //nolint:gosec // G304: trusted overlay directory
+	if err != nil {
+		of.ParseErr = err
+		return of
+	}
+	var overlay formula.FormulaOverlay
+	if _, err := toml.Decode(string(data), &overlay); err != nil {
+		of.ParseErr = fmt.Errorf("parsing TOML: %w", err)
+		return of
+	}
+	of.Overlay = &overlay
+	embeddedContent, err := formula.GetEmbeddedFormulaContent(formulaName)
+	if err != nil {
+		for _, so := range overlay.StepOverrides {
+			of.StaleIDs = append(of.StaleIDs, so.StepID)
+		}
+		return of
+	}
+	f, err := formula.Parse(embeddedContent)
+	if err != nil {
+		return of
+	}
+	of.StaleIDs = staleOverlayIDs(overlay, f.GetAllIDs())
+	return of
+}
+
+func staleOverlayIDs(overlay formula.FormulaOverlay, valid []string) []string {
+	validIDs := make(map[string]bool, len(valid))
+	for _, id := range valid {
+		validIDs[id] = true
+	}
+	var stale []string
+	for _, so := range overlay.StepOverrides {
+		if !validIDs[so.StepID] {
+			stale = append(stale, so.StepID)
+		}
+	}
+	return stale
 }
 
 // writeOverlayFile encodes a FormulaOverlay back to TOML and writes it to disk.

@@ -56,10 +56,7 @@ func NewOrphanSessionCheckWithSessionLister(lister SessionLister) *OrphanSession
 
 // Run checks for orphaned Gas Town tmux sessions.
 func (c *OrphanSessionCheck) Run(ctx *CheckContext) *CheckResult {
-	lister := c.sessionLister
-	if lister == nil {
-		lister = &realSessionLister{t: tmux.NewTmux()}
-	}
+	lister := c.getSessionLister()
 
 	sessions, err := lister.ListSessions()
 	if err != nil {
@@ -79,36 +76,50 @@ func (c *OrphanSessionCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Get list of valid rigs
 	validRigs := c.getValidRigs(ctx.TownRoot)
+	orphans, validCount := c.classifySessions(sessions, validRigs)
 
-	// Get session names for mayor/deacon
+	c.orphanSessions = orphans
+	return c.sessionResult(validCount, orphans)
+}
+
+func (c *OrphanSessionCheck) getSessionLister() SessionLister {
+	if c.sessionLister != nil {
+		return c.sessionLister
+	}
+	return &realSessionLister{t: tmux.NewTmux()}
+}
+
+func (c *OrphanSessionCheck) classifySessions(sessions, validRigs []string) ([]string, int) {
 	mayorSession := session.MayorSessionName()
 	deaconSession := session.DeaconSessionName()
-
-	// Check each session
 	var orphans []string
-	var validCount int
-
+	validCount := 0
 	for _, sess := range sessions {
-		if sess == "" {
+		valid, considered := c.classifySession(sess, validRigs, mayorSession, deaconSession)
+		if !considered {
 			continue
 		}
-
-		// Only check sessions that parse as Gas Town sessions
-		if _, err := session.ParseSessionName(sess); err != nil {
-			continue
-		}
-
-		if c.isValidSession(sess, validRigs, mayorSession, deaconSession) {
+		if valid {
 			validCount++
 		} else {
 			orphans = append(orphans, sess)
 		}
 	}
+	return orphans, validCount
+}
 
-	// Cache orphans for Fix
-	c.orphanSessions = orphans
+func (c *OrphanSessionCheck) classifySession(sess string, validRigs []string, mayorSession, deaconSession string) (bool, bool) {
+	if sess == "" {
+		return false, false
+	}
+	if _, err := session.ParseSessionName(sess); err != nil {
+		return false, false
+	}
+	return c.isValidSession(sess, validRigs, mayorSession, deaconSession), true
+}
+
+func (c *OrphanSessionCheck) sessionResult(validCount int, orphans []string) *CheckResult {
 
 	if len(orphans) == 0 {
 		return &CheckResult{
@@ -133,7 +144,7 @@ func (c *OrphanSessionCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix kills all orphaned sessions, except crew sessions which are protected.
-func (c *OrphanSessionCheck) Fix(ctx *CheckContext) error {
+func (c *OrphanSessionCheck) Fix(_ *CheckContext) error {
 	if len(c.orphanSessions) == 0 {
 		return nil
 	}
@@ -142,21 +153,22 @@ func (c *OrphanSessionCheck) Fix(ctx *CheckContext) error {
 	var lastErr error
 
 	for _, sess := range c.orphanSessions {
-		// SAFEGUARD: Never auto-kill crew sessions.
-		// Crew workers are human-managed and require explicit action.
-		if isCrewSession(sess) {
-			continue
-		}
-		// Log pre-death event for crash investigation (before killing)
-		_ = events.LogFeed(events.TypeSessionDeath, sess,
-			events.SessionDeathPayload(sess, "unknown", "orphan cleanup", "gt doctor"))
-		// Use KillSessionWithProcesses to ensure all descendant processes are killed.
-		if err := t.KillSessionWithProcesses(sess); err != nil {
+		if err := fixOrphanSession(t, sess); err != nil {
 			lastErr = err
 		}
 	}
 
 	return lastErr
+}
+
+func fixOrphanSession(t *tmux.Tmux, sess string) error {
+	// SAFEGUARD: Never auto-kill crew sessions. Crew workers are human-managed.
+	if isCrewSession(sess) {
+		return nil
+	}
+	_ = events.LogFeed(events.TypeSessionDeath, sess,
+		events.SessionDeathPayload(sess, "unknown", "orphan cleanup", "gt doctor"))
+	return t.KillSessionWithProcesses(sess)
 }
 
 // isCrewSession returns true if the session name matches the crew pattern.
@@ -171,30 +183,34 @@ func isCrewSession(sess string) bool {
 
 // getValidRigs returns a list of valid rig names from the workspace.
 func (c *OrphanSessionCheck) getValidRigs(townRoot string) []string {
-	var rigs []string
-
-	// Read rigs.json if it exists
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	if _, err := os.Stat(rigsPath); err == nil {
-		// For simplicity, just scan directories at town root that look like rigs
-		entries, err := os.ReadDir(townRoot)
-		if err == nil {
-			for _, entry := range entries {
-				if entry.IsDir() && entry.Name() != "mayor" && entry.Name() != ".beads" && !strings.HasPrefix(entry.Name(), ".") {
-					// Check if it looks like a rig (has polecats/ or crew/ directory)
-					polecatsDir := filepath.Join(townRoot, entry.Name(), "polecats")
-					crewDir := filepath.Join(townRoot, entry.Name(), "crew")
-					if _, err := os.Stat(polecatsDir); err == nil {
-						rigs = append(rigs, entry.Name())
-					} else if _, err := os.Stat(crewDir); err == nil {
-						rigs = append(rigs, entry.Name())
-					}
-				}
-			}
-		}
+	if _, err := os.Stat(rigsPath); err != nil {
+		return nil
 	}
 
+	entries, err := os.ReadDir(townRoot)
+	if err != nil {
+		return nil
+	}
+	var rigs []string
+	for _, entry := range entries {
+		if isValidRigEntry(townRoot, entry) {
+			rigs = append(rigs, entry.Name())
+		}
+	}
 	return rigs
+}
+
+func isValidRigEntry(townRoot string, entry os.DirEntry) bool {
+	if !entry.IsDir() || entry.Name() == "mayor" || entry.Name() == ".beads" || strings.HasPrefix(entry.Name(), ".") {
+		return false
+	}
+	polecatsDir := filepath.Join(townRoot, entry.Name(), "polecats")
+	if _, err := os.Stat(polecatsDir); err == nil {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(townRoot, entry.Name(), "crew"))
+	return err == nil
 }
 
 // isValidSession checks if a session name matches expected Gas Town patterns.
@@ -208,18 +224,7 @@ func (c *OrphanSessionCheck) getValidRigs(townRoot string) []string {
 //
 // Note: We can't verify polecat names without reading state, so we're permissive.
 func (c *OrphanSessionCheck) isValidSession(sess string, validRigs []string, mayorSession, deaconSession string) bool {
-	// Mayor session is always valid (dynamic name based on town)
-	if mayorSession != "" && sess == mayorSession {
-		return true
-	}
-
-	// Deacon session is always valid (dynamic name based on town)
-	if deaconSession != "" && sess == deaconSession {
-		return true
-	}
-
-	// Boot watchdog session is always valid
-	if sess == session.BootSessionName() {
+	if isAlwaysValidSession(sess, mayorSession, deaconSession) {
 		return true
 	}
 
@@ -235,44 +240,34 @@ func (c *OrphanSessionCheck) isValidSession(sess string, validRigs []string, may
 		return true
 	}
 
-	// Check if this rig exists.
+	return rigExistsForSession(identity, validRigs)
+}
+
+func isAlwaysValidSession(sess, mayorSession, deaconSession string) bool {
+	return (mayorSession != "" && sess == mayorSession) ||
+		(deaconSession != "" && sess == deaconSession) ||
+		sess == session.BootSessionName()
+}
+
+func rigExistsForSession(identity *session.AgentIdentity, validRigs []string) bool {
 	// For polecats, ParseSessionName assumes rig = everything except last segment,
-	// but polecat names can contain hyphens (e.g., gt-niflheim-fix-auth-bug where
-	// rig=niflheim, name=fix-auth-bug). If the initial parse doesn't match a valid
-	// rig, check if any valid rig is a prefix of the session suffix.
-	rigFound := false
+	// but polecat names can contain hyphens. If the initial parse does not match,
+	// check whether a registered rig is the session prefix.
+	rigName := identity.Rig
 	for _, r := range validRigs {
 		if r == rigName {
-			rigFound = true
-			break
+			return true
 		}
 	}
 
-	if !rigFound && identity.Role == session.RolePolecat {
-		// Try alternate rig interpretations: check if any valid rig
-		// matches the parsed prefix (via the registry)
+	if identity.Role == session.RolePolecat {
 		for _, r := range validRigs {
 			if session.PrefixFor(r) == identity.Prefix {
-				rigFound = true
-				break
+				return true
 			}
 		}
 	}
-
-	if !rigFound {
-		// Unknown rig - this is an orphan
-		return false
-	}
-
-	// witness, refinery, crew, and polecat are all valid roles
-	switch identity.Role {
-	case session.RoleWitness, session.RoleRefinery, session.RoleCrew, session.RolePolecat:
-		return true
-	}
-
-	// Any other role is assumed valid if the rig exists
-	// We can't easily verify without reading state, so accept it
-	return true
+	return false
 }
 
 // OrphanProcessCheck detects runtime processes that are not
@@ -296,7 +291,7 @@ func NewOrphanProcessCheck() *OrphanProcessCheck {
 }
 
 // Run checks for runtime processes running outside tmux.
-func (c *OrphanProcessCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *OrphanProcessCheck) Run(_ *CheckContext) *CheckResult {
 	// Get list of tmux session PIDs
 	tmuxPIDs, err := c.getTmuxSessionPIDs()
 	if err != nil {

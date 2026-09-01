@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/constants"
@@ -42,9 +41,16 @@ func NewStaleAgentBeadsCheck() *StaleAgentBeadsCheck {
 
 // Run checks for agent beads that have no matching agent on disk.
 func (c *StaleAgentBeadsCheck) Run(ctx *CheckContext) *CheckResult {
-	// Load routes to get prefixes
-	beadsDir := filepath.Join(ctx.TownRoot, ".beads")
-	routes, err := beads.LoadRoutes(beadsDir)
+	return runStaleAgentBeadsCheck(c, ctx)
+}
+
+type staleAgentRoutes struct {
+	prefixToRig   map[string]rigInfo
+	knownPrefixes map[string]bool
+}
+
+func runStaleAgentBeadsCheck(c *StaleAgentBeadsCheck, ctx *CheckContext) *CheckResult {
+	routes, err := beads.LoadRoutes(filepath.Join(ctx.TownRoot, ".beads"))
 	if err != nil {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -53,188 +59,168 @@ func (c *StaleAgentBeadsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Build prefix -> rigInfo map from routes
-	prefixToRig := make(map[string]rigInfo)
-	knownPrefixes := make(map[string]bool) // all known prefixes including town-level
-	for _, r := range routes {
-		parts := strings.Split(r.Path, "/")
-		if len(parts) >= 1 && parts[0] != "." {
-			rigName := parts[0]
-			prefix := strings.TrimSuffix(r.Prefix, "-")
-			prefixToRig[prefix] = rigInfo{
-				name:      rigName,
-				beadsPath: r.Path,
-			}
-			knownPrefixes[prefix] = true
-		} else {
-			// Town-level route (path ".") — track prefix but don't add to prefixToRig
-			prefix := strings.TrimSuffix(r.Prefix, "-")
-			knownPrefixes[prefix] = true
-		}
+	routeInfo := buildStaleAgentRoutes(routes)
+	stale := scanKnownRigBeads(ctx, routeInfo.prefixToRig)
+	stale = append(stale, scanTownAgentBeads(ctx, routeInfo)...)
+	return staleAgentResult(c, dedup(stale))
+}
+
+func buildStaleAgentRoutes(routes []beads.Route) staleAgentRoutes {
+	result := staleAgentRoutes{
+		prefixToRig:   make(map[string]rigInfo),
+		knownPrefixes: make(map[string]bool),
 	}
+	for _, route := range routes {
+		prefix := strings.TrimSuffix(route.Prefix, "-")
+		result.knownPrefixes[prefix] = true
+		parts := strings.Split(route.Path, "/")
+		if parts[0] == "." {
+			continue
+		}
+		result.prefixToRig[prefix] = rigInfo{name: parts[0], beadsPath: route.Path}
+	}
+	return result
+}
 
-	var stale []string
-	var staleMu sync.Mutex
-
-	// Phase 1: Check known rigs for stale crew/polecat beads.
-	// Run rigs in parallel — each rig spawns 2 bd subprocesses (List +
-	// ListAgentBeadsFromWisps). With 6 rigs sequentially, that's 12 calls;
-	// under Dolt memory pressure each can take 30s of retry, so the check
-	// would block the whole doctor for ~6 minutes. Parallelizing collapses
-	// the wall-clock time to roughly the slowest single rig.
-	// Investigation: dc-1pq8 (forensic report 2026-05-02).
-	var wg sync.WaitGroup
+func scanKnownRigBeads(ctx *CheckContext, prefixToRig map[string]rigInfo) []string {
+	if len(prefixToRig) == 0 {
+		return nil
+	}
+	results := make(chan []string, len(prefixToRig))
 	for prefix, info := range prefixToRig {
-		wg.Add(1)
 		go func(prefix string, info rigInfo) {
-			defer wg.Done()
-
-			rigBeadsPath := filepath.Join(ctx.TownRoot, info.beadsPath)
-			bd := beads.New(rigBeadsPath)
-			rigName := info.name
-
-			// Get actual crew workers on disk
-			crewDiskWorkers := listCrewWorkers(ctx.TownRoot, rigName)
-			crewDiskSet := make(map[string]bool, len(crewDiskWorkers))
-			for _, w := range crewDiskWorkers {
-				crewDiskSet[w] = true
-			}
-
-			// Get actual polecats on disk
-			polecatDiskWorkers := listPolecats(ctx.TownRoot, rigName)
-			polecatDiskSet := make(map[string]bool, len(polecatDiskWorkers))
-			for _, w := range polecatDiskWorkers {
-				polecatDiskSet[w] = true
-			}
-
-			// Agent bead ID patterns:
-			// Crew:    prefix-rig-crew-name (or prefix-crew-name when prefix == rig)
-			// Polecat: prefix-rig-polecat-name (or prefix-polecat-name when prefix == rig)
-			crewPrefix := beads.AgentBeadIDWithPrefix(prefix, rigName, constants.RoleCrew, "") + "-"
-			polecatPrefix := beads.AgentBeadIDWithPrefix(prefix, rigName, constants.RolePolecat, "") + "-"
-			allBeads, err := bd.List(beads.ListOptions{
-				Status:   "open",
-				Priority: -1,
-				Label:    "gt:agent",
-			})
-			if err != nil {
-				return
-			}
-
-			// Also check wisps table for migrated agent beads
-			if wispMap, _ := bd.ListAgentBeadsFromWisps(); len(wispMap) > 0 {
-				for _, w := range wispMap {
-					if w.Status == "open" || w.Status == "in_progress" || w.Status == "hooked" {
-						allBeads = append(allBeads, w)
-					}
-				}
-			}
-
-			var rigStale []string
-			for _, issue := range allBeads {
-				switch {
-				case strings.HasPrefix(issue.ID, crewPrefix):
-					workerName := strings.TrimPrefix(issue.ID, crewPrefix)
-					if workerName != "" && !crewDiskSet[workerName] {
-						rigStale = append(rigStale, issue.ID)
-					}
-				case strings.HasPrefix(issue.ID, polecatPrefix):
-					workerName := strings.TrimPrefix(issue.ID, polecatPrefix)
-					if workerName != "" && !polecatDiskSet[workerName] {
-						rigStale = append(rigStale, issue.ID)
-					}
-				}
-			}
-
-			if len(rigStale) > 0 {
-				staleMu.Lock()
-				stale = append(stale, rigStale...)
-				staleMu.Unlock()
-			}
+			results <- scanRigAgentBeads(ctx, prefix, info)
 		}(prefix, info)
 	}
-	wg.Wait()
+	var stale []string
+	for range prefixToRig {
+		stale = append(stale, <-results...)
+	}
+	return stale
+}
 
-	// Phase 2: Detect orphaned agent beads from deregistered rigs.
-	// Scan the town beads database for agent beads whose prefix doesn't match
-	// any route in routes.jsonl. These accumulate when a rig is removed via
-	// gt rig remove but its agent beads in the town database are not cleaned up.
-	townBeadsPath := beads.GetTownBeadsPath(ctx.TownRoot)
-	townBd := beads.New(townBeadsPath)
-	if townAgents, err := townBd.ListAgentBeads(); err == nil {
-		for id, issue := range townAgents {
-			// Skip closed/non-active beads
-			if issue.Status != "open" && issue.Status != "in_progress" && issue.Status != "hooked" {
-				continue
-			}
-			// Only check beads that are agent type
-			if issue.Type != "agent" {
-				continue
-			}
-			// Parse the bead ID to extract its prefix
-			rig, role, _, ok := beads.ParseAgentBeadID(id)
-			if !ok {
-				continue
-			}
-			// Skip town-level agents (mayor, deacon, dogs) — they don't belong to a rig
-			if rig == "" {
-				continue
-			}
-			// Extract the prefix from the ID (everything before the first hyphen)
-			hyphenIdx := strings.Index(id, "-")
-			if hyphenIdx < 0 {
-				continue
-			}
-			idPrefix := id[:hyphenIdx]
-			// If prefix is not in any known route, this is an orphan from a deregistered rig
-			if !knownPrefixes[idPrefix] {
-				stale = append(stale, id)
-				continue
-			}
-			// Also check: known prefix but the rig directory no longer exists on disk.
-			// This catches beads stored in the town DB (hq) for rigs that still have
-			// routes but whose crew/polecat workers were removed. The per-rig scan in
-			// Phase 1 may miss these if the beads are in hq rather than the rig DB.
-			if info, exists := prefixToRig[idPrefix]; exists {
-				switch role {
-				case constants.RoleCrew:
-					workerName := parseCrewOrPolecatFromID(id, idPrefix, info.name, constants.RoleCrew)
-					if workerName != "" {
-						crewWorkers := listCrewWorkers(ctx.TownRoot, info.name)
-						found := false
-						for _, w := range crewWorkers {
-							if w == workerName {
-								found = true
-								break
-							}
-						}
-						if !found {
-							stale = append(stale, id)
-						}
-					}
-				case constants.RolePolecat:
-					workerName := parseCrewOrPolecatFromID(id, idPrefix, info.name, constants.RolePolecat)
-					if workerName != "" {
-						polecats := listPolecats(ctx.TownRoot, info.name)
-						found := false
-						for _, p := range polecats {
-							if p == workerName {
-								found = true
-								break
-							}
-						}
-						if !found {
-							stale = append(stale, id)
-						}
-					}
-				}
-			}
+func scanRigAgentBeads(ctx *CheckContext, prefix string, info rigInfo) []string {
+	rigName := info.name
+	bd := beads.New(filepath.Join(ctx.TownRoot, info.beadsPath))
+	crewDiskSet := workerSet(listCrewWorkers(ctx.TownRoot, rigName))
+	polecatDiskSet := workerSet(listPolecats(ctx.TownRoot, rigName))
+	crewPrefix := beads.AgentBeadIDWithPrefix(prefix, rigName, constants.RoleCrew, "") + "-"
+	polecatPrefix := beads.AgentBeadIDWithPrefix(prefix, rigName, constants.RolePolecat, "") + "-"
+	allBeads, err := bd.List(beads.ListOptions{Status: "open", Priority: -1, Label: "gt:agent"})
+	if err != nil {
+		return nil
+	}
+	allBeads = append(allBeads, openWispAgentBeads(bd)...)
+	return staleRigBeads(allBeads, crewPrefix, polecatPrefix, crewDiskSet, polecatDiskSet)
+}
+
+func workerSet(workers []string) map[string]bool {
+	set := make(map[string]bool, len(workers))
+	for _, worker := range workers {
+		set[worker] = true
+	}
+	return set
+}
+
+func openWispAgentBeads(bd *beads.Beads) []*beads.Issue {
+	wispMap, _ := bd.ListAgentBeadsFromWisps()
+	var open []*beads.Issue
+	for _, issue := range wispMap {
+		if issue.Status == "open" || issue.Status == "in_progress" || issue.Status == "hooked" {
+			open = append(open, issue)
 		}
 	}
+	return open
+}
 
-	// Deduplicate stale list (Phase 1 and Phase 2 may find the same beads)
-	stale = dedup(stale)
+func staleRigBeads(allBeads []*beads.Issue, crewPrefix, polecatPrefix string, crewWorkers, polecatWorkers map[string]bool) []string {
+	var stale []string
+	for _, issue := range allBeads {
+		if staleWorkerBead(issue.ID, crewPrefix, crewWorkers) || staleWorkerBead(issue.ID, polecatPrefix, polecatWorkers) {
+			stale = append(stale, issue.ID)
+		}
+	}
+	return stale
+}
 
+func staleWorkerBead(id, prefix string, workers map[string]bool) bool {
+	if !strings.HasPrefix(id, prefix) {
+		return false
+	}
+	workerName := strings.TrimPrefix(id, prefix)
+	return workerName != "" && !workers[workerName]
+}
+
+func scanTownAgentBeads(ctx *CheckContext, routes staleAgentRoutes) []string {
+	townBd := beads.New(beads.GetTownBeadsPath(ctx.TownRoot))
+	townAgents, err := townBd.ListAgentBeads()
+	if err != nil {
+		return nil
+	}
+	var stale []string
+	for id, issue := range townAgents {
+		if isStaleTownAgentBead(ctx, id, issue, routes) {
+			stale = append(stale, id)
+		}
+	}
+	return stale
+}
+
+func isStaleTownAgentBead(ctx *CheckContext, id string, issue *beads.Issue, routes staleAgentRoutes) bool {
+	if !isActiveAgentBead(issue) {
+		return false
+	}
+	rig, role, _, ok := beads.ParseAgentBeadID(id)
+	if !ok || rig == "" {
+		return false
+	}
+	idPrefix := agentIDPrefix(id)
+	if idPrefix == "" {
+		return false
+	}
+	if !routes.knownPrefixes[idPrefix] {
+		return true
+	}
+	info, exists := routes.prefixToRig[idPrefix]
+	return exists && missingKnownRigWorker(ctx, id, idPrefix, info, role)
+}
+
+func isActiveAgentBead(issue *beads.Issue) bool {
+	if issue == nil || issue.Type != "agent" {
+		return false
+	}
+	return issue.Status == "open" || issue.Status == "in_progress" || issue.Status == "hooked"
+}
+
+func agentIDPrefix(id string) string {
+	idx := strings.Index(id, "-")
+	if idx < 0 {
+		return ""
+	}
+	return id[:idx]
+}
+
+func missingKnownRigWorker(ctx *CheckContext, id, prefix string, info rigInfo, role string) bool {
+	if role != constants.RoleCrew && role != constants.RolePolecat {
+		return false
+	}
+	workerName := parseCrewOrPolecatFromID(id, prefix, info.name, role)
+	if workerName == "" {
+		return false
+	}
+	workers := listCrewWorkers(ctx.TownRoot, info.name)
+	if role == constants.RolePolecat {
+		workers = listPolecats(ctx.TownRoot, info.name)
+	}
+	for _, worker := range workers {
+		if worker == workerName {
+			return false
+		}
+	}
+	return true
+}
+
+func staleAgentResult(c *StaleAgentBeadsCheck, stale []string) *CheckResult {
 	if len(stale) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -242,7 +228,6 @@ func (c *StaleAgentBeadsCheck) Run(ctx *CheckContext) *CheckResult {
 			Message: "No stale agent beads found",
 		}
 	}
-
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusWarning,
@@ -289,57 +274,57 @@ func dedup(s []string) []string {
 // For orphan beads from deregistered rigs (unknown prefix), closes via the
 // town beads client since that's where they were found by Phase 2 detection.
 func (c *StaleAgentBeadsCheck) Fix(ctx *CheckContext) error {
-	// Re-run detection to get current stale list
 	result := c.Run(ctx)
 	if result.Status == StatusOK {
 		return nil
 	}
+	return fixStaleAgentBeads(ctx, result.Details)
+}
 
-	// Load routes to get beads paths
-	beadsDir := filepath.Join(ctx.TownRoot, ".beads")
-	routes, err := beads.LoadRoutes(beadsDir)
+func fixStaleAgentBeads(ctx *CheckContext, stale []string) error {
+	routes, err := beads.LoadRoutes(filepath.Join(ctx.TownRoot, ".beads"))
 	if err != nil {
 		return fmt.Errorf("loading routes.jsonl: %w", err)
 	}
 
-	// Build prefix -> beads path map
-	prefixToPath := make(map[string]string)
-	for _, r := range routes {
-		parts := strings.Split(r.Path, "/")
-		if len(parts) >= 1 && parts[0] != "." {
-			prefix := strings.TrimSuffix(r.Prefix, "-")
-			prefixToPath[prefix] = filepath.Join(ctx.TownRoot, r.Path)
-		}
-	}
-
-	// Town beads client as fallback for orphan beads from deregistered rigs
+	prefixToPath := staleAgentPrefixPaths(ctx.TownRoot, routes)
 	townBeadsPath := beads.GetTownBeadsPath(ctx.TownRoot)
 	townBd := beads.New(townBeadsPath)
 
-	// Close each stale bead
-	closedStatus := "closed"
 	var errs []error
-	for _, beadID := range result.Details {
-		// Determine which rig's beads client to use based on bead ID prefix
-		var bd *beads.Beads
-		for prefix, path := range prefixToPath {
-			if strings.HasPrefix(beadID, prefix+"-") {
-				bd = beads.New(path)
-				break
-			}
-		}
-		if bd == nil {
-			// Unknown prefix — orphan from deregistered rig. These beads
-			// live in the town database (hq), so close them there.
-			bd = townBd
-		}
-
-		if err := bd.Update(beadID, beads.UpdateOptions{
-			Status: &closedStatus,
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("closing stale bead %s: %w", beadID, err))
+	for _, beadID := range stale {
+		if err := closeStaleAgentBead(beadID, prefixToPath, townBd); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
 	return errors.Join(errs...)
+}
+
+func staleAgentPrefixPaths(townRoot string, routes []beads.Route) map[string]string {
+	prefixToPath := make(map[string]string)
+	for _, route := range routes {
+		parts := strings.Split(route.Path, "/")
+		if parts[0] == "." {
+			continue
+		}
+		prefix := strings.TrimSuffix(route.Prefix, "-")
+		prefixToPath[prefix] = filepath.Join(townRoot, route.Path)
+	}
+	return prefixToPath
+}
+
+func closeStaleAgentBead(beadID string, prefixToPath map[string]string, townBd *beads.Beads) error {
+	bd := townBd
+	for prefix, path := range prefixToPath {
+		if strings.HasPrefix(beadID, prefix+"-") {
+			bd = beads.New(path)
+			break
+		}
+	}
+	closedStatus := "closed"
+	if err := bd.Update(beadID, beads.UpdateOptions{Status: &closedStatus}); err != nil {
+		return fmt.Errorf("closing stale bead %s: %w", beadID, err)
+	}
+	return nil
 }

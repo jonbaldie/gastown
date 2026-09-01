@@ -15,11 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	themeListFlag     bool
-	themeApplyAllFlag bool
-)
-
 // Valid CLI theme modes
 var validCLIThemes = []string{"auto", "dark", "light"}
 
@@ -79,14 +74,15 @@ func init() {
 	rootCmd.AddCommand(themeCmd)
 	themeCmd.AddCommand(themeApplyCmd)
 	themeCmd.AddCommand(themeCLICmd)
-	themeCmd.Flags().BoolVarP(&themeListFlag, "list", "l", false, "List available themes")
-	themeApplyCmd.Flags().BoolVarP(&themeApplyAllFlag, "all", "a", false, "Apply to all rigs, not just current")
+	themeCmd.Flags().BoolP("list", "l", false, "List available themes")
+	themeApplyCmd.Flags().BoolP("all", "a", false, "Apply to all rigs, not just current")
 
 }
 
 func runTheme(cmd *cobra.Command, args []string) error {
+	list := commandBoolFlag(cmd, "list")
 	// List mode
-	if themeListFlag {
+	if list {
 		fmt.Println("Available themes:")
 		for _, name := range tmux.ListThemeNames() {
 			theme := tmux.GetThemeByName(name)
@@ -134,7 +130,8 @@ func runTheme(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runThemeApply(cmd *cobra.Command, args []string) error {
+func runThemeApply(cmd *cobra.Command, _ []string) error {
+	applyAll := commandBoolFlag(cmd, "all")
 	t := tmux.NewTmux()
 	townRoot, _ := workspace.FindFromCwd()
 
@@ -150,104 +147,134 @@ func runThemeApply(cmd *cobra.Command, args []string) error {
 	// Apply to matching sessions
 	applied := 0
 	for _, sess := range sessions {
-		if !session.IsKnownSession(sess) {
+		cfg, ok := resolveThemeSession(sess, townRoot, rigName, applyAll)
+		if !ok {
 			continue
 		}
-
-		// Determine theme and identity for this session
-		var theme *tmux.Theme
-		var rig, worker, role string
-
-		identity, err := session.ParseSessionName(sess)
-		if err != nil {
-			continue
-		}
-
-		var crewMember string
-		switch identity.Role {
-		case session.RoleMayor:
-			theme = tmux.ResolveSessionTheme(townRoot, "", constants.RoleMayor, "")
-			worker = "Mayor"
-			role = constants.RoleMayor
-		case session.RoleDeacon:
-			theme = tmux.ResolveSessionTheme(townRoot, "", constants.RoleDeacon, "")
-			worker = "Deacon"
-			role = constants.RoleDeacon
-		default:
-			rig = identity.Rig
-
-			// Skip if not matching current rig (unless --all flag)
-			if !themeApplyAllFlag && rigName != "" && rig != rigName {
-				continue
-			}
-
-			role = string(identity.Role)
-			switch identity.Role {
-			case session.RoleWitness:
-				worker = constants.RoleWitness
-			case session.RoleRefinery:
-				worker = constants.RoleRefinery
-			case session.RoleCrew:
-				worker = identity.Name
-				crewMember = identity.Name
-			default:
-				worker = identity.Name
-				crewMember = identity.Name
-			}
-
-			// Use role-based theme resolution (with per-member override)
-			theme = tmux.ResolveSessionTheme(townRoot, rig, role, crewMember)
-		}
-
-		// Resolve window tint from config.
-		if theme != nil {
-			theme.Window = session.ResolveWindowTint(rig, role)
-			if theme.Window == nil && session.IsWindowTintEnabled(rig) {
-				factor := session.ResolveTintFactor(rig)
-				theme.Window = &tmux.WindowStyle{
-					BG: tmux.DarkenColor(theme.BG, factor),
-					FG: theme.FG,
-				}
-			}
-		}
-
-		if err := t.ConfigureGasTownSession(sess, theme, rig, worker, role); err != nil {
+		if err := t.ConfigureGasTownSession(sess, cfg.theme, cfg.rig, cfg.worker, cfg.role); err != nil {
 			fmt.Printf("  %s: failed (%v)\n", sess, err)
 			continue
 		}
-
-		if theme == nil {
-			fmt.Printf("  %s: disabled tmux theming\n", sess)
-		} else {
-			fmt.Printf("  %s: applied %s theme\n", sess, theme.Name)
-		}
+		printThemeApplication(sess, cfg.theme)
 		applied++
 	}
 
-	if applied == 0 {
-		fmt.Println("No matching sessions found")
-	} else {
-		fmt.Printf("\nApplied theme to %d session(s)\n", applied)
-	}
+	printThemeApplicationSummary(applied)
 
 	return nil
 }
 
+type themeSessionConfig struct {
+	theme  *tmux.Theme
+	rig    string
+	worker string
+	role   string
+}
+
+func resolveThemeSession(sessionName, townRoot, currentRig string, applyAll bool) (themeSessionConfig, bool) {
+	if !session.IsKnownSession(sessionName) {
+		return themeSessionConfig{}, false
+	}
+	identity, err := session.ParseSessionName(sessionName)
+	if err != nil {
+		return themeSessionConfig{}, false
+	}
+	if identity.Role == session.RoleMayor || identity.Role == session.RoleDeacon {
+		cfg := resolveTownThemeSession(townRoot, identity.Role)
+		applyWindowTint(cfg.theme, cfg.rig, cfg.role)
+		return cfg, true
+	}
+	return resolveRigThemeSession(townRoot, identity, currentRig, applyAll)
+}
+
+func resolveTownThemeSession(townRoot string, role session.Role) themeSessionConfig {
+	roleName := string(role)
+	worker := "Mayor"
+	if role == session.RoleDeacon {
+		worker = "Deacon"
+	}
+	return themeSessionConfig{
+		theme:  tmux.ResolveSessionTheme(townRoot, "", roleName, ""),
+		worker: worker,
+		role:   roleName,
+	}
+}
+
+func resolveRigThemeSession(townRoot string, identity *session.AgentIdentity, currentRig string, applyAll bool) (themeSessionConfig, bool) {
+	if !applyAll && currentRig != "" && identity.Rig != currentRig {
+		return themeSessionConfig{}, false
+	}
+
+	role := string(identity.Role)
+	worker, crewMember := rigThemeWorker(identity)
+	theme := tmux.ResolveSessionTheme(townRoot, identity.Rig, role, crewMember)
+	applyWindowTint(theme, identity.Rig, role)
+	return themeSessionConfig{theme: theme, rig: identity.Rig, worker: worker, role: role}, true
+}
+
+func rigThemeWorker(identity *session.AgentIdentity) (string, string) {
+	switch identity.Role {
+	case session.RoleWitness:
+		return constants.RoleWitness, ""
+	case session.RoleRefinery:
+		return constants.RoleRefinery, ""
+	default:
+		return identity.Name, identity.Name
+	}
+}
+
+func applyWindowTint(theme *tmux.Theme, rigName, role string) {
+	if theme == nil {
+		return
+	}
+	theme.Window = session.ResolveWindowTint(rigName, role)
+	if theme.Window != nil || !session.IsWindowTintEnabled(rigName) {
+		return
+	}
+	factor := session.ResolveTintFactor(rigName)
+	theme.Window = &tmux.WindowStyle{BG: tmux.DarkenColor(theme.BG, factor), FG: theme.FG}
+}
+
+func printThemeApplication(sessionName string, theme *tmux.Theme) {
+	if theme == nil {
+		fmt.Printf("  %s: disabled tmux theming\n", sessionName)
+		return
+	}
+	fmt.Printf("  %s: applied %s theme\n", sessionName, theme.Name)
+}
+
+func printThemeApplicationSummary(applied int) {
+	if applied == 0 {
+		fmt.Println("No matching sessions found")
+		return
+	}
+	fmt.Printf("\nApplied theme to %d session(s)\n", applied)
+}
+
 // detectCurrentRig determines the rig from environment or cwd.
 func detectCurrentRig() string {
-	// Try environment first (GT_RIG is set in tmux sessions)
 	if rig := os.Getenv("GT_RIG"); rig != "" {
 		return rig
 	}
-
-	// Try to extract from tmux session name
-	if sessName := detectCurrentSession(); sessName != "" {
-		if identity, err := session.ParseSessionName(sessName); err == nil && identity.Rig != "" {
-			return identity.Rig
-		}
+	if rig := detectRigFromSession(); rig != "" {
+		return rig
 	}
+	return detectRigFromCwd()
+}
 
-	// Try to detect from actual cwd path
+func detectRigFromSession() string {
+	sessName := detectCurrentSession()
+	if sessName == "" {
+		return ""
+	}
+	identity, err := session.ParseSessionName(sessName)
+	if err != nil {
+		return ""
+	}
+	return identity.Rig
+}
+
+func detectRigFromCwd() string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""
@@ -355,7 +382,7 @@ func saveRigTheme(rigName, themeName string) error {
 	return nil
 }
 
-func runThemeCLI(cmd *cobra.Command, args []string) error {
+func runThemeCLI(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding workspace: %w", err)
@@ -365,74 +392,74 @@ func runThemeCLI(cmd *cobra.Command, args []string) error {
 	}
 
 	settingsPath := config.TownSettingsPath(townRoot)
-
-	// Show current theme
 	if len(args) == 0 {
-		settings, err := config.LoadOrCreateTownSettings(settingsPath)
-		if err != nil {
-			return fmt.Errorf("loading settings: %w", err)
-		}
+		return showCLITheme(settingsPath)
+	}
+	return setCLITheme(settingsPath, args[0])
+}
 
-		// Determine effective mode
-		configValue := settings.CLITheme
-		if configValue == "" {
-			configValue = "auto"
-		}
-
-		// Check for env override
-		envValue := os.Getenv("GT_THEME")
-		effectiveMode := configValue
-		if envValue != "" {
-			effectiveMode = strings.ToLower(envValue)
-		}
-
-		fmt.Printf("CLI Theme:\n")
-		fmt.Printf("  Configured: %s\n", configValue)
-		if envValue != "" {
-			fmt.Printf("  Override:   %s (via GT_THEME)\n", envValue)
-		}
-		fmt.Printf("  Effective:  %s\n", effectiveMode)
-
-		// Show detection result for auto mode
-		if effectiveMode == "auto" {
-			detected := "light"
-			if detectTerminalBackground() {
-				detected = "dark"
-			}
-			fmt.Printf("  Detected:   %s background\n", detected)
-		}
-
-		return nil
+func showCLITheme(settingsPath string) error {
+	settings, err := config.LoadOrCreateTownSettings(settingsPath)
+	if err != nil {
+		return fmt.Errorf("loading settings: %w", err)
+	}
+	configValue := settings.CLITheme
+	if configValue == "" {
+		configValue = "auto"
+	}
+	envValue := os.Getenv("GT_THEME")
+	effectiveMode := configValue
+	if envValue != "" {
+		effectiveMode = strings.ToLower(envValue)
 	}
 
-	// Set CLI theme
-	mode := strings.ToLower(args[0])
+	fmt.Printf("CLI Theme:\n")
+	fmt.Printf("  Configured: %s\n", configValue)
+	if envValue != "" {
+		fmt.Printf("  Override:   %s (via GT_THEME)\n", envValue)
+	}
+	fmt.Printf("  Effective:  %s\n", effectiveMode)
+	if effectiveMode == "auto" {
+		printDetectedTerminalBackground()
+	}
+	return nil
+}
+
+func printDetectedTerminalBackground() {
+	detected := "light"
+	if detectTerminalBackground() {
+		detected = "dark"
+	}
+	fmt.Printf("  Detected:   %s background\n", detected)
+}
+
+func setCLITheme(settingsPath, requestedMode string) error {
+	mode := strings.ToLower(requestedMode)
 	if !isValidCLITheme(mode) {
 		return fmt.Errorf("invalid CLI theme '%s' (valid: auto, dark, light)", mode)
 	}
 
-	// Load existing settings
 	settings, err := config.LoadOrCreateTownSettings(settingsPath)
 	if err != nil {
 		return fmt.Errorf("loading settings: %w", err)
 	}
 
-	// Update CLITheme
 	settings.CLITheme = mode
-
-	// Save
 	if err := config.SaveTownSettings(settingsPath, settings); err != nil {
 		return fmt.Errorf("saving settings: %w", err)
 	}
 
 	fmt.Printf("CLI theme set to '%s'\n", mode)
+	printCLIThemeAdvice(mode)
+	return nil
+}
+
+func printCLIThemeAdvice(mode string) {
 	if mode == "auto" {
 		fmt.Println("Colors will adapt to your terminal's background.")
-	} else {
-		fmt.Printf("Colors optimized for %s backgrounds.\n", mode)
+		return
 	}
-
-	return nil
+	fmt.Printf("Colors optimized for %s backgrounds.\n", mode)
 }
 
 // isValidCLITheme checks if a CLI theme mode is valid.

@@ -13,6 +13,7 @@ import (
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/git"
+	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/style"
 	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
@@ -66,37 +67,64 @@ func extractEpicPrefix(epicID string) string {
 const maxBranchNameLen = 200
 
 func validateBranchName(branchName string) error {
+	checks := []func(string) error{
+		validateBranchNamePresence,
+		validateBranchNameLength,
+		validateBranchNameCharacters,
+		validateBranchNameSuffix,
+		validateBranchNameEdges,
+		validateBranchNameSeparators,
+	}
+	for _, check := range checks {
+		if err := check(branchName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateBranchNamePresence(branchName string) error {
 	if branchName == "" {
 		return fmt.Errorf("branch name cannot be empty")
 	}
+	return nil
+}
 
+func validateBranchNameLength(branchName string) error {
 	if len(branchName) > maxBranchNameLen {
 		return fmt.Errorf("branch name too long (%d chars, max %d)", len(branchName), maxBranchNameLen)
 	}
+	return nil
+}
 
-	// Check for invalid characters
+func validateBranchNameCharacters(branchName string) error {
 	if invalidBranchCharsRegex.MatchString(branchName) {
 		return fmt.Errorf("branch name %q contains invalid characters (~ ^ : \\ ? * [ space, .., or @{)", branchName)
 	}
+	return nil
+}
 
-	// Check for .lock suffix
+func validateBranchNameSuffix(branchName string) error {
 	if strings.HasSuffix(branchName, ".lock") {
 		return fmt.Errorf("branch name %q cannot end with .lock", branchName)
 	}
+	return nil
+}
 
-	// Check for leading/trailing slashes or dots
+func validateBranchNameEdges(branchName string) error {
 	if strings.HasPrefix(branchName, "/") || strings.HasSuffix(branchName, "/") {
 		return fmt.Errorf("branch name %q cannot start or end with /", branchName)
 	}
 	if strings.HasPrefix(branchName, ".") || strings.HasSuffix(branchName, ".") {
 		return fmt.Errorf("branch name %q cannot start or end with .", branchName)
 	}
+	return nil
+}
 
-	// Check for consecutive slashes
+func validateBranchNameSeparators(branchName string) error {
 	if strings.Contains(branchName, "//") {
 		return fmt.Errorf("branch name %q cannot contain consecutive slashes", branchName)
 	}
-
 	return nil
 }
 
@@ -154,19 +182,19 @@ func createLandWorktree(rigPath, startBranch string) (*git.Git, func(), error) {
 
 	// Clean up any stale worktree from a previous failed run
 	if _, err := os.Stat(landPath); err == nil {
-		_ = bareGit.WorktreeRemove(landPath, true)
+		_ = git.WorktreeRemove(bareGit, landPath, true)
 		_ = os.RemoveAll(landPath)
 	}
 
 	// Create worktree checked out to the target branch.
 	// Use --force because the branch may already be checked out in refinery/rig.
-	if err := bareGit.WorktreeAddExistingForce(landPath, startBranch); err != nil {
+	if err := git.WorktreeAddExistingForce(bareGit, landPath, startBranch); err != nil {
 		_ = fl.Unlock()
 		return nil, noop, fmt.Errorf("creating land worktree: %w", err)
 	}
 
 	cleanup := func() {
-		_ = bareGit.WorktreeRemove(landPath, true)
+		_ = git.WorktreeRemove(bareGit, landPath, true)
 		_ = os.RemoveAll(landPath)
 		_ = fl.Unlock()
 	}
@@ -176,10 +204,10 @@ func createLandWorktree(rigPath, startBranch string) (*git.Git, func(), error) {
 
 // branchNameExists checks if a branch name exists locally or on origin.
 func branchNameExists(g *git.Git, name string) bool {
-	if exists, _ := g.BranchExists(name); exists {
+	if exists, _ := git.BranchExists(g, name); exists {
 		return true
 	}
-	if exists, _ := g.RemoteBranchExists("origin", name); exists {
+	if exists, _ := git.RemoteBranchExists(g, "origin", name); exists {
 		return true
 	}
 	return false
@@ -331,121 +359,166 @@ type IntegrationStatusMRSummary struct {
 
 // runMqIntegrationCreate creates an integration branch for an epic.
 func runMqIntegrationCreate(cmd *cobra.Command, args []string) error {
+	branchTemplate, err := readMQStringFlag(cmd, "branch")
+	if err != nil {
+		return err
+	}
+	baseBranchOverride, err := readMQStringFlag(cmd, "base-branch")
+	if err != nil {
+		return err
+	}
+	force, err := readMQBoolFlag(cmd, "force")
+	if err != nil {
+		return err
+	}
 	epicID := args[0]
+	return runMQIntegrationCreateWorkflow(epicID, branchTemplate, baseBranchOverride, force)
+}
 
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	// Find current rig
-	_, r, err := findCurrentRig(townRoot)
+func runMQIntegrationCreateWorkflow(epicID, branchTemplate, baseBranchOverride string, force bool) error {
+	ctx, err := loadMQIntegrationCreateContext(epicID)
 	if err != nil {
 		return err
 	}
-
-	// Initialize beads for the rig
-	bd := beads.New(r.Path)
-
-	// 1. Verify epic exists
-	epic, err := bd.Show(epicID)
-	if err != nil {
-		if err == beads.ErrNotFound {
-			return fmt.Errorf("epic '%s' not found", epicID)
-		}
-		return fmt.Errorf("fetching epic: %w", err)
-	}
-
-	// Verify it's actually an epic
-	if epic.Type != "epic" {
-		return fmt.Errorf("'%s' is a %s, not an epic", epicID, epic.Type)
-	}
-
-	// Check for existing integration branch metadata
-	if existing := getIntegrationBranchField(epic.Description); existing != "" && !mqIntegrationCreateForce {
-		return fmt.Errorf("epic '%s' already has integration branch '%s'\n\nUse --force to recreate", epicID, existing)
-	}
-
-	// Build integration branch name from template
-	template := getIntegrationBranchTemplate(r.Path, mqIntegrationCreateBranch)
-	branchName := buildIntegrationBranchName(template, epicID, epic.Title)
-
-	// Validate the branch name
-	if err := validateBranchName(branchName); err != nil {
-		return fmt.Errorf("invalid branch name: %w", err)
-	}
-
-	// Warn if the branch name doesn't start with "integration/" — the pre-push
-	// hook guardrail only protects branches under that prefix.
-	if !strings.HasPrefix(branchName, "integration/") {
-		fmt.Printf("  %s Branch '%s' is outside the integration/ namespace.\n",
-			style.Bold.Render("⚠"),
-			branchName)
-		fmt.Printf("    The pre-push hook guardrail won't cover this branch.\n")
-	}
-
-	// Initialize git for the rig
-	g, err := getRigGit(r.Path)
-	if err != nil {
-		return fmt.Errorf("initializing git: %w", err)
-	}
-
-	// Check if integration branch already exists (local or remote).
-	// With {title} templates, two epics can produce the same branch name.
-	// Disambiguate by appending the epic's numeric suffix (e.g., -123).
-	branchName, err = resolveUniqueBranchName(g, branchName, epicID)
-	if err != nil {
+	if err := validateMQIntegrationCreateEpic(ctx, force); err != nil {
 		return err
 	}
 
-	// Ensure we have latest refs
-	fmt.Printf("Fetching latest from origin...\n")
-	if err := g.Fetch("origin"); err != nil {
-		return fmt.Errorf("fetching from origin: %w", err)
+	if err := resolveMQIntegrationCreateBranch(ctx, branchTemplate); err != nil {
+		return err
 	}
 
-	// 2. Create branch from base (default: rig's default_branch)
-	baseBranchName := r.DefaultBranch()
-	if mqIntegrationCreateBaseBranch != "" {
-		baseBranchName = strings.TrimPrefix(mqIntegrationCreateBaseBranch, "origin/")
-	}
-	baseBranch := "origin/" + baseBranchName
-	baseBranchDisplay := baseBranchName
-	fmt.Printf("Creating branch '%s' from %s...\n", branchName, baseBranchDisplay)
-	if err := g.CreateBranchFrom(branchName, baseBranch); err != nil {
-		return fmt.Errorf("creating branch: %w", err)
-	}
-
-	// 3. Push to origin
-	fmt.Printf("Pushing to origin...\n")
-	if err := g.Push("origin", branchName, false); err != nil {
-		// Clean up local branch on push failure (best-effort cleanup)
-		_ = g.DeleteBranch(branchName, true)
-		return fmt.Errorf("pushing to origin: %w", err)
+	if err := createMQIntegrationBranch(ctx, baseBranchOverride); err != nil {
+		return err
 	}
 
 	// 4. Store integration branch info in epic metadata
-	// Update the epic's description to include the integration branch info
-	newDesc := addIntegrationBranchField(epic.Description, branchName)
-	// Always store base_branch so land knows where to merge back
-	newDesc = beads.AddBaseBranchField(newDesc, baseBranchDisplay)
-	if newDesc != epic.Description {
-		if err := bd.Update(epicID, beads.UpdateOptions{Description: &newDesc}); err != nil {
-			// Non-fatal - branch was created, just metadata update failed
-			fmt.Printf("  %s\n", style.Dim.Render("(warning: could not update epic metadata)"))
-		}
-	}
-
-	// Success output
-	fmt.Printf("\n%s Created integration branch\n", style.Bold.Render("✓"))
-	fmt.Printf("  Epic:   %s\n", epicID)
-	fmt.Printf("  Branch: %s\n", branchName)
-	fmt.Printf("  From:   %s\n", baseBranchDisplay)
-	fmt.Printf("\n  Future MRs for this epic's children can target:\n")
-	fmt.Printf("    gt mq submit --epic %s\n", epicID)
+	updateMQIntegrationEpic(ctx)
+	printMQIntegrationCreateResult(ctx)
 
 	return nil
+}
+
+type mqIntegrationCreateContext struct {
+	epicID         string
+	rig            *rig.Rig
+	bd             *beads.Beads
+	g              *git.Git
+	epic           *beads.Issue
+	branchName     string
+	baseBranchName string
+}
+
+func loadMQIntegrationCreateContext(epicID string) (*mqIntegrationCreateContext, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	_, r, err := findCurrentRig(townRoot)
+	if err != nil {
+		return nil, err
+	}
+	bd := beads.New(r.Path)
+	epic, err := loadMQIntegrationCreateEpic(bd, epicID)
+	if err != nil {
+		return nil, err
+	}
+	g, err := getRigGit(r.Path)
+	if err != nil {
+		return nil, fmt.Errorf("initializing git: %w", err)
+	}
+	return &mqIntegrationCreateContext{epicID: epicID, rig: r, bd: bd, g: g, epic: epic}, nil
+}
+
+func loadMQIntegrationCreateEpic(bd *beads.Beads, epicID string) (*beads.Issue, error) {
+	epic, err := bd.Show(epicID)
+	if err != nil {
+		if err == beads.ErrNotFound {
+			return nil, fmt.Errorf("epic '%s' not found", epicID)
+		}
+		return nil, fmt.Errorf("fetching epic: %w", err)
+	}
+	return epic, nil
+}
+
+func validateMQIntegrationCreateEpic(ctx *mqIntegrationCreateContext, force bool) error {
+	if ctx.epic.Type != "epic" {
+		return fmt.Errorf("'%s' is a %s, not an epic", ctx.epicID, ctx.epic.Type)
+	}
+	if existing := getIntegrationBranchField(ctx.epic.Description); existing != "" && !force {
+		return fmt.Errorf("epic '%s' already has integration branch '%s'\n\nUse --force to recreate", ctx.epicID, existing)
+	}
+	return nil
+}
+
+func resolveMQIntegrationCreateBranch(ctx *mqIntegrationCreateContext, branchTemplate string) error {
+	template := getIntegrationBranchTemplate(ctx.rig.Path, branchTemplate)
+	branchName := buildIntegrationBranchName(template, ctx.epicID, ctx.epic.Title)
+	if err := validateBranchName(branchName); err != nil {
+		return fmt.Errorf("invalid branch name: %w", err)
+	}
+	printIntegrationNamespaceWarning(branchName)
+	branchName, err := resolveUniqueBranchName(ctx.g, branchName, ctx.epicID)
+	if err != nil {
+		return err
+	}
+	ctx.branchName = branchName
+	return nil
+}
+
+func printIntegrationNamespaceWarning(branchName string) {
+	if strings.HasPrefix(branchName, "integration/") {
+		return
+	}
+	fmt.Printf("  %s Branch '%s' is outside the integration/ namespace.\n",
+		style.Bold.Render("⚠"), branchName)
+	fmt.Printf("    The pre-push hook guardrail won't cover this branch.\n")
+}
+
+func createMQIntegrationBranch(ctx *mqIntegrationCreateContext, baseBranchOverride string) error {
+	fmt.Printf("Fetching latest from origin...\n")
+	if err := git.Fetch(ctx.g, "origin"); err != nil {
+		return fmt.Errorf("fetching from origin: %w", err)
+	}
+	ctx.baseBranchName = ctx.rig.DefaultBranch()
+	if baseBranchOverride != "" {
+		ctx.baseBranchName = strings.TrimPrefix(baseBranchOverride, "origin/")
+	}
+	baseBranch := "origin/" + ctx.baseBranchName
+	fmt.Printf("Creating branch '%s' from %s...\n", ctx.branchName, ctx.baseBranchName)
+	if err := git.CreateBranchFrom(ctx.g, ctx.branchName, baseBranch); err != nil {
+		return fmt.Errorf("creating branch: %w", err)
+	}
+	return pushMQIntegrationBranch(ctx)
+}
+
+func pushMQIntegrationBranch(ctx *mqIntegrationCreateContext) error {
+	fmt.Printf("Pushing to origin...\n")
+	if err := git.Push(ctx.g, "origin", ctx.branchName, false); err != nil {
+		_ = git.DeleteBranch(ctx.g, ctx.branchName, true)
+		return fmt.Errorf("pushing to origin: %w", err)
+	}
+	return nil
+}
+
+func updateMQIntegrationEpic(ctx *mqIntegrationCreateContext) {
+	newDesc := addIntegrationBranchField(ctx.epic.Description, ctx.branchName)
+	newDesc = beads.AddBaseBranchField(newDesc, ctx.baseBranchName)
+	if newDesc == ctx.epic.Description {
+		return
+	}
+	if err := ctx.bd.Update(ctx.epicID, beads.UpdateOptions{Description: &newDesc}); err != nil {
+		fmt.Printf("  %s\n", style.Dim.Render("(warning: could not update epic metadata)"))
+	}
+}
+
+func printMQIntegrationCreateResult(ctx *mqIntegrationCreateContext) {
+	fmt.Printf("\n%s Created integration branch\n", style.Bold.Render("✓"))
+	fmt.Printf("  Epic:   %s\n", ctx.epicID)
+	fmt.Printf("  Branch: %s\n", ctx.branchName)
+	fmt.Printf("  From:   %s\n", ctx.baseBranchName)
+	fmt.Printf("\n  Future MRs for this epic's children can target:\n")
+	fmt.Printf("    gt mq submit --epic %s\n", ctx.epicID)
 }
 
 // addIntegrationBranchField wraps beads.AddIntegrationBranchField for local callers.
@@ -455,276 +528,348 @@ func addIntegrationBranchField(description, branchName string) string {
 
 // runMqIntegrationLand merges an integration branch to main.
 func runMqIntegrationLand(cmd *cobra.Command, args []string) error {
-	epicID := args[0]
-
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	// Find current rig
-	_, r, err := findCurrentRig(townRoot)
+	force, err := readMQBoolFlag(cmd, "force")
 	if err != nil {
 		return err
 	}
-
-	// Initialize beads and git for the rig
-	// Use getRigGit for early ref-only checks (branch exists, fetch).
-	// Work-tree operations (checkout, merge, push) use a temporary worktree created later.
-	bd := beads.New(r.Path)
-	g, err := getRigGit(r.Path)
+	skipTests, err := readMQBoolFlag(cmd, "skip-tests")
 	if err != nil {
-		return fmt.Errorf("initializing git: %w", err)
+		return err
 	}
+	dryRun, err := readMQBoolFlag(cmd, "dry-run")
+	if err != nil {
+		return err
+	}
+	epicID := args[0]
+	return runMQIntegrationLandWorkflow(epicID, force, skipTests, dryRun)
+}
 
-	// Show what we're about to do
-	if mqIntegrationLandDryRun {
+func runMQIntegrationLandWorkflow(epicID string, force, skipTests, dryRun bool) error {
+	ctx, err := loadMQIntegrationLandContext(epicID)
+	if err != nil {
+		return err
+	}
+	if err := prepareMQIntegrationLand(ctx, force, dryRun); err != nil {
+		return err
+	}
+	if dryRun {
+		printMQIntegrationLandDryRun(ctx, skipTests)
+		return nil
+	}
+	return executeMQIntegrationLand(ctx, skipTests)
+}
+
+func prepareMQIntegrationLand(ctx *mqIntegrationLandContext, force, dryRun bool) error {
+	if dryRun {
 		fmt.Printf("%s Dry run - no changes will be made\n\n", style.Bold.Render("🔍"))
 	}
-
-	// 1. Verify epic exists
-	epic, err := bd.Show(epicID)
-	if err != nil {
-		if err == beads.ErrNotFound {
-			return fmt.Errorf("epic '%s' not found", epicID)
-		}
-		return fmt.Errorf("fetching epic: %w", err)
-	}
-
-	if epic.Type != "epic" {
-		return fmt.Errorf("'%s' is a %s, not an epic", epicID, epic.Type)
-	}
-
-	epicAlreadyClosed := epic.Status == "closed"
-	if epicAlreadyClosed {
+	ctx.epicAlreadyClosed = ctx.epic.Status == "closed"
+	if ctx.epicAlreadyClosed {
 		fmt.Printf("  %s Epic is already closed (may have been landed by another process)\n",
 			style.Bold.Render("⚠"))
 	}
-
-	// Fetch early so resolveEpicBranch and subsequent branch-existence
-	// checks operate on up-to-date refs (matches status which also fetches first).
-	fmt.Printf("Fetching latest from origin...\n")
-	if err := g.Fetch("origin"); err != nil {
-		return fmt.Errorf("fetching from origin: %w", err)
+	if err := resolveMQIntegrationLandBranch(ctx); err != nil {
+		return err
 	}
-
-	// Get integration branch name — tries metadata, then {title} template,
-	// then legacy {epic} template with branch existence checking.
-	branchName := resolveEpicBranch(epic, r.Path, g)
-
-	// Read base_branch from epic metadata (where to merge back)
-	// Fall back to rig's default_branch for backward compat with pre-base-branch epics
-	targetBranch := beads.GetBaseBranchField(epic.Description)
-	if targetBranch == "" {
-		targetBranch = r.DefaultBranch()
+	printMQIntegrationLandHeader(ctx)
+	if err := ensureMQIntegrationLandBranch(ctx); err != nil {
+		return err
 	}
+	return checkMQIntegrationLandReadiness(ctx, force)
+}
 
-	fmt.Printf("Landing integration branch for epic: %s\n", epicID)
-	fmt.Printf("  Title: %s\n\n", epic.Title)
-
-	// 2. Verify integration branch exists
-	fmt.Printf("Checking integration branch...\n")
-	exists, err := g.BranchExists(branchName)
-	if err != nil {
-		return fmt.Errorf("checking branch existence: %w", err)
-	}
-
-	// Check remote — land uses origin/ refs throughout, so the branch must be pushed
-	remoteExists, err := g.RemoteBranchExists("origin", branchName)
-	if err != nil {
-		return fmt.Errorf("checking remote branch: %w", err)
-	}
-
-	if !exists && !remoteExists {
-		return fmt.Errorf("integration branch '%s' does not exist (locally or on origin)", branchName)
-	}
-	if exists && !remoteExists {
-		return fmt.Errorf("integration branch '%s' exists locally but not on origin — push it first", branchName)
-	}
-	if !exists {
-		// Remote-only: fetch and create local tracking branch
-		fmt.Printf("Fetching integration branch from origin...\n")
-		if err := g.FetchBranch("origin", branchName); err != nil {
-			return fmt.Errorf("fetching branch: %w", err)
-		}
-	}
-	fmt.Printf("  %s Branch exists (local and remote)\n", style.Bold.Render("✓"))
-
-	// 3. Verify all MRs targeting this integration branch are merged
-	fmt.Printf("Checking open merge requests...\n")
-	openMRs, err := findOpenMRsForIntegration(bd, branchName)
-	if err != nil {
-		return fmt.Errorf("checking open MRs: %w", err)
-	}
-
-	if len(openMRs) > 0 {
-		fmt.Printf("\n  %s Open merge requests targeting %s:\n", style.Bold.Render("⚠"), branchName)
-		for _, mr := range openMRs {
-			fmt.Printf("    - %s: %s\n", mr.ID, mr.Title)
-		}
-		fmt.Println()
-
-		if !mqIntegrationLandForce {
-			return fmt.Errorf("cannot land: %d open MRs (use --force to override)", len(openMRs))
-		}
-		fmt.Printf("  %s Proceeding anyway (--force)\n", style.Dim.Render("⚠"))
-	} else {
-		fmt.Printf("  %s No open MRs targeting integration branch\n", style.Bold.Render("✓"))
-	}
-
-	// 4. Verify all epic children are closed
-	fmt.Printf("Checking epic children status...\n")
-	children, err := bd.List(beads.ListOptions{
-		Parent:   epicID,
-		Status:   "all",
-		Priority: -1,
-	})
-	if err != nil {
-		return fmt.Errorf("checking epic children: %w", err)
-	}
-
-	var openChildren []*beads.Issue
-	for _, child := range children {
-		if child.Status != "closed" {
-			openChildren = append(openChildren, child)
-		}
-	}
-
-	if len(openChildren) > 0 {
-		fmt.Printf("\n  %s Open children of %s:\n", style.Bold.Render("⚠"), epicID)
-		for _, child := range openChildren {
-			fmt.Printf("    - %s [%s]: %s\n", child.ID, child.Status, child.Title)
-		}
-		fmt.Println()
-
-		if !mqIntegrationLandForce {
-			return fmt.Errorf("cannot land: %d children still open/in_progress (use --force to override)", len(openChildren))
-		}
-		fmt.Printf("  %s Proceeding anyway (--force)\n", style.Dim.Render("⚠"))
-	} else if len(children) > 0 {
-		fmt.Printf("  %s All %d children closed\n", style.Bold.Render("✓"), len(children))
-	} else {
-		fmt.Printf("  %s No children found (landing empty integration branch)\n", style.Dim.Render("ℹ"))
-	}
-
-	// Dry run stops here
-	if mqIntegrationLandDryRun {
-		fmt.Printf("\n%s Dry run complete. Would perform:\n", style.Bold.Render("🔍"))
-		fmt.Printf("  1. Merge %s to %s (--no-ff)\n", branchName, targetBranch)
-		if !mqIntegrationLandSkipTests {
-			fmt.Printf("  2. Run tests on %s\n", targetBranch)
-		}
-		fmt.Printf("  3. Push %s to origin\n", targetBranch)
-		fmt.Printf("  4. Delete integration branch (local and remote)\n")
-		fmt.Printf("  5. Update epic status to closed\n")
-		return nil
-	}
+func executeMQIntegrationLand(ctx *mqIntegrationLandContext, skipTests bool) error {
 
 	// Idempotency check: if integration branch is already an ancestor of the
 	// target branch, the merge was already completed (e.g., previous run crashed
 	// after push but before cleanup). Skip directly to branch deletion and epic close.
-	alreadyMerged, err := g.IsAncestor("origin/"+branchName, "origin/"+targetBranch)
+	alreadyMerged, err := git.IsAncestor(ctx.g, "origin/"+ctx.branchName, "origin/"+ctx.targetBranch)
 	if err == nil && alreadyMerged {
 		fmt.Printf("  %s Integration branch already merged into %s — skipping to cleanup\n",
-			style.Bold.Render("✓"), targetBranch)
-		if warnings := cleanupIntegrationBranch(g, bd, epicID, branchName, targetBranch, epicAlreadyClosed); len(warnings) > 0 {
-			return fmt.Errorf("landed but cleanup incomplete: %s", strings.Join(warnings, "; "))
-		}
-		return nil
+			style.Bold.Render("✓"), ctx.targetBranch)
+		return finishMQIntegrationLand(ctx)
 	}
+	return performMQIntegrationLand(ctx, skipTests)
+}
 
-	// Create a temporary worktree for the merge operation.
-	// This avoids disrupting running agents (refinery, mayor) whose worktrees
-	// would be corrupted by checkout/merge operations.
-	fmt.Printf("Creating temporary worktree for merge...\n")
-	landGit, cleanup, err := createLandWorktree(r.Path, targetBranch)
+func performMQIntegrationLand(ctx *mqIntegrationLandContext, skipTests bool) error {
+	landGit, cleanup, err := createMQIntegrationLandWorktree(ctx)
 	if err != nil {
-		return fmt.Errorf("creating land worktree: %w", err)
+		return err
 	}
 	defer cleanup()
-
-	// Pull latest target branch into the worktree
-	if err := landGit.Pull("origin", targetBranch); err != nil {
-		// Non-fatal if pull fails (e.g., first time)
-		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(pull from origin/%s skipped)", targetBranch)))
+	if err := mergeMQIntegrationLandWorktree(ctx, landGit); err != nil {
+		return err
 	}
 
-	// 4. Merge integration branch into target
-	fmt.Printf("Merging %s to %s...\n", branchName, targetBranch)
-	mergeMsg := fmt.Sprintf("Merge %s: %s\n\nEpic: %s", branchName, epic.Title, epicID)
-	if err := landGit.MergeNoFF("origin/"+branchName, mergeMsg); err != nil {
-		// Capture conflicting files BEFORE aborting (abort wipes them).
-		// Best-effort: if GetConflictingFiles fails, we still want to abort and return.
-		conflictPaths, _ := landGit.GetConflictingFiles()
-
-		// Abort merge and reset worktree defensively. cleanup() will remove
-		// the entire .land-worktree dir on defer, but if AbortMerge somehow
-		// partially fails we still want HEAD pointing at a clean state for
-		// any debug inspection that happens before cleanup runs.
-		_ = landGit.AbortMerge()
-		_ = landGit.ResetHard("HEAD")
-
-		if len(conflictPaths) > 0 {
-			// Structured marker line — refinery patrol formula greps for
-			// "LAND_FAILED:" to drive its consolidation-failure-handler step.
-			fmt.Fprintf(os.Stderr, "LAND_FAILED: epic=%s branch=%s target=%s reason=conflict files=%s\n",
-				epicID, branchName, targetBranch, strings.Join(conflictPaths, ","))
-			return &LandConflictError{
-				EpicID:        epicID,
-				Branch:        branchName,
-				TargetBranch:  targetBranch,
-				ConflictPaths: conflictPaths,
-				Underlying:    err,
-			}
-		}
-
-		// Non-conflict merge failure (e.g., index lock, disk error).
-		fmt.Fprintf(os.Stderr, "LAND_FAILED: epic=%s branch=%s target=%s reason=merge-error\n",
-			epicID, branchName, targetBranch)
-		return fmt.Errorf("merge failed: %w", err)
-	}
-	fmt.Printf("  %s Merged successfully\n", style.Bold.Render("✓"))
-
-	// 5. Run tests (if configured and not skipped)
-	if !mqIntegrationLandSkipTests {
-		testCmd := getTestCommand(r.Path)
-		if testCmd != "" {
-			fmt.Printf("Running tests: %s\n", testCmd)
-			if err := runTestCommand(landGit.WorkDir(), testCmd); err != nil {
-				// Tests failed - no need to reset, worktree is temporary
-				fmt.Printf("  %s Tests failed\n", style.Bold.Render("✗"))
-				return fmt.Errorf("tests failed: %w", err)
-			}
-			fmt.Printf("  %s Tests passed\n", style.Bold.Render("✓"))
-		} else {
-			fmt.Printf("  %s\n", style.Dim.Render("(no test command configured)"))
-		}
-	} else {
-		fmt.Printf("  %s\n", style.Dim.Render("(tests skipped)"))
+	if err := runMQIntegrationLandTests(ctx, landGit, skipTests); err != nil {
+		return err
 	}
 
 	// Verify the merge actually brought changes (guard against empty merges).
 	// An empty merge means conflict resolution discarded all integration branch work,
 	// which would silently lose data if we proceed to delete the branch.
+	if err := verifyMQIntegrationLandMerge(landGit, ctx); err != nil {
+		return err
+	}
+
+	if err := pushMQIntegrationLand(ctx, landGit); err != nil {
+		return err
+	}
+	return finishMQIntegrationLand(ctx)
+}
+
+func pushMQIntegrationLand(ctx *mqIntegrationLandContext, landGit *git.Git) error {
+	fmt.Printf("Pushing %s to origin...\n", ctx.targetBranch)
+	if err := git.PushWithEnv(landGit, "origin", ctx.targetBranch, false, []string{"GT_INTEGRATION_LAND=1"}); err != nil {
+		return fmt.Errorf("push failed: %w", err)
+	}
+	fmt.Printf("  %s Pushed to origin\n", style.Bold.Render("✓"))
+	return nil
+}
+
+func finishMQIntegrationLand(ctx *mqIntegrationLandContext) error {
+	warnings := cleanupIntegrationBranch(ctx.g, ctx.bd, ctx.epicID, ctx.branchName, ctx.targetBranch, ctx.epicAlreadyClosed)
+	if len(warnings) > 0 {
+		return fmt.Errorf("landed but cleanup incomplete: %s", strings.Join(warnings, "; "))
+	}
+	return nil
+}
+
+type mqIntegrationLandContext struct {
+	epicID            string
+	rig               *rig.Rig
+	bd                *beads.Beads
+	g                 *git.Git
+	epic              *beads.Issue
+	branchName        string
+	targetBranch      string
+	epicAlreadyClosed bool
+	openMRs           []*beads.Issue
+	children          []*beads.Issue
+	openChildren      []*beads.Issue
+}
+
+func loadMQIntegrationLandContext(epicID string) (*mqIntegrationLandContext, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	_, r, err := findCurrentRig(townRoot)
+	if err != nil {
+		return nil, err
+	}
+	bd := beads.New(r.Path)
+	g, err := getRigGit(r.Path)
+	if err != nil {
+		return nil, fmt.Errorf("initializing git: %w", err)
+	}
+	epic, err := loadMQIntegrationCreateEpic(bd, epicID)
+	if err != nil {
+		return nil, err
+	}
+	if epic.Type != "epic" {
+		return nil, fmt.Errorf("'%s' is a %s, not an epic", epicID, epic.Type)
+	}
+	return &mqIntegrationLandContext{epicID: epicID, rig: r, bd: bd, g: g, epic: epic}, nil
+}
+
+func resolveMQIntegrationLandBranch(ctx *mqIntegrationLandContext) error {
+	fmt.Printf("Fetching latest from origin...\n")
+	if err := git.Fetch(ctx.g, "origin"); err != nil {
+		return fmt.Errorf("fetching from origin: %w", err)
+	}
+	ctx.branchName = resolveEpicBranch(ctx.epic, ctx.rig.Path, git.Checker{Git: ctx.g})
+	ctx.targetBranch = beads.GetBaseBranchField(ctx.epic.Description)
+	if ctx.targetBranch == "" {
+		ctx.targetBranch = ctx.rig.DefaultBranch()
+	}
+	return nil
+}
+
+func printMQIntegrationLandHeader(ctx *mqIntegrationLandContext) {
+	fmt.Printf("Landing integration branch for epic: %s\n", ctx.epicID)
+	fmt.Printf("  Title: %s\n\n", ctx.epic.Title)
+}
+
+func ensureMQIntegrationLandBranch(ctx *mqIntegrationLandContext) error {
+	fmt.Printf("Checking integration branch...\n")
+	exists, err := git.BranchExists(ctx.g, ctx.branchName)
+	if err != nil {
+		return fmt.Errorf("checking branch existence: %w", err)
+	}
+	remoteExists, err := git.RemoteBranchExists(ctx.g, "origin", ctx.branchName)
+	if err != nil {
+		return fmt.Errorf("checking remote branch: %w", err)
+	}
+	if !exists && !remoteExists {
+		return fmt.Errorf("integration branch '%s' does not exist (locally or on origin)", ctx.branchName)
+	}
+	if exists && !remoteExists {
+		return fmt.Errorf("integration branch '%s' exists locally but not on origin — push it first", ctx.branchName)
+	}
+	if !exists {
+		fmt.Printf("Fetching integration branch from origin...\n")
+		if err := git.FetchBranch(ctx.g, "origin", ctx.branchName); err != nil {
+			return fmt.Errorf("fetching branch: %w", err)
+		}
+	}
+	fmt.Printf("  %s Branch exists (local and remote)\n", style.Bold.Render("✓"))
+	return nil
+}
+
+func checkMQIntegrationLandReadiness(ctx *mqIntegrationLandContext, force bool) error {
+	if err := checkMQIntegrationLandMRs(ctx, force); err != nil {
+		return err
+	}
+	return checkMQIntegrationLandChildren(ctx, force)
+}
+
+func checkMQIntegrationLandMRs(ctx *mqIntegrationLandContext, force bool) error {
+	fmt.Printf("Checking open merge requests...\n")
+	openMRs, err := findOpenMRsForIntegration(ctx.bd, ctx.branchName)
+	if err != nil {
+		return fmt.Errorf("checking open MRs: %w", err)
+	}
+	ctx.openMRs = openMRs
+	if len(openMRs) == 0 {
+		fmt.Printf("  %s No open MRs targeting integration branch\n", style.Bold.Render("✓"))
+		return nil
+	}
+	fmt.Printf("\n  %s Open merge requests targeting %s:\n", style.Bold.Render("⚠"), ctx.branchName)
+	for _, mr := range openMRs {
+		fmt.Printf("    - %s: %s\n", mr.ID, mr.Title)
+	}
+	fmt.Println()
+	if !force {
+		return fmt.Errorf("cannot land: %d open MRs (use --force to override)", len(openMRs))
+	}
+	fmt.Printf("  %s Proceeding anyway (--force)\n", style.Dim.Render("⚠"))
+	return nil
+}
+
+func checkMQIntegrationLandChildren(ctx *mqIntegrationLandContext, force bool) error {
+	fmt.Printf("Checking epic children status...\n")
+	children, err := ctx.bd.List(beads.ListOptions{Parent: ctx.epicID, Status: "all", Priority: -1})
+	if err != nil {
+		return fmt.Errorf("checking epic children: %w", err)
+	}
+	ctx.children = children
+	ctx.openChildren = openIntegrationChildren(children)
+	if len(ctx.openChildren) > 0 {
+		return reportOpenIntegrationChildren(ctx, force)
+	}
+	if len(children) > 0 {
+		fmt.Printf("  %s All %d children closed\n", style.Bold.Render("✓"), len(children))
+		return nil
+	}
+	fmt.Printf("  %s No children found (landing empty integration branch)\n", style.Dim.Render("ℹ"))
+	return nil
+}
+
+func openIntegrationChildren(children []*beads.Issue) []*beads.Issue {
+	var open []*beads.Issue
+	for _, child := range children {
+		if child.Status != "closed" {
+			open = append(open, child)
+		}
+	}
+	return open
+}
+
+func reportOpenIntegrationChildren(ctx *mqIntegrationLandContext, force bool) error {
+	fmt.Printf("\n  %s Open children of %s:\n", style.Bold.Render("⚠"), ctx.epicID)
+	for _, child := range ctx.openChildren {
+		fmt.Printf("    - %s [%s]: %s\n", child.ID, child.Status, child.Title)
+	}
+	fmt.Println()
+	if !force {
+		return fmt.Errorf("cannot land: %d children still open/in_progress (use --force to override)", len(ctx.openChildren))
+	}
+	fmt.Printf("  %s Proceeding anyway (--force)\n", style.Dim.Render("⚠"))
+	return nil
+}
+
+func printMQIntegrationLandDryRun(ctx *mqIntegrationLandContext, skipTests bool) {
+	fmt.Printf("\n%s Dry run complete. Would perform:\n", style.Bold.Render("🔍"))
+	fmt.Printf("  1. Merge %s to %s (--no-ff)\n", ctx.branchName, ctx.targetBranch)
+	if !skipTests {
+		fmt.Printf("  2. Run tests on %s\n", ctx.targetBranch)
+	}
+	fmt.Printf("  3. Push %s to origin\n", ctx.targetBranch)
+	fmt.Printf("  4. Delete integration branch (local and remote)\n")
+	fmt.Printf("  5. Update epic status to closed\n")
+}
+
+func createMQIntegrationLandWorktree(ctx *mqIntegrationLandContext) (*git.Git, func(), error) {
+	fmt.Printf("Creating temporary worktree for merge...\n")
+	landGit, cleanup, err := createLandWorktree(ctx.rig.Path, ctx.targetBranch)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("creating land worktree: %w", err)
+	}
+	if err := git.Pull(landGit, "origin", ctx.targetBranch); err != nil {
+		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(pull from origin/%s skipped)", ctx.targetBranch)))
+	}
+	return landGit, cleanup, nil
+}
+
+func mergeMQIntegrationLandWorktree(ctx *mqIntegrationLandContext, landGit *git.Git) error {
+	fmt.Printf("Merging %s to %s...\n", ctx.branchName, ctx.targetBranch)
+	mergeMsg := fmt.Sprintf("Merge %s: %s\n\nEpic: %s", ctx.branchName, ctx.epic.Title, ctx.epicID)
+	if err := git.MergeNoFF(landGit, "origin/"+ctx.branchName, mergeMsg); err != nil {
+		return reportMQIntegrationLandMergeFailure(ctx, landGit, err)
+	}
+	fmt.Printf("  %s Merged successfully\n", style.Bold.Render("✓"))
+	return nil
+}
+
+func reportMQIntegrationLandMergeFailure(ctx *mqIntegrationLandContext, landGit *git.Git, mergeErr error) error {
+	conflictPaths, _ := git.GetConflictingFiles(landGit)
+	_ = git.AbortMerge(landGit)
+	_ = git.ResetHard(landGit, "HEAD")
+	if len(conflictPaths) > 0 {
+		fmt.Fprintf(os.Stderr, "LAND_FAILED: epic=%s branch=%s target=%s reason=conflict files=%s\n",
+			ctx.epicID, ctx.branchName, ctx.targetBranch, strings.Join(conflictPaths, ","))
+		return &LandConflictError{
+			EpicID:        ctx.epicID,
+			Branch:        ctx.branchName,
+			TargetBranch:  ctx.targetBranch,
+			ConflictPaths: conflictPaths,
+			Underlying:    mergeErr,
+		}
+	}
+	fmt.Fprintf(os.Stderr, "LAND_FAILED: epic=%s branch=%s target=%s reason=merge-error\n",
+		ctx.epicID, ctx.branchName, ctx.targetBranch)
+	return fmt.Errorf("merge failed: %w", mergeErr)
+}
+
+func runMQIntegrationLandTests(ctx *mqIntegrationLandContext, landGit *git.Git, skipTests bool) error {
+	if skipTests {
+		fmt.Printf("  %s\n", style.Dim.Render("(tests skipped)"))
+		return nil
+	}
+	testCmd := getTestCommand(ctx.rig.Path)
+	if testCmd == "" {
+		fmt.Printf("  %s\n", style.Dim.Render("(no test command configured)"))
+		return nil
+	}
+	fmt.Printf("Running tests: %s\n", testCmd)
+	if err := runTestCommand(git.WorkDir(landGit), testCmd); err != nil {
+		fmt.Printf("  %s Tests failed\n", style.Bold.Render("✗"))
+		return fmt.Errorf("tests failed: %w", err)
+	}
+	fmt.Printf("  %s Tests passed\n", style.Bold.Render("✓"))
+	return nil
+}
+
+func verifyMQIntegrationLandMerge(landGit *git.Git, ctx *mqIntegrationLandContext) error {
 	verifyCmd := exec.Command("git", "diff", "--stat", "HEAD~1..HEAD")
-	verifyCmd.Dir = landGit.WorkDir()
+	verifyCmd.Dir = git.WorkDir(landGit)
 	diffOutput, verifyErr := verifyCmd.Output()
 	if verifyErr == nil && len(strings.TrimSpace(string(diffOutput))) == 0 {
 		return fmt.Errorf("merge produced no file changes — integration branch work may have been discarded during conflict resolution\n"+
 			"  Integration branch '%s' has NOT been deleted.\n"+
-			"  Inspect manually: git diff %s...origin/%s", branchName, targetBranch, branchName)
-	}
-
-	// 6. Push to origin
-	fmt.Printf("Pushing %s to origin...\n", targetBranch)
-	if err := landGit.PushWithEnv("origin", targetBranch, false, []string{"GT_INTEGRATION_LAND=1"}); err != nil {
-		return fmt.Errorf("push failed: %w", err)
-	}
-	fmt.Printf("  %s Pushed to origin\n", style.Bold.Render("✓"))
-
-	if warnings := cleanupIntegrationBranch(g, bd, epicID, branchName, targetBranch, epicAlreadyClosed); len(warnings) > 0 {
-		return fmt.Errorf("landed but cleanup incomplete: %s", strings.Join(warnings, "; "))
+			"  Inspect manually: git diff %s...origin/%s", ctx.branchName, ctx.targetBranch, ctx.branchName)
 	}
 	return nil
 }
@@ -739,14 +884,14 @@ func runMqIntegrationLand(cmd *cobra.Command, args []string) error {
 // idempotent re-run, but the epic is already marked done).
 func cleanupIntegrationBranch(g *git.Git, bd *beads.Beads, epicID, branchName, targetBranch string, epicAlreadyClosed bool) []string {
 	var warnings []string
-	branchHead, err := g.PushRemoteBranchTip("origin", branchName)
+	branchHead, err := git.PushRemoteBranchTip(g, "origin", branchName)
 	if err != nil {
 		return append(warnings, fmt.Sprintf("could not read remote integration branch: %v", err))
 	}
 	if strings.TrimSpace(branchHead) == "" {
 		return append(warnings, "remote integration branch missing before cleanup")
 	}
-	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", targetBranch, branchHead); err != nil {
+	if err := git.VerifyPushedCommitReachableFromPushTarget(g, "origin", targetBranch, branchHead); err != nil {
 		return append(warnings, fmt.Sprintf("integration branch is not proven on %s: %v", targetBranch, err))
 	}
 
@@ -765,7 +910,7 @@ func cleanupIntegrationBranch(g *git.Git, bd *beads.Beads, epicID, branchName, t
 	// Delete integration branch (use bare repo git — ref-only operations)
 	fmt.Printf("Deleting integration branch...\n")
 	// Delete remote first
-	if err := g.DeleteRemoteBranchIfAt("origin", branchName, branchHead); err != nil {
+	if err := git.DeleteRemoteBranchIfAt(g, "origin", branchName, branchHead); err != nil {
 		warning := fmt.Sprintf("could not delete remote branch: %v", err)
 		warnings = append(warnings, warning)
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(%s)", warning)))
@@ -773,7 +918,7 @@ func cleanupIntegrationBranch(g *git.Git, bd *beads.Beads, epicID, branchName, t
 		fmt.Printf("  %s Deleted from origin\n", style.Bold.Render("✓"))
 	}
 	// Delete local
-	if err := g.DeleteBranch(branchName, true); err != nil {
+	if err := git.DeleteBranch(g, branchName, true); err != nil {
 		warning := fmt.Sprintf("could not delete local branch: %v", err)
 		warnings = append(warnings, warning)
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(%s)", warning)))
@@ -864,83 +1009,133 @@ func runTestCommand(workDir, testCmd string) error {
 
 // runMqIntegrationStatus shows the status of an integration branch for an epic.
 func runMqIntegrationStatus(cmd *cobra.Command, args []string) error {
-	epicID := args[0]
-
-	// Find workspace
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	// Find current rig
-	_, r, err := findCurrentRig(townRoot)
+	jsonOutput, err := readMQBoolFlag(cmd, "json")
 	if err != nil {
 		return err
 	}
+	epicID := args[0]
+	return runMQIntegrationStatusWorkflow(epicID, jsonOutput)
+}
 
-	// Initialize beads and git for the rig
+func runMQIntegrationStatusWorkflow(epicID string, jsonOutput bool) error {
+
+	ctx, err := loadMQIntegrationStatusContext(epicID)
+	if err != nil {
+		return err
+	}
+	if err := resolveMQIntegrationStatusBranch(ctx); err != nil {
+		return err
+	}
+
+	if err := loadMQIntegrationStatusBranchStats(ctx); err != nil {
+		return err
+	}
+
+	if err := loadMQIntegrationStatusMRs(ctx); err != nil {
+		return err
+	}
+
+	ctx.autoLandEnabled = integrationAutoLandEnabled(ctx.rig.Path)
+	loadMQIntegrationStatusChildren(ctx)
+	readyToLand := isReadyToLand(ctx.aheadCount, ctx.childrenTotal, ctx.childrenClosed, len(ctx.pendingMRs))
+
+	output := buildMQIntegrationStatusOutput(ctx, readyToLand)
+	return writeMQIntegrationStatusOutput(&output, jsonOutput)
+}
+
+type mqIntegrationStatusContext struct {
+	epicID          string
+	rig             *rig.Rig
+	bd              *beads.Beads
+	g               *git.Git
+	epic            *beads.Issue
+	branchName      string
+	baseBranch      string
+	ref             string
+	createdDate     string
+	aheadCount      int
+	mergedMRs       []*beads.Issue
+	pendingMRs      []*beads.Issue
+	autoLandEnabled bool
+	childrenTotal   int
+	childrenClosed  int
+}
+
+func loadMQIntegrationStatusContext(epicID string) (*mqIntegrationStatusContext, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	_, r, err := findCurrentRig(townRoot)
+	if err != nil {
+		return nil, err
+	}
 	bd := beads.New(r.Path)
 	g, err := getRigGit(r.Path)
 	if err != nil {
-		return fmt.Errorf("initializing git: %w", err)
+		return nil, fmt.Errorf("initializing git: %w", err)
 	}
-
-	// Fetch from origin to ensure we have latest refs (needed for branch detection)
-	if err := g.Fetch("origin"); err != nil {
-		// Non-fatal, continue with local data
+	_ = git.Fetch(g, "origin")
+	epic, err := loadMQIntegrationStatusEpic(bd, epicID)
+	if err != nil {
+		return nil, err
 	}
+	return &mqIntegrationStatusContext{epicID: epicID, rig: r, bd: bd, g: g, epic: epic}, nil
+}
 
-	// Fetch epic to get stored branch name
+func loadMQIntegrationStatusEpic(bd *beads.Beads, epicID string) (*beads.Issue, error) {
 	epic, err := bd.Show(epicID)
 	if err != nil {
 		if err == beads.ErrNotFound {
-			return fmt.Errorf("epic '%s' not found", epicID)
+			return nil, fmt.Errorf("epic '%s' not found", epicID)
 		}
-		return fmt.Errorf("fetching epic: %w", err)
+		return nil, fmt.Errorf("fetching epic: %w", err)
 	}
+	return epic, nil
+}
 
-	// Get integration branch name — tries metadata, then {title} template,
-	// then legacy {epic} template with branch existence checking.
-	branchName := resolveEpicBranch(epic, r.Path, g)
-
-	// Read base_branch from epic metadata (where to merge back)
-	// Fall back to rig's default_branch for backward compat with pre-base-branch epics
-	baseBranch := beads.GetBaseBranchField(epic.Description)
-	if baseBranch == "" {
-		baseBranch = r.DefaultBranch()
+func resolveMQIntegrationStatusBranch(ctx *mqIntegrationStatusContext) error {
+	ctx.branchName = resolveEpicBranch(ctx.epic, ctx.rig.Path, git.Checker{Git: ctx.g})
+	ctx.baseBranch = beads.GetBaseBranchField(ctx.epic.Description)
+	if ctx.baseBranch == "" {
+		ctx.baseBranch = ctx.rig.DefaultBranch()
 	}
+	return nil
+}
 
-	// Check if integration branch exists (locally or remotely)
-	localExists, _ := g.BranchExists(branchName)
-	remoteExists, _ := g.RemoteBranchExists("origin", branchName)
-
+func loadMQIntegrationStatusBranchStats(ctx *mqIntegrationStatusContext) error {
+	localExists, _ := git.BranchExists(ctx.g, ctx.branchName)
+	remoteExists, _ := git.RemoteBranchExists(ctx.g, "origin", ctx.branchName)
 	if !localExists && !remoteExists {
-		return fmt.Errorf("integration branch '%s' does not exist", branchName)
+		return fmt.Errorf("integration branch '%s' does not exist", ctx.branchName)
 	}
-
-	// Determine which ref to use for comparison
-	ref := branchName
+	ctx.ref = ctx.branchName
 	if !localExists && remoteExists {
-		ref = "origin/" + branchName
+		ctx.ref = "origin/" + ctx.branchName
 	}
+	ctx.createdDate = branchCreatedDate(ctx.g, ctx.ref)
+	ctx.aheadCount = commitsAhead(ctx.g, ctx.baseBranch, ctx.ref)
+	return nil
+}
 
-	// Get branch creation date
-	createdDate, err := g.BranchCreatedDate(ref)
+func branchCreatedDate(g *git.Git, ref string) string {
+	createdDate, err := git.BranchCreatedDate(g, ref)
 	if err != nil {
-		createdDate = "" // Non-fatal
+		return ""
 	}
+	return createdDate
+}
 
-	// Get commits ahead of base branch
-	aheadCount, err := g.CommitsAhead("origin/"+baseBranch, ref)
+func commitsAhead(g *git.Git, baseBranch, ref string) int {
+	aheadCount, err := git.CommitsAhead(g, "origin/"+baseBranch, ref)
 	if err != nil {
-		aheadCount = 0 // Non-fatal
+		return 0
 	}
+	return aheadCount
+}
 
-	// Query for MRs targeting this integration branch (use resolved name)
-	targetBranch := branchName
-
-	// Get all merge-request issues (MRs have Type: "task" with label "gt:merge-request")
-	allMRs, err := bd.List(beads.ListOptions{
+func loadMQIntegrationStatusMRs(ctx *mqIntegrationStatusContext) error {
+	allMRs, err := ctx.bd.List(beads.ListOptions{
 		Label:    "gt:merge-request",
 		Status:   "all",
 		Priority: -1,
@@ -948,96 +1143,91 @@ func runMqIntegrationStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("querying merge requests: %w", err)
 	}
+	ctx.mergedMRs, ctx.pendingMRs = splitIntegrationStatusMRs(allMRs, ctx.branchName)
+	return nil
+}
 
-	// Filter by target branch and separate into merged/pending
-	var mergedMRs, pendingMRs []*beads.Issue
+func splitIntegrationStatusMRs(allMRs []*beads.Issue, targetBranch string) (merged, pending []*beads.Issue) {
 	for _, mr := range allMRs {
 		fields := beads.ParseMRFields(mr)
-		if fields == nil {
+		if fields == nil || fields.Target != targetBranch {
 			continue
 		}
-		if fields.Target != targetBranch {
-			continue
-		}
-
 		if mr.Status == "closed" {
-			mergedMRs = append(mergedMRs, mr)
-		} else {
-			pendingMRs = append(pendingMRs, mr)
+			merged = append(merged, mr)
+			continue
 		}
+		pending = append(pending, mr)
 	}
+	return merged, pending
+}
 
-	// Check if auto-land is enabled in settings
-	settingsPath := filepath.Join(r.Path, "settings", "config.json")
-	settings, _ := config.LoadRigSettings(settingsPath) // Ignore error, use defaults
-	autoLandEnabled := false
-	if settings != nil && settings.MergeQueue != nil {
-		autoLandEnabled = settings.MergeQueue.IsIntegrationBranchAutoLandEnabled()
-	}
+func integrationAutoLandEnabled(rigPath string) bool {
+	settingsPath := filepath.Join(rigPath, "settings", "config.json")
+	settings, _ := config.LoadRigSettings(settingsPath)
+	return settings != nil && settings.MergeQueue != nil &&
+		config.IsIntegrationBranchAutoLandEnabled(settings.MergeQueue)
+}
 
-	// Query children of the epic to determine if ready to land
-	// Use status "all" to include both open and closed children
-	// Use Priority -1 to disable priority filtering
-	children, err := bd.List(beads.ListOptions{
-		Parent:   epicID,
+func loadMQIntegrationStatusChildren(ctx *mqIntegrationStatusContext) {
+	children, err := ctx.bd.List(beads.ListOptions{
+		Parent:   ctx.epicID,
 		Status:   "all",
 		Priority: -1,
 	})
-	childrenTotal := 0
-	childrenClosed := 0
-	if err == nil {
-		for _, child := range children {
-			childrenTotal++
-			if child.Status == "closed" {
-				childrenClosed++
-			}
+	if err != nil {
+		return
+	}
+	ctx.childrenTotal = len(children)
+	for _, child := range children {
+		if child.Status == "closed" {
+			ctx.childrenClosed++
 		}
 	}
+}
 
-	readyToLand := isReadyToLand(aheadCount, childrenTotal, childrenClosed, len(pendingMRs))
-
-	// Build output structure
-	output := IntegrationStatusOutput{
-		Epic:            epicID,
-		Branch:          branchName,
-		BaseBranch:      baseBranch,
-		Created:         createdDate,
-		AheadOfBase:     aheadCount,
-		MergedMRs:       make([]IntegrationStatusMRSummary, 0, len(mergedMRs)),
-		PendingMRs:      make([]IntegrationStatusMRSummary, 0, len(pendingMRs)),
+func buildMQIntegrationStatusOutput(ctx *mqIntegrationStatusContext, readyToLand bool) IntegrationStatusOutput {
+	return IntegrationStatusOutput{
+		Epic:            ctx.epicID,
+		Branch:          ctx.branchName,
+		BaseBranch:      ctx.baseBranch,
+		Created:         ctx.createdDate,
+		AheadOfBase:     ctx.aheadCount,
+		MergedMRs:       integrationStatusMRSummaries(ctx.mergedMRs, false),
+		PendingMRs:      integrationStatusMRSummaries(ctx.pendingMRs, true),
 		ReadyToLand:     readyToLand,
-		AutoLandEnabled: autoLandEnabled,
-		ChildrenTotal:   childrenTotal,
-		ChildrenClosed:  childrenClosed,
+		AutoLandEnabled: ctx.autoLandEnabled,
+		ChildrenTotal:   ctx.childrenTotal,
+		ChildrenClosed:  ctx.childrenClosed,
 	}
+}
 
-	for _, mr := range mergedMRs {
-		// Extract the title without "Merge: " prefix for cleaner display
-		title := strings.TrimPrefix(mr.Title, "Merge: ")
-		output.MergedMRs = append(output.MergedMRs, IntegrationStatusMRSummary{
-			ID:    mr.ID,
-			Title: title,
-		})
-	}
-
-	for _, mr := range pendingMRs {
-		title := strings.TrimPrefix(mr.Title, "Merge: ")
-		output.PendingMRs = append(output.PendingMRs, IntegrationStatusMRSummary{
+func integrationStatusMRSummaries(mrs []*beads.Issue, includeStatus bool) []IntegrationStatusMRSummary {
+	result := make([]IntegrationStatusMRSummary, 0, len(mrs))
+	for _, mr := range mrs {
+		result = append(result, IntegrationStatusMRSummary{
 			ID:     mr.ID,
-			Title:  title,
-			Status: mr.Status,
+			Title:  strings.TrimPrefix(mr.Title, "Merge: "),
+			Status: integrationStatusSummaryStatus(mr.Status, includeStatus),
 		})
 	}
+	return result
+}
 
-	// JSON output
-	if mqIntegrationStatusJSON {
+func integrationStatusSummaryStatus(status string, includeStatus bool) string {
+	if includeStatus {
+		return status
+	}
+	return ""
+}
+
+func writeMQIntegrationStatusOutput(output *IntegrationStatusOutput, jsonOutput bool) error {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(output)
 	}
-
-	// Human-readable output
-	return printIntegrationStatus(&output)
+	return printIntegrationStatus(output)
 }
 
 // isReadyToLand determines if an integration branch is ready to land.
@@ -1051,66 +1241,84 @@ func isReadyToLand(aheadCount, childrenTotal, childrenClosed, pendingMRCount int
 
 // printIntegrationStatus prints the integration status in human-readable format.
 func printIntegrationStatus(output *IntegrationStatusOutput) error {
+	printIntegrationStatusHeader(output)
+	printIntegrationStatusMRs(output)
+	printIntegrationLandingStatus(output)
+	return nil
+}
+
+func printIntegrationStatusHeader(output *IntegrationStatusOutput) {
 	fmt.Printf("Integration: %s\n", style.Bold.Render(output.Branch))
 	if output.Created != "" {
 		fmt.Printf("Created: %s\n", output.Created)
 	}
 	fmt.Printf("Ahead of %s: %d commits\n", output.BaseBranch, output.AheadOfBase)
 	fmt.Printf("Epic children: %d/%d closed\n", output.ChildrenClosed, output.ChildrenTotal)
+}
 
-	// Merged MRs
-	fmt.Printf("\nMerged MRs (%d):\n", len(output.MergedMRs))
-	if len(output.MergedMRs) == 0 {
+func printIntegrationStatusMRs(output *IntegrationStatusOutput) {
+	printIntegrationStatusMRSection("Merged MRs", output.MergedMRs, false)
+	printIntegrationStatusMRSection("Pending MRs", output.PendingMRs, true)
+}
+
+func printIntegrationStatusMRSection(label string, mrs []IntegrationStatusMRSummary, includeStatus bool) {
+	fmt.Printf("\n%s (%d):\n", label, len(mrs))
+	if len(mrs) == 0 {
 		fmt.Printf("  %s\n", style.Dim.Render("(none)"))
-	} else {
-		for _, mr := range output.MergedMRs {
-			fmt.Printf("  %-12s  %s\n", mr.ID, mr.Title)
-		}
+		return
 	}
-
-	// Pending MRs
-	fmt.Printf("\nPending MRs (%d):\n", len(output.PendingMRs))
-	if len(output.PendingMRs) == 0 {
-		fmt.Printf("  %s\n", style.Dim.Render("(none)"))
-	} else {
-		for _, mr := range output.PendingMRs {
-			statusInfo := ""
-			if mr.Status != "" && mr.Status != "open" {
-				statusInfo = fmt.Sprintf(" (%s)", mr.Status)
-			}
-			fmt.Printf("  %-12s  %s%s\n", mr.ID, mr.Title, style.Dim.Render(statusInfo))
-		}
+	for _, mr := range mrs {
+		statusInfo := integrationMRStatus(mr.Status, includeStatus)
+		fmt.Printf("  %-12s  %s%s\n", mr.ID, mr.Title, style.Dim.Render(statusInfo))
 	}
+}
 
-	// Landing status
+func integrationMRStatus(status string, includeStatus bool) string {
+	if includeStatus && status != "" && status != "open" {
+		return fmt.Sprintf(" (%s)", status)
+	}
+	return ""
+}
+
+func printIntegrationLandingStatus(output *IntegrationStatusOutput) {
 	fmt.Println()
 	if output.ReadyToLand {
-		fmt.Printf("%s Integration branch is ready to land.\n", style.Bold.Render("✓"))
-		if output.AutoLandEnabled {
-			fmt.Printf("  Auto-land: %s\n", style.Bold.Render("enabled"))
-		} else {
-			fmt.Printf("  Auto-land: %s\n", style.Dim.Render("disabled"))
-			fmt.Printf("  Run: gt mq integration land %s\n", output.Epic)
-		}
-	} else {
-		if output.ChildrenTotal == 0 {
-			fmt.Printf("%s Epic has no children yet.\n", style.Dim.Render("○"))
-		} else if output.ChildrenClosed < output.ChildrenTotal {
-			fmt.Printf("%s Waiting for %d/%d children to close.\n",
-				style.Dim.Render("○"), output.ChildrenTotal-output.ChildrenClosed, output.ChildrenTotal)
-		} else if len(output.PendingMRs) > 0 {
-			fmt.Printf("%s Waiting for %d pending MRs to merge.\n",
-				style.Dim.Render("○"), len(output.PendingMRs))
-		} else if output.AheadOfBase == 0 {
-			fmt.Printf("%s No commits ahead of %s.\n", style.Dim.Render("○"), output.BaseBranch)
-		}
-		// Show auto-land status even when not ready
-		if output.AutoLandEnabled {
-			fmt.Printf("  Auto-land: %s (will land when ready)\n", style.Bold.Render("enabled"))
-		} else {
-			fmt.Printf("  Auto-land: %s\n", style.Dim.Render("disabled"))
-		}
+		printReadyIntegrationStatus(output)
+		return
 	}
+	printWaitingIntegrationStatus(output)
+}
 
-	return nil
+func printReadyIntegrationStatus(output *IntegrationStatusOutput) {
+	fmt.Printf("%s Integration branch is ready to land.\n", style.Bold.Render("✓"))
+	if output.AutoLandEnabled {
+		fmt.Printf("  Auto-land: %s\n", style.Bold.Render("enabled"))
+		return
+	}
+	fmt.Printf("  Auto-land: %s\n", style.Dim.Render("disabled"))
+	fmt.Printf("  Run: gt mq integration land %s\n", output.Epic)
+}
+
+func printWaitingIntegrationStatus(output *IntegrationStatusOutput) {
+	printIntegrationWaitReason(output)
+	if output.AutoLandEnabled {
+		fmt.Printf("  Auto-land: %s (will land when ready)\n", style.Bold.Render("enabled"))
+		return
+	}
+	fmt.Printf("  Auto-land: %s\n", style.Dim.Render("disabled"))
+}
+
+func printIntegrationWaitReason(output *IntegrationStatusOutput) {
+	switch {
+	case output.ChildrenTotal == 0:
+		fmt.Printf("%s Epic has no children yet.\n", style.Dim.Render("○"))
+	case output.ChildrenClosed < output.ChildrenTotal:
+		fmt.Printf("%s Waiting for %d/%d children to close.\n",
+			style.Dim.Render("○"), output.ChildrenTotal-output.ChildrenClosed, output.ChildrenTotal)
+	case len(output.PendingMRs) > 0:
+		fmt.Printf("%s Waiting for %d pending MRs to merge.\n",
+			style.Dim.Render("○"), len(output.PendingMRs))
+	case output.AheadOfBase == 0:
+		fmt.Printf("%s No commits ahead of %s.\n", style.Dim.Render("○"), output.BaseBranch)
+	}
 }

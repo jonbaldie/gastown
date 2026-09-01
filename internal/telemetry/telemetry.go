@@ -48,12 +48,33 @@ const (
 	ExportInterval = 30 * time.Second
 )
 
-// package-level state for idempotent Init.
-var (
-	initMu         sync.Mutex
-	initDone       bool
-	globalProvider *Provider
-)
+// initState holds the package's idempotent initialization state.
+type initState struct {
+	mu       sync.Mutex
+	done     bool
+	provider *Provider
+}
+
+func (s *initState) begin() (*Provider, bool) {
+	s.mu.Lock()
+	if s.done {
+		provider := s.provider
+		s.mu.Unlock()
+		return provider, true
+	}
+	return nil, false
+}
+
+func (s *initState) complete(provider *Provider) {
+	s.done = true
+	s.provider = provider
+}
+
+func (s *initState) unlock() {
+	s.mu.Unlock()
+}
+
+var telemetryInit = &initState{}
 
 // Provider wraps OTel SDK providers and their shutdown functions.
 type Provider struct {
@@ -110,19 +131,17 @@ func IsActive() bool {
 //	metrics → http://localhost:8428/opentelemetry/api/v1/push
 //	logs    → http://localhost:9428/insert/opentelemetry/v1/logs
 func Init(ctx context.Context, serviceName, serviceVersion string) (*Provider, error) {
-	initMu.Lock()
-	defer initMu.Unlock()
-	if initDone {
-		return globalProvider, nil
+	if provider, done := telemetryInit.begin(); done {
+		return provider, nil
 	}
+	defer telemetryInit.unlock()
 
 	metricsURL := os.Getenv(EnvMetricsURL)
 	logsURL := os.Getenv(EnvLogsURL)
 
 	// Both unset → telemetry disabled, not an error.
 	if metricsURL == "" && logsURL == "" {
-		initDone = true
-		globalProvider = nil
+		telemetryInit.complete(nil)
 		return nil, nil
 	}
 	if metricsURL == "" {
@@ -179,7 +198,6 @@ func Init(ctx context.Context, serviceName, serviceVersion string) (*Provider, e
 	global.SetLoggerProvider(lp)
 	p.shutdowns = append(p.shutdowns, lp.Shutdown)
 
-	initDone = true
-	globalProvider = p
+	telemetryInit.complete(p)
 	return p, nil
 }

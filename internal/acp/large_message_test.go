@@ -43,7 +43,7 @@ func TestProxy_LargeMessageHandling(t *testing.T) {
 		defer p.cmd.Process.Kill()
 
 		p.wg.Add(1)
-		go p.forwardToAgent()
+		go forwardToAgent(p)
 
 		// Write large message to stdin
 		go func() {
@@ -84,7 +84,7 @@ func TestProxy_LargeMessageHandling(t *testing.T) {
 			t.Fatal("timeout waiting for large message forwardToAgent")
 		}
 
-		p.markDone()
+		markDone(p)
 		// We don't wait for wg because forwardToAgent might be blocked on ReadString
 		// but since we closed stdinWriter, it should exit.
 		p.wg.Wait()
@@ -102,7 +102,7 @@ func TestProxy_LargeMessageHandling(t *testing.T) {
 		p.uiEncoder = json.NewEncoder(stdoutWriter)
 
 		p.wg.Add(1)
-		go p.forwardFromAgent()
+		go forwardFromAgent(p)
 
 		// Write large message to agentStdout (via the writer side of the pipe)
 		go func() {
@@ -139,7 +139,7 @@ func TestProxy_LargeMessageHandling(t *testing.T) {
 			t.Fatal("timeout waiting for large message forwardFromAgent")
 		}
 
-		p.markDone()
+		markDone(p)
 		p.wg.Wait()
 	})
 }

@@ -236,44 +236,49 @@ func SyncManagedClaudeSettings(target Target, dryRun bool) (SyncResult, error) {
 		return 0, fmt.Errorf("loading current settings: %w", err)
 	}
 
-	_, statErr := os.Stat(target.Path)
-	fileExists := statErr == nil
-
+	fileExists := fileExists(target.Path)
 	if fileExists && HooksEqual(expected, &current.Hooks) && HasClaudePromptDefaults(current) {
 		return SyncUnchanged, nil
 	}
-
 	if dryRun {
-		if fileExists {
-			return SyncUpdated, nil
-		}
-		return SyncCreated, nil
+		return changedSyncResult(fileExists), nil
 	}
+	if err := writeManagedClaudeSettings(target.Path, current, expected); err != nil {
+		return 0, err
+	}
+	return changedSyncResult(fileExists), nil
+}
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func changedSyncResult(fileExists bool) SyncResult {
+	if fileExists {
+		return SyncUpdated
+	}
+	return SyncCreated
+}
+
+func writeManagedClaudeSettings(path string, current *SettingsJSON, expected *HooksConfig) error {
 	current.Hooks = *expected
 	if current.EnabledPlugins == nil {
 		current.EnabledPlugins = make(map[string]bool)
 	}
 	current.EnabledPlugins["beads@beads-marketplace"] = false
-
-	if err := os.MkdirAll(filepath.Dir(target.Path), 0755); err != nil {
-		return 0, fmt.Errorf("creating .claude directory: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("creating .claude directory: %w", err)
 	}
-
 	data, err := MarshalSettings(current)
 	if err != nil {
-		return 0, fmt.Errorf("marshaling settings: %w", err)
+		return fmt.Errorf("marshaling settings: %w", err)
 	}
 	data = append(data, '\n')
-
-	if err := atomicfile.WriteFile(target.Path, data, 0600); err != nil {
-		return 0, fmt.Errorf("writing settings: %w", err)
+	if err := atomicfile.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing settings: %w", err)
 	}
-
-	if fileExists {
-		return SyncUpdated, nil
-	}
-	return SyncCreated, nil
+	return nil
 }
 
 // HooksEqual returns true if two HooksConfigs are structurally equal.
@@ -328,182 +333,76 @@ func Merge(base, override *HooksConfig) *HooksConfig {
 // The successor picks up hooked work via SessionStart hook (gt prime --hook).
 func DefaultOverrides() map[string]*HooksConfig {
 	return map[string]*HooksConfig{
-		// Polecats: auto-run gt done on session Stop (gas-lob).
-		// Catches the "idle polecat" problem: polecats that finish work but
-		// forget to call gt done before the session ends. The polecat-stop-check
-		// command is idempotent — it checks heartbeat state and branch commits
-		// before deciding whether to run gt done.
-		"polecats": {
-			Stop: []HookEntry{
-				{
-					Matcher: "",
-					Hooks: []Hook{
-						{
-							Type:    "command",
-							Command: gtCommand("gt tap polecat-stop-check"),
-						},
-					},
-				},
-			},
-		},
-		// Crew workers: auto-cycle session on context compaction (gt-op78).
-		// Instead of compacting (lossy), replace with fresh session that
-		// inherits hooked work. The --cycle flag does: collect state →
-		// send handoff mail → respawn pane with fresh Claude instance.
-		"crew": {
-			PreCompact: []HookEntry{
-				{
-					Matcher: "",
-					Hooks: []Hook{
-						{
-							Type:    "command",
-							Command: gtCommand("gt handoff --cycle --reason compaction"),
-						},
-					},
-				},
-			},
-		},
-		// Witness roles: patrol-formula-guard (gt-e47hxn).
-		// Blocks patrol formulas from using persistent molecules — must use wisps.
-		// Without this, witnesses could accidentally create permanent patrol molecules
-		// that survive session restarts and accumulate unbounded.
-		"witness": {
-			UserPromptSubmit: []HookEntry{{Matcher: ""}},
-			PreToolUse: []HookEntry{
-				{
-					Matcher: "Bash(*bd mol pour*patrol*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-witness*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-deacon*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-refinery*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-			},
-		},
-		"boot": {
-			UserPromptSubmit: []HookEntry{{Matcher: ""}},
-			PreToolUse: []HookEntry{
-				{
-					Matcher: "Bash(*tmux*send-keys*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo 'BLOCKED: Boot must not use raw tmux send-keys; it can leave unsubmitted text staged in the Deacon TUI.' && echo 'Use: gt nudge --mode=immediate deacon \"message\" (do not add --force).' && exit 2",
-					}},
-				},
-			},
-		},
-		// Deacon roles: patrol-formula-guard (same as witness).
-		// Deacons also run patrols and must use wisps, not persistent molecules.
-		"deacon": {
-			UserPromptSubmit: []HookEntry{{Matcher: ""}},
-			PreToolUse: []HookEntry{
-				{
-					Matcher: "Bash(*for *seq*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Deacon must not batch patrol cycles with for/seq loops.' && echo 'Run one patrol cycle, then use gt patrol report or gt handoff.' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*while true*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Deacon must not run open-ended patrol loops.' && echo 'Run one patrol cycle, then use gt patrol report or gt handoff.' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*while :*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Deacon must not run open-ended patrol loops.' && echo 'Run one patrol cycle, then use gt patrol report or gt handoff.' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour*patrol*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-witness*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-deacon*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-refinery*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-			},
-		},
-		// Refinery roles: patrol-formula-guard (same as witness).
-		// Refineries also run patrols and must use wisps, not persistent molecules.
-		"refinery": {
-			UserPromptSubmit: []HookEntry{{Matcher: ""}},
-			PreToolUse: []HookEntry{
-				{
-					Matcher: "Bash(*bd mol pour*patrol*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-witness*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-deacon*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-				{
-					Matcher: "Bash(*bd mol pour *mol-refinery*)",
-					Hooks: []Hook{{
-						Type:    "command",
-						Command: "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2",
-					}},
-				},
-			},
-		},
+		"polecats": polecatDefaultOverride(),
+		"crew":     crewDefaultOverride(),
+		"witness":  patrolDefaultOverride(),
+		"boot":     bootDefaultOverride(),
+		"deacon":   deaconDefaultOverride(),
+		"refinery": patrolDefaultOverride(),
 	}
+}
+
+func polecatDefaultOverride() *HooksConfig {
+	return &HooksConfig{Stop: []HookEntry{{
+		Matcher: "",
+		Hooks:   []Hook{{Type: "command", Command: gtCommand("gt tap polecat-stop-check")}},
+	}}}
+}
+
+func crewDefaultOverride() *HooksConfig {
+	return &HooksConfig{PreCompact: []HookEntry{{
+		Matcher: "",
+		Hooks:   []Hook{{Type: "command", Command: gtCommand("gt handoff --cycle --reason compaction")}},
+	}}}
+}
+
+func patrolDefaultOverride() *HooksConfig {
+	return &HooksConfig{
+		UserPromptSubmit: []HookEntry{{Matcher: ""}},
+		PreToolUse:       patrolGuardHooks(),
+	}
+}
+
+func bootDefaultOverride() *HooksConfig {
+	return &HooksConfig{
+		UserPromptSubmit: []HookEntry{{Matcher: ""}},
+		PreToolUse: []HookEntry{{
+			Matcher: "Bash(*tmux*send-keys*)",
+			Hooks: []Hook{{
+				Type:    "command",
+				Command: "echo 'BLOCKED: Boot must not use raw tmux send-keys; it can leave unsubmitted text staged in the Deacon TUI.' && echo 'Use: gt nudge --mode=immediate deacon \"message\" (do not add --force).' && exit 2",
+			}},
+		}},
+	}
+}
+
+func deaconDefaultOverride() *HooksConfig {
+	hooks := []HookEntry{
+		commandGuard("Bash(*for *seq*)", "echo '❌ BLOCKED: Deacon must not batch patrol cycles with for/seq loops.' && echo 'Run one patrol cycle, then use gt patrol report or gt handoff.' && exit 2"),
+		commandGuard("Bash(*while true*)", "echo '❌ BLOCKED: Deacon must not run open-ended patrol loops.' && echo 'Run one patrol cycle, then use gt patrol report or gt handoff.' && exit 2"),
+		commandGuard("Bash(*while :*)", "echo '❌ BLOCKED: Deacon must not run open-ended patrol loops.' && echo 'Run one patrol cycle, then use gt patrol report or gt handoff.' && exit 2"),
+	}
+	hooks = append(hooks, patrolGuardHooks()...)
+	return &HooksConfig{UserPromptSubmit: []HookEntry{{Matcher: ""}}, PreToolUse: hooks}
+}
+
+func patrolGuardHooks() []HookEntry {
+	const command = "echo '❌ BLOCKED: Patrol formulas must use wisps, not persistent molecules.' && echo 'Use: bd mol wisp mol-*-patrol' && echo 'Not:  bd mol pour mol-*-patrol' && exit 2"
+	matchers := []string{
+		"Bash(*bd mol pour*patrol*)",
+		"Bash(*bd mol pour *mol-witness*)",
+		"Bash(*bd mol pour *mol-deacon*)",
+		"Bash(*bd mol pour *mol-refinery*)",
+	}
+	hooks := make([]HookEntry, 0, len(matchers))
+	for _, matcher := range matchers {
+		hooks = append(hooks, commandGuard(matcher, command))
+	}
+	return hooks
+}
+
+func commandGuard(matcher, command string) HookEntry {
+	return HookEntry{Matcher: matcher, Hooks: []Hook{{Type: "command", Command: command}}}
 }
 
 // ComputeExpected computes the expected HooksConfig for a target by loading
@@ -560,26 +459,17 @@ func ComputeExpected(target string) (*HooksConfig, error) {
 // via --settings flag. Crew members in a rig share one settings file, as do polecats.
 // Returns Target structs with path, override key, rig, and role information.
 func DiscoverTargets(townRoot string) ([]Target, error) {
-	var targets []Target
-
-	// Town-level targets (mayor/deacon cwd IS the settings dir)
-	targets = append(targets, Target{
+	targets := []Target{{
 		Path: filepath.Join(townRoot, "mayor", ".claude", "settings.json"),
 		Key:  "mayor",
 		Role: "mayor",
-	})
-	targets = append(targets, Target{
+	}, {
 		Path: filepath.Join(townRoot, "deacon", ".claude", "settings.json"),
 		Key:  "deacon",
 		Role: "deacon",
-	})
-
-	// Boot watchdog — ephemeral Claude agent in deacon/dogs/boot/.
-	// Only added when the directory exists (gitignored and optional).
-	// Adding it here ensures HooksSyncCheck manages the file and Fix() preserves
-	// custom fields (e.g. model) via the LoadSettings → MarshalSettings round-trip.
+	}}
 	bootDir := filepath.Join(townRoot, "deacon", "dogs", "boot")
-	if info, err := os.Stat(bootDir); err == nil && info.IsDir() {
+	if isDirectory(bootDir) {
 		targets = append(targets, Target{
 			Path: filepath.Join(bootDir, ".claude", "settings.json"),
 			Key:  "boot",
@@ -587,75 +477,52 @@ func DiscoverTargets(townRoot string) ([]Target, error) {
 		})
 	}
 
-	// Scan rigs
 	entries, err := os.ReadDir(townRoot)
 	if err != nil {
 		return nil, err
 	}
-
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == "mayor" || entry.Name() == "deacon" ||
-			entry.Name() == ".beads" || strings.HasPrefix(entry.Name(), ".") {
+		if !isRigEntry(entry) {
 			continue
 		}
-
 		rigName := entry.Name()
 		rigPath := filepath.Join(townRoot, rigName)
-
-		// Skip directories that aren't rigs (no crew/ or witness/ or polecats/ subdirs)
 		if !isRig(rigPath) {
 			continue
 		}
-
-		// Crew — one shared settings file in the crew parent directory.
-		// All crew members share this via --settings flag.
-		crewDir := filepath.Join(rigPath, "crew")
-		if info, err := os.Stat(crewDir); err == nil && info.IsDir() {
-			targets = append(targets, Target{
-				Path: filepath.Join(crewDir, ".claude", "settings.json"),
-				Key:  rigName + "/crew",
-				Rig:  rigName,
-				Role: "crew",
-			})
-		}
-
-		// Polecats — one shared settings file in the polecats parent directory.
-		// All polecats share this via --settings flag.
-		polecatsDir := filepath.Join(rigPath, "polecats")
-		if info, err := os.Stat(polecatsDir); err == nil && info.IsDir() {
-			targets = append(targets, Target{
-				Path: filepath.Join(polecatsDir, ".claude", "settings.json"),
-				Key:  rigName + "/polecats",
-				Rig:  rigName,
-				Role: "polecat",
-			})
-		}
-
-		// Witness — settings in the witness parent directory
-		witnessDir := filepath.Join(rigPath, "witness")
-		if info, err := os.Stat(witnessDir); err == nil && info.IsDir() {
-			targets = append(targets, Target{
-				Path: filepath.Join(witnessDir, ".claude", "settings.json"),
-				Key:  rigName + "/witness",
-				Rig:  rigName,
-				Role: "witness",
-			})
-		}
-
-		// Refinery — settings in the refinery parent directory
-		refineryDir := filepath.Join(rigPath, "refinery")
-		if info, err := os.Stat(refineryDir); err == nil && info.IsDir() {
-			targets = append(targets, Target{
-				Path: filepath.Join(refineryDir, ".claude", "settings.json"),
-				Key:  rigName + "/refinery",
-				Rig:  rigName,
-				Role: "refinery",
-			})
-		}
-
+		targets = append(targets, rigClaudeTargets(rigPath, rigName)...)
 	}
-
 	return targets, nil
+}
+
+type roleDirectory struct{ dir, role, key string }
+
+var rigRoleDirectories = []roleDirectory{
+	{dir: "crew", role: "crew", key: "crew"},
+	{dir: "polecats", role: "polecat", key: "polecats"},
+	{dir: "witness", role: "witness", key: "witness"},
+	{dir: "refinery", role: "refinery", key: "refinery"},
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func isRigEntry(entry os.DirEntry) bool {
+	name := entry.Name()
+	return entry.IsDir() && name != "mayor" && name != "deacon" && name != ".beads" && !strings.HasPrefix(name, ".")
+}
+
+func rigClaudeTargets(rigPath, rigName string) []Target {
+	var targets []Target
+	for _, role := range rigRoleDirectories {
+		dir := filepath.Join(rigPath, role.dir)
+		if isDirectory(dir) {
+			targets = append(targets, Target{Path: filepath.Join(dir, ".claude", "settings.json"), Key: rigName + "/" + role.key, Rig: rigName, Role: role.role})
+		}
+	}
+	return targets
 }
 
 // RoleLocation represents a discovered role directory in the workspace,
@@ -672,49 +539,40 @@ type RoleLocation struct {
 // agent-agnostic directory locations that callers can use with any agent config.
 func DiscoverRoleLocations(townRoot string) ([]RoleLocation, error) {
 	var locations []RoleLocation
-
-	// Town-level roles
 	for _, role := range []string{"mayor", "deacon"} {
 		dir := filepath.Join(townRoot, role)
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		if isDirectory(dir) {
 			locations = append(locations, RoleLocation{Dir: dir, Role: role})
 		}
 	}
-
-	// Scan rigs
 	entries, err := os.ReadDir(townRoot)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == "mayor" || entry.Name() == "deacon" ||
-			entry.Name() == ".beads" || strings.HasPrefix(entry.Name(), ".") {
+		if !isRigEntry(entry) {
 			continue
 		}
-
 		rigName := entry.Name()
 		rigPath := filepath.Join(townRoot, rigName)
-
 		if !isRig(rigPath) {
 			continue
 		}
+		locations = append(locations, rigRoleLocations(rigPath, rigName)...)
+	}
+	return locations, nil
+}
 
-		// Map subdirectories to roles
-		for _, sub := range []struct{ dir, role string }{
-			{"crew", "crew"},
-			{"polecats", "polecat"},
-			{"witness", "witness"},
-			{"refinery", "refinery"},
-		} {
-			dir := filepath.Join(rigPath, sub.dir)
-			if info, err := os.Stat(dir); err == nil && info.IsDir() {
-				locations = append(locations, RoleLocation{Dir: dir, Rig: rigName, Role: sub.role})
-			}
+func rigRoleLocations(rigPath, rigName string) []RoleLocation {
+	var locations []RoleLocation
+	for _, role := range rigRoleDirectories {
+		dir := filepath.Join(rigPath, role.dir)
+		if isDirectory(dir) {
+			locations = append(locations, RoleLocation{Dir: dir, Rig: rigName, Role: role.role})
 		}
 	}
-
-	return locations, nil
+	return locations
 }
 
 // DiscoverWorktrees returns subdirectories within a role parent directory that

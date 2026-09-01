@@ -120,8 +120,8 @@ func TestEnsureLifecycleDefaults_PreservesExisting(t *testing.T) {
 		Version: 1,
 		Patrols: &PatrolsConfig{
 			WispReaper: &WispReaperConfig{
-				Enabled:     true,
-				IntervalStr: "1h", // User customized to 1h
+				Enabled:      true,
+				IntervalStr:  "1h",   // User customized to 1h
 				DeleteAgeStr: "336h", // User customized to 14 days
 			},
 		},
@@ -162,10 +162,10 @@ func TestEnsureLifecycleDefaults_FullyConfigured(t *testing.T) {
 			CheckpointDog:        &CheckpointDogConfig{Enabled: false},
 			DoctorDog:            &DoctorDogConfig{Enabled: false},
 			JsonlGitBackup:       &JsonlGitBackupConfig{Enabled: false},
-			DoltBackup:           &DoltBackupConfig{Enabled: false},
+			DoltPatrols:          DoltPatrols{DoltBackup: &DoltBackupConfig{Enabled: false}},
 			ScheduledMaintenance: &ScheduledMaintenanceConfig{Enabled: false, Threshold: &threshold},
 			MainBranchTest:       &MainBranchTestConfig{Enabled: false},
-			Handler:              &PatrolConfig{Enabled: false},
+			CorePatrols:          CorePatrols{Handler: &PatrolConfig{Enabled: false}},
 		},
 	}
 
@@ -288,10 +288,12 @@ func TestEnsureLifecycleConfigFile_ProductionScenario(t *testing.T) {
 		Type:    "daemon-patrol-config",
 		Version: 1,
 		Patrols: &PatrolsConfig{
-			Deacon:   &PatrolConfig{Enabled: true, Interval: "5m", Agent: "deacon"},
-			Refinery: &PatrolConfig{Enabled: true, Interval: "5m", Agent: "refinery"},
-			Witness:  &PatrolConfig{Enabled: true, Interval: "5m", Agent: "witness"},
-			DoltBackup: &DoltBackupConfig{Enabled: false},
+			CorePatrols: CorePatrols{
+				Deacon:   &PatrolConfig{Enabled: true, Interval: "5m", Agent: "deacon"},
+				Refinery: &PatrolConfig{Enabled: true, Interval: "5m", Agent: "refinery"},
+				Witness:  &PatrolConfig{Enabled: true, Interval: "5m", Agent: "witness"},
+			},
+			DoltPatrols: DoltPatrols{DoltBackup: &DoltBackupConfig{Enabled: false}},
 		},
 	}
 	data, _ := json.MarshalIndent(existing, "", "  ")

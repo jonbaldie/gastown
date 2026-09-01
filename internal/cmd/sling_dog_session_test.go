@@ -9,10 +9,12 @@ import (
 
 func TestStartDelayedSession_FailsClosedOnStaleSession(t *testing.T) {
 	info := &DogDispatchInfo{
-		DogName:        "alpha",
-		sessionDelayed: true,
-		townRoot:       t.TempDir(),
-		workDesc:       "gt-new",
+		DogName: "alpha",
+		state: dogDispatchState{
+			sessionDelayed: true,
+			townRoot:       t.TempDir(),
+			workDesc:       "gt-new",
+		},
 	}
 	prev := ensureDogSession
 	t.Cleanup(func() { ensureDogSession = prev })
@@ -24,7 +26,7 @@ func TestStartDelayedSession_FailsClosedOnStaleSession(t *testing.T) {
 		t.Fatalf("StartDelayedSession() error = %v, want ErrSessionRunning", err)
 	}
 
-	info.sessionDelayed = true
+	info.state.sessionDelayed = true
 	ensureDogSession = func(*DogDispatchInfo) (string, error) {
 		return "", nil
 	}
@@ -32,7 +34,7 @@ func TestStartDelayedSession_FailsClosedOnStaleSession(t *testing.T) {
 		t.Fatal("empty pane must fail closed")
 	}
 
-	info.sessionDelayed = true
+	info.state.sessionDelayed = true
 	ensureDogSession = func(*DogDispatchInfo) (string, error) {
 		return "%5", nil
 	}
@@ -40,8 +42,8 @@ func TestStartDelayedSession_FailsClosedOnStaleSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartDelayedSession() error = %v", err)
 	}
-	if pane != "%5" || info.Pane != "%5" || info.sessionDelayed {
-		t.Fatalf("pane=%q delayed=%v, want %%5 started", pane, info.sessionDelayed)
+	if pane != "%5" || info.Pane != "%5" || info.state.sessionDelayed {
+		t.Fatalf("pane=%q delayed=%v, want %%5 started", pane, info.state.sessionDelayed)
 	}
 }
 
@@ -53,14 +55,14 @@ func TestStartDelayedSession_AlreadyStartedRequiresPane(t *testing.T) {
 }
 
 func TestVerifyConvoyRelation_RequiresMatchingConvoy(t *testing.T) {
-	d := &DogDispatchInfo{requireConvoy: true, expectedConvoy: "hq-cv-1"}
-	if err := d.verifyConvoyRelation(&beadInfo{Description: "title\n"}, "gt-a"); err == nil {
+	d := &DogDispatchInfo{state: dogDispatchState{requireConvoy: true, expectedConvoy: "hq-cv-1"}}
+	if err := verifyDogConvoyRelation(d, &beadInfo{Description: "title\n"}, "gt-a"); err == nil {
 		t.Fatal("missing convoy must fail when required")
 	}
-	if err := d.verifyConvoyRelation(&beadInfo{Description: "convoy_id: hq-cv-other\n"}, "gt-a"); err == nil {
+	if err := verifyDogConvoyRelation(d, &beadInfo{Description: "convoy_id: hq-cv-other\n"}, "gt-a"); err == nil {
 		t.Fatal("mismatched convoy must fail")
 	}
-	if err := d.verifyConvoyRelation(&beadInfo{Description: "convoy_id: hq-cv-1\n"}, "gt-a"); err != nil {
+	if err := verifyDogConvoyRelation(d, &beadInfo{Description: "convoy_id: hq-cv-1\n"}, "gt-a"); err != nil {
 		t.Fatalf("matching convoy error = %v", err)
 	}
 }

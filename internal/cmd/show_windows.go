@@ -29,10 +29,9 @@ func execBdShow(args []string) error {
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+			return NewSilentExit(exitErr.ExitCode())
 		}
 		return err
 	}
-	os.Exit(0)
-	return nil // unreachable
+	return nil
 }

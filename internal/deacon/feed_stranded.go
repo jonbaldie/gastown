@@ -211,167 +211,149 @@ var findStrandedConvoys = FindStrandedConvoys
 // Rate limits by maxPerCycle and per-convoy cooldown.
 func FeedStranded(townRoot string, maxPerCycle int, cooldown time.Duration) *FeedResult {
 	result := &FeedResult{}
-
 	if err := dog.RequireDispatchAllowed(townRoot); err != nil {
-		result.Errors++
-		result.Details = append(result.Details, FeedConvoyResult{
-			Action:  "blocked",
-			Message: fmt.Sprintf("guardian blocked dog dispatch: %v", err),
-		})
+		appendFeedError(result, "", "blocked", fmt.Sprintf("guardian blocked dog dispatch: %v", err))
 		return result
 	}
-
 	if maxPerCycle <= 0 {
 		maxPerCycle = DefaultMaxFeedsPerCycle
 	}
 	if cooldown <= 0 {
 		cooldown = DefaultFeedCooldown
 	}
-
-	// Find stranded convoys
-	stranded, err := findStrandedConvoys(townRoot)
-	if err != nil {
-		result.Errors++
-		result.Details = append(result.Details, FeedConvoyResult{
-			Action:  "error",
-			Message: fmt.Sprintf("failed to find stranded convoys: %v", err),
-		})
+	stranded, state, ok := loadFeedStrandedWork(townRoot, result)
+	if !ok {
 		return result
 	}
-
-	if len(stranded) == 0 {
-		return result
-	}
-
-	// Load state for cooldown tracking
-	state, err := LoadFeedStrandedState(townRoot)
-	if err != nil {
-		result.Errors++
-		result.Details = append(result.Details, FeedConvoyResult{
-			Action:  "error",
-			Message: fmt.Sprintf("failed to load feed state: %v", err),
-		})
-		return result
-	}
-
 	fedCount := 0
-
 	for _, convoy := range stranded {
-		// Handle convoys with no ready issues.
-		if convoy.ReadyCount == 0 {
-			// Convoy has tracked issues but none are ready — surface raw data
-			// for the deacon agent to inspect. Go does not classify WHY issues
-			// aren't ready (dependency resolution, external block, etc.).
-			if convoy.TrackedCount > 0 {
-				result.NeedsAttention++
-				result.Details = append(result.Details, FeedConvoyResult{
-					ConvoyID:     convoy.ID,
-					Action:       "needs_attention",
-					Message:      fmt.Sprintf("%d tracked issues, 0 ready — requires agent review", convoy.TrackedCount),
-					TrackedCount: convoy.TrackedCount,
-					ReadyCount:   0,
-				})
-				continue
-			}
-
-			// Truly empty convoy (0 tracked issues) — auto-close
-			if err := dog.RequireActivationAllowed(townRoot); err != nil {
-				result.Errors++
-				result.Details = append(result.Details, FeedConvoyResult{
-					ConvoyID: convoy.ID,
-					Action:   "blocked",
-					Message:  fmt.Sprintf("guardian blocked empty-convoy close: %v", err),
-				})
-				continue
-			}
-			if err := closeEmptyConvoy(townRoot, convoy.ID); err != nil {
-				result.Errors++
-				result.Details = append(result.Details, FeedConvoyResult{
-					ConvoyID: convoy.ID,
-					Action:   "error",
-					Message:  fmt.Sprintf("failed to auto-close empty convoy: %v", err),
-				})
-			} else {
-				result.Closed++
-				result.Details = append(result.Details, FeedConvoyResult{
-					ConvoyID: convoy.ID,
-					Action:   "closed",
-					Message:  "auto-closed empty convoy (0 tracked issues)",
-				})
-			}
-			continue
-		}
-
-		// Rate limit: check per-cycle cap
-		if fedCount >= maxPerCycle {
-			result.Details = append(result.Details, FeedConvoyResult{
-				ConvoyID: convoy.ID,
-				Action:   "limit",
-				Message:  fmt.Sprintf("skipped: per-cycle limit reached (%d/%d)", fedCount, maxPerCycle),
-			})
-			continue
-		}
-
-		// Rate limit: check per-convoy cooldown
-		convoyState := state.GetConvoyState(convoy.ID)
-		if convoyState.IsInCooldown(cooldown) {
-			remaining := convoyState.CooldownRemaining(cooldown)
-			result.Skipped++
-			result.Details = append(result.Details, FeedConvoyResult{
-				ConvoyID: convoy.ID,
-				Action:   "cooldown",
-				Message:  fmt.Sprintf("in cooldown (remaining: %s)", remaining.Round(time.Second)),
-			})
-			continue
-		}
-
-		if ok, reason, err := admitConvoyFeed(townRoot, convoy.ID); err != nil {
-			result.Errors++
-			result.Details = append(result.Details, FeedConvoyResult{
-				ConvoyID: convoy.ID,
-				Action:   "error",
-				Message:  fmt.Sprintf("failed to admit convoy feed: %v", err),
-			})
-			continue
-		} else if !ok {
-			result.Details = append(result.Details, FeedConvoyResult{
-				ConvoyID: convoy.ID,
-				Action:   "rejected",
-				Message:  reason,
-			})
-			continue
-		}
-
-		// Dispatch dog to feed the convoy
-		if err := dispatchFeedDog(townRoot, convoy.ID); err != nil {
-			result.Errors++
-			result.Details = append(result.Details, FeedConvoyResult{
-				ConvoyID: convoy.ID,
-				Action:   "error",
-				Message:  fmt.Sprintf("failed to dispatch feed dog: %v", err),
-			})
-			continue
-		}
-
-		convoyState.RecordFeed()
-		fedCount++
-		result.Fed++
-		result.Details = append(result.Details, FeedConvoyResult{
-			ConvoyID: convoy.ID,
-			Action:   "fed",
-			Message:  fmt.Sprintf("dispatched dog to feed (%d ready issues)", convoy.ReadyCount),
-		})
+		fedCount += processStrandedConvoy(townRoot, convoy, state, result, fedCount, maxPerCycle, cooldown)
 	}
-
-	// Save state
 	if err := SaveFeedStrandedState(townRoot, state); err != nil {
 		result.Details = append(result.Details, FeedConvoyResult{
 			Action:  "error",
 			Message: fmt.Sprintf("warning: failed to save feed state: %v", err),
 		})
 	}
-
 	return result
+}
+
+func loadFeedStrandedWork(townRoot string, result *FeedResult) ([]StrandedConvoy, *FeedStrandedState, bool) {
+	stranded, err := findStrandedConvoys(townRoot)
+	if err != nil {
+		appendFeedError(result, "", "error", fmt.Sprintf("failed to find stranded convoys: %v", err))
+		return nil, nil, false
+	}
+	if len(stranded) == 0 {
+		return nil, nil, false
+	}
+	state, err := LoadFeedStrandedState(townRoot)
+	if err != nil {
+		appendFeedError(result, "", "error", fmt.Sprintf("failed to load feed state: %v", err))
+		return nil, nil, false
+	}
+	return stranded, state, true
+}
+
+func processStrandedConvoy(townRoot string, convoy StrandedConvoy, state *FeedStrandedState, result *FeedResult, fedCount, maxPerCycle int, cooldown time.Duration) int {
+	if convoy.ReadyCount == 0 {
+		handleUnreadyStrandedConvoy(townRoot, convoy, result)
+		return 0
+	}
+	if skipStrandedFeed(convoy, state, result, fedCount, maxPerCycle, cooldown) {
+		return 0
+	}
+	if !admitAndDispatchFeed(townRoot, convoy, result) {
+		return 0
+	}
+	state.GetConvoyState(convoy.ID).RecordFeed()
+	result.Fed++
+	result.Details = append(result.Details, FeedConvoyResult{
+		ConvoyID: convoy.ID,
+		Action:   "fed",
+		Message:  fmt.Sprintf("dispatched dog to feed (%d ready issues)", convoy.ReadyCount),
+	})
+	return 1
+}
+
+func handleUnreadyStrandedConvoy(townRoot string, convoy StrandedConvoy, result *FeedResult) {
+	if convoy.TrackedCount > 0 {
+		result.NeedsAttention++
+		result.Details = append(result.Details, FeedConvoyResult{
+			ConvoyID:     convoy.ID,
+			Action:       "needs_attention",
+			Message:      fmt.Sprintf("%d tracked issues, 0 ready — requires agent review", convoy.TrackedCount),
+			TrackedCount: convoy.TrackedCount,
+			ReadyCount:   0,
+		})
+		return
+	}
+	if err := dog.RequireActivationAllowed(townRoot); err != nil {
+		appendFeedError(result, convoy.ID, "blocked", fmt.Sprintf("guardian blocked empty-convoy close: %v", err))
+		return
+	}
+	if err := closeEmptyConvoy(townRoot, convoy.ID); err != nil {
+		appendFeedError(result, convoy.ID, "error", fmt.Sprintf("failed to auto-close empty convoy: %v", err))
+		return
+	}
+	result.Closed++
+	result.Details = append(result.Details, FeedConvoyResult{
+		ConvoyID: convoy.ID,
+		Action:   "closed",
+		Message:  "auto-closed empty convoy (0 tracked issues)",
+	})
+}
+
+func skipStrandedFeed(convoy StrandedConvoy, state *FeedStrandedState, result *FeedResult, fedCount, maxPerCycle int, cooldown time.Duration) bool {
+	if fedCount >= maxPerCycle {
+		result.Details = append(result.Details, FeedConvoyResult{
+			ConvoyID: convoy.ID,
+			Action:   "limit",
+			Message:  fmt.Sprintf("skipped: per-cycle limit reached (%d/%d)", fedCount, maxPerCycle),
+		})
+		return true
+	}
+	convoyState := state.GetConvoyState(convoy.ID)
+	if !convoyState.IsInCooldown(cooldown) {
+		return false
+	}
+	result.Skipped++
+	result.Details = append(result.Details, FeedConvoyResult{
+		ConvoyID: convoy.ID,
+		Action:   "cooldown",
+		Message:  fmt.Sprintf("in cooldown (remaining: %s)", convoyState.CooldownRemaining(cooldown).Round(time.Second)),
+	})
+	return true
+}
+
+func admitAndDispatchFeed(townRoot string, convoy StrandedConvoy, result *FeedResult) bool {
+	ok, reason, err := admitConvoyFeed(townRoot, convoy.ID)
+	if err != nil {
+		appendFeedError(result, convoy.ID, "error", fmt.Sprintf("failed to admit convoy feed: %v", err))
+		return false
+	}
+	if !ok {
+		result.Details = append(result.Details, FeedConvoyResult{
+			ConvoyID: convoy.ID,
+			Action:   "rejected",
+			Message:  reason,
+		})
+		return false
+	}
+	if err := dispatchFeedDog(townRoot, convoy.ID); err != nil {
+		appendFeedError(result, convoy.ID, "error", fmt.Sprintf("failed to dispatch feed dog: %v", err))
+		return false
+	}
+	return true
+}
+
+func appendFeedError(result *FeedResult, convoyID, action, message string) {
+	result.Errors++
+	result.Details = append(result.Details, FeedConvoyResult{
+		ConvoyID: convoyID,
+		Action:   action,
+		Message:  message,
+	})
 }
 
 // closeEmptyConvoy runs `gt convoy check <id>` to auto-close an empty convoy.
@@ -436,6 +418,25 @@ func admitConvoyFeed(townRoot, convoyID string) (bool, string, error) {
 }
 
 func defaultListConvoyChildren(townRoot, convoyID string) ([]ConvoyChild, error) {
+	issues, err := showConvoyDependencies(townRoot, convoyID)
+	if err != nil {
+		return nil, err
+	}
+	var children []ConvoyChild
+	for _, dep := range issues {
+		child, skip, err := loadTrackedConvoyChild(townRoot, dep)
+		if err != nil {
+			return nil, err
+		}
+		if skip {
+			continue
+		}
+		children = append(children, child)
+	}
+	return children, nil
+}
+
+func showConvoyDependencies(townRoot, convoyID string) ([]beads.IssueDep, error) {
 	cmd := beads.Command(townRoot, townBeadsDir(townRoot), beads.ReadOnlyRouting, "show", convoyID, "--json")
 	output, err := cmd.Output()
 	if err != nil {
@@ -447,31 +448,32 @@ func defaultListConvoyChildren(townRoot, convoyID string) ([]ConvoyChild, error)
 	if err := json.Unmarshal(output, &issues); err != nil || len(issues) == 0 {
 		return nil, fmt.Errorf("parsing convoy %s: %w", convoyID, err)
 	}
-	var children []ConvoyChild
-	for _, dep := range issues[0].Dependencies {
-		if dep.DependencyType != "" && dep.DependencyType != "tracks" {
-			continue
-		}
-		child := ConvoyChild{ID: dep.ID, Status: dep.Status}
-		show := beads.Command(townRoot, townBeadsDir(townRoot), beads.ReadOnlyRouting, "show", dep.ID, "--json")
-		out, showErr := show.Output()
-		if showErr != nil {
-			return nil, fmt.Errorf("showing tracked child %s: %w", dep.ID, showErr)
-		}
-		var details []struct {
-			Status   string `json:"status"`
-			Assignee string `json:"assignee"`
-			Blocked  bool   `json:"blocked"`
-		}
-		if err := json.Unmarshal(out, &details); err != nil || len(details) == 0 {
-			return nil, fmt.Errorf("parsing tracked child %s: %w", dep.ID, err)
-		}
-		child.Status = details[0].Status
-		child.Assignee = details[0].Assignee
-		child.Blocked = details[0].Blocked
-		children = append(children, child)
+	return issues[0].Dependencies, nil
+}
+
+func loadTrackedConvoyChild(townRoot string, dep beads.IssueDep) (ConvoyChild, bool, error) {
+	if dep.DependencyType != "" && dep.DependencyType != "tracks" {
+		return ConvoyChild{}, true, nil
 	}
-	return children, nil
+	show := beads.Command(townRoot, townBeadsDir(townRoot), beads.ReadOnlyRouting, "show", dep.ID, "--json")
+	out, showErr := show.Output()
+	if showErr != nil {
+		return ConvoyChild{}, false, fmt.Errorf("showing tracked child %s: %w", dep.ID, showErr)
+	}
+	var details []struct {
+		Status   string `json:"status"`
+		Assignee string `json:"assignee"`
+		Blocked  bool   `json:"blocked"`
+	}
+	if err := json.Unmarshal(out, &details); err != nil || len(details) == 0 {
+		return ConvoyChild{}, false, fmt.Errorf("parsing tracked child %s: %w", dep.ID, err)
+	}
+	return ConvoyChild{
+		ID:       dep.ID,
+		Status:   details[0].Status,
+		Assignee: details[0].Assignee,
+		Blocked:  details[0].Blocked,
+	}, false, nil
 }
 
 // PruneFeedStrandedState removes entries for convoys that are no longer open.

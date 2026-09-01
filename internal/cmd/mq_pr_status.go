@@ -12,14 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	mqPRStatusJSON      bool
-	mqPRStatusPRURL     string
-	mqPRStatusPRNumber  int
-	mqPRStatusHeadOwner string
-	mqPRStatusRepo      string
-)
-
 var mqPRStatusCmd = &cobra.Command{
 	Use:   "pr-status <rig> <mr-id-or-branch>",
 	Short: "Resolve the GitHub PR state for a merge-request bead",
@@ -33,11 +25,11 @@ patrols do not misclassify fork-head or deleted-head PRs.`,
 }
 
 func init() {
-	mqPRStatusCmd.Flags().BoolVar(&mqPRStatusJSON, "json", false, "Output JSON")
-	mqPRStatusCmd.Flags().StringVar(&mqPRStatusPRURL, "pr-url", "", "Recorded GitHub PR URL")
-	mqPRStatusCmd.Flags().IntVar(&mqPRStatusPRNumber, "pr-number", 0, "Recorded GitHub PR number")
-	mqPRStatusCmd.Flags().StringVar(&mqPRStatusHeadOwner, "head-owner", "", "GitHub owner for qualified head fallback")
-	mqPRStatusCmd.Flags().StringVar(&mqPRStatusRepo, "repo", "", "Target GitHub repo owner/name (defaults to upstream or origin)")
+	mqPRStatusCmd.Flags().Bool("json", false, "Output JSON")
+	mqPRStatusCmd.Flags().String("pr-url", "", "Recorded GitHub PR URL")
+	mqPRStatusCmd.Flags().Int("pr-number", 0, "Recorded GitHub PR number")
+	mqPRStatusCmd.Flags().String("head-owner", "", "GitHub owner for qualified head fallback")
+	mqPRStatusCmd.Flags().String("repo", "", "Target GitHub repo owner/name (defaults to upstream or origin)")
 	mqCmd.AddCommand(mqPRStatusCmd)
 }
 
@@ -46,9 +38,14 @@ type mqPRStatusResult struct {
 	PR    *git.PullRequestInfo `json:"pr,omitempty"`
 }
 
-func runMQPRStatus(_ *cobra.Command, args []string) error {
+func runMQPRStatus(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
+	prURLFlag := commandStringFlag(cmd, "pr-url")
+	prNumberFlag := commandIntFlag(cmd, "pr-number")
+	headOwner := commandStringFlag(cmd, "head-owner")
+	targetRepo := commandStringFlag(cmd, "repo")
+	jsonOutput := commandBoolFlag(cmd, "json")
 
 	mgr, r, _, err := getRefineryManager(rigName)
 	if err != nil {
@@ -63,41 +60,62 @@ func runMQPRStatus(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve PR status: %w", err)
 	}
 
-	prURL := firstNonEmpty(mqPRStatusPRURL, mr.PRURL)
-	prNumber := mqPRStatusPRNumber
-	if prNumber == 0 {
-		prNumber = mr.PRNumber
-	}
-	if mr.IssueID != "" && (prURL == "" || prNumber == 0) {
-		if source, showErr := beads.New(r.BeadsPath()).Show(mr.IssueID); showErr == nil && source != nil {
-			if prURL == "" && looksLikeGitHubPRURL(source.ExternalRef) {
-				prURL = source.ExternalRef
-			}
-			if prNumber == 0 {
-				prNumber = prNumberFromLabels(source.Labels)
-			}
-		}
-	}
+	prURL, prNumber := resolveMQPRIdentity(mr.IssueID, mr.PRURL, mr.PRNumber, r.BeadsPath(), prURLFlag, prNumberFlag)
 
-	pr, err := rigGit.LookupPullRequest(git.PullRequestRef{
+	pr, err := git.LookupPullRequest(rigGit, git.PullRequestRef{
 		URL:        prURL,
 		Number:     prNumber,
 		Branch:     mr.Branch,
-		HeadOwner:  mqPRStatusHeadOwner,
+		HeadOwner:  headOwner,
 		HeadSHA:    mr.CommitSHA,
-		TargetRepo: mqPRStatusRepo,
+		TargetRepo: targetRepo,
 	})
 	if err != nil {
 		if errors.Is(err, git.ErrPullRequestNotFound) {
-			return printMQPRStatus(mqPRStatusResult{Found: false})
+			return printMQPRStatus(mqPRStatusResult{Found: false}, jsonOutput)
 		}
 		return err
 	}
-	return printMQPRStatus(mqPRStatusResult{Found: true, PR: pr})
+	return printMQPRStatus(mqPRStatusResult{Found: true, PR: pr}, jsonOutput)
 }
 
-func printMQPRStatus(result mqPRStatusResult) error {
-	if mqPRStatusJSON {
+func resolveMQPRIdentity(issueID, recordedURL string, recordedNumber int, beadsPath, prURLFlag string, prNumberFlag int) (string, int) {
+	prURL := firstNonEmpty(prURLFlag, recordedURL)
+	prNumber := prNumberFlag
+	if prNumber == 0 {
+		prNumber = recordedNumber
+	}
+	if issueID == "" || (prURL != "" && prNumber != 0) {
+		return prURL, prNumber
+	}
+
+	sourceURL, sourceNumber, ok := loadMQPRSourceIdentity(issueID, beadsPath)
+	if !ok {
+		return prURL, prNumber
+	}
+	if prURL == "" {
+		prURL = sourceURL
+	}
+	if prNumber == 0 {
+		prNumber = sourceNumber
+	}
+	return prURL, prNumber
+}
+
+func loadMQPRSourceIdentity(issueID, beadsPath string) (string, int, bool) {
+	source, err := beads.New(beadsPath).Show(issueID)
+	if err != nil || source == nil {
+		return "", 0, false
+	}
+	sourceURL := ""
+	if looksLikeGitHubPRURL(source.ExternalRef) {
+		sourceURL = source.ExternalRef
+	}
+	return sourceURL, prNumberFromLabels(source.Labels), true
+}
+
+func printMQPRStatus(result mqPRStatusResult, jsonOutput bool) error {
+	if jsonOutput {
 		data, err := json.Marshal(result)
 		if err != nil {
 			return err

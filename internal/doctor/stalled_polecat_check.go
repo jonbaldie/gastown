@@ -46,80 +46,81 @@ func NewStalledPolecatCheck() *StalledPolecatCheck {
 // Run checks all rigs for polecats with dead sessions and unpushed commits.
 func (c *StalledPolecatCheck) Run(ctx *CheckContext) *CheckResult {
 	t := tmux.NewTmux()
-	var stalled []stalledPolecatInfo
-	var checked int
-
-	// Iterate over all rigs (or single rig if specified)
-	rigsToCheck := c.findRigs(ctx)
-	for _, rigName := range rigsToCheck {
-		polecatsDir := filepath.Join(ctx.TownRoot, rigName, "polecats")
-		entries, err := os.ReadDir(polecatsDir)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-
-			polecatName := entry.Name()
-			checked++
-
-			// Check if tmux session is alive
-			sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
-			alive, err := t.HasSession(sessionName)
-			if err != nil || alive {
-				continue // Session alive or can't check — skip
-			}
-
-			// Session is dead. Check for unpushed commits.
-			clonePath := c.resolveClonePath(ctx.TownRoot, rigName, polecatName)
-			if clonePath == "" {
-				continue
-			}
-
-			polecatGit := git.NewGit(clonePath)
-			branch, brErr := polecatGit.CurrentBranch()
-			if brErr != nil || branch == "" {
-				continue
-			}
-
-			pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
-			if checkErr != nil || pushed {
-				continue // Already pushed or can't check
-			}
-
-			if unpushedCount > 0 {
-				stalled = append(stalled, stalledPolecatInfo{
-					name:          polecatName,
-					rigName:       rigName,
-					branch:        branch,
-					unpushedCount: unpushedCount,
-					clonePath:     clonePath,
-				})
-			}
-		}
-	}
+	stalled, checked := c.inspectRigs(ctx, t)
 
 	c.stalledPolecats = stalled
+	return c.result(stalled, checked)
+}
 
-	if len(stalled) == 0 {
-		msg := "No stalled polecats with unpushed work"
-		if checked > 0 {
-			msg = fmt.Sprintf("Checked %d polecat(s), no unpushed work at risk", checked)
+func (c *StalledPolecatCheck) inspectRigs(ctx *CheckContext, t *tmux.Tmux) ([]stalledPolecatInfo, int) {
+	var stalled []stalledPolecatInfo
+	checked := 0
+	for _, rigName := range c.findRigs(ctx) {
+		rigStalled, rigChecked := c.inspectRig(ctx, t, rigName)
+		stalled = append(stalled, rigStalled...)
+		checked += rigChecked
+	}
+	return stalled, checked
+}
+
+func (c *StalledPolecatCheck) inspectRig(ctx *CheckContext, t *tmux.Tmux, rigName string) ([]stalledPolecatInfo, int) {
+	entries, err := os.ReadDir(filepath.Join(ctx.TownRoot, rigName, "polecats"))
+	if err != nil {
+		return nil, 0
+	}
+	var stalled []stalledPolecatInfo
+	checked := 0
+	for _, entry := range entries {
+		if !isStalledPolecatEntry(entry) {
+			continue
 		}
+		checked++
+		if info, ok := c.inspectPolecat(ctx, t, rigName, entry.Name()); ok {
+			stalled = append(stalled, info)
+		}
+	}
+	return stalled, checked
+}
+
+func isStalledPolecatEntry(entry os.DirEntry) bool {
+	return entry.IsDir() && !strings.HasPrefix(entry.Name(), ".")
+}
+
+func (c *StalledPolecatCheck) inspectPolecat(ctx *CheckContext, t *tmux.Tmux, rigName, polecatName string) (stalledPolecatInfo, bool) {
+	sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
+	alive, err := t.HasSession(sessionName)
+	if err != nil || alive {
+		return stalledPolecatInfo{}, false
+	}
+	clonePath := c.resolveClonePath(ctx.TownRoot, rigName, polecatName)
+	if clonePath == "" {
+		return stalledPolecatInfo{}, false
+	}
+	polecatGit := git.NewGit(clonePath)
+	branch, err := git.CurrentBranch(polecatGit)
+	if err != nil || branch == "" {
+		return stalledPolecatInfo{}, false
+	}
+	pushed, unpushedCount, err := git.BranchPushedToRemote(polecatGit, branch, "origin")
+	if err != nil || pushed || unpushedCount == 0 {
+		return stalledPolecatInfo{}, false
+	}
+	return stalledPolecatInfo{
+		name:          polecatName,
+		rigName:       rigName,
+		branch:        branch,
+		unpushedCount: unpushedCount,
+		clonePath:     clonePath,
+	}, true
+}
+
+func (c *StalledPolecatCheck) result(stalled []stalledPolecatInfo, checked int) *CheckResult {
+	if len(stalled) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusOK,
-			Message: msg,
+			Message: stalledPolecatOKMessage(checked),
 		}
-	}
-
-	details := make([]string, len(stalled))
-	for i, s := range stalled {
-		details[i] = fmt.Sprintf("STALLED: %s/%s — branch %s has %d unpushed commit(s)",
-			s.rigName, s.name, s.branch, s.unpushedCount)
 	}
 
 	return &CheckResult{
@@ -127,13 +128,29 @@ func (c *StalledPolecatCheck) Run(ctx *CheckContext) *CheckResult {
 		Status: StatusWarning,
 		Message: fmt.Sprintf("Found %d stalled polecat(s) with unpushed work at risk of loss",
 			len(stalled)),
-		Details: details,
+		Details: stalledPolecatDetails(stalled),
 		FixHint: "Run 'gt doctor --fix' to push stalled branches to remote",
 	}
 }
 
+func stalledPolecatOKMessage(checked int) string {
+	if checked > 0 {
+		return fmt.Sprintf("Checked %d polecat(s), no unpushed work at risk", checked)
+	}
+	return "No stalled polecats with unpushed work"
+}
+
+func stalledPolecatDetails(stalled []stalledPolecatInfo) []string {
+	details := make([]string, len(stalled))
+	for i, info := range stalled {
+		details[i] = fmt.Sprintf("STALLED: %s/%s — branch %s has %d unpushed commit(s)",
+			info.rigName, info.name, info.branch, info.unpushedCount)
+	}
+	return details
+}
+
 // Fix pushes branches from stalled polecats to the remote.
-func (c *StalledPolecatCheck) Fix(ctx *CheckContext) error {
+func (c *StalledPolecatCheck) Fix(_ *CheckContext) error {
 	if len(c.stalledPolecats) == 0 {
 		return nil
 	}
@@ -141,7 +158,7 @@ func (c *StalledPolecatCheck) Fix(ctx *CheckContext) error {
 	var lastErr error
 	for _, s := range c.stalledPolecats {
 		polecatGit := git.NewGit(s.clonePath)
-		if err := polecatGit.Push("origin", s.branch, false); err != nil {
+		if err := git.Push(polecatGit, "origin", s.branch, false); err != nil {
 			lastErr = fmt.Errorf("pushing %s/%s branch %s: %w", s.rigName, s.name, s.branch, err)
 		}
 	}

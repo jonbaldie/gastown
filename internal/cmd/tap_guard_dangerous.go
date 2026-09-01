@@ -60,10 +60,7 @@ var fragmentPatterns = []dangerousPattern{
 	{[]string{"truncate", "table"}, "database table truncation"},
 }
 
-// safeForceFlags are git push flags that look like --force but are safe.
-var safeForceFlags = []string{"--force-with-lease", "--force-if-includes"}
-
-func runTapGuardDangerous(cmd *cobra.Command, args []string) error {
+func runTapGuardDangerous(_ *cobra.Command, _ []string) error {
 	// Read hook input from stdin (Claude Code protocol)
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -158,18 +155,22 @@ func matchesDangerousRmRf(command string) string {
 	fields := strings.Fields(command)
 	hasRm := false
 	hasRecursiveForce := false
-	for _, f := range fields {
-		if f == "rm" {
-			hasRm = true
-		}
-		if strings.HasPrefix(f, "-") && strings.Contains(f, "r") && strings.Contains(f, "f") {
-			hasRecursiveForce = true
-		}
-		if hasRm && hasRecursiveForce && (f == "/" || f == "/*") {
+	for _, field := range fields {
+		hasRm = hasRm || field == "rm"
+		hasRecursiveForce = hasRecursiveForce || isRecursiveForceFlag(field)
+		if hasRm && hasRecursiveForce && isRootPath(field) {
 			return "filesystem destruction (rm -rf /)"
 		}
 	}
 	return ""
+}
+
+func isRecursiveForceFlag(field string) bool {
+	return strings.HasPrefix(field, "-") && strings.Contains(field, "r") && strings.Contains(field, "f")
+}
+
+func isRootPath(field string) bool {
+	return field == "/" || field == "/*"
 }
 
 // matchesSudo blocks any command that starts with or contains "sudo".
@@ -209,19 +210,26 @@ func matchesPackageInstall(command string) string {
 		}
 	}
 
-	// pip install --system (but not regular pip install into a venv)
-	if strings.Contains(command, "pip") && strings.Contains(command, "install") && strings.Contains(command, "--system") {
+	if matchesSystemPipInstall(command) {
 		return "System-level pip install — use a virtualenv or workspace tools instead"
 	}
 
-	// npm install -g / npm install --global
-	if strings.Contains(command, "npm") && strings.Contains(command, "install") {
-		if strings.Contains(command, " -g ") || strings.Contains(command, " -g") || strings.Contains(command, "--global") {
-			return "Global npm install — use workspace tools instead"
-		}
+	if matchesGlobalNpmInstall(command) {
+		return "Global npm install — use workspace tools instead"
 	}
 
 	return ""
+}
+
+func matchesSystemPipInstall(command string) bool {
+	return strings.Contains(command, "pip") && strings.Contains(command, "install") && strings.Contains(command, "--system")
+}
+
+func matchesGlobalNpmInstall(command string) bool {
+	if !strings.Contains(command, "npm") || !strings.Contains(command, "install") {
+		return false
+	}
+	return strings.Contains(command, " -g ") || strings.Contains(command, " -g") || strings.Contains(command, "--global")
 }
 
 // matchesDangerousGitPush blocks "git push --force" while allowing safe
@@ -233,7 +241,7 @@ func matchesDangerousGitPush(command string) string {
 	fields := strings.Fields(command)
 	hasPush := false
 	for i, f := range fields {
-		if f == "push" && i > 0 && fields[i-1] == "git" {
+		if isGitPushCommand(fields, i) {
 			hasPush = true
 			continue
 		}
@@ -243,12 +251,10 @@ func matchesDangerousGitPush(command string) string {
 		if f == "--force" || f == "-f" {
 			return "Force push rewrites remote history and can destroy others' work"
 		}
-		// Skip safe force variants (don't accidentally match their substrings)
-		for _, safe := range safeForceFlags {
-			if f == safe {
-				break
-			}
-		}
 	}
 	return ""
+}
+
+func isGitPushCommand(fields []string, index int) bool {
+	return fields[index] == "push" && index > 0 && fields[index-1] == "git"
 }

@@ -26,11 +26,9 @@ Examples:
 	RunE: runHooksListTargets,
 }
 
-var hooksListJSON bool
-
 func init() {
 	hooksCmd.AddCommand(hooksListCmd)
-	hooksListCmd.Flags().BoolVar(&hooksListJSON, "json", false, "Output as JSON")
+	hooksListCmd.Flags().Bool("json", false, "Output as JSON")
 }
 
 // listTargetInfo holds display info for a single target.
@@ -42,7 +40,7 @@ type listTargetInfo struct {
 	Exists    bool     `json:"exists"`
 }
 
-func runHooksListTargets(cmd *cobra.Command, args []string) error {
+func runHooksListTargets(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -53,8 +51,26 @@ func runHooksListTargets(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("discovering targets: %w", err)
 	}
 
-	// Deduplicate targets by key (individual crew/polecat members share a key)
-	// For list display, we show the group-level target, not individual members
+	infos := buildListTargetInfos(targets)
+	showJSON, _ := cmd.Flags().GetBool("json")
+	if showJSON {
+		return outputListJSON(infos)
+	}
+	return outputListHuman(infos)
+}
+
+func buildListTargetInfos(targets []hooks.Target) []listTargetInfo {
+	uniqueTargets := uniqueListTargets(targets)
+	infos := make([]listTargetInfo, 0, len(uniqueTargets))
+	for _, target := range uniqueTargets {
+		infos = append(infos, buildTargetInfo(target))
+	}
+	return infos
+}
+
+func uniqueListTargets(targets []hooks.Target) []hooks.Target {
+	// Deduplicate targets by key (individual crew/polecat members share a key).
+	// For list display, show the group-level target, not individual members.
 	seen := make(map[string]bool)
 	var uniqueTargets []hooks.Target
 	for _, t := range targets {
@@ -64,18 +80,7 @@ func runHooksListTargets(cmd *cobra.Command, args []string) error {
 			uniqueTargets = append(uniqueTargets, t)
 		}
 	}
-
-	var infos []listTargetInfo
-	for _, target := range uniqueTargets {
-		info := buildTargetInfo(target)
-		infos = append(infos, info)
-	}
-
-	if hooksListJSON {
-		return outputListJSON(infos)
-	}
-
-	return outputListHuman(infos)
+	return uniqueTargets
 }
 
 func buildTargetInfo(target hooks.Target) listTargetInfo {
@@ -142,7 +147,15 @@ func outputListJSON(infos []listTargetInfo) error {
 }
 
 func outputListHuman(infos []listTargetInfo) error {
-	// Calculate column widths based on visible text (excluding ANSI codes)
+	targetWidth, overridesWidth := listColumnWidths(infos)
+	printListHeader(targetWidth, overridesWidth)
+	printListRows(infos, targetWidth, overridesWidth)
+	printListFooter()
+	return nil
+}
+
+func listColumnWidths(infos []listTargetInfo) (int, int) {
+	// Calculate column widths based on visible text (excluding ANSI codes).
 	targetWidth := len("Target")
 	overridesWidth := len("Overrides")
 	for _, info := range infos {
@@ -162,54 +175,69 @@ func outputListHuman(infos []listTargetInfo) error {
 	if overridesWidth > 35 {
 		overridesWidth = 35
 	}
+	return targetWidth, overridesWidth
+}
 
-	// Header - pad plain text first, then style
+func printListHeader(targetWidth, overridesWidth int) {
+	// Header - pad plain text first, then style.
 	fmt.Printf("%s  %s  %s\n",
 		style.Bold.Render(padRight("Target", targetWidth)),
 		style.Bold.Render(padRight("Overrides", overridesWidth)),
 		style.Bold.Render("Status"))
+}
 
-	// Rows - pad plain text content, then apply styles
+func printListRows(infos []listTargetInfo, targetWidth, overridesWidth int) {
+	// Rows - pad plain text content, then apply styles.
 	for _, info := range infos {
-		overridePlain := formatOverridesPlain(info.Overrides)
-		overrideStyled := formatOverrides(info.Overrides)
-		statusStr := renderSyncStatus(info.Status)
-
-		// Pad target (plain text, no ANSI)
-		targetPadded := padRight(info.Target, targetWidth)
-
-		// For overrides, add padding based on visible width difference
-		overridePadded := overrideStyled + padRight("", overridesWidth-len(overridePlain))
-
-		fmt.Printf("%s  %s  %s\n", targetPadded, overridePadded, statusStr)
+		printListRow(info, targetWidth, overridesWidth)
 	}
+}
 
-	// Footer
+func printListRow(info listTargetInfo, targetWidth, overridesWidth int) {
+	overridePlain := formatOverridesPlain(info.Overrides)
+	overrideStyled := formatOverrides(info.Overrides)
+	statusStr := renderSyncStatus(info.Status)
+
+	// Pad target (plain text, no ANSI).
+	targetPadded := padRight(info.Target, targetWidth)
+
+	// For overrides, add padding based on visible width difference.
+	overridePadded := overrideStyled + padRight("", overridesWidth-len(overridePlain))
+
+	fmt.Printf("%s  %s  %s\n", targetPadded, overridePadded, statusStr)
+}
+
+func printListFooter() {
 	fmt.Println()
-
-	// Check if base config exists
-	baseExists := "exists"
-	if _, err := os.Stat(hooks.BasePath()); os.IsNotExist(err) {
-		baseExists = "not found"
-	}
 	fmt.Printf("Base config: %s %s\n",
 		style.Dim.Render(hooks.BasePath()),
-		style.Dim.Render("("+baseExists+")"))
+		style.Dim.Render("("+baseConfigStatus()+")"))
 
-	// Count override files
-	overrideCount := 0
-	if entries, err := os.ReadDir(hooks.OverridesDir()); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-				overrideCount++
-			}
-		}
-	}
+	overrideCount := countOverrideFiles()
 	fmt.Printf("Overrides:   %s (%d files)\n",
 		style.Dim.Render(hooks.OverridesDir()),
 		overrideCount)
+}
 
-	return nil
+func baseConfigStatus() string {
+	if _, err := os.Stat(hooks.BasePath()); os.IsNotExist(err) {
+		return "not found"
+	}
+	return "exists"
+}
+
+func countOverrideFiles() int {
+	overrideCount := 0
+	entries, err := os.ReadDir(hooks.OverridesDir())
+	if err != nil {
+		return overrideCount
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			overrideCount++
+		}
+	}
+	return overrideCount
 }
 
 func formatOverrides(overrides []string) string {

@@ -485,7 +485,7 @@ func TestRigSummary(t *testing.T) {
 		HasRefinery: false,
 	}
 
-	summary := rig.Summary()
+	summary := Summary(rig)
 
 	if summary.Name != "test" {
 		t.Errorf("Name = %q, want test", summary.Name)
@@ -502,12 +502,11 @@ func TestRigSummary(t *testing.T) {
 }
 
 func TestEnsureGitignoreEntry_AddsEntry(t *testing.T) {
-	root, rigsConfig := setupTestTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
+	root, _ := setupTestTown(t)
 
 	gitignorePath := filepath.Join(root, ".gitignore")
 
-	if err := manager.ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
+	if err := ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
 		t.Fatalf("ensureGitignoreEntry: %v", err)
 	}
 
@@ -518,8 +517,7 @@ func TestEnsureGitignoreEntry_AddsEntry(t *testing.T) {
 }
 
 func TestEnsureGitignoreEntry_DoesNotDuplicate(t *testing.T) {
-	root, rigsConfig := setupTestTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
+	root, _ := setupTestTown(t)
 
 	gitignorePath := filepath.Join(root, ".gitignore")
 
@@ -528,7 +526,7 @@ func TestEnsureGitignoreEntry_DoesNotDuplicate(t *testing.T) {
 		t.Fatalf("writing .gitignore: %v", err)
 	}
 
-	if err := manager.ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
+	if err := ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
 		t.Fatalf("ensureGitignoreEntry: %v", err)
 	}
 
@@ -539,8 +537,7 @@ func TestEnsureGitignoreEntry_DoesNotDuplicate(t *testing.T) {
 }
 
 func TestEnsureGitignoreEntry_AppendsToExisting(t *testing.T) {
-	root, rigsConfig := setupTestTown(t)
-	manager := NewManager(root, rigsConfig, git.NewGit(root))
+	root, _ := setupTestTown(t)
 
 	gitignorePath := filepath.Join(root, ".gitignore")
 
@@ -549,7 +546,7 @@ func TestEnsureGitignoreEntry_AppendsToExisting(t *testing.T) {
 		t.Fatalf("writing .gitignore: %v", err)
 	}
 
-	if err := manager.ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
+	if err := ensureGitignoreEntry(gitignorePath, ".test-entry/"); err != nil {
 		t.Fatalf("ensureGitignoreEntry: %v", err)
 	}
 
@@ -1963,7 +1960,7 @@ func TestAddRig_UpstreamURL(t *testing.T) {
 
 	t.Run("bare repo upstream remote", func(t *testing.T) {
 		bareGit := git.NewGitWithDir(filepath.Join(rigPath, ".repo.git"), "")
-		got, err := bareGit.GetUpstreamURL()
+		got, err := git.GetUpstreamURL(bareGit)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}
@@ -1974,7 +1971,7 @@ func TestAddRig_UpstreamURL(t *testing.T) {
 
 	t.Run("mayor clone upstream remote", func(t *testing.T) {
 		mayorGit := git.NewGit(filepath.Join(rigPath, "mayor", "rig"))
-		got, err := mayorGit.GetUpstreamURL()
+		got, err := git.GetUpstreamURL(mayorGit)
 		if err != nil {
 			t.Fatalf("GetUpstreamURL: %v", err)
 		}
@@ -2078,14 +2075,14 @@ func TestAddRig_BranchFlag(t *testing.T) {
 	bareGit := git.NewGitWithDir(bareRepoPath, "")
 
 	t.Run("bare repo HEAD points to develop", func(t *testing.T) {
-		got := bareGit.DefaultBranch()
+		got := git.DefaultBranch(bareGit)
 		if got != "develop" {
 			t.Errorf("bare repo DefaultBranch() = %q, want %q", got, "develop")
 		}
 	})
 
 	t.Run("origin/develop tracking ref exists in bare repo", func(t *testing.T) {
-		exists, err := bareGit.RefExists("refs/remotes/origin/develop")
+		exists, err := git.RefExists(bareGit, "refs/remotes/origin/develop")
 		if err != nil {
 			t.Fatalf("RefExists: %v", err)
 		}
@@ -2143,7 +2140,7 @@ func TestBareCloneDefaultBranch(t *testing.T) {
 	}
 
 	g := git.NewGit(bareDir)
-	if got := g.DefaultBranch(); got != "master" {
+	if got := git.DefaultBranch(g); got != "master" {
 		t.Errorf("DefaultBranch() = %q, want %q", got, "master")
 	}
 }

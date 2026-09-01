@@ -13,10 +13,11 @@ import (
 // DefaultAgentEmailDomain is the default domain for agent git emails.
 const DefaultAgentEmailDomain = "gastown.local"
 
-var commitCmd = &cobra.Command{
-	Use:   "commit [flags] [-- git-commit-args...]",
-	Short: "Git commit with automatic agent identity",
-	Long: `Git commit wrapper that automatically sets git author identity for agents.
+func newCommitCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "commit [flags] [-- git-commit-args...]",
+		Short: "Git commit with automatic agent identity",
+		Long: `Git commit wrapper that automatically sets git author identity for agents.
 
 When run by an agent (GT_ROLE set), this command:
 1. Detects the agent identity from environment variables
@@ -36,11 +37,13 @@ Identity mapping:
                                 Email: gastown.crew.jack@gastown.local
 
 When run without GT_ROLE (human), passes through to git commit with no changes.`,
-	RunE:               runCommit,
-	DisableFlagParsing: true, // We'll parse flags ourselves to pass them to git
+		RunE:               runCommit,
+		DisableFlagParsing: true, // We'll parse flags ourselves to pass them to git
+	}
 }
 
 func init() {
+	commitCmd := newCommitCmd()
 	commitCmd.GroupID = GroupWork
 	rootCmd.AddCommand(commitCmd)
 }

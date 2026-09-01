@@ -71,7 +71,7 @@ func (c *LandWorktreeGitignoreCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix adds .land-worktree/ to .gitignore in all affected rigs.
-func (c *LandWorktreeGitignoreCheck) Fix(ctx *CheckContext) error {
+func (c *LandWorktreeGitignoreCheck) Fix(_ *CheckContext) error {
 	for _, rigPath := range c.affectedRigs {
 		gitignorePath := filepath.Join(rigPath, ".gitignore")
 		if err := appendGitignoreEntry(gitignorePath, ".land-worktree/"); err != nil {

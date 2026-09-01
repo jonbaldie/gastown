@@ -68,7 +68,7 @@ func NewRouterWithTownRoot(workDir, townRoot string) *Router {
 // WaitPendingNotifications blocks until all in-flight async notifications
 // have completed. CLI commands should call this before exiting to avoid
 // losing notifications that are still being delivered.
-func (r *Router) WaitPendingNotifications() {
+func WaitPendingNotifications(r *Router) {
 	r.notifyWg.Wait()
 }
 
@@ -137,7 +137,7 @@ func expandFromConfig[T any](r *Router, name string, getter func(*config.Messagi
 
 // expandList returns the recipients for a mailing list.
 // Returns ErrUnknownList if the list is not found.
-func (r *Router) expandList(listName string) ([]string, error) {
+func expandList(r *Router, listName string) ([]string, error) {
 	recipients, err := expandFromConfig(r, listName, func(cfg *config.MessagingConfig) ([]string, bool) {
 		r, ok := cfg.Lists[listName]
 		return r, ok
@@ -155,7 +155,7 @@ func (r *Router) expandList(listName string) ([]string, error) {
 
 // expandQueue returns the QueueConfig for a queue name.
 // Returns ErrUnknownQueue if the queue is not found.
-func (r *Router) expandQueue(queueName string) (*config.QueueConfig, error) {
+func expandQueue(r *Router, queueName string) (*config.QueueConfig, error) {
 	return expandFromConfig(r, queueName, func(cfg *config.MessagingConfig) (*config.QueueConfig, bool) {
 		qc, ok := cfg.Queues[queueName]
 		if !ok {
@@ -167,7 +167,7 @@ func (r *Router) expandQueue(queueName string) (*config.QueueConfig, error) {
 
 // expandAnnounce returns the AnnounceConfig for an announce channel name.
 // Returns ErrUnknownAnnounce if the channel is not found.
-func (r *Router) expandAnnounce(announceName string) (*config.AnnounceConfig, error) {
+func expandAnnounce(r *Router, announceName string) (*config.AnnounceConfig, error) {
 	return expandFromConfig(r, announceName, func(cfg *config.MessagingConfig) (*config.AnnounceConfig, bool) {
 		ac, ok := cfg.Announces[announceName]
 		if !ok {
@@ -207,7 +207,7 @@ func detectTownRoot(startDir string) string {
 //
 // All mail uses town beads ({townRoot}/.beads). Rig-level beads ({rig}/.beads)
 // are for project issues only, not mail.
-func (r *Router) resolveBeadsDir() string {
+func resolveBeadsDir(r *Router) string {
 	// If no town root, fall back to workDir's .beads
 	if r.townRoot == "" {
 		return filepath.Join(r.workDir, ".beads")
@@ -217,14 +217,14 @@ func (r *Router) resolveBeadsDir() string {
 	return filepath.Join(r.townRoot, ".beads")
 }
 
-func (r *Router) ensureCustomTypes(beadsDir string) error {
+func ensureCustomTypes(beadsDir string) error {
 	if err := beads.EnsureCustomTypes(beadsDir); err != nil {
 		return fmt.Errorf("ensuring custom types: %w", err)
 	}
 	return nil
 }
 
-func (r *Router) buildLabels(msg *Message) []string {
+func buildLabels(msg *Message) []string {
 	var labels []string
 	labels = append(labels, "gt:message")
 	if msg.Type == TypeEscalation {
@@ -295,8 +295,13 @@ func parseGroupAddress(address string) *ParsedGroup {
 
 	// Remove @ prefix
 	group := strings.TrimPrefix(address, "@")
+	if parsed := parseSpecialGroup(group, address); parsed != nil {
+		return parsed
+	}
+	return parseScopedGroup(group, address)
+}
 
-	// Special cases that don't require parsing
+func parseSpecialGroup(group, address string) *ParsedGroup {
 	switch group {
 	case "overseer":
 		return &ParsedGroup{Type: GroupTypeOverseer, Original: address}
@@ -311,7 +316,10 @@ func parseGroupAddress(address string) *ParsedGroup {
 	case "deacons":
 		return &ParsedGroup{Type: GroupTypeRole, RoleType: constants.RoleDeacon, Original: address}
 	}
+	return nil
+}
 
+func parseScopedGroup(group, address string) *ParsedGroup {
 	// Parse patterns with slashes: @rig/<name>, @crew/<rig>, @polecats/<rig>
 	parts := strings.SplitN(group, "/", 2)
 	if len(parts) != 2 || parts[1] == "" {
@@ -319,7 +327,6 @@ func parseGroupAddress(address string) *ParsedGroup {
 	}
 
 	prefix, qualifier := parts[0], parts[1]
-
 	switch prefix {
 	case "rig":
 		return &ParsedGroup{Type: GroupTypeRig, Rig: qualifier, Original: address}
@@ -362,30 +369,30 @@ func agentBeadToAddress(bead *agentBead) string {
 		return ""
 	}
 
-	// Handle hq- prefixed IDs (town-level format)
 	if strings.HasPrefix(id, "hq-") {
-		// Well-known town-level agents
-		if id == "hq-mayor" {
-			return "mayor/"
-		}
-		if id == "hq-deacon" {
-			return "deacon/"
-		}
-
-		// For other hq- agents, fall back to description parsing
-		return parseAgentAddressFromDescription(bead.Description)
+		return hqAgentAddress(bead)
 	}
 
-	// Handle gt- prefixed IDs (legacy format)
-	// Also handle rig-prefixed IDs (e.g., ppf-) by extracting rig from description
-	var rest string
-	if strings.HasPrefix(id, "gt-") {
-		rest = strings.TrimPrefix(id, "gt-")
-	} else {
+	if !strings.HasPrefix(id, "gt-") {
 		// For rig-prefixed IDs, extract rig and role from description
 		return parseRigAgentAddress(bead)
 	}
+	return legacyAgentAddress(strings.TrimPrefix(id, "gt-"))
+}
 
+func hqAgentAddress(bead *agentBead) string {
+	switch bead.ID {
+	case "hq-mayor":
+		return "mayor/"
+	case "hq-deacon":
+		return "deacon/"
+	default:
+		// For other hq- agents, fall back to description parsing
+		return parseAgentAddressFromDescription(bead.Description)
+	}
+}
+
+func legacyAgentAddress(rest string) string {
 	// Agent bead IDs include the role explicitly: gt-<rig>-<role>[-<name>]
 	// Scan from right for known role markers to handle hyphenated rig names.
 	parts := strings.Split(rest, "-")
@@ -397,22 +404,8 @@ func agentBeadToAddress(bead *agentBead) string {
 
 	// Scan from right for known role markers
 	for i := len(parts) - 1; i >= 1; i-- {
-		switch parts[i] {
-		case constants.RoleWitness, constants.RoleRefinery:
-			// Singleton role: rig is everything before the role
-			rig := strings.Join(parts[:i], "-")
-			return rig + "/" + parts[i]
-		case constants.RoleCrew, constants.RolePolecat:
-			// Named role: rig is before role, name is after (skip role in address)
-			rig := strings.Join(parts[:i], "-")
-			if i+1 < len(parts) {
-				name := strings.Join(parts[i+1:], "-")
-				return rig + "/" + name
-			}
-			return rig + "/"
-		case "dog":
-			// Town-level named: gt-dog-alpha
-			return dogAddressFromParts(parts, i)
+		if address := legacyAddressAtMarker(parts, i); address != "" {
+			return address
 		}
 	}
 
@@ -423,6 +416,28 @@ func agentBeadToAddress(bead *agentBead) string {
 	return ""
 }
 
+func legacyAddressAtMarker(parts []string, index int) string {
+	switch parts[index] {
+	case constants.RoleWitness, constants.RoleRefinery:
+		// Singleton role: rig is everything before the role
+		rig := strings.Join(parts[:index], "-")
+		return rig + "/" + parts[index]
+	case constants.RoleCrew, constants.RolePolecat:
+		// Named role: rig is before role, name is after (skip role in address)
+		rig := strings.Join(parts[:index], "-")
+		if index+1 < len(parts) {
+			name := strings.Join(parts[index+1:], "-")
+			return rig + "/" + name
+		}
+		return rig + "/"
+	case "dog":
+		// Town-level named: gt-dog-alpha
+		return dogAddressFromParts(parts, index)
+	default:
+		return ""
+	}
+}
+
 // parseRigAgentAddress extracts address from a rig-prefixed agent bead.
 // ID format: <prefix>-<rig>-<role>[-<name>]
 // Examples:
@@ -430,18 +445,8 @@ func agentBeadToAddress(bead *agentBead) string {
 //   - ppf-pyspark_pipeline_framework-polecat-Toast → pyspark_pipeline_framework/Toast
 //   - bd-beads-crew-beavis → beads/beavis
 func parseRigAgentAddress(bead *agentBead) string {
-	// Parse rig and role_type from description
-	var roleType, rig string
-	for _, line := range strings.Split(bead.Description, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "role_type:") {
-			roleType = strings.TrimSpace(strings.TrimPrefix(line, "role_type:"))
-		} else if strings.HasPrefix(line, "rig:") {
-			rig = strings.TrimSpace(strings.TrimPrefix(line, "rig:"))
-		}
-	}
-
-	if rig == "" || rig == "null" || roleType == "" || roleType == "null" {
+	metadata := parseAgentAddressMetadata(bead.Description)
+	if !metadata.hasRigAndRole() {
 		// Fallback: parse from bead ID by scanning for known role markers.
 		// ID format: <prefix>-<rig>-<role>[-<name>]
 		// Known rig-level roles: crew, polecat, witness, refinery
@@ -449,24 +454,58 @@ func parseRigAgentAddress(bead *agentBead) string {
 	}
 
 	// For singleton roles (witness, refinery), address is rig/role
-	if roleType == constants.RoleWitness || roleType == constants.RoleRefinery {
-		return rig + "/" + roleType
+	if isSingletonRole(metadata.roleType) {
+		return metadata.rig + "/" + metadata.roleType
 	}
 
 	// For named roles (crew, polecat), extract name from ID
 	// ID pattern: <prefix>-<rig>-<role>-<name>
 	// Find the role in the ID and take everything after it as the name
-	id := bead.ID
-	roleMarker := "-" + roleType + "-"
-	if idx := strings.Index(id, roleMarker); idx >= 0 {
-		name := id[idx+len(roleMarker):]
-		if name != "" {
-			return rig + "/" + name
-		}
+	if name := namedAgentName(bead.ID, metadata.roleType); name != "" {
+		return metadata.rig + "/" + name
 	}
 
 	// Fallback: return rig/roleType (may not be correct for all cases)
-	return rig + "/" + roleType
+	return metadata.rig + "/" + metadata.roleType
+}
+
+type agentAddressMetadata struct {
+	location string
+	roleType string
+	rig      string
+}
+
+func parseAgentAddressMetadata(desc string) agentAddressMetadata {
+	var metadata agentAddressMetadata
+	for _, line := range strings.Split(desc, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "location:"):
+			metadata.location = strings.TrimSpace(strings.TrimPrefix(line, "location:"))
+		case strings.HasPrefix(line, "role_type:"):
+			metadata.roleType = strings.TrimSpace(strings.TrimPrefix(line, "role_type:"))
+		case strings.HasPrefix(line, "rig:"):
+			metadata.rig = strings.TrimSpace(strings.TrimPrefix(line, "rig:"))
+		}
+	}
+	return metadata
+}
+
+func (m agentAddressMetadata) hasRigAndRole() bool {
+	return m.rig != "" && m.rig != "null" && m.roleType != "" && m.roleType != "null"
+}
+
+func isSingletonRole(roleType string) bool {
+	return roleType == constants.RoleWitness || roleType == constants.RoleRefinery
+}
+
+func namedAgentName(id, roleType string) string {
+	roleMarker := "-" + roleType + "-"
+	idx := strings.Index(id, roleMarker)
+	if idx < 0 {
+		return ""
+	}
+	return id[idx+len(roleMarker):]
 }
 
 // parseRigAgentAddressFromID extracts a mail address from a rig-prefixed bead ID
@@ -486,88 +525,92 @@ func parseRigAgentAddressFromID(id string) string {
 	namedRoles := []string{constants.RoleCrew, constants.RolePolecat}
 
 	for _, role := range namedRoles {
-		marker := "-" + role + "-"
-		if idx := strings.Index(id, marker); idx >= 0 {
-			// Everything between prefix- and -role- is the rig name.
-			// The prefix ends at the first hyphen: <prefix>-<rig>-...
-			// But prefix could be multi-char (bd, gt, ppf), so we find
-			// the rig as the substring between the first hyphen and the role marker.
-			firstHyphen := strings.Index(id, "-")
-			if firstHyphen < 0 || firstHyphen >= idx {
-				continue
-			}
-			rig := id[firstHyphen+1 : idx]
-			if rig == "" {
-				continue
-			}
-			name := id[idx+len(marker):]
-			if name != "" {
-				// Named role (crew, polecat): address is rig/name
-				return rig + "/" + name
-			}
-			// crew/polecat without a name — malformed, skip
-			continue
+		if address := namedRigAgentAddress(id, role); address != "" {
+			return address
 		}
 	}
 
 	for _, role := range singletonRoles {
-		// Singleton roles match only at end of ID: <prefix>-<rig>-<role>
-		// Reject if a name segment follows (e.g. -witness-extra is malformed).
-		marker := "-" + role + "-"
-		if strings.Contains(id, marker) {
-			// Has a name segment after the role — malformed singleton
-			continue
-		}
-
-		suffix := "-" + role
-		if strings.HasSuffix(id, suffix) {
-			// Find rig between first hyphen and the suffix
-			firstHyphen := strings.Index(id, "-")
-			if firstHyphen < 0 {
-				continue
-			}
-			suffixStart := len(id) - len(suffix)
-			if firstHyphen >= suffixStart {
-				continue
-			}
-			rig := id[firstHyphen+1 : suffixStart]
-			if rig == "" {
-				continue
-			}
-			return rig + "/" + role
+		if address := singletonRigAgentAddress(id, role); address != "" {
+			return address
 		}
 	}
 
 	return ""
 }
 
+func namedRigAgentAddress(id, role string) string {
+	marker := "-" + role + "-"
+	idx := strings.Index(id, marker)
+	if idx < 0 {
+		return ""
+	}
+	// Everything between prefix- and -role- is the rig name.
+	// The prefix ends at the first hyphen: <prefix>-<rig>-...
+	// But prefix could be multi-char (bd, gt, ppf), so we find
+	// the rig as the substring between the first hyphen and the role marker.
+	firstHyphen := strings.Index(id, "-")
+	if firstHyphen < 0 || firstHyphen >= idx {
+		return ""
+	}
+	rig := id[firstHyphen+1 : idx]
+	if rig == "" {
+		return ""
+	}
+	name := id[idx+len(marker):]
+	if name == "" {
+		return ""
+	}
+	// Named role (crew, polecat): address is rig/name
+	return rig + "/" + name
+}
+
+func singletonRigAgentAddress(id, role string) string {
+	// Singleton roles match only at end of ID: <prefix>-<rig>-<role>
+	// Reject if a name segment follows (e.g. -witness-extra is malformed).
+	marker := "-" + role + "-"
+	if strings.Contains(id, marker) {
+		return ""
+	}
+
+	suffix := "-" + role
+	if !strings.HasSuffix(id, suffix) {
+		return ""
+	}
+	// Find rig between first hyphen and the suffix
+	firstHyphen := strings.Index(id, "-")
+	if firstHyphen < 0 {
+		return ""
+	}
+	suffixStart := len(id) - len(suffix)
+	if firstHyphen >= suffixStart {
+		return ""
+	}
+	rig := id[firstHyphen+1 : suffixStart]
+	if rig == "" {
+		return ""
+	}
+	return rig + "/" + role
+}
+
 // parseAgentAddressFromDescription extracts agent address from description metadata.
 // Looks for "location: X" first (explicit address), then falls back to
 // "role_type: X" and "rig: Y" patterns in the description.
 func parseAgentAddressFromDescription(desc string) string {
-	var roleType, rig, location string
-
-	for _, line := range strings.Split(desc, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "location:") {
-			location = strings.TrimSpace(strings.TrimPrefix(line, "location:"))
-		} else if strings.HasPrefix(line, "role_type:") {
-			roleType = strings.TrimSpace(strings.TrimPrefix(line, "role_type:"))
-		} else if strings.HasPrefix(line, "rig:") {
-			rig = strings.TrimSpace(strings.TrimPrefix(line, "rig:"))
-		}
-	}
+	metadata := parseAgentAddressMetadata(desc)
 
 	// Explicit location takes priority (used by dogs and other agents
 	// whose address can't be derived from role_type + rig alone)
-	if location != "" && location != "null" {
-		return location
+	if metadata.location != "" && metadata.location != "null" {
+		return metadata.location
 	}
 
 	// Handle null values from description
+	rig := metadata.rig
 	if rig == "null" || rig == "" {
 		rig = ""
 	}
+	roleType := metadata.roleType
 	if roleType == "null" || roleType == "" {
 		return ""
 	}
@@ -589,27 +632,27 @@ func (r *Router) ResolveGroupAddress(address string) ([]string, error) {
 	if group == nil {
 		return nil, fmt.Errorf("invalid group address: %s", address)
 	}
-	return r.resolveGroup(group)
+	return resolveGroup(r, group)
 }
 
 // resolveGroup resolves a @group address to individual recipient addresses.
 // Returns the list of resolved addresses and any error.
-func (r *Router) resolveGroup(group *ParsedGroup) ([]string, error) {
+func resolveGroup(r *Router, group *ParsedGroup) ([]string, error) {
 	if group == nil {
 		return nil, errors.New("nil group")
 	}
 
 	switch group.Type {
 	case GroupTypeOverseer:
-		return r.resolveOverseer()
+		return resolveOverseer(r)
 	case GroupTypeTown:
-		return r.resolveTownAgents()
+		return resolveTownAgents(r)
 	case GroupTypeRole:
-		return r.resolveAgentsByRole(group.RoleType, "")
+		return resolveAgentsByRole(r, group.RoleType, "")
 	case GroupTypeRig:
-		return r.resolveAgentsByRig(group.Rig)
+		return resolveAgentsByRig(r, group.Rig)
 	case GroupTypeRigRole:
-		return r.resolveAgentsByRole(group.RoleType, group.Rig)
+		return resolveAgentsByRole(r, group.RoleType, group.Rig)
 	default:
 		return nil, fmt.Errorf("unknown group type: %s", group.Type)
 	}
@@ -617,7 +660,7 @@ func (r *Router) resolveGroup(group *ParsedGroup) ([]string, error) {
 
 // resolveOverseer resolves @overseer to the human operator's address.
 // Loads the overseer config and returns "overseer" as the address.
-func (r *Router) resolveOverseer() ([]string, error) {
+func resolveOverseer(r *Router) ([]string, error) {
 	if r.townRoot == "" {
 		return nil, errors.New("town root not set, cannot resolve @overseer")
 	}
@@ -634,9 +677,9 @@ func (r *Router) resolveOverseer() ([]string, error) {
 }
 
 // resolveTownAgents resolves @town to all town-level agents (mayor, deacon).
-func (r *Router) resolveTownAgents() ([]string, error) {
+func resolveTownAgents(r *Router) ([]string, error) {
 	// Town-level agents have rig=null in their description
-	agents := r.queryAgents("rig: null")
+	agents := queryAgents(r, "rig: null")
 
 	var addresses []string
 	for _, agent := range agents {
@@ -650,10 +693,10 @@ func (r *Router) resolveTownAgents() ([]string, error) {
 
 // resolveAgentsByRole resolves agents by their role_type.
 // If rig is non-empty, also filters by rig.
-func (r *Router) resolveAgentsByRole(roleType, rig string) ([]string, error) {
+func resolveAgentsByRole(r *Router, roleType, rig string) ([]string, error) {
 	// Build query filter
 	query := "role_type: " + roleType
-	agents := r.queryAgents(query)
+	agents := queryAgents(r, query)
 
 	var addresses []string
 	for _, agent := range agents {
@@ -673,10 +716,10 @@ func (r *Router) resolveAgentsByRole(roleType, rig string) ([]string, error) {
 }
 
 // resolveAgentsByRig resolves @rig/<rigname> to all agents in that rig.
-func (r *Router) resolveAgentsByRig(rig string) ([]string, error) {
+func resolveAgentsByRig(r *Router, rig string) ([]string, error) {
 	// Query for agents with matching rig in description
 	query := "rig: " + rig
-	agents := r.queryAgents(query)
+	agents := queryAgents(r, query)
 
 	var addresses []string
 	for _, agent := range agents {
@@ -690,12 +733,12 @@ func (r *Router) resolveAgentsByRig(rig string) ([]string, error) {
 
 // queryAgents queries agent beads using bd list with description filtering.
 // Searches both town-level and rig-level beads to find all agents.
-func (r *Router) queryAgents(descContains string) []*agentBead {
+func queryAgents(r *Router, descContains string) []*agentBead {
 	var allAgents []*agentBead
 
 	// Query town-level beads
-	townBeadsDir := r.resolveBeadsDir()
-	townAgents, err := r.queryAgentsInDir(townBeadsDir, descContains)
+	townBeadsDir := resolveBeadsDir(r)
+	townAgents, err := queryAgentsInDir(townBeadsDir, descContains)
 	if err != nil {
 		// Don't fail yet - rig beads might still have results
 		townAgents = nil
@@ -713,7 +756,7 @@ func (r *Router) queryAgents(descContains string) []*agentBead {
 					continue
 				}
 				rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
-				rigAgents, rigErr := r.queryAgentsInDir(rigBeadsDir, descContains)
+				rigAgents, rigErr := queryAgentsInDir(rigBeadsDir, descContains)
 				if rigErr != nil {
 					continue // Skip rigs with errors
 				}
@@ -737,12 +780,8 @@ func (r *Router) queryAgents(descContains string) []*agentBead {
 
 // queryAgentsInDir queries agent beads in a specific beads directory with optional description filtering.
 // Queries both the issues and wisps tables, merging results.
-func (r *Router) queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, error) {
-	args := []string{"list", "--label=gt:agent", "--json", "--flat", "--limit=0"}
-
-	if descContains != "" {
-		args = append(args, "--desc-contains="+descContains)
-	}
+func queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, error) {
+	args := agentListArgs(descContains)
 
 	ctx, cancel := bdReadCtx()
 	defer cancel()
@@ -755,46 +794,79 @@ func (r *Router) queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, 
 	defer wispCancel()
 	wispOut, _ := runBdCommand(wispCtx, []string{"mol", "wisp", "list", "--json"}, filepath.Dir(beadsDir), beadsDir)
 
-	// Merge results: collect agent beads from both sources
-	seenIDs := make(map[string]bool)
-	var agents []*agentBead
-
-	// Parse wisps first (primary source after migration)
-	if len(wispOut) > 0 {
-		var wispAgents []*agentBead
-		if json.Unmarshal(wispOut, &wispAgents) == nil {
-			for _, agent := range wispAgents {
-				if isAgentBeadEntry(agent) {
-					seenIDs[agent.ID] = true
-					agents = append(agents, agent)
-				}
-			}
-		}
-	}
+	// Merge results: collect agent beads from both sources. Wisps are the primary
+	// source after migration; issue rows fill in agents not yet migrated.
+	agents, seenIDs := parseWispAgents(wispOut)
 
 	// Then issues (backward compat, skip duplicates)
 	if len(stdout) > 0 {
-		var issueAgents []*agentBead
-		if json.Unmarshal(stdout, &issueAgents) == nil {
-			for _, agent := range issueAgents {
-				if !seenIDs[agent.ID] {
-					agents = append(agents, agent)
-				}
-			}
-		}
+		agents = appendIssueAgents(agents, seenIDs, stdout)
 	} else if issuesErr != nil && len(agents) == 0 {
 		return nil, fmt.Errorf("querying agents in %s: %w", beadsDir, issuesErr)
 	}
 
 	// Filter for active agents (closed/deleted agents are inactive)
+	return activeAgentBeads(agents), nil
+}
+
+func agentListArgs(descContains string) []string {
+	args := []string{"list", "--label=gt:agent", "--json", "--flat", "--limit=0"}
+	if descContains != "" {
+		args = append(args, "--desc-contains="+descContains)
+	}
+	return args
+}
+
+func parseWispAgents(output []byte) ([]*agentBead, map[string]bool) {
+	seenIDs := make(map[string]bool)
+	if len(output) == 0 {
+		return nil, seenIDs
+	}
+
+	var wispAgents []*agentBead
+	if json.Unmarshal(output, &wispAgents) != nil {
+		return nil, seenIDs
+	}
+	var agents []*agentBead
+	for _, agent := range wispAgents {
+		if isAgentBeadEntry(agent) {
+			seenIDs[agent.ID] = true
+			agents = append(agents, agent)
+		}
+	}
+	return agents, seenIDs
+}
+
+func appendIssueAgents(agents []*agentBead, seenIDs map[string]bool, output []byte) []*agentBead {
+	var issueAgents []*agentBead
+	if json.Unmarshal(output, &issueAgents) != nil {
+		return agents
+	}
+	for _, agent := range issueAgents {
+		if !seenIDs[agent.ID] {
+			agents = append(agents, agent)
+		}
+	}
+	return agents
+}
+
+func activeAgentBeads(agents []*agentBead) []*agentBead {
 	var active []*agentBead
 	for _, agent := range agents {
-		if agent.Status == "open" || agent.Status == "in_progress" || agent.Status == "hooked" || agent.Status == "pinned" {
+		if isActiveAgentStatus(agent.Status) {
 			active = append(active, agent)
 		}
 	}
+	return active
+}
 
-	return active, nil
+func isActiveAgentStatus(status string) bool {
+	switch status {
+	case "open", "in_progress", "hooked", "pinned":
+		return true
+	default:
+		return false
+	}
 }
 
 // isAgentBeadEntry checks if an agentBead entry is an actual agent bead.
@@ -811,15 +883,15 @@ func isAgentBeadEntry(a *agentBead) bool {
 }
 
 // queryAgentsFromDir queries agent beads from a specific beads directory.
-func (r *Router) queryAgentsFromDir(beadsDir string) ([]*agentBead, error) {
-	return r.queryAgentsInDir(beadsDir, "")
+func queryAgentsFromDir(beadsDir string) ([]*agentBead, error) {
+	return queryAgentsInDir(beadsDir, "")
 }
 
 // shouldBeWisp determines if a message should be stored as a wisp.
 // Returns true if:
 // - Message.Wisp is explicitly set
 // - Subject matches lifecycle message patterns (POLECAT_*, NUDGE, etc.)
-func (r *Router) shouldBeWisp(msg *Message) bool {
+func shouldBeWisp(msg *Message) bool {
 	if msg.Wisp {
 		return true
 	}
@@ -855,41 +927,41 @@ func (r *Router) shouldBeWisp(msg *Message) bool {
 func (r *Router) Send(msg *Message) error {
 	// Check for mailing list address
 	if isListAddress(msg.To) {
-		return r.sendToList(msg)
+		return sendToList(r, msg)
 	}
 
 	// Check for queue address - single message for claiming
 	if isQueueAddress(msg.To) {
-		return r.sendToQueue(msg)
+		return sendToQueue(r, msg)
 	}
 
 	// Check for announce address - bulletin board (single copy, no claiming)
 	if isAnnounceAddress(msg.To) {
-		return r.sendToAnnounce(msg)
+		return sendToAnnounce(r, msg)
 	}
 
 	// Check for beads-native channel address - broadcast with retention
 	if isChannelAddress(msg.To) {
-		return r.sendToChannel(msg)
+		return sendToChannel(r, msg)
 	}
 
 	// Check for @group address - resolve and fan-out
 	if isGroupAddress(msg.To) {
-		return r.sendToGroup(msg)
+		return sendToGroup(r, msg)
 	}
 
 	// Single recipient - send directly
-	return r.sendToSingle(msg)
+	return sendToSingle(r, msg)
 }
 
 // sendToGroup resolves a @group address and sends individual messages to each member.
-func (r *Router) sendToGroup(msg *Message) error {
+func sendToGroup(r *Router, msg *Message) error {
 	group := parseGroupAddress(msg.To)
 	if group == nil {
 		return fmt.Errorf("invalid group address: %s", msg.To)
 	}
 
-	recipients, err := r.resolveGroup(group)
+	recipients, err := resolveGroup(r, group)
 	if err != nil {
 		return fmt.Errorf("resolving group %s: %w", msg.To, err)
 	}
@@ -906,7 +978,7 @@ func (r *Router) sendToGroup(msg *Message) error {
 		msgCopy.To = recipient
 		msgCopy.ID = "" // Each fan-out copy gets its own ID from bd create
 
-		if err := r.sendToSingle(&msgCopy); err != nil {
+		if err := sendToSingle(r, &msgCopy); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", recipient, err))
 		}
 	}
@@ -921,128 +993,175 @@ func (r *Router) sendToGroup(msg *Message) error {
 // validateRecipient checks that the recipient identity corresponds to an existing agent.
 // Returns an error if the recipient is invalid or doesn't exist.
 // Queries agents from town-level beads AND all rig-level beads via routes.jsonl.
-func (r *Router) validateRecipient(identity string) error {
+func validateRecipient(r *Router, identity string) error {
 	if hasUnsafeAddressSegment(identity) {
 		return fmt.Errorf("no agent found")
 	}
 
-	// Overseer is the human operator, not an agent bead
-	if identity == "overseer" {
-		return nil
-	}
-
-	// Well-known town-level singletons always valid
-	switch identity {
-	case "mayor", "mayor/", "deacon", "deacon/":
-		return nil
-	}
-	if _, ok := DogAddressName(identity); !ok && isReservedTownSubpath(identity) {
-		return fmt.Errorf("no agent found")
-	}
-
-	// Well-known rig-level singletons are valid without an active session, but
-	// the containing rig must exist so typos do not queue mail to a dead inbox.
-	parts := strings.SplitN(identity, "/", 3)
-	if len(parts) == 2 {
-		switch parts[1] {
-		case "witness", "refinery":
-			if r.townRoot == "" || dirExists(filepath.Join(r.townRoot, parts[0])) {
-				return nil
-			}
-			return fmt.Errorf("no agent found")
-		}
+	if handled, err := validateKnownRecipient(r.townRoot, identity); handled {
+		return err
 	}
 
 	// Query agents from town-level beads
-	agents := r.queryAgents("")
-
-	for _, agent := range agents {
-		if agentBeadToAddress(agent) == identity {
-			return nil // Found matching agent
-		}
+	if queryContainsRecipient(r, identity) {
+		return nil
 	}
 
-	// Query agents from rig-level beads via routes.jsonl
-	var routeQueryErr error
-	if r.townRoot != "" {
-		townBeadsDir := filepath.Join(r.townRoot, ".beads")
-		routes, err := beads.LoadRoutes(townBeadsDir)
-		if err == nil {
-			var queryErrors []string
-			for _, route := range routes {
-				// Skip hq- routes (town-level, already queried)
-				if strings.HasPrefix(route.Prefix, "hq-") {
-					continue
-				}
-				rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
-				rigAgents, err := r.queryAgentsFromDir(rigBeadsDir)
-				if err != nil {
-					queryErrors = append(queryErrors, fmt.Sprintf("%s: %v", route.Path, err))
-					continue
-				}
-				for _, agent := range rigAgents {
-					if agentBeadToAddress(agent) == identity {
-						return nil // Found matching agent
-					}
-				}
-			}
-			if len(queryErrors) > 0 {
-				routeQueryErr = fmt.Errorf("no agent found (query errors: %s)", strings.Join(queryErrors, "; "))
-			}
+	return validateRecipientFromSources(r, identity)
+}
+
+func validateKnownRecipient(townRoot, identity string) (bool, error) {
+	if handled, err := validateTownRecipient(identity); handled {
+		return true, err
+	}
+	return validateRigSingleton(townRoot, identity)
+}
+
+func validateTownRecipient(identity string) (bool, error) {
+	// Overseer is the human operator, not an agent bead.
+	if identity == "overseer" {
+		return true, nil
+	}
+	// Well-known town-level singletons always valid.
+	switch identity {
+	case "mayor", "mayor/", "deacon", "deacon/":
+		return true, nil
+	}
+	if _, ok := DogAddressName(identity); !ok && isReservedTownSubpath(identity) {
+		return true, fmt.Errorf("no agent found")
+	}
+	return false, nil
+}
+
+func validateRigSingleton(townRoot, identity string) (bool, error) {
+	// Well-known rig-level singletons are valid without an active session, but
+	// the containing rig must exist so typos do not queue mail to a dead inbox.
+	parts := strings.SplitN(identity, "/", 3)
+	if len(parts) == 2 && (parts[1] == "witness" || parts[1] == "refinery") {
+		if townRoot == "" || dirExists(filepath.Join(townRoot, parts[0])) {
+			return true, nil
 		}
+		return true, fmt.Errorf("no agent found")
+	}
+	return false, nil
+}
+
+func validateRecipientFromSources(r *Router, identity string) error {
+	// Query agents from rig-level beads via routes.jsonl.
+	found, routeQueryErr := queryRoutesForRecipient(r, identity)
+	if found {
+		return nil
 	}
 
 	// Fall back to workspace directory validation. Agent beads may be missing
 	// (e.g., Dolt DB reset) even though the agent's workspace directory exists.
-	if r.townRoot != "" && r.validateAgentWorkspace(identity) {
+	if r.townRoot != "" && validateAgentWorkspace(r, identity) {
 		return nil
 	}
-
 	if routeQueryErr != nil {
 		return routeQueryErr
 	}
-
 	return fmt.Errorf("no agent found")
+}
+
+func queryContainsRecipient(r *Router, identity string) bool {
+	for _, agent := range queryAgents(r, "") {
+		if agentBeadToAddress(agent) == identity {
+			return true
+		}
+	}
+	return false
+}
+
+func queryRoutesForRecipient(r *Router, identity string) (bool, error) {
+	if r.townRoot == "" {
+		return false, nil
+	}
+
+	routes, err := beads.LoadRoutes(filepath.Join(r.townRoot, ".beads"))
+	if err != nil {
+		return false, nil
+	}
+	var queryErrors []string
+	for _, route := range routes {
+		if strings.HasPrefix(route.Prefix, "hq-") {
+			continue
+		}
+		found, err := queryRouteForRecipient(r, identity, route)
+		if found {
+			return true, nil
+		}
+		if err != nil {
+			queryErrors = append(queryErrors, fmt.Sprintf("%s: %v", route.Path, err))
+		}
+	}
+	if len(queryErrors) > 0 {
+		return false, fmt.Errorf("no agent found (query errors: %s)", strings.Join(queryErrors, "; "))
+	}
+	return false, nil
+}
+
+func queryRouteForRecipient(r *Router, identity string, route beads.Route) (bool, error) {
+	rigBeadsDir := filepath.Join(r.townRoot, route.Path, ".beads")
+	agents, err := queryAgentsFromDir(rigBeadsDir)
+	if err != nil {
+		return false, err
+	}
+	for _, agent := range agents {
+		if agentBeadToAddress(agent) == identity {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // validateAgentWorkspace checks if an agent's workspace directory exists on disk.
 // Used as a fallback when the agent isn't found in the bead registry.
-func (r *Router) validateAgentWorkspace(identity string) bool {
+func validateAgentWorkspace(r *Router, identity string) bool {
 	if _, ok := DogAddressName(identity); !ok && isReservedTownSubpath(identity) {
 		return false
 	}
 
 	parts := strings.Split(identity, "/")
-
 	switch len(parts) {
 	case 1:
-		// Town-level singleton: "mayor", "deacon"
-		name := strings.TrimSuffix(parts[0], "/")
-		return dirExists(filepath.Join(r.townRoot, name))
+		return townWorkspaceExists(r.townRoot, parts[0])
 	case 2:
-		rig, name := parts[0], parts[1]
-		// Singleton role: gastown/witness, gastown/refinery
-		if dirExists(filepath.Join(r.townRoot, rig, name)) {
-			return true
-		}
-		// Named role (identity normalized away crew/polecats): check both
-		for _, role := range []string{"crew", "polecats"} {
-			if dirExists(filepath.Join(r.townRoot, rig, role, name)) {
-				return true
-			}
-		}
+		return rigWorkspaceExists(r.townRoot, parts[0], parts[1])
 	case 3:
-		// Explicit role paths: rig/crew/<name> or rig/polecats/<name>
-		if parts[1] == "crew" || parts[1] == "polecats" {
-			return dirExists(filepath.Join(r.townRoot, parts[0], parts[1], parts[2]))
-		}
-		// Dog addresses: deacon/dogs/<name>
-		if _, ok := DogAddressName(identity); ok && dirExists(filepath.Join(r.townRoot, parts[0], parts[1], parts[2])) {
-			return true
-		}
+		return explicitWorkspaceExists(r.townRoot, identity, parts)
 	}
 
 	return false
+}
+
+func townWorkspaceExists(townRoot, name string) bool {
+	// Town-level singleton: "mayor", "deacon".
+	return dirExists(filepath.Join(townRoot, strings.TrimSuffix(name, "/")))
+}
+
+func rigWorkspaceExists(townRoot, rig, name string) bool {
+	// Singleton role: gastown/witness, gastown/refinery.
+	if dirExists(filepath.Join(townRoot, rig, name)) {
+		return true
+	}
+	// Named role (identity normalized away crew/polecats): check both.
+	for _, role := range []string{"crew", "polecats"} {
+		if dirExists(filepath.Join(townRoot, rig, role, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func explicitWorkspaceExists(townRoot, identity string, parts []string) bool {
+	// Explicit role paths: rig/crew/<name> or rig/polecats/<name>.
+	if parts[1] == "crew" || parts[1] == "polecats" {
+		return dirExists(filepath.Join(townRoot, parts[0], parts[1], parts[2]))
+	}
+	// Dog addresses: deacon/dogs/<name>.
+	_, isDog := DogAddressName(identity)
+	return isDog && dirExists(filepath.Join(townRoot, parts[0], parts[1], parts[2]))
 }
 
 // dirExists returns true if the path exists and is a directory.
@@ -1060,55 +1179,60 @@ func dirExists(path string) bool {
 // Returns the normalized identity if exactly one rig contains the crew member,
 // or the original identity unchanged if zero or multiple rigs match (to let
 // validation fail with an informative error).
-func (r *Router) resolveCrewShorthand(identity string) string {
+func resolveCrewShorthand(r *Router, identity string) string {
 	if r.townRoot == "" {
 		return identity
 	}
 
+	roleDir, name, ok := crewShorthandParts(identity)
+	if !ok || realRigDirectory(r.townRoot, roleDir) {
+		return identity
+	}
+	if match, ok := findCrewShorthand(r.townRoot, roleDir, name); ok {
+		return match // Unambiguous: expand to rig/name
+	}
+	return identity // Ambiguous or not found: let validation handle it
+}
+
+func crewShorthandParts(identity string) (roleDir, name string, ok bool) {
 	parts := strings.Split(identity, "/")
 	if len(parts) != 2 {
-		return identity
+		return "", "", false
 	}
-
-	roleDir, name := parts[0], parts[1]
-	// Only handle crew and polecats shorthand (not real rig names)
+	roleDir, name = parts[0], parts[1]
 	if roleDir != constants.RoleCrew && roleDir != "polecats" {
-		return identity
+		return "", "", false
 	}
+	return roleDir, name, true
+}
 
-	// Check if "crew" or "polecats" is actually a real rig directory
-	if fi, err := os.Stat(filepath.Join(r.townRoot, roleDir)); err == nil && fi.IsDir() {
-		// It's a real rig, not a shorthand - let normal validation handle it
-		return identity
-	}
+func realRigDirectory(townRoot, roleDir string) bool {
+	fi, err := os.Stat(filepath.Join(townRoot, roleDir))
+	return err == nil && fi.IsDir()
+}
 
-	// Scan rig directories for a crew/polecats member with this name
-	entries, err := os.ReadDir(r.townRoot)
+func findCrewShorthand(townRoot, roleDir, name string) (string, bool) {
+	entries, err := os.ReadDir(townRoot)
 	if err != nil {
-		return identity
+		return "", false
 	}
-
-	var matches []string
+	var match string
+	matches := 0
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		rig := entry.Name()
-		agentDir := filepath.Join(r.townRoot, rig, roleDir, name)
-		if fi, err2 := os.Stat(agentDir); err2 == nil && fi.IsDir() {
-			matches = append(matches, rig+"/"+name)
+		agentDir := filepath.Join(townRoot, entry.Name(), roleDir, name)
+		if fi, err := os.Stat(agentDir); err == nil && fi.IsDir() {
+			match = entry.Name() + "/" + name
+			matches++
 		}
 	}
-
-	if len(matches) == 1 {
-		return matches[0] // Unambiguous: expand to rig/name
-	}
-
-	return identity // Ambiguous or not found: let validation handle it
+	return match, matches == 1
 }
 
 // sendToSingle sends a message to a single recipient.
-func (r *Router) sendToSingle(msg *Message) error {
+func sendToSingle(r *Router, msg *Message) error {
 	// Ensure message has an ID for in-memory tracking (notifications, logging).
 	// We no longer pass --id to bd create; bd auto-generates the correct prefix.
 	if msg.ID == "" {
@@ -1123,16 +1247,39 @@ func (r *Router) sendToSingle(msg *Message) error {
 	// Convert addresses to beads identities
 	toIdentity := AddressToIdentity(msg.To)
 	// Expand crew/polecats shorthand (e.g., "crew/bob" → "pata/bob")
-	toIdentity = r.resolveCrewShorthand(toIdentity)
+	toIdentity = resolveCrewShorthand(r, toIdentity)
 
 	// Validate recipient exists
-	if err := r.validateRecipient(toIdentity); err != nil {
+	if err := validateRecipient(r, toIdentity); err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 	}
 
 	// Build labels for type, from/thread/reply-to/cc
-	labels := r.buildLabels(msg)
+	labels := buildLabels(msg)
+	args := singleMessageArgs(msg, toIdentity, labels, shouldBeWisp(msg))
+	if err := sendSingleMessage(r, msg, args); err != nil {
+		return err
+	}
 
+	// Notify recipient if they have an active session (best-effort notification).
+	// Skip when the caller explicitly suppressed notification (--no-notify)
+	// or for self-mail (handoffs to future-self don't need present-self notified).
+	// Notification is async: the durable write is complete, so the caller
+	// doesn't block on idle probing (up to 1s per recipient in fan-out).
+	// Callers that exit soon after Send should call WaitPendingNotifications.
+	if !msg.SuppressNotify && !isSelfMail(msg.From, msg.To) {
+		msgCopy := *msg // copy to avoid data race if caller mutates msg
+		r.notifyWg.Add(1)
+		go func() {
+			defer r.notifyWg.Done()
+			notifyRecipient(r, &msgCopy) //nolint:errcheck
+		}()
+	}
+
+	return nil
+}
+
+func singleMessageArgs(msg *Message, toIdentity string, labels []string, ephemeral bool) []string {
 	// Build command: bd create --assignee=<recipient> -d <body> --labels=gt:message,... -- <subject>
 	// Flags go first, then -- to end flag parsing, then the positional subject.
 	// This prevents subjects like "--help" from being parsed as flags (see web/api.go).
@@ -1140,36 +1287,24 @@ func (r *Router) sendToSingle(msg *Message) error {
 	args := []string{"create",
 		"--assignee", toIdentity,
 		"-d", msg.Body,
+		"--priority", fmt.Sprintf("%d", PriorityToBeads(msg.Priority)),
 	}
-
-	// Add priority flag
-	beadsPriority := PriorityToBeads(msg.Priority)
-	args = append(args, "--priority", fmt.Sprintf("%d", beadsPriority))
-
-	// Add labels
 	if len(labels) > 0 {
 		args = append(args, "--labels", strings.Join(labels, ","))
 	}
-
-	// Add actor for attribution (sender identity)
 	args = append(args, "--actor", msg.From)
-
 	// Do NOT pass --id to bd create. The msg.ID (msg-xxx prefix) is for
 	// in-memory tracking only. bd auto-generates IDs with the correct
-	// database prefix (e.g., hq-wisp-xxx). Passing --id causes prefix
-	// mismatch errors when the msg- prefix does not match the database.
-
-	// Add --ephemeral flag for ephemeral messages (wisps, not synced to git)
-	if r.shouldBeWisp(msg) {
+	// database prefix (e.g., hq-wisp-xxx).
+	if ephemeral {
 		args = append(args, "--ephemeral")
 	}
+	return append(args, "--", msg.Subject)
+}
 
-	// End flag parsing with --, then add subject as positional argument.
-	// This prevents subjects like "--help" or "--json" from being parsed as flags.
-	args = append(args, "--", msg.Subject)
-
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+func sendSingleMessage(r *Router, msg *Message, args []string) error {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
@@ -1188,31 +1323,15 @@ func (r *Router) sendToSingle(msg *Message) error {
 	if err != nil {
 		return fmt.Errorf("sending message: %w", err)
 	}
-
-	// Notify recipient if they have an active session (best-effort notification).
-	// Skip when the caller explicitly suppressed notification (--no-notify)
-	// or for self-mail (handoffs to future-self don't need present-self notified).
-	// Notification is async: the durable write is complete, so the caller
-	// doesn't block on idle probing (up to 1s per recipient in fan-out).
-	// Callers that exit soon after Send should call WaitPendingNotifications.
-	if !msg.SuppressNotify && !isSelfMail(msg.From, msg.To) {
-		msgCopy := *msg // copy to avoid data race if caller mutates msg
-		r.notifyWg.Add(1)
-		go func() {
-			defer r.notifyWg.Done()
-			r.notifyRecipient(&msgCopy) //nolint:errcheck
-		}()
-	}
-
 	return nil
 }
 
 // sendToList expands a mailing list and sends individual copies to each recipient.
 // Each recipient gets their own message copy with the same content.
 // Collects all delivery errors and reports partial failures.
-func (r *Router) sendToList(msg *Message) error {
+func sendToList(r *Router, msg *Message) error {
 	listName := parseListName(msg.To)
-	recipients, err := r.expandList(listName)
+	recipients, err := expandList(r, listName)
 	if err != nil {
 		return err
 	}
@@ -1244,18 +1363,18 @@ func (r *Router) ExpandListAddress(address string) ([]string, error) {
 	if !isListAddress(address) {
 		return nil, fmt.Errorf("not a list address: %s", address)
 	}
-	return r.expandList(parseListName(address))
+	return expandList(r, parseListName(address))
 }
 
 // sendToQueue delivers a message to a queue for worker claiming.
 // Unlike sendToList, this creates a SINGLE message (no fan-out).
 // The message is stored in town-level beads with queue metadata.
 // Workers claim messages using bd update --claimed-by.
-func (r *Router) sendToQueue(msg *Message) error {
+func sendToQueue(r *Router, msg *Message) error {
 	queueName := parseQueueName(msg.To)
 
 	// Validate queue exists in messaging config
-	_, err := r.expandQueue(queueName)
+	_, err := expandQueue(r, queueName)
 	if err != nil {
 		return err
 	}
@@ -1305,8 +1424,8 @@ func (r *Router) sendToQueue(msg *Message) error {
 	args = append(args, "--", msg.Subject)
 
 	// Queue messages go to town-level beads (shared location)
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
@@ -1324,32 +1443,34 @@ func (r *Router) sendToQueue(msg *Message) error {
 // sendToAnnounce delivers a message to an announce channel (bulletin board).
 // Unlike sendToQueue, no claiming is supported - messages persist until retention limit.
 // ONE copy is stored in town-level beads with announce_channel metadata.
-func (r *Router) sendToAnnounce(msg *Message) error {
+func sendToAnnounce(r *Router, msg *Message) error {
 	announceName := parseAnnounceName(msg.To)
 
 	// Validate announce channel exists and get config
-	announceCfg, err := r.expandAnnounce(announceName)
+	announceCfg, err := expandAnnounce(r, announceName)
 	if err != nil {
 		return err
 	}
 
 	// Apply retention pruning BEFORE creating new message
 	if announceCfg.RetainCount > 0 {
-		if err := r.pruneAnnounce(announceName, announceCfg.RetainCount); err != nil {
+		if err := pruneAnnounce(r, announceName, announceCfg.RetainCount); err != nil {
 			// Log but don't fail - pruning is best-effort
 			// The new message should still be created
 			_ = err
 		}
 	}
 
-	// Build labels for type, from/thread/reply-to/cc plus announce metadata.
-	// Note: delivery:pending is intentionally omitted for announce messages —
-	// broadcast messages have no single recipient to ack against. Subscriber
-	// fan-out copies go through sendToSingle which adds delivery tracking.
-	var labels []string
-	labels = append(labels, "gt:message")
-	labels = append(labels, "from:"+msg.From)
-	labels = append(labels, "announce:"+announceName)
+	labels := announceMessageLabels(msg, announceName)
+	args := announceMessageArgs(msg, labels)
+	return sendAnnounceMessage(r, announceName, args)
+}
+
+func announceMessageLabels(msg *Message, announceName string) []string {
+	// delivery:pending is intentionally omitted for announce messages — broadcast
+	// messages have no single recipient to ack against. Subscriber fan-out copies
+	// go through sendToSingle which adds delivery tracking.
+	labels := []string{"gt:message", "from:" + msg.From, "announce:" + announceName}
 	if msg.ThreadID != "" {
 		labels = append(labels, "thread:"+msg.ThreadID)
 	}
@@ -1357,51 +1478,114 @@ func (r *Router) sendToAnnounce(msg *Message) error {
 		labels = append(labels, "reply-to:"+msg.ReplyTo)
 	}
 	for _, cc := range msg.CC {
-		ccIdentity := AddressToIdentity(cc)
-		labels = append(labels, "cc:"+ccIdentity)
+		labels = append(labels, "cc:"+AddressToIdentity(cc))
 	}
+	return labels
+}
 
-	// Build command: bd create --assignee=announce:<name> -d <body> ... -- <subject>
+func announceMessageArgs(msg *Message, labels []string) []string {
 	// Flags go first, then -- to end flag parsing, then the positional subject.
 	// This prevents subjects like "--help" from being parsed as flags.
-	// Use announce:<name> as assignee so queries can filter by channel
-	args := []string{"create",
+	args := []string{
+		"create",
 		"--assignee", msg.To, // announce:name
 		"-d", msg.Body,
+		"--priority", fmt.Sprintf("%d", PriorityToBeads(msg.Priority)),
 	}
-
-	// Add priority flag
-	beadsPriority := PriorityToBeads(msg.Priority)
-	args = append(args, "--priority", fmt.Sprintf("%d", beadsPriority))
-
-	// Add labels (includes announce name for filtering)
 	if len(labels) > 0 {
 		args = append(args, "--labels", strings.Join(labels, ","))
 	}
-
-	// Add actor for attribution (sender identity)
 	args = append(args, "--actor", msg.From)
+	// Announce messages are never ephemeral — they need to persist for readers.
+	return append(args, "--", msg.Subject)
+}
 
-	// Announce messages are never ephemeral - they need to persist for readers
-	// (deliberately not checking shouldBeWisp)
-
-	// End flag parsing, then subject as positional argument
-	args = append(args, "--", msg.Subject)
-
-	// Announce messages go to town-level beads (shared location)
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+func sendAnnounceMessage(r *Router, announceName string, args []string) error {
+	// Announce messages go to town-level beads (shared location).
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 	ctx, cancel := bdWriteCtx()
 	defer cancel()
-	_, err = runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir)
-	if err != nil {
+	if _, err := runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir); err != nil {
 		return fmt.Errorf("sending to announce %s: %w", announceName, err)
 	}
+	// No notification for announce messages — readers poll or check on their own schedule.
+	return nil
+}
 
-	// No notification for announce messages - readers poll or check on their own schedule
+func channelMessageLabels(msg *Message, channelName string) []string {
+	labels := []string{
+		"gt:message",
+		"from:" + msg.From,
+		"channel:" + channelName,
+	}
+	if msg.ThreadID != "" {
+		labels = append(labels, "thread:"+msg.ThreadID)
+	}
+	if msg.ReplyTo != "" {
+		labels = append(labels, "reply-to:"+msg.ReplyTo)
+	}
+	for _, cc := range msg.CC {
+		labels = append(labels, "cc:"+AddressToIdentity(cc))
+	}
+	return labels
+}
 
+func channelMessageArgs(msg *Message, labels []string) []string {
+	args := []string{
+		"create",
+		"--assignee", msg.To, // channel:name
+		"-d", msg.Body,
+		"--priority", fmt.Sprintf("%d", PriorityToBeads(msg.Priority)),
+	}
+	if len(labels) > 0 {
+		args = append(args, "--labels", strings.Join(labels, ","))
+	}
+	args = append(args, "--actor", msg.From)
+	// Channel messages are never ephemeral — they persist according to the
+	// channel's retention policy.
+	return append(args, "--", msg.Subject)
+}
+
+func sendChannelMessage(r *Router, channelName string, args []string) error {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
+		return err
+	}
+	ctx, cancel := bdWriteCtx()
+	defer cancel()
+	if _, err := runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir); err != nil {
+		return fmt.Errorf("sending to channel %s: %w", channelName, err)
+	}
+	return nil
+}
+
+func fanOutChannelMessage(r *Router, msg *Message, channelName string, subscribers []string) error {
+	if len(subscribers) == 0 {
+		return nil
+	}
+
+	var errs []string
+	for _, subscriber := range subscribers {
+		// Skip self-delivery (don't notify the sender).
+		if isSelfMail(msg.From, subscriber) {
+			continue
+		}
+
+		msgCopy := *msg
+		msgCopy.To = subscriber
+		msgCopy.ID = "" // Each fan-out copy gets its own ID from bd create.
+		msgCopy.Subject = fmt.Sprintf("[channel:%s] %s", channelName, msg.Subject)
+
+		if err := sendToSingle(r, &msgCopy); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", subscriber, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("channel %s: some subscriber deliveries failed: %s", channelName, strings.Join(errs, "; "))
+	}
 	return nil
 }
 
@@ -1409,7 +1593,7 @@ func (r *Router) sendToAnnounce(msg *Message) error {
 // Creates a message with channel:<name> label for channel queries.
 // Also fans out delivery to each subscriber's inbox.
 // Retention is enforced by the channel's EnforceChannelRetention after message creation.
-func (r *Router) sendToChannel(msg *Message) error {
+func sendToChannel(r *Router, msg *Message) error {
 	channelName := parseChannelName(msg.To)
 
 	// Validate channel exists as a beads-native channel
@@ -1428,103 +1612,27 @@ func (r *Router) sendToChannel(msg *Message) error {
 		return fmt.Errorf("channel %s is closed", channelName)
 	}
 
-	// Build labels for type, from/thread/reply-to/cc plus channel metadata.
-	// Note: delivery:pending is intentionally omitted for the channel-origin
-	// copy — it has no single recipient to ack. Subscriber fan-out copies go
-	// through sendToSingle which adds delivery tracking.
-	var labels []string
-	labels = append(labels, "gt:message")
-	labels = append(labels, "from:"+msg.From)
-	labels = append(labels, "channel:"+channelName)
-	if msg.ThreadID != "" {
-		labels = append(labels, "thread:"+msg.ThreadID)
-	}
-	if msg.ReplyTo != "" {
-		labels = append(labels, "reply-to:"+msg.ReplyTo)
-	}
-	for _, cc := range msg.CC {
-		ccIdentity := AddressToIdentity(cc)
-		labels = append(labels, "cc:"+ccIdentity)
-	}
-
-	// Build command: bd create --assignee=channel:<name> -d <body> ... -- <subject>
-	// Flags go first, then -- to end flag parsing, then the positional subject.
-	// This prevents subjects like "--help" from being parsed as flags.
-	// Use channel:<name> as assignee so queries can filter by channel
-	args := []string{"create",
-		"--assignee", msg.To, // channel:name
-		"-d", msg.Body,
-	}
-
-	// Add priority flag
-	beadsPriority := PriorityToBeads(msg.Priority)
-	args = append(args, "--priority", fmt.Sprintf("%d", beadsPriority))
-
-	// Add labels (includes channel name for filtering)
-	if len(labels) > 0 {
-		args = append(args, "--labels", strings.Join(labels, ","))
-	}
-
-	// Add actor for attribution (sender identity)
-	args = append(args, "--actor", msg.From)
-
-	// Channel messages are never ephemeral - they persist according to retention policy
-	// (deliberately not checking shouldBeWisp)
-
-	// End flag parsing, then subject as positional argument
-	args = append(args, "--", msg.Subject)
-
-	// Channel messages go to town-level beads (shared location)
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	labels := channelMessageLabels(msg, channelName)
+	args := channelMessageArgs(msg, labels)
+	if err := sendChannelMessage(r, channelName, args); err != nil {
 		return err
-	}
-	ctx, cancel := bdWriteCtx()
-	defer cancel()
-	_, err = runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir)
-	if err != nil {
-		return fmt.Errorf("sending to channel %s: %w", channelName, err)
 	}
 
 	// Enforce channel retention policy (on-write cleanup)
 	_ = b.EnforceChannelRetention(channelName)
 
-	// Fan-out delivery: send a copy to each subscriber's inbox
-	if len(fields.Subscribers) > 0 {
-		var errs []string
-		for _, subscriber := range fields.Subscribers {
-			// Skip self-delivery (don't notify the sender)
-			if isSelfMail(msg.From, subscriber) {
-				continue
-			}
-
-			// Create a copy for this subscriber with channel context in subject
-			msgCopy := *msg
-			msgCopy.To = subscriber
-			msgCopy.ID = "" // Each fan-out copy gets its own ID from bd create
-			msgCopy.Subject = fmt.Sprintf("[channel:%s] %s", channelName, msg.Subject)
-
-			if err := r.sendToSingle(&msgCopy); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", subscriber, err))
-			}
-		}
-		if len(errs) > 0 {
-			return fmt.Errorf("channel %s: some subscriber deliveries failed: %s", channelName, strings.Join(errs, "; "))
-		}
-	}
-
-	return nil
+	return fanOutChannelMessage(r, msg, channelName, fields.Subscribers)
 }
 
 // pruneAnnounce deletes oldest messages from an announce channel to enforce retention.
 // If the channel has >= retainCount messages, deletes the oldest until count < retainCount.
-func (r *Router) pruneAnnounce(announceName string, retainCount int) error {
+func pruneAnnounce(r *Router, announceName string, retainCount int) error {
 	if retainCount <= 0 {
 		return nil // No retention limit
 	}
 
-	beadsDir := r.resolveBeadsDir()
-	if err := r.ensureCustomTypes(beadsDir); err != nil {
+	beadsDir := resolveBeadsDir(r)
+	if err := ensureCustomTypes(beadsDir); err != nil {
 		return err
 	}
 
@@ -1562,7 +1670,8 @@ func (r *Router) pruneAnnounce(announceName string, retainCount int) error {
 	}
 
 	// Delete oldest messages
-	for i := 0; i < toDelete && i < len(messages); i++ {
+	messageCount := len(messages)
+	for i := 0; i < toDelete && i < messageCount; i++ {
 		deleteArgs := []string{"close", messages[i].ID, "--reason=retention pruning"}
 		// Best-effort deletion - don't fail if one delete fails
 		delCtx, delCancel := bdWriteCtx()
@@ -1582,7 +1691,7 @@ func isSelfMail(from, to string) bool {
 // GetMailbox returns a Mailbox for the given address.
 // Routes to the correct beads database based on the address.
 func (r *Router) GetMailbox(address string) (*Mailbox, error) {
-	beadsDir := r.resolveBeadsDir()
+	beadsDir := resolveBeadsDir(r)
 	workDir := filepath.Dir(beadsDir) // Parent of .beads
 	return NewMailboxFromAddress(address, workDir), nil
 }
@@ -1603,7 +1712,7 @@ func (r *Router) GetMailbox(address string) (*Mailbox, error) {
 //
 // Supports mayor/, deacon/, rig/crew/name, rig/polecats/name, and rig/name addresses.
 // Respects agent DND/muted state - skips notification if recipient has DND enabled.
-func (r *Router) notifyRecipient(msg *Message) error {
+func notifyRecipient(r *Router, msg *Message) error {
 	sessionIDs := AddressToSessionIDs(msg.To)
 	if len(sessionIDs) == 0 {
 		return nil
@@ -1626,7 +1735,7 @@ type mailNotifyResult struct {
 func notifyLiveSessions(r *Router, msg *Message, sessionIDs []string, notification, priority string) mailNotifyResult {
 	var result mailNotifyResult
 	for _, sessionID := range sessionIDs {
-		if r.isSessionMuted(sessionID) {
+		if isSessionMuted(r, sessionID) {
 			continue
 		}
 		outcome := notifyOneLiveSession(r, msg, sessionID, notification, priority)
@@ -1685,7 +1794,7 @@ func notifyAgentSession(r *Router, msg *Message, sessionID, notification, priori
 
 func enqueueHeadlessMail(r *Router, msg *Message, sessionIDs []string, notification, priority string, result *mailNotifyResult) {
 	for _, sessionID := range sessionIDs {
-		if r.isSessionMuted(sessionID) {
+		if isSessionMuted(r, sessionID) {
 			continue
 		}
 		if err := enqueueQueuedMail(r.townRoot, sessionID, msg, notification, priority); err != nil {
@@ -1708,7 +1817,7 @@ func finishMailNotify(result mailNotifyResult) error {
 	return fmt.Errorf("mail notification failed: %w", joined)
 }
 
-func (r *Router) isSessionMuted(sessionID string) bool {
+func isSessionMuted(r *Router, sessionID string) bool {
 	if r.townRoot == "" || sessionID == "" || sessionID == session.OverseerSessionName() {
 		return false
 	}
@@ -1762,7 +1871,7 @@ func enqueueMailNotification(r *Router, msg *Message, sessionID, notification, p
 	if err := enqueueQueuedMail(r.townRoot, sessionID, msg, notification, priority); err != nil {
 		return err
 	}
-	r.enqueueReplyReminder(msg, sessionID)
+	enqueueReplyReminder(r, msg, sessionID)
 	return nil
 }
 
@@ -1788,7 +1897,7 @@ func enqueueQueuedMail(townRoot, sessionID string, msg *Message, notification, p
 //   - Message type is TypeReply (recipient is already replying)
 //   - Sender is not a direct mail address that can receive a reply
 //   - Configured delay is zero or negative (feature disabled)
-func (r *Router) enqueueReplyReminder(msg *Message, sessionID string) {
+func enqueueReplyReminder(r *Router, msg *Message, sessionID string) {
 	if r.townRoot == "" {
 		return
 	}
@@ -1816,39 +1925,70 @@ func (r *Router) enqueueReplyReminder(msg *Message, sessionID string) {
 }
 
 func senderCanReceiveReply(from string) bool {
-	if from == "" || strings.TrimSpace(from) != from || strings.ContainsAny(from, " \t\r\n") {
+	if !isReplySenderInput(from) {
 		return false
 	}
 
 	identity := AddressToIdentity(from)
-	switch identity {
-	case "overseer", "mayor/", "deacon/":
+	if isDirectReplyIdentity(identity) {
 		return true
 	}
-	if identity == "" || strings.HasPrefix(identity, "@") || strings.ContainsAny(identity, ":@") {
+	if !isRoutableReplyIdentity(identity) {
 		return false
 	}
 
-	parts := strings.Split(identity, "/")
-	switch len(parts) {
-	case 2:
-		if !validReplyAddressPart(parts[0]) || !validReplyAddressPart(parts[1]) {
-			return false
-		}
-		if parts[0] == constants.RoleMayor || parts[0] == constants.RoleDeacon {
-			return false
-		}
-		switch parts[1] {
-		case constants.RoleCrew, "polecat", "polecats", "dogs":
-			return false
-		default:
-			return true
-		}
-	case 3:
-		return parts[0] == constants.RoleDeacon && parts[1] == "dogs" && validReplyAddressPart(parts[2])
+	return replyAddressParts(strings.Split(identity, "/"))
+}
+
+func isReplySenderInput(from string) bool {
+	return from != "" && strings.TrimSpace(from) == from && !strings.ContainsAny(from, " \t\r\n")
+}
+
+func isDirectReplyIdentity(identity string) bool {
+	switch identity {
+	case "overseer", "mayor/", "deacon/":
+		return true
 	default:
 		return false
 	}
+}
+
+func isRoutableReplyIdentity(identity string) bool {
+	return identity != "" && !strings.HasPrefix(identity, "@") && !strings.ContainsAny(identity, ":@")
+}
+
+func replyAddressParts(parts []string) bool {
+	switch len(parts) {
+	case 2:
+		return twoPartReplyAddress(parts)
+	case 3:
+		return deaconDogReplyAddress(parts)
+	default:
+		return false
+	}
+}
+
+func twoPartReplyAddress(parts []string) bool {
+	if !validReplyAddressPart(parts[0]) || !validReplyAddressPart(parts[1]) {
+		return false
+	}
+	if parts[0] == constants.RoleMayor || parts[0] == constants.RoleDeacon {
+		return false
+	}
+	return !isNonReplyAddressRole(parts[1])
+}
+
+func isNonReplyAddressRole(role string) bool {
+	switch role {
+	case constants.RoleCrew, "polecat", "polecats", "dogs":
+		return true
+	default:
+		return false
+	}
+}
+
+func deaconDogReplyAddress(parts []string) bool {
+	return parts[0] == constants.RoleDeacon && parts[1] == "dogs" && validReplyAddressPart(parts[2])
 }
 
 func validReplyAddressPart(part string) bool {
@@ -1879,13 +2019,13 @@ func (r *Router) IsRecipientMuted(address string) bool {
 	if r.townRoot == "" {
 		return false
 	}
-	return r.isRecipientMuted(address)
+	return isRecipientMuted(r, address)
 }
 
 // isRecipientMuted checks if a mail recipient has DND/muted notifications enabled.
 // Returns true if the recipient is muted and should not receive tmux nudges.
 // Fails open (returns false) if the agent bead cannot be found.
-func (r *Router) isRecipientMuted(address string) bool {
+func isRecipientMuted(r *Router, address string) bool {
 	agentBeadID := addressToAgentBeadID(address)
 	if agentBeadID == "" {
 		return false // Can't determine agent bead, allow notification
@@ -1903,17 +2043,8 @@ func (r *Router) isRecipientMuted(address string) bool {
 // addressToAgentBeadID converts a mail address to an agent bead ID for DND lookup.
 // Returns empty string if the address cannot be converted.
 func addressToAgentBeadID(address string) string {
-	if address == "overseer" {
-		return "" // Overseer is a human, no agent bead
-	}
-	if dogName, ok := DogAddressName(address); ok {
-		return session.DogSessionName(dogName)
-	}
-	switch address {
-	case constants.RoleMayor, constants.RoleMayor + "/":
-		return session.MayorSessionName()
-	case constants.RoleDeacon, constants.RoleDeacon + "/":
-		return session.DeaconSessionName()
+	if agentBeadID, ok := townAddressToAgentBeadID(address); ok {
+		return agentBeadID
 	}
 	if isReservedTownSubpath(address) {
 		return ""
@@ -1924,25 +2055,39 @@ func addressToAgentBeadID(address string) string {
 		return ""
 	}
 
-	rig := parts[0]
-	target := parts[1]
+	return agentBeadIDForTarget(parts[0], parts[1])
+}
 
+func townAddressToAgentBeadID(address string) (string, bool) {
+	if address == "overseer" {
+		return "", true // Overseer is a human, no agent bead.
+	}
+	if dogName, ok := DogAddressName(address); ok {
+		return session.DogSessionName(dogName), true
+	}
+	switch address {
+	case constants.RoleMayor, constants.RoleMayor + "/":
+		return session.MayorSessionName(), true
+	case constants.RoleDeacon, constants.RoleDeacon + "/":
+		return session.DeaconSessionName(), true
+	default:
+		return "", false
+	}
+}
+
+func agentBeadIDForTarget(rig, target string) string {
 	rigPrefix := session.PrefixFor(rig)
-
 	switch {
 	case target == constants.RoleWitness:
 		return session.WitnessSessionName(rigPrefix)
 	case target == constants.RoleRefinery:
 		return session.RefinerySessionName(rigPrefix)
 	case strings.HasPrefix(target, "crew/"):
-		crewName := strings.TrimPrefix(target, "crew/")
-		return session.CrewSessionName(rigPrefix, crewName)
+		return session.CrewSessionName(rigPrefix, strings.TrimPrefix(target, "crew/"))
 	case strings.HasPrefix(target, "polecat/"):
-		pcName := strings.TrimPrefix(target, "polecat/")
-		return session.PolecatSessionName(rigPrefix, pcName)
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecat/"))
 	case strings.HasPrefix(target, "polecats/"):
-		pcName := strings.TrimPrefix(target, "polecats/")
-		return session.PolecatSessionName(rigPrefix, pcName)
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecats/"))
 	default:
 		return session.PolecatSessionName(rigPrefix, target)
 	}
@@ -1956,22 +2101,8 @@ func addressToAgentBeadID(address string) string {
 // This supersedes the approach in PR #896 which only handled slash-to-dash
 // conversion but didn't address the crew/polecat ambiguity.
 func AddressToSessionIDs(address string) []string {
-	// Overseer address: "overseer" (human operator)
-	if address == "overseer" {
-		return []string{session.OverseerSessionName()}
-	}
-	if dogName, ok := DogAddressName(address); ok {
-		return []string{session.DogSessionName(dogName)}
-	}
-
-	// Mayor address: "mayor/" or "mayor"
-	if address == constants.RoleMayor || address == constants.RoleMayor+"/" {
-		return []string{session.MayorSessionName()}
-	}
-
-	// Deacon address: "deacon/" or "deacon"
-	if address == constants.RoleDeacon || address == constants.RoleDeacon+"/" {
-		return []string{session.DeaconSessionName()}
+	if ids, ok := townAddressToSessionIDs(address); ok {
+		return ids
 	}
 	if isReservedTownSubpath(address) {
 		return nil
@@ -1983,31 +2114,29 @@ func AddressToSessionIDs(address string) []string {
 		return nil
 	}
 
-	rig := parts[0]
-	target := parts[1]
+	return rigAddressSessionIDs(parts[0], parts[1])
+}
+
+func townAddressToSessionIDs(address string) ([]string, bool) {
+	if address == "overseer" {
+		return []string{session.OverseerSessionName()}, true
+	}
+	if dogName, ok := DogAddressName(address); ok {
+		return []string{session.DogSessionName(dogName)}, true
+	}
+	if address == constants.RoleMayor || address == constants.RoleMayor+"/" {
+		return []string{session.MayorSessionName()}, true
+	}
+	if address == constants.RoleDeacon || address == constants.RoleDeacon+"/" {
+		return []string{session.DeaconSessionName()}, true
+	}
+	return nil, false
+}
+
+func rigAddressSessionIDs(rig, target string) []string {
 	rigPrefix := session.PrefixFor(rig)
-
-	// If target already has crew/, polecat/, or polecats/ prefix, use it directly
-	// e.g., "gastown/crew/holden" → "gt-crew-holden"
-	if strings.HasPrefix(target, "crew/") {
-		crewName := strings.TrimPrefix(target, "crew/")
-		return []string{session.CrewSessionName(rigPrefix, crewName)}
-	}
-	if strings.HasPrefix(target, "polecat/") {
-		polecatName := strings.TrimPrefix(target, "polecat/")
-		return []string{session.PolecatSessionName(rigPrefix, polecatName)}
-	}
-	if strings.HasPrefix(target, "polecats/") {
-		polecatName := strings.TrimPrefix(target, "polecats/")
-		return []string{session.PolecatSessionName(rigPrefix, polecatName)}
-	}
-
-	// Special cases that don't need crew variant
-	if target == constants.RoleWitness {
-		return []string{session.WitnessSessionName(rigPrefix)}
-	}
-	if target == constants.RoleRefinery {
-		return []string{session.RefinerySessionName(rigPrefix)}
+	if id, ok := explicitRigSessionID(rigPrefix, target); ok {
+		return []string{id}
 	}
 
 	// For normalized addresses like "gastown/holden", try both:
@@ -2017,5 +2146,22 @@ func AddressToSessionIDs(address string) []string {
 	return []string{
 		session.CrewSessionName(rigPrefix, target),    // <prefix>-crew-name
 		session.PolecatSessionName(rigPrefix, target), // <prefix>-name
+	}
+}
+
+func explicitRigSessionID(rigPrefix, target string) (string, bool) {
+	switch {
+	case strings.HasPrefix(target, "crew/"):
+		return session.CrewSessionName(rigPrefix, strings.TrimPrefix(target, "crew/")), true
+	case strings.HasPrefix(target, "polecat/"):
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecat/")), true
+	case strings.HasPrefix(target, "polecats/"):
+		return session.PolecatSessionName(rigPrefix, strings.TrimPrefix(target, "polecats/")), true
+	case target == constants.RoleWitness:
+		return session.WitnessSessionName(rigPrefix), true
+	case target == constants.RoleRefinery:
+		return session.RefinerySessionName(rigPrefix), true
+	default:
+		return "", false
 	}
 }

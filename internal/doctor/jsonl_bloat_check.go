@@ -41,44 +41,46 @@ func (c *CheckJSONLBloat) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	details := inspectJSONLBloat(ctx.TownRoot, databases)
+	return jsonlBloatResult(c.Name(), details)
+}
+
+func inspectJSONLBloat(townRoot string, databases []string) []string {
 	var details []string
-	bloated := false
-
 	for _, db := range databases {
-		rigDir := filepath.Join(ctx.TownRoot, db)
-		jsonlCount, ephemeralCount, err := countJSONLEntries(rigDir)
-		if err != nil {
-			continue // No JSONL file for this rig
-		}
-		if jsonlCount == 0 {
-			continue
-		}
+		details = append(details, inspectJSONLDatabase(filepath.Join(townRoot, db), db)...)
+	}
+	return details
+}
 
-		liveCount, err := queryLiveIssueCount(rigDir)
-		if err != nil {
-			continue // DB not reachable for this rig
-		}
-
-		// Check bloat: JSONL has >10x the live count.
-		if liveCount > 0 && jsonlCount > liveCount*10 {
-			details = append(details, fmt.Sprintf(
-				"%s: issues.jsonl has %d entries vs %d live DB records (%.0fx bloat)",
-				db, jsonlCount, liveCount, float64(jsonlCount)/float64(liveCount)))
-			bloated = true
-		}
-
-		// Check ephemeral ratio: >50% of JSONL entries are ephemeral.
-		if jsonlCount > 0 && ephemeralCount*100/jsonlCount > 50 {
-			details = append(details, fmt.Sprintf(
-				"%s: %d/%d JSONL entries (%d%%) are ephemeral — wisp data polluting git-tracked export",
-				db, ephemeralCount, jsonlCount, ephemeralCount*100/jsonlCount))
-			bloated = true
-		}
+func inspectJSONLDatabase(rigDir, db string) []string {
+	jsonlCount, ephemeralCount, err := countJSONLEntries(rigDir)
+	if err != nil || jsonlCount == 0 {
+		return nil
+	}
+	liveCount, err := queryLiveIssueCount(rigDir)
+	if err != nil {
+		return nil
 	}
 
-	if bloated {
+	var details []string
+	if liveCount > 0 && jsonlCount > liveCount*10 {
+		details = append(details, fmt.Sprintf(
+			"%s: issues.jsonl has %d entries vs %d live DB records (%.0fx bloat)",
+			db, jsonlCount, liveCount, float64(jsonlCount)/float64(liveCount)))
+	}
+	if ephemeralCount*100/jsonlCount > 50 {
+		details = append(details, fmt.Sprintf(
+			"%s: %d/%d JSONL entries (%d%%) are ephemeral — wisp data polluting git-tracked export",
+			db, ephemeralCount, jsonlCount, ephemeralCount*100/jsonlCount))
+	}
+	return details
+}
+
+func jsonlBloatResult(name string, details []string) *CheckResult {
+	if len(details) > 0 {
 		return &CheckResult{
-			Name:    c.Name(),
+			Name:    name,
 			Status:  StatusWarning,
 			Message: "issues.jsonl contains stale/ephemeral data bloating the git-tracked export",
 			Details: details,
@@ -86,7 +88,7 @@ func (c *CheckJSONLBloat) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	return &CheckResult{
-		Name:    c.Name(),
+		Name:    name,
 		Status:  StatusOK,
 		Message: "issues.jsonl not bloated",
 	}

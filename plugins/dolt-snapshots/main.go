@@ -261,81 +261,90 @@ func snapshotConvoys(db *sql.DB, databases []string, routes map[string]string, d
 	fmt.Printf("Found %d convoy(s) needing snapshots.\n", len(convoys))
 
 	for _, c := range convoys {
-		safeName := sanitizeName(c.Title, c.ID)
-		fmt.Printf("\n--- Convoy: %s (%s) [%s] ---\n", c.Title, c.ID, c.Status)
-
-		// Discover which rig databases this convoy touches
-		rigDBs, err := discoverConvoyDatabases(db, c.ID, databases, routes)
-		if err != nil {
-			log.Printf("Warning: cannot discover databases for convoy %s: %v", c.ID, err)
-			continue
-		}
-
-		if len(rigDBs) == 0 {
-			fmt.Printf("  No rig databases found for convoy %s, skipping.\n", c.ID)
-			continue
-		}
-
-		// Always tag HQ too, dedup
-		dbSet := make(map[string]bool)
-		dbSet["hq"] = true
-		for _, d := range rigDBs {
-			dbSet[d] = true
-		}
-		var allDBs []string
-		for d := range dbSet {
-			allDBs = append(allDBs, d)
-		}
-
-		// Create open/ tags for convoys that need them
-		if !c.HasOpenTag {
-			tagName := "open/" + safeName
-			for _, dbName := range allDBs {
-				msg := fmt.Sprintf("Pre-work baseline for convoy %s", c.ID)
-				if dryRun {
-					fmt.Printf("  [dry-run] Would create tag %s on %s\n", tagName, dbName)
-				} else {
-					if err := createTag(db, dbName, tagName, msg); err != nil {
-						log.Printf("  Failed to create tag %s on %s: %v", tagName, dbName, err)
-						stats.tagsFailed++
-					} else {
-						fmt.Printf("  Created tag %s on %s\n", tagName, dbName)
-						stats.tagsCreated++
-					}
-				}
-			}
-		}
-
-		// Create staged/ tags + branches for staged/launched/closed convoys
-		if !c.HasStagedTag && c.Status != "open" {
-			tagName := "staged/" + safeName
-			branchName := "convoy/" + safeName
-			for _, dbName := range allDBs {
-				msg := fmt.Sprintf("Launch baseline for convoy %s", c.ID)
-				if dryRun {
-					fmt.Printf("  [dry-run] Would create tag %s on %s\n", tagName, dbName)
-					fmt.Printf("  [dry-run] Would create branch %s on %s\n", branchName, dbName)
-				} else {
-					if err := createTag(db, dbName, tagName, msg); err != nil {
-						log.Printf("  Failed to create tag %s on %s: %v", tagName, dbName, err)
-						stats.tagsFailed++
-					} else {
-						fmt.Printf("  Created tag %s on %s\n", tagName, dbName)
-						stats.tagsCreated++
-					}
-
-					if err := createBranch(db, dbName, branchName); err != nil {
-						log.Printf("  Failed to create branch %s on %s: %v", branchName, dbName, err)
-					} else {
-						fmt.Printf("  Created branch %s on %s\n", branchName, dbName)
-						stats.branchesCreated++
-					}
-				}
-			}
-		}
+		stats = snapshotConvoy(db, databases, routes, c, dryRun, stats)
 	}
 
 	return stats, nil
+}
+
+func snapshotConvoy(db *sql.DB, databases []string, routes map[string]string, c convoyRow, dryRun bool, stats snapshotStats) snapshotStats {
+	safeName := sanitizeName(c.Title, c.ID)
+	fmt.Printf("\n--- Convoy: %s (%s) [%s] ---\n", c.Title, c.ID, c.Status)
+
+	rigDBs, err := discoverConvoyDatabases(db, c.ID, databases, routes)
+	if err != nil {
+		log.Printf("Warning: cannot discover databases for convoy %s: %v", c.ID, err)
+		return stats
+	}
+	if len(rigDBs) == 0 {
+		fmt.Printf("  No rig databases found for convoy %s, skipping.\n", c.ID)
+		return stats
+	}
+
+	allDBs := snapshotDatabases(rigDBs)
+	if !c.HasOpenTag {
+		stats = createSnapshotTag(db, allDBs, "open/"+safeName, c.ID, dryRun, "Pre-work baseline", stats)
+	}
+	if !c.HasStagedTag && c.Status != "open" {
+		stats = createStagedSnapshot(db, allDBs, "staged/"+safeName, "convoy/"+safeName, c.ID, dryRun, stats)
+	}
+	return stats
+}
+
+func snapshotDatabases(rigDBs []string) []string {
+	dbSet := make(map[string]bool, len(rigDBs)+1)
+	dbSet["hq"] = true
+	for _, name := range rigDBs {
+		dbSet[name] = true
+	}
+	allDBs := make([]string, 0, len(dbSet))
+	for name := range dbSet {
+		allDBs = append(allDBs, name)
+	}
+	return allDBs
+}
+
+func createSnapshotTag(db *sql.DB, databases []string, tagName, convoyID string, dryRun bool, messagePrefix string, stats snapshotStats) snapshotStats {
+	for _, dbName := range databases {
+		message := fmt.Sprintf("%s for convoy %s", messagePrefix, convoyID)
+		if dryRun {
+			fmt.Printf("  [dry-run] Would create tag %s on %s\n", tagName, dbName)
+			continue
+		}
+		if err := createTag(db, dbName, tagName, message); err != nil {
+			log.Printf("  Failed to create tag %s on %s: %v", tagName, dbName, err)
+			stats.tagsFailed++
+			continue
+		}
+		fmt.Printf("  Created tag %s on %s\n", tagName, dbName)
+		stats.tagsCreated++
+	}
+	return stats
+}
+
+func createStagedSnapshot(db *sql.DB, databases []string, tagName, branchName, convoyID string, dryRun bool, stats snapshotStats) snapshotStats {
+	for _, dbName := range databases {
+		message := fmt.Sprintf("Launch baseline for convoy %s", convoyID)
+		if dryRun {
+			fmt.Printf("  [dry-run] Would create tag %s on %s\n", tagName, dbName)
+			fmt.Printf("  [dry-run] Would create branch %s on %s\n", branchName, dbName)
+			continue
+		}
+		if err := createTag(db, dbName, tagName, message); err != nil {
+			log.Printf("  Failed to create tag %s on %s: %v", tagName, dbName, err)
+			stats.tagsFailed++
+		} else {
+			fmt.Printf("  Created tag %s on %s\n", tagName, dbName)
+			stats.tagsCreated++
+		}
+		if err := createBranch(db, dbName, branchName); err != nil {
+			log.Printf("  Failed to create branch %s on %s: %v", branchName, dbName, err)
+			continue
+		}
+		fmt.Printf("  Created branch %s on %s\n", branchName, dbName)
+		stats.branchesCreated++
+	}
+	return stats
 }
 
 // findConvoysNeedingSnapshots queries HQ for convoys that need tags.
@@ -624,58 +633,67 @@ func watchEvents(host, port, routesFile string, cleanup bool) error {
 	log.Printf("Watching %s for convoy events...", eventsPath)
 
 	for range ticker.C {
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				break // no more data available
-			}
-
-			var ev convoyEvent
-			if json.Unmarshal([]byte(line), &ev) != nil {
-				continue
-			}
-
-			switch ev.Type {
-			case "convoy.created", "convoy.staged", "convoy.launched", "convoy.closed":
-				convoyID, _ := ev.Payload["convoy_id"].(string)
-				log.Printf("Event: %s (convoy %s) — running snapshot cycle", ev.Type, convoyID)
-
-				db, err := sql.Open("mysql", dsn)
-				if err != nil {
-					log.Printf("ERROR opening DB: %v", err)
-					continue
-				}
-				db.SetMaxOpenConns(2)
-				db.SetConnMaxLifetime(time.Minute)
-
-				if err := db.Ping(); err != nil {
-					log.Printf("ERROR pinging DB: %v", err)
-					db.Close()
-					continue
-				}
-
-				databases, err := listDatabases(db)
-				if err != nil {
-					log.Printf("ERROR listing databases: %v", err)
-					db.Close()
-					continue
-				}
-
-				routes := loadRoutes(routesFile)
-				stats, err := snapshotConvoys(db, databases, routes, false)
-				if err != nil {
-					log.Printf("ERROR in snapshot cycle: %v", err)
-				} else {
-					log.Printf("Snapshot complete: %d tags, %d branches created", stats.tagsCreated, stats.branchesCreated)
-				}
-
-				if cleanup {
-					escalateStale(db, databases, false)
-				}
-
-				db.Close()
-			}
-		}
+		processSnapshotEvents(reader, dsn, routesFile, cleanup)
 	}
 	return nil
+}
+
+func processSnapshotEvents(reader *bufio.Reader, dsn, routesFile string, cleanup bool) {
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		var ev convoyEvent
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		if isSnapshotEvent(ev.Type) {
+			runSnapshotCycle(ev, dsn, routesFile, cleanup)
+		}
+	}
+}
+
+func isSnapshotEvent(eventType string) bool {
+	switch eventType {
+	case "convoy.created", "convoy.staged", "convoy.launched", "convoy.closed":
+		return true
+	default:
+		return false
+	}
+}
+
+func runSnapshotCycle(ev convoyEvent, dsn, routesFile string, cleanup bool) {
+	convoyID, _ := ev.Payload["convoy_id"].(string)
+	log.Printf("Event: %s (convoy %s) — running snapshot cycle", ev.Type, convoyID)
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		log.Printf("ERROR opening DB: %v", err)
+		return
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(2)
+	db.SetConnMaxLifetime(time.Minute)
+
+	if err := db.Ping(); err != nil {
+		log.Printf("ERROR pinging DB: %v", err)
+		return
+	}
+	databases, err := listDatabases(db)
+	if err != nil {
+		log.Printf("ERROR listing databases: %v", err)
+		return
+	}
+
+	routes := loadRoutes(routesFile)
+	stats, err := snapshotConvoys(db, databases, routes, false)
+	if err != nil {
+		log.Printf("ERROR in snapshot cycle: %v", err)
+	} else {
+		log.Printf("Snapshot complete: %d tags, %d branches created", stats.tagsCreated, stats.branchesCreated)
+	}
+	if cleanup {
+		escalateStale(db, databases, false)
+	}
 }

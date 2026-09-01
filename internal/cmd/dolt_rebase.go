@@ -15,12 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	doltRebaseConfirm    bool
-	doltRebaseKeepRecent int
-	doltRebaseDryRun     bool
-)
-
 var doltRebaseCmd = &cobra.Command{
 	Use:   "rebase <database>",
 	Short: "Surgical compaction: squash old commits, keep recent ones",
@@ -54,36 +48,57 @@ Requires --yes-i-am-sure flag as safety interlock.`,
 }
 
 func init() {
-	doltRebaseCmd.Flags().BoolVar(&doltRebaseConfirm, "yes-i-am-sure", false,
+	doltRebaseCmd.Flags().Bool("yes-i-am-sure", false,
 		"Required safety flag to confirm compaction")
-	doltRebaseCmd.Flags().IntVar(&doltRebaseKeepRecent, "keep-recent", 50,
+	doltRebaseCmd.Flags().Int("keep-recent", 50,
 		"Number of recent commits to keep as individual picks")
-	doltRebaseCmd.Flags().BoolVar(&doltRebaseDryRun, "dry-run", false,
+	doltRebaseCmd.Flags().Bool("dry-run", false,
 		"Show the rebase plan without executing it")
 	doltCmd.AddCommand(doltRebaseCmd)
 }
 
+type doltRebaseRequest struct {
+	dbName     string
+	keepRecent int
+	dryRun     bool
+}
+
 func runDoltRebase(cmd *cobra.Command, args []string) error {
-	dbName := args[0]
-
-	if !doltRebaseConfirm && !doltRebaseDryRun {
-		return fmt.Errorf("this command rewrites commit history. Pass --yes-i-am-sure to proceed (or --dry-run to preview)")
+	req, err := parseDoltRebaseRequest(cmd, args)
+	if err != nil {
+		return err
 	}
-
-	if doltRebaseKeepRecent < 0 {
-		return fmt.Errorf("--keep-recent must be non-negative (got %d)", doltRebaseKeepRecent)
+	db, ctx, cancel, err := connectDoltRebaseDB(req.dbName)
+	if err != nil {
+		return err
 	}
+	defer cancel()
+	defer db.Close()
+	return runDoltRebaseOnDB(ctx, db, req)
+}
 
+func parseDoltRebaseRequest(cmd *cobra.Command, args []string) (*doltRebaseRequest, error) {
+	confirm := commandBoolFlag(cmd, "yes-i-am-sure")
+	keepRecent := commandIntFlag(cmd, "keep-recent")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	if !confirm && !dryRun {
+		return nil, fmt.Errorf("this command rewrites commit history. Pass --yes-i-am-sure to proceed (or --dry-run to preview)")
+	}
+	if keepRecent < 0 {
+		return nil, fmt.Errorf("--keep-recent must be non-negative (got %d)", keepRecent)
+	}
+	return &doltRebaseRequest{dbName: args[0], keepRecent: keepRecent, dryRun: dryRun}, nil
+}
+
+func connectDoltRebaseDB(dbName string) (*sql.DB, context.Context, context.CancelFunc, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return nil, nil, nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
 	running, _, err := doltserver.IsRunning(townRoot)
 	if err != nil || !running {
-		return fmt.Errorf("Dolt server is not running — start with 'gt dolt start'")
+		return nil, nil, nil, fmt.Errorf("Dolt server is not running — start with 'gt dolt start'")
 	}
-
 	config := doltserver.DefaultConfig(townRoot)
 	// wa-d6f: socket-first DSN (TCP fallback) — eliminates TIME_WAIT churn.
 	dsn := buildDoltDSNFromConfig(config, dbName, dsnOpts{
@@ -92,266 +107,279 @@ func runDoltRebase(cmd *cobra.Command, args []string) error {
 		ReadTimeout:  "60s",
 		WriteTimeout: "300s",
 	})
-
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return fmt.Errorf("connecting to database %s: %w", dbName, err)
+		return nil, nil, nil, fmt.Errorf("connecting to database %s: %w", dbName, err)
 	}
-	defer db.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	// Verify database exists.
 	var dummy int
 	if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&dummy); err != nil {
-		return fmt.Errorf("database %q not reachable: %w", dbName, err)
+		cancel()
+		db.Close()
+		return nil, nil, nil, fmt.Errorf("database %q not reachable: %w", dbName, err)
 	}
+	return db, ctx, cancel, nil
+}
 
-	fmt.Printf("%s Pre-flight checks for %s (surgical rebase)\n", style.Bold.Render("●"), style.Bold.Render(dbName))
+type doltRebasePreflight struct {
+	commitCount int
+	counts      map[string]int
+	head        string
+	rootHash    string
+}
 
-	// Count commits.
+const doltRebaseBaseBranch = "compact-base"
+const doltRebaseWorkBranch = "compact-work"
+
+func runDoltRebaseOnDB(ctx context.Context, db *sql.DB, req *doltRebaseRequest) error {
+	fmt.Printf("%s Pre-flight checks for %s (surgical rebase)\n", style.Bold.Render("●"), style.Bold.Render(req.dbName))
+	pre, err := preflightDoltRebase(ctx, db, req)
+	if err != nil || pre == nil {
+		return err
+	}
+	fmt.Printf("\n%s Starting surgical rebase...\n", style.Bold.Render("●"))
+	if err := createDoltRebaseBranches(ctx, db, pre.rootHash); err != nil {
+		return err
+	}
+	plan, err := inspectDoltRebasePlan(ctx, db, req.keepRecent)
+	if err != nil || plan == nil {
+		return err
+	}
+	if req.dryRun {
+		return printDoltRebaseDryRun(ctx, db, req, plan)
+	}
+	if err := executeDoltRebaseSwap(ctx, db, req, pre, plan); err != nil {
+		return err
+	}
+	verifyDoltRebase(ctx, db, req, pre)
+	return nil
+}
+
+type doltRebasePlan struct {
+	minOrder        int
+	squashThreshold int
+	toSquash        int
+}
+
+func createDoltRebaseBranches(ctx context.Context, db *sql.DB, rootHash string) error {
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', '%s')", doltRebaseBaseBranch, rootHash)); err != nil {
+		return fmt.Errorf("create base branch at root: %w", err)
+	}
+	fmt.Printf("  Created %s at root %s\n", doltRebaseBaseBranch, rootHash[:12])
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', 'main')", doltRebaseWorkBranch)); err != nil {
+		rebaseCleanupBase(db, doltRebaseBaseBranch)
+		return fmt.Errorf("create work branch from main: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_CHECKOUT('%s')", doltRebaseWorkBranch)); err != nil {
+		rebaseCleanupAll(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return fmt.Errorf("checkout work branch: %w", err)
+	}
+	fmt.Printf("  Created %s from main, checked out\n", doltRebaseWorkBranch)
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_REBASE('--interactive', '%s')", doltRebaseBaseBranch)); err != nil {
+		rebaseCleanupAll(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return fmt.Errorf("start interactive rebase: %w", err)
+	}
+	fmt.Printf("  Interactive rebase started (dolt_rebase table populated)\n")
+	return nil
+}
+
+func inspectDoltRebasePlan(ctx context.Context, db *sql.DB, keepRecent int) (*doltRebasePlan, error) {
+	var totalPlan int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_rebase").Scan(&totalPlan); err != nil {
+		rebaseAbortAndCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return nil, fmt.Errorf("counting rebase entries: %w", err)
+	}
+	fmt.Printf("  Rebase plan: %d commits\n", totalPlan)
+	var minOrderStr, maxOrderStr string
+	if err := db.QueryRowContext(ctx, "SELECT MIN(rebase_order), MAX(rebase_order) FROM dolt_rebase").Scan(&minOrderStr, &maxOrderStr); err != nil {
+		rebaseAbortAndCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return nil, fmt.Errorf("getting rebase order range: %w", err)
+	}
+	minOrder, maxOrder, err := parseRebaseOrderRange(minOrderStr, maxOrderStr)
+	if err != nil {
+		rebaseAbortAndCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return nil, fmt.Errorf("parsing rebase order range: %w", err)
+	}
+	squashThreshold := maxOrder - keepRecent
+	toSquash := 0
+	if squashThreshold > minOrder {
+		toSquash = squashThreshold - minOrder
+	}
+	fmt.Printf("  Squashing: %d old commits (keeping first as pick + last %d)\n", toSquash, keepRecent)
+	if toSquash == 0 {
+		fmt.Printf("  %s Nothing to squash — all commits are recent\n", style.Bold.Render("✓"))
+		rebaseAbortAndCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return nil, nil
+	}
+	return &doltRebasePlan{minOrder: minOrder, squashThreshold: squashThreshold, toSquash: toSquash}, nil
+}
+
+func printDoltRebaseDryRun(ctx context.Context, db *sql.DB, req *doltRebaseRequest, plan *doltRebasePlan) error {
+	fmt.Printf("\n%s Dry-run rebase plan:\n", style.Bold.Render("●"))
+	rows, err := db.QueryContext(ctx, "SELECT rebase_order, action, commit_hash, commit_message FROM dolt_rebase ORDER BY rebase_order")
+	if err != nil {
+		rebaseAbortAndCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return fmt.Errorf("reading rebase plan: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		printDoltRebasePlanRow(rows, plan)
+	}
+	fmt.Printf("\n  Would squash %d commits, keep %d recent + 1 root pick\n", plan.toSquash, req.keepRecent)
+	rebaseAbortAndCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+	return nil
+}
+
+func printDoltRebasePlanRow(rows *sql.Rows, plan *doltRebasePlan) {
+	var orderStr, action, hash, msg string
+	if err := rows.Scan(&orderStr, &action, &hash, &msg); err != nil {
+		return
+	}
+	order, err := parseRebaseOrder(orderStr)
+	if err != nil {
+		return
+	}
+	marker := "pick"
+	if order > plan.minOrder && order <= plan.squashThreshold {
+		marker = "squash"
+	}
+	if len(msg) > 60 {
+		msg = msg[:60] + "..."
+	}
+	if len(hash) > 8 {
+		hash = hash[:8]
+	}
+	fmt.Printf("  %3d  %-7s  %s  %s\n", order, marker, hash, msg)
+}
+
+func executeDoltRebaseSwap(ctx context.Context, db *sql.DB, req *doltRebaseRequest, pre *doltRebasePreflight, plan *doltRebasePlan) error {
+	result, err := db.ExecContext(ctx, fmt.Sprintf(
+		"UPDATE dolt_rebase SET action = 'squash' WHERE rebase_order > %d AND rebase_order <= %d",
+		plan.minOrder, plan.squashThreshold))
+	if err != nil {
+		rebaseAbortAndCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return fmt.Errorf("updating rebase plan: %w", err)
+	}
+	affected, _ := result.RowsAffected()
+	fmt.Printf("  Marked %d commits as squash\n", affected)
+	fmt.Printf("  Executing rebase (this may take a while)...\n")
+	if _, err := db.ExecContext(ctx, "CALL DOLT_REBASE('--continue')"); err != nil {
+		rebaseCleanupAll(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return fmt.Errorf("rebase execution failed (possible conflicts — automatic abort): %w", err)
+	}
+	fmt.Printf("  %s Rebase executed successfully\n", style.Bold.Render("✓"))
+	if err := checkDoltRebaseConcurrency(db, req.dbName, pre.head); err != nil {
+		return err
+	}
+	return swapDoltRebaseMain(ctx, db)
+}
+
+func checkDoltRebaseConcurrency(db *sql.DB, dbName, preHead string) error {
+	currentHead, err := flattenGetHead(db, dbName)
+	if err != nil {
+		rebaseCleanupAll(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return fmt.Errorf("concurrency check: %w", err)
+	}
+	if currentHead != preHead {
+		rebaseCleanupAll(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+		return fmt.Errorf("ABORT: main HEAD moved during rebase (%s → %s)", shortHash(preHead), shortHash(currentHead))
+	}
+	return nil
+}
+
+func swapDoltRebaseMain(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, "CALL DOLT_BRANCH('-D', 'main')"); err != nil {
+		return fmt.Errorf("delete old main: %w (compact-work branch preserved for manual recovery)", err)
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('-m', '%s', 'main')", doltRebaseWorkBranch)); err != nil {
+		return fmt.Errorf("rename work branch to main: %w", err)
+	}
+	_, _ = db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('-D', '%s')", doltRebaseBaseBranch))
+	if _, err := db.ExecContext(ctx, "CALL DOLT_CHECKOUT('main')"); err != nil {
+		return fmt.Errorf("checkout new main: %w", err)
+	}
+	fmt.Printf("  Branch swap complete — compact-work is now main\n")
+	return nil
+}
+
+func verifyDoltRebase(ctx context.Context, db *sql.DB, req *doltRebaseRequest, pre *doltRebasePreflight) {
+	postCounts, err := flattenGetRowCounts(db, req.dbName)
+	if err != nil {
+		fmt.Printf("  %s WARNING: could not verify row counts after rebase: %v\n", style.Bold.Render("!"), err)
+		fmt.Printf("  Branch swap already complete — verify manually with 'gt dolt status'\n")
+	} else {
+		reportDoltRebaseIntegrity(pre.counts, postCounts)
+	}
+	var finalCount int
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.dolt_log", req.dbName)).Scan(&finalCount); err == nil {
+		fmt.Printf("  Final commit count: %d\n", finalCount)
+	}
+	fmt.Printf("\n%s Surgical rebase complete: %d → %d commits (kept %d recent)\n",
+		style.Bold.Render("✓"), pre.commitCount, finalCount, req.keepRecent)
+}
+
+func reportDoltRebaseIntegrity(preCounts, postCounts map[string]int) {
+	integrityOK := true
+	for table, preCount := range preCounts {
+		postCount, ok := postCounts[table]
+		if !ok {
+			fmt.Printf("  %s INTEGRITY WARNING: table %q missing after rebase (was %d rows)\n", style.Bold.Render("!"), table, preCount)
+			integrityOK = false
+			continue
+		}
+		if preCount != postCount {
+			fmt.Printf("  %s INTEGRITY WARNING: %q row count changed: pre=%d post=%d\n", style.Bold.Render("!"), table, preCount, postCount)
+			integrityOK = false
+		}
+	}
+	if integrityOK {
+		fmt.Printf("  %s Integrity verified (%d tables match)\n", style.Bold.Render("✓"), len(preCounts))
+		return
+	}
+	fmt.Printf("  %s Some integrity checks failed — review above warnings\n", style.Bold.Render("!"))
+}
+
+func preflightDoltRebase(ctx context.Context, db *sql.DB, req *doltRebaseRequest) (*doltRebasePreflight, error) {
 	var commitCount int
-	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.dolt_log", dbName)).Scan(&commitCount); err != nil {
-		return fmt.Errorf("counting commits: %w", err)
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.dolt_log", req.dbName)).Scan(&commitCount); err != nil {
+		return nil, fmt.Errorf("counting commits: %w", err)
 	}
 	fmt.Printf("  Commits: %d\n", commitCount)
-	fmt.Printf("  Keep recent: %d\n", doltRebaseKeepRecent)
-
-	// Need at least 3 commits: root (pick) + at least 1 to squash + 1 to keep.
-	minCommits := doltRebaseKeepRecent + 2
+	fmt.Printf("  Keep recent: %d\n", req.keepRecent)
+	minCommits := req.keepRecent + 2
 	if commitCount < minCommits {
 		fmt.Printf("  %s Too few commits (%d) for surgical rebase with --keep-recent=%d (need at least %d)\n",
-			style.Bold.Render("✓"), commitCount, doltRebaseKeepRecent, minCommits)
-		return nil
+			style.Bold.Render("✓"), commitCount, req.keepRecent, minCommits)
+		return nil, nil
 	}
-
-	// Record pre-flight row counts.
-	preCounts, err := flattenGetRowCounts(db, dbName)
+	preCounts, err := flattenGetRowCounts(db, req.dbName)
 	if err != nil {
-		return fmt.Errorf("recording row counts: %w", err)
+		return nil, fmt.Errorf("recording row counts: %w", err)
 	}
 	fmt.Printf("  Tables: %d\n", len(preCounts))
 	for table, count := range preCounts {
 		fmt.Printf("    %s: %d rows\n", table, count)
 	}
-
-	// Get HEAD hash for concurrency check.
-	preHead, err := flattenGetHead(db, dbName)
+	preHead, err := flattenGetHead(db, req.dbName)
 	if err != nil {
-		return fmt.Errorf("getting HEAD: %w", err)
+		return nil, fmt.Errorf("getting HEAD: %w", err)
 	}
 	fmt.Printf("  HEAD: %s\n", preHead[:12])
-
-	// Get root commit.
 	var rootHash string
-	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT commit_hash FROM `%s`.dolt_log ORDER BY date ASC LIMIT 1", dbName)).Scan(&rootHash); err != nil {
-		return fmt.Errorf("finding root commit: %w", err)
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT commit_hash FROM `%s`.dolt_log ORDER BY date ASC LIMIT 1", req.dbName)).Scan(&rootHash); err != nil {
+		return nil, fmt.Errorf("finding root commit: %w", err)
 	}
 	fmt.Printf("  Root: %s\n", rootHash[:12])
-
-	// USE database for all subsequent operations.
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("USE `%s`", dbName)); err != nil {
-		return fmt.Errorf("use database: %w", err)
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("USE `%s`", req.dbName)); err != nil {
+		return nil, fmt.Errorf("use database: %w", err)
 	}
-
-	const baseBranch = "compact-base"
-	const workBranch = "compact-work"
-
-	// Clean up any leftover branches from a previous failed run.
-	rebaseCleanup(db, baseBranch, workBranch)
-
-	fmt.Printf("\n%s Starting surgical rebase...\n", style.Bold.Render("●"))
-
-	// Step 1: Create anchor branch at root commit.
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', '%s')", baseBranch, rootHash)); err != nil {
-		return fmt.Errorf("create base branch at root: %w", err)
-	}
-	fmt.Printf("  Created %s at root %s\n", baseBranch, rootHash[:12])
-
-	// Step 2: Create work branch from main.
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('%s', 'main')", workBranch)); err != nil {
-		rebaseCleanupBase(db, baseBranch)
-		return fmt.Errorf("create work branch from main: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_CHECKOUT('%s')", workBranch)); err != nil {
-		rebaseCleanupAll(db, baseBranch, workBranch)
-		return fmt.Errorf("checkout work branch: %w", err)
-	}
-	fmt.Printf("  Created %s from main, checked out\n", workBranch)
-
-	// Step 3: Start interactive rebase — populates dolt_rebase system table.
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_REBASE('--interactive', '%s')", baseBranch)); err != nil {
-		rebaseCleanupAll(db, baseBranch, workBranch)
-		return fmt.Errorf("start interactive rebase: %w", err)
-	}
-	fmt.Printf("  Interactive rebase started (dolt_rebase table populated)\n")
-
-	// Step 4: Inspect the rebase plan.
-	var totalPlan int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_rebase").Scan(&totalPlan); err != nil {
-		rebaseAbortAndCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("counting rebase entries: %w", err)
-	}
-	fmt.Printf("  Rebase plan: %d commits\n", totalPlan)
-
-	// Calculate how many to squash: everything except first (must stay pick) and last N.
-	// Dolt returns rebase_order as DECIMAL — the MySQL driver delivers it as
-	// []uint8 (e.g. "1.00") which cannot be scanned directly into int.
-	// Scan as string, parse to float, then truncate to int.
-	var minOrderStr, maxOrderStr string
-	if err := db.QueryRowContext(ctx, "SELECT MIN(rebase_order), MAX(rebase_order) FROM dolt_rebase").Scan(&minOrderStr, &maxOrderStr); err != nil {
-		rebaseAbortAndCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("getting rebase order range: %w", err)
-	}
-	minOrder, maxOrder, err := parseRebaseOrderRange(minOrderStr, maxOrderStr)
-	if err != nil {
-		rebaseAbortAndCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("parsing rebase order range: %w", err)
-	}
-
-	squashThreshold := maxOrder - doltRebaseKeepRecent
-	toSquash := 0
-	if squashThreshold > minOrder {
-		toSquash = squashThreshold - minOrder
-	}
-
-	fmt.Printf("  Squashing: %d old commits (keeping first as pick + last %d)\n",
-		toSquash, doltRebaseKeepRecent)
-
-	if toSquash == 0 {
-		fmt.Printf("  %s Nothing to squash — all commits are recent\n", style.Bold.Render("✓"))
-		rebaseAbortAndCleanup(db, baseBranch, workBranch)
-		return nil
-	}
-
-	if doltRebaseDryRun {
-		// Show the plan.
-		fmt.Printf("\n%s Dry-run rebase plan:\n", style.Bold.Render("●"))
-		rows, err := db.QueryContext(ctx, "SELECT rebase_order, action, commit_hash, commit_message FROM dolt_rebase ORDER BY rebase_order")
-		if err != nil {
-			rebaseAbortAndCleanup(db, baseBranch, workBranch)
-			return fmt.Errorf("reading rebase plan: %w", err)
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var orderStr string
-			var action, hash, msg string
-			if err := rows.Scan(&orderStr, &action, &hash, &msg); err != nil {
-				continue
-			}
-			order, err := parseRebaseOrder(orderStr)
-			if err != nil {
-				continue
-			}
-			marker := "pick"
-			if order > minOrder && order <= squashThreshold {
-				marker = "squash"
-			}
-			if len(msg) > 60 {
-				msg = msg[:60] + "..."
-			}
-			if len(hash) > 8 {
-				hash = hash[:8]
-			}
-			fmt.Printf("  %3d  %-7s  %s  %s\n", order, marker, hash, msg)
-		}
-
-		fmt.Printf("\n  Would squash %d commits, keep %d recent + 1 root pick\n",
-			toSquash, doltRebaseKeepRecent)
-		rebaseAbortAndCleanup(db, baseBranch, workBranch)
-		return nil
-	}
-
-	// Step 5: Modify the plan — mark old commits as squash.
-	// First commit (minOrder) MUST stay 'pick' — squash needs a parent to fold into.
-	// Keep last N commits as 'pick'.
-	result, err := db.ExecContext(ctx, fmt.Sprintf(
-		"UPDATE dolt_rebase SET action = 'squash' WHERE rebase_order > %d AND rebase_order <= %d",
-		minOrder, squashThreshold))
-	if err != nil {
-		rebaseAbortAndCleanup(db, baseBranch, workBranch)
-		return fmt.Errorf("updating rebase plan: %w", err)
-	}
-	affected, _ := result.RowsAffected()
-	fmt.Printf("  Marked %d commits as squash\n", affected)
-
-	// Step 6: Execute the rebase plan.
-	fmt.Printf("  Executing rebase (this may take a while)...\n")
-	if _, err := db.ExecContext(ctx, "CALL DOLT_REBASE('--continue')"); err != nil {
-		// Rebase failed — conflicts cause automatic abort.
-		rebaseCleanupAll(db, baseBranch, workBranch)
-		return fmt.Errorf("rebase execution failed (possible conflicts — automatic abort): %w", err)
-	}
-	fmt.Printf("  %s Rebase executed successfully\n", style.Bold.Render("✓"))
-
-	// Step 7: Concurrency check — verify main hasn't moved.
-	currentHead, err := flattenGetHead(db, dbName)
-	if err != nil {
-		rebaseCleanupAll(db, baseBranch, workBranch)
-		return fmt.Errorf("concurrency check: %w", err)
-	}
-	if currentHead != preHead {
-		rebaseCleanupAll(db, baseBranch, workBranch)
-		return fmt.Errorf("ABORT: main HEAD moved during rebase (%s → %s)", shortHash(preHead), shortHash(currentHead))
-	}
-
-	// Step 8: Swap branches — make compact-work the new main.
-	// We're already on compact-work from the rebase.
-	if _, err := db.ExecContext(ctx, "CALL DOLT_BRANCH('-D', 'main')"); err != nil {
-		// Can't delete main — leave compact-work in place for manual recovery.
-		return fmt.Errorf("delete old main: %w (compact-work branch preserved for manual recovery)", err)
-	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('-m', '%s', 'main')", workBranch)); err != nil {
-		return fmt.Errorf("rename work branch to main: %w", err)
-	}
-	// Delete the base branch.
-	_, _ = db.ExecContext(ctx, fmt.Sprintf("CALL DOLT_BRANCH('-D', '%s')", baseBranch))
-	// Checkout main.
-	if _, err := db.ExecContext(ctx, "CALL DOLT_CHECKOUT('main')"); err != nil {
-		return fmt.Errorf("checkout new main: %w", err)
-	}
-	fmt.Printf("  Branch swap complete — compact-work is now main\n")
-
-	// Step 9: Verify integrity — row counts must match pre-flight.
-	// This runs AFTER the branch swap so we're reading from the new main,
-	// not from compact-work (which may have different table visibility during rebase).
-	postCounts, err := flattenGetRowCounts(db, dbName)
-	if err != nil {
-		fmt.Printf("  %s WARNING: could not verify row counts after rebase: %v\n",
-			style.Bold.Render("!"), err)
-		fmt.Printf("  Branch swap already complete — verify manually with 'gt dolt status'\n")
-	} else {
-		integrityOK := true
-		for table, preCount := range preCounts {
-			postCount, ok := postCounts[table]
-			if !ok {
-				fmt.Printf("  %s INTEGRITY WARNING: table %q missing after rebase (was %d rows)\n",
-					style.Bold.Render("!"), table, preCount)
-				integrityOK = false
-			} else if preCount != postCount {
-				fmt.Printf("  %s INTEGRITY WARNING: %q row count changed: pre=%d post=%d\n",
-					style.Bold.Render("!"), table, preCount, postCount)
-				integrityOK = false
-			}
-		}
-		if integrityOK {
-			fmt.Printf("  %s Integrity verified (%d tables match)\n", style.Bold.Render("✓"), len(preCounts))
-		} else {
-			fmt.Printf("  %s Some integrity checks failed — review above warnings\n", style.Bold.Render("!"))
-		}
-	}
-
-	// Verify final state.
-	var finalCount int
-	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.dolt_log", dbName)).Scan(&finalCount); err == nil {
-		fmt.Printf("  Final commit count: %d\n", finalCount)
-	}
-
-	fmt.Printf("\n%s Surgical rebase complete: %d → %d commits (kept %d recent)\n",
-		style.Bold.Render("✓"), commitCount, finalCount, doltRebaseKeepRecent)
-	return nil
+	rebaseCleanup(db, doltRebaseBaseBranch, doltRebaseWorkBranch)
+	return &doltRebasePreflight{
+		commitCount: commitCount,
+		counts:      preCounts,
+		head:        preHead,
+		rootHash:    rootHash,
+	}, nil
 }
 
 // rebaseCleanup removes leftover branches from a previous failed rebase.

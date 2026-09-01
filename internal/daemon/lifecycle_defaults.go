@@ -43,9 +43,11 @@ func DefaultLifecycleConfig() *DaemonPatrolConfig {
 				IntervalStr: "15m",
 				Scrub:       &scrub,
 			},
-			DoltBackup: &DoltBackupConfig{
-				Enabled:     true,
-				IntervalStr: "15m",
+			DoltPatrols: DoltPatrols{
+				DoltBackup: &DoltBackupConfig{
+					Enabled:     true,
+					IntervalStr: "15m",
+				},
 			},
 			ScheduledMaintenance: &ScheduledMaintenanceConfig{
 				Enabled:   true,
@@ -58,8 +60,10 @@ func DefaultLifecycleConfig() *DaemonPatrolConfig {
 				IntervalStr: "30m",
 				TimeoutStr:  "10m",
 			},
-			Handler: &PatrolConfig{
-				Enabled: true,
+			CorePatrols: CorePatrols{
+				Handler: &PatrolConfig{
+					Enabled: true,
+				},
 			},
 		},
 	}
@@ -76,7 +80,6 @@ func EnsureLifecycleDefaults(config *DaemonPatrolConfig) bool {
 	}
 
 	defaults := DefaultLifecycleConfig()
-	changed := false
 
 	if config.Patrols == nil {
 		config.Patrols = defaults.Patrols
@@ -85,44 +88,32 @@ func EnsureLifecycleDefaults(config *DaemonPatrolConfig) bool {
 
 	p := config.Patrols
 	d := defaults.Patrols
+	return applyPatrolDefaults(p, d)
+}
 
-	if p.WispReaper == nil {
-		p.WispReaper = d.WispReaper
-		changed = true
-	}
-	if p.CompactorDog == nil {
-		p.CompactorDog = d.CompactorDog
-		changed = true
-	}
-	if p.CheckpointDog == nil {
-		p.CheckpointDog = d.CheckpointDog
-		changed = true
-	}
-	if p.DoctorDog == nil {
-		p.DoctorDog = d.DoctorDog
-		changed = true
-	}
-	if p.JsonlGitBackup == nil {
-		p.JsonlGitBackup = d.JsonlGitBackup
-		changed = true
-	}
-	if p.DoltBackup == nil {
-		p.DoltBackup = d.DoltBackup
-		changed = true
-	}
-	if p.ScheduledMaintenance == nil {
-		p.ScheduledMaintenance = d.ScheduledMaintenance
-		changed = true
-	}
-	if p.MainBranchTest == nil {
-		p.MainBranchTest = d.MainBranchTest
-		changed = true
-	}
-	if p.Handler == nil {
-		p.Handler = d.Handler
-		changed = true
+func applyPatrolDefaults(p, d *PatrolsConfig) bool {
+	patrols := []struct {
+		missing func() bool
+		apply   func()
+	}{
+		{func() bool { return p.WispReaper == nil }, func() { p.WispReaper = d.WispReaper }},
+		{func() bool { return p.CompactorDog == nil }, func() { p.CompactorDog = d.CompactorDog }},
+		{func() bool { return p.CheckpointDog == nil }, func() { p.CheckpointDog = d.CheckpointDog }},
+		{func() bool { return p.DoctorDog == nil }, func() { p.DoctorDog = d.DoctorDog }},
+		{func() bool { return p.JsonlGitBackup == nil }, func() { p.JsonlGitBackup = d.JsonlGitBackup }},
+		{func() bool { return p.DoltBackup == nil }, func() { p.DoltBackup = d.DoltBackup }},
+		{func() bool { return p.ScheduledMaintenance == nil }, func() { p.ScheduledMaintenance = d.ScheduledMaintenance }},
+		{func() bool { return p.MainBranchTest == nil }, func() { p.MainBranchTest = d.MainBranchTest }},
+		{func() bool { return p.Handler == nil }, func() { p.Handler = d.Handler }},
 	}
 
+	changed := false
+	for _, patrol := range patrols {
+		if patrol.missing() {
+			patrol.apply()
+			changed = true
+		}
+	}
 	return changed
 }
 

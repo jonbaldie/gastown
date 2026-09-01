@@ -70,13 +70,15 @@ func (m *mockBeads) Close(id string) error {
 // makeTestIssue creates a test issue with common defaults
 func makeTestIssue(id, title, issueType, status string) *beads.Issue {
 	return &beads.Issue{
-		ID:        id,
-		Title:     title,
-		Type:      issueType,
-		Status:    status,
-		Priority:  2,
-		CreatedAt: "2025-01-01T12:00:00Z",
-		UpdatedAt: "2025-01-01T12:00:00Z",
+		ID:       id,
+		Title:    title,
+		Type:     issueType,
+		Status:   status,
+		Priority: 2,
+		IssueAuditFields: beads.IssueAuditFields{
+			CreatedAt: "2025-01-01T12:00:00Z",
+			UpdatedAt: "2025-01-01T12:00:00Z",
+		},
 	}
 }
 
@@ -97,7 +99,9 @@ func makeTestMR(id, branch, target, worker string, status string) *beads.Issue {
 		Priority:    2,
 		Labels:      []string{"gt:merge-request"},
 		Description: desc,
-		CreatedAt:   "2025-01-01T12:00:00Z",
-		UpdatedAt:   "2025-01-01T12:00:00Z",
+		IssueAuditFields: beads.IssueAuditFields{
+			CreatedAt: "2025-01-01T12:00:00Z",
+			UpdatedAt: "2025-01-01T12:00:00Z",
+		},
 	}
 }

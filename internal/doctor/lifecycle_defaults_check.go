@@ -57,39 +57,46 @@ func (c *LifecycleDefaultsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Check each patrol entry individually
-	p := config.Patrols
+	c.missing = missingLifecyclePatrols(config.Patrols)
+	return lifecycleDefaultsResult(c.Name(), c.missing)
+}
+
+func missingLifecyclePatrols(p *daemon.PatrolsConfig) []string {
+	var missing []string
 	if p.WispReaper == nil {
-		c.missing = append(c.missing, "wisp_reaper")
+		missing = append(missing, "wisp_reaper")
 	}
 	if p.CompactorDog == nil {
-		c.missing = append(c.missing, "compactor_dog")
+		missing = append(missing, "compactor_dog")
 	}
 	if p.DoctorDog == nil {
-		c.missing = append(c.missing, "doctor_dog")
+		missing = append(missing, "doctor_dog")
 	}
 	if p.JsonlGitBackup == nil {
-		c.missing = append(c.missing, "jsonl_git_backup")
+		missing = append(missing, "jsonl_git_backup")
 	}
 	if p.DoltBackup == nil {
-		c.missing = append(c.missing, "dolt_backup")
+		missing = append(missing, "dolt_backup")
 	}
 	if p.ScheduledMaintenance == nil {
-		c.missing = append(c.missing, "scheduled_maintenance")
+		missing = append(missing, "scheduled_maintenance")
 	}
+	return missing
+}
 
-	if len(c.missing) == 0 {
+func lifecycleDefaultsResult(name string, missing []string) *CheckResult {
+	if len(missing) == 0 {
 		return &CheckResult{
-			Name:    c.Name(),
+			Name:    name,
 			Status:  StatusOK,
 			Message: "All lifecycle patrols configured",
 		}
 	}
 
 	return &CheckResult{
-		Name:    c.Name(),
+		Name:    name,
 		Status:  StatusWarning,
-		Message: fmt.Sprintf("Missing %d lifecycle patrol(s): %s", len(c.missing), strings.Join(c.missing, ", ")),
+		Message: fmt.Sprintf("Missing %d lifecycle patrol(s): %s", len(missing), strings.Join(missing, ", ")),
 		FixHint: "Run 'gt doctor --fix' to populate defaults",
 	}
 }

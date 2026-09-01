@@ -18,6 +18,13 @@ import (
 	"github.com/jonbaldie/gastown/internal/telemetry"
 )
 
+func (b *Beads) agentBeadTarget() *Beads {
+	if b.noRoute {
+		return b
+	}
+	return b.ForAgentBead()
+}
+
 // lockAgentBead acquires an exclusive file lock for a specific agent bead ID.
 // This prevents concurrent read-modify-write races in methods like
 // CreateOrReopenAgentBead, ResetAgentBeadForReuse, and UpdateAgentDescriptionFields.
@@ -74,62 +81,16 @@ func FormatAgentDescription(title string, fields *AgentFields) string {
 		return title
 	}
 
-	var lines []string
-	lines = append(lines, title)
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("role_type: %s", fields.RoleType))
-
-	if fields.Rig != "" {
-		lines = append(lines, fmt.Sprintf("rig: %s", fields.Rig))
-	} else {
-		lines = append(lines, "rig: null")
+	lines := []string{title, "", "role_type: " + fields.RoleType}
+	lines = appendAgentNullableField(lines, "rig", fields.Rig)
+	lines = append(lines, "agent_state: "+fields.AgentState)
+	for _, field := range []agentDescriptionField{
+		{"hook_bead", fields.HookBead}, {"cleanup_status", fields.CleanupStatus},
+		{"active_mr", fields.ActiveMR}, {"notification_level", fields.NotificationLevel},
+	} {
+		lines = appendAgentNullableField(lines, field.key, field.value)
 	}
-
-	lines = append(lines, fmt.Sprintf("agent_state: %s", fields.AgentState))
-
-	if fields.HookBead != "" {
-		lines = append(lines, fmt.Sprintf("hook_bead: %s", fields.HookBead))
-	} else {
-		lines = append(lines, "hook_bead: null")
-	}
-
-	// Note: role_bead field no longer written - role definitions are config-based
-
-	if fields.CleanupStatus != "" {
-		lines = append(lines, fmt.Sprintf("cleanup_status: %s", fields.CleanupStatus))
-	} else {
-		lines = append(lines, "cleanup_status: null")
-	}
-
-	if fields.ActiveMR != "" {
-		lines = append(lines, fmt.Sprintf("active_mr: %s", fields.ActiveMR))
-	} else {
-		lines = append(lines, "active_mr: null")
-	}
-
-	if fields.NotificationLevel != "" {
-		lines = append(lines, fmt.Sprintf("notification_level: %s", fields.NotificationLevel))
-	} else {
-		lines = append(lines, "notification_level: null")
-	}
-
-	if fields.Mode != "" {
-		lines = append(lines, fmt.Sprintf("mode: %s", fields.Mode))
-	}
-
-	// Completion metadata fields (gt-x7t9)
-	if fields.ExitType != "" {
-		lines = append(lines, fmt.Sprintf("exit_type: %s", fields.ExitType))
-	}
-	if fields.MRID != "" {
-		lines = append(lines, fmt.Sprintf("mr_id: %s", fields.MRID))
-	}
-	if fields.Branch != "" {
-		lines = append(lines, fmt.Sprintf("branch: %s", fields.Branch))
-	}
-	if fields.LastSourceIssue != "" {
-		lines = append(lines, fmt.Sprintf("last_source_issue: %s", fields.LastSourceIssue))
-	}
+	lines = appendAgentOptionalFields(lines, fields)
 	if fields.MRFailed {
 		lines = append(lines, "mr_failed: true")
 	}
@@ -137,69 +98,81 @@ func FormatAgentDescription(title string, fields *AgentFields) string {
 		lines = append(lines, "push_failed: true")
 	}
 	if fields.CompletionTime != "" {
-		lines = append(lines, fmt.Sprintf("completion_time: %s", fields.CompletionTime))
+		lines = append(lines, "completion_time: "+fields.CompletionTime)
 	}
-
 	return strings.Join(lines, "\n")
+}
+
+type agentDescriptionField struct{ key, value string }
+
+func appendAgentNullableField(lines []string, key, value string) []string {
+	if value == "" {
+		value = "null"
+	}
+	return append(lines, key+": "+value)
+}
+
+func appendAgentOptionalFields(lines []string, fields *AgentFields) []string {
+	for _, field := range []agentDescriptionField{
+		{"mode", fields.Mode}, {"exit_type", fields.ExitType}, {"mr_id", fields.MRID},
+		{"branch", fields.Branch}, {"last_source_issue", fields.LastSourceIssue},
+	} {
+		if field.value != "" {
+			lines = append(lines, field.key+": "+field.value)
+		}
+	}
+	return lines
 }
 
 // ParseAgentFields extracts agent fields from an issue's description.
 func ParseAgentFields(description string) *AgentFields {
 	fields := &AgentFields{}
-
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "null" || value == "" {
-			value = ""
-		}
-
-		switch strings.ToLower(key) {
-		case "role_type":
-			fields.RoleType = value
-		case "rig":
-			fields.Rig = value
-		case "agent_state":
-			fields.AgentState = value
-		case "hook_bead":
-			fields.HookBead = value
-		case "cleanup_status":
-			fields.CleanupStatus = value
-		case "active_mr":
-			fields.ActiveMR = value
-		case "notification_level":
-			fields.NotificationLevel = value
-		case "mode":
-			fields.Mode = value
-		// Completion metadata fields (gt-x7t9)
-		case "exit_type":
-			fields.ExitType = value
-		case "mr_id":
-			fields.MRID = value
-		case "branch":
-			fields.Branch = value
-		case "last_source_issue":
-			fields.LastSourceIssue = value
-		case "mr_failed":
-			fields.MRFailed = value == "true"
-		case "push_failed":
-			fields.PushFailed = value == "true"
-		case "completion_time":
-			fields.CompletionTime = value
-		}
+		setAgentDescriptionField(fields, line)
 	}
-
 	return fields
+}
+
+func setAgentDescriptionField(fields *AgentFields, line string) {
+	key, value, ok := agentDescriptionFieldLine(line)
+	if !ok {
+		return
+	}
+	if destination, ok := agentStringFields(fields)[key]; ok {
+		*destination = value
+		return
+	}
+	if destination, ok := agentBooleanFields(fields)[key]; ok {
+		*destination = value == "true"
+	}
+}
+
+func agentDescriptionFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIndex := strings.Index(line, ":")
+	if line == "" || colonIndex == -1 {
+		return "", "", false
+	}
+	value := strings.TrimSpace(line[colonIndex+1:])
+	if value == "null" {
+		value = ""
+	}
+	return strings.ToLower(strings.TrimSpace(line[:colonIndex])), value, true
+}
+
+func agentStringFields(fields *AgentFields) map[string]*string {
+	return map[string]*string{
+		"role_type": &fields.RoleType, "rig": &fields.Rig, "agent_state": &fields.AgentState,
+		"hook_bead": &fields.HookBead, "cleanup_status": &fields.CleanupStatus,
+		"active_mr": &fields.ActiveMR, "notification_level": &fields.NotificationLevel,
+		"mode": &fields.Mode, "exit_type": &fields.ExitType, "mr_id": &fields.MRID,
+		"branch": &fields.Branch, "last_source_issue": &fields.LastSourceIssue,
+		"completion_time": &fields.CompletionTime,
+	}
+}
+
+func agentBooleanFields(fields *AgentFields) map[string]*bool {
+	return map[string]*bool{"mr_failed": &fields.MRFailed, "push_failed": &fields.PushFailed}
 }
 
 // CreateAgentBead creates an agent bead for tracking agent lifecycle.
@@ -217,7 +190,7 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 		return nil, fmt.Errorf("refusing to create agent bead: %w (got %q)", ErrFlagTitle, title)
 	}
 
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 	targetDir := target.getResolvedBeadsDir()
 
 	description := FormatAgentDescription(title, fields)
@@ -329,7 +302,7 @@ func (b *Beads) CreateOrReopenAgentBead(id, title string, fields *AgentFields) (
 	// Create failed - check if bead already exists (handles both open and closed states)
 	createErr := err
 
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 
 	existing, showErr := target.Show(id)
 	if showErr != nil {
@@ -390,7 +363,7 @@ func labelsForAgentBeadReuse(existing []string) []string {
 // CreateOrReopenAgentBead can simply update it on re-spawn without needing reopen.
 //
 // This is the standard nuke path (gt-14b8o).
-func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
+func (b *Beads) ResetAgentBeadForReuse(id, _ string) error {
 	// Lock the agent bead to prevent concurrent read-modify-write races.
 	// Without this, a concurrent CreateOrReopenAgentBead could overwrite
 	// the nuked state we're about to set. See gt-joazs.
@@ -400,7 +373,7 @@ func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
 	}
 	defer func() { _ = fl.Unlock() }()
 
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 
 	// Get current issue to preserve immutable fields (title, role_type, rig)
 	issue, err := target.Show(id)
@@ -444,7 +417,7 @@ func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
 // when the agent bead routes to a different beads dir via routes.jsonl.
 func (b *Beads) UpdateAgentState(id string, state string) (retErr error) {
 	defer func() { telemetry.RecordAgentStateChange(context.Background(), id, state, nil, retErr) }()
-	target := b.agentBeadTarget()
+	target := b.AgentBeadTarget()
 	return target.UpdateAgentDescriptionFields(id, AgentFieldUpdates{AgentState: &state})
 }
 
@@ -478,16 +451,12 @@ type AgentFieldUpdates struct {
 // condition where concurrent callers updating different fields overwrite each
 // other because the entire description is replaced.
 func (b *Beads) UpdateAgentDescriptionFields(id string, updates AgentFieldUpdates) error {
-	if target := b.agentBeadTarget(); target != b {
+	if target := b.AgentBeadTarget(); target != b {
 		return target.UpdateAgentDescriptionFields(id, updates)
 	}
 
-	// Validate notification level if provided
-	if updates.NotificationLevel != nil {
-		level := *updates.NotificationLevel
-		if level != "" && level != NotifyVerbose && level != NotifyNormal && level != NotifyMuted {
-			return fmt.Errorf("invalid notification level %q: must be verbose, normal, or muted", level)
-		}
+	if err := validateAgentFieldUpdates(updates); err != nil {
+		return err
 	}
 
 	// Lock the agent bead to prevent concurrent read-modify-write races.
@@ -505,50 +474,48 @@ func (b *Beads) UpdateAgentDescriptionFields(id string, updates AgentFieldUpdate
 	}
 
 	fields := ParseAgentFields(issue.Description)
-
-	if updates.AgentState != nil {
-		fields.AgentState = *updates.AgentState
-	}
-	if updates.CleanupStatus != nil {
-		fields.CleanupStatus = *updates.CleanupStatus
-	}
-	if updates.ActiveMR != nil {
-		fields.ActiveMR = *updates.ActiveMR
-	}
-	if updates.NotificationLevel != nil {
-		fields.NotificationLevel = *updates.NotificationLevel
-	}
-	if updates.Mode != nil {
-		fields.Mode = *updates.Mode
-	}
-	if updates.HookBead != nil {
-		fields.HookBead = *updates.HookBead
-	}
-	// Completion metadata fields (gt-x7t9)
-	if updates.ExitType != nil {
-		fields.ExitType = *updates.ExitType
-	}
-	if updates.MRID != nil {
-		fields.MRID = *updates.MRID
-	}
-	if updates.Branch != nil {
-		fields.Branch = *updates.Branch
-	}
-	if updates.LastSourceIssue != nil {
-		fields.LastSourceIssue = *updates.LastSourceIssue
-	}
-	if updates.MRFailed != nil {
-		fields.MRFailed = *updates.MRFailed
-	}
-	if updates.PushFailed != nil {
-		fields.PushFailed = *updates.PushFailed
-	}
-	if updates.CompletionTime != nil {
-		fields.CompletionTime = *updates.CompletionTime
-	}
+	applyAgentFieldUpdates(fields, updates)
 
 	description := FormatAgentDescription(issue.Title, fields)
 	return b.Update(id, UpdateOptions{Description: &description})
+}
+
+func validateAgentFieldUpdates(updates AgentFieldUpdates) error {
+	if updates.NotificationLevel == nil {
+		return nil
+	}
+	level := *updates.NotificationLevel
+	if level == "" || level == NotifyVerbose || level == NotifyNormal || level == NotifyMuted {
+		return nil
+	}
+	return fmt.Errorf("invalid notification level %q: must be verbose, normal, or muted", level)
+}
+
+func applyAgentFieldUpdates(fields *AgentFields, updates AgentFieldUpdates) {
+	for key, value := range agentStringFieldUpdates(updates) {
+		if value != nil {
+			*agentStringFields(fields)[key] = *value
+		}
+	}
+	for key, value := range agentBooleanFieldUpdates(updates) {
+		if value != nil {
+			*agentBooleanFields(fields)[key] = *value
+		}
+	}
+}
+
+func agentStringFieldUpdates(updates AgentFieldUpdates) map[string]*string {
+	return map[string]*string{
+		"agent_state": updates.AgentState, "cleanup_status": updates.CleanupStatus,
+		"active_mr": updates.ActiveMR, "notification_level": updates.NotificationLevel,
+		"mode": updates.Mode, "hook_bead": updates.HookBead, "exit_type": updates.ExitType,
+		"mr_id": updates.MRID, "branch": updates.Branch, "last_source_issue": updates.LastSourceIssue,
+		"completion_time": updates.CompletionTime,
+	}
+}
+
+func agentBooleanFieldUpdates(updates AgentFieldUpdates) map[string]*bool {
+	return map[string]*bool{"mr_failed": updates.MRFailed, "push_failed": updates.PushFailed}
 }
 
 // UpdateAgentCleanupStatus updates the cleanup_status field in an agent bead.
@@ -568,7 +535,7 @@ func (b *Beads) UpdateAgentActiveMR(id string, activeMR string) error {
 // ClearAgentActiveMRIfMatches clears active_mr only when it still references
 // expectedMR. It returns true when a clear was written.
 func (b *Beads) ClearAgentActiveMRIfMatches(id string, expectedMR string) (bool, error) {
-	if target := b.agentBeadTarget(); target != b {
+	if target := b.AgentBeadTarget(); target != b {
 		return target.ClearAgentActiveMRIfMatches(id, expectedMR)
 	}
 
@@ -583,13 +550,13 @@ func (b *Beads) ClearAgentActiveMRIfMatches(id string, expectedMR string) (bool,
 		return false, fmt.Errorf("locking agent bead %s: %w", id, lockErr)
 	}
 	defer func() { _ = fl.Unlock() }()
+	return b.clearAgentActiveMR(id, expectedMR)
+}
 
+func (b *Beads) clearAgentActiveMR(id, expectedMR string) (bool, error) {
 	issue, err := b.Show(id)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return false, nil
-		}
-		return false, err
+		return clearAgentActiveMRError(err)
 	}
 	if !IsAgentBead(issue) {
 		return false, fmt.Errorf("%s is not an agent bead", id)
@@ -606,6 +573,13 @@ func (b *Beads) ClearAgentActiveMRIfMatches(id string, expectedMR string) (bool,
 		return false, err
 	}
 	return true, nil
+}
+
+func clearAgentActiveMRError(err error) (bool, error) {
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return false, err
 }
 
 // UpdateAgentNotificationLevel updates the notification_level field in an agent bead.
@@ -680,7 +654,7 @@ func (b *Beads) GetAgentNotificationLevel(id string) (string, error) {
 // GetAgentBead retrieves an agent bead by ID.
 // Returns nil if not found.
 func (b *Beads) GetAgentBead(id string) (*Issue, *AgentFields, error) {
-	if target := b.agentBeadTarget(); target != b {
+	if target := b.AgentBeadTarget(); target != b {
 		return target.GetAgentBead(id)
 	}
 

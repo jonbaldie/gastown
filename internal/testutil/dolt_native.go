@@ -58,83 +58,116 @@ func startNativeDoltSQLServer() (*nativeDoltServer, error) {
 		return nil, fmt.Errorf("dolt binary not found")
 	}
 
-	dataDir, err := os.MkdirTemp("", "gt-dolt-test-*")
+	dataDir, port, logPath, logFile, err := prepareNativeDoltData()
 	if err != nil {
-		return nil, fmt.Errorf("mkdir dolt data dir: %w", err)
-	}
-
-	port, err := freeTCPPort()
-	if err != nil {
-		_ = os.RemoveAll(dataDir)
-		return nil, fmt.Errorf("allocate dolt port: %w", err)
-	}
-
-	logPath := filepath.Join(dataDir, "sql-server.log")
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		_ = os.RemoveAll(dataDir)
-		return nil, fmt.Errorf("create dolt log: %w", err)
+		return nil, err
 	}
 
 	// --name/--email keep init independent of ~/.dolt. CI installs Dolt but
 	// never sets user.name/user.email, and writing those globally from a
 	// temp dir can create .dolt before init.
-	initCmd := exec.Command(dolt, "init", "--name", "gt-test", "--email", "gt-test@localhost") //nolint:gosec
-	initCmd.Dir = dataDir
-	initOut, err := initCmd.CombinedOutput()
+	initOut, err := initializeNativeDolt(dolt, dataDir)
 	if err != nil {
 		_ = logFile.Close()
 		_ = os.RemoveAll(dataDir)
 		return nil, fmt.Errorf("dolt init in %s: %w\n%s", dataDir, err, initOut)
 	}
 
-	cmd := exec.Command(dolt, "sql-server", "--host", "127.0.0.1", "--port", port) //nolint:gosec
-	cmd.Dir = dataDir
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	cmd, err := launchNativeDolt(dolt, dataDir, port, logFile)
+	if err != nil {
 		_ = logFile.Close()
 		_ = os.RemoveAll(dataDir)
 		return nil, fmt.Errorf("starting dolt sql-server: %w", err)
 	}
 	_ = logFile.Close()
 
+	srv := &nativeDoltServer{cmd: cmd, dataDir: dataDir, port: port}
+	if err := waitForNativeDolt(srv, logPath); err != nil {
+		_ = stopNativeDoltSQLServer(srv)
+		return nil, err
+	}
+	return srv, nil
+}
+
+func prepareNativeDoltData() (dataDir, port, logPath string, logFile *os.File, err error) {
+	dataDir, err = os.MkdirTemp("", "gt-dolt-test-*")
+	if err != nil {
+		return "", "", "", nil, fmt.Errorf("mkdir dolt data dir: %w", err)
+	}
+
+	port, err = freeTCPPort()
+	if err != nil {
+		_ = os.RemoveAll(dataDir)
+		return "", "", "", nil, fmt.Errorf("allocate dolt port: %w", err)
+	}
+
+	logPath = filepath.Join(dataDir, "sql-server.log")
+	logFile, err = os.Create(logPath)
+	if err != nil {
+		_ = os.RemoveAll(dataDir)
+		return "", "", "", nil, fmt.Errorf("create dolt log: %w", err)
+	}
+	return dataDir, port, logPath, logFile, nil
+}
+
+func initializeNativeDolt(dolt, dataDir string) ([]byte, error) {
+	initCmd := exec.Command(dolt, "init", "--name", "gt-test", "--email", "gt-test@localhost") //nolint:gosec
+	initCmd.Dir = dataDir
+	return initCmd.CombinedOutput()
+}
+
+func launchNativeDolt(dolt, dataDir, port string, logFile *os.File) (*exec.Cmd, error) {
+	cmd := exec.Command(dolt, "sql-server", "--host", "127.0.0.1", "--port", port) //nolint:gosec
+	cmd.Dir = dataDir
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return cmd, nil
+}
+
+func waitForNativeDolt(srv *nativeDoltServer, logPath string) error {
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if portListening("127.0.0.1", port) {
-			return &nativeDoltServer{cmd: cmd, dataDir: dataDir, port: port}, nil
+		if portListening("127.0.0.1", srv.port) {
+			return nil
 		}
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			_ = logFile.Close()
-			_ = os.RemoveAll(dataDir)
-			return nil, fmt.Errorf("dolt sql-server exited during startup; see %s", logPath)
+		if srv.cmd.ProcessState != nil && srv.cmd.ProcessState.Exited() {
+			return fmt.Errorf("dolt sql-server exited during startup; see %s", logPath)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-
-	_ = stopNativeDoltSQLServer(&nativeDoltServer{cmd: cmd, dataDir: dataDir})
-	return nil, fmt.Errorf("dolt sql-server did not accept connections on port %s within 15s; see %s", port, logPath)
+	return fmt.Errorf("dolt sql-server did not accept connections on port %s within 15s; see %s", srv.port, logPath)
 }
 
 func stopNativeDoltSQLServer(srv *nativeDoltServer) error {
-	if srv == nil || srv.cmd == nil || srv.cmd.Process == nil {
-		if srv != nil && srv.dataDir != "" {
-			return os.RemoveAll(srv.dataDir)
-		}
+	if srv == nil {
 		return nil
+	}
+	if srv.cmd == nil || srv.cmd.Process == nil {
+		return os.RemoveAll(srv.dataDir)
 	}
 
 	pgid, pgErr := syscall.Getpgid(srv.cmd.Process.Pid)
+	signalNativeDolt(srv.cmd, pgid, pgErr)
+	waitNativeDolt(srv.cmd, pgid, pgErr)
+	return os.RemoveAll(srv.dataDir)
+}
+
+func signalNativeDolt(cmd *exec.Cmd, pgid int, pgErr error) {
 	if pgErr == nil {
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	} else {
-		_ = srv.cmd.Process.Signal(syscall.SIGTERM)
+		return
 	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+}
 
+func waitNativeDolt(cmd *exec.Cmd, pgid int, pgErr error) {
 	done := make(chan struct{})
 	go func() {
-		_ = srv.cmd.Wait()
+		_ = cmd.Wait()
 		close(done)
 	}()
 
@@ -144,10 +177,8 @@ func stopNativeDoltSQLServer(srv *nativeDoltServer) error {
 		if pgErr == nil {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		} else {
-			_ = srv.cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 		<-done
 	}
-
-	return os.RemoveAll(srv.dataDir)
 }

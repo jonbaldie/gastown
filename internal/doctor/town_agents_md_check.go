@@ -138,30 +138,40 @@ func (c *TownAgentsMDCheck) Fix(ctx *CheckContext) error {
 		return fmt.Errorf("reading identity file: %w", err)
 	}
 
-	var toAppend strings.Builder
-	if len(c.missingSections) > 0 {
-		canonicalSections := parseH2Sections(canonical)
-		for _, missing := range c.missingSections {
-			for _, cs := range canonicalSections {
-				if strings.Contains(cs.content, missing.Heading) {
-					toAppend.WriteString("\n")
-					toAppend.WriteString(cs.content)
-					break
-				}
-			}
-		}
-	}
-
-	updated := current
-	if toAppend.Len() > 0 {
-		if !strings.HasSuffix(updated, "\n") {
-			updated += "\n"
-		}
-		updated += toAppend.String()
-	}
+	toAppend := missingTownSections(canonical, c.missingSections)
+	updated := appendTownSections(current, toAppend)
 
 	_, err = instructions.Provision(ctx.TownRoot, updated, "")
 	return err
+}
+
+func missingTownSections(canonical string, missing []templates.TownRootRequiredSection) string {
+	if len(missing) == 0 {
+		return ""
+	}
+
+	canonicalSections := parseH2Sections(canonical)
+	var toAppend strings.Builder
+	for _, required := range missing {
+		for _, section := range canonicalSections {
+			if strings.Contains(section.content, required.Heading) {
+				toAppend.WriteString("\n")
+				toAppend.WriteString(section.content)
+				break
+			}
+		}
+	}
+	return toAppend.String()
+}
+
+func appendTownSections(current, sections string) string {
+	if sections == "" {
+		return current
+	}
+	if !strings.HasSuffix(current, "\n") {
+		current += "\n"
+	}
+	return current + sections
 }
 
 // h2Section represents a section of markdown delimited by H2 headings.

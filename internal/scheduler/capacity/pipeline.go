@@ -16,26 +16,33 @@ type PendingBead struct {
 // SlingContextFields holds scheduling parameters stored on a sling context bead.
 // JSON-serialized as the context bead's description.
 type SlingContextFields struct {
-	Version          int    `json:"version"`
-	WorkBeadID       string `json:"work_bead_id"`
-	TargetRig        string `json:"target_rig"`
-	Formula          string `json:"formula,omitempty"`
-	Args             string `json:"args,omitempty"`
-	Vars             string `json:"vars,omitempty"`
-	EnqueuedAt       string `json:"enqueued_at"`
-	Merge            string `json:"merge,omitempty"`
-	Convoy           string `json:"convoy,omitempty"`
-	BaseBranch       string `json:"base_branch,omitempty"`
-	ResumeBranch     string `json:"resume_branch,omitempty"`
-	NoMerge          bool   `json:"no_merge,omitempty"`
-	ReviewOnly       bool   `json:"review_only,omitempty"`
-	Account          string `json:"account,omitempty"`
-	Agent            string `json:"agent,omitempty"`
-	HookRawBead      bool   `json:"hook_raw_bead,omitempty"`
-	Owned            bool   `json:"owned,omitempty"`
-	Mode             string `json:"mode,omitempty"`
+	Version      int    `json:"version"`
+	WorkBeadID   string `json:"work_bead_id"`
+	TargetRig    string `json:"target_rig"`
+	Formula      string `json:"formula,omitempty"`
+	Args         string `json:"args,omitempty"`
+	Vars         string `json:"vars,omitempty"`
+	EnqueuedAt   string `json:"enqueued_at"`
+	Merge        string `json:"merge,omitempty"`
+	Convoy       string `json:"convoy,omitempty"`
+	BaseBranch   string `json:"base_branch,omitempty"`
+	ResumeBranch string `json:"resume_branch,omitempty"`
+	SlingContextPolicy
 	DispatchFailures int    `json:"dispatch_failures,omitempty"`
 	LastFailure      string `json:"last_failure,omitempty"`
+}
+
+// SlingContextPolicy contains the execution policy persisted with a sling
+// context. It is embedded so its JSON fields remain flat for compatibility
+// with existing context beads.
+type SlingContextPolicy struct {
+	NoMerge     bool   `json:"no_merge,omitempty"`
+	ReviewOnly  bool   `json:"review_only,omitempty"`
+	Account     string `json:"account,omitempty"`
+	Agent       string `json:"agent,omitempty"`
+	HookRawBead bool   `json:"hook_raw_bead,omitempty"`
+	Owned       bool   `json:"owned,omitempty"`
+	Mode        string `json:"mode,omitempty"`
 }
 
 // LabelSlingContext is the label used to identify sling context beads.
@@ -147,33 +154,37 @@ func PlanDispatch(availableCapacity, batchSize int, ready []PendingBead) Dispatc
 		}
 	}
 
-	// Dispatch up to the smallest of capacity, batchSize, and readyBeads count
-	toDispatch := batchSize
-	if availableCapacity < toDispatch {
-		toDispatch = availableCapacity
-	}
-	if len(ready) < toDispatch {
-		toDispatch = len(ready)
-	}
-
-	reason := "batch"
-	if availableCapacity < batchSize && availableCapacity < len(ready) {
-		reason = "capacity"
-	}
-	if len(ready) < batchSize && len(ready) < availableCapacity {
-		reason = "ready"
-	}
-
-	skipped := len(ready) - toDispatch + msgSkipped
-	if msgSkipped > 0 {
-		reason = reason + "+messaging-filtered"
-	}
-
+	toDispatch := dispatchLimit(availableCapacity, batchSize, len(ready))
 	return DispatchPlan{
 		ToDispatch: ready[:toDispatch],
-		Skipped:    skipped,
-		Reason:     reason,
+		Skipped:    len(ready) - toDispatch + msgSkipped,
+		Reason:     dispatchReason(availableCapacity, batchSize, len(ready), msgSkipped),
 	}
+}
+
+func dispatchLimit(availableCapacity, batchSize, readyCount int) int {
+	limit := batchSize
+	if availableCapacity < limit {
+		limit = availableCapacity
+	}
+	if readyCount < limit {
+		return readyCount
+	}
+	return limit
+}
+
+func dispatchReason(availableCapacity, batchSize, readyCount, messagingSkipped int) string {
+	reason := "batch"
+	if availableCapacity < batchSize && availableCapacity < readyCount {
+		reason = "capacity"
+	}
+	if readyCount < batchSize && readyCount < availableCapacity {
+		reason = "ready"
+	}
+	if messagingSkipped > 0 {
+		return reason + "+messaging-filtered"
+	}
+	return reason
 }
 
 // NoRetryPolicy returns a FailurePolicy that always quarantines on first failure.

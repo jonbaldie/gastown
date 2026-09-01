@@ -11,19 +11,19 @@ func TestDetectQueueAnomalies_StaleClaim(t *testing.T) {
 	now := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
 	issues := []*beads.Issue{
 		{
-			ID:        "gt-warn",
-			Status:    "open",
-			Assignee:  "rig/refinery-1",
-			UpdatedAt: now.Add(-3 * time.Hour).Format(time.RFC3339),
+			ID:               "gt-warn",
+			Status:           "open",
+			Assignee:         "rig/refinery-1",
+			IssueAuditFields: beads.IssueAuditFields{UpdatedAt: now.Add(-3 * time.Hour).Format(time.RFC3339)},
 			Description: `branch: polecat/warn
 target: main
 worker: nux`,
 		},
 		{
-			ID:        "gt-critical",
-			Status:    "open",
-			Assignee:  "rig/refinery-2",
-			UpdatedAt: now.Add(-7 * time.Hour).Format(time.RFC3339),
+			ID:               "gt-critical",
+			Status:           "open",
+			Assignee:         "rig/refinery-2",
+			IssueAuditFields: beads.IssueAuditFields{UpdatedAt: now.Add(-7 * time.Hour).Format(time.RFC3339)},
 			Description: `branch: polecat/critical
 target: main
 worker: nux`,
@@ -59,17 +59,17 @@ func TestDetectQueueAnomalies_OrphanedBranch(t *testing.T) {
 	now := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
 	issues := []*beads.Issue{
 		{
-			ID:        "gt-orphan",
-			Status:    "open",
-			UpdatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+			ID:               "gt-orphan",
+			Status:           "open",
+			IssueAuditFields: beads.IssueAuditFields{UpdatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339)},
 			Description: `branch: polecat/orphan
 target: main
 worker: nux`,
 		},
 		{
-			ID:        "gt-ok",
-			Status:    "open",
-			UpdatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+			ID:               "gt-ok",
+			Status:           "open",
+			IssueAuditFields: beads.IssueAuditFields{UpdatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339)},
 			Description: `branch: polecat/ok
 target: main
 worker: nux`,

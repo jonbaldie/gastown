@@ -40,9 +40,9 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	params := sling.Intent{
-		BeadID:   "test-closed1",
-		RigName:  "testrig",
-		TownRoot: townRoot,
+		BeadID:                 "test-closed1",
+		RigName:                "testrig",
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot},
 	}
 
 	result, err := runTownSling(context.Background(), params)
@@ -88,9 +88,9 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	params := sling.Intent{
-		BeadID:   "test-tomb1",
-		RigName:  "testrig",
-		TownRoot: townRoot,
+		BeadID:                 "test-tomb1",
+		RigName:                "testrig",
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot},
 	}
 
 	result, err := runTownSling(context.Background(), params)
@@ -137,10 +137,12 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	params := sling.Intent{
-		BeadID:   "test-closed2",
-		RigName:  "testrig",
-		TownRoot: townRoot,
-		Force:    true, // --force should NOT bypass closed guard
+		BeadID:  "test-closed2",
+		RigName: "testrig",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot: townRoot,
+			Force:    true, // --force should NOT bypass closed guard
+		},
 	}
 
 	_, err := runTownSling(context.Background(), params)

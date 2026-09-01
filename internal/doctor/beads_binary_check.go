@@ -25,7 +25,7 @@ func NewBeadsBinaryCheck() *BeadsBinaryCheck {
 }
 
 // Run checks if bd is available in PATH and reports its version status.
-func (c *BeadsBinaryCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *BeadsBinaryCheck) Run(_ *CheckContext) *CheckResult {
 	status, version := deps.CheckBeads()
 
 	switch status {

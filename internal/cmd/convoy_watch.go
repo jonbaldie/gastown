@@ -12,19 +12,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// convoy watch flags
-var (
-	convoyWatchNudge bool
-	convoyWatchAddr  string
-	convoyWatchJSON  bool
-)
-
 func init() {
-	convoyWatchCmd.Flags().BoolVar(&convoyWatchNudge, "nudge", false, "Subscribe for nudge notification instead of mail")
-	convoyWatchCmd.Flags().StringVar(&convoyWatchAddr, "addr", "", "Address to notify (default: caller's identity)")
-	convoyWatchCmd.Flags().BoolVar(&convoyWatchJSON, "json", false, "Output as JSON")
+	convoyWatchCmd.Flags().Bool("nudge", false, "Subscribe for nudge notification instead of mail")
+	convoyWatchCmd.Flags().String("addr", "", "Address to notify (default: caller's identity)")
+	convoyWatchCmd.Flags().Bool("json", false, "Output as JSON")
 
-	convoyUnwatchCmd.Flags().StringVar(&convoyWatchAddr, "addr", "", "Address to remove (default: caller's identity)")
+	convoyUnwatchCmd.Flags().String("addr", "", "Address to remove (default: caller's identity)")
 
 	convoyCmd.AddCommand(convoyWatchCmd)
 	convoyCmd.AddCommand(convoyUnwatchCmd)
@@ -66,143 +59,72 @@ Examples:
 	RunE:         runConvoyUnwatch,
 }
 
+type convoyWatchOptions struct {
+	nudge bool
+	addr  string
+	json  bool
+}
+
+func readConvoyWatchOptions(cmd *cobra.Command) (convoyWatchOptions, error) {
+	addr, err := cmd.Flags().GetString("addr")
+	if err != nil {
+		return convoyWatchOptions{}, err
+	}
+	opts := convoyWatchOptions{addr: addr}
+	if cmd.Flags().Lookup("nudge") != nil {
+		opts.nudge, err = cmd.Flags().GetBool("nudge")
+		if err != nil {
+			return convoyWatchOptions{}, err
+		}
+		opts.json, err = cmd.Flags().GetBool("json")
+		if err != nil {
+			return convoyWatchOptions{}, err
+		}
+	}
+	return opts, nil
+}
+
 func runConvoyWatch(cmd *cobra.Command, args []string) error {
-	convoyID := args[0]
-
-	// Resolve numeric shortcut
-	if n, err := strconv.Atoi(convoyID); err == nil && n > 0 {
-		townBeads, err := getTownBeadsDir()
-		if err != nil {
-			return err
-		}
-		resolved, err := resolveConvoyNumber(townBeads, n)
-		if err != nil {
-			return err
-		}
-		convoyID = resolved
-	}
-
-	// Determine watcher address
-	addr := convoyWatchAddr
-	if addr == "" {
-		addr = detectSender()
-	}
-	if addr == "" {
-		return fmt.Errorf("could not determine caller identity; use --addr to specify")
-	}
-
-	townBeads, err := getTownBeadsDir()
+	opts, convoyID, addr, townBeads, convoy, err := loadConvoyWatch(cmd, args[0])
 	if err != nil {
 		return err
 	}
 
-	// Get convoy details
-	convoy, err := getConvoyForWatch(townBeads, convoyID)
-	if err != nil {
-		return err
-	}
-
-	// Parse existing convoy fields
 	fields := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description})
 	if fields == nil {
 		fields = &beads.ConvoyFields{}
 	}
 
 	// Add watcher
-	var added bool
-	var watchType string
-	if convoyWatchNudge {
-		added = fields.AddNudgeWatcher(addr)
-		watchType = "nudge"
-	} else {
-		added = fields.AddWatcher(addr)
-		watchType = "mail"
-	}
+	added, watchType := addConvoyWatcher(fields, addr, opts.nudge)
 
 	if !added {
-		if convoyWatchJSON {
-			out, _ := json.Marshal(map[string]interface{}{
-				"convoy_id":  convoyID,
-				"address":    addr,
-				"watch_type": watchType,
-				"status":     "already_watching",
-			})
-			fmt.Println(string(out))
-		} else {
-			fmt.Printf("%s %s is already watching convoy %s (%s)\n", style.Dim.Render("○"), addr, convoyID, watchType)
-		}
+		printWatchResult(convoyID, addr, watchType, "already_watching", opts.json, opts.nudge)
 		return nil
 	}
 
-	// Update convoy description with new watcher
 	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoy.Description}, fields)
 	if err := updateConvoyDescription(townBeads, convoyID, newDesc); err != nil {
 		return fmt.Errorf("updating convoy watchers: %w", err)
 	}
 
-	if convoyWatchJSON {
-		out, _ := json.Marshal(map[string]interface{}{
-			"convoy_id":  convoyID,
-			"address":    addr,
-			"watch_type": watchType,
-			"status":     "subscribed",
-		})
-		fmt.Println(string(out))
-	} else {
-		emoji := "📬"
-		if convoyWatchNudge {
-			emoji = "🔔"
-		}
-		fmt.Printf("%s %s subscribed to convoy %s (%s notification)\n", emoji, addr, convoyID, watchType)
-	}
+	printWatchResult(convoyID, addr, watchType, "subscribed", opts.json, opts.nudge)
 
 	return nil
 }
 
 func runConvoyUnwatch(cmd *cobra.Command, args []string) error {
-	convoyID := args[0]
-
-	// Resolve numeric shortcut
-	if n, err := strconv.Atoi(convoyID); err == nil && n > 0 {
-		townBeads, err := getTownBeadsDir()
-		if err != nil {
-			return err
-		}
-		resolved, err := resolveConvoyNumber(townBeads, n)
-		if err != nil {
-			return err
-		}
-		convoyID = resolved
-	}
-
-	// Determine watcher address
-	addr := convoyWatchAddr
-	if addr == "" {
-		addr = detectSender()
-	}
-	if addr == "" {
-		return fmt.Errorf("could not determine caller identity; use --addr to specify")
-	}
-
-	townBeads, err := getTownBeadsDir()
+	_, convoyID, addr, townBeads, convoy, err := loadConvoyWatch(cmd, args[0])
 	if err != nil {
 		return err
 	}
 
-	// Get convoy details
-	convoy, err := getConvoyForWatch(townBeads, convoyID)
-	if err != nil {
-		return err
-	}
-
-	// Parse existing convoy fields
 	fields := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description})
 	if fields == nil {
 		fmt.Printf("%s %s is not watching convoy %s\n", style.Dim.Render("○"), addr, convoyID)
 		return nil
 	}
 
-	// Remove from both watcher lists
 	removedMail := fields.RemoveWatcher(addr)
 	removedNudge := fields.RemoveNudgeWatcher(addr)
 
@@ -211,7 +133,6 @@ func runConvoyUnwatch(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Update convoy description
 	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoy.Description}, fields)
 	if err := updateConvoyDescription(townBeads, convoyID, newDesc); err != nil {
 		return fmt.Errorf("updating convoy watchers: %w", err)
@@ -227,6 +148,78 @@ func runConvoyUnwatch(cmd *cobra.Command, args []string) error {
 	fmt.Printf("🔕 %s unsubscribed from convoy %s (%s)\n", addr, convoyID, strings.Join(types, "+"))
 
 	return nil
+}
+
+func loadConvoyWatch(cmd *cobra.Command, rawID string) (convoyWatchOptions, string, string, string, *convoyForWatch, error) {
+	opts, err := readConvoyWatchOptions(cmd)
+	if err != nil {
+		return convoyWatchOptions{}, "", "", "", nil, err
+	}
+	convoyID, err := resolveWatchedConvoy(rawID)
+	if err != nil {
+		return convoyWatchOptions{}, "", "", "", nil, err
+	}
+	addr := watcherAddress(opts.addr)
+	if addr == "" {
+		return convoyWatchOptions{}, "", "", "", nil, fmt.Errorf("could not determine caller identity; use --addr to specify")
+	}
+	townBeads, err := getTownBeadsDir()
+	if err != nil {
+		return convoyWatchOptions{}, "", "", "", nil, err
+	}
+	convoy, err := getConvoyForWatch(townBeads, convoyID)
+	if err != nil {
+		return convoyWatchOptions{}, "", "", "", nil, err
+	}
+	return opts, convoyID, addr, townBeads, convoy, nil
+}
+
+func resolveWatchedConvoy(convoyID string) (string, error) {
+	n, err := strconv.Atoi(convoyID)
+	if err != nil || n <= 0 {
+		return convoyID, nil
+	}
+	townBeads, err := getTownBeadsDir()
+	if err != nil {
+		return "", err
+	}
+	return resolveConvoyNumber(townBeads, n)
+}
+
+func watcherAddress(addr string) string {
+	if addr != "" {
+		return addr
+	}
+	return detectSender()
+}
+
+func addConvoyWatcher(fields *beads.ConvoyFields, addr string, nudge bool) (bool, string) {
+	if nudge {
+		return fields.AddNudgeWatcher(addr), "nudge"
+	}
+	return fields.AddWatcher(addr), "mail"
+}
+
+func printWatchResult(convoyID, addr, watchType, status string, jsonOutput, nudge bool) {
+	if jsonOutput {
+		out, _ := json.Marshal(map[string]interface{}{
+			"convoy_id":  convoyID,
+			"address":    addr,
+			"watch_type": watchType,
+			"status":     status,
+		})
+		fmt.Println(string(out))
+		return
+	}
+	if status == "already_watching" {
+		fmt.Printf("%s %s is already watching convoy %s (%s)\n", style.Dim.Render("○"), addr, convoyID, watchType)
+		return
+	}
+	emoji := "📬"
+	if nudge {
+		emoji = "🔔"
+	}
+	fmt.Printf("%s %s subscribed to convoy %s (%s notification)\n", emoji, addr, convoyID, watchType)
 }
 
 // convoyForWatch is a minimal convoy struct for watch operations.

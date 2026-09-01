@@ -16,6 +16,39 @@ import (
 	"github.com/jonbaldie/gastown/internal/session"
 )
 
+func TestPRShowResponseJSONFlattensStats(t *testing.T) {
+	response := PRShowResponse{
+		PRStats: PRStats{
+			CreatedAt:    "2026-08-29T12:00:00Z",
+			UpdatedAt:    "2026-08-29T13:00:00Z",
+			Additions:    4,
+			Deletions:    2,
+			ChangedFiles: 1,
+		},
+	}
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	for key, want := range map[string]any{
+		"created_at":    "2026-08-29T12:00:00Z",
+		"updated_at":    "2026-08-29T13:00:00Z",
+		"additions":     float64(4),
+		"deletions":     float64(2),
+		"changed_files": float64(1),
+	} {
+		if got := fields[key]; got != want {
+			t.Errorf("JSON field %q = %v, want %v", key, got, want)
+		}
+	}
+}
+
 func TestValidateCommand(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -914,7 +947,7 @@ func TestOptionsCacheConcurrentAccess(t *testing.T) {
 				defer wg.Done()
 				req := httptest.NewRequest(http.MethodGet, "/api/options", nil)
 				w := httptest.NewRecorder()
-				h.handleOptions(w, req)
+				handleOptions(h, w, req)
 				if w.Code != http.StatusOK {
 					t.Errorf("handleOptions returned %d", w.Code)
 				}
@@ -1048,7 +1081,7 @@ esac
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1100,7 +1133,7 @@ esac
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1144,7 +1177,7 @@ func TestHandleOptionsTypeRigsUsesConfigWithoutCommands(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1195,7 +1228,7 @@ func TestHandleOptionsTypeRigsFindsConfigFromSubdir(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/options?type=rigs", nil)
 	w := httptest.NewRecorder()
-	h.handleOptions(w, req)
+	handleOptions(h, w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleOptions returned status %d: %s", w.Code, w.Body.String())
@@ -1288,7 +1321,7 @@ func TestRunGtCommandSemaphore(t *testing.T) {
 	for i := 0; i < numCmds; i++ {
 		go func() {
 			defer wg.Done()
-			_, _ = h.runGtCommand(context.Background(), 2*time.Second, []string{"0.1"})
+			_, _ = runGtCommand(h, context.Background(), 2*time.Second, []string{"0.1"})
 		}()
 	}
 	wg.Wait()
@@ -1321,7 +1354,7 @@ func TestRunGtCommandSemaphoreContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := h.runGtCommand(ctx, 5*time.Second, []string{"10"})
+	_, err := runGtCommand(h, ctx, 5*time.Second, []string{"10"})
 	if err == nil {
 		t.Fatal("expected error when semaphore full and context cancelled")
 	}
@@ -1353,7 +1386,7 @@ func TestRunGtCommandSemaphoreTimeoutBudget(t *testing.T) {
 	start := time.Now()
 	// Use a background context (no external deadline) but a short timeout.
 	// The timeout should bound the semaphore wait.
-	_, err := h.runGtCommand(context.Background(), 200*time.Millisecond, []string{"10"})
+	_, err := runGtCommand(h, context.Background(), 200*time.Millisecond, []string{"10"})
 	elapsed := time.Since(start)
 
 	// Drain the slot we manually added.
@@ -1417,7 +1450,7 @@ func TestHandleSessionPreviewPrefixValidation(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			rec := httptest.NewRecorder()
 
-			h.handleSessionPreview(rec, req)
+			handleSessionPreview(h, rec, req)
 
 			if tc.wantRejected {
 				if rec.Code != http.StatusBadRequest {

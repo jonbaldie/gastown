@@ -186,8 +186,8 @@ func TestApplyMQCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			status := RecoveryStatus{
-				Verdict: tt.initialVerdict,
-				Branch:  "polecat/test",
+				PolecatRecoveryState: PolecatRecoveryState{Verdict: tt.initialVerdict},
+				Branch:               "polecat/test",
 			}
 			applyMQCheck(&status, tt.finder, tt.beadTerminal, tt.hasWork, tt.mqNotRequired)
 
@@ -399,9 +399,11 @@ func TestReconcileCleanupStatusIfSafe(t *testing.T) {
 		t.Run(string(previous), func(t *testing.T) {
 			status := &RecoveryStatus{
 				CleanupStatus: previous,
-				Verdict:       "SAFE_TO_NUKE",
-				Branch:        "polecat/nitro",
-				MQStatus:      "submitted",
+				PolecatRecoveryState: PolecatRecoveryState{
+					Verdict:  "SAFE_TO_NUKE",
+					MQStatus: "submitted",
+				},
+				Branch: "polecat/nitro",
 			}
 			updater := &fakeCleanupUpdater{}
 			reconcileCleanupStatusIfSafe(status, updater, "gt-gastown-polecat-nitro", &polecat.Polecat{State: polecat.StateIdle}, &beads.AgentFields{
@@ -425,9 +427,11 @@ func TestReconcileCleanupStatusIfSafe(t *testing.T) {
 func TestReconcileCleanupStatusIfSafe_FailsClosed(t *testing.T) {
 	status := &RecoveryStatus{
 		CleanupStatus: polecat.CleanupUnpushed,
-		Verdict:       "SAFE_TO_NUKE",
-		Branch:        "polecat/nitro",
-		MQStatus:      "submitted",
+		PolecatRecoveryState: PolecatRecoveryState{
+			Verdict:  "SAFE_TO_NUKE",
+			MQStatus: "submitted",
+		},
+		Branch: "polecat/nitro",
 	}
 	reconcileCleanupStatusIfSafe(status, &fakeCleanupUpdater{err: errors.New("bd update failed")}, "gt-gastown-polecat-nitro", &polecat.Polecat{State: polecat.StateIdle}, &beads.AgentFields{
 		AgentState:    string(beads.AgentStateIdle),
@@ -443,7 +447,10 @@ func TestReconcileCleanupStatusIfSafe_FailsClosed(t *testing.T) {
 }
 
 func TestCleanupStatusReconcileCandidateRequiresStrictPredicates(t *testing.T) {
-	baseStatus := &RecoveryStatus{Verdict: "SAFE_TO_NUKE", Branch: "polecat/nitro", MQStatus: "submitted"}
+	baseStatus := &RecoveryStatus{
+		PolecatRecoveryState: PolecatRecoveryState{Verdict: "SAFE_TO_NUKE", MQStatus: "submitted"},
+		Branch:               "polecat/nitro",
+	}
 	basePolecat := &polecat.Polecat{State: polecat.StateIdle}
 	baseFields := &beads.AgentFields{AgentState: string(beads.AgentStateIdle), CleanupStatus: string(polecat.CleanupUnpushed)}
 
@@ -456,8 +463,8 @@ func TestCleanupStatusReconcileCandidateRequiresStrictPredicates(t *testing.T) {
 		{name: "stale clean is not rewritten", status: baseStatus, p: basePolecat, fields: &beads.AgentFields{AgentState: string(beads.AgentStateIdle), CleanupStatus: string(polecat.CleanupClean)}},
 		{name: "working polecat blocks", status: baseStatus, p: &polecat.Polecat{State: polecat.StateWorking}, fields: baseFields},
 		{name: "working agent bead blocks", status: baseStatus, p: basePolecat, fields: &beads.AgentFields{AgentState: string(beads.AgentStateWorking), CleanupStatus: string(polecat.CleanupUnpushed)}},
-		{name: "needs recovery blocks", status: &RecoveryStatus{Verdict: "NEEDS_RECOVERY", NeedsRecovery: true, Branch: "polecat/nitro", MQStatus: "submitted"}, p: basePolecat, fields: baseFields},
-		{name: "unknown mq blocks", status: &RecoveryStatus{Verdict: "SAFE_TO_NUKE", Branch: "polecat/nitro", MQStatus: "unknown"}, p: basePolecat, fields: baseFields},
+		{name: "needs recovery blocks", status: &RecoveryStatus{PolecatRecoveryState: PolecatRecoveryState{Verdict: "NEEDS_RECOVERY", NeedsRecovery: true, MQStatus: "submitted"}, Branch: "polecat/nitro"}, p: basePolecat, fields: baseFields},
+		{name: "unknown mq blocks", status: &RecoveryStatus{PolecatRecoveryState: PolecatRecoveryState{Verdict: "SAFE_TO_NUKE", MQStatus: "unknown"}, Branch: "polecat/nitro"}, p: basePolecat, fields: baseFields},
 	}
 
 	for _, tt := range tests {

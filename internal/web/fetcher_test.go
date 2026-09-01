@@ -290,9 +290,6 @@ func TestDetermineColorClass(t *testing.T) {
 }
 
 func TestGetRefineryStatusHint(t *testing.T) {
-	// Create a minimal fetcher for testing
-	f := &LiveConvoyFetcher{}
-
 	tests := []struct {
 		name            string
 		mergeQueueCount int
@@ -306,7 +303,7 @@ func TestGetRefineryStatusHint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := f.getRefineryStatusHint(tt.mergeQueueCount)
+			got := getRefineryStatusHint(tt.mergeQueueCount)
 			if got != tt.want {
 				t.Errorf("getRefineryStatusHint(%d) = %q, want %q",
 					tt.mergeQueueCount, got, tt.want)
@@ -549,10 +546,10 @@ esac
 	// Use generous 30s timeout — this fetcher tests exit-code behavior, not
 	// timeouts. The 2s value was flaky under CI load (process startup alone
 	// can take >1s under heavy contention).
-	f := &LiveConvoyFetcher{cmdTimeout: 30 * time.Second, bdBin: bdPath}
+	f := wireFetcherMethods(&LiveConvoyFetcher{liveFetcherState: &liveFetcherState{cmdTimeout: 30 * time.Second, bdBin: bdPath}})
 
 	t.Run("non-zero exit with stdout returns output", func(t *testing.T) {
-		stdout, err := f.runBdCmd(t.TempDir(), "warn")
+		stdout, err := runBdCmd(f, t.TempDir(), "warn")
 		if err != nil {
 			t.Fatalf("runBdCmd warn returned error: %v", err)
 		}
@@ -565,8 +562,8 @@ esac
 		// Use 200ms timeout (not 20ms) to avoid flakiness from process startup
 		// overhead under system load. The script sleeps for 10s so the timeout
 		// always fires first with wide margin.
-		tf := &LiveConvoyFetcher{cmdTimeout: 200 * time.Millisecond, bdBin: bdPath}
-		_, err := tf.runBdCmd(t.TempDir(), "sleep")
+		tf := wireFetcherMethods(&LiveConvoyFetcher{liveFetcherState: &liveFetcherState{cmdTimeout: 200 * time.Millisecond, bdBin: bdPath}})
+		_, err := runBdCmd(tf, t.TempDir(), "sleep")
 		if err == nil {
 			t.Fatal("expected timeout error")
 		}
@@ -609,7 +606,7 @@ exit 0
 				t.Fatalf("write fake bd: %v", err)
 			}
 
-			f := &LiveConvoyFetcher{townRoot: t.TempDir(), cmdTimeout: 5 * time.Second, bdBin: bdPath}
+			f := wireFetcherMethods(&LiveConvoyFetcher{liveFetcherState: &liveFetcherState{townRoot: t.TempDir(), cmdTimeout: 5 * time.Second, bdBin: bdPath}})
 			if _, err := f.FetchConvoys(); err == nil {
 				t.Fatal("expected first FetchConvoys call to fail")
 			}
@@ -645,7 +642,7 @@ exit 0
 		t.Fatalf("write fake bd: %v", err)
 	}
 
-	f := &LiveConvoyFetcher{townRoot: t.TempDir(), cmdTimeout: 5 * time.Second, bdBin: bdPath}
+	f := wireFetcherMethods(&LiveConvoyFetcher{liveFetcherState: &liveFetcherState{townRoot: t.TempDir(), cmdTimeout: 5 * time.Second, bdBin: bdPath}})
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errCh := make(chan error, 8)
@@ -834,8 +831,8 @@ func TestResolveMayorRuntime(t *testing.T) {
 				tt.setup(t, townRoot)
 			}
 
-			f := &LiveConvoyFetcher{townRoot: townRoot}
-			if got := f.resolveMayorRuntime("hq-mayor"); got != tt.wantRuntime {
+			f := wireFetcherMethods(&LiveConvoyFetcher{liveFetcherState: &liveFetcherState{townRoot: townRoot}})
+			if got := resolveMayorRuntime(f, "hq-mayor"); got != tt.wantRuntime {
 				t.Fatalf("resolveMayorRuntime() = %q, want %q", got, tt.wantRuntime)
 			}
 		})
@@ -927,11 +924,11 @@ func TestFetchMayor_UsesResolvedRuntime(t *testing.T) {
 		},
 	)
 
-	f := &LiveConvoyFetcher{
+	f := wireFetcherMethods(&LiveConvoyFetcher{liveFetcherState: &liveFetcherState{
 		townRoot:             t.TempDir(),
 		mayorActiveThreshold: 24 * time.Hour,
 		tmuxCmdTimeout:       time.Second,
-	}
+	}})
 
 	status, err := f.FetchMayor()
 	if err != nil {
@@ -969,10 +966,10 @@ func TestFetchHealth_DeaconHeartbeatFieldName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := &LiveConvoyFetcher{
+	f := wireFetcherMethods(&LiveConvoyFetcher{liveFetcherState: &liveFetcherState{
 		townRoot:                townRoot,
 		heartbeatFreshThreshold: 5 * time.Minute,
-	}
+	}})
 
 	health, err := f.FetchHealth()
 	if err != nil {

@@ -165,57 +165,62 @@ func (c *BranchProtectionCheck) Fix(ctx *CheckContext) error {
 	}
 
 	hooksDir := filepath.Join(ctx.TownRoot, ".git", "hooks")
-
-	// Ensure hooks directory exists
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
 		return fmt.Errorf("creating hooks directory: %w", err)
 	}
-
-	// Remove obsolete pre-checkout hook if it's ours
-	preCheckoutPath := filepath.Join(hooksDir, "pre-checkout")
-	if content, err := os.ReadFile(preCheckoutPath); err == nil {
-		if strings.Contains(string(content), "Gas Town pre-checkout hook") {
-			_ = os.Remove(preCheckoutPath) // Best effort removal
-		}
-	}
+	removeObsoletePreCheckout(filepath.Join(hooksDir, "pre-checkout"))
 
 	hookPath := filepath.Join(hooksDir, "post-checkout")
-
-	// Read existing hook content (if any)
-	existingContent, err := os.ReadFile(hookPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reading existing hook: %w", err)
+	existingContent, err := readExistingHook(hookPath)
+	if err != nil {
+		return err
 	}
-
-	var newContent string
-	if len(existingContent) == 0 {
-		// No existing hook - create new one with shebang
-		newContent = "#!/bin/sh\n" + branchProtectionScript
-	} else if strings.Contains(string(existingContent), branchProtectionMarker) {
-		// Already has branch protection
+	newContent, changed := branchProtectionContent(existingContent)
+	if !changed {
 		return nil
-	} else {
-		// Prepend branch protection after shebang
-		content := string(existingContent)
-		if strings.HasPrefix(content, "#!") {
-			// Find end of shebang line
-			idx := strings.Index(content, "\n")
-			if idx != -1 {
-				newContent = content[:idx+1] + branchProtectionScript + content[idx+1:]
-			} else {
-				newContent = content + "\n" + branchProtectionScript
-			}
-		} else {
-			newContent = "#!/bin/sh\n" + branchProtectionScript + content
-		}
 	}
-
-	// Write the hook
 	if err := os.WriteFile(hookPath, []byte(newContent), 0755); err != nil {
 		return fmt.Errorf("writing hook: %w", err)
 	}
 
 	return nil
+}
+
+func removeObsoletePreCheckout(path string) {
+	content, err := os.ReadFile(path)
+	if err == nil && strings.Contains(string(content), "Gas Town pre-checkout hook") {
+		_ = os.Remove(path)
+	}
+}
+
+func readExistingHook(path string) ([]byte, error) {
+	content, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading existing hook: %w", err)
+	}
+	return content, nil
+}
+
+func branchProtectionContent(existing []byte) (string, bool) {
+	if len(existing) == 0 {
+		return "#!/bin/sh\n" + branchProtectionScript, true
+	}
+	content := string(existing)
+	if strings.Contains(content, branchProtectionMarker) {
+		return "", false
+	}
+	return prependBranchProtection(content), true
+}
+
+func prependBranchProtection(content string) string {
+	if !strings.HasPrefix(content, "#!") {
+		return "#!/bin/sh\n" + branchProtectionScript + content
+	}
+	idx := strings.Index(content, "\n")
+	if idx == -1 {
+		return content + "\n" + branchProtectionScript
+	}
+	return content[:idx+1] + branchProtectionScript + content[idx+1:]
 }
 
 // Legacy type alias for backwards compatibility

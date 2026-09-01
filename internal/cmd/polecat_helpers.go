@@ -25,14 +25,50 @@ type polecatTarget struct {
 // If useAll is true, the first arg is treated as a rig name and all polecats in it are returned.
 // Otherwise, args are parsed as rig/polecat addresses.
 func resolvePolecatTargets(args []string, useAll bool) ([]polecatTarget, error) {
-	var targets []polecatTarget
-
 	if useAll {
-		// --all flag: first arg is just the rig name
-		rigName := args[0]
-		// Check if it looks like rig/polecat format
-		if _, _, err := parseAddress(rigName); err == nil {
-			return nil, fmt.Errorf("with --all, provide just the rig name (e.g., 'gt polecat <cmd> %s --all')", strings.Split(rigName, "/")[0])
+		return resolveAllPolecatTargets(args)
+	}
+	return resolveExplicitPolecatTargets(args)
+}
+
+func resolveAllPolecatTargets(args []string) ([]polecatTarget, error) {
+	// --all flag: first arg is just the rig name.
+	rigName := args[0]
+	if _, _, err := parseAddress(rigName); err == nil {
+		return nil, fmt.Errorf("with --all, provide just the rig name (e.g., 'gt polecat <cmd> %s --all')", strings.Split(rigName, "/")[0])
+	}
+
+	mgr, r, err := getPolecatManager(rigName)
+	if err != nil {
+		return nil, err
+	}
+	polecats, err := polecat.List(mgr)
+	if err != nil {
+		return nil, fmt.Errorf("listing polecats: %w", err)
+	}
+
+	targets := make([]polecatTarget, 0, len(polecats))
+	for _, p := range polecats {
+		targets = append(targets, polecatTarget{
+			rigName:     rigName,
+			polecatName: p.Name,
+			mgr:         mgr,
+			r:           r,
+		})
+	}
+	return targets, nil
+}
+
+func resolveExplicitPolecatTargets(args []string) ([]polecatTarget, error) {
+	var targets []polecatTarget
+	for _, arg := range args {
+		if !strings.Contains(arg, "/") {
+			return nil, fmt.Errorf("invalid address '%s': must be in 'rig/polecat' format (e.g., 'gastown/Toast')", arg)
+		}
+
+		rigName, polecatName, err := parseAddress(arg)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address '%s': %w", arg, err)
 		}
 
 		mgr, r, err := getPolecatManager(rigName)
@@ -40,44 +76,12 @@ func resolvePolecatTargets(args []string, useAll bool) ([]polecatTarget, error) 
 			return nil, err
 		}
 
-		polecats, err := mgr.List()
-		if err != nil {
-			return nil, fmt.Errorf("listing polecats: %w", err)
-		}
-
-		for _, p := range polecats {
-			targets = append(targets, polecatTarget{
-				rigName:     rigName,
-				polecatName: p.Name,
-				mgr:         mgr,
-				r:           r,
-			})
-		}
-	} else {
-		// Multiple rig/polecat arguments - require explicit rig/polecat format
-		for _, arg := range args {
-			// Validate format: must contain "/" to avoid misinterpreting rig names as polecat names
-			if !strings.Contains(arg, "/") {
-				return nil, fmt.Errorf("invalid address '%s': must be in 'rig/polecat' format (e.g., 'gastown/Toast')", arg)
-			}
-
-			rigName, polecatName, err := parseAddress(arg)
-			if err != nil {
-				return nil, fmt.Errorf("invalid address '%s': %w", arg, err)
-			}
-
-			mgr, r, err := getPolecatManager(rigName)
-			if err != nil {
-				return nil, err
-			}
-
-			targets = append(targets, polecatTarget{
-				rigName:     rigName,
-				polecatName: polecatName,
-				mgr:         mgr,
-				r:           r,
-			})
-		}
+		targets = append(targets, polecatTarget{
+			rigName:     rigName,
+			polecatName: polecatName,
+			mgr:         mgr,
+			r:           r,
+		})
 	}
 
 	return targets, nil
@@ -96,39 +100,31 @@ type SafetyCheckResult struct {
 	GitState      *GitState
 }
 
+type polecatSafetyInput struct {
+	bd        *beads.Beads
+	state     polecat.State
+	issue     string
+	clonePath string
+	gitState  *GitState
+	fields    *beads.AgentFields
+	agentErr  error
+}
+
 // checkPolecatSafety performs safety checks before destructive operations.
 // Returns nil if the polecat is safe to operate on, or a SafetyCheckResult with reasons if blocked.
 func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 	result := &SafetyCheckResult{
 		Polecat: fmt.Sprintf("%s/%s", target.rigName, target.polecatName),
 	}
+	input := loadPolecatSafetyInput(target)
+	result.GitState = input.gitState
+	if input.agentErr == nil && input.fields != nil {
+		result.CleanupStatus = polecat.CleanupStatus(input.fields.CleanupStatus)
+		result.HookBead = input.fields.HookBead
+		result.ActiveMR = input.fields.ActiveMR
+	}
 
-	polecatInfo, infoErr := target.mgr.Get(target.polecatName)
-	bd := beads.New(target.r.Path)
-	state := polecat.StateIdle
-	issue := ""
-	clonePath := polecat.ClonePathFor(target.r.Path, target.rigName, target.polecatName)
-	if infoErr == nil && polecatInfo != nil {
-		state = polecatInfo.State
-		issue = polecatInfo.Issue
-		clonePath = polecatInfo.ClonePath
-		if gitState, gitErr := getGitState(polecatInfo.ClonePath); gitErr == nil {
-			result.GitState = gitState
-		}
-	}
-	_, fields, agentErr := bd.GetAgentBead(polecatBeadIDForRig(target.r, target.rigName, target.polecatName))
-	if agentErr == nil && fields != nil {
-		result.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
-		result.HookBead = fields.HookBead
-		result.ActiveMR = fields.ActiveMR
-		if issue == "" {
-			issue = fields.LastSourceIssue
-			if issue == "" {
-				issue = fields.HookBead
-			}
-		}
-	}
-	d := polecat.InspectWorkstate(target.polecatName, bd, clonePath, state, issue)
+	d := polecat.InspectWorkstate(target.polecatName, input.bd, input.clonePath, input.state, input.issue)
 	if !d.Reusable && !d.SafeToNuke {
 		result.Reasons = append(result.Reasons, d.Blockers...)
 		if len(result.Reasons) == 0 && d.Reason != "" && d.Reason != "reusable" {
@@ -137,6 +133,31 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 	}
 	result.Blocked = len(result.Reasons) > 0
 	return result
+}
+
+func loadPolecatSafetyInput(target polecatTarget) polecatSafetyInput {
+	input := polecatSafetyInput{
+		bd:        beads.New(target.r.Path),
+		state:     polecat.StateIdle,
+		clonePath: polecat.ClonePathFor(target.r.Path, target.rigName, target.polecatName),
+	}
+	polecatInfo, infoErr := polecat.Get(target.mgr, target.polecatName)
+	if infoErr == nil && polecatInfo != nil {
+		input.state = polecatInfo.State
+		input.issue = polecatInfo.Issue
+		input.clonePath = polecatInfo.ClonePath
+		if gitState, gitErr := getGitState(polecatInfo.ClonePath); gitErr == nil {
+			input.gitState = gitState
+		}
+	}
+	_, input.fields, input.agentErr = input.bd.GetAgentBead(polecatBeadIDForRig(target.r, target.rigName, target.polecatName))
+	if input.agentErr == nil && input.fields != nil && input.issue == "" {
+		input.issue = input.fields.LastSourceIssue
+		if input.issue == "" {
+			input.issue = input.fields.HookBead
+		}
+	}
+	return input
 }
 
 func rigPrefix(r *rig.Rig) string {
@@ -185,80 +206,111 @@ func formatSafetyCheckBlockers(blocked []*SafetyCheckResult) string {
 func displayDryRunSafetyCheck(target polecatTarget) bool {
 	fmt.Printf("\n  Safety checks:\n")
 	result := checkPolecatSafety(target)
-	polecatInfo, infoErr := target.mgr.Get(target.polecatName)
-	bd := beads.New(target.r.Path)
-	agentBeadID := polecatBeadIDForRig(target.r, target.rigName, target.polecatName)
-	agentIssue, fields, err := bd.GetAgentBead(agentBeadID)
-
-	// Check 1: cleanup status or fallback git state
-	if err != nil || fields == nil {
-		if infoErr == nil && polecatInfo != nil {
-			gitState, gitErr := getGitState(polecatInfo.ClonePath)
-			if gitErr != nil {
-				fmt.Printf("    - Git state: %s\n", style.Warning.Render("cannot check"))
-			} else if gitState.Clean {
-				fmt.Printf("    - Git state: %s\n", style.Success.Render("clean"))
-			} else {
-				fmt.Printf("    - Git state: %s\n", style.Error.Render("dirty"))
-			}
-		} else {
-			fmt.Printf("    - Git state: %s\n", style.Dim.Render("unknown (no polecat info)"))
-		}
-		fmt.Printf("    - Hook: %s\n", style.Dim.Render("unknown (no agent bead)"))
-	} else {
-		cleanupStatus := polecat.CleanupStatus(fields.CleanupStatus)
-		if cleanupStatus.IsSafe() {
-			fmt.Printf("    - Cleanup status: %s\n", style.Success.Render(string(cleanupStatus)))
-		} else if cleanupStatus.RequiresRecovery() {
-			fmt.Printf("    - Cleanup status: %s\n", style.Error.Render(string(cleanupStatus)))
-		} else {
-			statusText := string(cleanupStatus)
-			if statusText == "" {
-				statusText = "<missing>"
-			}
-			fmt.Printf("    - Cleanup status: %s\n", style.Warning.Render(statusText))
-		}
-
-		hookBead := agentIssue.HookBead
-		if hookBead == "" {
-			hookBead = fields.HookBead
-		}
-		if hookBead != "" {
-			hookedIssue, err := bd.Show(hookBead)
-			if err == nil && hookedIssue != nil && hookedIssue.Status == "closed" {
-				fmt.Printf("    - Hook: %s (%s, closed - stale)\n", style.Warning.Render("stale"), hookBead)
-			} else {
-				fmt.Printf("    - Hook: %s (%s)\n", style.Error.Render("has work"), hookBead)
-			}
-		} else {
-			fmt.Printf("    - Hook: %s\n", style.Success.Render("empty"))
-		}
-
-		if fields.ActiveMR != "" {
-			sourceHint := agentSourceIssueHint("", fields)
-			gitSafe := false
-			if infoErr == nil && polecatInfo != nil {
-				gitSafe = activeMRGitSafeForWorktree(polecatInfo.ClonePath)
-			}
-			if blocker := activeMRBlocker(bd, fields.ActiveMR, sourceHint, true, gitSafe); blocker != "" {
-				fmt.Printf("    - Active MR: %s (%s)\n", style.Error.Render("blocked"), blocker)
-			} else {
-				fmt.Printf("    - Active MR: %s (%s)\n", style.Success.Render("terminal"), fields.ActiveMR)
-			}
-		}
-	}
-
-	// Check 2: Open MR
-	if infoErr == nil && polecatInfo != nil && polecatInfo.Branch != "" {
-		mr, mrErr := bd.FindMRForBranch(polecatInfo.Branch)
-		if mrErr == nil && mr != nil {
-			fmt.Printf("    - Open MR: %s (%s)\n", style.Error.Render("yes"), mr.ID)
-		} else {
-			fmt.Printf("    - Open MR: %s\n", style.Success.Render("none"))
-		}
-	} else {
-		fmt.Printf("    - Open MR: %s\n", style.Dim.Render("unknown (no branch info)"))
-	}
-
+	input := loadDryRunSafetyInput(target)
+	displayDryRunCleanup(input)
+	displayDryRunOpenMR(input)
 	return result.Blocked
+}
+
+type dryRunSafetyInput struct {
+	polecatInfo *polecat.Polecat
+	infoErr     error
+	bd          *beads.Beads
+	agentIssue  *beads.Issue
+	fields      *beads.AgentFields
+	agentErr    error
+}
+
+func loadDryRunSafetyInput(target polecatTarget) dryRunSafetyInput {
+	input := dryRunSafetyInput{bd: beads.New(target.r.Path)}
+	input.polecatInfo, input.infoErr = polecat.Get(target.mgr, target.polecatName)
+	agentBeadID := polecatBeadIDForRig(target.r, target.rigName, target.polecatName)
+	input.agentIssue, input.fields, input.agentErr = input.bd.GetAgentBead(agentBeadID)
+	return input
+}
+
+func displayDryRunCleanup(input dryRunSafetyInput) {
+	if input.agentErr != nil || input.fields == nil {
+		displayDryRunFallbackState(input)
+		fmt.Printf("    - Hook: %s\n", style.Dim.Render("unknown (no agent bead)"))
+		return
+	}
+
+	displayDryRunCleanupStatus(polecat.CleanupStatus(input.fields.CleanupStatus))
+	displayDryRunHook(input.bd, input.agentIssue, input.fields)
+	displayDryRunActiveMR(input)
+}
+
+func displayDryRunFallbackState(input dryRunSafetyInput) {
+	if input.infoErr != nil || input.polecatInfo == nil {
+		fmt.Printf("    - Git state: %s\n", style.Dim.Render("unknown (no polecat info)"))
+		return
+	}
+	gitState, gitErr := getGitState(input.polecatInfo.ClonePath)
+	if gitErr != nil {
+		fmt.Printf("    - Git state: %s\n", style.Warning.Render("cannot check"))
+	} else if gitState.Clean {
+		fmt.Printf("    - Git state: %s\n", style.Success.Render("clean"))
+	} else {
+		fmt.Printf("    - Git state: %s\n", style.Error.Render("dirty"))
+	}
+}
+
+func displayDryRunCleanupStatus(cleanupStatus polecat.CleanupStatus) {
+	if cleanupStatus.IsSafe() {
+		fmt.Printf("    - Cleanup status: %s\n", style.Success.Render(string(cleanupStatus)))
+		return
+	}
+	if cleanupStatus.RequiresRecovery() {
+		fmt.Printf("    - Cleanup status: %s\n", style.Error.Render(string(cleanupStatus)))
+		return
+	}
+	statusText := string(cleanupStatus)
+	if statusText == "" {
+		statusText = "<missing>"
+	}
+	fmt.Printf("    - Cleanup status: %s\n", style.Warning.Render(statusText))
+}
+
+func displayDryRunHook(bd *beads.Beads, agentIssue *beads.Issue, fields *beads.AgentFields) {
+	hookBead := agentIssue.HookBead
+	if hookBead == "" {
+		hookBead = fields.HookBead
+	}
+	if hookBead == "" {
+		fmt.Printf("    - Hook: %s\n", style.Success.Render("empty"))
+		return
+	}
+	hookedIssue, err := bd.Show(hookBead)
+	if err == nil && hookedIssue != nil && hookedIssue.Status == "closed" {
+		fmt.Printf("    - Hook: %s (%s, closed - stale)\n", style.Warning.Render("stale"), hookBead)
+		return
+	}
+	fmt.Printf("    - Hook: %s (%s)\n", style.Error.Render("has work"), hookBead)
+}
+
+func displayDryRunActiveMR(input dryRunSafetyInput) {
+	if input.fields.ActiveMR == "" {
+		return
+	}
+	sourceHint := agentSourceIssueHint("", input.fields)
+	gitSafe := input.infoErr == nil && input.polecatInfo != nil && activeMRGitSafeForWorktree(input.polecatInfo.ClonePath)
+	if blocker := activeMRBlocker(input.bd, input.fields.ActiveMR, sourceHint, true, gitSafe); blocker != "" {
+		fmt.Printf("    - Active MR: %s (%s)\n", style.Error.Render("blocked"), blocker)
+		return
+	}
+	fmt.Printf("    - Active MR: %s (%s)\n", style.Success.Render("terminal"), input.fields.ActiveMR)
+}
+
+func displayDryRunOpenMR(input dryRunSafetyInput) {
+	if input.infoErr != nil || input.polecatInfo == nil || input.polecatInfo.Branch == "" {
+		fmt.Printf("    - Open MR: %s\n", style.Dim.Render("unknown (no branch info)"))
+		return
+	}
+	mr, mrErr := input.bd.FindMRForBranch(input.polecatInfo.Branch)
+	if mrErr == nil && mr != nil {
+		fmt.Printf("    - Open MR: %s (%s)\n", style.Error.Render("yes"), mr.ID)
+		return
+	}
+	fmt.Printf("    - Open MR: %s\n", style.Success.Render("none"))
 }

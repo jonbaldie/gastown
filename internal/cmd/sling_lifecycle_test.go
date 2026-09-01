@@ -54,14 +54,16 @@ func completeRawIntentFields() *capacity.SlingContextFields {
 		Merge:        "local",
 		Convoy:       "hq-cv-scheduled",
 		ResumeBranch: "feature/resume-me",
-		Account:      "work",
-		Agent:        "codex",
-		HookRawBead:  true,
-		Owned:        true,
-		Mode:         "ralph",
-		ReviewOnly:   true,
-		NoMerge:      true,
-		EnqueuedAt:   "2026-08-14T00:00:00Z",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			Account:     "work",
+			Agent:       "codex",
+			HookRawBead: true,
+			Owned:       true,
+			Mode:        "ralph",
+			ReviewOnly:  true,
+			NoMerge:     true,
+		},
+		EnqueuedAt: "2026-08-14T00:00:00Z",
 	}
 }
 
@@ -141,24 +143,26 @@ func TestLifecycleRawDirectSlingAttachesConvoyHookAndBead(t *testing.T) {
 	spawnOpts, createdConvoys := stubRawSlingCollaborators(t, townRoot)
 
 	outcome, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		RigName:          "gastown",
-		Args:             "implement the thing",
-		Vars:             []string{"feature=widget", "issue=gt-rawrollback"},
-		Merge:            "local",
-		ResumeBranch:     "feature/resume-me",
-		Account:          "work",
-		Agent:            "codex",
-		Mode:             "ralph",
-		NoMerge:          true,
-		ReviewOnly:       true,
-		HookRawBead:      true,
-		Owned:            true,
-		FormulaFailFatal: true,
-		CallerContext:    "sling",
-		NoBoot:           true,
-		TownRoot:         townRoot,
-		BeadsDir:         filepath.Join(rigPath, ".beads"),
+		BeadID:       "gt-rawrollback",
+		RigName:      "gastown",
+		Args:         "implement the thing",
+		Vars:         []string{"feature=widget", "issue=gt-rawrollback"},
+		Merge:        "local",
+		ResumeBranch: "feature/resume-me",
+		Account:      "work",
+		Agent:        "codex",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			Mode:             "ralph",
+			NoMerge:          true,
+			ReviewOnly:       true,
+			HookRawBead:      true,
+			Owned:            true,
+			FormulaFailFatal: true,
+			CallerContext:    "sling",
+			NoBoot:           true,
+			TownRoot:         townRoot,
+			BeadsDir:         filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -182,15 +186,17 @@ func TestDirectAndDeferredRawSlingProduceEquivalentAttachment(t *testing.T) {
 	directRoot, directRig, directDesc := setupMutableBDRawSlingTest(t, "Keep this body.")
 	_, _ = stubRawSlingCollaborators(t, directRoot)
 	direct, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		RigName:          "gastown",
-		Merge:            "local",
-		HookRawBead:      true,
-		Owned:            true,
-		FormulaFailFatal: true,
-		NoBoot:           true,
-		TownRoot:         directRoot,
-		BeadsDir:         filepath.Join(directRig, ".beads"),
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		Merge:   "local",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			HookRawBead:      true,
+			Owned:            true,
+			FormulaFailFatal: true,
+			NoBoot:           true,
+			TownRoot:         directRoot,
+			BeadsDir:         filepath.Join(directRig, ".beads"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("direct Execute: %v", err)
@@ -203,12 +209,14 @@ func TestDirectAndDeferredRawSlingProduceEquivalentAttachment(t *testing.T) {
 		WorkBeadID: "gt-rawrollback",
 		TargetRig:  "gastown",
 		Context: sling.ToContextFields(sling.Intent{
-			BeadID:      "gt-rawrollback",
-			RigName:     "gastown",
-			Merge:       "local",
-			Convoy:      direct.ConvoyID,
-			HookRawBead: true,
-			Owned:       true,
+			BeadID:  "gt-rawrollback",
+			RigName: "gastown",
+			Merge:   "local",
+			Convoy:  direct.ConvoyID,
+			IntentExecutionOptions: sling.IntentExecutionOptions{
+				HookRawBead: true,
+				Owned:       true,
+			},
 		}, "2026-08-14T00:00:00Z"),
 	}, deferredRoot, "test")
 	if err != nil {
@@ -240,16 +248,18 @@ func TestLifecycleFormulaSlingAttachesMolecule(t *testing.T) {
 	extendBDStubForFormula(t, townRoot)
 
 	outcome, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		RigName:          "gastown",
-		Formula:          "mol-polecat-work",
-		Vars:             []string{"disks=3"},
-		Merge:            "local",
-		Owned:            true,
-		FormulaFailFatal: true,
-		NoBoot:           true,
-		TownRoot:         townRoot,
-		BeadsDir:         filepath.Join(rigPath, ".beads"),
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		Formula: "mol-polecat-work",
+		Vars:    []string{"disks=3"},
+		Merge:   "local",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			Owned:            true,
+			FormulaFailFatal: true,
+			NoBoot:           true,
+			TownRoot:         townRoot,
+			BeadsDir:         filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("formula Execute: %v", err)
@@ -282,13 +292,13 @@ func TestDeferredFormulaSlingMatchesDirectMoleculeAttachment(t *testing.T) {
 		WorkBeadID: "gt-rawrollback",
 		TargetRig:  "gastown",
 		Context: &capacity.SlingContextFields{
-			WorkBeadID: "gt-rawrollback",
-			TargetRig:  "gastown",
-			Formula:    "mol-polecat-work",
-			Vars:       "disks=3",
-			Merge:      "local",
-			Convoy:     "hq-cv-formula",
-			Owned:      true,
+			WorkBeadID:         "gt-rawrollback",
+			TargetRig:          "gastown",
+			Formula:            "mol-polecat-work",
+			Vars:               "disks=3",
+			Merge:              "local",
+			Convoy:             "hq-cv-formula",
+			SlingContextPolicy: capacity.SlingContextPolicy{Owned: true},
 		},
 	}, townRoot, "test")
 	if err != nil {
@@ -333,17 +343,19 @@ func TestLifecycleCompensatesHookFailureWithoutClosingReusedConvoy(t *testing.T)
 	}
 
 	_, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		RigName:          "gastown",
-		Convoy:           "hq-cv-existing",
-		NoConvoy:         true,
-		HookRawBead:      true,
-		NoMerge:          true,
-		ReviewOnly:       true,
-		FormulaFailFatal: true,
-		NoBoot:           true,
-		TownRoot:         townRoot,
-		BeadsDir:         filepath.Join(rigPath, ".beads"),
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		Convoy:  "hq-cv-existing",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			NoConvoy:         true,
+			HookRawBead:      true,
+			NoMerge:          true,
+			ReviewOnly:       true,
+			FormulaFailFatal: true,
+			NoBoot:           true,
+			TownRoot:         townRoot,
+			BeadsDir:         filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err == nil {
 		t.Fatal("expected hook failure")
@@ -434,16 +446,18 @@ func TestLifecycleCompensatesEachDurableStage(t *testing.T) {
 			stage.setup(t, townRoot)
 
 			intent := sling.Intent{
-				BeadID:           "gt-rawrollback",
-				RigName:          "gastown",
-				HookRawBead:      true,
-				NoMerge:          true,
-				ReviewOnly:       true,
-				NoConvoy:         true,
-				FormulaFailFatal: true,
-				NoBoot:           true,
-				TownRoot:         townRoot,
-				BeadsDir:         filepath.Join(rigPath, ".beads"),
+				BeadID:  "gt-rawrollback",
+				RigName: "gastown",
+				IntentExecutionOptions: sling.IntentExecutionOptions{
+					HookRawBead:      true,
+					NoMerge:          true,
+					ReviewOnly:       true,
+					NoConvoy:         true,
+					FormulaFailFatal: true,
+					NoBoot:           true,
+					TownRoot:         townRoot,
+					BeadsDir:         filepath.Join(rigPath, ".beads"),
+				},
 			}
 			if stage.name == "formula cook" {
 				intent.HookRawBead = false
@@ -476,9 +490,9 @@ func TestDeferredDispatchFailureIdentifiesBeadAndRig(t *testing.T) {
 		WorkBeadID: "gt-rawrollback",
 		TargetRig:  "gastown",
 		Context: &capacity.SlingContextFields{
-			WorkBeadID:  "gt-rawrollback",
-			TargetRig:   "gastown",
-			HookRawBead: true,
+			WorkBeadID:         "gt-rawrollback",
+			TargetRig:          "gastown",
+			SlingContextPolicy: capacity.SlingContextPolicy{HookRawBead: true},
 		},
 	}, townRoot, "test")
 	if err == nil {
@@ -597,15 +611,17 @@ func TestLifecycleNamedTargetHooksWithoutSpawningPolecat(t *testing.T) {
 	}
 
 	outcome, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		Target:           "gastown/crew/toast",
-		HookRawBead:      true,
-		NoConvoy:         true,
-		NoBoot:           true,
-		FormulaFailFatal: true,
-		CallerContext:    "sling",
-		TownRoot:         townRoot,
-		BeadsDir:         filepath.Join(rigPath, ".beads"),
+		BeadID: "gt-rawrollback",
+		Target: "gastown/crew/toast",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			HookRawBead:      true,
+			NoConvoy:         true,
+			NoBoot:           true,
+			FormulaFailFatal: true,
+			CallerContext:    "sling",
+			TownRoot:         townRoot,
+			BeadsDir:         filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute named target: %v", err)
@@ -638,13 +654,15 @@ func TestLifecycleNamedTargetRejectsClosedBead(t *testing.T) {
 	}
 
 	_, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:   "gt-rawrollback",
-		Target:   "gastown/crew/toast",
-		Force:    true,
-		NoConvoy: true,
-		NoBoot:   true,
-		TownRoot: townRoot,
-		BeadsDir: filepath.Join(rigPath, ".beads"),
+		BeadID: "gt-rawrollback",
+		Target: "gastown/crew/toast",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			Force:    true,
+			NoConvoy: true,
+			NoBoot:   true,
+			TownRoot: townRoot,
+			BeadsDir: filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err == nil {
 		t.Fatal("expected closed bead to be refused")
@@ -679,12 +697,14 @@ func TestLifecycleNamedTargetIdempotentNoOp(t *testing.T) {
 	}
 
 	outcome, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:   "gt-rawrollback",
-		Target:   "gastown/crew/toast",
-		NoConvoy: true,
-		NoBoot:   true,
-		TownRoot: townRoot,
-		BeadsDir: filepath.Join(rigPath, ".beads"),
+		BeadID: "gt-rawrollback",
+		Target: "gastown/crew/toast",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			NoConvoy: true,
+			NoBoot:   true,
+			TownRoot: townRoot,
+			BeadsDir: filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -722,13 +742,15 @@ func TestLifecycleNamedTargetDeadAgentAutoForce(t *testing.T) {
 	hookBeadWithRetryFn = func(string, string, string) error { return nil }
 
 	outcome, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		Target:      "gastown/crew/toast",
-		HookRawBead: true,
-		NoConvoy:    true,
-		NoBoot:      true,
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
+		BeadID: "gt-rawrollback",
+		Target: "gastown/crew/toast",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			HookRawBead: true,
+			NoConvoy:    true,
+			NoBoot:      true,
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -801,17 +823,19 @@ func TestLifecycleNamedPolecatAssigneeLockFailureCompensates(t *testing.T) {
 	}
 
 	_, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		Target:           "gastown/polecats/toast",
-		Create:           true,
-		HookRawBead:      true,
-		NoMerge:          true,
-		ReviewOnly:       true,
-		NoConvoy:         true,
-		NoBoot:           true,
-		FormulaFailFatal: true,
-		TownRoot:         townRoot,
-		BeadsDir:         filepath.Join(rigPath, ".beads"),
+		BeadID:              "gt-rawrollback",
+		Target:              "gastown/polecats/toast",
+		IntentTargetOptions: sling.IntentTargetOptions{Create: true},
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			HookRawBead:      true,
+			NoMerge:          true,
+			ReviewOnly:       true,
+			NoConvoy:         true,
+			NoBoot:           true,
+			FormulaFailFatal: true,
+			TownRoot:         townRoot,
+			BeadsDir:         filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err == nil {
 		t.Fatal("expected assignee-lock failure")
@@ -836,16 +860,18 @@ func TestLifecycleNamedHookFailureClosesCreatedConvoyOnly(t *testing.T) {
 	stubHookFailure(t)
 
 	_, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		Target:           "gastown/polecats/toast",
-		Create:           true,
-		HookRawBead:      true,
-		Owned:            true,
-		Merge:            "local",
-		NoBoot:           true,
-		FormulaFailFatal: true,
-		TownRoot:         townRoot,
-		BeadsDir:         filepath.Join(rigPath, ".beads"),
+		BeadID:              "gt-rawrollback",
+		Target:              "gastown/polecats/toast",
+		Merge:               "local",
+		IntentTargetOptions: sling.IntentTargetOptions{Create: true},
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			HookRawBead:      true,
+			Owned:            true,
+			NoBoot:           true,
+			FormulaFailFatal: true,
+			TownRoot:         townRoot,
+			BeadsDir:         filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err == nil {
 		t.Fatal("expected hook failure")
@@ -868,17 +894,19 @@ func TestLifecycleNamedHookFailureKeepsReusedConvoy(t *testing.T) {
 	stubHookFailure(t)
 
 	_, err := executeDeepSling(context.Background(), sling.Intent{
-		BeadID:           "gt-rawrollback",
-		Target:           "gastown/polecats/toast",
-		Create:           true,
-		Convoy:           "hq-cv-existing",
-		HookRawBead:      true,
-		NoMerge:          true,
-		ReviewOnly:       true,
-		NoBoot:           true,
-		FormulaFailFatal: true,
-		TownRoot:         townRoot,
-		BeadsDir:         filepath.Join(rigPath, ".beads"),
+		BeadID:              "gt-rawrollback",
+		Target:              "gastown/polecats/toast",
+		Convoy:              "hq-cv-existing",
+		IntentTargetOptions: sling.IntentTargetOptions{Create: true},
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			HookRawBead:      true,
+			NoMerge:          true,
+			ReviewOnly:       true,
+			NoBoot:           true,
+			FormulaFailFatal: true,
+			TownRoot:         townRoot,
+			BeadsDir:         filepath.Join(rigPath, ".beads"),
+		},
 	})
 	if err == nil {
 		t.Fatal("expected hook failure")

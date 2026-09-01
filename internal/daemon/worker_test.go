@@ -25,7 +25,7 @@ func TestRigWorkerPoolConcurrencyLimit(t *testing.T) {
 		rigs[i] = "rig"
 	}
 
-	pool.runPerRig(context.Background(), rigs, func(ctx context.Context, rigName string) error {
+	pool.RunPerRig(context.Background(), rigs, func(ctx context.Context, rigName string) error {
 		cur := active.Add(1)
 		// Record peak concurrency.
 		for {
@@ -67,7 +67,7 @@ func TestRigWorkerPoolContextTimeout(t *testing.T) {
 		rigs[i] = "rig"
 	}
 
-	pool.runPerRig(context.Background(), rigs, func(ctx context.Context, _ string) error {
+	pool.RunPerRig(context.Background(), rigs, func(ctx context.Context, _ string) error {
 		select {
 		case <-time.After(slowDelay):
 			completed.Add(1)
@@ -105,7 +105,7 @@ func TestRigWorkerPoolSlowRigDoesNotBlockOthers(t *testing.T) {
 	rigs := []string{slowRig, "fast-1", "fast-2", "fast-3", "fast-4"}
 
 	start := time.Now()
-	pool.runPerRig(context.Background(), rigs, func(ctx context.Context, rigName string) error {
+	pool.RunPerRig(context.Background(), rigs, func(ctx context.Context, rigName string) error {
 		if rigName == slowRig {
 			// Slow rig blocks until its context times out.
 			select {
@@ -141,10 +141,10 @@ func TestRigWorkerPoolSlowRigDoesNotBlockOthers(t *testing.T) {
 // Run with: go test ./internal/daemon/ -bench=BenchmarkRigWorkerPool100RigsOneSlow -benchtime=5s
 func BenchmarkRigWorkerPool100RigsOneSlow(b *testing.B) {
 	const (
-		numRigs   = 100
-		slowIndex = 7
-		slowDelay = 100 * time.Millisecond
-		fastDelay = 1 * time.Millisecond
+		numRigs    = 100
+		slowIndex  = 7
+		slowDelay  = 100 * time.Millisecond
+		fastDelay  = 1 * time.Millisecond
 		rigTimeout = 5 * time.Second
 	)
 
@@ -158,7 +158,7 @@ func BenchmarkRigWorkerPool100RigsOneSlow(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		i := 0
-		pool.runPerRig(context.Background(), rigs, func(ctx context.Context, _ string) error {
+		pool.RunPerRig(context.Background(), rigs, func(ctx context.Context, _ string) error {
 			delay := fastDelay
 			if i == slowIndex {
 				delay = slowDelay

@@ -17,11 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	uninstallWorkspace bool
-	uninstallForce     bool
-)
-
 var uninstallCmd = &cobra.Command{
 	Use:     "uninstall",
 	GroupID: GroupConfig,
@@ -47,106 +42,127 @@ Examples:
 }
 
 func init() {
-	uninstallCmd.Flags().BoolVar(&uninstallWorkspace, "workspace", false,
+	uninstallCmd.Flags().Bool("workspace", false,
 		"Also remove the workspace directory (DESTRUCTIVE)")
-	uninstallCmd.Flags().BoolVarP(&uninstallForce, "force", "f", false,
+	uninstallCmd.Flags().BoolP("force", "f", false,
 		"Skip confirmation prompts")
 	rootCmd.AddCommand(uninstallCmd)
 }
 
-func runUninstall(cmd *cobra.Command, args []string) error {
-	if !uninstallForce {
-		fmt.Println("This will remove Gas Town from your system.")
-		fmt.Println()
-		fmt.Println("The following will be removed:")
-		fmt.Printf("  • Shell integration (%s)\n", shell.RCFilePath(shell.DetectShell()))
-		fmt.Printf("  • Wrapper scripts (%s)\n", wrappers.BinDir())
-		fmt.Printf("  • State directory (%s)\n", state.StateDir())
-		fmt.Printf("  • Config directory (%s)\n", state.ConfigDir())
-		fmt.Printf("  • Cache directory (%s)\n", state.CacheDir())
-
-		if uninstallWorkspace {
-			fmt.Println()
-			fmt.Printf("  %s WORKSPACE WILL BE DELETED\n", style.Warning.Render("⚠"))
-			fmt.Println("     This cannot be undone!")
-		}
-
-		fmt.Println()
-		fmt.Print("Continue? [y/N] ")
-
-		reader := bufio.NewReader(os.Stdin)
-		response, _ := reader.ReadString('\n')
-		response = strings.TrimSpace(strings.ToLower(response))
-
-		if response != "y" && response != "yes" {
-			fmt.Println("Aborted.")
-			return nil
-		}
+func runUninstall(cmd *cobra.Command, _ []string) error {
+	workspaceFlag := commandBoolFlag(cmd, "workspace")
+	force := commandBoolFlag(cmd, "force")
+	if !confirmUninstall(force, workspaceFlag) {
+		return nil
 	}
-
-	var errors []string
 
 	fmt.Println()
 	fmt.Println("Removing Gas Town...")
-
-	if err := shell.Remove(); err != nil {
-		errors = append(errors, fmt.Sprintf("shell integration: %v", err))
-	} else {
-		fmt.Printf("  %s Removed shell integration\n", style.Success.Render("✓"))
-	}
-
-	if err := wrappers.Remove(); err != nil {
-		errors = append(errors, fmt.Sprintf("wrapper scripts: %v", err))
-	} else {
-		fmt.Printf("  %s Removed wrapper scripts\n", style.Success.Render("✓"))
-	}
-
-	if err := os.RemoveAll(state.StateDir()); err != nil && !os.IsNotExist(err) {
-		errors = append(errors, fmt.Sprintf("state directory: %v", err))
-	} else {
-		fmt.Printf("  %s Removed state directory\n", style.Success.Render("✓"))
-	}
-
-	if err := os.RemoveAll(state.ConfigDir()); err != nil && !os.IsNotExist(err) {
-		errors = append(errors, fmt.Sprintf("config directory: %v", err))
-	} else {
-		fmt.Printf("  %s Removed config directory\n", style.Success.Render("✓"))
-	}
-
-	if err := os.RemoveAll(state.CacheDir()); err != nil && !os.IsNotExist(err) {
-		errors = append(errors, fmt.Sprintf("cache directory: %v", err))
-	} else {
-		fmt.Printf("  %s Removed cache directory\n", style.Success.Render("✓"))
-	}
-
-	if uninstallWorkspace {
-		workspaceDir := findWorkspaceForUninstall()
-		if workspaceDir != "" {
-			if err := os.RemoveAll(workspaceDir); err != nil {
-				errors = append(errors, fmt.Sprintf("workspace: %v", err))
-			} else {
-				fmt.Printf("  %s Removed workspace: %s\n", style.Success.Render("✓"), workspaceDir)
-			}
-		}
-	}
-
+	errors := removeUninstallComponents(workspaceFlag)
 	if len(errors) > 0 {
-		fmt.Println()
-		fmt.Printf("%s Some components could not be removed:\n", style.Warning.Render("⚠"))
-		for _, e := range errors {
-			fmt.Printf("  • %s\n", e)
-		}
+		printUninstallFailures(errors)
 		return fmt.Errorf("uninstall incomplete")
 	}
 
+	printUninstallSuccess()
+	return nil
+}
+
+func confirmUninstall(force, workspaceFlag bool) bool {
+	if force {
+		return true
+	}
+	printUninstallNotice(workspaceFlag)
+	fmt.Print("Continue? [y/N] ")
+
+	reader := bufio.NewReader(os.Stdin)
+	response, _ := reader.ReadString('\n')
+	response = strings.TrimSpace(strings.ToLower(response))
+	if response == "y" || response == "yes" {
+		return true
+	}
+	fmt.Println("Aborted.")
+	return false
+}
+
+func printUninstallNotice(workspaceFlag bool) {
+	fmt.Println("This will remove Gas Town from your system.")
+	fmt.Println()
+	fmt.Println("The following will be removed:")
+	fmt.Printf("  • Shell integration (%s)\n", shell.RCFilePath(shell.DetectShell()))
+	fmt.Printf("  • Wrapper scripts (%s)\n", wrappers.BinDir())
+	fmt.Printf("  • State directory (%s)\n", state.StateDir())
+	fmt.Printf("  • Config directory (%s)\n", state.ConfigDir())
+	fmt.Printf("  • Cache directory (%s)\n", state.CacheDir())
+	if workspaceFlag {
+		fmt.Println()
+		fmt.Printf("  %s WORKSPACE WILL BE DELETED\n", style.Warning.Render("⚠"))
+		fmt.Println("     This cannot be undone!")
+	}
+	fmt.Println()
+}
+
+func removeUninstallComponents(workspaceFlag bool) []string {
+	var failures []string
+	appendFailure := func(failure string) {
+		if failure != "" {
+			failures = append(failures, failure)
+		}
+	}
+	appendFailure(removeUninstallComponent("shell integration", "Removed shell integration", shell.Remove))
+	appendFailure(removeUninstallComponent("wrapper scripts", "Removed wrapper scripts", wrappers.Remove))
+	appendFailure(removeUninstallDirectory("state directory", state.StateDir()))
+	appendFailure(removeUninstallDirectory("config directory", state.ConfigDir()))
+	appendFailure(removeUninstallDirectory("cache directory", state.CacheDir()))
+	if workspaceFlag {
+		appendFailure(removeUninstallWorkspace())
+	}
+	return failures
+}
+
+func removeUninstallComponent(label, success string, remove func() error) string {
+	if err := remove(); err != nil {
+		return fmt.Sprintf("%s: %v", label, err)
+	}
+	fmt.Printf("  %s %s\n", style.Success.Render("✓"), success)
+	return ""
+}
+
+func removeUninstallDirectory(label, path string) string {
+	if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Sprintf("%s: %v", label, err)
+	}
+	fmt.Printf("  %s Removed %s\n", style.Success.Render("✓"), label)
+	return ""
+}
+
+func removeUninstallWorkspace() string {
+	workspaceDir := findWorkspaceForUninstall()
+	if workspaceDir == "" {
+		return ""
+	}
+	if err := os.RemoveAll(workspaceDir); err != nil {
+		return fmt.Sprintf("workspace: %v", err)
+	}
+	fmt.Printf("  %s Removed workspace: %s\n", style.Success.Render("✓"), workspaceDir)
+	return ""
+}
+
+func printUninstallFailures(failures []string) {
+	fmt.Println()
+	fmt.Printf("%s Some components could not be removed:\n", style.Warning.Render("⚠"))
+	for _, failure := range failures {
+		fmt.Printf("  • %s\n", failure)
+	}
+}
+
+func printUninstallSuccess() {
 	fmt.Println()
 	fmt.Printf("%s Gas Town has been uninstalled\n", style.Success.Render("✓"))
 	fmt.Println()
 	fmt.Println("To reinstall, run:")
 	fmt.Printf("  %s\n", style.Dim.Render("CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest"))
 	fmt.Printf("  %s\n", style.Dim.Render("gt install ~/gt --shell"))
-
-	return nil
 }
 
 func findWorkspaceForUninstall() string {

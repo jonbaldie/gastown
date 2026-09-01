@@ -28,9 +28,13 @@ type Proc struct {
 
 // Table is a point-in-time process snapshot.
 type Table struct {
-	byPID    map[int]Proc
+	byPID map[int]Proc
+	order []int
+	processTree
+}
+
+type processTree struct {
 	children map[int][]int
-	order    []int
 }
 
 // Capture reads the process table once.
@@ -46,8 +50,8 @@ func Capture() (Table, error) {
 // (`pid ppid comm...`) and the rich capture format (`pid ppid tty etime args...`).
 func Parse(out []byte) Table {
 	table := Table{
-		byPID:    make(map[int]Proc),
-		children: make(map[int][]int),
+		byPID:       make(map[int]Proc),
+		processTree: processTree{children: make(map[int][]int)},
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
@@ -115,45 +119,46 @@ func looksLikeTTY(s string) bool {
 }
 
 func parseEtime(etime string) (int, error) {
-	var days, hours, minutes, seconds int
-	if idx := strings.Index(etime, "-"); idx != -1 {
-		d, err := strconv.Atoi(etime[:idx])
-		if err != nil {
-			return 0, err
-		}
-		days = d
-		etime = etime[idx+1:]
+	days, clock, err := parseElapsedDays(etime)
+	if err != nil {
+		return 0, err
 	}
-	parts := strings.Split(etime, ":")
-	switch len(parts) {
-	case 2:
-		m, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return 0, err
-		}
-		s, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return 0, err
-		}
-		minutes, seconds = m, s
-	case 3:
-		h, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return 0, err
-		}
-		m, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return 0, err
-		}
-		s, err := strconv.Atoi(parts[2])
-		if err != nil {
-			return 0, err
-		}
-		hours, minutes, seconds = h, m, s
-	default:
-		return 0, os.ErrInvalid
+	hours, minutes, seconds, err := parseElapsedClock(clock)
+	if err != nil {
+		return 0, err
 	}
 	return days*86400 + hours*3600 + minutes*60 + seconds, nil
+}
+
+func parseElapsedDays(etime string) (int, string, error) {
+	idx := strings.Index(etime, "-")
+	if idx == -1 {
+		return 0, etime, nil
+	}
+	days, err := strconv.Atoi(etime[:idx])
+	if err != nil {
+		return 0, "", err
+	}
+	return days, etime[idx+1:], nil
+}
+
+func parseElapsedClock(etime string) (int, int, int, error) {
+	parts := strings.Split(etime, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0, 0, 0, os.ErrInvalid
+	}
+	values := make([]int, len(parts))
+	for i, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		values[i] = value
+	}
+	if len(values) == 2 {
+		return 0, values[0], values[1], nil
+	}
+	return values[0], values[1], values[2], nil
 }
 
 func commandName(args string) string {
@@ -180,12 +185,12 @@ func (t Table) All() []Proc {
 }
 
 // Children returns the direct child PIDs of pid.
-func (t Table) Children(pid int) []int {
+func (t processTree) Children(pid int) []int {
 	return append([]int(nil), t.children[pid]...)
 }
 
 // Descendants returns all descendant PIDs, deepest first.
-func (t Table) Descendants(pid int) []int {
+func (t processTree) Descendants(pid int) []int {
 	seen := map[int]bool{pid: true}
 	var result []int
 	var walk func(int)

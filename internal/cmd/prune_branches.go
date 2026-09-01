@@ -8,11 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	pruneBranchesDryRun  bool
-	pruneBranchesPattern string
-)
-
 var pruneBranchesCmd = &cobra.Command{
 	Use:     "prune-branches",
 	GroupID: GroupWork,
@@ -40,35 +35,60 @@ Examples:
 }
 
 func init() {
-	pruneBranchesCmd.Flags().BoolVar(&pruneBranchesDryRun, "dry-run", false, "Show what would be deleted without deleting")
-	pruneBranchesCmd.Flags().StringVar(&pruneBranchesPattern, "pattern", "polecat/*", "Branch name pattern to match")
+	pruneBranchesCmd.Flags().Bool("dry-run", false, "Show what would be deleted without deleting")
+	pruneBranchesCmd.Flags().String("pattern", "polecat/*", "Branch name pattern to match")
 
 	rootCmd.AddCommand(pruneBranchesCmd)
 }
 
-func runPruneBranches(cmd *cobra.Command, args []string) error {
+type pruneBranchesOptions struct {
+	dryRun  bool
+	pattern string
+}
+
+func readPruneBranchesOptions(cmd *cobra.Command) (pruneBranchesOptions, error) {
+	dryRun, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return pruneBranchesOptions{}, err
+	}
+	pattern, err := cmd.Flags().GetString("pattern")
+	if err != nil {
+		return pruneBranchesOptions{}, err
+	}
+	return pruneBranchesOptions{dryRun: dryRun, pattern: pattern}, nil
+}
+
+func runPruneBranches(cmd *cobra.Command, _ []string) error {
+	opts, err := readPruneBranchesOptions(cmd)
+	if err != nil {
+		return err
+	}
 	g := gitpkg.NewGit(".")
-	if !g.IsRepo() {
+	if !gitpkg.IsRepo(g) {
 		return fmt.Errorf("not a git repository")
 	}
 
 	// Run fetch --prune first to clean up stale remote tracking refs
-	if err := g.FetchPrune("origin"); err != nil {
+	if err := gitpkg.FetchPrune(g, "origin"); err != nil {
 		// Non-fatal: we can still prune based on current state
 		fmt.Printf("%s Warning: git fetch --prune failed: %v\n", style.Warning.Render("⚠"), err)
 	}
 
-	pruned, err := g.PruneStaleBranches(pruneBranchesPattern, pruneBranchesDryRun)
+	pruned, err := gitpkg.PruneStaleBranches(g, opts.pattern, opts.dryRun)
 	if err != nil {
 		return fmt.Errorf("pruning branches: %w", err)
 	}
 
 	if len(pruned) == 0 {
-		fmt.Printf("%s No stale branches found matching %q\n", style.Bold.Render("✓"), pruneBranchesPattern)
+		fmt.Printf("%s No stale branches found matching %q\n", style.Bold.Render("✓"), opts.pattern)
 		return nil
 	}
+	printPruneBranchesResult(pruned, opts.dryRun)
+	return nil
+}
 
-	if pruneBranchesDryRun {
+func printPruneBranchesResult(pruned []gitpkg.PrunedBranch, dryRun bool) {
+	if dryRun {
 		fmt.Printf("%s Would prune %d branch(es):\n\n", style.Warning.Render("⚠"), len(pruned))
 	} else {
 		fmt.Printf("%s Pruned %d branch(es):\n\n", style.Bold.Render("✓"), len(pruned))
@@ -90,6 +110,4 @@ func runPruneBranches(cmd *cobra.Command, args []string) error {
 			style.Dim.Render(reasonStr))
 	}
 	fmt.Println()
-
-	return nil
 }

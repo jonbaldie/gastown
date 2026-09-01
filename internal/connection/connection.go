@@ -22,57 +22,57 @@ type Connection interface {
 	// File operations
 
 	// ReadFile reads the named file and returns its contents.
-	ReadFile(path string) ([]byte, error)
+	ReadFile(_ string) ([]byte, error)
 
 	// WriteFile writes data to the named file with the given permissions.
-	WriteFile(path string, data []byte, perm fs.FileMode) error
+	WriteFile(_ string, _ []byte, _ fs.FileMode) error
 
 	// MkdirAll creates a directory and all parent directories.
-	MkdirAll(path string, perm fs.FileMode) error
+	MkdirAll(_ string, _ fs.FileMode) error
 
 	// Remove removes the named file or empty directory.
-	Remove(path string) error
+	Remove(_ string) error
 
 	// RemoveAll removes the named file or directory and any children.
-	RemoveAll(path string) error
+	RemoveAll(_ string) error
 
 	// Stat returns file info for the named file.
-	Stat(path string) (FileInfo, error)
+	Stat(_ string) (FileInfo, error)
 
 	// Glob returns the names of all files matching the pattern.
-	Glob(pattern string) ([]string, error)
+	Glob(_ string) ([]string, error)
 
 	// Exists returns true if the path exists.
-	Exists(path string) (bool, error)
+	Exists(_ string) (bool, error)
 
 	// Command execution
 
 	// Exec runs a command and returns its combined output.
-	Exec(cmd string, args ...string) ([]byte, error)
+	Exec(_ string, _ ...string) ([]byte, error)
 
 	// ExecDir runs a command in the specified directory.
-	ExecDir(dir, cmd string, args ...string) ([]byte, error)
+	ExecDir(_, _ string, _ ...string) ([]byte, error)
 
 	// ExecEnv runs a command with additional environment variables.
-	ExecEnv(env map[string]string, cmd string, args ...string) ([]byte, error)
+	ExecEnv(_ map[string]string, _ string, _ ...string) ([]byte, error)
 
 	// Tmux operations
 
 	// TmuxNewSession creates a new tmux session with the given name.
-	TmuxNewSession(name, dir string) error
+	TmuxNewSession(_, _ string) error
 
 	// TmuxKillSession terminates the named tmux session.
 	// Uses KillSessionWithProcesses internally to ensure all descendant processes are killed.
-	TmuxKillSession(name string) error
+	TmuxKillSession(_ string) error
 
 	// TmuxSendKeys sends keys to the named tmux session.
-	TmuxSendKeys(session, keys string) error
+	TmuxSendKeys(_, _ string) error
 
 	// TmuxCapturePane captures the last N lines from a tmux pane.
-	TmuxCapturePane(session string, lines int) (string, error)
+	TmuxCapturePane(_ string, _ int) (string, error)
 
 	// TmuxHasSession returns true if the named tmux session exists.
-	TmuxHasSession(name string) (bool, error)
+	TmuxHasSession(_ string) (bool, error)
 
 	// TmuxListSessions returns a list of all tmux session names.
 	TmuxListSessions() ([]string, error)

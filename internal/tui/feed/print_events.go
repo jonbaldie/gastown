@@ -16,10 +16,10 @@ import (
 type PrintOptions struct {
 	Limit  int
 	Follow bool
-	Since  string // duration string like "5m", "1h"
-	Mol    string // molecule/issue ID prefix filter
-	Type   string // event type filter
-	Rig    string // rig name filter (matches event's Rig field)
+	Since  string          // duration string like "5m", "1h"
+	Mol    string          // molecule/issue ID prefix filter
+	Type   string          // event type filter
+	Rig    string          // rig name filter (matches event's Rig field)
 	Ctx    context.Context // optional: controls follow-mode lifecycle; nil uses signal.NotifyContext
 }
 
@@ -27,68 +27,92 @@ type PrintOptions struct {
 // When opts.Follow is true, it tails the file for new events after printing
 // the initial batch, polling every 200ms. Canceled via opts.Ctx or SIGINT.
 func PrintGtEvents(townRoot string, opts PrintOptions) error {
-	eventsPath := filepath.Join(townRoot, ".events.jsonl")
-	file, err := os.Open(eventsPath)
+	file, sinceTime, err := openGtEventsFile(townRoot, opts.Since)
 	if err != nil {
-		return fmt.Errorf("no events file found at %s: %w", eventsPath, err)
+		return err
 	}
 	defer file.Close()
-
-	// Parse --since into a cutoff time
-	var sinceTime time.Time
-	if opts.Since != "" {
-		dur, err := time.ParseDuration(opts.Since)
-		if err != nil {
-			return fmt.Errorf("invalid --since duration %q: %w", opts.Since, err)
-		}
-		sinceTime = time.Now().Add(-dur)
+	events, err := loadGtEvents(file, sinceTime, opts)
+	if err != nil {
+		return err
 	}
-
-	var events []Event
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if event := parseGtEventLine(line); event != nil {
-			if matchesFilters(event, sinceTime, opts.Mol, opts.Type, opts.Rig) {
-				events = append(events, *event)
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("reading events: %w", err)
-	}
-
-	// Sort by time descending (most recent first)
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].Time.After(events[j].Time)
-	})
-
-	// Apply limit
-	if opts.Limit > 0 && len(events) > opts.Limit {
-		events = events[:opts.Limit]
-	}
-
-	// Reverse to show oldest first (chronological)
-	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-		events[i], events[j] = events[j], events[i]
-	}
-
-	if len(events) == 0 && !opts.Follow {
-		fmt.Println("No events found in .events.jsonl")
-		return nil
-	}
-
-	for _, event := range events {
-		printEvent(event)
-	}
-
+	printLoadedGtEvents(events, opts.Follow)
 	if !opts.Follow {
 		return nil
 	}
+	return followGtEvents(file, sinceTime, opts)
+}
 
+func openGtEventsFile(townRoot, since string) (*os.File, time.Time, error) {
+	eventsPath := filepath.Join(townRoot, ".events.jsonl")
+	file, err := os.Open(eventsPath)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("no events file found at %s: %w", eventsPath, err)
+	}
+	sinceTime, err := parseEventsSince(since)
+	if err != nil {
+		file.Close()
+		return nil, time.Time{}, err
+	}
+	return file, sinceTime, nil
+}
+
+func parseEventsSince(since string) (time.Time, error) {
+	if since == "" {
+		return time.Time{}, nil
+	}
+	dur, err := time.ParseDuration(since)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid --since duration %q: %w", since, err)
+	}
+	return time.Now().Add(-dur), nil
+}
+
+func loadGtEvents(file *os.File, sinceTime time.Time, opts PrintOptions) ([]Event, error) {
+	var events []Event
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		appendMatchingEvent(&events, scanner.Text(), sinceTime, opts)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading events: %w", err)
+	}
+	return limitGtEvents(events, opts.Limit), nil
+}
+
+func appendMatchingEvent(events *[]Event, line string, sinceTime time.Time, opts PrintOptions) {
+	event := parseGtEventLine(line)
+	if event == nil || !matchesFilters(event, sinceTime, opts.Mol, opts.Type, opts.Rig) {
+		return
+	}
+	*events = append(*events, *event)
+}
+
+func limitGtEvents(events []Event, limit int) []Event {
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Time.After(events[j].Time)
+	})
+	if limit > 0 && len(events) > limit {
+		events = events[:limit]
+	}
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	return events
+}
+
+func printLoadedGtEvents(events []Event, follow bool) {
+	if len(events) == 0 && !follow {
+		fmt.Println("No events found in .events.jsonl")
+		return
+	}
+	for _, event := range events {
+		printEvent(event)
+	}
+}
+
+func followGtEvents(file *os.File, sinceTime time.Time, opts PrintOptions) error {
 	// Tail mode: poll for new lines using a fresh scanner each tick.
 	// bufio.Scanner sets an internal 'done' flag after EOF and won't retry,
 	// so we must create a new scanner each poll cycle while preserving the
@@ -99,35 +123,35 @@ func PrintGtEvents(townRoot string, opts PrintOptions) error {
 		ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 	}
-
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			s := bufio.NewScanner(file)
-			s.Buffer(make([]byte, 1024*1024), 1024*1024)
-			for s.Scan() {
-				line := s.Text()
-				if event := parseGtEventLine(line); event != nil {
-					if matchesFilters(event, sinceTime, opts.Mol, opts.Type, opts.Rig) {
-						printEvent(*event)
-					}
-				}
-			}
+			scanNewGtEvents(file, sinceTime, opts)
+		}
+	}
+}
+
+func scanNewGtEvents(file *os.File, sinceTime time.Time, opts PrintOptions) {
+	s := bufio.NewScanner(file)
+	s.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for s.Scan() {
+		event := parseGtEventLine(s.Text())
+		if event != nil && matchesFilters(event, sinceTime, opts.Mol, opts.Type, opts.Rig) {
+			printEvent(*event)
 		}
 	}
 }
 
 // matchesFilters checks whether an event passes the --since, --mol, --type, and --rig filters.
 func matchesFilters(event *Event, sinceTime time.Time, mol, eventType, rig string) bool {
-	if !sinceTime.IsZero() && event.Time.Before(sinceTime) {
+	if !matchesSinceFilter(event, sinceTime) {
 		return false
 	}
-	if mol != "" && !strings.Contains(event.Target, mol) && !strings.Contains(event.Message, mol) {
+	if !matchesMolFilter(event, mol) {
 		return false
 	}
 	if eventType != "" && event.Type != eventType {
@@ -137,6 +161,17 @@ func matchesFilters(event *Event, sinceTime time.Time, mol, eventType, rig strin
 		return false
 	}
 	return true
+}
+
+func matchesSinceFilter(event *Event, sinceTime time.Time) bool {
+	return sinceTime.IsZero() || !event.Time.Before(sinceTime)
+}
+
+func matchesMolFilter(event *Event, mol string) bool {
+	if mol == "" {
+		return true
+	}
+	return strings.Contains(event.Target, mol) || strings.Contains(event.Message, mol)
 }
 
 // printEvent formats and prints a single event line.
@@ -150,33 +185,24 @@ func printEvent(event Event) {
 	fmt.Printf("[%s] %s %-25s %s\n", ts, symbol, actor, event.Message)
 }
 
+var eventTypeSymbols = map[string]string{
+	"patrol_started":  "\U0001F989", // owl
+	"patrol_complete": "\U0001F989", // owl
+	"polecat_nudged":  "\u26A1",     // lightning
+	"sling":           "\U0001F3AF", // target
+	"handoff":         "\U0001F91D", // handshake
+	"done":            "\u2713",     // checkmark
+	"merged":          "\u2713",
+	"merge_failed":    "\u2717", // x
+	"create":          "+",
+	"complete":        "\u2713",
+	"fail":            "\u2717",
+	"delete":          "\u2298", // circled minus
+}
+
 func typeSymbol(eventType string) string {
-	switch eventType {
-	case "patrol_started":
-		return "\U0001F989" // owl
-	case "patrol_complete":
-		return "\U0001F989" // owl
-	case "polecat_nudged":
-		return "\u26A1" // lightning
-	case "sling":
-		return "\U0001F3AF" // target
-	case "handoff":
-		return "\U0001F91D" // handshake
-	case "done":
-		return "\u2713" // checkmark
-	case "merged":
-		return "\u2713"
-	case "merge_failed":
-		return "\u2717" // x
-	case "create":
-		return "+"
-	case "complete":
-		return "\u2713"
-	case "fail":
-		return "\u2717"
-	case "delete":
-		return "\u2298" // circled minus
-	default:
-		return "\u2192" // arrow
+	if symbol, ok := eventTypeSymbols[eventType]; ok {
+		return symbol
 	}
+	return "\u2192" // arrow
 }

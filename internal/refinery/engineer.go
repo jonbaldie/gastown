@@ -14,15 +14,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
-	"github.com/jonbaldie/gastown/internal/crew"
 	"github.com/jonbaldie/gastown/internal/events"
 	"github.com/jonbaldie/gastown/internal/git"
-	"github.com/jonbaldie/gastown/internal/mail"
-	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/util"
 )
 
@@ -119,19 +115,7 @@ type MergeQueueConfig struct {
 	// RetryFlakyTests is the number of times to retry flaky tests.
 	RetryFlakyTests int `json:"retry_flaky_tests"`
 
-	// PollInterval is how often to check for new MRs.
-	PollInterval time.Duration `json:"poll_interval"`
-
-	// MaxConcurrent is the maximum number of MRs to process concurrently.
-	MaxConcurrent int `json:"max_concurrent"`
-
-	// StaleClaimTimeout is how long a claimed MR can go without updates before
-	// being considered abandoned and eligible for re-claim. This handles the
-	// case where a refinery crashes mid-merge, leaving an MR permanently claimed.
-	// Set conservatively to avoid re-claiming MRs with long-running test suites.
-	// NOTE: Only one refinery instance runs per rig (enforced by ErrAlreadyRunning
-	// in manager.go), so concurrent re-claim is not a concern in practice.
-	StaleClaimTimeout time.Duration `json:"stale_claim_timeout"`
+	MergeQueueTiming
 
 	// Gates defines named quality gate commands to run before merging.
 	// When non-empty, gates replace the legacy RunTests/TestCommand path.
@@ -141,18 +125,6 @@ type MergeQueueConfig struct {
 	// GatesParallel controls whether gates run concurrently.
 	// When true, all gates start simultaneously; any failure = overall failure.
 	GatesParallel bool `json:"gates_parallel"`
-
-	// StaleClaimWarningAfter is how long a claimed MR can sit without updates
-	// before it triggers a "warning" severity anomaly.
-	StaleClaimWarningAfter time.Duration `json:"stale_claim_warning_after"`
-
-	// StaleClaimCriticalAfter is how long a claimed MR can sit without updates
-	// before it triggers a "critical" severity anomaly.
-	StaleClaimCriticalAfter time.Duration `json:"stale_claim_critical_after"`
-
-	// MaxRetryCount is the maximum number of conflict resolution retries
-	// before escalation to Mayor.
-	MaxRetryCount int `json:"max_retry_count"`
 
 	// AutoPush controls whether the refinery pushes to origin after merging.
 	// When false, the refinery merges locally but does not push — the user
@@ -179,42 +151,63 @@ type MergeQueueConfig struct {
 	Batch *BatchConfig `json:"batch,omitempty"`
 }
 
+// MergeQueueTiming groups polling, concurrency, retry, and stale-claim
+// thresholds used by the queue processor. It is embedded to keep the config
+// JSON keys flat for existing refinery settings.
+type MergeQueueTiming struct {
+	// PollInterval is how often to check for new MRs.
+	PollInterval time.Duration `json:"poll_interval"`
+
+	// MaxConcurrent is the maximum number of MRs to process concurrently.
+	MaxConcurrent int `json:"max_concurrent"`
+
+	// StaleClaimTimeout is how long a claimed MR can go without updates before
+	// being considered abandoned and eligible for re-claim. This handles the
+	// case where a refinery crashes mid-merge, leaving an MR permanently claimed.
+	// Set conservatively to avoid re-claiming MRs with long-running test suites.
+	// NOTE: Only one refinery instance runs per rig (enforced by ErrAlreadyRunning
+	// in manager.go), so concurrent re-claim is not a concern in practice.
+	StaleClaimTimeout time.Duration `json:"stale_claim_timeout"`
+
+	// StaleClaimWarningAfter is how long a claimed MR can sit without updates
+	// before it triggers a "warning" severity anomaly.
+	StaleClaimWarningAfter time.Duration `json:"stale_claim_warning_after"`
+
+	// StaleClaimCriticalAfter is how long a claimed MR can sit without updates
+	// before it triggers a "critical" severity anomaly.
+	StaleClaimCriticalAfter time.Duration `json:"stale_claim_critical_after"`
+
+	// MaxRetryCount is the maximum number of conflict resolution retries
+	// before escalation to Mayor.
+	MaxRetryCount int `json:"max_retry_count"`
+}
+
 // DefaultMergeQueueConfig returns sensible defaults for merge queue configuration.
 func DefaultMergeQueueConfig() *MergeQueueConfig {
 	return &MergeQueueConfig{
-		Enabled:                 true,
-		OnConflict:              "assign_back",
-		RunTests:                true,
-		TestCommand:             "",
-		DeleteMergedBranches:    true,
-		GatesParallel:           true, // gt-8b2i: run gates concurrently (~2x speedup)
-		RetryFlakyTests:         1,
-		PollInterval:            30 * time.Second,
-		MaxConcurrent:           1,
-		StaleClaimTimeout:       DefaultStaleClaimTimeout,
-		StaleClaimWarningAfter:  2 * time.Hour,
-		StaleClaimCriticalAfter: 6 * time.Hour,
-		MaxRetryCount:           5,
-		AutoPush:                true,
+		Enabled:              true,
+		OnConflict:           "assign_back",
+		RunTests:             true,
+		TestCommand:          "",
+		DeleteMergedBranches: true,
+		GatesParallel:        true, // gt-8b2i: run gates concurrently (~2x speedup)
+		RetryFlakyTests:      1,
+		MergeQueueTiming: MergeQueueTiming{
+			PollInterval:            30 * time.Second,
+			MaxConcurrent:           1,
+			StaleClaimTimeout:       DefaultStaleClaimTimeout,
+			StaleClaimWarningAfter:  2 * time.Hour,
+			StaleClaimCriticalAfter: 6 * time.Hour,
+			MaxRetryCount:           5,
+		},
+		AutoPush: true,
 	}
 }
 
-// MRInfo holds merge request information for display and processing.
-// This replaces mrqueue.MR after the mrqueue package removal.
-type MRInfo struct {
-	ID              string     // Bead ID (e.g., "gt-abc123")
-	Branch          string     // Source branch (e.g., "polecat/nux")
-	Target          string     // Target branch (e.g., "main")
-	SourceIssue     string     // The work item being merged
-	Worker          string     // Who did the work
-	Rig             string     // Which rig
-	Title           string     // MR title
-	Priority        int        // Priority (lower = higher priority)
-	AgentBead       string     // Agent bead ID that created this MR
-	CommitSHA       string     // Source branch tip submitted to the queue
-	PRURL           string     // Recorded pull request URL, if available
-	PRNumber        int        // Recorded pull request number, if available
-	RetryCount      int        // Conflict retry count
+// MRLifecycleState holds queue, verification, and branch-health state for an MR.
+// It is embedded so MRInfo keeps its existing selector surface while the
+// lifecycle state has one clear owner.
+type MRLifecycleState struct {
 	ConflictTaskID  string     // Open conflict-resolution task for this MR (if any)
 	ConvoyID        string     // Parent convoy ID if part of a convoy
 	ConvoyCreatedAt *time.Time // Convoy creation time
@@ -234,6 +227,25 @@ type MRInfo struct {
 	BranchExistsRemote bool      // Whether the MR branch exists in remote tracking refs
 }
 
+// MRInfo holds merge request information for display and processing.
+// This replaces mrqueue.MR after the mrqueue package removal.
+type MRInfo struct {
+	ID          string // Bead ID (e.g., "gt-abc123")
+	Branch      string // Source branch (e.g., "polecat/nux")
+	Target      string // Target branch (e.g., "main")
+	SourceIssue string // The work item being merged
+	Worker      string // Who did the work
+	Rig         string // Which rig
+	Title       string // MR title
+	Priority    int    // Priority (lower = higher priority)
+	AgentBead   string // Agent bead ID that created this MR
+	CommitSHA   string // Source branch tip submitted to the queue
+	PRURL       string // Recorded pull request URL, if available
+	PRNumber    int    // Recorded pull request number, if available
+	RetryCount  int    // Conflict retry count
+	MRLifecycleState
+}
+
 // MRAnomaly represents an MR queue health problem that can stall processing.
 type MRAnomaly struct {
 	ID       string        `json:"id"`
@@ -250,65 +262,6 @@ type MRAnomaly struct {
 // transient contention from real failures that need operator attention.
 var errMergeSlotTimeout = errors.New("merge slot contention timeout")
 
-// mergeSlotSeq is a package-level counter for unique merge slot holder IDs.
-// Using time.Now().UnixNano() alone is insufficient on Windows where timer
-// resolution can cause identical timestamps across concurrent goroutines.
-var mergeSlotSeq uint64
-
-// Engineer is the merge queue processor that polls for ready merge-requests
-// and processes them according to the merge queue design.
-type Engineer struct {
-	rig                   *rig.Rig
-	beads                 *beads.Beads
-	git                   *git.Git
-	config                *MergeQueueConfig
-	prProvider            PRProvider // VCS-specific PR operations (nil when MergeStrategy != "pr")
-	workDir               string
-	output                io.Writer    // Output destination for user-facing messages
-	router                *mail.Router // Mail router for sending protocol messages
-	mergeSlotEnsureExists func() (string, error)
-	mergeSlotAcquire      func(holder string, addWaiter bool) (*beads.MergeSlotStatus, error)
-	mergeSlotRelease      func(holder string) error
-	mergeSlotMaxRetries   int           // Max retries for slot acquisition (0 = no retry)
-	mergeSlotRetryBackoff time.Duration // Initial backoff between retries
-	testAllowSyntheticMRs bool          // Test-only: legacy merge-mechanics tests use synthetic MRs without beads.
-}
-
-// NewEngineer creates a new Engineer for the given rig.
-func NewEngineer(r *rig.Rig) *Engineer {
-	cfg := DefaultMergeQueueConfig()
-
-	// Determine the git working directory for refinery operations.
-	// Prefer refinery/rig worktree, fall back to mayor/rig (legacy architecture).
-	// Using rig.Path directly would find town's .git with rig-named remotes instead of "origin".
-	gitDir := filepath.Join(r.Path, "refinery", "rig")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		gitDir = filepath.Join(r.Path, "mayor", "rig")
-	}
-	beadsClient := beads.New(r.Path)
-
-	return &Engineer{
-		rig:     r,
-		beads:   beadsClient,
-		git:     git.NewGit(gitDir),
-		config:  cfg,
-		workDir: gitDir,
-		output:  os.Stdout,
-		router:  mail.NewRouter(r.Path),
-		mergeSlotEnsureExists: func() (string, error) {
-			return beadsClient.MergeSlotEnsureExists()
-		},
-		mergeSlotAcquire: func(holder string, addWaiter bool) (*beads.MergeSlotStatus, error) {
-			return beadsClient.MergeSlotAcquire(holder, addWaiter)
-		},
-		mergeSlotRelease: func(holder string) error {
-			return beadsClient.MergeSlotRelease(holder)
-		},
-		mergeSlotMaxRetries:   10,
-		mergeSlotRetryBackoff: 500 * time.Millisecond,
-	}
-}
-
 // SetOutput sets the output writer for user-facing messages.
 // This is useful for testing or redirecting output.
 func (e *Engineer) SetOutput(w io.Writer) {
@@ -316,144 +269,197 @@ func (e *Engineer) SetOutput(w io.Writer) {
 }
 
 // LoadConfig loads merge queue configuration from the rig's config.json.
+type mergeQueueCoreRaw struct {
+	Enabled              *bool   `json:"enabled"`
+	OnConflict           *string `json:"on_conflict"`
+	RunTests             *bool   `json:"run_tests"`
+	TestCommand          *string `json:"test_command"`
+	DeleteMergedBranches *bool   `json:"delete_merged_branches"`
+	RetryFlakyTests      *int    `json:"retry_flaky_tests"`
+	PollInterval         *string `json:"poll_interval"`
+	MaxConcurrent        *int    `json:"max_concurrent"`
+	StaleClaimTimeout    *string `json:"stale_claim_timeout"`
+}
+
+type mergeQueueAdvancedRaw struct {
+	Gates         map[string]*gateConfigRaw `json:"gates"`
+	GatesParallel *bool                     `json:"gates_parallel"`
+	AutoPush      *bool                     `json:"auto_push"`
+	MergeStrategy *string                   `json:"merge_strategy"`
+	VCSProvider   *string                   `json:"vcs_provider"`
+	RequireReview *bool                     `json:"require_review"`
+}
+
+// LoadConfig loads merge queue configuration from the rig's config.json.
 func (e *Engineer) LoadConfig() error {
-	configPath := filepath.Join(e.rig.Path, "config.json")
-	data, err := os.ReadFile(configPath)
+	rawQueue, err := readMergeQueueConfig(filepath.Join(e.rig.Path, "config.json"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Use defaults if no config file
-			return nil
-		}
-		return fmt.Errorf("reading config: %w", err)
+		return err
 	}
-
-	// Parse config file to extract merge_queue section
-	var rawConfig struct {
-		MergeQueue json.RawMessage `json:"merge_queue"`
-	}
-	if err := json.Unmarshal(data, &rawConfig); err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-
-	if rawConfig.MergeQueue == nil {
-		// No merge_queue section, use defaults
+	if rawQueue == nil {
 		return nil
 	}
-
-	// Parse merge_queue section into our config struct
-	// We need special handling for poll_interval (string -> Duration)
-	var mqRaw struct {
-		Enabled              *bool                     `json:"enabled"`
-		OnConflict           *string                   `json:"on_conflict"`
-		RunTests             *bool                     `json:"run_tests"`
-		TestCommand          *string                   `json:"test_command"`
-		DeleteMergedBranches *bool                     `json:"delete_merged_branches"`
-		RetryFlakyTests      *int                      `json:"retry_flaky_tests"`
-		PollInterval         *string                   `json:"poll_interval"`
-		MaxConcurrent        *int                      `json:"max_concurrent"`
-		StaleClaimTimeout    *string                   `json:"stale_claim_timeout"`
-		Gates                map[string]*gateConfigRaw `json:"gates"`
-		GatesParallel        *bool                     `json:"gates_parallel"`
-		AutoPush             *bool                     `json:"auto_push"`
-		MergeStrategy        *string                   `json:"merge_strategy"`
-		VCSProvider          *string                   `json:"vcs_provider"`
-		RequireReview        *bool                     `json:"require_review"`
+	if err := e.applyMergeQueueConfig(rawQueue); err != nil {
+		return err
 	}
-
-	if err := json.Unmarshal(rawConfig.MergeQueue, &mqRaw); err != nil {
-		return fmt.Errorf("parsing merge_queue config: %w", err)
-	}
-
-	// Apply non-nil values to config (preserving defaults for missing fields)
-	if mqRaw.Enabled != nil {
-		e.config.Enabled = *mqRaw.Enabled
-	}
-	if mqRaw.OnConflict != nil {
-		e.config.OnConflict = *mqRaw.OnConflict
-	}
-	if mqRaw.RunTests != nil {
-		e.config.RunTests = *mqRaw.RunTests
-	}
-	if mqRaw.TestCommand != nil {
-		e.config.TestCommand = *mqRaw.TestCommand
-	}
-	if mqRaw.DeleteMergedBranches != nil {
-		e.config.DeleteMergedBranches = *mqRaw.DeleteMergedBranches
-	}
-	if mqRaw.RetryFlakyTests != nil {
-		e.config.RetryFlakyTests = *mqRaw.RetryFlakyTests
-	}
-	if mqRaw.MaxConcurrent != nil {
-		e.config.MaxConcurrent = *mqRaw.MaxConcurrent
-	}
-	if mqRaw.PollInterval != nil {
-		dur, err := time.ParseDuration(*mqRaw.PollInterval)
-		if err != nil {
-			return fmt.Errorf("invalid poll_interval %q: %w", *mqRaw.PollInterval, err)
-		}
-		e.config.PollInterval = dur
-	}
-	if mqRaw.StaleClaimTimeout != nil {
-		dur, err := time.ParseDuration(*mqRaw.StaleClaimTimeout)
-		if err != nil {
-			return fmt.Errorf("invalid stale_claim_timeout %q: %w", *mqRaw.StaleClaimTimeout, err)
-		}
-		if dur <= 0 {
-			return fmt.Errorf("stale_claim_timeout must be positive, got %v", dur)
-		}
-		e.config.StaleClaimTimeout = dur
-	}
-
-	// Parse gates configuration
-	if mqRaw.Gates != nil {
-		e.config.Gates = make(map[string]*GateConfig, len(mqRaw.Gates))
-		for name, raw := range mqRaw.Gates {
-			gc := &GateConfig{Cmd: raw.Cmd}
-			if raw.Timeout != "" {
-				dur, err := time.ParseDuration(raw.Timeout)
-				if err != nil {
-					return fmt.Errorf("invalid timeout for gate %q: %w", name, err)
-				}
-				if dur <= 0 {
-					return fmt.Errorf("gate %q timeout must be positive, got %v", name, dur)
-				}
-				gc.Timeout = dur
-			}
-			switch raw.Phase {
-			case "", "pre-merge":
-				gc.Phase = GatePhasePreMerge
-			case "post-squash":
-				gc.Phase = GatePhasePostSquash
-			default:
-				return fmt.Errorf("gate %q has invalid phase %q: must be \"pre-merge\" or \"post-squash\"", name, raw.Phase)
-			}
-			e.config.Gates[name] = gc
-		}
-	}
-	if mqRaw.GatesParallel != nil {
-		e.config.GatesParallel = *mqRaw.GatesParallel
-	}
-	if mqRaw.AutoPush != nil {
-		e.config.AutoPush = *mqRaw.AutoPush
-	}
-	if mqRaw.MergeStrategy != nil {
-		e.config.MergeStrategy = *mqRaw.MergeStrategy
-	}
-	if mqRaw.VCSProvider != nil {
-		e.config.VCSProvider = *mqRaw.VCSProvider
-	}
-	if mqRaw.RequireReview != nil {
-		e.config.RequireReview = mqRaw.RequireReview
-	}
-
-	// Initialize the PR provider when merge_strategy=pr.
 	if e.config.MergeStrategy == "pr" {
 		if err := e.initPRProvider(); err != nil {
 			return fmt.Errorf("initializing PR provider: %w", err)
 		}
 	}
-
 	return nil
+}
+
+func readMergeQueueConfig(configPath string) (json.RawMessage, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+
+	var rawConfig struct {
+		MergeQueue json.RawMessage `json:"merge_queue"`
+	}
+	if err := json.Unmarshal(data, &rawConfig); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	return rawConfig.MergeQueue, nil
+}
+
+func (e *Engineer) applyMergeQueueConfig(rawQueue json.RawMessage) error {
+	core, advanced, err := parseMergeQueueRaw(rawQueue)
+	if err != nil {
+		return err
+	}
+	if err := applyMergeQueueCore(e.config, core); err != nil {
+		return err
+	}
+	return applyMergeQueueAdvanced(e.config, advanced)
+}
+
+func parseMergeQueueRaw(rawQueue json.RawMessage) (mergeQueueCoreRaw, mergeQueueAdvancedRaw, error) {
+	var core mergeQueueCoreRaw
+	if err := json.Unmarshal(rawQueue, &core); err != nil {
+		return mergeQueueCoreRaw{}, mergeQueueAdvancedRaw{}, fmt.Errorf("parsing merge_queue config: %w", err)
+	}
+	var advanced mergeQueueAdvancedRaw
+	if err := json.Unmarshal(rawQueue, &advanced); err != nil {
+		return mergeQueueCoreRaw{}, mergeQueueAdvancedRaw{}, fmt.Errorf("parsing merge_queue config: %w", err)
+	}
+	return core, advanced, nil
+}
+
+func applyMergeQueueCore(cfg *MergeQueueConfig, raw mergeQueueCoreRaw) error {
+	applyMergeQueueCoreValues(cfg, raw)
+	return applyMergeQueueDurations(cfg, raw)
+}
+
+func applyMergeQueueCoreValues(cfg *MergeQueueConfig, raw mergeQueueCoreRaw) {
+	if raw.Enabled != nil {
+		cfg.Enabled = *raw.Enabled
+	}
+	if raw.OnConflict != nil {
+		cfg.OnConflict = *raw.OnConflict
+	}
+	if raw.RunTests != nil {
+		cfg.RunTests = *raw.RunTests
+	}
+	if raw.TestCommand != nil {
+		cfg.TestCommand = *raw.TestCommand
+	}
+	if raw.DeleteMergedBranches != nil {
+		cfg.DeleteMergedBranches = *raw.DeleteMergedBranches
+	}
+	if raw.RetryFlakyTests != nil {
+		cfg.RetryFlakyTests = *raw.RetryFlakyTests
+	}
+	if raw.MaxConcurrent != nil {
+		cfg.MaxConcurrent = *raw.MaxConcurrent
+	}
+}
+
+func applyMergeQueueDurations(cfg *MergeQueueConfig, raw mergeQueueCoreRaw) error {
+	if raw.PollInterval != nil {
+		dur, err := time.ParseDuration(*raw.PollInterval)
+		if err != nil {
+			return fmt.Errorf("invalid poll_interval %q: %w", *raw.PollInterval, err)
+		}
+		cfg.PollInterval = dur
+	}
+	if raw.StaleClaimTimeout != nil {
+		dur, err := time.ParseDuration(*raw.StaleClaimTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid stale_claim_timeout %q: %w", *raw.StaleClaimTimeout, err)
+		}
+		if dur <= 0 {
+			return fmt.Errorf("stale_claim_timeout must be positive, got %v", dur)
+		}
+		cfg.StaleClaimTimeout = dur
+	}
+	return nil
+}
+
+func applyMergeQueueAdvanced(cfg *MergeQueueConfig, raw mergeQueueAdvancedRaw) error {
+	if raw.Gates != nil {
+		gates, err := parseGateConfigs(raw.Gates)
+		if err != nil {
+			return err
+		}
+		cfg.Gates = gates
+	}
+	if raw.GatesParallel != nil {
+		cfg.GatesParallel = *raw.GatesParallel
+	}
+	if raw.AutoPush != nil {
+		cfg.AutoPush = *raw.AutoPush
+	}
+	if raw.MergeStrategy != nil {
+		cfg.MergeStrategy = *raw.MergeStrategy
+	}
+	if raw.VCSProvider != nil {
+		cfg.VCSProvider = *raw.VCSProvider
+	}
+	if raw.RequireReview != nil {
+		cfg.RequireReview = raw.RequireReview
+	}
+	return nil
+}
+
+func parseGateConfigs(rawGates map[string]*gateConfigRaw) (map[string]*GateConfig, error) {
+	gates := make(map[string]*GateConfig, len(rawGates))
+	for name, raw := range rawGates {
+		gate, err := parseGateConfig(name, raw)
+		if err != nil {
+			return nil, err
+		}
+		gates[name] = gate
+	}
+	return gates, nil
+}
+
+func parseGateConfig(name string, raw *gateConfigRaw) (*GateConfig, error) {
+	gate := &GateConfig{Cmd: raw.Cmd}
+	if raw.Timeout != "" {
+		dur, err := time.ParseDuration(raw.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timeout for gate %q: %w", name, err)
+		}
+		if dur <= 0 {
+			return nil, fmt.Errorf("gate %q timeout must be positive, got %v", name, dur)
+		}
+		gate.Timeout = dur
+	}
+	switch raw.Phase {
+	case "", "pre-merge":
+		gate.Phase = GatePhasePreMerge
+	case "post-squash":
+		gate.Phase = GatePhasePostSquash
+	default:
+		return nil, fmt.Errorf("gate %q has invalid phase %q: must be \"pre-merge\" or \"post-squash\"", name, raw.Phase)
+	}
+	return gate, nil
 }
 
 // initPRProvider creates the appropriate PRProvider based on vcs_provider config.
@@ -514,17 +520,77 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 		return eligibility
 	}
 
-	// Step 1: Verify source branch exists locally (shared .repo.git with polecats)
+	mergeRef, preparation := e.prepareMerge(mr, branch, target)
+	if !preparation.Success {
+		return preparation
+	}
+
+	shouldSkipGates := skipMergeGates(skipGates)
+	if result := e.runConfiguredMergeGates(ctx, shouldSkipGates); !result.Success {
+		return result
+	}
+
+	mergeCommit, mergeResult := e.executeMerge(ctx, mr, branch, target, mergeRef, shouldSkipGates)
+	if !mergeResult.Success {
+		return mergeResult
+	}
+
+	if result := e.publishMergeResult(ctx, mr, target, mergeCommit); !result.Success {
+		return result
+	}
+
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged: %s\n", shortSHA(mergeCommit))
+	return ProcessResult{
+		Success:     true,
+		MergeCommit: mergeCommit,
+	}
+}
+
+func skipMergeGates(skipGates []bool) bool {
+	return len(skipGates) > 0 && skipGates[0]
+}
+
+func (e *Engineer) executeMerge(ctx context.Context, mr *MRInfo, branch, target, mergeRef string, skipGates bool) (string, ProcessResult) {
+	if e.config.MergeStrategy == "pr" {
+		result := e.doMergePR(ctx, mr)
+		return result.MergeCommit, result
+	}
+	return e.mergeTarget(ctx, mr, branch, target, mergeRef, skipGates)
+}
+
+func (e *Engineer) publishMergeResult(ctx context.Context, mr *MRInfo, target, mergeCommit string) ProcessResult {
+	if !e.config.AutoPush {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-push disabled, skipping push to origin/%s\n", target)
+		return ProcessResult{Success: true}
+	}
+	return e.pushMergeResult(ctx, mr, target, mergeCommit)
+}
+
+func (e *Engineer) prepareMerge(mr *MRInfo, branch, target string) (string, ProcessResult) {
+	mergeRef, result := e.validateMergeSource(mr, branch)
+	if !result.Success {
+		return "", result
+	}
+	if result := e.checkoutMergeTarget(target, mergeRef); !result.Success {
+		return "", result
+	}
+	if result := e.pushSubmoduleChanges(mr, target, mergeRef); !result.Success {
+		return "", result
+	}
+	return mergeRef, ProcessResult{Success: true}
+}
+
+func (e *Engineer) validateMergeSource(mr *MRInfo, branch string) (string, ProcessResult) {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking local branch %s...\n", branch)
-	exists, err := e.git.BranchExists(branch)
+	exists, err := git.BranchExists(e.git, branch)
 	if err != nil {
-		return ProcessResult{
+		return "", ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to check branch %s: %v", branch, err),
 		}
 	}
 	if !exists {
-		return ProcessResult{
+		return "", ProcessResult{
 			Success:        false,
 			BranchNotFound: true,
 			Error:          fmt.Sprintf("branch %s not found locally", branch),
@@ -532,27 +598,26 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 	}
 	mergeRef, err := e.submittedBranchHead(mr)
 	if err != nil {
-		return ProcessResult{Success: false, Error: err.Error()}
+		return "", ProcessResult{Success: false, Error: err.Error()}
 	}
+	return mergeRef, ProcessResult{Success: true}
+}
 
-	// Step 2: Checkout the target branch
+func (e *Engineer) checkoutMergeTarget(target, mergeRef string) ProcessResult {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking out target branch %s...\n", target)
-	if err := e.git.Checkout(target); err != nil {
+	if err := git.Checkout(e.git, target); err != nil {
 		return ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to checkout target %s: %v", target, err),
 		}
 	}
-
-	// Make sure target is up to date with origin
-	if err := e.git.Pull("origin", target); err != nil {
+	if err := git.Pull(e.git, "origin", target); err != nil {
 		// Pull might fail if nothing to pull, that's ok
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: pull from origin/%s: %v (continuing)\n", target, err)
 	}
 
-	// Step 3: Check for merge conflicts (using local branch)
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Checking for conflicts...\n")
-	conflicts, err := e.git.CheckConflicts(mergeRef, target)
+	conflicts, err := git.CheckConflicts(e.git, mergeRef, target)
 	if err != nil {
 		return ProcessResult{
 			Success:  false,
@@ -567,203 +632,177 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 			Error:    fmt.Sprintf("merge conflicts in: %v", conflicts),
 		}
 	}
+	return ProcessResult{Success: true}
+}
 
-	// Step 3.5: Push submodule commits if the branch changes submodule pointers.
-	// The refinery owns all remote pushes — submodule commits must land before the
-	// parent pointer is merged, otherwise main gets dangling submodule references.
-	subChanges, err := e.git.SubmoduleChanges(target, mergeRef)
+func (e *Engineer) pushSubmoduleChanges(mr *MRInfo, target, mergeRef string) ProcessResult {
+	subChanges, err := git.SubmoduleChanges(e.git, target, mergeRef)
 	if err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not check submodule changes: %v\n", err)
 	}
-	if len(subChanges) > 0 {
-		// Ensure submodules are initialized in the refinery worktree
-		// Use mayor/rig as reference to avoid re-fetching from remote
-		mayorRig := filepath.Join(e.rig.Path, "mayor", "rig")
-		if initErr := git.InitSubmodules(e.git.WorkDir(), mayorRig); initErr != nil {
+	if len(subChanges) == 0 {
+		return ProcessResult{Success: true}
+	}
+
+	// Ensure submodules are initialized in the refinery worktree.
+	// Use mayor/rig as reference to avoid re-fetching from remote.
+	mayorRig := filepath.Join(e.rig.Path, "mayor", "rig")
+	if initErr := git.InitSubmodules(git.WorkDir(e.git), mayorRig); initErr != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to init submodules in refinery worktree: %v", initErr),
+		}
+	}
+	for _, sc := range subChanges {
+		if sc.NewSHA == "" {
+			continue // Submodule removed, nothing to push
+		}
+		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
+			return eligibility
+		}
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing submodule %s (commit %s)...\n", sc.Path, shortSHA(sc.NewSHA))
+		if pushErr := git.PushSubmoduleCommit(e.git, sc.Path, sc.NewSHA, "origin"); pushErr != nil {
 			return ProcessResult{
 				Success: false,
-				Error:   fmt.Sprintf("failed to init submodules in refinery worktree: %v", initErr),
+				Error:   fmt.Sprintf("failed to push submodule %s: %v", sc.Path, pushErr),
 			}
 		}
-		for _, sc := range subChanges {
-			if sc.NewSHA == "" {
-				continue // Submodule removed, nothing to push
-			}
-			if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-				return eligibility
-			}
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing submodule %s (commit %s)...\n", sc.Path, shortSHA(sc.NewSHA))
-			if pushErr := e.git.PushSubmoduleCommit(sc.Path, sc.NewSHA, "origin"); pushErr != nil {
-				return ProcessResult{
-					Success: false,
-					Error:   fmt.Sprintf("failed to push submodule %s: %v", sc.Path, pushErr),
-				}
-			}
-		}
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushed %d submodule(s)\n", len(subChanges))
 	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Pushed %d submodule(s)\n", len(subChanges))
+	return ProcessResult{Success: true}
+}
 
-	// Step 4: Run quality gates (or legacy tests) if configured.
-	// Phase 3 fast-path: if skipGates is true (pre-verified MR with matching base),
-	// skip all gate execution — the polecat already ran gates after rebasing.
-	shouldSkipGates := len(skipGates) > 0 && skipGates[0]
-	if shouldSkipGates {
+func (e *Engineer) runConfiguredMergeGates(ctx context.Context, shouldSkip bool) ProcessResult {
+	if shouldSkip {
 		_, _ = fmt.Fprintln(e.output, "[Engineer] Skipping gates (pre-verified by polecat)")
-	} else if len(e.config.Gates) > 0 {
-		// New gates system: run configured quality gates
-		gateResult := e.runGates(ctx)
-		if !gateResult.Success {
-			return gateResult
-		}
-	} else if e.config.RunTests && e.config.TestCommand != "" {
-		// Legacy test command path (backward compatible)
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
-		result := e.runTests(ctx)
-		if !result.Success {
-			return ProcessResult{
-				Success:     false,
-				TestsFailed: true,
-				Error:       result.Error,
-			}
-		}
-		_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
+		return ProcessResult{Success: true}
+	}
+	if len(e.config.Gates) > 0 {
+		return e.runGates(ctx)
+	}
+	if !e.config.RunTests || e.config.TestCommand == "" {
+		return ProcessResult{Success: true}
 	}
 
-	// PR merge path: when merge_strategy=pr, use the VCS provider's merge API
-	// instead of local merge + direct push. This respects branch
-	// protection/restriction rules and preserves the PR audit trail.
-	// The VCS provider (GitHub, Bitbucket) is selected via vcs_provider config.
-	if e.config.MergeStrategy == "pr" {
-		return e.doMergePR(ctx, mr)
-	}
-
-	// Step 5: Perform the actual merge, preserving the submitted head in target ancestry.
-	// Get the original commit message from the polecat branch to preserve the
-	// conventional commit format (feat:/fix:) in the merge commit message.
-	mergeMsg, err := e.git.GetBranchCommitMessage(branch)
-	if err != nil {
-		// Fallback to a descriptive message if we can't get the original
-		mergeMsg = fmt.Sprintf("Merge %s into %s", branch, target)
-		if mr.SourceIssue != "" {
-			mergeMsg = fmt.Sprintf("Merge %s into %s (%s)", branch, target, mr.SourceIssue)
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
+	result := e.runTests(ctx)
+	if !result.Success {
+		return ProcessResult{
+			Success:     false,
+			TestsFailed: true,
+			Error:       result.Error,
 		}
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not get original commit message: %v\n", err)
 	}
+	_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) mergeTarget(ctx context.Context, mr *MRInfo, branch, target, mergeRef string, skipGates bool) (string, ProcessResult) {
+	mergeMsg := e.mergeMessage(branch, target, mr.SourceIssue)
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Merging with message: %s\n", strings.TrimSpace(mergeMsg))
-	if err := e.git.MergeNoFF(mergeRef, mergeMsg); err != nil {
-		// ZFC: Use git's porcelain output to detect conflicts instead of parsing stderr.
-		// GetConflictingFiles() uses `git diff --diff-filter=U` which is proper.
-		conflicts, conflictErr := e.git.GetConflictingFiles()
+	if err := git.MergeNoFF(e.git, mergeRef, mergeMsg); err != nil {
+		conflicts, conflictErr := git.GetConflictingFiles(e.git)
 		if conflictErr == nil && len(conflicts) > 0 {
-			_ = e.git.AbortMerge()
-			return ProcessResult{
+			_ = git.AbortMerge(e.git)
+			return "", ProcessResult{
 				Success:  false,
 				Conflict: true,
 				Error:    "merge conflict during actual merge",
 			}
 		}
-		// Non-conflict failure: still need to abort to clean up dirty merge state
-		_ = e.git.AbortMerge()
-		return ProcessResult{
+		_ = git.AbortMerge(e.git)
+		return "", ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("merge failed: %v", err),
 		}
 	}
 
-	// Step 5.5: Run post-squash gates on the merged result.
-	// These validate the actual combined code before it goes anywhere.
-	// On failure, reset the merge to undo the local merge commit.
-	if !shouldSkipGates {
+	if !skipGates {
 		postResult := e.runGatesForPhase(ctx, GatePhasePostSquash)
 		if !postResult.Success {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
 				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after post-squash gate failure: %v\n", target, resetErr)
 			}
-			return postResult
+			return "", postResult
 		}
 	}
 
-	// Step 6: Get the merge commit SHA
-	mergeCommit, err := e.git.Rev("HEAD")
+	mergeCommit, err := git.Rev(e.git, "HEAD")
 	if err != nil {
-		return ProcessResult{
+		return "", ProcessResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to get merge commit SHA: %v", err),
 		}
 	}
+	return mergeCommit, ProcessResult{Success: true}
+}
 
-	// Step 7-8: Push to origin (when auto_push is enabled).
-	if e.config.AutoPush {
-		// Acquire merge slot before push to serialize writes to the default branch.
-		// Only serialize pushes to the rig's default branch (typically main).
-		// Integration-branch and feature-branch pushes don't need serialization.
-		var pushHolder string
-		if target == e.rig.DefaultBranch() {
-			var slotErr error
-			pushHolder, slotErr = e.acquireMainPushSlot(ctx)
-			if slotErr != nil {
-				// Reset the checked-out target branch to origin to undo the local merge commit.
-				// ResetHard is required because target is the current branch (checked out in Step 2).
-				if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-					_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after slot failure: %v\n", target, resetErr)
-				}
-				// Only classify as SlotTimeout for actual contention (retries exhausted).
-				// Infrastructure errors (beads down, permission errors) should surface
-				// through the normal failure/notification path for operator visibility.
-				return ProcessResult{
-					Success:     false,
-					SlotTimeout: errors.Is(slotErr, errMergeSlotTimeout),
-					Error:       fmt.Sprintf("failed to acquire merge slot before push: %v", slotErr),
-				}
-			}
-			defer func() {
-				// pushHolder is empty when the self-conflict bypass fires — conflict-resolution
-				// owns the slot, so we must not release it here.
-				if pushHolder != "" {
-					if releaseErr := e.mergeSlotRelease(pushHolder); releaseErr != nil {
-						_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to release merge slot for push (%s): %v\n", pushHolder, releaseErr)
-					}
-				}
-			}()
-		}
+func (e *Engineer) mergeMessage(branch, target, sourceIssue string) string {
+	mergeMsg, err := git.GetBranchCommitMessage(e.git, branch)
+	if err == nil {
+		return mergeMsg
+	}
+	mergeMsg = fmt.Sprintf("Merge %s into %s", branch, target)
+	if sourceIssue != "" {
+		mergeMsg = fmt.Sprintf("Merge %s into %s (%s)", branch, target, sourceIssue)
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not get original commit message: %v\n", err)
+	return mergeMsg
+}
 
-		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)
-			}
-			return eligibility
+func (e *Engineer) pushMergeResult(ctx context.Context, mr *MRInfo, target, mergeCommit string) ProcessResult {
+	pushHolder, slotErr := e.acquirePushSlot(ctx, target)
+	if slotErr != nil {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after slot failure: %v\n", target, resetErr)
 		}
-
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing to origin/%s...\n", target)
-		if err := e.git.Push("origin", target, false); err != nil {
-			// Reset the checked-out target branch to undo the local merge commit.
-			// Without this, the next retry could see stale local state from the failed push.
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
-			}
-			return ProcessResult{
-				Success: false,
-				Error:   fmt.Sprintf("failed to push to origin: %v", err),
-			}
+		return ProcessResult{
+			Success:     false,
+			SlotTimeout: errors.Is(slotErr, errMergeSlotTimeout),
+			Error:       fmt.Sprintf("failed to acquire merge slot before push: %v", slotErr),
 		}
-		if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after verified-push failure: %v\n", target, resetErr)
-			}
-			return ProcessResult{
-				Success: false,
-				Error:   err.Error(),
-			}
-		}
-	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-push disabled, skipping push to origin/%s\n", target)
+	}
+	if pushHolder != "" {
+		defer e.releasePushSlot(pushHolder)
 	}
 
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged: %s\n", shortSHA(mergeCommit))
-	return ProcessResult{
-		Success:     true,
-		MergeCommit: mergeCommit,
+	if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)
+		}
+		return eligibility
 	}
+	if err := e.pushAndVerifyMerge(target, mergeCommit); err != nil {
+		if resetErr := git.ResetHard(e.git, "origin/"+target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
+		}
+		return ProcessResult{Success: false, Error: err.Error()}
+	}
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) acquirePushSlot(ctx context.Context, target string) (string, error) {
+	if target != e.rig.DefaultBranch() {
+		return "", nil
+	}
+	return e.acquireMainPushSlot(ctx)
+}
+
+func (e *Engineer) releasePushSlot(holder string) {
+	if releaseErr := e.mergeSlotRelease(holder); releaseErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to release merge slot for push (%s): %v\n", holder, releaseErr)
+	}
+}
+
+func (e *Engineer) pushAndVerifyMerge(target, mergeCommit string) error {
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing to origin/%s...\n", target)
+	if err := git.Push(e.git, "origin", target, false); err != nil {
+		return fmt.Errorf("failed to push to origin: %w", err)
+	}
+	if err := git.VerifyPushedCommit(e.git, "origin", target, mergeCommit); err != nil {
+		return err
+	}
+	return nil
 }
 
 // doMergePR handles merging via the VCS provider's PR merge API (merge_strategy=pr).
@@ -774,14 +813,11 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 //nolint:unparam // ctx is reserved for future use when git methods accept context
 func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 	_ = ctx
-	if mr == nil {
-		return ProcessResult{Success: false, Error: "merge request is missing"}
+	if result := validatePRMergeRequest(mr); !result.Success {
+		return result
 	}
 	branch, target := mr.Branch, mr.Target
-	provider := e.config.VCSProvider
-	if provider == "" {
-		provider = "github"
-	}
+	provider := configuredVCSProvider(e.config.VCSProvider)
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Using PR merge strategy (vcs_provider=%s)\n", provider)
 
 	if e.prProvider == nil {
@@ -790,69 +826,18 @@ func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 			Error:   fmt.Sprintf("no PR provider configured for vcs_provider=%s", provider),
 		}
 	}
-	// Step PR.1: Find the PR for this branch
-	pr, err := e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
-	if err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to find PR for branch %s: %v", branch, err),
-		}
+	pr, result := e.findPRForMerge(mr, branch)
+	if !result.Success {
+		return result
 	}
-	if pr == nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch),
-		}
+	if result := e.checkPRApproval(pr); !result.Success {
+		return result
 	}
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Found PR #%d for branch %s\n", pr.Number, branch)
-	if strings.TrimSpace(mr.CommitSHA) != "" {
-		if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
-			return ProcessResult{Success: false, Error: err.Error()}
-		}
+	pr, result = e.preparePRMerge(mr, branch, target)
+	if !result.Success {
+		return result
 	}
 
-	// Step PR.2: Check approval status if require_review is enabled
-	requireReview := e.config.RequireReview != nil && *e.config.RequireReview
-	if requireReview {
-		approved, err := e.prProvider.IsPRApproved(pr)
-		if err != nil {
-			return ProcessResult{
-				Success: false,
-				Error:   fmt.Sprintf("failed to check PR #%d approval status: %v", pr.Number, err),
-			}
-		}
-		if !approved {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d awaiting human approval — deferring merge\n", pr.Number)
-			return ProcessResult{
-				Success:       false,
-				NeedsApproval: true,
-				Error:         fmt.Sprintf("PR #%d requires approving review before merge", pr.Number),
-			}
-		}
-		_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d has approving review\n", pr.Number)
-	}
-
-	if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
-		return eligibility
-	}
-	if err := e.ensureMRInfoCommitSHA(mr); err != nil {
-		return ProcessResult{Success: false, Error: err.Error()}
-	}
-	// Re-read immediately before merge so a PR head advance cannot sneak between
-	// approval/recheck and the provider merge call.
-	pr, err = e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
-	if err != nil {
-		return ProcessResult{Success: false, Error: fmt.Sprintf("failed to refresh PR for branch %s: %v", branch, err)}
-	}
-	if pr == nil {
-		return ProcessResult{Success: false, Error: fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch)}
-	}
-	if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
-		return ProcessResult{Success: false, Error: err.Error()}
-	}
-
-	// Step PR.3: Merge via VCS provider API with a merge commit so the submitted
-	// head remains in target ancestry for post-merge proof.
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Merging PR #%d via %s API (merge)...\n", pr.Number, provider)
 	mergeCommit, err := e.prProvider.MergePR(pr, "merge")
 	if err != nil {
@@ -861,24 +846,9 @@ func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 			Error:   fmt.Sprintf("PR merge failed for PR #%d: %v", pr.Number, err),
 		}
 	}
-
-	// Step PR.4: Sync local target branch after remote merge
-	if err := e.git.Checkout(target); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to checkout %s after PR merge: %v\n", target, err)
-	} else if err := e.git.Pull("origin", target); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to pull %s after PR merge: %v\n", target, err)
-	}
-
-	if mergeCommit == "" {
-		if sha, err := e.git.Rev("HEAD"); err == nil {
-			mergeCommit = sha
-		}
-	}
-	if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   err.Error(),
-		}
+	mergeCommit = e.syncPRMergeTarget(target, mergeCommit)
+	if err := git.VerifyPushedCommit(e.git, "origin", target, mergeCommit); err != nil {
+		return ProcessResult{Success: false, Error: err.Error()}
 	}
 
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged PR #%d: %s\n", pr.Number, shortSHA(mergeCommit))
@@ -888,12 +858,122 @@ func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
 	}
 }
 
+func validatePRMergeRequest(mr *MRInfo) ProcessResult {
+	if mr == nil {
+		return ProcessResult{Success: false, Error: "merge request is missing"}
+	}
+	return ProcessResult{Success: true}
+}
+
+func configuredVCSProvider(provider string) string {
+	if provider == "" {
+		return "github"
+	}
+	return provider
+}
+
+func (e *Engineer) findPRForMerge(mr *MRInfo, branch string) (*git.PullRequestInfo, ProcessResult) {
+	pr, err := e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
+	if err != nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to find PR for branch %s: %v", branch, err),
+		}
+	}
+	if pr == nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch),
+		}
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Found PR #%d for branch %s\n", pr.Number, branch)
+	if strings.TrimSpace(mr.CommitSHA) != "" {
+		if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
+			return nil, ProcessResult{Success: false, Error: err.Error()}
+		}
+	}
+	return pr, ProcessResult{Success: true}
+}
+
+func (e *Engineer) checkPRApproval(pr *git.PullRequestInfo) ProcessResult {
+	requireReview := e.config.RequireReview != nil && *e.config.RequireReview
+	if !requireReview {
+		return ProcessResult{Success: true}
+	}
+	approved, err := e.prProvider.IsPRApproved(pr)
+	if err != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to check PR #%d approval status: %v", pr.Number, err),
+		}
+	}
+	if !approved {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d awaiting human approval — deferring merge\n", pr.Number)
+		return ProcessResult{
+			Success:       false,
+			NeedsApproval: true,
+			Error:         fmt.Sprintf("PR #%d requires approving review before merge", pr.Number),
+		}
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] PR #%d has approving review\n", pr.Number)
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) refreshPRForMerge(mr *MRInfo, branch string) (*git.PullRequestInfo, ProcessResult) {
+	pr, err := e.prProvider.FindPullRequest(branch, mr.PRURL, mr.PRNumber, mr.CommitSHA)
+	if err != nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to refresh PR for branch %s: %v", branch, err),
+		}
+	}
+	if pr == nil {
+		return nil, ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("no open PR found for branch %s — merge_strategy=pr requires a PR", branch),
+		}
+	}
+	if err := requirePullRequestHead(pr, mr.CommitSHA); err != nil {
+		return nil, ProcessResult{Success: false, Error: err.Error()}
+	}
+	return pr, ProcessResult{Success: true}
+}
+
+func (e *Engineer) preparePRMerge(mr *MRInfo, branch, target string) (*git.PullRequestInfo, ProcessResult) {
+	if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
+		return nil, eligibility
+	}
+	if err := e.ensureMRInfoCommitSHA(mr); err != nil {
+		return nil, ProcessResult{Success: false, Error: err.Error()}
+	}
+	return e.refreshPRForMerge(mr, branch)
+}
+
+func (e *Engineer) syncPRMergeTarget(target, mergeCommit string) string {
+	if err := git.Checkout(e.git, target); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to checkout %s after PR merge: %v\n", target, err)
+	} else if err := git.Pull(e.git, "origin", target); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to pull %s after PR merge: %v\n", target, err)
+	}
+	if mergeCommit == "" {
+		if sha, err := git.Rev(e.git, "HEAD"); err == nil {
+			return sha
+		}
+	}
+	return mergeCommit
+}
+
 func mergeIneligibleResult(format string, args ...interface{}) ProcessResult {
 	return ProcessResult{
 		Success: false,
 		NoMerge: true,
 		Error:   fmt.Sprintf(format, args...),
 	}
+}
+
+type mergeRequestRecheckFields struct {
+	commitSHA   string
+	sourceIssue string
 }
 
 func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessResult {
@@ -909,72 +989,121 @@ func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessRes
 		return e.rejectMRBeforeMerge(mr, "MR has missing source_issue")
 	}
 
-	fieldCommit := ""
-	if mrID := strings.TrimSpace(mr.ID); mrID != "" && !e.isSyntheticMergeMechanicsMR(mr) {
-		mrIssue, err := e.beads.Show(mrID)
-		if err != nil {
-			if errors.Is(err, beads.ErrNotFound) {
-				return mergeIneligibleResult("MR %s no longer exists", mrID)
-			}
-			return ProcessResult{Success: false, Error: fmt.Sprintf("pre-push recheck MR %s: %v", mrID, err)}
-		}
-		if mrIssue == nil {
-			return mergeIneligibleResult("MR %s no longer exists", mrID)
-		}
-		if beads.IssueStatus(strings.TrimSpace(mrIssue.Status)) != beads.StatusOpen {
-			return mergeIneligibleResult("MR %s status is %s", mrID, mrIssue.Status)
-		}
-		if beads.HasLabel(mrIssue, "gt:owned-direct") {
-			return e.rejectMRBeforeMerge(mr, "MR is owned-direct")
-		}
-
-		fields := beads.ParseMRFields(mrIssue)
-		if fields == nil {
-			return e.rejectMRBeforeMerge(mr, "MR has missing merge-request fields")
-		}
-		if closeReason := strings.TrimSpace(fields.CloseReason); closeReason != "" {
-			if strings.EqualFold(closeReason, string(CloseReasonMerged)) {
-				if err := e.closeMRWithReason(mr, string(CloseReasonMerged)); err != nil {
-					return ProcessResult{Success: false, Error: fmt.Sprintf("failed to close already-merged MR %s: %v", mrID, err)}
-				}
-				return mergeIneligibleResult("MR close_reason is %s", closeReason)
-			}
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR close_reason is %s", closeReason))
-		}
-		if fields.Branch != "" && mr.Branch != "" && fields.Branch != mr.Branch {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR branch changed from %s to %s", mr.Branch, fields.Branch))
-		}
-		if strings.TrimSpace(fields.Target) == "" {
-			return e.rejectMRBeforeMerge(mr, "MR has missing target")
-		}
-		if fields.Target != target {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR target changed from %s to %s", target, fields.Target))
-		}
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR belongs to rig %s", fields.Rig))
-		}
-		if strings.TrimSpace(fields.SourceIssue) == "" {
-			return e.rejectMRBeforeMerge(mr, "MR has missing source_issue")
-		}
-		if fields.SourceIssue != sourceIssue {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR source_issue changed from %s to %s", sourceIssue, fields.SourceIssue))
-		}
-		fieldCommit = strings.TrimSpace(fields.CommitSHA)
-		sourceIssue = fields.SourceIssue
+	fields, result := e.loadMRRecheckFields(mr, target, sourceIssue)
+	if !result.Success {
+		return result
 	}
-
-	if eligibility := e.recheckMRSourceStillMergeable(mr, sourceIssue); !eligibility.Success {
+	if eligibility := e.recheckMRSourceStillMergeable(mr, fields.sourceIssue); !eligibility.Success {
 		return eligibility
 	}
-	if strings.TrimSpace(mr.ID) != "" && !e.isSyntheticMergeMechanicsMR(mr) {
-		if fieldCommit == "" {
-			return e.rejectMRBeforeMerge(mr, "MR has missing commit_sha")
+	return e.validateMRRecheckCommit(mr, fields.commitSHA)
+}
+
+func (e *Engineer) loadMRRecheckFields(mr *MRInfo, target, sourceIssue string) (mergeRequestRecheckFields, ProcessResult) {
+	mrID := strings.TrimSpace(mr.ID)
+	if mrID == "" || e.isSyntheticMergeMechanicsMR(mr) {
+		return mergeRequestRecheckFields{sourceIssue: sourceIssue}, ProcessResult{Success: true}
+	}
+
+	mrIssue, result := e.loadMergeRequestForRecheck(mr, mrID)
+	if !result.Success {
+		return mergeRequestRecheckFields{}, result
+	}
+	fields := beads.ParseMRFields(mrIssue)
+	if fields == nil {
+		return mergeRequestRecheckFields{}, e.rejectMRBeforeMerge(mr, "MR has missing merge-request fields")
+	}
+	if result := e.validateMRRecheckFields(mr, target, sourceIssue, mrID, fields); !result.Success {
+		return mergeRequestRecheckFields{}, result
+	}
+	return mergeRequestRecheckFields{
+		commitSHA:   strings.TrimSpace(fields.CommitSHA),
+		sourceIssue: fields.SourceIssue,
+	}, ProcessResult{Success: true}
+}
+
+func (e *Engineer) loadMergeRequestForRecheck(mr *MRInfo, mrID string) (*beads.Issue, ProcessResult) {
+	mrIssue, err := e.beads.Show(mrID)
+	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return nil, mergeIneligibleResult("MR %s no longer exists", mrID)
 		}
-		if mr.CommitSHA == "" {
-			mr.CommitSHA = fieldCommit
-		} else if fieldCommit != strings.TrimSpace(mr.CommitSHA) {
-			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR commit_sha changed from %s to %s", shortSHA(mr.CommitSHA), shortSHA(fieldCommit)))
+		return nil, ProcessResult{Success: false, Error: fmt.Sprintf("pre-push recheck MR %s: %v", mrID, err)}
+	}
+	if mrIssue == nil {
+		return nil, mergeIneligibleResult("MR %s no longer exists", mrID)
+	}
+	if beads.IssueStatus(strings.TrimSpace(mrIssue.Status)) != beads.StatusOpen {
+		return nil, mergeIneligibleResult("MR %s status is %s", mrID, mrIssue.Status)
+	}
+	if beads.HasLabel(mrIssue, "gt:owned-direct") {
+		return nil, e.rejectMRBeforeMerge(mr, "MR is owned-direct")
+	}
+	return mrIssue, ProcessResult{Success: true}
+}
+
+func (e *Engineer) validateMRRecheckFields(mr *MRInfo, target, sourceIssue, mrID string, fields *beads.MRFields) ProcessResult {
+	if closeReason := strings.TrimSpace(fields.CloseReason); closeReason != "" {
+		return e.validateMRCloseReason(mr, mrID, closeReason)
+	}
+	if result := validateMRBranchAndTarget(mr, target, fields); !result.Success {
+		return e.rejectMRBeforeMerge(mr, result.Error)
+	}
+	if result := validateMRRigAndSource(e, sourceIssue, fields); !result.Success {
+		return e.rejectMRBeforeMerge(mr, result.Error)
+	}
+	return ProcessResult{Success: true}
+}
+
+func validateMRBranchAndTarget(mr *MRInfo, target string, fields *beads.MRFields) ProcessResult {
+	if fields.Branch != "" && mr.Branch != "" && fields.Branch != mr.Branch {
+		return mergeIneligibleResult("MR branch changed from %s to %s", mr.Branch, fields.Branch)
+	}
+	if strings.TrimSpace(fields.Target) == "" {
+		return mergeIneligibleResult("MR has missing target")
+	}
+	if fields.Target != target {
+		return mergeIneligibleResult("MR target changed from %s to %s", target, fields.Target)
+	}
+	return ProcessResult{Success: true}
+}
+
+func validateMRRigAndSource(e *Engineer, sourceIssue string, fields *beads.MRFields) ProcessResult {
+	if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
+		return mergeIneligibleResult("MR belongs to rig %s", fields.Rig)
+	}
+	if strings.TrimSpace(fields.SourceIssue) == "" {
+		return mergeIneligibleResult("MR has missing source_issue")
+	}
+	if fields.SourceIssue != sourceIssue {
+		return mergeIneligibleResult("MR source_issue changed from %s to %s", sourceIssue, fields.SourceIssue)
+	}
+	return ProcessResult{Success: true}
+}
+
+func (e *Engineer) validateMRCloseReason(mr *MRInfo, mrID, closeReason string) ProcessResult {
+	if strings.EqualFold(closeReason, string(CloseReasonMerged)) {
+		if err := e.closeMRWithReason(mr, string(CloseReasonMerged)); err != nil {
+			return ProcessResult{Success: false, Error: fmt.Sprintf("failed to close already-merged MR %s: %v", mrID, err)}
 		}
+		return mergeIneligibleResult("MR close_reason is %s", closeReason)
+	}
+	return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR close_reason is %s", closeReason))
+}
+
+func (e *Engineer) validateMRRecheckCommit(mr *MRInfo, fieldCommit string) ProcessResult {
+	if strings.TrimSpace(mr.ID) == "" || e.isSyntheticMergeMechanicsMR(mr) {
+		return ProcessResult{Success: true}
+	}
+	if fieldCommit == "" {
+		return e.rejectMRBeforeMerge(mr, "MR has missing commit_sha")
+	}
+	if mr.CommitSHA == "" {
+		mr.CommitSHA = fieldCommit
+		return ProcessResult{Success: true}
+	}
+	if fieldCommit != strings.TrimSpace(mr.CommitSHA) {
+		return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR commit_sha changed from %s to %s", shortSHA(mr.CommitSHA), shortSHA(fieldCommit)))
 	}
 	return ProcessResult{Success: true}
 }
@@ -1002,6 +1131,10 @@ func (e *Engineer) recheckMRSourceStillMergeable(mr *MRInfo, sourceIssue string)
 		}
 		return ProcessResult{Success: false, Error: fmt.Sprintf("pre-push recheck source_issue %s: %v", sourceIssue, err)}
 	}
+	return e.validateSourceIssue(mr, sourceIssue, issue)
+}
+
+func (e *Engineer) validateSourceIssue(mr *MRInfo, sourceIssue string, issue *beads.Issue) ProcessResult {
 	if issue == nil {
 		return e.rejectMRBeforeMerge(mr, fmt.Sprintf("source_issue %s is missing", sourceIssue))
 	}
@@ -1014,6 +1147,10 @@ func (e *Engineer) recheckMRSourceStillMergeable(mr *MRInfo, sourceIssue string)
 	if unchecked := beads.HasUncheckedCriteria(issue); unchecked > 0 {
 		return e.rejectMRBeforeMerge(mr, fmt.Sprintf("source_issue %s has %d unchecked acceptance criteria", sourceIssue, unchecked))
 	}
+	return e.validateSourceAttachments(mr, sourceIssue, issue)
+}
+
+func (e *Engineer) validateSourceAttachments(mr *MRInfo, sourceIssue string, issue *beads.Issue) ProcessResult {
 	if af := beads.ParseAttachmentFields(issue); af != nil {
 		switch {
 		case af.NoMerge:
@@ -1033,7 +1170,7 @@ func (e *Engineer) acquireMainPushSlot(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("ensure merge slot exists: %w", err)
 	}
 
-	seq := atomic.AddUint64(&mergeSlotSeq, 1)
+	seq := e.mergeSlotSeq.Add(1)
 	holder := fmt.Sprintf("%s/refinery/push/%d-%d", e.rig.Name, time.Now().UnixNano(), seq)
 
 	// The conflict-resolution path holds the slot with holder "rigName/refinery".
@@ -1048,34 +1185,53 @@ func (e *Engineer) acquireMainPushSlot(ctx context.Context) (string, error) {
 	}
 
 	for attempt := 0; attempt <= e.mergeSlotMaxRetries; attempt++ {
-		if attempt > 0 {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held, retrying in %v (attempt %d/%d)...\n", backoff, attempt, e.mergeSlotMaxRetries)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return "", ctx.Err()
-			}
-			backoff = min(backoff*2, 10*time.Second)
+		if err := e.waitForMainPushSlotRetry(ctx, attempt, &backoff); err != nil {
+			return "", err
 		}
 
-		status, err := e.mergeSlotAcquire(holder, false)
+		acquired, retry, err := e.tryAcquireMainPushSlot(slotID, holder, selfConflictHolder)
 		if err != nil {
-			return "", fmt.Errorf("acquire merge slot %s (%s): %w", slotID, holder, err)
+			return "", err
 		}
-		if status == nil {
-			return "", fmt.Errorf("acquire merge slot %s (%s): empty status", slotID, holder)
-		}
-		if status.Available || status.Holder == holder {
-			return holder, nil
-		}
-		// Slot held by our own conflict-resolution path — safe to proceed.
-		if status.Holder == selfConflictHolder {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by conflict-resolution path, proceeding\n")
-			return "", nil // No holder to release — conflict-resolution owns the slot
+		if !retry {
+			return acquired, nil
 		}
 	}
 
 	return "", fmt.Errorf("merge slot %s: %w after %d retries", slotID, errMergeSlotTimeout, e.mergeSlotMaxRetries)
+}
+
+func (e *Engineer) waitForMainPushSlotRetry(ctx context.Context, attempt int, backoff *time.Duration) error {
+	if attempt == 0 {
+		return nil
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held, retrying in %v (attempt %d/%d)...\n", *backoff, attempt, e.mergeSlotMaxRetries)
+	select {
+	case <-time.After(*backoff):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	*backoff = min(*backoff*2, 10*time.Second)
+	return nil
+}
+
+func (e *Engineer) tryAcquireMainPushSlot(slotID, holder, selfConflictHolder string) (string, bool, error) {
+	status, err := e.mergeSlotAcquire(holder, false)
+	if err != nil {
+		return "", false, fmt.Errorf("acquire merge slot %s (%s): %w", slotID, holder, err)
+	}
+	if status == nil {
+		return "", false, fmt.Errorf("acquire merge slot %s (%s): empty status", slotID, holder)
+	}
+	if status.Available || status.Holder == holder {
+		return holder, false, nil
+	}
+	// Slot held by our own conflict-resolution path — safe to proceed.
+	if status.Holder == selfConflictHolder {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by conflict-resolution path, proceeding\n")
+		return "", false, nil // No holder to release — conflict-resolution owns the slot
+	}
+	return "", true, nil
 }
 
 // ValidateTestCommand validates that a test command is safe to execute.
@@ -1211,67 +1367,24 @@ func (e *Engineer) runGates(ctx context.Context) ProcessResult {
 // Gates run in parallel if GatesParallel is true; otherwise sequentially.
 // Any single gate failure means overall failure.
 func (e *Engineer) runGatesForPhase(ctx context.Context, phase GatePhase) ProcessResult {
-	// Filter gates for this phase. Empty phase is treated as pre-merge (default).
-	gates := make(map[string]*GateConfig)
-	for name, gc := range e.config.Gates {
-		gatePhase := gc.Phase
-		if gatePhase == "" {
-			gatePhase = GatePhasePreMerge
-		}
-		if gatePhase == phase {
-			gates[name] = gc
-		}
-	}
+	gates := filterGatesForPhase(e.config.Gates, phase)
 	if len(gates) == 0 {
 		return ProcessResult{Success: true}
 	}
 
-	// Sort gate names for deterministic ordering
-	names := make([]string, 0, len(gates))
-	for name := range gates {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := sortedGateNames(gates)
 
 	parallel := e.config.GatesParallel && phase == GatePhasePreMerge // post-squash always sequential
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Running %d %s gate(s) (parallel=%v)\n", len(names), phase, parallel)
 
 	var results []GateResult
-
 	if parallel {
-		results = make([]GateResult, len(names))
-		var wg sync.WaitGroup
-		for i, name := range names {
-			wg.Add(1)
-			go func(idx int, gateName string) {
-				defer wg.Done()
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", gateName, gates[gateName].Cmd)
-				results[idx] = e.runGate(ctx, gateName, gates[gateName])
-			}(i, name)
-		}
-		wg.Wait()
+		results = e.runGatesParallel(ctx, names, gates)
 	} else {
-		for _, name := range names {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", name, gates[name].Cmd)
-			result := e.runGate(ctx, name, gates[name])
-			results = append(results, result)
-			if !result.Success {
-				// Sequential mode: stop on first failure
-				break
-			}
-		}
+		results = e.runGatesSequential(ctx, names, gates)
 	}
 
-	// Report results
-	var failures []string
-	for _, r := range results {
-		if r.Success {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: passed (%v)\n", r.Name, r.Elapsed.Truncate(time.Millisecond))
-		} else {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: FAILED (%v) - %s\n", r.Name, r.Elapsed.Truncate(time.Millisecond), r.Error)
-			failures = append(failures, fmt.Sprintf("%s: %s", r.Name, r.Error))
-		}
-	}
+	failures := e.reportGateResults(results)
 
 	if len(failures) > 0 {
 		return ProcessResult{
@@ -1285,36 +1398,69 @@ func (e *Engineer) runGatesForPhase(ctx context.Context, phase GatePhase) Proces
 	return ProcessResult{Success: true}
 }
 
-// syncCrewWorkspaces pulls latest changes to all crew workspaces.
-// This ensures crew members have access to newly merged code without manual sync.
-func (e *Engineer) syncCrewWorkspaces() {
-	crewGit := git.NewGit(e.rig.Path)
-	crewMgr := crew.NewManager(e.rig, crewGit)
-
-	workers, err := crewMgr.List()
-	if err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to list crew workspaces: %v\n", err)
-		return
+func filterGatesForPhase(gates map[string]*GateConfig, phase GatePhase) map[string]*GateConfig {
+	filtered := make(map[string]*GateConfig)
+	for name, gate := range gates {
+		gatePhase := gate.Phase
+		if gatePhase == "" {
+			gatePhase = GatePhasePreMerge
+		}
+		if gatePhase == phase {
+			filtered[name] = gate
+		}
 	}
+	return filtered
+}
 
-	if len(workers) == 0 {
-		return
+func sortedGateNames(gates map[string]*GateConfig) []string {
+	names := make([]string, 0, len(gates))
+	for name := range gates {
+		names = append(names, name)
 	}
+	sort.Strings(names)
+	return names
+}
 
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Syncing %d crew workspace(s)...\n", len(workers))
+func (e *Engineer) runGatesParallel(ctx context.Context, names []string, gates map[string]*GateConfig) []GateResult {
+	results := make([]GateResult, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(idx int, gateName string) {
+			defer wg.Done()
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", gateName, gates[gateName].Cmd)
+			results[idx] = e.runGate(ctx, gateName, gates[gateName])
+		}(i, name)
+	}
+	wg.Wait()
+	return results
+}
 
-	for _, worker := range workers {
-		result, err := crewMgr.Pristine(worker.Name)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to sync crew/%s: %v\n", worker.Name, err)
+func (e *Engineer) runGatesSequential(ctx context.Context, names []string, gates map[string]*GateConfig) []GateResult {
+	var results []GateResult
+	for _, name := range names {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", name, gates[name].Cmd)
+		result := e.runGate(ctx, name, gates[name])
+		results = append(results, result)
+		if !result.Success {
+			// Sequential mode: stop on first failure
+			break
+		}
+	}
+	return results
+}
+
+func (e *Engineer) reportGateResults(results []GateResult) []string {
+	var failures []string
+	for _, result := range results {
+		if result.Success {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: passed (%v)\n", result.Name, result.Elapsed.Truncate(time.Millisecond))
 			continue
 		}
-		if result.Pulled {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Synced crew/%s\n", worker.Name)
-		} else if result.PullError != "" {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: crew/%s pull failed: %s\n", worker.Name, result.PullError)
-		}
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: FAILED (%v) - %s\n", result.Name, result.Elapsed.Truncate(time.Millisecond), result.Error)
+		failures = append(failures, fmt.Sprintf("%s: %s", result.Name, result.Error))
 	}
+	return failures
 }
 
 // ProcessMRInfo processes a merge request from MRInfo.
@@ -1333,7 +1479,7 @@ func (e *Engineer) ProcessMRInfo(ctx context.Context, mr *MRInfo) ProcessResult 
 	if mr.PreVerified && mr.PreVerifiedBase != "" {
 		_, _ = fmt.Fprintf(e.output, "  Pre-verified: yes (base=%s)\n", mr.PreVerifiedBase[:min(8, len(mr.PreVerifiedBase))])
 		// Check if target HEAD still matches the verified base
-		targetHead, err := e.git.Rev("origin/" + mr.Target)
+		targetHead, err := git.Rev(e.git, "origin/"+mr.Target)
 		if err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not resolve origin/%s HEAD: %v (falling through to normal gates)\n", mr.Target, err)
 		} else if targetHead == mr.PreVerifiedBase {
@@ -1358,85 +1504,98 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) bool {
 		AgentBead:   mr.AgentBead,
 	})
 
-	// Release merge slot if this was a conflict resolution
-	// The slot is held while conflict resolution is in progress
-	holder := e.rig.Name + "/refinery"
-	if err := e.mergeSlotRelease(holder); err != nil {
-		// Best-effort: slot release failures are always non-fatal.
-		// Slot may not have been held (optional acquisition) or may have expired.
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: merge slot release: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Released merge slot\n")
-	}
-	if err := e.verifyMRInfoPostMergeProof(mr); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge proof failed for %s: %v\n", mr.ID, err)
+	e.releaseMergeSlotAfterSuccess()
+	if !e.completeMRInfoMerge(mr, result) {
 		return false
 	}
 
-	// Update and close the MR bead
-	if mr.ID != "" && !e.isSyntheticMergeMechanicsMR(mr) {
-		if err := e.closeMRWithReason(mr, string(CloseReasonMerged), result.MergeCommit); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge cleanup failed for %s: %v\n", mr.ID, err)
-			return false
-		}
-	}
-
-	// 1. Close source issue with reference to MR. Resolve before MR close clears
-	// active_mr, then close after the real merge success has been recorded.
-	closeMergedWorkBead(e.beads, nil, e.output, mergedWorkBeadCloseRequest{
-		MRID:        mr.ID,
-		Target:      mr.Target,
-		SourceIssue: workBeadID,
-		MergeCommit: result.MergeCommit,
-	})
-
-	// 1.2. Close conflict-resolution tasks that this land has made moot (hq-jnap).
-	// Conflict beads otherwise outlive the successful re-land of their content
-	// and rot as open issues (re-dlcs/re-4i3b/re-gcii pattern).
-	e.closeSupersededConflictArtifacts(mr)
-
-	// 2. Delete source branch (remote first, then local only if still exact).
-	// Polecat branches (polecat/*) are always cleaned up — they are ephemeral
-	// work branches that should never persist after merge. Other branches
-	// respect the DeleteMergedBranches config.
-	isPolecat := strings.HasPrefix(mr.Branch, "polecat/")
-	if mr.Branch != "" && (e.config.DeleteMergedBranches || isPolecat) {
-		// Remote delete — only polecat branches. Non-polecat branches may belong
-		// to contributor forks with open upstream PRs; deleting them from origin
-		// causes GitHub to auto-close those PRs via head_ref_delete. (GH#2669)
-		// gas-fk4: Also skip deletion for polecat branches that have open PRs.
-		// When merge_strategy=pr, polecat branches have GitHub PRs that should
-		// be closed via gh pr merge (showing "merged"), not via branch deletion
-		// (which shows "closed" and destroys the PR audit trail).
-		expectedHead := strings.TrimSpace(mr.CommitSHA)
-		remoteDeleteSafe := true
-		if isPolecat {
-			if e.git.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: mr.Branch, HeadSHA: expectedHead}) {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", mr.Branch)
-			} else if err := e.git.DeleteRemoteBranchIfAt("origin", mr.Branch, expectedHead); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s: %v\n", mr.Branch, err)
-				remoteDeleteSafe = false
-			} else {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted remote branch: %s\n", mr.Branch)
-			}
-		}
-		if remoteDeleteSafe {
-			if err := e.deleteLocalBranchIfAt(mr.Branch, expectedHead); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mr.Branch, err)
-			} else {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)
-			}
-		}
-	}
+	e.finishMergedWork(mr, result, workBeadID)
+	e.deleteMergedSourceBranch(mr)
 
 	// 3. Check and auto-close completed convoys
 	// After closing a source issue, its parent convoy may now be complete.
 	// Run convoy check to auto-close and notify subscribers.
 	e.postMergeConvoyCheck(mr)
 
-	// 4. Nudge mayor about successful merge so dispatcher can unblock
-	// dependent work. Without this, mayor only discovers completion by polling.
-	// Uses nudge (not mail) to avoid permanent Dolt commits for routine signals (GH#2434).
+	e.nudgeMayorAfterMerge(mr)
+
+	// 5. Log success
+	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
+	return true
+}
+
+func (e *Engineer) releaseMergeSlotAfterSuccess() {
+	// Best-effort: slot release failures are always non-fatal.
+	// Slot may not have been held (optional acquisition) or may have expired.
+	holder := e.rig.Name + "/refinery"
+	if err := e.mergeSlotRelease(holder); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: merge slot release: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Released merge slot\n")
+}
+
+func (e *Engineer) completeMRInfoMerge(mr *MRInfo, result ProcessResult) bool {
+	if err := e.verifyMRInfoPostMergeProof(mr); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge proof failed for %s: %v\n", mr.ID, err)
+		return false
+	}
+	if mr.ID == "" || e.isSyntheticMergeMechanicsMR(mr) {
+		return true
+	}
+	if err := e.closeMRWithReason(mr, string(CloseReasonMerged), result.MergeCommit); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge cleanup failed for %s: %v\n", mr.ID, err)
+		return false
+	}
+	return true
+}
+
+func (e *Engineer) finishMergedWork(mr *MRInfo, result ProcessResult, workBeadID string) {
+	closeMergedWorkBead(e.beads, nil, e.output, mergedWorkBeadCloseRequest{
+		MRID:        mr.ID,
+		Target:      mr.Target,
+		SourceIssue: workBeadID,
+		MergeCommit: result.MergeCommit,
+	})
+	e.closeSupersededConflictArtifacts(mr)
+}
+
+func (e *Engineer) deleteMergedSourceBranch(mr *MRInfo) {
+	isPolecat := strings.HasPrefix(mr.Branch, "polecat/")
+	if mr.Branch == "" || (!e.config.DeleteMergedBranches && !isPolecat) {
+		return
+	}
+	expectedHead := strings.TrimSpace(mr.CommitSHA)
+	if !e.deleteMergedRemoteBranch(mr, isPolecat, expectedHead) {
+		return
+	}
+	if err := e.deleteLocalBranchIfAt(mr.Branch, expectedHead); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mr.Branch, err)
+		return
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)
+}
+
+func (e *Engineer) deleteMergedRemoteBranch(mr *MRInfo, isPolecat bool, expectedHead string) bool {
+	if !isPolecat {
+		return true
+	}
+	// Non-polecat branches may belong to contributor forks with open upstream PRs;
+	// deleting them from origin causes GitHub to auto-close those PRs. (GH#2669)
+	if git.HasOpenPullRequest(e.git, git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: mr.Branch, HeadSHA: expectedHead}) {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", mr.Branch)
+		return true
+	}
+	if err := git.DeleteRemoteBranchIfAt(e.git, "origin", mr.Branch, expectedHead); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s: %v\n", mr.Branch, err)
+		return false
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted remote branch: %s\n", mr.Branch)
+	return true
+}
+
+func (e *Engineer) nudgeMayorAfterMerge(mr *MRInfo) {
+	// Use nudge (not mail) to avoid permanent Dolt commits for routine signals (GH#2434).
 	nudgeMsg := fmt.Sprintf("MERGED: %s issue=%s branch=%s", mr.ID, mr.SourceIssue, mr.Branch)
 	nudgeCmd := exec.Command("gt", "nudge", "mayor/", nudgeMsg)
 	util.SetDetachedProcessGroup(nudgeCmd)
@@ -1444,10 +1603,6 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) bool {
 	if err := nudgeCmd.Run(); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about merge: %v\n", err)
 	}
-
-	// 5. Log success
-	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
-	return true
 }
 
 func (e *Engineer) ensureMRInfoCommitSHA(mr *MRInfo) error {
@@ -1467,7 +1622,7 @@ func (e *Engineer) ensureMRInfoCommitSHA(mr *MRInfo) error {
 	if branch == "" {
 		return fmt.Errorf("missing submitted commit_sha and source branch")
 	}
-	sha, err := e.git.Rev(branch)
+	sha, err := git.Rev(e.git, branch)
 	if err != nil {
 		return fmt.Errorf("resolve submitted head for %s: %w", branch, err)
 	}
@@ -1487,7 +1642,7 @@ func (e *Engineer) submittedBranchHead(mr *MRInfo) (string, error) {
 		return "", fmt.Errorf("missing source branch")
 	}
 	commit := strings.TrimSpace(mr.CommitSHA)
-	localHead, err := e.git.Rev("refs/heads/" + branch + "^{commit}")
+	localHead, err := git.Rev(e.git, "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve source branch %s: %w", branch, err)
 	}
@@ -1507,14 +1662,14 @@ func (e *Engineer) deleteLocalBranchIfAt(branch, expectedHead string) error {
 	if expectedHead == "" {
 		return fmt.Errorf("missing submitted commit_sha")
 	}
-	localHead, err := e.git.Rev("refs/heads/" + branch + "^{commit}")
+	localHead, err := git.Rev(e.git, "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return fmt.Errorf("resolve local branch head: %w", err)
 	}
 	if strings.TrimSpace(localHead) != expectedHead {
 		return fmt.Errorf("local branch head changed from submitted %s to %s", shortSHA(expectedHead), shortSHA(localHead))
 	}
-	return e.git.DeleteBranch(branch, false)
+	return git.DeleteBranch(e.git, branch, false)
 }
 
 func requirePullRequestHead(pr *git.PullRequestInfo, expectedHead string) error {
@@ -1553,7 +1708,7 @@ func (e *Engineer) verifyMRInfoPostMergeProof(mr *MRInfo) error {
 	if commit == "" {
 		return fmt.Errorf("missing submitted commit_sha")
 	}
-	if err := e.git.VerifyPushedCommitReachableFromPushTarget("origin", target, commit); err != nil {
+	if err := git.VerifyPushedCommitReachableFromPushTarget(e.git, "origin", target, commit); err != nil {
 		return fmt.Errorf("target %s does not contain submitted head %s: %w", target, commit, err)
 	}
 	return nil
@@ -1564,18 +1719,22 @@ func (e *Engineer) verifyMRInfoPostMergeProof(mr *MRInfo) error {
 // For slot timeouts, the MR stays in queue for automatic retry without notifying polecats.
 // This enables non-blocking delegation: the queue continues to the next MR.
 func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
-	// Slot timeout is transient infrastructure contention — not a build/test/conflict failure.
-	// The MR stays in queue and will be retried on the next poll cycle.
-	// No polecat notification needed since there's nothing for a worker to fix.
-	if result.SlotTimeout {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] ✗ Slot timeout: %s - %s\n", mr.ID, result.Error)
-		_, _ = fmt.Fprintln(e.output, "[Engineer] MR remains in queue for automatic retry (slot contention)")
+	if e.handleEarlyMRFailure(mr, result) {
 		return
 	}
 
-	// Policy ineligibility is intentional — not a build/test failure.
-	// No polecat or mayor notification needed; close any still-open MR so it
-	// cannot retry forever after a no-merge/review-only/rejected decision.
+	failureType := mrFailureType(result)
+	e.nudgeMergeFailure(mr, result, failureType)
+	e.handleConflictFailure(mr, result)
+	e.logMRFailure(mr, result)
+}
+
+func (e *Engineer) handleEarlyMRFailure(mr *MRInfo, result ProcessResult) bool {
+	if result.SlotTimeout {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] ✗ Slot timeout: %s - %s\n", mr.ID, result.Error)
+		_, _ = fmt.Fprintln(e.output, "[Engineer] MR remains in queue for automatic retry (slot contention)")
+		return true
+	}
 	if result.NoMerge {
 		reason := strings.TrimSpace(result.Error)
 		if reason == "" {
@@ -1585,43 +1744,41 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 		if closeErr := e.closeIneligibleMR(mr, reason); closeErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close ineligible MR %s: %v\n", mr.ID, closeErr)
 		}
-		return
+		return true
 	}
-
-	// NeedsApproval: PR exists but lacks required approving review (merge_strategy=pr).
-	// Not a failure — the MR stays in queue and will be retried on the next poll.
-	// No polecat notification needed; the PR just needs a human review on GitHub.
 	if result.NeedsApproval {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s: PR awaiting human approval, will retry next poll\n", mr.ID)
-		return
+		return true
 	}
-
-	// Branch-not-found: the remote branch doesn't exist. This can mean either
-	// the branch was cleanly cherry-picked to target, OR the polecat's work was
-	// lost (e.g., worktree in /tmp wiped by reboot before gt done pushed).
-	// Escalate to mayor so lost work can be re-dispatched (gas-556).
 	if result.BranchNotFound {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s: branch %s not found on remote — escalating to mayor (possible work loss)\n", mr.ID, mr.Branch)
-		mayorMsg := fmt.Sprintf("BRANCH_MISSING: MR %s branch=%s issue=%s worker=%s — branch not on origin, work may be lost; re-dispatch if needed",
-			mr.ID, mr.Branch, mr.SourceIssue, mr.Worker)
-		mayorCmd := exec.Command("gt", "nudge", "mayor/", mayorMsg)
-		mayorCmd.Dir = e.workDir
-		if err := mayorCmd.Run(); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about missing branch: %v\n", err)
-		}
-		return
+		e.nudgeMayorForMissingBranch(mr)
+		return true
 	}
+	return false
+}
 
-	// Nudge polecat directly about the merge failure.
-	// Previously sent MERGE_FAILED mail to witness (which relayed to polecat),
-	// but that created permanent Dolt commits for routine protocol signals.
-	// The witness discovers merge failures from MR bead status during patrol.
-	failureType := "build"
-	if result.Conflict {
-		failureType = "conflict"
-	} else if result.TestsFailed {
-		failureType = "tests"
+func (e *Engineer) nudgeMayorForMissingBranch(mr *MRInfo) {
+	_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s: branch %s not found on remote — escalating to mayor (possible work loss)\n", mr.ID, mr.Branch)
+	mayorMsg := fmt.Sprintf("BRANCH_MISSING: MR %s branch=%s issue=%s worker=%s — branch not on origin, work may be lost; re-dispatch if needed",
+		mr.ID, mr.Branch, mr.SourceIssue, mr.Worker)
+	mayorCmd := exec.Command("gt", "nudge", "mayor/", mayorMsg)
+	mayorCmd.Dir = e.workDir
+	if err := mayorCmd.Run(); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about missing branch: %v\n", err)
 	}
+}
+
+func mrFailureType(result ProcessResult) string {
+	if result.Conflict {
+		return "conflict"
+	}
+	if result.TestsFailed {
+		return "tests"
+	}
+	return "build"
+}
+
+func (e *Engineer) nudgeMergeFailure(mr *MRInfo, result ProcessResult, failureType string) {
 	polecatName := strings.TrimPrefix(mr.Worker, "polecats/")
 	nudgeTarget := fmt.Sprintf("%s/%s", e.rig.Name, polecatName)
 	nudgeMsg := fmt.Sprintf("MERGE_FAILED: branch=%s issue=%s type=%s error=%s — fix and resubmit with 'gt done'",
@@ -1635,8 +1792,7 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Nudged %s about merge failure (%s)\n", polecatName, failureType)
 	}
 
-	// Nudge mayor about merge failure so dispatcher can unblock or reassign
-	// dependent work immediately. Mirrors the success nudge in HandleMRInfoSuccess.
+	// Nudge mayor about merge failure so dispatcher can unblock or reassign dependent work.
 	mayorMsg := fmt.Sprintf("MERGE_FAILED: %s issue=%s branch=%s type=%s", mr.ID, mr.SourceIssue, mr.Branch, failureType)
 	mayorCmd := exec.Command("gt", "nudge", "mayor/", mayorMsg)
 	util.SetDetachedProcessGroup(mayorCmd)
@@ -1644,34 +1800,44 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 	if err := mayorCmd.Run(); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about merge failure: %v\n", err)
 	}
+}
 
-	// If this was a conflict, create a conflict-resolution task for dispatch
-	// and block the MR until the task is resolved (non-blocking delegation)
-	if result.Conflict {
-		retryCount := mr.RetryCount + 1
-		conflictSHA, revErr := e.git.Rev("origin/" + mr.Target)
-		if revErr != nil {
-			conflictSHA = "unknown-sha"
-		}
-		taskID, err := e.createConflictResolutionTaskForMR(mr, result)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to create conflict resolution task: %v\n", err)
-		} else if taskID != "" {
-			// Block the MR on the conflict resolution task using beads dependency
-			// When the task closes, the MR unblocks and re-enters the ready queue
-			if err := e.beads.AddDependency(mr.ID, taskID); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to block MR on task: %v\n", err)
-			} else {
-				if err := e.recordConflictTaskOnMR(mr, taskID, retryCount, conflictSHA); err != nil {
-					_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to record conflict task on MR %s: %v\n", mr.ID, err)
-				} else {
-					mr.ConflictTaskID = taskID
-					mr.RetryCount = retryCount
-				}
-				_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s blocked on conflict task %s (non-blocking delegation)\n", mr.ID, taskID)
-			}
-		}
+func (e *Engineer) handleConflictFailure(mr *MRInfo, result ProcessResult) {
+	if !result.Conflict {
+		return
 	}
+	retryCount := mr.RetryCount + 1
+	conflictSHA, revErr := git.Rev(e.git, "origin/"+mr.Target)
+	if revErr != nil {
+		conflictSHA = "unknown-sha"
+	}
+	taskID, err := e.createConflictResolutionTaskForMR(mr, result)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to create conflict resolution task: %v\n", err)
+		return
+	}
+	if taskID == "" {
+		return
+	}
+	e.blockMROnConflictTask(mr, taskID, retryCount, conflictSHA)
+}
+
+func (e *Engineer) blockMROnConflictTask(mr *MRInfo, taskID string, retryCount int, conflictSHA string) {
+	// Block the MR on the conflict resolution task; closing the task re-enters the queue.
+	if err := e.beads.AddDependency(mr.ID, taskID); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to block MR on task: %v\n", err)
+		return
+	}
+	if err := e.recordConflictTaskOnMR(mr, taskID, retryCount, conflictSHA); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to record conflict task on MR %s: %v\n", mr.ID, err)
+	} else {
+		mr.ConflictTaskID = taskID
+		mr.RetryCount = retryCount
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s blocked on conflict task %s (non-blocking delegation)\n", mr.ID, taskID)
+}
+
+func (e *Engineer) logMRFailure(mr *MRInfo, result ProcessResult) {
 
 	// Log the failure - MR stays in queue but may be blocked
 	_, _ = fmt.Fprintf(e.output, "[Engineer] ✗ Failed: %s - %s\n", mr.ID, result.Error)
@@ -1767,62 +1933,92 @@ func normalizedMRCloseReason(closeReason string) string {
 // If the slot is already held, we skip creating the task and let the MR stay in queue.
 // When the current resolution completes and merges, the slot is released.
 func (e *Engineer) createConflictResolutionTaskForMR(mr *MRInfo, _ ProcessResult) (string, error) { // result unused but kept for future merge diagnostics
-	// === MERGE SLOT GATE: Serialize conflict resolution ===
-	// Ensure merge slot exists (idempotent)
+	_, slotHolder, deferred := e.acquireConflictResolutionSlot(mr)
+	if deferred {
+		return "", nil
+	}
+
+	mainSHA := e.conflictResolutionMainSHA(mr)
+	originalTitle := e.conflictResolutionOriginalTitle(mr)
+	retryCount := mr.RetryCount + 1
+	description := buildConflictResolutionDescription(mr, mainSHA, retryCount)
+	task, err := e.beads.Create(beads.CreateOptions{
+		Title:       fmt.Sprintf("Resolve merge conflicts: %s", originalTitle),
+		Labels:      []string{"gt:task"},
+		Priority:    mr.Priority,
+		Description: description,
+		Actor:       e.rig.Name + "/refinery",
+		Rig:         e.rig.Name, // Ensure task lands in the rig's database (gt-7y7)
+	})
+	if err != nil {
+		e.releaseConflictResolutionSlot(slotHolder)
+		return "", fmt.Errorf("creating conflict resolution task: %w", err)
+	}
+
+	// gt-gpy: Validate task bead landed in the rig's database (warning only).
+	townRoot := filepath.Dir(e.rig.Path)
+	if prefixErr := beads.ValidateRigPrefix(townRoot, e.rig.Name, task.ID); prefixErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] WARNING: conflict task prefix mismatch: %v\n", prefixErr)
+	}
+
+	// The conflict task's ID is returned so the MR can be blocked on it.
+	// When the task closes, the MR unblocks and re-enters the ready queue.
+
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Created conflict resolution task: %s (P%d)\n", task.ID, task.Priority)
+
+	return task.ID, nil
+}
+
+func (e *Engineer) acquireConflictResolutionSlot(mr *MRInfo) (string, string, bool) {
 	slotID, err := e.mergeSlotEnsureExists()
-	slotHolder := "" // tracks acquired slot for cleanup on error
 	if err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not ensure merge slot: %v\n", err)
-		// Continue anyway - slot is optional for now
-	} else {
-		// Try to acquire the merge slot
-		holder := e.rig.Name + "/refinery"
-		status, err := e.mergeSlotAcquire(holder, false)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not acquire merge slot: %v\n", err)
-			// Continue anyway - slot is optional
-		} else if status == nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: merge slot returned nil status\n")
-			// Continue anyway - slot is optional
-		} else if !status.Available && status.Holder != "" && status.Holder != holder {
-			// Slot is held by someone else - skip creating the task
-			// The MR stays in queue and will retry when slot is released
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by %s - deferring conflict resolution\n", status.Holder)
-			_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s will retry after current resolution completes\n", mr.ID)
-			return "", nil // Not an error - just deferred
-		} else {
-			slotHolder = holder
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Acquired merge slot: %s\n", slotID)
-		}
+		return "", "", false
 	}
-	// Release slot on error to prevent permanent blockage
-	releaseSlotOnError := func() {
-		if slotHolder != "" {
-			_ = e.mergeSlotRelease(slotHolder)
-		}
-	}
-
-	// Get the current main SHA for conflict tracking
-	mainSHA, err := e.git.Rev("origin/" + mr.Target)
+	holder := e.rig.Name + "/refinery"
+	status, err := e.mergeSlotAcquire(holder, false)
 	if err != nil {
-		mainSHA = "unknown-sha"
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not acquire merge slot: %v\n", err)
+		return slotID, "", false
 	}
+	if status == nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: merge slot returned nil status\n")
+		return slotID, "", false
+	}
+	if !status.Available && status.Holder != "" && status.Holder != holder {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Merge slot held by %s - deferring conflict resolution\n", status.Holder)
+		_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s will retry after current resolution completes\n", mr.ID)
+		return slotID, "", true
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Acquired merge slot: %s\n", slotID)
+	return slotID, holder, false
+}
 
-	// Get the original issue title if we have a source issue
-	originalTitle := mr.SourceIssue
+func (e *Engineer) releaseConflictResolutionSlot(slotHolder string) {
+	if slotHolder != "" {
+		_ = e.mergeSlotRelease(slotHolder)
+	}
+}
+
+func (e *Engineer) conflictResolutionMainSHA(mr *MRInfo) string {
+	mainSHA, err := git.Rev(e.git, "origin/"+mr.Target)
+	if err != nil {
+		return "unknown-sha"
+	}
+	return mainSHA
+}
+
+func (e *Engineer) conflictResolutionOriginalTitle(mr *MRInfo) string {
 	if mr.SourceIssue != "" {
 		if sourceIssue, err := e.beads.Show(mr.SourceIssue); err == nil && sourceIssue != nil {
-			originalTitle = sourceIssue.Title
+			return sourceIssue.Title
 		}
 	}
+	return mr.SourceIssue
+}
 
-	// ZFC: pass raw priority. Agent decides boost strategy.
-
-	// Increment retry count for tracking
-	retryCount := mr.RetryCount + 1
-
-	// Build the task description with metadata
-	description := fmt.Sprintf(`Resolve merge conflicts for branch %s
+func buildConflictResolutionDescription(mr *MRInfo, mainSHA string, retryCount int) string {
+	return fmt.Sprintf(`Resolve merge conflicts for branch %s
 
 ## Metadata
 - Original MR: %s
@@ -1850,34 +2046,6 @@ The Refinery will automatically retry the merge after you push.`,
 		mr.Target,
 		mr.Branch,
 	)
-
-	// Create the conflict resolution task
-	taskTitle := fmt.Sprintf("Resolve merge conflicts: %s", originalTitle)
-	task, err := e.beads.Create(beads.CreateOptions{
-		Title:       taskTitle,
-		Labels:      []string{"gt:task"},
-		Priority:    mr.Priority,
-		Description: description,
-		Actor:       e.rig.Name + "/refinery",
-		Rig:         e.rig.Name, // Ensure task lands in the rig's database (gt-7y7)
-	})
-	if err != nil {
-		releaseSlotOnError()
-		return "", fmt.Errorf("creating conflict resolution task: %w", err)
-	}
-
-	// gt-gpy: Validate task bead landed in the rig's database (warning only).
-	townRoot := filepath.Dir(e.rig.Path)
-	if prefixErr := beads.ValidateRigPrefix(townRoot, e.rig.Name, task.ID); prefixErr != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] WARNING: conflict task prefix mismatch: %v\n", prefixErr)
-	}
-
-	// The conflict task's ID is returned so the MR can be blocked on it.
-	// When the task closes, the MR unblocks and re-enters the ready queue.
-
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Created conflict resolution task: %s (P%d)\n", task.ID, task.Priority)
-
-	return task.ID, nil
 }
 
 func (e *Engineer) recordConflictTaskOnMR(mr *MRInfo, taskID string, retryCount int, conflictSHA string) error {
@@ -2032,28 +2200,30 @@ func issueToMRInfo(issue *beads.Issue, fields *beads.MRFields) *MRInfo {
 	}
 
 	return &MRInfo{
-		ID:              issue.ID,
-		Branch:          fields.Branch,
-		Target:          fields.Target,
-		SourceIssue:     fields.SourceIssue,
-		Worker:          fields.Worker,
-		Rig:             fields.Rig,
-		Title:           issue.Title,
-		Priority:        issue.Priority,
-		AgentBead:       fields.AgentBead,
-		CommitSHA:       fields.CommitSHA,
-		PRURL:           fields.PRURL,
-		PRNumber:        fields.PRNumber,
-		RetryCount:      fields.RetryCount,
-		ConflictTaskID:  fields.ConflictTaskID,
-		ConvoyID:        fields.ConvoyID,
-		ConvoyCreatedAt: convoyCreatedAt,
-		PreVerified:     fields.PreVerified,
-		PreVerifiedAt:   preVerifiedAt,
-		PreVerifiedBase: fields.PreVerifiedBase,
-		CreatedAt:       createdAt,
-		UpdatedAt:       updatedAt,
-		Assignee:        issue.Assignee,
+		ID:          issue.ID,
+		Branch:      fields.Branch,
+		Target:      fields.Target,
+		SourceIssue: fields.SourceIssue,
+		Worker:      fields.Worker,
+		Rig:         fields.Rig,
+		Title:       issue.Title,
+		Priority:    issue.Priority,
+		AgentBead:   fields.AgentBead,
+		CommitSHA:   fields.CommitSHA,
+		PRURL:       fields.PRURL,
+		PRNumber:    fields.PRNumber,
+		RetryCount:  fields.RetryCount,
+		MRLifecycleState: MRLifecycleState{
+			ConflictTaskID:  fields.ConflictTaskID,
+			ConvoyID:        fields.ConvoyID,
+			ConvoyCreatedAt: convoyCreatedAt,
+			PreVerified:     fields.PreVerified,
+			PreVerifiedAt:   preVerifiedAt,
+			PreVerifiedBase: fields.PreVerifiedBase,
+			CreatedAt:       createdAt,
+			UpdatedAt:       updatedAt,
+			Assignee:        issue.Assignee,
+		},
 	}
 }
 
@@ -2083,58 +2253,52 @@ func (e *Engineer) ListReadyMRs() ([]*MRInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying beads for merge-requests: %w", err)
 	}
+	return e.readyMRInfos(issues), nil
+}
 
-	// Convert beads issues to MRInfo
+func (e *Engineer) readyMRInfos(issues []*beads.Issue) []*MRInfo {
 	var mrs []*MRInfo
 	for _, issue := range issues {
-		// Skip closed MRs (workaround for bd list not respecting --status filter)
-		if issue.Status != "open" {
-			continue
+		if mr := e.readyMRInfo(issue); mr != nil {
+			mrs = append(mrs, mr)
 		}
-
-		// Skip blocked MRs (replaces bd ready's blocker filtering)
-		if beads.HasUnresolvedBlockers(issue) {
-			continue
-		}
-
-		// Belt-and-suspenders: skip MRs labeled gt:owned-direct.
-		// These MRs shouldn't exist (gt done skips MR creation for owned+direct
-		// convoys), but if one slips through, the refinery should not process it.
-		if beads.HasLabel(issue, "gt:owned-direct") {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping MR %s: owned+direct convoy (belt-and-suspenders)\n", issue.ID)
-			continue
-		}
-
-		fields := beads.ParseMRFields(issue)
-		if fields == nil {
-			continue // Skip issues without MR fields
-		}
-
-		// Filter by rig — wisps are shared across all rigs (GH#2718).
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
-			continue
-		}
-
-		// Skip if already assigned, unless claim is stale (allows re-claim after crash).
-		// NOTE: Only one refinery runs per rig (enforced by ErrAlreadyRunning in
-		// manager.go), so concurrent re-claim race conditions are not a concern.
-		if issue.Assignee != "" {
-			stale, parseErr := isClaimStale(issue.UpdatedAt, e.config.StaleClaimTimeout)
-			if parseErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not parse UpdatedAt for %s: %v (treating claim as valid)\n",
-					issue.ID, parseErr)
-			}
-			if !stale {
-				continue
-			}
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Stale claim detected: %s (assignee: %s, updated: %s) — eligible for re-claim\n",
-				issue.ID, issue.Assignee, issue.UpdatedAt)
-		}
-
-		mrs = append(mrs, issueToMRInfo(issue, fields))
 	}
+	return mrs
+}
 
-	return mrs, nil
+func (e *Engineer) readyMRInfo(issue *beads.Issue) *MRInfo {
+	if issue.Status != "open" || beads.HasUnresolvedBlockers(issue) {
+		return nil
+	}
+	if beads.HasLabel(issue, "gt:owned-direct") {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping MR %s: owned+direct convoy (belt-and-suspenders)\n", issue.ID)
+		return nil
+	}
+	fields := beads.ParseMRFields(issue)
+	if fields == nil || (fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name)) {
+		return nil
+	}
+	if !e.readyMRClaimEligible(issue) {
+		return nil
+	}
+	return issueToMRInfo(issue, fields)
+}
+
+func (e *Engineer) readyMRClaimEligible(issue *beads.Issue) bool {
+	if issue.Assignee == "" {
+		return true
+	}
+	stale, parseErr := isClaimStale(issue.UpdatedAt, e.config.StaleClaimTimeout)
+	if parseErr != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not parse UpdatedAt for %s: %v (treating claim as valid)\n",
+			issue.ID, parseErr)
+	}
+	if !stale {
+		return false
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Stale claim detected: %s (assignee: %s, updated: %s) — eligible for re-claim\n",
+		issue.ID, issue.Assignee, issue.UpdatedAt)
+	return true
 }
 
 // ListBlockedMRs returns MRs that are blocked by open tasks.
@@ -2219,8 +2383,8 @@ func (e *Engineer) ListAllOpenMRs() ([]*MRInfo, error) {
 		mr := issueToMRInfo(issue, fields)
 
 		// Check branch existence (local + remote tracking refs)
-		mr.BranchExistsLocal, _ = e.git.BranchExists(fields.Branch)
-		mr.BranchExistsRemote, _ = e.git.RemoteTrackingBranchExists("origin", fields.Branch)
+		mr.BranchExistsLocal, _ = git.BranchExists(e.git, fields.Branch)
+		mr.BranchExistsRemote, _ = git.RemoteTrackingBranchExists(e.git, "origin", fields.Branch)
 		mr.BlockedBy = e.firstOpenBlocker(issue)
 
 		mrs = append(mrs, mr)
@@ -2253,11 +2417,11 @@ func (e *Engineer) ListQueueAnomalies(now time.Time) ([]*MRAnomaly, error) {
 	}
 
 	return detectQueueAnomalies(filtered, now, e.config.StaleClaimWarningAfter, func(branch string) (bool, bool, error) {
-		localExists, err := e.git.BranchExists(branch)
+		localExists, err := git.BranchExists(e.git, branch)
 		if err != nil {
 			return false, false, err
 		}
-		remoteTrackingExists, err := e.git.RemoteTrackingBranchExists("origin", branch)
+		remoteTrackingExists, err := git.RemoteTrackingBranchExists(e.git, "origin", branch)
 		if err != nil {
 			return false, false, err
 		}
@@ -2274,46 +2438,73 @@ func detectQueueAnomalies(
 	var anomalies []*MRAnomaly
 
 	for _, issue := range issues {
-		if issue == nil || issue.Status != "open" {
-			continue
-		}
-		fields := beads.ParseMRFields(issue)
-		if fields == nil || fields.Branch == "" {
-			continue
-		}
-
-		// 1) Stale claim detection.
-		if issue.Assignee != "" {
-			updatedAt, err := time.Parse(time.RFC3339, issue.UpdatedAt)
-			if err == nil {
-				age := now.Sub(updatedAt)
-				if age >= warningAfter {
-					anomalies = append(anomalies, &MRAnomaly{
-						ID:       issue.ID,
-						Branch:   fields.Branch,
-						Type:     "stale-claim",
-						Assignee: issue.Assignee,
-						Age:      age,
-						Detail:   "MR is claimed but not progressing",
-					})
-				}
-			}
-		}
-
-		// 2) Orphaned branch detection.
-		// ZFC: report raw anomaly data. Agent decides severity.
-		localExists, remoteTrackingExists, err := branchExistsFn(fields.Branch)
-		if err == nil && !localExists && !remoteTrackingExists {
-			anomalies = append(anomalies, &MRAnomaly{
-				ID:     issue.ID,
-				Branch: fields.Branch,
-				Type:   "orphaned-branch",
-				Detail: "MR branch is missing locally and in origin/* tracking refs",
-			})
-		}
+		anomalies = append(anomalies, queueAnomaliesForIssue(issue, now, warningAfter, branchExistsFn)...)
 	}
 
 	return anomalies
+}
+
+func queueAnomaliesForIssue(
+	issue *beads.Issue,
+	now time.Time,
+	warningAfter time.Duration,
+	branchExistsFn func(branch string) (localExists bool, remoteTrackingExists bool, err error),
+) []*MRAnomaly {
+	if issue == nil || issue.Status != "open" {
+		return nil
+	}
+	fields := beads.ParseMRFields(issue)
+	if fields == nil || fields.Branch == "" {
+		return nil
+	}
+
+	var anomalies []*MRAnomaly
+	if anomaly := staleClaimAnomaly(issue, fields.Branch, now, warningAfter); anomaly != nil {
+		anomalies = append(anomalies, anomaly)
+	}
+	if anomaly := orphanedBranchAnomaly(issue, fields.Branch, branchExistsFn); anomaly != nil {
+		anomalies = append(anomalies, anomaly)
+	}
+	return anomalies
+}
+
+func staleClaimAnomaly(issue *beads.Issue, branch string, now time.Time, warningAfter time.Duration) *MRAnomaly {
+	if issue.Assignee == "" {
+		return nil
+	}
+	updatedAt, err := time.Parse(time.RFC3339, issue.UpdatedAt)
+	if err != nil {
+		return nil
+	}
+	age := now.Sub(updatedAt)
+	if age < warningAfter {
+		return nil
+	}
+	return &MRAnomaly{
+		ID:       issue.ID,
+		Branch:   branch,
+		Type:     "stale-claim",
+		Assignee: issue.Assignee,
+		Age:      age,
+		Detail:   "MR is claimed but not progressing",
+	}
+}
+
+func orphanedBranchAnomaly(
+	issue *beads.Issue,
+	branch string,
+	branchExistsFn func(branch string) (localExists bool, remoteTrackingExists bool, err error),
+) *MRAnomaly {
+	localExists, remoteTrackingExists, err := branchExistsFn(branch)
+	if err != nil || localExists || remoteTrackingExists {
+		return nil
+	}
+	return &MRAnomaly{
+		ID:     issue.ID,
+		Branch: branch,
+		Type:   "orphaned-branch",
+		Detail: "MR branch is missing locally and in origin/* tracking refs",
+	}
 }
 
 // ClaimMR claims an MR for processing by setting the assignee field.
@@ -2410,6 +2601,20 @@ type convoyInfo struct {
 	Description string
 }
 
+type convoyCandidate struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Status      string   `json:"status"`
+	Description string   `json:"description"`
+	IssueType   string   `json:"issue_type"`
+	Labels      []string `json:"labels"`
+}
+
+type convoyDependency struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
 func refineryHasLabel(labels []string, target string) bool {
 	for _, label := range labels {
 		if label == target {
@@ -2425,6 +2630,21 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 	townReadEnv := beads.BuildReadOnlyPinnedBDEnv(os.Environ(), townBeads)
 	townMutationEnv := beads.BuildMutationPinnedBDEnv(os.Environ(), townBeads)
 	routingReadEnv := beads.BuildReadOnlyRoutingBDEnv(os.Environ(), townBeads)
+	convoys, ok := e.listOpenConvoyCandidates(townBeads, townReadEnv)
+	if !ok {
+		return nil
+	}
+
+	var closed []convoyInfo
+	for _, convoy := range convoys {
+		if info, ok := e.closeCompletedConvoy(convoy, townRoot, townBeads, townReadEnv, townMutationEnv, routingReadEnv); ok {
+			closed = append(closed, info)
+		}
+	}
+	return closed
+}
+
+func (e *Engineer) listOpenConvoyCandidates(townBeads string, townReadEnv []string) ([]convoyCandidate, bool) {
 
 	// List all open issues and filter locally so legacy type=convoy beads remain visible.
 	listArgs := beads.InjectFlatForListJSON([]string{"list", "--status=open", "--json", "--limit=0"})
@@ -2435,114 +2655,89 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 
 	if err := listCmd.Run(); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to list convoys: %v\n", err)
-		return nil
+		return nil, false
 	}
 
-	var convoys []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Status      string   `json:"status"`
-		Description string   `json:"description"`
-		IssueType   string   `json:"issue_type"`
-		Labels      []string `json:"labels"`
-	}
+	var convoys []convoyCandidate
 	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to parse convoy list: %v\n", err)
-		return nil
+		return nil, false
 	}
+	return convoys, true
+}
 
-	var closed []convoyInfo
-
-	for _, convoy := range convoys {
-		if convoy.IssueType != "convoy" && !refineryHasLabel(convoy.Labels, "gt:convoy") {
-			continue
-		}
-		// Get tracked issues for this convoy via bd dep list
-		depArgs := beads.MaybePrependAllowStaleWithEnv(townReadEnv, []string{"dep", "list", convoy.ID, "--direction=down", "--type=tracks", "--json"})
-		depCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyPinned, depArgs...)
-		var depOut bytes.Buffer
-		depCmd.Stdout = &depOut
-
-		if err := depCmd.Run(); err != nil {
-			continue
-		}
-
-		var deps []struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		}
-		if err := json.Unmarshal(depOut.Bytes(), &deps); err != nil {
-			continue
-		}
-
-		// Refresh statuses from home rigs (cross-rig lookup)
-		allClosed := true
-		for _, dep := range deps {
-			// Unwrap external:prefix:id format
-			depID := dep.ID
-			if strings.HasPrefix(depID, "external:") {
-				parts := strings.SplitN(depID, ":", 3)
-				if len(parts) == 3 {
-					depID = parts[2]
-				}
-			}
-
-			// Get fresh status from home rig via bd show with routing
-			showArgs := beads.MaybePrependAllowStaleWithEnv(routingReadEnv, []string{"show", depID, "--json"})
-			showCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyRouting, showArgs...)
-			var showOut bytes.Buffer
-			showCmd.Stdout = &showOut
-
-			if err := showCmd.Run(); err != nil || showOut.Len() == 0 {
-				// Can't verify - treat as open to be safe
-				allClosed = false
-				break
-			}
-
-			var issues []struct {
-				Status string `json:"status"`
-			}
-			if err := json.Unmarshal(showOut.Bytes(), &issues); err != nil || len(issues) == 0 {
-				allClosed = false
-				break
-			}
-
-			if issues[0].Status != "closed" && issues[0].Status != "tombstone" {
-				allClosed = false
-				break
-			}
-		}
-
-		if !allClosed {
-			continue
-		}
-
-		// All tracked issues are complete - close the convoy
-		reason := "All tracked issues completed"
-		if len(deps) == 0 {
-			reason = "Empty convoy — auto-closed as definitionally complete"
-		}
-
-		closeArgs := beads.MaybePrependAllowStaleWithEnv(townMutationEnv, []string{"close", convoy.ID, "-r", reason})
-		closeCmd := beads.Command(townBeads, townBeads, beads.MutationPinned, closeArgs...)
-
-		if err := closeCmd.Run(); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close convoy %s: %v\n", convoy.ID, err)
-			continue
-		}
-
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-closed convoy %s: %s\n", convoy.ID, convoy.Title)
-		closed = append(closed, convoyInfo{
-			ID:          convoy.ID,
-			Title:       convoy.Title,
-			Description: convoy.Description,
-		})
-
-		// Send convoy completion notifications (owner + notify addresses)
-		e.notifyConvoyCompletion(townRoot, convoy.ID, convoy.Title, convoy.Description)
+func (e *Engineer) closeCompletedConvoy(
+	convoy convoyCandidate,
+	townRoot, townBeads string,
+	townReadEnv, townMutationEnv, routingReadEnv []string,
+) (convoyInfo, bool) {
+	if convoy.IssueType != "convoy" && !refineryHasLabel(convoy.Labels, "gt:convoy") {
+		return convoyInfo{}, false
 	}
+	deps, ok := e.listConvoyDependencies(townRoot, townBeads, townReadEnv, convoy.ID)
+	if !ok || !e.allConvoyDependenciesClosed(deps, townRoot, townBeads, routingReadEnv) {
+		return convoyInfo{}, false
+	}
+	reason := "All tracked issues completed"
+	if len(deps) == 0 {
+		reason = "Empty convoy — auto-closed as definitionally complete"
+	}
+	closeArgs := beads.MaybePrependAllowStaleWithEnv(townMutationEnv, []string{"close", convoy.ID, "-r", reason})
+	closeCmd := beads.Command(townBeads, townBeads, beads.MutationPinned, closeArgs...)
+	if err := closeCmd.Run(); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close convoy %s: %v\n", convoy.ID, err)
+		return convoyInfo{}, false
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-closed convoy %s: %s\n", convoy.ID, convoy.Title)
+	e.notifyConvoyCompletion(townRoot, convoy.ID, convoy.Title, convoy.Description)
+	return convoyInfo{ID: convoy.ID, Title: convoy.Title, Description: convoy.Description}, true
+}
 
-	return closed
+func (e *Engineer) listConvoyDependencies(townRoot, townBeads string, townReadEnv []string, convoyID string) ([]convoyDependency, bool) {
+	depArgs := beads.MaybePrependAllowStaleWithEnv(townReadEnv, []string{"dep", "list", convoyID, "--direction=down", "--type=tracks", "--json"})
+	depCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyPinned, depArgs...)
+	var depOut bytes.Buffer
+	depCmd.Stdout = &depOut
+	if err := depCmd.Run(); err != nil {
+		return nil, false
+	}
+	var deps []convoyDependency
+	if err := json.Unmarshal(depOut.Bytes(), &deps); err != nil {
+		return nil, false
+	}
+	return deps, true
+}
+
+func (e *Engineer) allConvoyDependenciesClosed(deps []convoyDependency, townRoot, townBeads string, routingReadEnv []string) bool {
+	for _, dep := range deps {
+		if !e.convoyDependencyClosed(dep.ID, townRoot, townBeads, routingReadEnv) {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engineer) convoyDependencyClosed(depID, townRoot, townBeads string, routingReadEnv []string) bool {
+	if strings.HasPrefix(depID, "external:") {
+		parts := strings.SplitN(depID, ":", 3)
+		if len(parts) == 3 {
+			depID = parts[2]
+		}
+	}
+	showArgs := beads.MaybePrependAllowStaleWithEnv(routingReadEnv, []string{"show", depID, "--json"})
+	showCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyRouting, showArgs...)
+	var showOut bytes.Buffer
+	showCmd.Stdout = &showOut
+	if err := showCmd.Run(); err != nil || showOut.Len() == 0 {
+		return false
+	}
+	var issues []struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(showOut.Bytes(), &issues); err != nil || len(issues) == 0 {
+		return false
+	}
+	return issues[0].Status == "closed" || issues[0].Status == "tombstone"
 }
 
 // notifyConvoyCompletion sends notifications to convoy owner and notify addresses.
@@ -2620,10 +2815,10 @@ func (e *Engineer) landConvoySwarm(townRoot string, convoy convoyInfo) {
 
 	// Check if the molecule has an integration branch (swarm/* pattern)
 	integrationBranch := fmt.Sprintf("swarm/%s", moleculeID)
-	branchExists, err := e.git.BranchExists(integrationBranch)
+	branchExists, err := git.BranchExists(e.git, integrationBranch)
 	if err != nil || !branchExists {
 		// Also check remote
-		remoteExists, _ := e.git.RemoteTrackingBranchExists("origin", integrationBranch)
+		remoteExists, _ := git.RemoteTrackingBranchExists(e.git, "origin", integrationBranch)
 		if !remoteExists {
 			return // No integration branch to land
 		}
@@ -2651,7 +2846,7 @@ func (e *Engineer) landConvoySwarm(townRoot string, convoy convoyInfo) {
 // pruneStaleRemoteRefs prunes remote tracking refs that no longer exist on origin.
 // This cleans up refs from branches that were deleted on the remote after merge.
 func (e *Engineer) pruneStaleRemoteRefs() {
-	if err := e.git.FetchPrune("origin"); err != nil {
+	if err := git.FetchPrune(e.git, "origin"); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to prune stale remote refs: %v\n", err)
 	}
 }

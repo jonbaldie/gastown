@@ -59,42 +59,59 @@ var checkpointClearCmd = &cobra.Command{
 	RunE:  runCheckpointClear,
 }
 
-var (
-	checkpointNotes    string
-	checkpointMolecule string
-	checkpointStep     string
-)
-
 func init() {
 	checkpointCmd.AddCommand(checkpointWriteCmd)
 	checkpointCmd.AddCommand(checkpointReadCmd)
 	checkpointCmd.AddCommand(checkpointClearCmd)
 
-	checkpointWriteCmd.Flags().StringVar(&checkpointNotes, "notes", "",
+	checkpointWriteCmd.Flags().String("notes", "",
 		"Add notes to the checkpoint")
-	checkpointWriteCmd.Flags().StringVar(&checkpointMolecule, "molecule", "",
+	checkpointWriteCmd.Flags().String("molecule", "",
 		"Override molecule ID (auto-detected if not specified)")
-	checkpointWriteCmd.Flags().StringVar(&checkpointStep, "step", "",
+	checkpointWriteCmd.Flags().String("step", "",
 		"Override step ID (auto-detected if not specified)")
 
 	rootCmd.AddCommand(checkpointCmd)
 }
 
-func runCheckpointWrite(cmd *cobra.Command, args []string) error {
+type checkpointWriteOptions struct {
+	notes    string
+	molecule string
+	step     string
+}
+
+func checkpointWriteOptionsFromCommand(cmd *cobra.Command) (checkpointWriteOptions, error) {
+	if cmd == nil {
+		return checkpointWriteOptions{}, nil
+	}
+	notes, err := cmd.Flags().GetString("notes")
+	if err != nil {
+		return checkpointWriteOptions{}, err
+	}
+	molecule, err := cmd.Flags().GetString("molecule")
+	if err != nil {
+		return checkpointWriteOptions{}, err
+	}
+	step, err := cmd.Flags().GetString("step")
+	if err != nil {
+		return checkpointWriteOptions{}, err
+	}
+	return checkpointWriteOptions{notes: notes, molecule: molecule, step: step}, nil
+}
+
+func runCheckpointWrite(cmd *cobra.Command, _ []string) error {
+	opts, err := checkpointWriteOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
 
-	// Detect role context
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil || townRoot == "" {
-		return fmt.Errorf("not in a Gas Town workspace")
-	}
-
-	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	roleInfo, err := checkpointRoleContext(cwd)
 	if err != nil {
-		return fmt.Errorf("detecting role: %w", err)
+		return err
 	}
 
 	// Only polecats and crew workers use checkpoints
@@ -104,40 +121,9 @@ func runCheckpointWrite(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Capture current state
-	cp, err := checkpoint.Capture(cwd)
+	cp, err := captureCheckpoint(cwd, roleInfo, opts)
 	if err != nil {
-		return fmt.Errorf("capturing checkpoint: %w", err)
-	}
-
-	// Add notes if provided
-	if checkpointNotes != "" {
-		cp.WithNotes(checkpointNotes)
-	}
-
-	// Try to detect molecule context if not overridden
-	if checkpointMolecule == "" || checkpointStep == "" {
-		moleculeID, stepID, stepTitle := detectMoleculeContext(cwd, roleInfo)
-		if checkpointMolecule == "" {
-			checkpointMolecule = moleculeID
-		}
-		if checkpointStep == "" {
-			checkpointStep = stepID
-		}
-		if stepTitle != "" {
-			cp.WithMolecule(checkpointMolecule, checkpointStep, stepTitle)
-		}
-	}
-
-	// Add molecule context
-	if checkpointMolecule != "" {
-		cp.WithMolecule(checkpointMolecule, checkpointStep, "")
-	}
-
-	// Detect hooked bead
-	hookedBead := detectHookedBead(cwd, roleInfo)
-	if hookedBead != "" {
-		cp.WithHookedBead(hookedBead)
+		return err
 	}
 
 	// Write checkpoint
@@ -146,12 +132,58 @@ func runCheckpointWrite(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("%s Checkpoint written\n", style.Bold.Render("✓"))
-	fmt.Printf("  %s\n", cp.Summary())
+	fmt.Printf("  %s\n", checkpoint.Summary(cp))
 
 	return nil
 }
 
-func runCheckpointRead(cmd *cobra.Command, args []string) error {
+func checkpointRoleContext(cwd string) (RoleInfo, error) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return RoleInfo{}, fmt.Errorf("not in a Gas Town workspace")
+	}
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return RoleInfo{}, fmt.Errorf("detecting role: %w", err)
+	}
+	return roleInfo, nil
+}
+
+func captureCheckpoint(cwd string, roleInfo RoleInfo, opts checkpointWriteOptions) (*checkpoint.Checkpoint, error) {
+	cp, err := checkpoint.Capture(cwd)
+	if err != nil {
+		return nil, fmt.Errorf("capturing checkpoint: %w", err)
+	}
+	enrichCheckpoint(cp, cwd, roleInfo, opts)
+	return cp, nil
+}
+
+func enrichCheckpoint(cp *checkpoint.Checkpoint, cwd string, roleInfo RoleInfo, opts checkpointWriteOptions) {
+	if opts.notes != "" {
+		checkpoint.WithNotes(cp, opts.notes)
+	}
+	moleculeID, stepID := opts.molecule, opts.step
+	if moleculeID == "" || stepID == "" {
+		detectedMolecule, detectedStep, stepTitle := detectMoleculeContext(cwd, roleInfo)
+		if moleculeID == "" {
+			moleculeID = detectedMolecule
+		}
+		if stepID == "" {
+			stepID = detectedStep
+		}
+		if stepTitle != "" {
+			checkpoint.WithMolecule(cp, moleculeID, stepID, stepTitle)
+		}
+	}
+	if moleculeID != "" {
+		checkpoint.WithMolecule(cp, moleculeID, stepID, "")
+	}
+	if hookedBead := detectHookedBead(cwd, roleInfo); hookedBead != "" {
+		checkpoint.WithHookedBead(cp, hookedBead)
+	}
+}
+
+func runCheckpointRead(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -167,44 +199,48 @@ func runCheckpointRead(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%s\n\n", style.Bold.Render("Checkpoint"))
-	fmt.Printf("Timestamp: %s (%s ago)\n", cp.Timestamp.Format("2006-01-02 15:04:05"), cp.Age().Round(1))
-
-	if cp.MoleculeID != "" {
-		fmt.Printf("Molecule: %s\n", cp.MoleculeID)
-	}
-	if cp.CurrentStep != "" {
-		fmt.Printf("Step: %s\n", cp.CurrentStep)
-	}
-	if cp.StepTitle != "" {
-		fmt.Printf("Step Title: %s\n", cp.StepTitle)
-	}
-	if cp.HookedBead != "" {
-		fmt.Printf("Hooked Bead: %s\n", cp.HookedBead)
-	}
-	if cp.Branch != "" {
-		fmt.Printf("Branch: %s\n", cp.Branch)
-	}
-	if cp.LastCommit != "" {
-		fmt.Printf("Last Commit: %s\n", cp.LastCommit[:min(12, len(cp.LastCommit))])
-	}
-	if len(cp.ModifiedFiles) > 0 {
-		fmt.Printf("Modified Files: %d\n", len(cp.ModifiedFiles))
-		for _, f := range cp.ModifiedFiles {
-			fmt.Printf("  - %s\n", f)
-		}
-	}
-	if cp.Notes != "" {
-		fmt.Printf("Notes: %s\n", cp.Notes)
-	}
-	if cp.SessionID != "" {
-		fmt.Printf("Session ID: %s\n", cp.SessionID)
-	}
+	printCheckpoint(cp)
 
 	return nil
 }
 
-func runCheckpointClear(cmd *cobra.Command, args []string) error {
+func printCheckpoint(cp *checkpoint.Checkpoint) {
+	fmt.Printf("%s\n\n", style.Bold.Render("Checkpoint"))
+	fmt.Printf("Timestamp: %s (%s ago)\n", cp.Timestamp.Format("2006-01-02 15:04:05"), checkpoint.Age(cp).Round(1))
+	fields := []struct {
+		label string
+		value string
+	}{
+		{"Molecule", cp.MoleculeID},
+		{"Step", cp.CurrentStep},
+		{"Step Title", cp.StepTitle},
+		{"Hooked Bead", cp.HookedBead},
+		{"Branch", cp.Branch},
+		{"Last Commit", checkpointCommitPrefix(cp.LastCommit)},
+		{"Notes", cp.Notes},
+		{"Session ID", cp.SessionID},
+	}
+	for _, field := range fields {
+		if field.value != "" {
+			fmt.Printf("%s: %s\n", field.label, field.value)
+		}
+	}
+	if len(cp.ModifiedFiles) > 0 {
+		fmt.Printf("Modified Files: %d\n", len(cp.ModifiedFiles))
+		for _, file := range cp.ModifiedFiles {
+			fmt.Printf("  - %s\n", file)
+		}
+	}
+}
+
+func checkpointCommitPrefix(commit string) string {
+	if commit == "" {
+		return ""
+	}
+	return commit[:min(12, len(commit))]
+}
+
+func runCheckpointClear(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)

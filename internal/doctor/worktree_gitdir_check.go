@@ -52,8 +52,7 @@ func (c *WorktreeGitdirCheck) Run(ctx *CheckContext) *CheckResult {
 	c.brokenWorktrees = nil
 	c.townRoot = ctx.TownRoot
 
-	entries, err := os.ReadDir(ctx.TownRoot)
-	if err != nil {
+	if err := scanWorktreeRigs(c, ctx); err != nil {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusError,
@@ -61,30 +60,32 @@ func (c *WorktreeGitdirCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	// Scan deacon/dogs for cross-rig worktrees (not covered by rig scan
+	// because deacon/ doesn't have config.json or standard rig subdirs).
+	scanDeaconDogs(c, ctx.TownRoot)
+
+	return worktreeCheckResult(c, ctx.TownRoot)
+}
+
+func scanWorktreeRigs(c *WorktreeGitdirCheck, ctx *CheckContext) error {
+	entries, err := os.ReadDir(ctx.TownRoot)
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-
 		rigPath := filepath.Join(ctx.TownRoot, entry.Name())
-
-		// Skip non-rig directories
-		if !isRigDir(rigPath) {
+		if !isRigDir(rigPath) || (ctx.RigName != "" && entry.Name() != ctx.RigName) {
 			continue
 		}
-
-		// If --rig is specified, only check that rig
-		if ctx.RigName != "" && entry.Name() != ctx.RigName {
-			continue
-		}
-
-		c.checkRigWorktrees(rigPath, entry.Name())
+		scanRigWorktrees(c, rigPath, entry.Name())
 	}
+	return nil
+}
 
-	// Scan deacon/dogs for cross-rig worktrees (not covered by rig scan
-	// because deacon/ doesn't have config.json or standard rig subdirs).
-	c.checkDeaconDogs(ctx.TownRoot)
-
+func worktreeCheckResult(c *WorktreeGitdirCheck, townRoot string) *CheckResult {
 	if len(c.brokenWorktrees) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -92,30 +93,32 @@ func (c *WorktreeGitdirCheck) Run(ctx *CheckContext) *CheckResult {
 			Message: "All worktree gitdir references are valid",
 		}
 	}
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusError,
+		Message: fmt.Sprintf("%d worktree(s) with broken gitdir references", len(c.brokenWorktrees)),
+		Details: worktreeFailureDetails(c.brokenWorktrees, townRoot),
+		FixHint: "Run 'gt doctor --fix' to re-create broken worktrees from .repo.git",
+	}
+}
 
-	var details []string
-	for _, bw := range c.brokenWorktrees {
-		relPath, _ := filepath.Rel(ctx.TownRoot, bw.worktreePath)
+func worktreeFailureDetails(broken []brokenWorktree, townRoot string) []string {
+	details := make([]string, 0, len(broken))
+	for _, bw := range broken {
+		relPath, _ := filepath.Rel(townRoot, bw.worktreePath)
 		if relPath == "" {
 			relPath = bw.worktreePath
 		}
 		details = append(details, fmt.Sprintf("%s: %s", relPath, bw.reason))
 	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusError,
-		Message: fmt.Sprintf("%d worktree(s) with broken gitdir references", len(c.brokenWorktrees)),
-		Details: details,
-		FixHint: "Run 'gt doctor --fix' to re-create broken worktrees from .repo.git",
-	}
+	return details
 }
 
-// checkRigWorktrees checks all worktrees within a single rig.
-func (c *WorktreeGitdirCheck) checkRigWorktrees(rigPath, rigName string) {
+// scanRigWorktrees checks all worktrees within a single rig.
+func scanRigWorktrees(c *WorktreeGitdirCheck, rigPath, rigName string) {
 	// Check refinery/rig
 	refineryRig := filepath.Join(rigPath, "refinery", "rig")
-	c.checkWorktree(refineryRig, rigPath)
+	checkWorktree(c, refineryRig, rigPath)
 
 	// Check polecats (both structures: polecats/<name>/<rigname>/ and polecats/<name>/)
 	polecatsDir := filepath.Join(rigPath, "polecats")
@@ -131,28 +134,28 @@ func (c *WorktreeGitdirCheck) checkRigWorktrees(rigPath, rigName string) {
 
 		// Try new structure first: polecats/<name>/<rigname>/
 		newPath := filepath.Join(polecatsDir, entry.Name(), rigName)
-		if c.hasGitFile(newPath) {
-			c.checkWorktree(newPath, rigPath)
+		if hasGitFile(newPath) {
+			checkWorktree(c, newPath, rigPath)
 			continue
 		}
 
 		// Fall back to old structure: polecats/<name>/
 		oldPath := filepath.Join(polecatsDir, entry.Name())
-		if c.hasGitFile(oldPath) {
-			c.checkWorktree(oldPath, rigPath)
+		if hasGitFile(oldPath) {
+			checkWorktree(c, oldPath, rigPath)
 		}
 	}
 
 	// Check witness/rig
 	witnessRig := filepath.Join(rigPath, "witness", "rig")
-	if c.hasGitFile(witnessRig) {
-		c.checkWorktree(witnessRig, rigPath)
+	if hasGitFile(witnessRig) {
+		checkWorktree(c, witnessRig, rigPath)
 	}
 }
 
-// checkDeaconDogs scans deacon/dogs/<dogname>/<rigname>/ for cross-rig worktrees.
+// scanDeaconDogs scans deacon/dogs/<dogname>/<rigname>/ for cross-rig worktrees.
 // Each dog directory contains worktrees of various rigs, created by gt sling.
-func (c *WorktreeGitdirCheck) checkDeaconDogs(townRoot string) {
+func scanDeaconDogs(c *WorktreeGitdirCheck, townRoot string) {
 	dogsDir := filepath.Join(townRoot, "deacon", "dogs")
 	dogEntries, err := os.ReadDir(dogsDir)
 	if err != nil {
@@ -170,23 +173,27 @@ func (c *WorktreeGitdirCheck) checkDeaconDogs(townRoot string) {
 			continue
 		}
 
-		for _, rigEntry := range rigEntries {
-			if !rigEntry.IsDir() || strings.HasPrefix(rigEntry.Name(), ".") {
-				continue
-			}
+		scanDogWorktrees(c, townRoot, dogPath, rigEntries)
+	}
+}
 
-			wtPath := filepath.Join(dogPath, rigEntry.Name())
-			if c.hasGitFile(wtPath) {
-				// For dog worktrees, rigPath is the rig the worktree belongs to
-				rigPath := filepath.Join(townRoot, rigEntry.Name())
-				c.checkWorktree(wtPath, rigPath)
-			}
+func scanDogWorktrees(c *WorktreeGitdirCheck, townRoot, dogPath string, rigEntries []os.DirEntry) {
+	for _, rigEntry := range rigEntries {
+		if !rigEntry.IsDir() || strings.HasPrefix(rigEntry.Name(), ".") {
+			continue
+		}
+
+		wtPath := filepath.Join(dogPath, rigEntry.Name())
+		if hasGitFile(wtPath) {
+			// For dog worktrees, rigPath is the rig the worktree belongs to
+			rigPath := filepath.Join(townRoot, rigEntry.Name())
+			checkWorktree(c, wtPath, rigPath)
 		}
 	}
 }
 
 // checkWorktree validates a single worktree's .git file reference.
-func (c *WorktreeGitdirCheck) checkWorktree(worktreePath, rigPath string) {
+func checkWorktree(c *WorktreeGitdirCheck, worktreePath, rigPath string) {
 	gitFile := filepath.Join(worktreePath, ".git")
 
 	info, err := os.Stat(gitFile)
@@ -201,7 +208,7 @@ func (c *WorktreeGitdirCheck) checkWorktree(worktreePath, rigPath string) {
 
 	content, err := os.ReadFile(gitFile)
 	if err != nil {
-		c.brokenWorktrees = append(c.brokenWorktrees, brokenWorktree{
+		appendBrokenWorktree(c, brokenWorktree{
 			worktreePath: worktreePath,
 			rigPath:      rigPath,
 			reason:       fmt.Sprintf("cannot read .git file: %v", err),
@@ -209,57 +216,65 @@ func (c *WorktreeGitdirCheck) checkWorktree(worktreePath, rigPath string) {
 		return
 	}
 
+	worktree, ok := inspectWorktreeGitFile(c, worktreePath, rigPath, content)
+	if !ok {
+		return
+	}
+	appendBrokenWorktree(c, worktree)
+}
+
+func appendBrokenWorktree(c *WorktreeGitdirCheck, worktree brokenWorktree) {
+	c.brokenWorktrees = append(c.brokenWorktrees, worktree)
+}
+
+func inspectWorktreeGitFile(c *WorktreeGitdirCheck, worktreePath, rigPath string, content []byte) (brokenWorktree, bool) {
 	line := strings.TrimSpace(string(content))
 	if !strings.HasPrefix(line, "gitdir: ") {
-		c.brokenWorktrees = append(c.brokenWorktrees, brokenWorktree{
+		return brokenWorktree{
 			worktreePath: worktreePath,
 			rigPath:      rigPath,
 			reason:       fmt.Sprintf("malformed .git file (no gitdir: prefix): %s", line),
-		})
-		return
+		}, true
 	}
 
 	gitdirTarget := strings.TrimPrefix(line, "gitdir: ")
-
-	// Resolve relative paths
 	if !filepath.IsAbs(gitdirTarget) {
 		gitdirTarget = filepath.Join(worktreePath, gitdirTarget)
 	}
 
-	// Check if the gitdir target exists
-	if _, err := os.Stat(gitdirTarget); os.IsNotExist(err) {
-		// Extract the bare repo path and worktree name from the stale gitdir target.
-		// Format: <prefix>/<rigname>/.repo.git/worktrees/<wtname>
-		bareRepoPath := ""
-		if strings.Contains(gitdirTarget, ".repo.git") {
-			parts := strings.SplitN(gitdirTarget, ".repo.git", 2)
-			bareRepoPath = parts[0] + ".repo.git"
-		}
-
-		// Try to infer the correct bare repo path from the current town root.
-		// The gitdir target has the form: <old_prefix>/<rigname>/.repo.git/worktrees/<wtname>
-		// We extract <rigname> and look for <townRoot>/<rigname>/.repo.git
-		correctedBareRepo := ""
-		if bareRepoPath != "" && c.townRoot != "" {
-			correctedBareRepo = c.inferCorrectedBareRepo(bareRepoPath)
-		}
-
-		reason := c.buildReason(gitdirTarget, bareRepoPath, correctedBareRepo)
-
-		c.brokenWorktrees = append(c.brokenWorktrees, brokenWorktree{
-			worktreePath:      worktreePath,
-			gitdirTarget:      gitdirTarget,
-			rigPath:           rigPath,
-			bareRepoPath:      bareRepoPath,
-			correctedBareRepo: correctedBareRepo,
-			reason:            reason,
-		})
+	if _, err := os.Stat(gitdirTarget); !os.IsNotExist(err) {
+		return brokenWorktree{}, false
 	}
+	return missingGitdirWorktree(c, worktreePath, rigPath, gitdirTarget), true
+}
+
+func missingGitdirWorktree(c *WorktreeGitdirCheck, worktreePath, rigPath, gitdirTarget string) brokenWorktree {
+	bareRepoPath := extractBareRepoPath(gitdirTarget)
+	correctedBareRepo := ""
+	if bareRepoPath != "" && c.townRoot != "" {
+		correctedBareRepo = inferCorrectedBareRepo(c.townRoot, bareRepoPath)
+	}
+	return brokenWorktree{
+		worktreePath:      worktreePath,
+		gitdirTarget:      gitdirTarget,
+		rigPath:           rigPath,
+		bareRepoPath:      bareRepoPath,
+		correctedBareRepo: correctedBareRepo,
+		reason:            buildReason(gitdirTarget, bareRepoPath, correctedBareRepo),
+	}
+}
+
+func extractBareRepoPath(gitdirTarget string) string {
+	if !strings.Contains(gitdirTarget, ".repo.git") {
+		return ""
+	}
+	parts := strings.SplitN(gitdirTarget, ".repo.git", 2)
+	return parts[0] + ".repo.git"
 }
 
 // inferCorrectedBareRepo tries to find the correct .repo.git path by extracting
 // the rig name from the stale path and looking it up under the current town root.
-func (c *WorktreeGitdirCheck) inferCorrectedBareRepo(staleBareRepoPath string) string {
+func inferCorrectedBareRepo(townRoot, staleBareRepoPath string) string {
 	// staleBareRepoPath looks like: /Users/bob/gt/testAnt/.repo.git
 	// We need to extract "testAnt" and check <townRoot>/testAnt/.repo.git
 
@@ -267,7 +282,7 @@ func (c *WorktreeGitdirCheck) inferCorrectedBareRepo(staleBareRepoPath string) s
 	staleRigDir := filepath.Dir(staleBareRepoPath)
 	rigName := filepath.Base(staleRigDir)
 
-	candidate := filepath.Join(c.townRoot, rigName, ".repo.git")
+	candidate := filepath.Join(townRoot, rigName, ".repo.git")
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate
 	}
@@ -276,7 +291,7 @@ func (c *WorktreeGitdirCheck) inferCorrectedBareRepo(staleBareRepoPath string) s
 }
 
 // buildReason constructs a human-readable reason string for a broken worktree.
-func (c *WorktreeGitdirCheck) buildReason(gitdirTarget, bareRepoPath, correctedBareRepo string) string {
+func buildReason(gitdirTarget, bareRepoPath, correctedBareRepo string) string {
 	if bareRepoPath == "" {
 		return fmt.Sprintf("gitdir target does not exist: %s", gitdirTarget)
 	}
@@ -288,7 +303,7 @@ func (c *WorktreeGitdirCheck) buildReason(gitdirTarget, bareRepoPath, correctedB
 
 	// Stale .repo.git path doesn't exist — is this a relocation?
 	if correctedBareRepo != "" {
-		oldPrefix := filepath.Dir(filepath.Dir(bareRepoPath))     // e.g., /Users/bob/gt
+		oldPrefix := filepath.Dir(filepath.Dir(bareRepoPath))      // e.g., /Users/bob/gt
 		newPrefix := filepath.Dir(filepath.Dir(correctedBareRepo)) // e.g., /home/bob/gt
 		return fmt.Sprintf("relocated (%s -> %s), needs worktree re-creation", oldPrefix, newPrefix)
 	}
@@ -297,7 +312,7 @@ func (c *WorktreeGitdirCheck) buildReason(gitdirTarget, bareRepoPath, correctedB
 }
 
 // hasGitFile checks if a directory has a .git file (not directory).
-func (c *WorktreeGitdirCheck) hasGitFile(path string) bool {
+func hasGitFile(path string) bool {
 	gitFile := filepath.Join(path, ".git")
 	info, err := os.Stat(gitFile)
 	if err != nil {
@@ -307,7 +322,7 @@ func (c *WorktreeGitdirCheck) hasGitFile(path string) bool {
 }
 
 // Fix attempts to re-create broken worktrees.
-func (c *WorktreeGitdirCheck) Fix(ctx *CheckContext) error {
+func (c *WorktreeGitdirCheck) Fix(_ *CheckContext) error {
 	var errs []string
 
 	for _, bw := range c.brokenWorktrees {
@@ -327,7 +342,7 @@ func (c *WorktreeGitdirCheck) Fix(ctx *CheckContext) error {
 			continue
 		}
 
-		if err := c.fixOneWorktree(bw, repoPath); err != nil {
+		if err := fixOneWorktree(bw, repoPath); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}
@@ -339,7 +354,7 @@ func (c *WorktreeGitdirCheck) Fix(ctx *CheckContext) error {
 }
 
 // fixOneWorktree repairs a single broken worktree.
-func (c *WorktreeGitdirCheck) fixOneWorktree(bw brokenWorktree, repoPath string) error {
+func fixOneWorktree(bw brokenWorktree, repoPath string) error {
 	// Remove the broken .git file
 	gitFile := filepath.Join(bw.worktreePath, ".git")
 	if _, err := os.Stat(gitFile); err == nil {
@@ -373,7 +388,7 @@ func (c *WorktreeGitdirCheck) fixOneWorktree(bw brokenWorktree, repoPath string)
 	// Directory already exists with content (common for deacon dogs after rsync).
 	// Manually register the worktree: create the entry in .repo.git/worktrees/
 	// and write a new .git file pointing to it.
-	return c.manualWorktreeRegister(bw.worktreePath, repoPath, branch)
+	return manualWorktreeRegister(bw.worktreePath, repoPath, branch)
 }
 
 // manualWorktreeRegister creates a worktree registration manually when
@@ -384,7 +399,7 @@ func (c *WorktreeGitdirCheck) fixOneWorktree(bw brokenWorktree, repoPath string)
 //   - .repo.git/worktrees/<name>/commondir → ../..
 //   - .repo.git/worktrees/<name>/HEAD → ref: refs/heads/<branch>
 //   - <worktree>/.git → gitdir: path to entry
-func (c *WorktreeGitdirCheck) manualWorktreeRegister(worktreePath, repoPath, branch string) error {
+func manualWorktreeRegister(worktreePath, repoPath, branch string) error {
 	// Choose a unique name for the worktree entry
 	baseName := filepath.Base(worktreePath)
 	wtName := baseName

@@ -216,26 +216,13 @@ func (w *Watcher) Close() error {
 
 func (w *Watcher) watch() {
 	defer w.wg.Done()
-
-	// Use fsnotify directly.
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		// Log but don't block; fallback behavior is explicit in callers.
-		fmt.Fprintf(os.Stderr, "nudge watcher init failed for %s: %v\n", w.dir, err)
+	watcher, ok := newQueueWatcher(w.dir)
+	if !ok {
 		return
 	}
 	defer func() { _ = watcher.Close() }()
-
-	// Watch the directory.
-	if err := watcher.Add(w.dir); err != nil {
-		fmt.Fprintf(os.Stderr, "nudge watcher failed to add dir %s: %v\n", w.dir, err)
-		return
-	}
-
-	// Coalescing window.
 	coalesceTimer := time.NewTicker(100 * time.Millisecond)
 	defer coalesceTimer.Stop()
-
 	pending := false
 	for {
 		select {
@@ -245,27 +232,53 @@ func (w *Watcher) watch() {
 			if !ok {
 				return
 			}
-			// Only care about file creation/modification in the queue dir
-			if event.Op&(fsnotify.Create|fsnotify.Write) != 0 {
-				// Filter: only .json files in the queue directory
-				if strings.HasSuffix(event.Name, ".json") && filepath.Dir(event.Name) == w.dir {
-					pending = true
-				}
-			}
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return
-			}
-			fmt.Fprintf(os.Stderr, "nudge watcher error: %v\n", err)
+			pending = pending || isQueueWrite(event, w.dir)
+		case err := <-watcher.Errors:
+			logWatcherError(err)
 		case <-coalesceTimer.C:
-			if pending {
-				pending = false
-				select {
-				case w.events <- struct{}{}:
-				default:
-				}
-			}
+			pending = w.flushPending(pending)
 		}
+	}
+}
+
+func newQueueWatcher(dir string) (*fsnotify.Watcher, bool) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nudge watcher init failed for %s: %v\n", dir, err)
+		return nil, false
+	}
+	if err := watcher.Add(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "nudge watcher failed to add dir %s: %v\n", dir, err)
+		_ = watcher.Close()
+		return nil, false
+	}
+	return watcher, true
+}
+
+func isQueueWrite(event fsnotify.Event, dir string) bool {
+	if event.Op&(fsnotify.Create|fsnotify.Write) == 0 {
+		return false
+	}
+	return strings.HasSuffix(event.Name, ".json") && filepath.Dir(event.Name) == dir
+}
+
+func (w *Watcher) notify() {
+	select {
+	case w.events <- struct{}{}:
+	default:
+	}
+}
+
+func (w *Watcher) flushPending(pending bool) bool {
+	if pending {
+		w.notify()
+	}
+	return false
+}
+
+func logWatcherError(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nudge watcher error: %v\n", err)
 	}
 }
 

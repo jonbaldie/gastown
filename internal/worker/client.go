@@ -79,7 +79,7 @@ func (c *Client) call(ctx context.Context, req TownRequest) (TownResponse, error
 	return out, nil
 }
 
-func (c *Client) ping(ctx context.Context) error {
+func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.call(ctx, TownRequest{Op: opPing})
 	return err
 }

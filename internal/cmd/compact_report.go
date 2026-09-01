@@ -46,13 +46,13 @@ func extractBeadID(output string) (string, error) {
 	return matches[len(matches)-1][1], nil
 }
 
-var (
-	compactReportDryRun  bool
-	compactReportWeekly  bool
-	compactReportVerbose bool
-	compactReportDate    string
-	compactReportJSON    bool
-)
+type compactReportOptions struct {
+	dryRun  bool
+	weekly  bool
+	verbose bool
+	date    string
+	json    bool
+}
 
 // wispCategory maps individual wisp types to display categories.
 // Matches the design doc: Heartbeats, Patrols, Errors, Untyped.
@@ -97,6 +97,13 @@ type weeklyRollup struct {
 	Anomalies  []string                  `json:"anomalies,omitempty"`
 }
 
+type compactReportEvent struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Payload   string `json:"payload"`
+	CreatedAt string `json:"created_at"`
+}
+
 var compactReportCmd = &cobra.Command{
 	Use:   "report",
 	Short: "Generate and send compaction digest report",
@@ -117,95 +124,144 @@ Examples:
 }
 
 func init() {
-	compactReportCmd.Flags().BoolVar(&compactReportDryRun, "dry-run", false, "Preview report without sending")
-	compactReportCmd.Flags().BoolVar(&compactReportWeekly, "weekly", false, "Generate weekly rollup instead of daily digest")
-	compactReportCmd.Flags().BoolVarP(&compactReportVerbose, "verbose", "v", false, "Verbose output")
-	compactReportCmd.Flags().StringVar(&compactReportDate, "date", "", "Report for specific date (YYYY-MM-DD); default: today")
-	compactReportCmd.Flags().BoolVar(&compactReportJSON, "json", false, "Output report as JSON")
+	compactReportCmd.Flags().Bool("dry-run", false, "Preview report without sending")
+	compactReportCmd.Flags().Bool("weekly", false, "Generate weekly rollup instead of daily digest")
+	compactReportCmd.Flags().BoolP("verbose", "v", false, "Verbose output")
+	compactReportCmd.Flags().String("date", "", "Report for specific date (YYYY-MM-DD); default: today")
+	compactReportCmd.Flags().Bool("json", false, "Output report as JSON")
 
 	compactCmd.AddCommand(compactReportCmd)
 }
 
-func runCompactReport(cmd *cobra.Command, args []string) error {
-	if compactReportWeekly {
-		return runWeeklyRollup()
+func runCompactReport(cmd *cobra.Command, _ []string) error {
+	options, err := compactReportOptionsFrom(cmd)
+	if err != nil {
+		return err
 	}
-	return runDailyDigest()
+	if options.weekly {
+		return runWeeklyRollup(options)
+	}
+	return runDailyDigest(options)
 }
 
-func runDailyDigest() error {
-	now := time.Now().UTC()
-	dateStr := now.Format("2006-01-02")
-	if compactReportDate != "" {
-		if _, err := time.Parse("2006-01-02", compactReportDate); err != nil {
-			return fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
-		}
-		dateStr = compactReportDate
-	}
-
-	// Idempotency check: see if digest already exists for this date
-	existingID, err := findExistingCompactReport(dateStr)
+func compactReportOptionsFrom(cmd *cobra.Command) (compactReportOptions, error) {
+	dryRun, err := cmd.Flags().GetBool("dry-run")
 	if err != nil {
-		// Non-fatal: continue with creation attempt
-		if compactReportVerbose {
-			fmt.Fprintf(os.Stderr, "warning: idempotency check failed: %v\n", err)
-		}
-	} else if existingID != "" {
-		fmt.Printf("%s Compaction digest already sent for %s (bead: %s)\n",
-			style.Dim.Render("○"), dateStr, existingID)
+		return compactReportOptions{}, err
+	}
+	weekly, err := cmd.Flags().GetBool("weekly")
+	if err != nil {
+		return compactReportOptions{}, err
+	}
+	verbose, err := cmd.Flags().GetBool("verbose")
+	if err != nil {
+		return compactReportOptions{}, err
+	}
+	date, err := cmd.Flags().GetString("date")
+	if err != nil {
+		return compactReportOptions{}, err
+	}
+	outputJSON, err := cmd.Flags().GetBool("json")
+	if err != nil {
+		return compactReportOptions{}, err
+	}
+	return compactReportOptions{
+		dryRun:  dryRun,
+		weekly:  weekly,
+		verbose: verbose,
+		date:    date,
+		json:    outputJSON,
+	}, nil
+}
+
+func runDailyDigest(options compactReportOptions) error {
+	dateStr, err := dailyDigestDate(options.date)
+	if err != nil {
+		return err
+	}
+	if dailyDigestAlreadySent(dateStr, options.verbose) {
 		return nil
 	}
+
+	report, err := loadDailyDigestReport(dateStr)
+	if err != nil {
+		return err
+	}
+	return publishDailyDigest(dateStr, report, options)
+}
+
+func dailyDigestDate(requested string) (string, error) {
+	if requested == "" {
+		return time.Now().UTC().Format("2006-01-02"), nil
+	}
+	if _, err := time.Parse("2006-01-02", requested); err != nil {
+		return "", fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
+	}
+	return requested, nil
+}
+
+func dailyDigestAlreadySent(dateStr string, verbose bool) bool {
+	existingID, err := findExistingCompactReport(dateStr)
+	if err != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "warning: idempotency check failed: %v\n", err)
+		}
+		return false
+	}
+	if existingID == "" {
+		return false
+	}
+	fmt.Printf("%s Compaction digest already sent for %s (bead: %s)\n",
+		style.Dim.Render("○"), dateStr, existingID)
+	return true
+}
+
+func loadDailyDigestReport(dateStr string) (*compactReport, error) {
 
 	// Run compaction with --json to get results
 	compactOut, err := exec.Command("gt", "compact", "--json").Output()
 	if err != nil {
-		return fmt.Errorf("running compaction: %w", err)
+		return nil, fmt.Errorf("running compaction: %w", err)
 	}
 
 	var result compactResult
 	if err := json.Unmarshal(extractJSONObject(compactOut), &result); err != nil {
-		return fmt.Errorf("parsing compaction output: %w", err)
+		return nil, fmt.Errorf("parsing compaction output: %w", err)
 	}
 
 	// Query active wisps for the "Active" column
 	workDir, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("getting working dir: %w", err)
+		return nil, fmt.Errorf("getting working dir: %w", err)
 	}
 	bd := beads.New(workDir)
 	activeWisps, err := listReportWisps(bd)
 	if err != nil {
-		return fmt.Errorf("listing active wisps: %w", err)
+		return nil, fmt.Errorf("listing active wisps: %w", err)
 	}
 
-	// Build report
 	report := buildReport(dateStr, &result, activeWisps)
-
-	// Detect anomalies
 	report.Anomalies = detectAnomalies(report)
+	return report, nil
+}
 
-	if compactReportJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(report)
+func publishDailyDigest(dateStr string, report *compactReport, options compactReportOptions) error {
+	if options.json {
+		return encodeCompactReportJSON(report)
 	}
 
-	// Format as markdown
 	markdown := formatDailyDigest(report)
-
-	if compactReportDryRun {
+	if options.dryRun {
 		fmt.Printf("%s [DRY RUN] Daily compaction digest for %s:\n\n", style.Dim.Render("[dry-run]"), dateStr)
 		fmt.Println(markdown)
 		return nil
 	}
 
-	// Create permanent event bead for audit trail
 	beadID, err := createCompactReportBead(report, markdown)
 	if err != nil {
 		return fmt.Errorf("recording compact report audit bead: %w", err)
 	}
 
-	// Send mail to deacon/, cc mayor/
 	if err := sendCompactDigest(dateStr, markdown); err != nil {
 		return fmt.Errorf("sending digest: %w", err)
 	}
@@ -216,6 +272,12 @@ func runDailyDigest() error {
 	}
 
 	return nil
+}
+
+func encodeCompactReportJSON(value any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
 }
 
 // listReportWisps includes infrastructure wisps that the default bd list view
@@ -292,29 +354,28 @@ func detectAnomalies(report *compactReport) []string {
 	var anomalies []string
 
 	for _, cat := range categoryOrder {
-		stats := report.Categories[cat]
-
-		// High deletion volume (> 1000 in a single day for heartbeats suggests restart loop)
-		if cat == "Heartbeats" && stats.Deleted > 1000 {
-			anomalies = append(anomalies, fmt.Sprintf(
-				"%dx normal heartbeat volume (possible restart loop)",
-				stats.Deleted/300)) // ~300/day is baseline for a rig
-		}
-
-		// A zero query result is a reporting observation, not agent-health proof.
-		if cat == "Patrols" && stats.Active == 0 && stats.Deleted == 0 && stats.Promoted == 0 {
-			anomalies = append(anomalies, zeroPatrolReportingGap)
-		}
-
-		// High promotion rate (> 50% of non-skipped suggests miscategorized wisps)
-		total := stats.Deleted + stats.Promoted
-		if total > 10 && stats.Promoted > total/2 {
-			anomalies = append(anomalies,
-				fmt.Sprintf("%s: high promotion rate (%d/%d) — review wisp classification",
-					cat, stats.Promoted, total))
-		}
+		anomalies = append(anomalies, categoryAnomalies(cat, report.Categories[cat])...)
 	}
 
+	return anomalies
+}
+
+func categoryAnomalies(category string, stats *categoryStats) []string {
+	var anomalies []string
+	if category == "Heartbeats" && stats.Deleted > 1000 {
+		anomalies = append(anomalies, fmt.Sprintf(
+			"%dx normal heartbeat volume (possible restart loop)",
+			stats.Deleted/300))
+	}
+	if category == "Patrols" && stats.Active == 0 && stats.Deleted == 0 && stats.Promoted == 0 {
+		anomalies = append(anomalies, zeroPatrolReportingGap)
+	}
+	total := stats.Deleted + stats.Promoted
+	if total > 10 && stats.Promoted > total/2 {
+		anomalies = append(anomalies,
+			fmt.Sprintf("%s: high promotion rate (%d/%d) — review wisp classification",
+				category, stats.Promoted, total))
+	}
 	return anomalies
 }
 
@@ -323,8 +384,14 @@ func formatDailyDigest(report *compactReport) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## Wisp Compaction: %s\n\n", report.Date))
+	writeDailySummary(&sb, report)
+	writeDailyPromotions(&sb, report.Promotions)
+	writeDigestList(&sb, "Anomalies", report.Anomalies)
+	writeDigestList(&sb, "Errors", report.Errors)
+	return sb.String()
+}
 
-	// Summary table
+func writeDailySummary(sb *strings.Builder, report *compactReport) {
 	sb.WriteString("### Summary\n")
 	sb.WriteString("| Category | Deleted | Promoted | Active |\n")
 	sb.WriteString("|----------|---------|----------|--------|\n")
@@ -338,33 +405,29 @@ func formatDailyDigest(report *compactReport) string {
 		sb.WriteString(fmt.Sprintf("| %s | %d | %d | %d |\n",
 			cat, stats.Deleted, stats.Promoted, stats.Active))
 	}
+}
 
-	// Promotions
-	if len(report.Promotions) > 0 {
-		sb.WriteString("\n### Promotions\n")
-		for _, p := range report.Promotions {
-			sb.WriteString(fmt.Sprintf("- %s: %q (reason: %s)\n",
-				p.ID, compactTruncate(p.Title, 60), p.Reason))
-		}
+func writeDailyPromotions(sb *strings.Builder, promotions []compactAction) {
+	if len(promotions) == 0 {
+		return
 	}
-
-	// Anomalies
-	if len(report.Anomalies) > 0 {
-		sb.WriteString("\n### Anomalies\n")
-		for _, a := range report.Anomalies {
-			sb.WriteString(fmt.Sprintf("- %s\n", a))
-		}
+	sb.WriteString("\n### Promotions\n")
+	for _, p := range promotions {
+		sb.WriteString(fmt.Sprintf("- %s: %q (reason: %s)\n",
+			p.ID, compactTruncate(p.Title, 60), p.Reason))
 	}
+}
 
-	// Errors
-	if len(report.Errors) > 0 {
-		sb.WriteString("\n### Errors\n")
-		for _, e := range report.Errors {
-			sb.WriteString(fmt.Sprintf("- %s\n", e))
-		}
+func writeDigestList(sb *strings.Builder, heading string, entries []string) {
+	if len(entries) == 0 {
+		return
 	}
-
-	return sb.String()
+	sb.WriteString("\n### ")
+	sb.WriteString(heading)
+	sb.WriteString("\n")
+	for _, entry := range entries {
+		sb.WriteString(fmt.Sprintf("- %s\n", entry))
+	}
 }
 
 // sendCompactDigest sends the daily digest via gt mail send.
@@ -424,29 +487,43 @@ func createCompactReportBead(report *compactReport, markdown string) (string, er
 
 // --- Weekly Rollup ---
 
-func runWeeklyRollup() error {
+func runWeeklyRollup(options compactReportOptions) error {
 	now := time.Now().UTC()
 	weekEnd := now.Format("2006-01-02")
 	weekStart := now.AddDate(0, 0, -7).Format("2006-01-02")
 
-	// Idempotency check: see if weekly rollup already exists for this week
-	existingID, err := findExistingWeeklyRollup(weekStart, weekEnd)
-	if err != nil {
-		if compactReportVerbose {
-			fmt.Fprintf(os.Stderr, "warning: weekly idempotency check failed: %v\n", err)
-		}
-	} else if existingID != "" {
-		fmt.Printf("%s Weekly rollup already sent for %s to %s (bead: %s)\n",
-			style.Dim.Render("○"), weekStart, weekEnd, existingID)
+	if weeklyRollupAlreadySent(weekStart, weekEnd, options.verbose) {
 		return nil
 	}
 
-	// Query compaction report event beads from the past week
+	rollup, err := loadWeeklyRollup(weekStart, weekEnd)
+	if err != nil {
+		return err
+	}
+	return publishWeeklyRollup(weekStart, weekEnd, rollup, options)
+}
+
+func weeklyRollupAlreadySent(weekStart, weekEnd string, verbose bool) bool {
+	existingID, err := findExistingWeeklyRollup(weekStart, weekEnd)
+	if err != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "warning: weekly idempotency check failed: %v\n", err)
+		}
+		return false
+	}
+	if existingID == "" {
+		return false
+	}
+	fmt.Printf("%s Weekly rollup already sent for %s to %s (bead: %s)\n",
+		style.Dim.Render("○"), weekStart, weekEnd, existingID)
+	return true
+}
+
+func loadWeeklyRollup(weekStart, weekEnd string) (*weeklyRollup, error) {
 	reports, err := queryCompactionReports(weekStart, weekEnd)
 	if err != nil {
-		return fmt.Errorf("querying compaction reports: %w", err)
+		return nil, fmt.Errorf("querying compaction reports: %w", err)
 	}
-
 	rollup := &weeklyRollup{
 		WeekStart: weekStart,
 		WeekEnd:   weekEnd,
@@ -474,29 +551,27 @@ func runWeeklyRollup() error {
 			rollup.Anomalies = append(rollup.Anomalies, normalizeCompactionAnomaly(anomaly))
 		}
 	}
+	return rollup, nil
+}
 
-	if compactReportJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rollup)
+func publishWeeklyRollup(weekStart, weekEnd string, rollup *weeklyRollup, options compactReportOptions) error {
+	if options.json {
+		return encodeCompactReportJSON(rollup)
 	}
 
 	markdown := formatWeeklyRollup(rollup)
-
-	if compactReportDryRun {
+	if options.dryRun {
 		fmt.Printf("%s [DRY RUN] Weekly compaction rollup (%s to %s):\n\n",
 			style.Dim.Render("[dry-run]"), weekStart, weekEnd)
 		fmt.Println(markdown)
 		return nil
 	}
 
-	// Create audit event bead for the weekly rollup (for future idempotency checks)
 	beadID, beadErr := createWeeklyRollupBead(rollup, markdown)
 	if beadErr != nil {
 		return fmt.Errorf("recording weekly rollup audit bead: %w", beadErr)
 	}
 
-	// Send to mayor/
 	subject := fmt.Sprintf("Weekly Wisp Compaction: %s to %s", weekStart, weekEnd)
 	mailCmd := exec.Command("gt", "mail", "send", "mayor/",
 		"-s", subject,
@@ -530,62 +605,67 @@ func queryCompactionReports(startDate, endDate string) ([]*compactReport, error)
 		return nil, fmt.Errorf("listing event beads: %w", err)
 	}
 
-	var events []struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Payload   string `json:"payload"`
-		CreatedAt string `json:"created_at"`
-	}
+	var events []compactReportEvent
 	if err := json.Unmarshal(extractJSONArray(listOutput), &events); err != nil {
 		return nil, fmt.Errorf("parsing event list: %w", err)
 	}
 
+	reports, matchingEvents := collectCompactionReports(events, startDate, endDate)
+	if matchingEvents > 0 && len(reports) == 0 {
+		return nil, fmt.Errorf("found %d matching compaction report event(s), but no usable payload", matchingEvents)
+	}
+
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Date < reports[j].Date
+	})
+	return reports, nil
+}
+
+func collectCompactionReports(events []compactReportEvent, startDate, endDate string) ([]*compactReport, int) {
 	var reports []*compactReport
 	reportIndexByDate := make(map[string]int)
 	reportCreatedAtByDate := make(map[string]string)
 	matchingEvents := 0
 	for _, evt := range events {
-		if !strings.HasPrefix(evt.Title, "Compaction Report ") {
-			continue
-		}
-		// Extract date from title
-		evtDate := strings.TrimPrefix(evt.Title, "Compaction Report ")
-		if evtDate < startDate || evtDate > endDate {
+		report, matching := parseCompactionReportEvent(evt, startDate, endDate)
+		if !matching {
 			continue
 		}
 		matchingEvents++
-
-		// Parse the event payload back into a compactReport
-		if evt.Payload == "" {
+		if report == nil {
 			continue
 		}
-		var report compactReport
-		if err := json.Unmarshal([]byte(evt.Payload), &report); err != nil {
-			continue
-		}
-		if idx, exists := reportIndexByDate[report.Date]; exists {
-			// A failed historical idempotency check can leave duplicate daily
-			// audit beads. Count each calendar day once and keep the newest copy.
-			if evt.CreatedAt > reportCreatedAtByDate[report.Date] {
-				reports[idx] = &report
-				reportCreatedAtByDate[report.Date] = evt.CreatedAt
-			}
-			continue
-		}
-		reportIndexByDate[report.Date] = len(reports)
-		reportCreatedAtByDate[report.Date] = evt.CreatedAt
-		reports = append(reports, &report)
+		reports = appendCompactionReport(reports, reportIndexByDate, reportCreatedAtByDate, evt, report)
 	}
-	if matchingEvents > 0 && len(reports) == 0 {
-		return nil, fmt.Errorf("found %d matching compaction report event(s), but no usable payload", matchingEvents)
+	return reports, matchingEvents
+}
+
+func parseCompactionReportEvent(evt compactReportEvent, startDate, endDate string) (*compactReport, bool) {
+	if !strings.HasPrefix(evt.Title, "Compaction Report ") {
+		return nil, false
 	}
+	evtDate := strings.TrimPrefix(evt.Title, "Compaction Report ")
+	if evtDate < startDate || evtDate > endDate || evt.Payload == "" {
+		return nil, true
+	}
+	var report compactReport
+	if err := json.Unmarshal([]byte(evt.Payload), &report); err != nil {
+		return nil, true
+	}
+	return &report, true
+}
 
-	// Sort by date
-	sort.Slice(reports, func(i, j int) bool {
-		return reports[i].Date < reports[j].Date
-	})
-
-	return reports, nil
+func appendCompactionReport(reports []*compactReport, reportIndexByDate map[string]int, reportCreatedAtByDate map[string]string, evt compactReportEvent, report *compactReport) []*compactReport {
+	if idx, exists := reportIndexByDate[report.Date]; exists {
+		if evt.CreatedAt > reportCreatedAtByDate[report.Date] {
+			reports[idx] = report
+			reportCreatedAtByDate[report.Date] = evt.CreatedAt
+		}
+		return reports
+	}
+	reportIndexByDate[report.Date] = len(reports)
+	reportCreatedAtByDate[report.Date] = evt.CreatedAt
+	return append(reports, report)
 }
 
 func normalizeCompactionAnomaly(anomaly string) string {
@@ -601,12 +681,22 @@ func formatWeeklyRollup(rollup *weeklyRollup) string {
 
 	sb.WriteString(fmt.Sprintf("## Weekly Wisp Compaction: %s to %s\n\n", rollup.WeekStart, rollup.WeekEnd))
 	sb.WriteString(fmt.Sprintf("**Days reported:** %d\n\n", rollup.Days))
-	if rollup.Days == 0 {
-		sb.WriteString("### Coverage\n")
-		sb.WriteString("- No eligible daily compaction reports were found in this date range; patrol health was not assessed.\n\n")
-	}
+	writeWeeklyCoverage(&sb, rollup.Days)
+	totalDeleted, totalPromoted := writeWeeklyTotals(&sb, rollup)
+	writeWeeklyRates(&sb, rollup, totalDeleted, totalPromoted)
+	writeWeeklyAnomalies(&sb, rollup.Anomalies)
+	return sb.String()
+}
 
-	// Totals table
+func writeWeeklyCoverage(sb *strings.Builder, days int) {
+	if days != 0 {
+		return
+	}
+	sb.WriteString("### Coverage\n")
+	sb.WriteString("- No eligible daily compaction reports were found in this date range; patrol health was not assessed.\n\n")
+}
+
+func writeWeeklyTotals(sb *strings.Builder, rollup *weeklyRollup) (int, int) {
 	sb.WriteString("### Totals\n")
 	sb.WriteString("| Category | Deleted | Promoted | Active (latest) |\n")
 	sb.WriteString("|----------|---------|----------|----------------|\n")
@@ -624,9 +714,11 @@ func formatWeeklyRollup(rollup *weeklyRollup) string {
 		totalDeleted += stats.Deleted
 		totalPromoted += stats.Promoted
 	}
+	return totalDeleted, totalPromoted
+}
 
-	// Rates
-	sb.WriteString(fmt.Sprintf("\n### Rates\n"))
+func writeWeeklyRates(sb *strings.Builder, rollup *weeklyRollup, totalDeleted, totalPromoted int) {
+	sb.WriteString("\n### Rates\n")
 	sb.WriteString(fmt.Sprintf("- **Total deleted:** %d\n", totalDeleted))
 	sb.WriteString(fmt.Sprintf("- **Total promoted:** %d\n", totalPromoted))
 	if totalDeleted+totalPromoted > 0 {
@@ -636,21 +728,21 @@ func formatWeeklyRollup(rollup *weeklyRollup) string {
 	if rollup.Days > 0 {
 		sb.WriteString(fmt.Sprintf("- **Avg deleted/day:** %d\n", totalDeleted/rollup.Days))
 	}
+}
 
-	// Anomalies across the week
-	if len(rollup.Anomalies) > 0 {
-		sb.WriteString("\n### Anomalies This Week\n")
-		// Deduplicate
-		seen := make(map[string]bool)
-		for _, a := range rollup.Anomalies {
-			if !seen[a] {
-				sb.WriteString(fmt.Sprintf("- %s\n", a))
-				seen[a] = true
-			}
-		}
+func writeWeeklyAnomalies(sb *strings.Builder, anomalies []string) {
+	if len(anomalies) == 0 {
+		return
 	}
-
-	return sb.String()
+	sb.WriteString("\n### Anomalies This Week\n")
+	seen := make(map[string]bool)
+	for _, anomaly := range anomalies {
+		if seen[anomaly] {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("- %s\n", anomaly))
+		seen[anomaly] = true
+	}
 }
 
 // findExistingCompactReport checks if a compaction digest already exists for the given date.

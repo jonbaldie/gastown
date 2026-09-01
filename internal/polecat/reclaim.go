@@ -25,32 +25,66 @@ func brokenIdleReclaimAgentBlocker(fields *beads.AgentFields) string {
 	if fields == nil {
 		return "agent_fields=<missing>"
 	}
-	if state := beads.AgentState(fields.AgentState); state != beads.AgentStateIdle {
-		if state == "" {
-			return "agent_state=<missing>"
-		}
-		return "agent_state=" + string(state)
+	if blocker := agentStateBlocker(fields.AgentState); blocker != "" {
+		return blocker
 	}
-	if status := CleanupStatus(fields.CleanupStatus); status != CleanupClean {
-		if status == "" {
-			return "cleanup_status=<missing>"
-		}
-		return "cleanup_status=" + string(status)
+	if blocker := cleanupStatusBlocker(fields.CleanupStatus); blocker != "" {
+		return blocker
 	}
-	if strings.TrimSpace(fields.HookBead) != "" {
-		return "hook_bead=" + fields.HookBead
+	return agentDetailsBlocker(fields)
+}
+
+func agentDetailsBlocker(fields *beads.AgentFields) string {
+	if blocker := nonEmptyAgentFieldBlocker("hook_bead", fields.HookBead); blocker != "" {
+		return blocker
 	}
-	if strings.TrimSpace(fields.ActiveMR) != "" {
-		return "active_mr=" + fields.ActiveMR
+	if blocker := nonEmptyAgentFieldBlocker("active_mr", fields.ActiveMR); blocker != "" {
+		return blocker
 	}
-	if fields.PushFailed {
-		return "push_failed=true"
+	if blocker := flagAgentFieldBlocker("push_failed", fields.PushFailed); blocker != "" {
+		return blocker
 	}
-	if fields.MRFailed {
-		return "mr_failed=true"
+	if blocker := flagAgentFieldBlocker("mr_failed", fields.MRFailed); blocker != "" {
+		return blocker
 	}
 	if strings.TrimSpace(fields.Branch) == "" {
 		return "branch=<missing>"
+	}
+	return ""
+}
+
+func agentStateBlocker(raw string) string {
+	state := beads.AgentState(raw)
+	if state == beads.AgentStateIdle {
+		return ""
+	}
+	if state == "" {
+		return "agent_state=<missing>"
+	}
+	return "agent_state=" + string(state)
+}
+
+func cleanupStatusBlocker(raw string) string {
+	status := CleanupStatus(raw)
+	if status == CleanupClean {
+		return ""
+	}
+	if status == "" {
+		return "cleanup_status=<missing>"
+	}
+	return "cleanup_status=" + string(status)
+}
+
+func nonEmptyAgentFieldBlocker(label, value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return label + "=" + value
+}
+
+func flagAgentFieldBlocker(label string, set bool) string {
+	if set {
+		return label + "=true"
 	}
 	return ""
 }

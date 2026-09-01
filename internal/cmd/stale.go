@@ -10,9 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var staleJSON bool
-var staleQuiet bool
-
 var staleCmd = &cobra.Command{
 	Use:     "stale",
 	GroupID: GroupDiag,
@@ -35,8 +32,8 @@ Exit codes:
 }
 
 func init() {
-	staleCmd.Flags().BoolVar(&staleJSON, "json", false, "Output as JSON")
-	staleCmd.Flags().BoolVarP(&staleQuiet, "quiet", "q", false, "Exit code only (0=stale, 1=fresh, 2=undetermined)")
+	staleCmd.Flags().Bool("json", false, "Output as JSON")
+	staleCmd.Flags().BoolP("quiet", "q", false, "Exit code only (0=stale, 1=fresh, 2=undetermined)")
 	rootCmd.AddCommand(staleCmd)
 }
 
@@ -55,46 +52,41 @@ type StaleOutput struct {
 	Error         string `json:"error,omitempty"`
 }
 
-func runStale(cmd *cobra.Command, args []string) error {
-	// Find the gastown repo
-	repoRoot, err := version.GetRepoRoot()
-	if err != nil {
-		if staleQuiet {
-			return NewSilentExit(2)
-		}
-		if staleJSON {
-			return outputStaleJSON(StaleOutput{Error: err.Error()})
-		}
-		return fmt.Errorf("cannot find gastown repo: %w", err)
+func staleOutputFlags(cmd *cobra.Command) (jsonOutput, quiet bool) {
+	if cmd == nil {
+		return false, false
 	}
+	jsonOutput, _ = cmd.Flags().GetBool("json")
+	quiet, _ = cmd.Flags().GetBool("quiet")
+	return jsonOutput, quiet
+}
 
-	// Check staleness
-	info := version.CheckStaleBinary(repoRoot)
-
-	// Handle errors
-	if info.Error != nil {
-		if staleQuiet {
-			return NewSilentExit(2)
-		}
-		if staleJSON {
-			return outputStaleJSON(StaleOutput{Error: info.Error.Error()})
-		}
-		return fmt.Errorf("staleness check failed: %w", info.Error)
+func staleRepoError(err error, jsonOutput, quiet bool) error {
+	if quiet {
+		return NewSilentExit(2)
 	}
-
-	// Quiet mode: just exit with appropriate code
-	if staleQuiet {
-		return NewSilentExit(staleQuietExitCode(info))
+	if jsonOutput {
+		return outputStaleJSON(StaleOutput{Error: err.Error()})
 	}
+	return fmt.Errorf("cannot find gastown repo: %w", err)
+}
 
-	// Build output
-	// SafeToRebuild requires: stale + forward-only + on a build branch.
-	safeToRebuild := info.IsStale && info.IsForward && info.OnMainBranch
-	output := StaleOutput{
+func staleCheckError(err error, jsonOutput, quiet bool) error {
+	if quiet {
+		return NewSilentExit(2)
+	}
+	if jsonOutput {
+		return outputStaleJSON(StaleOutput{Error: err.Error()})
+	}
+	return fmt.Errorf("staleness check failed: %w", err)
+}
+
+func staleOutput(info *version.StaleBinaryInfo) StaleOutput {
+	return StaleOutput{
 		Stale:         info.IsStale,
 		Forward:       info.IsForward,
 		OnMainBranch:  info.OnMainBranch,
-		SafeToRebuild: safeToRebuild,
+		SafeToRebuild: info.IsStale && info.IsForward && info.OnMainBranch,
 		BinaryCommit:  info.BinaryCommit,
 		RepoCommit:    info.RepoCommit,
 		CompareRef:    info.CompareRef,
@@ -102,8 +94,32 @@ func runStale(cmd *cobra.Command, args []string) error {
 		Skipped:       info.Skipped,
 		SkipReason:    info.SkipReason,
 	}
+}
 
-	if staleJSON {
+func runStale(cmd *cobra.Command, _ []string) error {
+	jsonOutput, quiet := staleOutputFlags(cmd)
+	// Find the gastown repo
+	repoRoot, err := version.GetRepoRoot()
+	if err != nil {
+		return staleRepoError(err, jsonOutput, quiet)
+	}
+
+	// Check staleness
+	info := version.CheckStaleBinary(repoRoot, resolveCommitHash())
+
+	// Handle errors
+	if info.Error != nil {
+		return staleCheckError(info.Error, jsonOutput, quiet)
+	}
+
+	// Quiet mode: just exit with appropriate code
+	if quiet {
+		return NewSilentExit(staleQuietExitCode(info))
+	}
+
+	output := staleOutput(info)
+
+	if jsonOutput {
 		return outputStaleJSON(output)
 	}
 

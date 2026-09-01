@@ -112,7 +112,7 @@ func (s *SchedulerState) SetResumed() {
 }
 
 // RecordDispatch records a dispatch event.
-func (s *SchedulerState) RecordDispatch(count int) {
+func RecordDispatch(s *SchedulerState, count int) {
 	s.LastDispatchAt = time.Now().UTC().Format(time.RFC3339)
 	s.LastDispatchCount = count
 }

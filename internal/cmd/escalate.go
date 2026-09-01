@@ -4,22 +4,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Escalate command flags
-var (
-	escalateSeverity    string
-	escalateReason      string
-	escalateSource      string
-	escalateRelatedBead string
-	escalateFingerprint string
-	escalateJSON        bool
-	escalateListJSON    bool
-	escalateListAll     bool
-	escalateStaleJSON   bool
-	escalateDryRun      bool
-	escalateCloseReason string
-	escalateStdin       bool // Read reason from stdin
-)
-
 var escalateCmd = &cobra.Command{
 	Use:     "escalate [description]",
 	GroupID: GroupComm,
@@ -140,29 +124,29 @@ Examples:
 
 func init() {
 	// Main escalate command flags
-	escalateCmd.Flags().StringVarP(&escalateSeverity, "severity", "s", "medium", "Severity level: critical, high, medium, low")
-	escalateCmd.Flags().StringVarP(&escalateReason, "reason", "r", "", "Detailed reason for escalation")
-	escalateCmd.Flags().StringVar(&escalateSource, "source", "", "Source identifier (e.g., plugin:rebuild-gt, patrol:deacon)")
-	escalateCmd.Flags().StringVar(&escalateRelatedBead, "related", "", "Related bead ID (task, bug, etc.)")
-	escalateCmd.Flags().StringVar(&escalateFingerprint, "fingerprint", "", "Stable duplicate-suppression key for repeated alerts")
-	escalateCmd.Flags().BoolVar(&escalateJSON, "json", false, "Output as JSON")
-	escalateCmd.Flags().BoolVarP(&escalateDryRun, "dry-run", "n", false, "Show what would be done without executing")
-	escalateCmd.Flags().BoolVar(&escalateStdin, "stdin", false, "Read reason from stdin (avoids shell quoting issues)")
+	escalateCmd.Flags().StringP("severity", "s", "medium", "Severity level: critical, high, medium, low")
+	escalateCmd.Flags().StringP("reason", "r", "", "Detailed reason for escalation")
+	escalateCmd.Flags().String("source", "", "Source identifier (e.g., plugin:rebuild-gt, patrol:deacon)")
+	escalateCmd.Flags().String("related", "", "Related bead ID (task, bug, etc.)")
+	escalateCmd.Flags().String("fingerprint", "", "Stable duplicate-suppression key for repeated alerts")
+	escalateCmd.Flags().Bool("json", false, "Output as JSON")
+	escalateCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done without executing")
+	escalateCmd.Flags().Bool("stdin", false, "Read reason from stdin (avoids shell quoting issues)")
 
 	// List subcommand flags
-	escalateListCmd.Flags().BoolVar(&escalateListJSON, "json", false, "Output as JSON")
-	escalateListCmd.Flags().BoolVar(&escalateListAll, "all", false, "Include closed escalations")
+	escalateListCmd.Flags().Bool("json", false, "Output as JSON")
+	escalateListCmd.Flags().Bool("all", false, "Include closed escalations")
 
 	// Close subcommand flags
-	escalateCloseCmd.Flags().StringVar(&escalateCloseReason, "reason", "", "Resolution reason")
+	escalateCloseCmd.Flags().String("reason", "", "Resolution reason")
 	_ = escalateCloseCmd.MarkFlagRequired("reason")
 
 	// Stale subcommand flags
-	escalateStaleCmd.Flags().BoolVar(&escalateStaleJSON, "json", false, "Output as JSON")
-	escalateStaleCmd.Flags().BoolVarP(&escalateDryRun, "dry-run", "n", false, "Show what would be re-escalated without acting")
+	escalateStaleCmd.Flags().Bool("json", false, "Output as JSON")
+	escalateStaleCmd.Flags().BoolP("dry-run", "n", false, "Show what would be re-escalated without acting")
 
 	// Show subcommand flags
-	escalateShowCmd.Flags().BoolVar(&escalateJSON, "json", false, "Output as JSON")
+	escalateShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Add subcommands
 	escalateCmd.AddCommand(escalateListCmd)

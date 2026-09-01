@@ -73,10 +73,10 @@ func TestHookShowShorthandResolvesToCanonical(t *testing.T) {
 		_ = os.Chdir(oldWD)
 	})
 
-	prevJSON := moleculeJSON
-	moleculeJSON = true
+	prevJSON := moleculeState().json
+	moleculeState().json = true
 	t.Cleanup(func() {
-		moleculeJSON = prevJSON
+		moleculeState().json = prevJSON
 	})
 
 	runShow := func(target string) hookShowJSON {

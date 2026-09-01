@@ -16,34 +16,50 @@ import (
 // settings, setup hooks. Ignore patterns stay in .git/info/exclude so they
 // do not reach the tracked Rig tree.
 func Provision(rigPath, workDir, role string) error {
+	townRoot := provisionTownRoot(rigPath)
+
+	warnProvisionFailure("could not set up beads redirect", func() error {
+		return beads.SetupRedirect(townRoot, workDir)
+	})
+	warnProvisionFailure("could not provision PRIME.md", func() error {
+		return beads.ProvisionPrimeMDForWorktree(workDir)
+	})
+	warnProvisionFailure("could not copy overlay files", func() error {
+		return CopyOverlay(rigPath, workDir)
+	})
+	warnProvisionFailure("could not update local git excludes", func() error {
+		return EnsureLocalExcludePatterns(workDir)
+	})
+
+	settingsDir := provisionSettingsDir(role, rigPath, workDir)
+	rc := config.ResolveRoleAgentConfig(role, townRoot, rigPath)
+	warnProvisionFailure("could not install runtime settings", func() error {
+		return runtime.EnsureSettingsForRole(settingsDir, workDir, role, rc)
+	})
+	warnProvisionFailure("could not run setup hooks", func() error {
+		return RunSetupHooks(rigPath, workDir)
+	})
+	return nil
+}
+
+func provisionTownRoot(rigPath string) string {
 	townRoot, err := workspace.Find(rigPath)
-	if err != nil || townRoot == "" {
-		townRoot = filepath.Dir(rigPath)
+	if err == nil && townRoot != "" {
+		return townRoot
 	}
+	return filepath.Dir(rigPath)
+}
 
-	if err := beads.SetupRedirect(townRoot, workDir); err != nil {
-		style.PrintWarning("could not set up beads redirect: %v", err)
-	}
-	if err := beads.ProvisionPrimeMDForWorktree(workDir); err != nil {
-		style.PrintWarning("could not provision PRIME.md: %v", err)
-	}
-	if err := CopyOverlay(rigPath, workDir); err != nil {
-		style.PrintWarning("could not copy overlay files: %v", err)
-	}
-	if err := EnsureLocalExcludePatterns(workDir); err != nil {
-		style.PrintWarning("could not update local git excludes: %v", err)
-	}
-
+func provisionSettingsDir(role, rigPath, workDir string) string {
 	settingsDir := config.RoleSettingsDir(role, rigPath)
 	if settingsDir == "" {
-		settingsDir = workDir
+		return workDir
 	}
-	rc := config.ResolveRoleAgentConfig(role, townRoot, rigPath)
-	if err := runtime.EnsureSettingsForRole(settingsDir, workDir, role, rc); err != nil {
-		style.PrintWarning("could not install runtime settings: %v", err)
+	return settingsDir
+}
+
+func warnProvisionFailure(message string, action func() error) {
+	if err := action(); err != nil {
+		style.PrintWarning("%s: %v", message, err)
 	}
-	if err := RunSetupHooks(rigPath, workDir); err != nil {
-		style.PrintWarning("could not run setup hooks: %v", err)
-	}
-	return nil
 }

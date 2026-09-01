@@ -59,14 +59,14 @@ func TestListenSucceedsWhenSocketPathIsTooLong(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 
-	if w.local.unixActive() {
+	if w.local.UnixActive() {
 		t.Fatalf("expected the Unix socket to be unavailable at %d bytes", len(SocketPath(root)))
 	}
 
 	// The returned Worker must be usable, not merely constructed.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.client.ping(ctx); err != nil {
+	if err := w.client.Ping(ctx); err != nil {
 		t.Fatalf("ping over the loopback fallback: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestListenUsesUnixSocketWhenPathFits(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 
-	if !w.local.unixActive() {
+	if !w.local.UnixActive() {
 		t.Fatal("expected the Unix socket to be bound for a short town root")
 	}
 	if network, address := w.Endpoint(); network != "unix" || address != SocketPath(root) {
@@ -120,7 +120,7 @@ func TestListenUsesUnixSocketWhenPathFits(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.client.ping(ctx); err != nil {
+	if err := w.client.Ping(ctx); err != nil {
 		t.Fatalf("ping over the Unix socket: %v", err)
 	}
 }

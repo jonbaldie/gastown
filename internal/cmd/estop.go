@@ -18,12 +18,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	estopReason string
-	estopRig    string
-	thawRig     string
-)
-
 var estopCmd = &cobra.Command{
 	Use:     "estop",
 	GroupID: GroupServices,
@@ -59,7 +53,7 @@ var estopStatusCmd = &cobra.Command{
 	RunE:  runEstopStatus,
 }
 
-func runEstopStatus(cmd *cobra.Command, args []string) error {
+func runEstopStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -100,23 +94,48 @@ Examples:
 }
 
 func init() {
-	estopCmd.Flags().StringVarP(&estopReason, "reason", "r", "", "Reason for the E-stop")
-	estopCmd.Flags().StringVar(&estopRig, "rig", "", "Freeze only this rig (instead of all)")
-	thawCmd.Flags().StringVar(&thawRig, "rig", "", "Thaw only this rig (instead of all)")
+	estopCmd.Flags().StringP("reason", "r", "", "Reason for the E-stop")
+	estopCmd.Flags().String("rig", "", "Freeze only this rig (instead of all)")
+	thawCmd.Flags().String("rig", "", "Thaw only this rig (instead of all)")
 	estopCmd.AddCommand(estopStatusCmd)
 	rootCmd.AddCommand(estopCmd)
 	rootCmd.AddCommand(thawCmd)
 }
 
-func runEstop(cmd *cobra.Command, args []string) error {
+type estopOptions struct {
+	reason string
+	rig    string
+}
+
+func estopOptionsFromCommand(cmd *cobra.Command) (estopOptions, error) {
+	reason, err := cmd.Flags().GetString("reason")
+	if err != nil {
+		return estopOptions{}, err
+	}
+	rig, err := cmd.Flags().GetString("rig")
+	if err != nil {
+		return estopOptions{}, err
+	}
+	return estopOptions{reason: reason, rig: rig}, nil
+}
+
+func runEstop(cmd *cobra.Command, _ []string) error {
+	opts, err := estopOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
+	return runEstopWithOptions(opts)
+}
+
+func runEstopWithOptions(opts estopOptions) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Per-rig E-stop
-	if estopRig != "" {
-		return runEstopRig(townRoot, estopRig)
+	if opts.rig != "" {
+		return runEstopRig(townRoot, opts.rig, opts.reason)
 	}
 
 	if estop.IsActive(townRoot) {
@@ -129,13 +148,13 @@ func runEstop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the sentinel file first — this is the source of truth
-	if err := estop.Activate(townRoot, estop.TriggerManual, estopReason); err != nil {
+	if err := estop.Activate(townRoot, estop.TriggerManual, opts.reason); err != nil {
 		return fmt.Errorf("failed to create ESTOP file: %w", err)
 	}
 
 	fmt.Printf("%s EMERGENCY STOP\n", style.Error.Render("⛔"))
-	if estopReason != "" {
-		fmt.Printf("   Reason: %s\n", estopReason)
+	if opts.reason != "" {
+		fmt.Printf("   Reason: %s\n", opts.reason)
 	}
 	fmt.Println()
 
@@ -155,7 +174,7 @@ func runEstop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runEstopRig(townRoot, rigName string) error {
+func runEstopRig(townRoot, rigName, reason string) error {
 	if estop.IsRigActive(townRoot, rigName) {
 		info := estop.ReadRig(townRoot, rigName)
 		if info != nil {
@@ -165,13 +184,13 @@ func runEstopRig(townRoot, rigName string) error {
 		return nil
 	}
 
-	if err := estop.ActivateRig(townRoot, rigName, estop.TriggerManual, estopReason); err != nil {
+	if err := estop.ActivateRig(townRoot, rigName, estop.TriggerManual, reason); err != nil {
 		return fmt.Errorf("failed to create ESTOP file for %s: %w", rigName, err)
 	}
 
 	fmt.Printf("%s EMERGENCY STOP: %s\n", style.Error.Render("⛔"), style.Bold.Render(rigName))
-	if estopReason != "" {
-		fmt.Printf("   Reason: %s\n", estopReason)
+	if reason != "" {
+		fmt.Printf("   Reason: %s\n", reason)
 	}
 	fmt.Println()
 
@@ -189,15 +208,20 @@ func runEstopRig(townRoot, rigName string) error {
 	return nil
 }
 
-func runThaw(cmd *cobra.Command, args []string) error {
+func runThaw(cmd *cobra.Command, _ []string) error {
+	rig, err := cmd.Flags().GetString("rig")
+	if err != nil {
+		return err
+	}
+
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Per-rig thaw
-	if thawRig != "" {
-		return runThawRig(townRoot, thawRig)
+	if rig != "" {
+		return runThawRig(townRoot, rig)
 	}
 
 	if !estop.IsActive(townRoot) {

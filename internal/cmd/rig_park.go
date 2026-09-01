@@ -63,7 +63,7 @@ func init() {
 	rigCmd.AddCommand(rigUnparkCmd)
 }
 
-func runRigPark(cmd *cobra.Command, args []string) error {
+func runRigPark(_ *cobra.Command, args []string) error {
 	var errs []error
 
 	for _, rigName := range args {
@@ -137,7 +137,7 @@ func parkOneRig(rigName string) error {
 	return nil
 }
 
-func runRigUnpark(cmd *cobra.Command, args []string) error {
+func runRigUnpark(_ *cobra.Command, args []string) error {
 	var errs []error
 
 	for _, rigName := range args {

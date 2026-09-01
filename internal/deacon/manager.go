@@ -22,7 +22,7 @@ var (
 // tmuxOps abstracts tmux operations for testing.
 type tmuxOps interface {
 	session.TmuxOps
-	GetSessionInfo(name string) (*tmux.SessionInfo, error)
+	GetSessionInfo(_ string) (*tmux.SessionInfo, error)
 }
 
 // Manager handles deacon lifecycle operations.
@@ -65,15 +65,6 @@ func (m *Manager) startNudgePoller(sessionID string) {
 	}
 	if _, pollerErr := m.startPoller(m.townRoot, sessionID); pollerErr != nil {
 		fmt.Printf("warning: could not start nudge poller for %s: %v\n", sessionID, pollerErr)
-	}
-}
-
-func (m *Manager) stopNudgePoller(sessionID string) {
-	if m.stopPoller == nil {
-		return
-	}
-	if pollerErr := m.stopPoller(m.townRoot, sessionID); pollerErr != nil {
-		fmt.Printf("warning: could not stop nudge poller for %s: %v\n", sessionID, pollerErr)
 	}
 }
 

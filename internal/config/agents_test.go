@@ -75,6 +75,52 @@ func TestBuiltinPresets(t *testing.T) {
 	}
 }
 
+func TestAgentPresetInfoJSONFlattensSettings(t *testing.T) {
+	info := AgentPresetInfo{
+		Name:    "custom-agent",
+		Command: "custom-agent",
+		AgentProcessSettings: AgentProcessSettings{
+			SessionIDEnv: "CUSTOM_SESSION_ID",
+			ResumeFlag:   "--resume",
+		},
+		AgentRuntimeSettings: AgentRuntimeSettings{
+			PromptMode:   "arg",
+			ReadyDelayMs: 2500,
+		},
+		AgentHookSettings: AgentHookSettings{
+			HooksProvider: "custom",
+			ACP:           &ACPConfig{Command: "acp"},
+		},
+	}
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("json.Marshal(AgentPresetInfo) failed: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("json.Unmarshal(AgentPresetInfo) failed: %v", err)
+	}
+	for _, key := range []string{"session_id_env", "prompt_mode", "ready_delay_ms", "hooks_provider", "acp"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("flattened JSON missing %q: %s", key, data)
+		}
+	}
+	for _, key := range []string{"AgentProcessSettings", "AgentRuntimeSettings", "AgentHookSettings"} {
+		if _, ok := fields[key]; ok {
+			t.Errorf("flattened JSON unexpectedly contains nested %q: %s", key, data)
+		}
+	}
+
+	var roundTrip AgentPresetInfo
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatalf("round-trip unmarshal failed: %v", err)
+	}
+	if roundTrip.SessionIDEnv != info.SessionIDEnv || roundTrip.PromptMode != info.PromptMode || roundTrip.HooksProvider != info.HooksProvider || roundTrip.ACP == nil || roundTrip.ACP.Command != "acp" {
+		t.Errorf("round-trip settings = %+v, want flattened values preserved", roundTrip)
+	}
+}
+
 func TestGetAgentPresetByName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1800,14 +1846,18 @@ func TestACPConfig(t *testing.T) {
 			"custom-agent": {
 				Name:    "custom-agent",
 				Command: "custom-agent",
-				ACP: &ACPConfig{
-					Command: "acp",
+				AgentHookSettings: AgentHookSettings{
+					ACP: &ACPConfig{
+						Command: "acp",
+					},
 				},
 			},
 			"legacy-agent": {
 				Name:    "legacy-agent",
 				Command: "legacy-agent",
-				ACP:     nil,
+				AgentHookSettings: AgentHookSettings{
+					ACP: nil,
+				},
 			},
 		},
 	}

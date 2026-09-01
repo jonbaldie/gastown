@@ -23,7 +23,7 @@ func TestSaveIndexSurvivesConcurrentWriters(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			store := newStore(townRoot)
-			errs[i] = store.putRun(&Run{RunID: fmt.Sprintf("run-%d", i), SessionID: "hq-mayor", State: StateStarted})
+			errs[i] = store.PutRun(&Run{RunID: fmt.Sprintf("run-%d", i), SessionID: "hq-mayor", State: StateStarted})
 		}(i)
 	}
 	wg.Wait()

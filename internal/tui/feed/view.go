@@ -68,8 +68,6 @@ func (m *Model) renderHeader() string {
 			AgentActiveStyle.Render("●"), ok,
 			EventFailStyle.Render("●"), stuck,
 			idle)
-	} else if m.filter != "" {
-		stats = FilterStyle.Render(fmt.Sprintf("Filter: %s", m.filter))
 	} else {
 		stats = FilterStyle.Render("Filter: all")
 	}
@@ -127,83 +125,75 @@ func (m *Model) renderProblemsPanel() string {
 
 // renderProblemsContent renders the problems view content
 func (m *Model) renderProblemsContent() string {
-	var lines []string
-
 	if m.problemsError != nil {
 		return AgentIdleStyle.Render(fmt.Sprintf("Error fetching agent status: %v\nRetrying...", m.problemsError))
 	}
-
 	if len(m.problemAgents) == 0 {
 		return AgentIdleStyle.Render("No agents detected. Run gt feed in a GasTown workspace with active agents.")
 	}
+	problemAgents, workingAgents, idleAgents := partitionProblemAgents(m.problemAgents)
+	lines := m.renderAttentionSection(problemAgents)
+	lines = append(lines, renderWorkingSection(workingAgents)...)
+	lines = append(lines, renderIdleSection(idleAgents)...)
+	return strings.Join(lines, "\n")
+}
 
-	// Count problems
-	var problemAgents []*ProblemAgent
-	var workingAgents []*ProblemAgent
-	var idleAgents []*ProblemAgent
-
-	for _, agent := range m.problemAgents {
+func partitionProblemAgents(agents []*ProblemAgent) (problems, working, idle []*ProblemAgent) {
+	for _, agent := range agents {
 		switch {
 		case agent.State.NeedsAttention():
-			problemAgents = append(problemAgents, agent)
+			problems = append(problems, agent)
 		case agent.State == StateWorking:
-			workingAgents = append(workingAgents, agent)
+			working = append(working, agent)
 		default:
-			idleAgents = append(idleAgents, agent)
+			idle = append(idle, agent)
 		}
 	}
+	return problems, working, idle
+}
 
-	// NEEDS ATTENTION section
-	if len(problemAgents) > 0 {
-		lines = append(lines, ProblemsHeaderStyle.Render(fmt.Sprintf("NEEDS ATTENTION (%d)", len(problemAgents))))
-		lines = append(lines, "")
-		for i, agent := range problemAgents {
-			isSelected := i == m.selectedProblem
-			lines = append(lines, m.renderProblemAgent(agent, isSelected))
-		}
-		lines = append(lines, "")
-	} else {
-		lines = append(lines, ProblemsHeaderStyle.Render("NEEDS ATTENTION (0)"))
-		lines = append(lines, "  "+AgentActiveStyle.Render("All agents OK!"))
-		lines = append(lines, "")
+func (m *Model) renderAttentionSection(agents []*ProblemAgent) []string {
+	if len(agents) == 0 {
+		return []string{ProblemsHeaderStyle.Render("NEEDS ATTENTION (0)"), "  " + AgentActiveStyle.Render("All agents OK!"), ""}
 	}
-
-	// WORKING section (collapsed dots by rig)
-	if len(workingAgents) > 0 {
-		lines = append(lines, WorkingHeaderStyle.Render(fmt.Sprintf("WORKING (%d)", len(workingAgents))))
-		// Group by rig
-		byRig := make(map[string]int)
-		for _, agent := range workingAgents {
-			rig := agent.Rig
-			if rig == "" {
-				rig = "default"
-			}
-			byRig[rig]++
-		}
-		for rig, count := range byRig {
-			dots := strings.Repeat("●", count)
-			if count > 20 {
-				dots = strings.Repeat("●", 20) + fmt.Sprintf("+%d", count-20)
-			}
-			lines = append(lines, fmt.Sprintf("  %s %s (%d)",
-				AgentActiveStyle.Render(dots),
-				RigStyle.Render(rig),
-				count))
-		}
-		lines = append(lines, "")
+	lines := []string{ProblemsHeaderStyle.Render(fmt.Sprintf("NEEDS ATTENTION (%d)", len(agents))), ""}
+	for i, agent := range agents {
+		lines = append(lines, m.renderProblemAgent(agent, i == m.selectedProblem))
 	}
+	return append(lines, "")
+}
 
-	// IDLE section (collapsed)
-	if len(idleAgents) > 0 {
-		lines = append(lines, IdleHeaderStyle.Render(fmt.Sprintf("IDLE (%d)", len(idleAgents))))
-		dots := strings.Repeat("○", len(idleAgents))
-		if len(idleAgents) > 20 {
-			dots = strings.Repeat("○", 20) + fmt.Sprintf("+%d", len(idleAgents)-20)
-		}
-		lines = append(lines, "  "+AgentIdleStyle.Render(dots))
+func renderWorkingSection(agents []*ProblemAgent) []string {
+	if len(agents) == 0 {
+		return nil
 	}
+	lines := []string{WorkingHeaderStyle.Render(fmt.Sprintf("WORKING (%d)", len(agents)))}
+	byRig := make(map[string]int)
+	for _, agent := range agents {
+		rig := agent.Rig
+		if rig == "" {
+			rig = "default"
+		}
+		byRig[rig]++
+	}
+	for rig, count := range byRig {
+		lines = append(lines, fmt.Sprintf("  %s %s (%d)", AgentActiveStyle.Render(statusDots("●", count)), RigStyle.Render(rig), count))
+	}
+	return append(lines, "")
+}
 
-	return strings.Join(lines, "\n")
+func renderIdleSection(agents []*ProblemAgent) []string {
+	if len(agents) == 0 {
+		return nil
+	}
+	return []string{IdleHeaderStyle.Render(fmt.Sprintf("IDLE (%d)", len(agents))), "  " + AgentIdleStyle.Render(statusDots("○", len(agents)))}
+}
+
+func statusDots(symbol string, count int) string {
+	if count > 20 {
+		return strings.Repeat(symbol, 20) + fmt.Sprintf("+%d", count-20)
+	}
+	return strings.Repeat(symbol, count)
 }
 
 // renderProblemAgent renders a single problem agent line
@@ -274,41 +264,37 @@ func (m *Model) renderTree() string {
 	sort.Strings(rigNames)
 
 	for _, rigName := range rigNames {
-		rig := m.rigs[rigName]
-
-		// Rig header
-		rigLine := RigStyle.Render(rigName + "/")
-		lines = append(lines, rigLine)
-
-		// Group agents by role
-		byRole := m.groupAgentsByRole(rig.Agents)
-
-		// Render each role group
-		roleOrder := []string{"mayor", "witness", "refinery", "deacon", "crew", "polecat"}
-		for _, role := range roleOrder {
-			agents, ok := byRole[role]
-			if !ok || len(agents) == 0 {
-				continue
-			}
-
-			icon := RoleIcons[role]
-			if icon == "" {
-				icon = "•"
-			}
-
-			// For crew and polecats, show as expandable group
-			if role == "crew" || role == "polecat" {
-				lines = append(lines, m.renderAgentGroup(icon, role, agents))
-			} else {
-				// Single agents (mayor, witness, refinery)
-				for _, agent := range agents {
-					lines = append(lines, m.renderAgent(icon, agent, 2))
-				}
-			}
-		}
+		lines = append(lines, m.renderRig(rigName, m.rigs[rigName])...)
 	}
-
 	return strings.Join(lines, "\n")
+}
+
+func (m *Model) renderRig(name string, rig *Rig) []string {
+	lines := []string{RigStyle.Render(name + "/")}
+	byRole := m.groupAgentsByRole(rig.Agents)
+	for _, role := range []string{"mayor", "witness", "refinery", "deacon", "crew", "polecat"} {
+		agents := byRole[role]
+		if len(agents) == 0 {
+			continue
+		}
+		icon := RoleIcons[role]
+		if icon == "" {
+			icon = "•"
+		}
+		lines = append(lines, m.renderRoleAgents(icon, role, agents)...)
+	}
+	return lines
+}
+
+func (m *Model) renderRoleAgents(icon, role string, agents []*Agent) []string {
+	if role == "crew" || role == "polecat" {
+		return []string{m.renderAgentGroup(icon, role, agents)}
+	}
+	lines := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		lines = append(lines, m.renderAgent(icon, agent, 2))
+	}
+	return lines
 }
 
 // groupAgentsByRole groups agents by their role
@@ -415,66 +401,42 @@ func (m *Model) renderFeed() string {
 
 // renderEvent renders a single event line
 func (m *Model) renderEvent(e Event) string {
-	// Timestamp - compact HH:MM format, no brackets
 	ts := TimestampStyle.Render(e.Time.Local().Format("15:04"))
-
-	// Symbol based on event type
 	symbol := EventSymbols[e.Type]
 	if symbol == "" {
 		symbol = "•"
 	}
-
-	// Style based on event type
-	var symbolStyle lipgloss.Style
-	switch e.Type {
-	case "create":
-		symbolStyle = EventCreateStyle
-	case "update":
-		symbolStyle = EventUpdateStyle
-	case "complete", "patrol_complete", "merged", "done":
-		symbolStyle = EventCompleteStyle
-	case "fail", "merge_failed":
-		symbolStyle = EventFailStyle
-	case "delete":
-		symbolStyle = EventDeleteStyle
-	case "merge_started":
-		symbolStyle = EventMergeStartedStyle
-	case "merge_skipped":
-		symbolStyle = EventMergeSkippedStyle
-	case "patrol_started", "polecat_checked":
-		symbolStyle = EventUpdateStyle
-	case "polecat_nudged", "escalation_sent", "nudge":
-		symbolStyle = EventFailStyle // Use red/warning style for nudges and escalations
-	case "sling", "hook", "spawn", "boot":
-		symbolStyle = EventCreateStyle
-	case "handoff", "mail":
-		symbolStyle = EventUpdateStyle
-	default:
-		symbolStyle = EventUpdateStyle
-	}
-
-	styledSymbol := symbolStyle.Render(symbol)
-
-	// Actor (short form)
-	actor := ""
-	if e.Actor != "" {
-		parts := strings.Split(e.Actor, "/")
-		if len(parts) > 0 {
-			actor = parts[len(parts)-1]
-		}
-		if icon := RoleIcons[e.Role]; icon != "" {
-			actor = icon + " " + actor
-		}
-		actor = RoleStyle.Render(actor) + ": "
-	}
-
-	// Message
+	styledSymbol := eventSymbolStyle(e.Type).Render(symbol)
 	msg := e.Message
 	if msg == "" && e.Raw != "" {
 		msg = e.Raw
 	}
+	return fmt.Sprintf("%s %s %s%s", ts, styledSymbol, eventActor(e), msg)
+}
 
-	return fmt.Sprintf("%s %s %s%s", ts, styledSymbol, actor, msg)
+func eventSymbolStyle(eventType string) lipgloss.Style {
+	styles := map[string]lipgloss.Style{
+		"create": EventCreateStyle, "sling": EventCreateStyle, "hook": EventCreateStyle, "spawn": EventCreateStyle, "boot": EventCreateStyle,
+		"complete": EventCompleteStyle, "patrol_complete": EventCompleteStyle, "merged": EventCompleteStyle, "done": EventCompleteStyle,
+		"fail": EventFailStyle, "merge_failed": EventFailStyle, "polecat_nudged": EventFailStyle, "escalation_sent": EventFailStyle, "nudge": EventFailStyle,
+		"delete": EventDeleteStyle, "merge_started": EventMergeStartedStyle, "merge_skipped": EventMergeSkippedStyle,
+	}
+	if style, ok := styles[eventType]; ok {
+		return style
+	}
+	return EventUpdateStyle
+}
+
+func eventActor(event Event) string {
+	if event.Actor == "" {
+		return ""
+	}
+	parts := strings.Split(event.Actor, "/")
+	actor := parts[len(parts)-1]
+	if icon := RoleIcons[event.Role]; icon != "" {
+		actor = icon + " " + actor
+	}
+	return RoleStyle.Render(actor) + ": "
 }
 
 // renderStatusBar renders the bottom status bar.
@@ -489,7 +451,7 @@ func (m *Model) renderStatusBar() string {
 			}
 		}
 		left = fmt.Sprintf("[problems] %d need attention", problemCount)
-		if selected := m.getSelectedProblemAgent(); selected != nil {
+		if selected := getSelectedProblemAgent(m); selected != nil {
 			left += fmt.Sprintf(" | selected: %s", selected.Name)
 		}
 	} else {

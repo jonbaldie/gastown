@@ -176,7 +176,7 @@ func TestAutoRebaseOnTarget_RealRepoSuccess(t *testing.T) {
 	testRunGit(t, repo, "checkout", "feature")
 
 	g := gitpkg.NewGit(repo)
-	rebased, skipReason, err := autoRebaseOnTarget(g, "main", 1, false, false)
+	rebased, skipReason, err := autoRebaseOnTarget(gitRebaseAdapter{g}, "main", 1, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestAutoRebaseOnTarget_RealRepoConflictAborts(t *testing.T) {
 	testRunGit(t, repo, "checkout", "feature")
 
 	g := gitpkg.NewGit(repo)
-	rebased, skipReason, err := autoRebaseOnTarget(g, "main", 1, false, false)
+	rebased, skipReason, err := autoRebaseOnTarget(gitRebaseAdapter{g}, "main", 1, false, false)
 	if err == nil {
 		t.Fatal("expected conflict error, got nil")
 	}

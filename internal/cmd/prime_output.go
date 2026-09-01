@@ -35,26 +35,9 @@ func outputPrimeContext(ctx RoleContext) (string, error) {
 		return "", nil
 	}
 
-	// Map role to template name
-	var roleName string
-	switch ctx.Role {
-	case RoleMayor:
-		roleName = constants.RoleMayor
-	case RoleDeacon:
-		roleName = constants.RoleDeacon
-	case RoleWitness:
-		roleName = constants.RoleWitness
-	case RoleRefinery:
-		roleName = constants.RoleRefinery
-	case RolePolecat:
-		roleName = constants.RolePolecat
-	case RoleCrew:
-		roleName = constants.RoleCrew
-	case RoleBoot:
-		roleName = "boot"
-	case RoleDog:
-		roleName = "dog"
-	default:
+	// Map role to template name.
+	roleName, ok := primeTemplateRole(ctx.Role)
+	if !ok {
 		// Unknown role - use fallback
 		outputPrimeContextFallback(ctx)
 		return "", nil
@@ -89,6 +72,29 @@ func outputPrimeContext(ctx RoleContext) (string, error) {
 
 	fmt.Print(output)
 	return output, nil
+}
+
+func primeTemplateRole(role Role) (string, bool) {
+	switch role {
+	case RoleMayor:
+		return constants.RoleMayor, true
+	case RoleDeacon:
+		return constants.RoleDeacon, true
+	case RoleWitness:
+		return constants.RoleWitness, true
+	case RoleRefinery:
+		return constants.RoleRefinery, true
+	case RolePolecat:
+		return constants.RolePolecat, true
+	case RoleCrew:
+		return constants.RoleCrew, true
+	case RoleBoot:
+		return "boot", true
+	case RoleDog:
+		return "dog", true
+	default:
+		return "", false
+	}
 }
 
 func roleRigContext(ctx RoleContext) (defaultBranch string, isForkRig bool, upstreamURL string) {
@@ -154,18 +160,14 @@ func outputSkillDirectives(w io.Writer) {
 // and override formula defaults where they conflict.
 //
 // w and explainEnabled are injected so tests can capture output without
-// mutating os.Stdout or the primeExplain global (avoiding data races
+// mutating os.Stdout or command state (avoiding data races
 // under t.Parallel).
 func outputRoleDirectives(ctx RoleContext, w io.Writer, explainEnabled bool) {
 	role := string(ctx.Role)
 	townRoot := ctx.TownRoot
 	rigName := ctx.Rig
 
-	townPath := filepath.Join(townRoot, "directives", role+".md")
-	rigPath := ""
-	if rigName != "" {
-		rigPath = filepath.Join(townRoot, rigName, "directives", role+".md")
-	}
+	townPath, rigPath := roleDirectivePaths(townRoot, rigName, role)
 
 	explainf := func(format string, args ...any) {
 		if explainEnabled {
@@ -175,41 +177,56 @@ func outputRoleDirectives(ctx RoleContext, w io.Writer, explainEnabled bool) {
 
 	content := config.LoadRoleDirective(role, townRoot, rigName)
 	if content == "" {
-		explainf("Role directives: no directive files found (checked %s", townPath)
-		if rigPath != "" {
-			explainf("Role directives: also checked %s", rigPath)
-		}
+		explainMissingRoleDirectives(explainf, townPath, rigPath)
 		return
 	}
 
-	// Determine source label for the header
-	hasTown := false
-	hasRig := false
-	if data, err := os.ReadFile(townPath); err == nil { //nolint:gosec // G304: path is from trusted config
-		if s := strings.TrimSpace(string(data)); s != "" {
-			hasTown = true
-		}
-	}
-	if rigPath != "" {
-		if data, err := os.ReadFile(rigPath); err == nil { //nolint:gosec // G304: path is from trusted config
-			if s := strings.TrimSpace(string(data)); s != "" {
-				hasRig = true
-			}
-		}
-	}
+	hasTown, hasRig := roleDirectiveSources(townPath, rigPath)
 
 	explainf("Role directives: town=%v rig=%v (town=%s, rig=%s)", hasTown, hasRig, townPath, rigPath)
 
+	outputRoleDirectiveHeader(w, hasTown, hasRig)
+	fmt.Fprintln(w, content)
+}
+
+func roleDirectivePaths(townRoot, rigName, role string) (string, string) {
+	townPath := filepath.Join(townRoot, "directives", role+".md")
+	if rigName == "" {
+		return townPath, ""
+	}
+	return townPath, filepath.Join(townRoot, rigName, "directives", role+".md")
+}
+
+func explainMissingRoleDirectives(explainf func(string, ...any), townPath, rigPath string) {
+	explainf("Role directives: no directive files found (checked %s", townPath)
+	if rigPath != "" {
+		explainf("Role directives: also checked %s", rigPath)
+	}
+}
+
+func roleDirectiveSources(townPath, rigPath string) (bool, bool) {
+	return roleDirectiveFileExists(townPath), roleDirectiveFileExists(rigPath)
+}
+
+func roleDirectiveFileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is from trusted config
+	return err == nil && strings.TrimSpace(string(data)) != ""
+}
+
+func outputRoleDirectiveHeader(w io.Writer, hasTown, hasRig bool) {
 	fmt.Fprintln(w)
-	if hasTown && hasRig {
+	switch {
+	case hasTown && hasRig:
 		fmt.Fprintln(w, "## Town & Rig Directives (operator policy — overrides formula where they conflict)")
-	} else if hasRig {
+	case hasRig:
 		fmt.Fprintln(w, "## Rig Directives (operator policy — overrides formula where they conflict)")
-	} else {
+	default:
 		fmt.Fprintln(w, "## Town Directives (operator policy — overrides formula where they conflict)")
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, content)
 }
 
 func outputPrimeContextFallback(ctx RoleContext) {
@@ -546,136 +563,162 @@ func outputHandoffContent(ctx RoleContext) {
 func outputStartupDirective(ctx RoleContext) {
 	switch ctx.Role {
 	case RoleMayor:
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are the Mayor. Please:")
-		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
-		fmt.Println("2. Announce: \"Mayor, checking in.\"")
-		fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
-		fmt.Println("4. Check for attached work: `" + cli.Name() + " hook`")
-		fmt.Println("   - If mol attached → **RUN IT** (no human input needed)")
-		fmt.Println("   - If no mol → await user instruction")
+		outputMayorStartupDirective()
 	case RoleWitness:
-		if stopped, reason := IsRigParkedOrDocked(ctx.TownRoot, ctx.Rig); stopped {
-			fmt.Println()
-			fmt.Println("---")
-			fmt.Println()
-			fmt.Printf("Rig %s is %s. No patrol needed. Exit cleanly.\n", ctx.Rig, reason)
-			return
-		}
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are the Witness. Please:")
-		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
-		fmt.Println("2. Announce: \"Witness, checking in.\"")
-		fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
-		fmt.Println("4. Check for attached patrol: `" + cli.Name() + " hook`")
-		fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
-		fmt.Println("   - If no mol → create patrol: `" + cli.Name() + " patrol new`")
+		outputWitnessStartupDirective(ctx)
 	case RolePolecat:
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are a polecat with NO WORK on your hook.")
-		fmt.Println()
-		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
-		fmt.Println("2. Check if any mail was injected above in this output")
-		fmt.Println("3. If you have mail with work instructions → execute that work")
-		fmt.Println("4. If NO mail → run `" + cli.Name() + " done` IMMEDIATELY")
-		fmt.Println()
-		fmt.Println("Polecat sessions are ephemeral. No work on hook + no mail = terminate.")
-		fmt.Println("DO NOT wait. DO NOT escalate. DO NOT send idle alerts.")
-		fmt.Println("Just run `" + cli.Name() + " done` and exit.")
+		outputPolecatStartupDirective()
 	case RoleRefinery:
-		if stopped, reason := IsRigParkedOrDocked(ctx.TownRoot, ctx.Rig); stopped {
-			fmt.Println()
-			fmt.Println("---")
-			fmt.Println()
-			fmt.Printf("Rig %s is %s. No patrol needed. Exit cleanly.\n", ctx.Rig, reason)
-			return
-		}
-		if stop, err := refinery.ActiveSafetyStop(ctx.TownRoot, ctx.Rig); err != nil {
-			fmt.Println()
-			fmt.Println("---")
-			fmt.Println()
-			style.PrintWarning("could not check refinery safety stop: %v", err)
-			fmt.Println("No patrol needed. Exit cleanly until safety-stop state can be verified.")
-			return
-		} else if stop != nil {
-			fmt.Println()
-			fmt.Println("---")
-			fmt.Println()
-			fmt.Printf("Refinery %s is %s. No patrol needed. Exit cleanly.\n", ctx.Rig, stop.Reason())
-			return
-		}
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are the Refinery. Please:")
-		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
-		fmt.Println("2. Announce: \"Refinery, checking in.\"")
-		fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
-		fmt.Println("4. Check for attached patrol: `" + cli.Name() + " hook`")
-		fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
-		fmt.Println("   - If no mol → create patrol: `" + cli.Name() + " patrol new`")
+		outputRefineryStartupDirective(ctx)
 	case RoleCrew:
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are a crew worker. Please:")
-		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
-		fmt.Printf("2. Announce: \"%s Crew %s, checking in.\"\n", ctx.Rig, ctx.Polecat)
-		fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox`")
-		fmt.Println("4. If there's a 🤝 HANDOFF message, read it and continue the work")
-		fmt.Println("5. Check for attached work: `" + cli.Name() + " hook`")
-		fmt.Println("   - If attachment found → **RUN IT** (no human input needed)")
-		fmt.Println("   - If no attachment → **STOP and wait for input**. Do NOT run")
-		fmt.Println("     any more commands. Do NOT poll mail. Do NOT check status.")
-		fmt.Println("     Sit idle at your prompt — a nudge or user message will arrive.")
+		outputCrewStartupDirective(ctx)
 	case RoleDeacon:
-		// Skip startup protocol if paused - the pause message was already shown
-		paused, _, _ := deacon.IsPaused(ctx.TownRoot)
-		if paused {
-			return
-		}
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are the Deacon. Please:")
-		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
-		fmt.Println("2. Announce: \"Deacon, checking in.\"")
-		fmt.Println("3. Signal awake: `" + cli.Name() + " deacon heartbeat \"starting patrol\"`")
-		fmt.Println("4. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
-		fmt.Println("5. Check for attached patrol: `" + cli.Name() + " hook`")
-		fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
-		fmt.Println("   - If no mol → create patrol: `bd mol wisp mol-deacon-patrol`")
+		outputDeaconStartupDirective(ctx)
 	case RoleDog:
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are a dog with NO WORK on your hook.")
-		fmt.Println()
-		fmt.Println("This likely means dispatch had a timing race (hook write not yet propagated).")
-		fmt.Println("Before going idle, try to recover work:")
-		fmt.Println()
-		fmt.Println("1. Check mail: `" + cli.Name() + " mail inbox` — dispatcher may have sent instructions")
-		fmt.Println("2. If mail has work → execute it")
-		fmt.Println("3. If no mail → check ready queue: `bd ready`")
-		fmt.Println("4. If ready queue has work → claim top bead: `bd update <id> --claim`")
-		fmt.Println("5. If nothing available → run `" + cli.Name() + " done` and exit")
-		fmt.Println()
-		fmt.Println("DO NOT sit idle waiting. Recover or terminate. (GH#2748)")
+		outputDogStartupDirective()
 	case RoleBoot:
-		fmt.Println()
-		fmt.Println("---")
-		fmt.Println()
-		fmt.Println("**STARTUP PROTOCOL**: You are Boot. Please:")
-		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context)")
-		fmt.Println("2. Run `" + cli.Name() + " boot triage` immediately")
-		fmt.Println("3. When triage completes, exit cleanly")
+		outputBootStartupDirective()
 	}
+}
+
+func outputStartupSeparator() {
+	fmt.Println()
+	fmt.Println("---")
+	fmt.Println()
+}
+
+func outputMayorStartupDirective() {
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are the Mayor. Please:")
+	fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
+	fmt.Println("2. Announce: \"Mayor, checking in.\"")
+	fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
+	fmt.Println("4. Check for attached work: `" + cli.Name() + " hook`")
+	fmt.Println("   - If mol attached → **RUN IT** (no human input needed)")
+	fmt.Println("   - If no mol → await user instruction")
+}
+
+func outputWitnessStartupDirective(ctx RoleContext) {
+	if outputStoppedRigDirective(ctx) {
+		return
+	}
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are the Witness. Please:")
+	fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
+	fmt.Println("2. Announce: \"Witness, checking in.\"")
+	fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
+	fmt.Println("4. Check for attached patrol: `" + cli.Name() + " hook`")
+	fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
+	fmt.Println("   - If no mol → create patrol: `" + cli.Name() + " patrol new`")
+}
+
+func outputPolecatStartupDirective() {
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are a polecat with NO WORK on your hook.")
+	fmt.Println()
+	fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
+	fmt.Println("2. Check if any mail was injected above in this output")
+	fmt.Println("3. If you have mail with work instructions → execute that work")
+	fmt.Println("4. If NO mail → run `" + cli.Name() + " done` IMMEDIATELY")
+	fmt.Println()
+	fmt.Println("Polecat sessions are ephemeral. No work on hook + no mail = terminate.")
+	fmt.Println("DO NOT wait. DO NOT escalate. DO NOT send idle alerts.")
+	fmt.Println("Just run `" + cli.Name() + " done` and exit.")
+}
+
+func outputRefineryStartupDirective(ctx RoleContext) {
+	if outputStoppedRigDirective(ctx) || outputRefinerySafetyDirective(ctx) {
+		return
+	}
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are the Refinery. Please:")
+	fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
+	fmt.Println("2. Announce: \"Refinery, checking in.\"")
+	fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
+	fmt.Println("4. Check for attached patrol: `" + cli.Name() + " hook`")
+	fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
+	fmt.Println("   - If no mol → create patrol: `" + cli.Name() + " patrol new`")
+}
+
+func outputStoppedRigDirective(ctx RoleContext) bool {
+	stopped, reason := IsRigParkedOrDocked(ctx.TownRoot, ctx.Rig)
+	if !stopped {
+		return false
+	}
+	outputStartupSeparator()
+	fmt.Printf("Rig %s is %s. No patrol needed. Exit cleanly.\n", ctx.Rig, reason)
+	return true
+}
+
+func outputRefinerySafetyDirective(ctx RoleContext) bool {
+	stop, err := refinery.ActiveSafetyStop(ctx.TownRoot, ctx.Rig)
+	if err != nil {
+		outputStartupSeparator()
+		style.PrintWarning("could not check refinery safety stop: %v", err)
+		fmt.Println("No patrol needed. Exit cleanly until safety-stop state can be verified.")
+		return true
+	}
+	if stop == nil {
+		return false
+	}
+	outputStartupSeparator()
+	fmt.Printf("Refinery %s is %s. No patrol needed. Exit cleanly.\n", ctx.Rig, stop.Reason())
+	return true
+}
+
+func outputCrewStartupDirective(ctx RoleContext) {
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are a crew worker. Please:")
+	fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
+	fmt.Printf("2. Announce: \"%s Crew %s, checking in.\"\n", ctx.Rig, ctx.Polecat)
+	fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox`")
+	fmt.Println("4. If there's a 🤝 HANDOFF message, read it and continue the work")
+	fmt.Println("5. Check for attached work: `" + cli.Name() + " hook`")
+	fmt.Println("   - If attachment found → **RUN IT** (no human input needed)")
+	fmt.Println("   - If no attachment → **STOP and wait for input**. Do NOT run")
+	fmt.Println("     any more commands. Do NOT poll mail. Do NOT check status.")
+	fmt.Println("     Sit idle at your prompt — a nudge or user message will arrive.")
+}
+
+func outputDeaconStartupDirective(ctx RoleContext) {
+	// Skip startup protocol if paused - the pause message was already shown.
+	paused, _, _ := deacon.IsPaused(ctx.TownRoot)
+	if paused {
+		return
+	}
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are the Deacon. Please:")
+	fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context, mail, and pending work)")
+	fmt.Println("2. Announce: \"Deacon, checking in.\"")
+	fmt.Println("3. Signal awake: `" + cli.Name() + " deacon heartbeat \"starting patrol\"`")
+	fmt.Println("4. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
+	fmt.Println("5. Check for attached patrol: `" + cli.Name() + " hook`")
+	fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
+	fmt.Println("   - If no mol → create patrol: `bd mol wisp mol-deacon-patrol`")
+}
+
+func outputDogStartupDirective() {
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are a dog with NO WORK on your hook.")
+	fmt.Println()
+	fmt.Println("This likely means dispatch had a timing race (hook write not yet propagated).")
+	fmt.Println("Before going idle, try to recover work:")
+	fmt.Println()
+	fmt.Println("1. Check mail: `" + cli.Name() + " mail inbox` — dispatcher may have sent instructions")
+	fmt.Println("2. If mail has work → execute it")
+	fmt.Println("3. If no mail → check ready queue: `bd ready`")
+	fmt.Println("4. If ready queue has work → claim top bead: `bd update <id> --claim`")
+	fmt.Println("5. If nothing available → run `" + cli.Name() + " done` and exit")
+	fmt.Println()
+	fmt.Println("DO NOT sit idle waiting. Recover or terminate. (GH#2748)")
+}
+
+func outputBootStartupDirective() {
+	outputStartupSeparator()
+	fmt.Println("**STARTUP PROTOCOL**: You are Boot. Please:")
+	fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context)")
+	fmt.Println("2. Run `" + cli.Name() + " boot triage` immediately")
+	fmt.Println("3. When triage completes, exit cleanly")
 }
 
 // outputAttachmentStatus checks for attached work molecule and outputs status.
@@ -714,10 +757,14 @@ func outputAttachmentStatus(ctx RoleContext) {
 		return
 	}
 
-	// Has attached work - output prominently with current step
+	outputAttachedWorkStatus(ctx, pinnedBeads[0], attachment)
+}
+
+func outputAttachedWorkStatus(ctx RoleContext, bead *beads.Issue, attachment *beads.AttachmentFields) {
+	// Has attached work - output prominently with current step.
 	fmt.Println()
 	fmt.Printf("%s\n\n", style.Bold.Render("## 🎯 ATTACHED WORK DETECTED"))
-	fmt.Printf("Pinned bead: %s\n", pinnedBeads[0].ID)
+	fmt.Printf("Pinned bead: %s\n", bead.ID)
 	if attachment.AttachedFormula != "" {
 		fmt.Printf("Attached formula: %s\n", attachment.AttachedFormula)
 	}
@@ -840,16 +887,20 @@ func outputCheckpointContext(ctx RoleContext) {
 	}
 
 	// Check if checkpoint is stale (older than 24 hours)
-	if cp.IsStale(24 * time.Hour) {
+	if checkpoint.IsStale(cp, 24*time.Hour) {
 		// Remove stale checkpoint
 		_ = checkpoint.Remove(ctx.WorkDir)
 		return
 	}
 
-	// Display checkpoint context
+	outputCheckpointDetails(cp)
+}
+
+func outputCheckpointDetails(cp *checkpoint.Checkpoint) {
+	// Display checkpoint context.
 	fmt.Println()
 	fmt.Printf("%s\n\n", style.Bold.Render("## 📌 Previous Session Checkpoint"))
-	fmt.Printf("A previous session left a checkpoint %s ago.\n\n", cp.Age().Round(time.Minute))
+	fmt.Printf("A previous session left a checkpoint %s ago.\n\n", checkpoint.Age(cp).Round(time.Minute))
 
 	if cp.StepTitle != "" {
 		fmt.Printf("  **Working on:** %s\n", cp.StepTitle)
@@ -868,17 +919,7 @@ func outputCheckpointContext(ctx RoleContext) {
 	}
 	if len(cp.ModifiedFiles) > 0 {
 		fmt.Printf("  **Modified files:** %d\n", len(cp.ModifiedFiles))
-		// Show first few files
-		maxShow := 5
-		if len(cp.ModifiedFiles) < maxShow {
-			maxShow = len(cp.ModifiedFiles)
-		}
-		for i := 0; i < maxShow; i++ {
-			fmt.Printf("    - %s\n", cp.ModifiedFiles[i])
-		}
-		if len(cp.ModifiedFiles) > maxShow {
-			fmt.Printf("    ... and %d more\n", len(cp.ModifiedFiles)-maxShow)
-		}
+		outputCheckpointModifiedFiles(cp.ModifiedFiles)
 	}
 	if cp.Notes != "" {
 		fmt.Printf("  **Notes:** %s\n", cp.Notes)
@@ -887,6 +928,16 @@ func outputCheckpointContext(ctx RoleContext) {
 
 	fmt.Println("Use this context to resume work. The checkpoint will be updated as you progress.")
 	fmt.Println()
+}
+
+func outputCheckpointModifiedFiles(files []string) {
+	maxShow := min(5, len(files))
+	for i := 0; i < maxShow; i++ {
+		fmt.Printf("    - %s\n", files[i])
+	}
+	if len(files) > maxShow {
+		fmt.Printf("    ... and %d more\n", len(files)-maxShow)
+	}
 }
 
 // outputDeaconPausedMessage outputs a prominent PAUSED message for the Deacon.
@@ -917,7 +968,7 @@ func outputDeaconPausedMessage(state *deacon.PauseState) {
 
 // explain outputs an explanatory message if --explain mode is enabled.
 func explain(condition bool, reason string) {
-	if primeExplain && condition {
+	if primeState().explain && condition {
 		fmt.Printf("\n[EXPLAIN] %s\n", reason)
 	}
 }

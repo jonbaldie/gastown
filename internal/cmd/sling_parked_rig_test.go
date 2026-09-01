@@ -47,9 +47,9 @@ func TestExecuteSling_ParkedRig(t *testing.T) {
 
 	// Try to execute sling to the parked rig
 	params := sling.Intent{
-		BeadID:   "test-123",
-		RigName:  rigName,
-		TownRoot: townRoot,
+		BeadID:                 "test-123",
+		RigName:                rigName,
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot},
 	}
 
 	result, err := runTownSling(context.Background(), params)

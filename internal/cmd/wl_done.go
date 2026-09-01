@@ -14,8 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var wlDoneEvidence string
-
 var wlDoneCmd = &cobra.Command{
 	Use:   "done <wanted-id>",
 	Short: "Submit completion evidence for a wanted item",
@@ -37,13 +35,14 @@ Examples:
 }
 
 func init() {
-	wlDoneCmd.Flags().StringVar(&wlDoneEvidence, "evidence", "", "Evidence URL or description (required)")
+	wlDoneCmd.Flags().String("evidence", "", "Evidence URL or description (required)")
 	_ = wlDoneCmd.MarkFlagRequired("evidence")
 
 	wlCmd.AddCommand(wlDoneCmd)
 }
 
 func runWlDone(cmd *cobra.Command, args []string) error {
+	wlDoneEvidence, _ := cmd.Flags().GetString("evidence")
 	wantedID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()

@@ -142,137 +142,133 @@ func ExtractAgentPrefix(id string) string {
 // for known role tokens from the right side of the ID.
 // Returns nil if the ID is valid, or an error describing the issue.
 func ValidateAgentID(id string) error {
+	parts, err := agentIDParts(id)
+	if err != nil {
+		return err
+	}
+	if len(parts) < 3 {
+		return validateShortAgentID(id, parts)
+	}
+	roleIndex, role, ok := findAgentIDRole(parts)
+	if !ok {
+		return invalidAgentRoleFormat(id)
+	}
+	return validateExpandedAgentID(id, role, strings.Join(parts[:roleIndex], "-"), strings.Join(parts[roleIndex+1:], "-"))
+}
+
+func agentIDParts(id string) ([]string, error) {
 	if id == "" {
-		return fmt.Errorf("agent ID is required")
+		return nil, fmt.Errorf("agent ID is required")
 	}
-
-	// Must contain a hyphen to have a prefix
-	hyphenIdx := strings.Index(id, "-")
-	if hyphenIdx <= 0 {
-		return fmt.Errorf("agent ID must have a prefix followed by '-' (got %q)", id)
+	hyphenIndex := strings.Index(id, "-")
+	if hyphenIndex <= 0 {
+		return nil, fmt.Errorf("agent ID must have a prefix followed by '-' (got %q)", id)
 	}
-
-	// Split into parts after the prefix
-	rest := id[hyphenIdx+1:] // Skip "<prefix>-"
-	parts := strings.Split(rest, "-")
-	if len(parts) < 1 || parts[0] == "" {
-		return fmt.Errorf("agent ID must include content after prefix (got %q)", id)
+	parts := strings.Split(id[hyphenIndex+1:], "-")
+	if parts[0] == "" {
+		return nil, fmt.Errorf("agent ID must include content after prefix (got %q)", id)
 	}
+	return parts, nil
+}
 
-	// Case 1: Single part after prefix - town-level role or collapsed rig-level
-	// (collapsed form: when prefix == rig, e.g., "ff-witness" for rig "ff")
+func validateShortAgentID(id string, parts []string) error {
 	if len(parts) == 1 {
-		role := parts[0]
-		if isTownLevelRole(role) {
-			return nil // Valid town-level agent
-		}
-		if isTownLevelNamedRole(role) {
-			return fmt.Errorf("agent role %q requires name: <prefix>-%s-<name> (got %q)", role, role, id)
-		}
-		if isRigLevelRole(role) {
-			return nil // Valid collapsed rig-level singleton (prefix == rig)
-		}
-		if isNamedRole(role) {
-			return fmt.Errorf("agent role %q requires name: <prefix>-%s-<name> (got %q)", role, role, id)
-		}
-		return fmt.Errorf("invalid agent role %q (valid: %s)", role, strings.Join(ValidAgentRoles, ", "))
+		return validateSinglePartAgentID(id, parts[0])
 	}
+	return validateTwoPartAgentID(id, parts)
+}
 
-	// Case 2: Two parts - could be town-level named (dog-alpha), rig-level singleton
-	// (gastown-witness), or collapsed named agent (polecat-nux when prefix == rig)
-	if len(parts) == 2 {
-		// Check if first part is a town-level named role
-		if isTownLevelNamedRole(parts[0]) {
-			return nil // Valid town-level named agent: gt-dog-alpha
-		}
-		// Check if first part is a named role (collapsed form: prefix-role-name)
-		if isNamedRole(parts[0]) {
-			return nil // Valid collapsed named agent: ff-polecat-nux (prefix == rig)
-		}
-		// Check if second part is a rig-level singleton role
-		if isRigLevelRole(parts[1]) {
-			return nil // Valid rig-level singleton: gt-gastown-witness
-		}
-		// Check if second part is a named role (missing name)
-		if isNamedRole(parts[1]) {
-			return fmt.Errorf("agent role %q requires name: <prefix>-<rig>-%s-<name> (got %q)", parts[1], parts[1], id)
-		}
-		// Check if second part is a town-level role (invalid with rig)
-		if isTownLevelRole(parts[1]) {
-			return fmt.Errorf("town-level agent %q cannot have rig/name suffixes (expected <prefix>-%s, got %q)", parts[1], parts[1], id)
-		}
-		return fmt.Errorf("invalid agent format: no valid role found in %q (valid roles: %s)", id, strings.Join(ValidAgentRoles, ", "))
-	}
-
-	// For 3+ parts, scan from the right to find a known role.
-	// This allows rig names to contain hyphens (e.g., "my-project").
-	// When a worker name collides with a role keyword (e.g., polecat named
-	// "witness"), prefer the named-role interpretation over singleton.
-	roleIdx := -1
-	var role string
-	for i := len(parts) - 1; i >= 0; i-- {
-		if !isValidRole(parts[i]) {
-			continue
-		}
-		// Found a role keyword. Check if the part to its left is a named
-		// role — if so, the keyword is actually the worker's name.
-		if i >= 2 && isNamedRole(parts[i-1]) {
-			roleIdx = i - 1
-			role = parts[i-1]
-			break
-		}
-		roleIdx = i
-		role = parts[i]
-		break
-	}
-
-	if roleIdx == -1 {
-		return fmt.Errorf("invalid agent format: no valid role found in %q (valid roles: %s)", id, strings.Join(ValidAgentRoles, ", "))
-	}
-
-	// Extract rig (everything before role) and name (everything after role)
-	rig := strings.Join(parts[:roleIdx], "-")
-	name := strings.Join(parts[roleIdx+1:], "-")
-
-	// Validate based on role type
-	if isTownLevelRole(role) {
-		if rig != "" || name != "" {
-			return fmt.Errorf("town-level agent %q cannot have rig/name suffixes (expected <prefix>-%s, got %q)", role, role, id)
-		}
+func validateSinglePartAgentID(id, role string) error {
+	if isTownLevelRole(role) || isRigLevelRole(role) {
 		return nil
 	}
+	if isTownLevelNamedRole(role) || isNamedRole(role) {
+		return fmt.Errorf("agent role %q requires name: <prefix>-%s-<name> (got %q)", role, role, id)
+	}
+	return fmt.Errorf("invalid agent role %q (valid: %s)", role, strings.Join(ValidAgentRoles, ", "))
+}
 
+func validateTwoPartAgentID(id string, parts []string) error {
+	if isTownLevelNamedRole(parts[0]) || isNamedRole(parts[0]) || isRigLevelRole(parts[1]) {
+		return nil
+	}
+	if isNamedRole(parts[1]) {
+		return fmt.Errorf("agent role %q requires name: <prefix>-<rig>-%s-<name> (got %q)", parts[1], parts[1], id)
+	}
+	if isTownLevelRole(parts[1]) {
+		return fmt.Errorf("town-level agent %q cannot have rig/name suffixes (expected <prefix>-%s, got %q)", parts[1], parts[1], id)
+	}
+	return invalidAgentRoleFormat(id)
+}
+
+func findAgentIDRole(parts []string) (int, string, bool) {
+	for index := len(parts) - 1; index >= 0; index-- {
+		if !isValidRole(parts[index]) {
+			continue
+		}
+		if index >= 2 && isNamedRole(parts[index-1]) {
+			return index - 1, parts[index-1], true
+		}
+		return index, parts[index], true
+	}
+	return 0, "", false
+}
+
+func validateExpandedAgentID(id, role, rig, name string) error {
+	if isTownLevelRole(role) {
+		return validateTownLevelAgentID(id, role, rig, name)
+	}
 	if isTownLevelNamedRole(role) {
-		if rig != "" {
-			return fmt.Errorf("town-level agent %q cannot have rig prefix (expected <prefix>-%s-<name>, got %q)", role, role, id)
-		}
-		if name == "" {
-			return fmt.Errorf("agent role %q requires name: <prefix>-%s-<name> (got %q)", role, role, id)
-		}
-		return nil // Valid town-level named agent
+		return validateTownLevelNamedAgentID(id, role, rig, name)
 	}
-
 	if isRigLevelRole(role) {
-		if rig == "" {
-			return fmt.Errorf("agent role %q requires rig: <prefix>-<rig>-%s (got %q)", role, role, id)
-		}
-		if name != "" {
-			return fmt.Errorf("agent role %q cannot have name suffix (expected <prefix>-<rig>-%s, got %q)", role, role, id)
-		}
-		return nil // Valid rig-level singleton agent
+		return validateRigLevelAgentID(id, role, rig, name)
 	}
-
 	if isNamedRole(role) {
-		if rig == "" {
-			return fmt.Errorf("rig name cannot be empty in %q", id)
-		}
-		if name == "" {
-			return fmt.Errorf("agent role %q requires name: <prefix>-<rig>-%s-<name> (got %q)", role, role, id)
-		}
-		return nil // Valid named agent
+		return validateNamedAgentID(id, role, rig, name)
 	}
-
 	return fmt.Errorf("invalid agent ID format: %q", id)
+}
+
+func validateTownLevelAgentID(id, role, rig, name string) error {
+	if rig != "" || name != "" {
+		return fmt.Errorf("town-level agent %q cannot have rig/name suffixes (expected <prefix>-%s, got %q)", role, role, id)
+	}
+	return nil
+}
+
+func validateTownLevelNamedAgentID(id, role, rig, name string) error {
+	if rig != "" {
+		return fmt.Errorf("town-level agent %q cannot have rig prefix (expected <prefix>-%s-<name>, got %q)", role, role, id)
+	}
+	if name == "" {
+		return fmt.Errorf("agent role %q requires name: <prefix>-%s-<name> (got %q)", role, role, id)
+	}
+	return nil
+}
+
+func validateRigLevelAgentID(id, role, rig, name string) error {
+	if rig == "" {
+		return fmt.Errorf("agent role %q requires rig: <prefix>-<rig>-%s (got %q)", role, role, id)
+	}
+	if name != "" {
+		return fmt.Errorf("agent role %q cannot have name suffix (expected <prefix>-<rig>-%s, got %q)", role, role, id)
+	}
+	return nil
+}
+
+func validateNamedAgentID(id, role, rig, name string) error {
+	if rig == "" {
+		return fmt.Errorf("rig name cannot be empty in %q", id)
+	}
+	if name == "" {
+		return fmt.Errorf("agent role %q requires name: <prefix>-<rig>-%s-<name> (got %q)", role, role, id)
+	}
+	return nil
+}
+
+func invalidAgentRoleFormat(id string) error {
+	return fmt.Errorf("invalid agent format: no valid role found in %q (valid roles: %s)", id, strings.Join(ValidAgentRoles, ", "))
 }
 
 // ===== Rig-level agent bead ID helpers (gt- prefix) =====
@@ -370,87 +366,83 @@ func PolecatBeadID(rig, name string) string {
 //   - "ff-witness"     → rig="ff", role="witness", name=""
 //   - "ff-polecat-nux" → rig="ff", role="polecat", name="nux"
 func ParseAgentBeadID(id string) (rig, role, name string, ok bool) {
-	// Prefix is the token before the first hyphen. Beads prefixes may be 1-20
-	// characters (gt, bd, hq, gthq, nrpk, or a derived prefix such as abcd).
-	hyphenIdx := strings.Index(id, "-")
-	if hyphenIdx <= 0 {
+	prefix, parts, ok := agentBeadIDParts(id)
+	if !ok {
 		return "", "", "", false
 	}
-
-	prefix := id[:hyphenIdx]
-	rest := id[hyphenIdx+1:]
-	parts := strings.Split(rest, "-")
-
-	if len(parts) == 0 {
-		return "", "", "", false
-	}
-
-	// Single part: town-level role (gt-mayor) or collapsed rig-level (ff-witness)
 	if len(parts) == 1 {
-		r := parts[0]
-		if isTownLevelRole(r) {
-			return "", r, "", true
-		}
-		// Collapsed rig-level singleton: prefix is the rig (e.g., ff-witness)
-		if isRigLevelRole(r) {
-			return prefix, r, "", true
-		}
-		// Unknown single-part — return as-is for backward compat
-		return "", r, "", true
+		return parseSinglePartAgentBeadID(prefix, parts[0])
 	}
-
-	// Check for town-level named roles (dog) first
 	if parts[0] == "dog" {
 		return "", "dog", strings.Join(parts[1:], "-"), true
 	}
-
-	// Check for collapsed named agent: prefix-role-name (e.g., ff-polecat-nux)
-	// This happens when prefix == rig, so the rig component was omitted.
 	if isNamedRole(parts[0]) {
 		return prefix, parts[0], strings.Join(parts[1:], "-"), true
 	}
+	return parseRigAgentBeadID(parts)
+}
 
-	// Scan from right for known role markers to handle hyphenated rig names.
-	// Format: <rig>-<role>[-<name>] where rig may contain hyphens.
-	//
-	// When a worker name collides with a role keyword (e.g., a polecat named
-	// "witness"), we prefer the named-role interpretation. A named role like
-	// "polecat" at position i-1 consuming the keyword at position i as its
-	// name is more specific than treating the keyword as a singleton role.
-	for i := len(parts) - 1; i >= 1; i-- {
-		p := parts[i]
-		if isNamedRole(p) && i < len(parts)-1 {
-			// Named roles with a name following: crew, polecat
-			return strings.Join(parts[:i], "-"), p, strings.Join(parts[i+1:], "-"), true
+func agentBeadIDParts(id string) (string, []string, bool) {
+	hyphenIndex := strings.Index(id, "-")
+	if hyphenIndex <= 0 {
+		return "", nil, false
+	}
+	return id[:hyphenIndex], strings.Split(id[hyphenIndex+1:], "-"), true
+}
+
+func parseSinglePartAgentBeadID(prefix, role string) (string, string, string, bool) {
+	if isTownLevelRole(role) {
+		return "", role, "", true
+	}
+	if isRigLevelRole(role) {
+		return prefix, role, "", true
+	}
+	return "", role, "", true
+}
+
+func parseRigAgentBeadID(parts []string) (string, string, string, bool) {
+	for index := len(parts) - 1; index >= 1; index-- {
+		if rig, role, name, ok := parseNamedRoleWithName(parts, index); ok {
+			return rig, role, name, true
 		}
-		if isRigLevelRole(p) {
-			// Before accepting as singleton, check if the part to the left
-			// is a named role — if so, this keyword is actually the worker's
-			// name, not a singleton role marker.
-			if i >= 2 && isNamedRole(parts[i-1]) {
-				return strings.Join(parts[:i-1], "-"), parts[i-1], strings.Join(parts[i:], "-"), true
-			}
-			// Genuine singleton role: witness, refinery
-			return strings.Join(parts[:i], "-"), p, "", true
+		if rig, role, name, ok := parseRigLevelRole(parts, index); ok {
+			return rig, role, name, true
 		}
-		if isNamedRole(p) && i == len(parts)-1 {
-			// Named role at the end without a following name. Check if the
-			// part to the left is also a named role — if so, this keyword
-			// is the worker's name for that role.
-			if i >= 2 && isNamedRole(parts[i-1]) {
-				return strings.Join(parts[:i-1], "-"), parts[i-1], p, true
-			}
-			// Named role without a name (invalid but handle gracefully)
-			return strings.Join(parts[:i], "-"), p, "", true
+		if rig, role, name, ok := parseTrailingNamedRole(parts, index); ok {
+			return rig, role, name, true
 		}
 	}
-
-	// Fallback: assume 2-part rig/role pattern
 	if len(parts) == 2 {
 		return parts[0], parts[1], "", true
 	}
-
 	return "", "", "", false
+}
+
+func parseNamedRoleWithName(parts []string, index int) (string, string, string, bool) {
+	if !isNamedRole(parts[index]) || index == len(parts)-1 {
+		return "", "", "", false
+	}
+	return strings.Join(parts[:index], "-"), parts[index], strings.Join(parts[index+1:], "-"), true
+}
+
+func parseRigLevelRole(parts []string, index int) (string, string, string, bool) {
+	if !isRigLevelRole(parts[index]) {
+		return "", "", "", false
+	}
+	if index >= 2 && isNamedRole(parts[index-1]) {
+		return strings.Join(parts[:index-1], "-"), parts[index-1], strings.Join(parts[index:], "-"), true
+	}
+	return strings.Join(parts[:index], "-"), parts[index], "", true
+}
+
+func parseTrailingNamedRole(parts []string, index int) (string, string, string, bool) {
+	if !isNamedRole(parts[index]) || index != len(parts)-1 {
+		return "", "", "", false
+	}
+	if index >= 2 && isNamedRole(parts[index-1]) {
+		return strings.Join(parts[:index-1], "-"), parts[index-1], parts[index], true
+	}
+	return strings.Join(parts[:index], "-"), parts[index], "", true
 }
 
 // IsAgentSessionBead returns true if the bead ID represents an agent session molecule.

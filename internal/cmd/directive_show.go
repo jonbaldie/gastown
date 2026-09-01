@@ -25,11 +25,9 @@ Examples:
 	RunE: runDirectiveShow,
 }
 
-var directiveShowRig string
-
 func init() {
 	directiveCmd.AddCommand(directiveShowCmd)
-	directiveShowCmd.Flags().StringVar(&directiveShowRig, "rig", "", "Rig name (default: auto-detect from cwd)")
+	directiveShowCmd.Flags().String("rig", "", "Rig name (default: auto-detect from cwd)")
 }
 
 func runDirectiveShow(cmd *cobra.Command, args []string) error {
@@ -40,7 +38,7 @@ func runDirectiveShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown role %q — valid roles: %s", role, strings.Join(config.AllRoles(), ", "))
 	}
 
-	townRoot, rigName, err := resolveDirectiveContext(directiveShowRig)
+	townRoot, rigName, err := resolveDirectiveContext(directiveShowRigValue(cmd))
 	if err != nil {
 		return err
 	}
@@ -53,12 +51,7 @@ func runDirectiveShow(cmd *cobra.Command, args []string) error {
 
 	content := config.LoadRoleDirective(role, townRoot, rigName)
 	if content == "" {
-		fmt.Printf("No directive found for role %q\n", role)
-		fmt.Printf("  Checked: %s\n", townPath)
-		if rigPath != "" {
-			fmt.Printf("  Checked: %s\n", rigPath)
-		}
-		fmt.Println("\nUse 'gt directive edit' to create one.")
+		printMissingDirective(role, townPath, rigPath)
 		return nil
 	}
 
@@ -66,6 +59,34 @@ func runDirectiveShow(cmd *cobra.Command, args []string) error {
 	hasTown := fileHasContent(townPath)
 	hasRig := rigPath != "" && fileHasContent(rigPath)
 
+	printDirectiveSource(role, rigName, townPath, rigPath, hasTown, hasRig)
+	fmt.Println()
+	fmt.Println(content)
+
+	return nil
+}
+
+func directiveShowRigValue(cmd *cobra.Command) string {
+	if cmd == nil {
+		return ""
+	}
+	rigName, err := cmd.Flags().GetString("rig")
+	if err != nil {
+		return ""
+	}
+	return rigName
+}
+
+func printMissingDirective(role, townPath, rigPath string) {
+	fmt.Printf("No directive found for role %q\n", role)
+	fmt.Printf("  Checked: %s\n", townPath)
+	if rigPath != "" {
+		fmt.Printf("  Checked: %s\n", rigPath)
+	}
+	fmt.Println("\nUse 'gt directive edit' to create one.")
+}
+
+func printDirectiveSource(role, rigName, townPath, rigPath string, hasTown, hasRig bool) {
 	// Print source annotation
 	switch {
 	case hasTown && hasRig:
@@ -79,10 +100,6 @@ func runDirectiveShow(cmd *cobra.Command, args []string) error {
 		fmt.Printf("# Directive: %s (town)\n", role)
 		fmt.Printf("# Source: %s\n", townPath)
 	}
-	fmt.Println()
-	fmt.Println(content)
-
-	return nil
 }
 
 // resolveDirectiveContext finds the town root and rig name for directive commands.

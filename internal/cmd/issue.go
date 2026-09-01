@@ -56,7 +56,7 @@ func init() {
 	issueCmd.AddCommand(issueShowCmd)
 }
 
-func runIssueSet(cmd *cobra.Command, args []string) error {
+func runIssueSet(_ *cobra.Command, args []string) error {
 	issueID := args[0]
 
 	// Get current tmux session
@@ -78,7 +78,7 @@ func runIssueSet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runIssueClear(cmd *cobra.Command, args []string) error {
+func runIssueClear(_ *cobra.Command, _ []string) error {
 	session := os.Getenv("TMUX_PANE")
 	if session == "" {
 		session = detectCurrentSession()
@@ -97,7 +97,7 @@ func runIssueClear(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runIssueShow(cmd *cobra.Command, args []string) error {
+func runIssueShow(_ *cobra.Command, _ []string) error {
 	session := os.Getenv("TMUX_PANE")
 	if session == "" {
 		session = detectCurrentSession()

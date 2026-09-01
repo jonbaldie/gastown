@@ -23,7 +23,7 @@ func TestForwardFromAgent_StandardForwarding(t *testing.T) {
 	// Start forwarding
 	p.wg.Add(1)
 	go func() {
-		p.forwardFromAgent()
+		forwardFromAgent(p)
 		stdoutWriter.Close()
 	}()
 
@@ -151,7 +151,7 @@ func TestForwardFromAgent_PropulsionSuppression(t *testing.T) {
 	// Start forwarding
 	p.wg.Add(1)
 	go func() {
-		p.forwardFromAgent()
+		forwardFromAgent(p)
 		stdoutWriter.Close()
 	}()
 
@@ -202,7 +202,7 @@ func TestForwardFromAgent_PropulsionSuppression(t *testing.T) {
 		}
 	}
 
-	p.markDone()
+	markDone(p)
 }
 
 func TestForwardFromAgent_PropulsionTriggers(t *testing.T) {
@@ -220,7 +220,7 @@ func TestForwardFromAgent_PropulsionTriggers(t *testing.T) {
 	// Start forwarding
 	p.wg.Add(1)
 	go func() {
-		p.forwardFromAgent()
+		forwardFromAgent(p)
 		stdoutWriter.Close()
 	}()
 
@@ -338,7 +338,7 @@ func TestForwardFromAgent_PropulsionTriggers(t *testing.T) {
 		t.Error("Message after propulsion reset was not forwarded")
 	}
 
-	p.markDone()
+	markDone(p)
 	agentStdoutWriter.Close()
 
 	// Clean up reader

@@ -42,23 +42,16 @@ func (c *BeadsDirPermsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	for _, dir := range collectBeadsDirs(ctx.TownRoot) {
-		info, err := os.Stat(dir)
-		if err != nil {
-			return &CheckResult{
-				Name:     c.Name(),
-				Status:   StatusWarning,
-				Message:  fmt.Sprintf("Could not stat %s: %v", dir, err),
-				Category: c.CheckCategory,
-			}
-		}
-		if !info.IsDir() {
-			continue
-		}
-		if info.Mode().Perm() != beads.DirPerm {
-			c.loose = append(c.loose, dir)
+	loose, err := findLooseBeadsDirs(ctx.TownRoot)
+	if err != nil {
+		return &CheckResult{
+			Name:     c.Name(),
+			Status:   StatusWarning,
+			Message:  err.Error(),
+			Category: c.CheckCategory,
 		}
 	}
+	c.loose = loose
 
 	if len(c.loose) == 0 {
 		return &CheckResult{
@@ -69,32 +62,53 @@ func (c *BeadsDirPermsCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	details := make([]string, 0, len(c.loose))
-	for _, dir := range c.loose {
-		rel := dir
-		if r, err := filepath.Rel(ctx.TownRoot, dir); err == nil {
-			rel = r
-		}
-		info, err := os.Stat(dir)
-		mode := os.FileMode(0)
-		if err == nil {
-			mode = info.Mode().Perm()
-		}
-		details = append(details, fmt.Sprintf("%s is %04o (want 0700)", rel, mode))
-	}
-
 	return &CheckResult{
 		Name:     c.Name(),
 		Status:   StatusWarning,
 		Message:  fmt.Sprintf("%d .beads director(ies) are not mode 0700", len(c.loose)),
-		Details:  details,
+		Details:  beadsDirPermissionDetails(ctx.TownRoot, c.loose),
 		FixHint:  "Run 'gt doctor --fix' to chmod .beads directories to 0700",
 		Category: c.CheckCategory,
 	}
 }
 
+func findLooseBeadsDirs(townRoot string) ([]string, error) {
+	var loose []string
+	for _, dir := range collectBeadsDirs(townRoot) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return nil, fmt.Errorf("Could not stat %s: %v", dir, err)
+		}
+		if info.IsDir() && info.Mode().Perm() != beads.DirPerm {
+			loose = append(loose, dir)
+		}
+	}
+	return loose, nil
+}
+
+func beadsDirPermissionDetails(townRoot string, dirs []string) []string {
+	details := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		details = append(details, beadsDirPermissionDetail(townRoot, dir))
+	}
+	return details
+}
+
+func beadsDirPermissionDetail(townRoot, dir string) string {
+	rel, err := filepath.Rel(townRoot, dir)
+	if err != nil {
+		rel = dir
+	}
+	mode := os.FileMode(0)
+	info, err := os.Stat(dir)
+	if err == nil {
+		mode = info.Mode().Perm()
+	}
+	return fmt.Sprintf("%s is %04o (want 0700)", rel, mode)
+}
+
 // Fix sets loose .beads directories to mode 0700.
-func (c *BeadsDirPermsCheck) Fix(ctx *CheckContext) error {
+func (c *BeadsDirPermsCheck) Fix(_ *CheckContext) error {
 	if len(c.loose) == 0 {
 		return nil
 	}

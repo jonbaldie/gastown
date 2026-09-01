@@ -159,7 +159,7 @@ func TestCheckDeaconHeartbeat_IdleGuard(t *testing.T) {
 			logBuf := &strings.Builder{}
 			d.logger = log.New(logBuf, "", 0)
 
-			d.checkDeaconHeartbeat()
+			checkDeaconHeartbeat(d)
 
 			logOutput := logBuf.String()
 

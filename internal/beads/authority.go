@@ -42,61 +42,93 @@ func (a *Authority) ForBead(beadID string) Session {
 	if a == nil {
 		return Session{beadID: beadID}
 	}
-	fallback := a.fallbackDir
-	s := Session{
-		beadID:   beadID,
-		townRoot: a.townRoot,
-		beadsDir: fallback,
-		workDir:  parentDir(fallback),
-	}
+	s := a.fallbackSession(beadID)
 	prefix := ExtractPrefix(beadID)
 	if prefix == "" {
 		return s
 	}
 
-	routesDir := fallback
-	if a.townRoot != "" {
-		routesDir = filepath.Join(a.townRoot, ".beads")
-	}
-	routes, err := LoadRoutes(routesDir)
-	if len(routes) == 0 || err != nil {
-		townRoot := a.townRoot
-		if townRoot == "" && fallback != "" {
-			townRoot = FindTownRoot(filepath.Dir(fallback))
-		}
-		if townRoot != "" {
-			townBeads := filepath.Join(townRoot, ".beads")
-			if townBeads != routesDir {
-				routesDir = townBeads
-				routes, err = LoadRoutes(routesDir)
-			}
-		}
-	}
+	routesDir, routes, err := a.routesFor(s.beadsDir)
 	if err != nil || len(routes) == 0 {
 		return s
 	}
+	route, found := routeForPrefix(routes, prefix)
+	if !found {
+		return s
+	}
+	return a.routedSession(beadID, routesDir, route)
+}
 
-	for _, r := range routes {
-		if r.Prefix != prefix {
-			continue
-		}
-		townRoot := a.townRoot
-		if townRoot == "" {
-			townRoot = filepath.Dir(routesDir)
-		}
-		beadsDir := ResolveBeadsDir(routesDir)
-		if r.Path != "." {
-			beadsDir = ResolveBeadsDir(filepath.Join(townRoot, r.Path))
-		}
-		return Session{
-			beadID:   beadID,
-			townRoot: townRoot,
-			beadsDir: beadsDir,
-			workDir:  parentDir(beadsDir),
-			routed:   true,
+func (a *Authority) fallbackSession(beadID string) Session {
+	return Session{
+		beadID:   beadID,
+		townRoot: a.townRoot,
+		beadsDir: a.fallbackDir,
+		workDir:  parentDir(a.fallbackDir),
+	}
+}
+
+func (a *Authority) routesFor(fallback string) (string, []Route, error) {
+	routesDir := a.routeDirectory(fallback)
+	routes, err := LoadRoutes(routesDir)
+	if err == nil && len(routes) > 0 {
+		return routesDir, routes, nil
+	}
+	return a.fallbackRoutes(routesDir, routes, err, fallback)
+}
+
+func (a *Authority) routeDirectory(fallback string) string {
+	if a.townRoot == "" {
+		return fallback
+	}
+	return filepath.Join(a.townRoot, ".beads")
+}
+
+func (a *Authority) fallbackRoutes(routesDir string, routes []Route, loadErr error, fallback string) (string, []Route, error) {
+	townRoot := a.routeTownRoot(fallback)
+	if townRoot == "" {
+		return routesDir, routes, loadErr
+	}
+	townBeads := filepath.Join(townRoot, ".beads")
+	if townBeads == routesDir {
+		return routesDir, routes, loadErr
+	}
+	routes, err := LoadRoutes(townBeads)
+	return townBeads, routes, err
+}
+
+func (a *Authority) routeTownRoot(fallback string) string {
+	if a.townRoot != "" || fallback == "" {
+		return a.townRoot
+	}
+	return FindTownRoot(filepath.Dir(fallback))
+}
+
+func routeForPrefix(routes []Route, prefix string) (Route, bool) {
+	for _, route := range routes {
+		if route.Prefix == prefix {
+			return route, true
 		}
 	}
-	return s
+	return Route{}, false
+}
+
+func (a *Authority) routedSession(beadID, routesDir string, route Route) Session {
+	townRoot := a.townRoot
+	if townRoot == "" {
+		townRoot = filepath.Dir(routesDir)
+	}
+	beadsDir := ResolveBeadsDir(routesDir)
+	if route.Path != "." {
+		beadsDir = ResolveBeadsDir(filepath.Join(townRoot, route.Path))
+	}
+	return Session{
+		beadID:   beadID,
+		townRoot: townRoot,
+		beadsDir: beadsDir,
+		workDir:  parentDir(beadsDir),
+		routed:   true,
+	}
 }
 
 // ForAgentBead returns a Session for an agent bead. Agent beads live in the
@@ -139,9 +171,6 @@ func (s Session) BeadsDir() string { return s.beadsDir }
 // This is the parent of BeadsDir, after redirects.
 func (s Session) WorkDir() string { return s.workDir }
 
-// Routed reports whether prefix routing found an owning rig or town path.
-func (s Session) Routed() bool { return s.routed }
-
 // WithStore binds an in-process beads SDK adapter. Show, Update, Close, and
 // Hook then use the store instead of the bd CLI.
 func (s Session) WithStore(store beadsdk.Storage) Session {
@@ -149,7 +178,7 @@ func (s Session) WithStore(store beadsdk.Storage) Session {
 	return s
 }
 
-func (a *Authority) withFallback(dir string) *Authority {
+func (a *Authority) WithFallback(dir string) *Authority {
 	if a == nil {
 		return &Authority{fallbackDir: dir}
 	}

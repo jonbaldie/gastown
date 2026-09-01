@@ -62,16 +62,8 @@ func resolveRigSessionTheme(townRoot, rigName, role, crewMember string) *Theme {
 	}
 
 	// Per-member theme takes priority over role-level theme.
-	if crewMember != "" && settings.Theme.CrewThemes != nil {
-		if resolved, ok := resolveRoleThemeName(settings.Theme.CrewThemes[crewMember]); ok {
-			return resolved
-		}
-	}
-
-	if settings.Theme.RoleThemes != nil {
-		if resolved, ok := resolveRoleThemeName(settings.Theme.RoleThemes[role]); ok {
-			return resolved
-		}
+	if resolved, ok := resolveThemeOverrides(role, crewMember, settings.Theme.CrewThemes, settings.Theme.RoleThemes); ok {
+		return resolved
 	}
 
 	return resolveThemeConfig(settings.Theme)
@@ -88,49 +80,45 @@ func resolveTownSessionTheme(townRoot, role, crewMember string) *Theme {
 	}
 
 	// Per-member theme takes priority over role defaults at town level too.
-	if crewMember != "" && mayorCfg.Theme.CrewThemes != nil {
-		if resolved, ok := resolveRoleThemeName(mayorCfg.Theme.CrewThemes[crewMember]); ok {
-			return resolved
-		}
+	if resolved, ok := resolveThemeOverrides(role, crewMember, mayorCfg.Theme.CrewThemes, mayorCfg.Theme.RoleDefaults); ok {
+		return resolved
 	}
 
-	if mayorCfg.Theme.RoleDefaults != nil {
-		if resolved, ok := resolveRoleThemeName(mayorCfg.Theme.RoleDefaults[role]); ok {
-			return resolved
-		}
-	}
-
-	if mayorCfg.Theme.Disabled {
-		return nil
-	}
-	if mayorCfg.Theme.Custom != nil {
-		return customTheme("custom", mayorCfg.Theme.Custom)
-	}
-	if mayorCfg.Theme.Name != "" {
-		if theme := GetThemeByName(mayorCfg.Theme.Name); theme != nil {
-			return theme
-		}
-	}
-
-	return unresolvedTheme
+	return resolveThemeValues(mayorCfg.Theme.Disabled, mayorCfg.Theme.Name, mayorCfg.Theme.Custom)
 }
 
 func resolveThemeConfig(cfg *config.ThemeConfig) *Theme {
 	if cfg == nil {
 		return unresolvedTheme
 	}
-	if cfg.Disabled {
+	return resolveThemeValues(cfg.Disabled, cfg.Name, cfg.Custom)
+}
+
+func resolveThemeValues(disabled bool, name string, custom *config.CustomTheme) *Theme {
+	if disabled {
 		return nil
 	}
-	if cfg.Custom != nil {
-		return customTheme("custom", cfg.Custom)
+	if custom != nil {
+		return customTheme("custom", custom)
 	}
-	if cfg.Name != "" {
-		if theme := GetThemeByName(cfg.Name); theme != nil {
+	if name != "" {
+		if theme := GetThemeByName(name); theme != nil {
 			return theme
 		}
 	}
 	return unresolvedTheme
+}
+
+func resolveThemeOverrides(role, crewMember string, crewThemes, roleThemes map[string]string) (*Theme, bool) {
+	if crewMember != "" {
+		if resolved, ok := resolveRoleThemeName(crewThemes[crewMember]); ok {
+			return resolved, true
+		}
+	}
+	if resolved, ok := resolveRoleThemeName(roleThemes[role]); ok {
+		return resolved, true
+	}
+	return nil, false
 }
 
 func resolveRoleThemeName(name string) (*Theme, bool) {

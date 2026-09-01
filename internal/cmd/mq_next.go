@@ -10,13 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// MQ next command flags
-var (
-	mqNextStrategy string // "priority" (default) or "fifo"
-	mqNextJSON     bool
-	mqNextQuiet    bool
-)
-
 var mqNextCmd = &cobra.Command{
 	Use:   "next <rig>",
 	Short: "Show the highest-priority merge request",
@@ -40,131 +33,148 @@ Examples:
 }
 
 func init() {
-	mqNextCmd.Flags().StringVar(&mqNextStrategy, "strategy", "priority", "Ordering strategy: 'priority' or 'fifo'")
-	mqNextCmd.Flags().BoolVar(&mqNextJSON, "json", false, "Output as JSON")
-	mqNextCmd.Flags().BoolVarP(&mqNextQuiet, "quiet", "q", false, "Just print the MR ID")
+	mqNextCmd.Flags().String("strategy", "priority", "Ordering strategy: 'priority' or 'fifo'")
+	mqNextCmd.Flags().Bool("json", false, "Output as JSON")
+	mqNextCmd.Flags().BoolP("quiet", "q", false, "Just print the MR ID")
 
 	mqCmd.AddCommand(mqNextCmd)
 }
 
 func runMQNext(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
+	strategy := commandStringFlag(cmd, "strategy")
+	jsonOutput := commandBoolFlag(cmd, "json")
+	quiet := commandBoolFlag(cmd, "quiet")
 
-	_, r, _, err := getRefineryManager(rigName)
+	ready, err := readyMergeRequests(rigName)
 	if err != nil {
 		return err
 	}
+	if len(ready) == 0 {
+		return reportNoReadyMergeRequests(quiet)
+	}
 
-	// Create beads wrapper for the rig
+	now := time.Now()
+	sortReadyMergeRequests(ready, strategy, now)
+	return outputNextMergeRequest(ready, quiet, jsonOutput, now)
+}
+
+func readyMergeRequests(rigName string) ([]*beads.Issue, error) {
+	_, r, _, err := getRefineryManager(rigName)
+	if err != nil {
+		return nil, err
+	}
+
 	b := beads.New(r.BeadsPath())
-
-	// Query for open merge-requests (ready to process).
-	// Use ListMergeRequests to query both issues and wisps tables,
-	// since MRs are created as ephemeral (wisps) by gt mq submit (GH#2446).
-	opts := beads.ListOptions{
+	issues, err := b.ListMergeRequests(beads.ListOptions{
 		Label:    "gt:merge-request",
 		Status:   "open",
-		Priority: -1, // No priority filter
+		Priority: -1,
 		Rig:      rigName,
-	}
-
-	issues, err := b.ListMergeRequests(opts)
+	})
 	if err != nil {
-		return fmt.Errorf("querying merge queue: %w", err)
+		return nil, fmt.Errorf("querying merge queue: %w", err)
 	}
+	return filterReadyMergeRequests(issues), nil
+}
 
-	// Filter to only ready MRs (no blockers)
-	var ready []*beads.Issue
+func filterReadyMergeRequests(issues []*beads.Issue) []*beads.Issue {
+	ready := make([]*beads.Issue, 0, len(issues))
 	for _, issue := range issues {
 		if isMergeRequestReadyForSelection(issue) {
 			ready = append(ready, issue)
 		}
 	}
+	return ready
+}
 
-	if len(ready) == 0 {
-		if mqNextQuiet {
-			return nil // Silent exit
-		}
-		fmt.Printf("%s No ready merge requests in queue\n", style.Dim.Render("ℹ"))
+func reportNoReadyMergeRequests(quiet bool) error {
+	if quiet {
 		return nil
 	}
+	fmt.Printf("%s No ready merge requests in queue\n", style.Dim.Render("ℹ"))
+	return nil
+}
 
-	now := time.Now()
+func sortReadyMergeRequests(ready []*beads.Issue, strategy string, now time.Time) {
+	if strategy == "fifo" {
+		sortReadyMergeRequestsFIFO(ready)
+		return
+	}
+	sortReadyMergeRequestsByPriority(ready, now)
+}
 
-	// Sort based on strategy
-	if mqNextStrategy == "fifo" {
-		// FIFO: oldest first by creation time
-		sort.Slice(ready, func(i, j int) bool {
-			ti, _ := time.Parse(time.RFC3339, ready[i].CreatedAt)
-			tj, _ := time.Parse(time.RFC3339, ready[j].CreatedAt)
-			return ti.Before(tj)
-		})
-	} else {
-		// Priority: highest score first
-		type scoredIssue struct {
-			issue *beads.Issue
-			score float64
-		}
-		scored := make([]scoredIssue, len(ready))
-		for i, issue := range ready {
-			fields := beads.ParseMRFields(issue)
-			score := calculateMRScore(issue, fields, now)
-			scored[i] = scoredIssue{issue: issue, score: score}
-		}
+func sortReadyMergeRequestsFIFO(ready []*beads.Issue) {
+	sort.Slice(ready, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, ready[i].CreatedAt)
+		tj, _ := time.Parse(time.RFC3339, ready[j].CreatedAt)
+		return ti.Before(tj)
+	})
+}
 
-		sort.Slice(scored, func(i, j int) bool {
-			return scored[i].score > scored[j].score
-		})
+type scoredMQNextIssue struct {
+	issue *beads.Issue
+	score float64
+}
 
-		// Rebuild ready slice in sorted order
-		for i, s := range scored {
-			ready[i] = s.issue
+func sortReadyMergeRequestsByPriority(ready []*beads.Issue, now time.Time) {
+	scored := make([]scoredMQNextIssue, len(ready))
+	for i, issue := range ready {
+		fields := beads.ParseMRFields(issue)
+		scored[i] = scoredMQNextIssue{
+			issue: issue,
+			score: calculateMRScore(issue, fields, now),
 		}
 	}
 
-	// Get the top MR
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+	for i, scoredIssue := range scored {
+		ready[i] = scoredIssue.issue
+	}
+}
+
+func outputNextMergeRequest(ready []*beads.Issue, quiet, jsonOutput bool, now time.Time) error {
 	next := ready[0]
 	fields := beads.ParseMRFields(next)
-
-	// Output based on format flags
-	if mqNextQuiet {
+	if quiet {
 		fmt.Println(next.ID)
 		return nil
 	}
-
-	if mqNextJSON {
+	if jsonOutput {
 		return outputJSON(next)
 	}
+	printNextMergeRequest(next, fields, ready, now)
+	return nil
+}
 
-	// Human-readable output
+func printNextMergeRequest(next *beads.Issue, fields *beads.MRFields, ready []*beads.Issue, now time.Time) {
 	fmt.Printf("%s Next MR to process:\n\n", style.Bold.Render("🎯"))
-
-	score := calculateMRScore(next, fields, now)
-
 	fmt.Printf("  ID:       %s\n", next.ID)
-	fmt.Printf("  Score:    %.1f\n", score)
+	fmt.Printf("  Score:    %.1f\n", calculateMRScore(next, fields, now))
 	fmt.Printf("  Priority: P%d\n", next.Priority)
-
-	if fields != nil {
-		if fields.Branch != "" {
-			fmt.Printf("  Branch:   %s\n", fields.Branch)
-		}
-		if fields.Worker != "" {
-			fmt.Printf("  Worker:   %s\n", fields.Worker)
-		}
-		if fields.ConvoyID != "" {
-			fmt.Printf("  Convoy:   %s\n", fields.ConvoyID)
-		}
-		if fields.RetryCount > 0 {
-			fmt.Printf("  Retries:  %d\n", fields.RetryCount)
-		}
-	}
-
+	printNextMergeRequestFields(fields)
 	fmt.Printf("  Age:      %s\n", formatMRAge(next.CreatedAt))
-
 	if len(ready) > 1 {
 		fmt.Printf("\n  %s\n", style.Dim.Render(fmt.Sprintf("(%d more in queue)", len(ready)-1)))
 	}
+}
 
-	return nil
+func printNextMergeRequestFields(fields *beads.MRFields) {
+	if fields == nil {
+		return
+	}
+	if fields.Branch != "" {
+		fmt.Printf("  Branch:   %s\n", fields.Branch)
+	}
+	if fields.Worker != "" {
+		fmt.Printf("  Worker:   %s\n", fields.Worker)
+	}
+	if fields.ConvoyID != "" {
+		fmt.Printf("  Convoy:   %s\n", fields.ConvoyID)
+	}
+	if fields.RetryCount > 0 {
+		fmt.Printf("  Retries:  %d\n", fields.RetryCount)
+	}
 }

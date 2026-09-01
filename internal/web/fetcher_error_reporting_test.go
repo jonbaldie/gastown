@@ -18,8 +18,8 @@ func TestGetIssueDetailsBatch_ReturnsStructuredErrorOnCommandFailure(t *testing.
 		return nil, errors.New("boom")
 	}
 
-	f := &LiveConvoyFetcher{cmdTimeout: 100 * time.Millisecond}
-	_, err := f.getIssueDetailsBatch([]string{"gt-1", "gt-2"})
+	f := &LiveConvoyFetcher{liveFetcherState: &liveFetcherState{cmdTimeout: 100 * time.Millisecond}}
+	_, err := getIssueDetailsBatch(f, []string{"gt-1", "gt-2"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -41,8 +41,8 @@ func TestGetIssueDetailsBatch_ReturnsStructuredErrorOnInvalidJSON(t *testing.T) 
 		return bytes.NewBufferString("{invalid"), nil
 	}
 
-	f := &LiveConvoyFetcher{cmdTimeout: 100 * time.Millisecond}
-	_, err := f.getIssueDetailsBatch([]string{"gt-9"})
+	f := &LiveConvoyFetcher{liveFetcherState: &liveFetcherState{cmdTimeout: 100 * time.Millisecond}}
+	_, err := getIssueDetailsBatch(f, []string{"gt-9"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -67,8 +67,8 @@ func TestGetIssueDetailsBatch_ParsesIssueDetails(t *testing.T) {
 		]`), nil
 	}
 
-	f := &LiveConvoyFetcher{cmdTimeout: 100 * time.Millisecond}
-	details, err := f.getIssueDetailsBatch([]string{"gt-1", "gt-2"})
+	f := &LiveConvoyFetcher{liveFetcherState: &liveFetcherState{cmdTimeout: 100 * time.Millisecond}}
+	details, err := getIssueDetailsBatch(f, []string{"gt-1", "gt-2"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

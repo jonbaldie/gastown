@@ -72,109 +72,85 @@ func ParseMoleculeSteps(description string) ([]MoleculeStep, error) {
 		return nil, nil
 	}
 
-	lines := strings.Split(description, "\n")
 	var steps []MoleculeStep
-	var currentStep *MoleculeStep
+	var currentRef string
 	var contentLines []string
-
-	// Helper to finalize current step
-	finalizeStep := func() {
-		if currentStep == nil {
-			return
-		}
-
-		// Process content lines to extract Needs/Tier and build instructions
-		var instructionLines []string
-		for _, line := range contentLines {
-			trimmed := strings.TrimSpace(line)
-
-			// Check for Needs: line
-			if matches := needsLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				deps := strings.Split(matches[1], ",")
-				for _, dep := range deps {
-					dep = strings.TrimSpace(dep)
-					if dep != "" {
-						currentStep.Needs = append(currentStep.Needs, dep)
-					}
-				}
-				continue
-			}
-
-			// Check for Tier: line
-			if matches := tierLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				currentStep.Tier = strings.ToLower(matches[1])
-				continue
-			}
-
-			// Check for WaitsFor: line
-			if matches := waitsForLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				conditions := strings.Split(matches[1], ",")
-				for _, cond := range conditions {
-					cond = strings.TrimSpace(cond)
-					if cond != "" {
-						currentStep.WaitsFor = append(currentStep.WaitsFor, cond)
-					}
-				}
-				continue
-			}
-
-			// Check for Type: line
-			if matches := typeLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				currentStep.Type = strings.ToLower(matches[1])
-				continue
-			}
-
-			// Check for Backoff: line
-			if matches := backoffLineRegex.FindStringSubmatch(trimmed); matches != nil {
-				currentStep.Backoff = parseBackoffConfig(matches[1])
-				continue
-			}
-
-			// Regular instruction line
-			instructionLines = append(instructionLines, line)
-		}
-
-		// Build instructions, trimming leading/trailing blank lines
-		currentStep.Instructions = strings.TrimSpace(strings.Join(instructionLines, "\n"))
-
-		// Set title from first non-empty line of instructions, or use ref
-		if currentStep.Instructions != "" {
-			firstLine := strings.SplitN(currentStep.Instructions, "\n", 2)[0]
-			currentStep.Title = strings.TrimSpace(firstLine)
-		}
-		if currentStep.Title == "" {
-			currentStep.Title = currentStep.Ref
-		}
-
-		steps = append(steps, *currentStep)
-		currentStep = nil
-		contentLines = nil
-	}
-
-	for _, line := range lines {
-		// Check for step header
+	for _, line := range strings.Split(description, "\n") {
 		if matches := stepHeaderRegex.FindStringSubmatch(line); matches != nil {
-			// Finalize previous step if any
-			finalizeStep()
-
-			// Start new step
-			currentStep = &MoleculeStep{
-				Ref: matches[1],
-			}
+			steps = appendMoleculeStep(steps, currentRef, contentLines)
+			currentRef = matches[1]
 			contentLines = nil
 			continue
 		}
 
-		// Accumulate content lines if we're in a step
-		if currentStep != nil {
+		if currentRef != "" {
 			contentLines = append(contentLines, line)
 		}
 	}
+	return appendMoleculeStep(steps, currentRef, contentLines), nil
+}
 
-	// Finalize last step
-	finalizeStep()
+func appendMoleculeStep(steps []MoleculeStep, ref string, contentLines []string) []MoleculeStep {
+	if ref == "" {
+		return steps
+	}
+	return append(steps, parseMoleculeStep(ref, contentLines))
+}
 
-	return steps, nil
+func parseMoleculeStep(ref string, contentLines []string) MoleculeStep {
+	step := MoleculeStep{Ref: ref}
+	var instructionLines []string
+	for _, line := range contentLines {
+		if !parseMoleculeStepDirective(&step, strings.TrimSpace(line)) {
+			instructionLines = append(instructionLines, line)
+		}
+	}
+	setMoleculeStepInstructions(&step, instructionLines)
+	return step
+}
+
+func parseMoleculeStepDirective(step *MoleculeStep, line string) bool {
+	if matches := needsLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Needs = append(step.Needs, splitCommaSeparatedValues(matches[1])...)
+		return true
+	}
+	if matches := tierLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Tier = strings.ToLower(matches[1])
+		return true
+	}
+	if matches := waitsForLineRegex.FindStringSubmatch(line); matches != nil {
+		step.WaitsFor = append(step.WaitsFor, splitCommaSeparatedValues(matches[1])...)
+		return true
+	}
+	if matches := typeLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Type = strings.ToLower(matches[1])
+		return true
+	}
+	if matches := backoffLineRegex.FindStringSubmatch(line); matches != nil {
+		step.Backoff = parseBackoffConfig(matches[1])
+		return true
+	}
+	return false
+}
+
+func splitCommaSeparatedValues(value string) []string {
+	var values []string
+	for _, value := range strings.Split(value, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func setMoleculeStepInstructions(step *MoleculeStep, instructionLines []string) {
+	step.Instructions = strings.TrimSpace(strings.Join(instructionLines, "\n"))
+	if step.Instructions != "" {
+		step.Title = strings.TrimSpace(strings.SplitN(step.Instructions, "\n", 2)[0])
+	}
+	if step.Title == "" {
+		step.Title = step.Ref
+	}
 }
 
 // parseBackoffConfig parses a backoff configuration string.
@@ -297,162 +273,184 @@ func (b *Beads) InstantiateMolecule(ctx context.Context, mol *Issue, parent *Iss
 
 // instantiateFromChildren creates steps from template child issues (new format).
 func (b *Beads) instantiateFromChildren(ctx context.Context, mol *Issue, parent *Issue, templates []*Issue, opts InstantiateOptions) ([]*Issue, error) {
+	createdIssues, templateToNew, err := b.createTemplateChildren(ctx, mol, parent, templates, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.wireTemplateDependencies(templates, templateToNew); err != nil {
+		return createdIssues, err
+	}
+	return createdIssues, nil
+}
+
+func (b *Beads) createTemplateChildren(ctx context.Context, mol *Issue, parent *Issue, templates []*Issue, opts InstantiateOptions) ([]*Issue, map[string]string, error) {
 	var createdIssues []*Issue
-	templateToNew := make(map[string]string) // template ID -> new issue ID
-
-	// First pass: create all child issues
+	templateToNew := make(map[string]string, len(templates))
 	for _, tmpl := range templates {
-		// Expand template variables in description
-		description := tmpl.Description
-		if opts.Context != nil {
-			description = ExpandTemplateVars(description, opts.Context)
-		}
-
-		// Add provenance metadata
-		if description != "" {
-			description += "\n\n"
-		}
-		description += fmt.Sprintf("instantiated_from: %s\ntemplate_step: %s", mol.ID, tmpl.ID)
-
-		// Create the child issue
-		stepType := tmpl.Type
-		if stepType == "" {
-			stepType = "task"
-		}
-		childOpts := CreateOptions{
-			Title:       tmpl.Title,
-			Labels:      []string{"gt:" + stepType},
-			Priority:    parent.Priority,
-			Description: description,
-			Parent:      parent.ID,
-		}
-
-		child, err := b.Create(childOpts)
+		child, err := b.Create(moleculeTemplateCreateOptions(mol, parent, tmpl, opts))
 		if err != nil {
-			// Attempt to clean up created issues on failure (best-effort cleanup)
-			for _, created := range createdIssues {
-				_ = b.Close(created.ID)
-			}
-			return nil, fmt.Errorf("creating step from template %q: %w", tmpl.ID, err)
+			b.closeMoleculeIssues(createdIssues)
+			return nil, nil, fmt.Errorf("creating step from template %q: %w", tmpl.ID, err)
 		}
 		telemetry.RecordBeadCreate(ctx, child.ID, parent.ID, mol.ID)
-
 		createdIssues = append(createdIssues, child)
 		templateToNew[tmpl.ID] = child.ID
 	}
+	return createdIssues, templateToNew, nil
+}
 
-	// Second pass: wire dependencies based on template dependencies
+func moleculeTemplateCreateOptions(mol, parent, tmpl *Issue, opts InstantiateOptions) CreateOptions {
+	description := moleculeTemplateDescription(mol.ID, tmpl, opts.Context)
+	stepType := tmpl.Type
+	if stepType == "" {
+		stepType = "task"
+	}
+	return CreateOptions{
+		Title:       tmpl.Title,
+		Labels:      []string{"gt:" + stepType},
+		Priority:    parent.Priority,
+		Description: description,
+		Parent:      parent.ID,
+	}
+}
+
+func moleculeTemplateDescription(moleculeID string, tmpl *Issue, context map[string]string) string {
+	description := tmpl.Description
+	if context != nil {
+		description = ExpandTemplateVars(description, context)
+	}
+	if description != "" {
+		description += "\n\n"
+	}
+	return description + fmt.Sprintf("instantiated_from: %s\ntemplate_step: %s", moleculeID, tmpl.ID)
+}
+
+func (b *Beads) wireTemplateDependencies(templates []*Issue, templateToNew map[string]string) error {
 	for _, tmpl := range templates {
-		if len(tmpl.DependsOn) == 0 {
-			continue
-		}
-
-		newChildID := templateToNew[tmpl.ID]
-		for _, depTemplateID := range tmpl.DependsOn {
-			newDepID, ok := templateToNew[depTemplateID]
-			if !ok {
-				// Dependency points outside the template - skip
-				continue
-			}
-			if err := b.AddDependency(newChildID, newDepID); err != nil {
-				// Log but don't fail - the issues are created
-				return createdIssues, fmt.Errorf("adding dependency %s -> %s: %w", newChildID, newDepID, err)
+		for _, dependency := range tmpl.DependsOn {
+			if err := b.addTemplateDependency(templateToNew, tmpl.ID, dependency); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
 
-	return createdIssues, nil
+func (b *Beads) addTemplateDependency(templateToNew map[string]string, templateID, dependencyID string) error {
+	newDependencyID, ok := templateToNew[dependencyID]
+	if !ok {
+		return nil
+	}
+	newChildID := templateToNew[templateID]
+	if err := b.AddDependency(newChildID, newDependencyID); err != nil {
+		return fmt.Errorf("adding dependency %s -> %s: %w", newChildID, newDependencyID, err)
+	}
+	return nil
+}
+
+func (b *Beads) closeMoleculeIssues(issues []*Issue) {
+	for _, issue := range issues {
+		_ = b.Close(issue.ID)
+	}
 }
 
 // instantiateFromMarkdown creates steps from embedded markdown (old format).
 func (b *Beads) instantiateFromMarkdown(ctx context.Context, mol *Issue, parent *Issue, opts InstantiateOptions) ([]*Issue, error) {
-	// Parse steps from molecule
-	steps, err := ParseMoleculeSteps(mol.Description)
+	steps, err := markdownMoleculeSteps(mol.Description)
+	if err != nil {
+		return nil, err
+	}
+	createdIssues, stepIssueIDs, err := b.createMarkdownChildren(ctx, mol, parent, steps, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.wireMarkdownDependencies(steps, stepIssueIDs); err != nil {
+		return createdIssues, err
+	}
+	return createdIssues, nil
+}
+
+func markdownMoleculeSteps(description string) ([]MoleculeStep, error) {
+	steps, err := ParseMoleculeSteps(description)
 	if err != nil {
 		return nil, fmt.Errorf("parsing molecule steps: %w", err)
 	}
-
 	if len(steps) == 0 {
 		return nil, fmt.Errorf("molecule has no steps defined")
 	}
-
-	// Build map of step ref -> step for dependency validation
-	stepMap := make(map[string]*MoleculeStep)
-	for i := range steps {
-		stepMap[steps[i].Ref] = &steps[i]
+	if err := validateMarkdownDependencies(steps); err != nil {
+		return nil, err
 	}
+	return steps, nil
+}
 
-	// Validate all Needs references exist
+func validateMarkdownDependencies(steps []MoleculeStep) error {
+	stepRefs := make(map[string]bool, len(steps))
+	for _, step := range steps {
+		stepRefs[step.Ref] = true
+	}
 	for _, step := range steps {
 		for _, need := range step.Needs {
-			if _, ok := stepMap[need]; !ok {
-				return nil, fmt.Errorf("step %q depends on unknown step %q", step.Ref, need)
+			if !stepRefs[need] {
+				return fmt.Errorf("step %q depends on unknown step %q", step.Ref, need)
 			}
 		}
 	}
+	return nil
+}
 
-	// Create child issues for each step
+func (b *Beads) createMarkdownChildren(ctx context.Context, mol *Issue, parent *Issue, steps []MoleculeStep, opts InstantiateOptions) ([]*Issue, map[string]string, error) {
 	var createdIssues []*Issue
-	stepIssueIDs := make(map[string]string) // step ref -> issue ID
-
+	stepIssueIDs := make(map[string]string, len(steps))
 	for _, step := range steps {
-		// Expand template variables in instructions
-		instructions := step.Instructions
-		if opts.Context != nil {
-			instructions = ExpandTemplateVars(instructions, opts.Context)
-		}
-
-		// Build description with provenance metadata
-		description := instructions
-		if description != "" {
-			description += "\n\n"
-		}
-		description += fmt.Sprintf("instantiated_from: %s\nstep: %s", mol.ID, step.Ref)
-		if step.Tier != "" {
-			description += fmt.Sprintf("\ntier: %s", step.Tier)
-		}
-
-		// Create the child issue
-		childOpts := CreateOptions{
-			Title:       step.Title,
-			Labels:      []string{"gt:task"},
-			Priority:    parent.Priority,
-			Description: description,
-			Parent:      parent.ID,
-		}
-
-		child, err := b.Create(childOpts)
+		child, err := b.Create(markdownStepCreateOptions(mol, parent, step, opts))
 		if err != nil {
-			// Attempt to clean up created issues on failure (best-effort cleanup)
-			for _, created := range createdIssues {
-				_ = b.Close(created.ID)
-			}
-			return nil, fmt.Errorf("creating step %q: %w", step.Ref, err)
+			b.closeMoleculeIssues(createdIssues)
+			return nil, nil, fmt.Errorf("creating step %q: %w", step.Ref, err)
 		}
 		telemetry.RecordBeadCreate(ctx, child.ID, parent.ID, mol.ID)
-
 		createdIssues = append(createdIssues, child)
 		stepIssueIDs[step.Ref] = child.ID
 	}
+	return createdIssues, stepIssueIDs, nil
+}
 
-	// Wire inter-step dependencies based on Needs: declarations
+func markdownStepCreateOptions(mol, parent *Issue, step MoleculeStep, opts InstantiateOptions) CreateOptions {
+	return CreateOptions{
+		Title:       step.Title,
+		Labels:      []string{"gt:task"},
+		Priority:    parent.Priority,
+		Description: markdownStepDescription(mol.ID, step, opts.Context),
+		Parent:      parent.ID,
+	}
+}
+
+func markdownStepDescription(moleculeID string, step MoleculeStep, context map[string]string) string {
+	description := step.Instructions
+	if context != nil {
+		description = ExpandTemplateVars(description, context)
+	}
+	if description != "" {
+		description += "\n\n"
+	}
+	description += fmt.Sprintf("instantiated_from: %s\nstep: %s", moleculeID, step.Ref)
+	if step.Tier != "" {
+		description += fmt.Sprintf("\ntier: %s", step.Tier)
+	}
+	return description
+}
+
+func (b *Beads) wireMarkdownDependencies(steps []MoleculeStep, stepIssueIDs map[string]string) error {
 	for _, step := range steps {
-		if len(step.Needs) == 0 {
-			continue
-		}
-
-		childID := stepIssueIDs[step.Ref]
 		for _, need := range step.Needs {
+			childID := stepIssueIDs[step.Ref]
 			dependsOnID := stepIssueIDs[need]
 			if err := b.AddDependency(childID, dependsOnID); err != nil {
-				// Log but don't fail - the issues are created
-				// This is non-atomic but bd CLI doesn't support transactions
-				return createdIssues, fmt.Errorf("adding dependency %s -> %s: %w", childID, dependsOnID, err)
+				return fmt.Errorf("adding dependency %s -> %s: %w", childID, dependsOnID, err)
 			}
 		}
 	}
-
-	return createdIssues, nil
+	return nil
 }
 
 // ValidateMolecule checks if an issue is a valid molecule definition.
@@ -469,35 +467,53 @@ func ValidateMolecule(mol *Issue) error {
 		return fmt.Errorf("molecule is nil")
 	}
 
+	steps, err := moleculeStepsForValidation(mol)
+	if err != nil {
+		return err
+	}
+	stepRefs, err := validateMoleculeStepRefs(steps)
+	if err != nil {
+		return err
+	}
+	if err := validateMoleculeDependencies(steps, stepRefs); err != nil {
+		return err
+	}
+	return detectCycles(steps)
+}
+
+func moleculeStepsForValidation(mol *Issue) ([]MoleculeStep, error) {
 	if mol.Type != "molecule" {
-		return fmt.Errorf("issue type is %q, expected molecule", mol.Type)
+		return nil, fmt.Errorf("issue type is %q, expected molecule", mol.Type)
 	}
 
 	steps, err := ParseMoleculeSteps(mol.Description)
 	if err != nil {
-		return fmt.Errorf("parsing steps: %w", err)
+		return nil, fmt.Errorf("parsing steps: %w", err)
 	}
-
 	if len(steps) == 0 {
-		return fmt.Errorf("molecule has no steps defined")
+		return nil, fmt.Errorf("molecule has no steps defined")
 	}
+	return steps, nil
+}
 
-	// Build step map for reference validation
-	stepMap := make(map[string]bool)
+func validateMoleculeStepRefs(steps []MoleculeStep) (map[string]bool, error) {
+	stepRefs := make(map[string]bool, len(steps))
 	for _, step := range steps {
 		if step.Ref == "" {
-			return fmt.Errorf("step has empty ref")
+			return nil, fmt.Errorf("step has empty ref")
 		}
-		if stepMap[step.Ref] {
-			return fmt.Errorf("duplicate step ref: %s", step.Ref)
+		if stepRefs[step.Ref] {
+			return nil, fmt.Errorf("duplicate step ref: %s", step.Ref)
 		}
-		stepMap[step.Ref] = true
+		stepRefs[step.Ref] = true
 	}
+	return stepRefs, nil
+}
 
-	// Validate Needs references
+func validateMoleculeDependencies(steps []MoleculeStep, stepRefs map[string]bool) error {
 	for _, step := range steps {
 		for _, need := range step.Needs {
-			if !stepMap[need] {
+			if !stepRefs[need] {
 				return fmt.Errorf("step %q depends on unknown step %q", step.Ref, need)
 			}
 			if need == step.Ref {
@@ -505,23 +521,13 @@ func ValidateMolecule(mol *Issue) error {
 			}
 		}
 	}
-
-	// Detect cycles in dependency graph
-	if err := detectCycles(steps); err != nil {
-		return err
-	}
-
 	return nil
 }
 
 // detectCycles checks for circular dependencies in the step graph using DFS.
 // Returns an error describing the cycle if one is found.
 func detectCycles(steps []MoleculeStep) error {
-	// Build adjacency list: step -> steps it depends on
-	deps := make(map[string][]string)
-	for _, step := range steps {
-		deps[step.Ref] = step.Needs
-	}
+	deps := moleculeStepDependencies(steps)
 
 	// Track visit state: 0 = unvisited, 1 = visiting (in stack), 2 = visited
 	state := make(map[string]int)
@@ -535,17 +541,7 @@ func detectCycles(steps []MoleculeStep) error {
 			return nil // Already fully processed
 		}
 		if state[node] == 1 {
-			// Found a back edge - there's a cycle
-			// Build cycle path for error message
-			cycleStart := -1
-			for i, n := range path {
-				if n == node {
-					cycleStart = i
-					break
-				}
-			}
-			cycle := append(path[cycleStart:], node)
-			return fmt.Errorf("cycle detected in step dependencies: %s", formatCycle(cycle))
+			return cycleDependencyError(path, node)
 		}
 
 		state[node] = 1 // Mark as visiting
@@ -571,6 +567,24 @@ func detectCycles(steps []MoleculeStep) error {
 	}
 
 	return nil
+}
+
+func cycleDependencyError(path []string, node string) error {
+	for index, pathNode := range path {
+		if pathNode == node {
+			cycle := append(path[index:], node)
+			return fmt.Errorf("cycle detected in step dependencies: %s", formatCycle(cycle))
+		}
+	}
+	return fmt.Errorf("cycle detected in step dependencies: %s", node)
+}
+
+func moleculeStepDependencies(steps []MoleculeStep) map[string][]string {
+	deps := make(map[string][]string, len(steps))
+	for _, step := range steps {
+		deps[step.Ref] = step.Needs
+	}
+	return deps
 }
 
 // formatCycle formats a cycle path as "a -> b -> c -> a".

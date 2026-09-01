@@ -10,11 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	hooksScanJSON    bool
-	hooksScanVerbose bool
-)
-
 var hooksScanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Scan workspace for existing Claude Code hooks",
@@ -39,8 +34,8 @@ Examples:
 
 func init() {
 	hooksCmd.AddCommand(hooksScanCmd)
-	hooksScanCmd.Flags().BoolVar(&hooksScanJSON, "json", false, "Output as JSON")
-	hooksScanCmd.Flags().BoolVarP(&hooksScanVerbose, "verbose", "v", false, "Show hook commands")
+	hooksScanCmd.Flags().Bool("json", false, "Output as JSON")
+	hooksScanCmd.Flags().BoolP("verbose", "v", false, "Show hook commands")
 }
 
 // HookInfo contains information about a discovered hook.
@@ -60,7 +55,9 @@ type HooksOutput struct {
 	Count    int        `json:"count"`
 }
 
-func runHooksScan(cmd *cobra.Command, args []string) error {
+func runHooksScan(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	verbose := commandBoolFlag(cmd, "verbose")
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -72,11 +69,11 @@ func runHooksScan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("discovering hooks: %w", err)
 	}
 
-	if hooksScanJSON {
+	if jsonOutput {
 		return outputHooksJSON(townRoot, hookInfos)
 	}
 
-	return outputHooksHuman(townRoot, hookInfos)
+	return outputHooksHuman(townRoot, hookInfos, verbose)
 }
 
 // discoverHooks finds all Claude Code hooks in the workspace using hooks.DiscoverTargets.
@@ -158,7 +155,7 @@ func outputHooksJSON(townRoot string, hookInfos []HookInfo) error {
 	return nil
 }
 
-func outputHooksHuman(townRoot string, hookInfos []HookInfo) error {
+func outputHooksHuman(townRoot string, hookInfos []HookInfo, verbose bool) error {
 	if len(hookInfos) == 0 {
 		fmt.Println(style.Dim.Render("No Claude Code hooks found in workspace"))
 		return nil
@@ -167,60 +164,71 @@ func outputHooksHuman(townRoot string, hookInfos []HookInfo) error {
 	fmt.Printf("\n%s Claude Code Hooks\n", style.Bold.Render("🪝"))
 	fmt.Printf("Town root: %s\n\n", style.Dim.Render(townRoot))
 
-	// Group by hook type
-	byType := make(map[string][]HookInfo)
-
-	for _, h := range hookInfos {
-		byType[h.Type] = append(byType[h.Type], h)
-	}
-
-	// Use canonical event type order, plus any extras
-	typeOrder := make([]string, len(hooks.EventTypes))
-	copy(typeOrder, hooks.EventTypes)
-	for t := range byType {
-		found := false
-		for _, o := range typeOrder {
-			if t == o {
-				found = true
-				break
-			}
+	byType := groupHooksByType(hookInfos)
+	for _, hookType := range hookTypeOrder(byType) {
+		if typeHooks := byType[hookType]; len(typeHooks) > 0 {
+			printHookType(hookType, typeHooks, verbose)
 		}
-		if !found {
-			typeOrder = append(typeOrder, t)
-		}
-	}
-
-	for _, hookType := range typeOrder {
-		typeHooks := byType[hookType]
-		if len(typeHooks) == 0 {
-			continue
-		}
-
-		fmt.Printf("%s %s\n", style.Bold.Render("▸"), hookType)
-
-		for _, h := range typeHooks {
-			statusIcon := "●"
-			if h.Status != "active" {
-				statusIcon = "○"
-			}
-
-			matcherStr := ""
-			if h.Matcher != "" {
-				matcherStr = fmt.Sprintf(" [%s]", h.Matcher)
-			}
-
-			fmt.Printf("  %s %-25s%s\n", statusIcon, h.Agent, style.Dim.Render(matcherStr))
-
-			if hooksScanVerbose {
-				for _, cmd := range h.Commands {
-					fmt.Printf("    %s %s\n", style.Dim.Render("→"), cmd)
-				}
-			}
-		}
-		fmt.Println()
 	}
 
 	fmt.Printf("%s %d hooks found\n", style.Dim.Render("Total:"), len(hookInfos))
 
 	return nil
+}
+
+func groupHooksByType(hookInfos []HookInfo) map[string][]HookInfo {
+	byType := make(map[string][]HookInfo)
+	for _, hook := range hookInfos {
+		byType[hook.Type] = append(byType[hook.Type], hook)
+	}
+	return byType
+}
+
+func hookTypeOrder(byType map[string][]HookInfo) []string {
+	// Use canonical event type order, plus any extras.
+	typeOrder := make([]string, len(hooks.EventTypes))
+	copy(typeOrder, hooks.EventTypes)
+	for hookType := range byType {
+		if containsHookType(typeOrder, hookType) {
+			continue
+		}
+		typeOrder = append(typeOrder, hookType)
+	}
+	return typeOrder
+}
+
+func containsHookType(typeOrder []string, hookType string) bool {
+	for _, existing := range typeOrder {
+		if hookType == existing {
+			return true
+		}
+	}
+	return false
+}
+
+func printHookType(hookType string, typeHooks []HookInfo, verbose bool) {
+	fmt.Printf("%s %s\n", style.Bold.Render("▸"), hookType)
+	for _, hook := range typeHooks {
+		printHookInfo(hook, verbose)
+	}
+	fmt.Println()
+}
+
+func printHookInfo(hook HookInfo, verbose bool) {
+	statusIcon := "●"
+	if hook.Status != "active" {
+		statusIcon = "○"
+	}
+
+	matcherStr := ""
+	if hook.Matcher != "" {
+		matcherStr = fmt.Sprintf(" [%s]", hook.Matcher)
+	}
+
+	fmt.Printf("  %s %-25s%s\n", statusIcon, hook.Agent, style.Dim.Render(matcherStr))
+	if verbose {
+		for _, command := range hook.Commands {
+			fmt.Printf("    %s %s\n", style.Dim.Render("→"), command)
+		}
+	}
 }

@@ -58,56 +58,20 @@ func Prepare(parent, town string) (*Plan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving parent path: %w", err)
 	}
-	info, err := os.Stat(parentAbs)
-	if err != nil {
-		return nil, fmt.Errorf("parent folder: %w", err)
+	if err := validateParentPath(parentAbs); err != nil {
+		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("parent %s is not a directory", parentAbs)
-	}
-
 	townAbs, err := resolveTownPath(parentAbs, town)
 	if err != nil {
 		return nil, err
 	}
-	inside, err := pathInside(townAbs, parentAbs)
-	if err != nil {
-		return nil, fmt.Errorf("comparing Town path %s to parent %s: %w", townAbs, parentAbs, err)
+	if err := validateTownLayout(parentAbs, townAbs); err != nil {
+		return nil, err
 	}
-	if inside {
-		return nil, fmt.Errorf("Town path %s is inside parent folder %s; HQ files must not mix with project repositories", townAbs, parentAbs)
+	plan := &Plan{ParentAbs: parentAbs, TownAbs: townAbs}
+	if err := inspectTownPath(plan); err != nil {
+		return nil, err
 	}
-
-	if townRoot, err := workspace.Find(parentAbs); err == nil && townRoot != "" {
-		if townRoot == parentAbs {
-			return nil, fmt.Errorf("parent %s is a Gas Town HQ; gt from scans a folder of project repositories, not a Town", parentAbs)
-		}
-		return nil, fmt.Errorf("parent %s is inside Gas Town HQ %s; gt from scans a folder of project repositories, not a Town", parentAbs, townRoot)
-	}
-
-	plan := &Plan{
-		ParentAbs: parentAbs,
-		TownAbs:   townAbs,
-	}
-
-	townInfo, townStatErr := os.Stat(townAbs)
-	switch {
-	case townStatErr == nil:
-		if !townInfo.IsDir() {
-			return nil, fmt.Errorf("Town path %s exists and is not a directory", townAbs)
-		}
-		isTown, err := workspace.IsWorkspace(townAbs)
-		if err != nil {
-			return nil, fmt.Errorf("checking Town path: %w", err)
-		}
-		if !isTown {
-			return nil, fmt.Errorf("path %s exists but is not a Gas Town HQ", townAbs)
-		}
-		plan.TownExists = true
-	case !os.IsNotExist(townStatErr):
-		return nil, fmt.Errorf("checking Town path: %w", townStatErr)
-	}
-
 	if err := discover(plan); err != nil {
 		return nil, err
 	}
@@ -115,6 +79,57 @@ func Prepare(parent, town string) (*Plan, error) {
 		return nil, err
 	}
 	return plan, nil
+}
+
+func validateParentPath(parentAbs string) error {
+	info, err := os.Stat(parentAbs)
+	if err != nil {
+		return fmt.Errorf("parent folder: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("parent %s is not a directory", parentAbs)
+	}
+	return nil
+}
+
+func validateTownLayout(parentAbs, townAbs string) error {
+	inside, err := pathInside(townAbs, parentAbs)
+	if err != nil {
+		return fmt.Errorf("comparing Town path %s to parent %s: %w", townAbs, parentAbs, err)
+	}
+	if inside {
+		return fmt.Errorf("Town path %s is inside parent folder %s; HQ files must not mix with project repositories", townAbs, parentAbs)
+	}
+	townRoot, err := workspace.Find(parentAbs)
+	if err != nil || townRoot == "" {
+		return nil
+	}
+	if townRoot == parentAbs {
+		return fmt.Errorf("parent %s is a Gas Town HQ; gt from scans a folder of project repositories, not a Town", parentAbs)
+	}
+	return fmt.Errorf("parent %s is inside Gas Town HQ %s; gt from scans a folder of project repositories, not a Town", parentAbs, townRoot)
+}
+
+func inspectTownPath(plan *Plan) error {
+	info, err := os.Stat(plan.TownAbs)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking Town path: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("Town path %s exists and is not a directory", plan.TownAbs)
+	}
+	isTown, err := workspace.IsWorkspace(plan.TownAbs)
+	if err != nil {
+		return fmt.Errorf("checking Town path: %w", err)
+	}
+	if !isTown {
+		return fmt.Errorf("path %s exists but is not a Gas Town HQ", plan.TownAbs)
+	}
+	plan.TownExists = true
+	return nil
 }
 
 func resolveTownPath(parentAbs, town string) (string, error) {
@@ -169,7 +184,19 @@ func discover(plan *Plan) error {
 	if err != nil {
 		return fmt.Errorf("reading parent folder: %w", err)
 	}
+	children := discoverChildren(plan, entries)
+	sources := repositorySources(plan.ParentAbs, children)
+	if len(sources) == 0 {
+		return fmt.Errorf("no Git repositories found in %s", plan.ParentAbs)
+	}
+	existing, err := loadExistingRigs(plan)
+	if err != nil {
+		return err
+	}
+	return appendPlannedRigs(plan, sources, existing)
+}
 
+func discoverChildren(plan *Plan, entries []os.DirEntry) []string {
 	var children []string
 	for _, entry := range entries {
 		name := entry.Name()
@@ -191,20 +218,20 @@ func discover(plan *Plan) error {
 			children = append(children, child)
 		}
 	}
+	return children
+}
 
-	sources := children
-	if len(sources) == 0 && isGitDirRepo(plan.ParentAbs) {
-		sources = []string{plan.ParentAbs}
+func repositorySources(parent string, children []string) []string {
+	if len(children) > 0 {
+		return children
 	}
-	if len(sources) == 0 {
-		return fmt.Errorf("no Git repositories found in %s", plan.ParentAbs)
+	if isGitDirRepo(parent) {
+		return []string{parent}
 	}
+	return nil
+}
 
-	existing, err := loadExistingRigs(plan)
-	if err != nil {
-		return err
-	}
-
+func appendPlannedRigs(plan *Plan, sources []string, existing map[string]config.RigEntry) error {
 	for _, source := range sources {
 		planned, err := planRig(source)
 		if err != nil {
@@ -220,7 +247,7 @@ func planRig(source string) (Rig, error) {
 	name := rig.SanitizeName(filepath.Base(source))
 	g := git.NewGit(source)
 	gitURL := fileURL(source)
-	origin, err := g.ConfiguredRemoteURL("origin")
+	origin, err := git.ConfiguredRemoteURL(g, "origin")
 	switch {
 	case err == nil && strings.TrimSpace(origin) != "":
 		gitURL = strings.TrimSpace(origin)
@@ -264,9 +291,26 @@ func loadExistingRigs(plan *Plan) (map[string]config.RigEntry, error) {
 }
 
 func preflight(plan *Plan) error {
+	if err := validatePlannedIdentities(plan.Rigs); err != nil {
+		return err
+	}
+	existing, err := loadExistingRigs(plan)
+	if err != nil {
+		return err
+	}
+	if err := validateExistingRigs(plan.Rigs, existing); err != nil {
+		return err
+	}
+	if plan.TownExists {
+		return validateTownPrefixes(plan)
+	}
+	return nil
+}
+
+func validatePlannedIdentities(rigs []Rig) error {
 	byName := make(map[string][]string)
 	byPrefix := make(map[string][]string)
-	for _, r := range plan.Rigs {
+	for _, r := range rigs {
 		byName[r.Name] = append(byName[r.Name], r.SourcePath)
 		byPrefix[r.Prefix] = append(byPrefix[r.Prefix], r.Name)
 		if rig.IsReservedName(r.Name) {
@@ -283,35 +327,36 @@ func preflight(plan *Plan) error {
 			return fmt.Errorf("Rigs %s would share Beads prefix %q", strings.Join(unique(names), " and "), prefix)
 		}
 	}
+	return nil
+}
 
-	existing, err := loadExistingRigs(plan)
-	if err != nil {
-		return err
-	}
-	for _, r := range plan.Rigs {
+func validateExistingRigs(rigs []Rig, existing map[string]config.RigEntry) error {
+	for _, r := range rigs {
 		entry, ok := existing[r.Name]
-		if !ok {
-			continue
-		}
-		if r.Action == ActionSkip {
-			continue
-		}
-		return fmt.Errorf("Rig %q already exists for a different source (%s)", r.Name, entry.LocalRepo)
-	}
-	if plan.TownExists {
-		for _, r := range plan.Rigs {
-			if r.Action == ActionSkip {
-				continue
-			}
-			if err := beads.CheckPrefixAvailable(plan.TownAbs, r.Prefix+"-", r.Name); err != nil {
-				if errors.Is(err, beads.ErrPrefixInUse) {
-					return fmt.Errorf("Beads prefix %q for Rig %q collides with an existing Town prefix: %w", r.Prefix, r.Name, err)
-				}
-				return fmt.Errorf("checking Beads prefix %q: %w", r.Prefix, err)
-			}
+		if ok && r.Action != ActionSkip {
+			return fmt.Errorf("Rig %q already exists for a different source (%s)", r.Name, entry.LocalRepo)
 		}
 	}
 	return nil
+}
+
+func validateTownPrefixes(plan *Plan) error {
+	for _, r := range plan.Rigs {
+		if r.Action == ActionSkip {
+			continue
+		}
+		if err := beads.CheckPrefixAvailable(plan.TownAbs, r.Prefix+"-", r.Name); err != nil {
+			return prefixAvailabilityError(r, err)
+		}
+	}
+	return nil
+}
+
+func prefixAvailabilityError(r Rig, err error) error {
+	if errors.Is(err, beads.ErrPrefixInUse) {
+		return fmt.Errorf("Beads prefix %q for Rig %q collides with an existing Town prefix: %w", r.Prefix, r.Name, err)
+	}
+	return fmt.Errorf("checking Beads prefix %q: %w", r.Prefix, err)
 }
 
 func isGitDirRepo(path string) bool {

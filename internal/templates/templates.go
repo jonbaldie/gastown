@@ -10,34 +10,26 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"text/template"
 
 	"github.com/jonbaldie/gastown/internal/instructions"
 	"github.com/jonbaldie/gastown/internal/templates/commands"
 )
 
-var (
-	cmdName     string
-	cmdNameOnce sync.Once
-)
-
 // CmdName returns the Gas Town CLI command name.
 // Defaults to "gt", but can be overridden with GT_COMMAND env var.
 // This allows coexistence with other tools that use "gt" (e.g., Graphite).
 func CmdName() string {
-	cmdNameOnce.Do(func() {
-		cmdName = os.Getenv("GT_COMMAND")
-		if cmdName == "" {
-			cmdName = "gt"
-		}
-	})
-	return cmdName
+	if cmdName := os.Getenv("GT_COMMAND"); cmdName != "" {
+		return cmdName
+	}
+	return "gt"
 }
 
-// templateFuncs provides custom functions for templates.
-var templateFuncs = template.FuncMap{
-	"cmd": CmdName, // {{ cmd }} returns the CLI command name
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"cmd": CmdName, // {{ cmd }} returns the CLI command name
+	}
 }
 
 //go:embed roles/*.md.tmpl messages/*.md.tmpl
@@ -51,8 +43,16 @@ var polecatAgentsMD string
 
 // Templates manages role and message templates.
 type Templates struct {
-	roleTemplates    *template.Template
-	messageTemplates *template.Template
+	roleTemplateSet
+	messageTemplateSet
+}
+
+type roleTemplateSet struct {
+	templates *template.Template
+}
+
+type messageTemplateSet struct {
+	templates *template.Template
 }
 
 // RoleData contains information for rendering role contexts.
@@ -125,31 +125,28 @@ type SupervisorData struct {
 
 // New creates a new Templates instance.
 func New() (*Templates, error) {
-	t := &Templates{}
-
 	// Parse role templates with custom functions
-	roleTempl, err := template.New("").Funcs(templateFuncs).ParseFS(templateFS, "roles/*.md.tmpl")
+	roleTempl, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "roles/*.md.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parsing role templates: %w", err)
 	}
-	t.roleTemplates = roleTempl
-
 	// Parse message templates with custom functions
-	msgTempl, err := template.New("").Funcs(templateFuncs).ParseFS(templateFS, "messages/*.md.tmpl")
+	msgTempl, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "messages/*.md.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parsing message templates: %w", err)
 	}
-	t.messageTemplates = msgTempl
-
-	return t, nil
+	return &Templates{
+		roleTemplateSet:    roleTemplateSet{templates: roleTempl},
+		messageTemplateSet: messageTemplateSet{templates: msgTempl},
+	}, nil
 }
 
 // RenderRole renders a role context template.
-func (t *Templates) RenderRole(role string, data RoleData) (string, error) {
+func (t *roleTemplateSet) RenderRole(role string, data RoleData) (string, error) {
 	templateName := role + ".md.tmpl"
 
 	var buf bytes.Buffer
-	if err := t.roleTemplates.ExecuteTemplate(&buf, templateName, data); err != nil {
+	if err := t.templates.ExecuteTemplate(&buf, templateName, data); err != nil {
 		return "", fmt.Errorf("rendering role template %s: %w", templateName, err)
 	}
 
@@ -157,11 +154,11 @@ func (t *Templates) RenderRole(role string, data RoleData) (string, error) {
 }
 
 // RenderMessage renders a message template.
-func (t *Templates) RenderMessage(name string, data interface{}) (string, error) {
+func (t *messageTemplateSet) RenderMessage(name string, data interface{}) (string, error) {
 	templateName := name + ".md.tmpl"
 
 	var buf bytes.Buffer
-	if err := t.messageTemplates.ExecuteTemplate(&buf, templateName, data); err != nil {
+	if err := t.templates.ExecuteTemplate(&buf, templateName, data); err != nil {
 		return "", fmt.Errorf("rendering message template %s: %w", templateName, err)
 	}
 
@@ -169,12 +166,12 @@ func (t *Templates) RenderMessage(name string, data interface{}) (string, error)
 }
 
 // RoleNames returns the list of available role templates.
-func (t *Templates) RoleNames() []string {
+func (t *roleTemplateSet) RoleNames() []string {
 	return []string{"mayor", "witness", "refinery", "polecat", "crew", "deacon", "boot"}
 }
 
 // MessageNames returns the list of available message templates.
-func (t *Templates) MessageNames() []string {
+func (t *messageTemplateSet) MessageNames() []string {
 	return []string{"spawn", "nudge", "escalation", "handoff"}
 }
 
@@ -305,14 +302,9 @@ func provisionLaunchd(data SupervisorData) (string, error) {
 
 // provisionSystemd creates and enables a systemd user unit on Linux.
 func provisionSystemd(data SupervisorData) (string, error) {
-	// Get XDG_DATA_HOME or use ~/.local/share
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("finding home directory: %w", err)
-		}
-		dataHome = filepath.Join(homeDir, ".local", "share")
+	dataHome, err := systemdDataHome()
+	if err != nil {
+		return "", err
 	}
 
 	systemdDir := filepath.Join(dataHome, "systemd", "user")
@@ -344,20 +336,37 @@ func provisionSystemd(data SupervisorData) (string, error) {
 		return "", fmt.Errorf("writing service file: %w", err)
 	}
 
-	// Reload systemd daemon
-	if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("reloading systemd: %s", string(output))
-	}
-
-	// Enable the service
-	if output, err := exec.Command("systemctl", "--user", "enable", "gastown-daemon.service").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("enabling systemd service: %s", string(output))
-	}
-
-	// Start the service
-	if output, err := exec.Command("systemctl", "--user", "start", "gastown-daemon.service").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("starting systemd service: %s", string(output))
+	for _, operation := range []struct {
+		args   []string
+		action string
+	}{
+		{[]string{"daemon-reload"}, "reloading systemd"},
+		{[]string{"enable", "gastown-daemon.service"}, "enabling systemd service"},
+		{[]string{"start", "gastown-daemon.service"}, "starting systemd service"},
+	} {
+		if err := runSystemctl(operation.args...); err != nil {
+			return "", fmt.Errorf("%s: %w", operation.action, err)
+		}
 	}
 
 	return "Created and enabled systemd user service: gastown-daemon.service", nil
+}
+
+func runSystemctl(args ...string) error {
+	output, err := exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", string(output))
+	}
+	return nil
+}
+
+func systemdDataHome() (string, error) {
+	if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
+		return dataHome, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("finding home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".local", "share"), nil
 }

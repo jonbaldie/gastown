@@ -71,7 +71,13 @@ type DogDispatchInfo struct {
 	Pane    string // Tmux pane (empty if session start was delayed)
 	Spawned bool   // True if dog was spawned (new)
 
-	// Internal fields for delayed session start
+	state dogDispatchState
+}
+
+// dogDispatchState keeps dispatch bookkeeping behind the public dispatch
+// result. The state is shared by session, verification, and cleanup methods so
+// those operations remain one cohesive implementation detail.
+type dogDispatchState struct {
 	sessionDelayed bool
 	townRoot       string
 	workDesc       string
@@ -84,184 +90,229 @@ type DogDispatchInfo struct {
 	requireHook    bool
 }
 
+type slingDogDispatchContext struct {
+	townRoot   string
+	rigsConfig *config.RigsConfig
+	mgr        *dog.Manager
+}
+
+type dogDispatchSelection struct {
+	targetDog     *dog.Dog
+	spawned       bool
+	workStartedAt time.Time
+	ownsWork      bool
+	delayed       bool
+}
+
 // DispatchToDog finds or spawns a dog for work dispatch.
 // If dogName is empty, finds an idle dog from the pool.
 // If opts.Create is true and no dogs exist, creates one.
 // opts.WorkDesc is recorded in the dog's state so we know what it's working on.
 // If opts.DelaySessionStart is true, the session is not started (caller must call StartDelayedSession).
 func DispatchToDog(dogName string, opts DogDispatchOptions) (*DogDispatchInfo, error) {
+	ctx, err := loadSlingDogDispatchContext()
+	if err != nil {
+		return nil, err
+	}
+	selection, err := selectDogForDispatch(ctx, dogName, opts)
+	if err != nil {
+		return nil, err
+	}
+	if selection.delayed || opts.DelaySessionStart {
+		if opts.DelaySessionStart && !selection.delayed {
+			fmt.Printf("Dog %s assigned (session start delayed)\n", selection.targetDog.Name)
+		}
+		return newDelayedDogDispatchInfo(ctx, selection, opts), nil
+	}
+
+	pane, err := startDogSession(ctx, selection.targetDog, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &DogDispatchInfo{
+		DogName: selection.targetDog.Name,
+		AgentID: dogAgentID(selection.targetDog.Name),
+		Pane:    pane,
+		Spawned: selection.spawned,
+		state: dogDispatchState{
+			workStartedAt: selection.workStartedAt,
+			ownsWork:      true,
+		},
+	}, nil
+}
+
+func loadSlingDogDispatchContext() (*slingDogDispatchContext, error) {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return nil, fmt.Errorf("finding town root: %w", err)
 	}
-
-	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	rigsConfig, err := config.LoadRigsConfig(filepath.Join(townRoot, "mayor", "rigs.json"))
 	if err != nil {
 		return nil, fmt.Errorf("loading rigs config: %w", err)
 	}
+	return &slingDogDispatchContext{
+		townRoot:   townRoot,
+		rigsConfig: rigsConfig,
+		mgr:        dog.NewManager(townRoot, rigsConfig),
+	}, nil
+}
 
-	mgr := dog.NewManager(townRoot, rigsConfig)
-
-	var targetDog *dog.Dog
-	var spawned bool
-	var workStartedAt time.Time
-
+func selectDogForDispatch(ctx *slingDogDispatchContext, dogName string, opts DogDispatchOptions) (dogDispatchSelection, error) {
 	if dogName != "" {
-		// Specific dog requested
-		targetDog, err = mgr.Get(dogName)
+		return selectSpecificDog(ctx, dogName, opts)
+	}
+	return selectPoolDog(ctx, opts)
+}
+
+func selectSpecificDog(ctx *slingDogDispatchContext, dogName string, opts DogDispatchOptions) (dogDispatchSelection, error) {
+	targetDog, err := ctx.mgr.Get(dogName)
+	spawned := false
+	if err != nil {
+		if !opts.Create {
+			return dogDispatchSelection{}, fmt.Errorf("dog %s not found (use --create to add)", dogName)
+		}
+		targetDog, err = ctx.mgr.Add(dogName)
 		if err != nil {
-			if opts.Create {
-				// Create the dog if it doesn't exist
-				targetDog, err = mgr.Add(dogName)
-				if err != nil {
-					return nil, fmt.Errorf("creating dog %s: %w", dogName, err)
-				}
-				fmt.Printf("✓ Created dog %s\n", dogName)
-				spawned = true
-			} else {
-				return nil, fmt.Errorf("dog %s not found (use --create to add)", dogName)
-			}
+			return dogDispatchSelection{}, fmt.Errorf("creating dog %s: %w", dogName, err)
 		}
-
-		agentID := fmt.Sprintf("deacon/dogs/%s", targetDog.Name)
-		if existing, err := findHookedFormulaSingleton(townRoot, agentID, opts.WorkDesc); err != nil {
-			return nil, fmt.Errorf("checking existing dog formula: %w", err)
-		} else if existing != nil && dogWorksOnHook(targetDog, opts.WorkDesc, existing) {
-			return &DogDispatchInfo{
-				DogName:        targetDog.Name,
-				AgentID:        agentID,
-				Pane:           "",
-				Spawned:        spawned,
-				sessionDelayed: true,
-				townRoot:       townRoot,
-				workDesc:       opts.WorkDesc,
-				workStartedAt:  targetDog.WorkStartedAt,
-				ownsWork:       false,
-				agentOverride:  opts.AgentOverride,
-				rigsConfig:     rigsConfig,
-			}, nil
-		}
-	} else {
-		if existing, existingDogName, err := findHookedFormulaForDogPool(townRoot, opts.WorkDesc, func(hooked *beads.Issue, candidateDogName string) bool {
-			candidateDog, getErr := mgr.Get(candidateDogName)
-			return getErr == nil && dogWorksOnHook(candidateDog, opts.WorkDesc, hooked)
-		}); err != nil {
-			return nil, fmt.Errorf("checking existing dog formula: %w", err)
-		} else if existing != nil {
-			targetDog, err = mgr.Get(existingDogName)
-			if err == nil && dogWorksOnHook(targetDog, opts.WorkDesc, existing) {
-				agentID := fmt.Sprintf("deacon/dogs/%s", targetDog.Name)
-				return &DogDispatchInfo{
-					DogName:        targetDog.Name,
-					AgentID:        agentID,
-					Pane:           "",
-					Spawned:        false,
-					sessionDelayed: true,
-					townRoot:       townRoot,
-					workDesc:       opts.WorkDesc,
-					workStartedAt:  targetDog.WorkStartedAt,
-					ownsWork:       false,
-					agentOverride:  opts.AgentOverride,
-					rigsConfig:     rigsConfig,
-				}, nil
-			}
-		}
-
-		// Pool dispatch - find an idle dog
-		for {
-			targetDog, err = mgr.GetIdleDog()
-			if err != nil {
-				return nil, fmt.Errorf("finding idle dog: %w", err)
-			}
-
-			if targetDog == nil {
-				// No idle dogs - auto-create one if pool is under max size.
-				// Pool dispatch means "send to any available dog" - if none exist,
-				// spawning one is the natural behavior (see mol-deacon-patrol:
-				// "Spawn on demand when pool is empty").
-				dogs, listErr := mgr.List()
-				if listErr != nil {
-					return nil, fmt.Errorf("listing dogs: %w", listErr)
-				}
-				if len(dogs) >= maxDogPoolSize {
-					return nil, fmt.Errorf("no idle dogs available (pool at max %d, all busy)", maxDogPoolSize)
-				}
-				newName := generateDogName(mgr)
-				targetDog, err = mgr.Add(newName)
-				if err != nil {
-					return nil, fmt.Errorf("creating dog %s: %w", newName, err)
-				}
-				fmt.Printf("✓ Auto-created dog %s (no idle dogs, pool %d/%d)\n", newName, len(dogs)+1, maxDogPoolSize)
-				spawned = true
-			}
-
-			assignedState, err := mgr.AssignWorkIfIdleWithKind(targetDog.Name, opts.WorkDesc, opts.WorkKind)
-			if errors.Is(err, dog.ErrDogWorking) {
-				spawned = false
-				continue
-			}
-			if err != nil {
-				return nil, fmt.Errorf("assigning idle dog work: %w", err)
-			}
-			workStartedAt = assignedState.WorkStartedAt
-			break
-		}
+		fmt.Printf("✓ Created dog %s\n", dogName)
+		spawned = true
 	}
 
-	if dogName != "" {
-		assignedState, err := mgr.AssignWorkIfIdleWithKind(targetDog.Name, opts.WorkDesc, opts.WorkKind)
-		if err != nil {
-			return nil, fmt.Errorf("assigning idle dog work: %w", err)
-		}
-		workStartedAt = assignedState.WorkStartedAt
-	}
-
-	// Build agent ID
-	agentID := fmt.Sprintf("deacon/dogs/%s", targetDog.Name)
-
-	// If delayed start, return info for later session start
-	if opts.DelaySessionStart {
-		fmt.Printf("Dog %s assigned (session start delayed)\n", targetDog.Name)
-		return &DogDispatchInfo{
-			DogName:        targetDog.Name,
-			AgentID:        agentID,
-			Pane:           "", // No pane yet
-			Spawned:        spawned,
-			sessionDelayed: true,
-			townRoot:       townRoot,
-			workDesc:       opts.WorkDesc,
-			workStartedAt:  workStartedAt,
-			ownsWork:       true,
-			agentOverride:  opts.AgentOverride,
-			rigsConfig:     rigsConfig,
+	if existing, err := findHookedFormulaSingleton(ctx.townRoot, dogAgentID(targetDog.Name), opts.WorkDesc); err != nil {
+		return dogDispatchSelection{}, fmt.Errorf("checking existing dog formula: %w", err)
+	} else if existing != nil && dogWorksOnHook(targetDog, opts.WorkDesc, existing) {
+		return dogDispatchSelection{
+			targetDog:     targetDog,
+			spawned:       spawned,
+			workStartedAt: targetDog.WorkStartedAt,
+			delayed:       true,
 		}, nil
 	}
 
-	// Ensure dog session is running (start if needed)
-	t := tmux.NewTmux()
-	sessMgr := dog.NewSessionManager(t, townRoot, mgr)
-
-	sessOpts := dog.SessionStartOptions{
-		WorkDesc:      opts.WorkDesc,
-		AgentOverride: opts.AgentOverride,
-	}
-	pane, err := sessMgr.EnsureRunning(targetDog.Name, sessOpts)
+	workStartedAt, err := assignDogWork(ctx.mgr, targetDog.Name, opts)
 	if err != nil {
-		return nil, fmt.Errorf("starting dog session: %w", err)
+		return dogDispatchSelection{}, err
 	}
-	if pane == "" {
-		return nil, fmt.Errorf("dog %s session started without a pane", targetDog.Name)
-	}
-
-	return &DogDispatchInfo{
-		DogName:       targetDog.Name,
-		AgentID:       agentID,
-		Pane:          pane,
-		Spawned:       spawned,
+	return dogDispatchSelection{
+		targetDog:     targetDog,
+		spawned:       spawned,
 		workStartedAt: workStartedAt,
 		ownsWork:      true,
 	}, nil
+}
+
+func selectPoolDog(ctx *slingDogDispatchContext, opts DogDispatchOptions) (dogDispatchSelection, error) {
+	if existing, existingDogName, err := findHookedFormulaForDogPool(ctx.townRoot, opts.WorkDesc, func(hooked *beads.Issue, candidateDogName string) bool {
+		candidateDog, getErr := ctx.mgr.Get(candidateDogName)
+		return getErr == nil && dogWorksOnHook(candidateDog, opts.WorkDesc, hooked)
+	}); err != nil {
+		return dogDispatchSelection{}, fmt.Errorf("checking existing dog formula: %w", err)
+	} else if existing != nil {
+		targetDog, getErr := ctx.mgr.Get(existingDogName)
+		if getErr == nil && dogWorksOnHook(targetDog, opts.WorkDesc, existing) {
+			return dogDispatchSelection{targetDog: targetDog, workStartedAt: targetDog.WorkStartedAt, delayed: true}, nil
+		}
+	}
+
+	return assignPoolDog(ctx, opts)
+}
+
+func assignPoolDog(ctx *slingDogDispatchContext, opts DogDispatchOptions) (dogDispatchSelection, error) {
+	spawned := false
+	for {
+		targetDog, err := ctx.mgr.GetIdleDog()
+		if err != nil {
+			return dogDispatchSelection{}, fmt.Errorf("finding idle dog: %w", err)
+		}
+		if targetDog == nil {
+			targetDog, spawned, err = createPoolDog(ctx)
+			if err != nil {
+				return dogDispatchSelection{}, err
+			}
+		}
+
+		workStartedAt, err := assignDogWork(ctx.mgr, targetDog.Name, opts)
+		if errors.Is(err, dog.ErrDogWorking) {
+			spawned = false
+			continue
+		}
+		if err != nil {
+			return dogDispatchSelection{}, err
+		}
+		return dogDispatchSelection{
+			targetDog:     targetDog,
+			spawned:       spawned,
+			workStartedAt: workStartedAt,
+			ownsWork:      true,
+		}, nil
+	}
+}
+
+func createPoolDog(ctx *slingDogDispatchContext) (*dog.Dog, bool, error) {
+	dogs, err := ctx.mgr.List()
+	if err != nil {
+		return nil, false, fmt.Errorf("listing dogs: %w", err)
+	}
+	if len(dogs) >= maxDogPoolSize {
+		return nil, false, fmt.Errorf("no idle dogs available (pool at max %d, all busy)", maxDogPoolSize)
+	}
+	newName := generateDogName(ctx.mgr)
+	targetDog, err := ctx.mgr.Add(newName)
+	if err != nil {
+		return nil, false, fmt.Errorf("creating dog %s: %w", newName, err)
+	}
+	fmt.Printf("✓ Auto-created dog %s (no idle dogs, pool %d/%d)\n", newName, len(dogs)+1, maxDogPoolSize)
+	return targetDog, true, nil
+}
+
+func assignDogWork(mgr *dog.Manager, dogName string, opts DogDispatchOptions) (time.Time, error) {
+	assignedState, err := mgr.AssignWorkIfIdleWithKind(dogName, opts.WorkDesc, opts.WorkKind)
+	if err != nil {
+		if errors.Is(err, dog.ErrDogWorking) {
+			return time.Time{}, err
+		}
+		return time.Time{}, fmt.Errorf("assigning idle dog work: %w", err)
+	}
+	return assignedState.WorkStartedAt, nil
+}
+
+func newDelayedDogDispatchInfo(ctx *slingDogDispatchContext, selection dogDispatchSelection, opts DogDispatchOptions) *DogDispatchInfo {
+	return &DogDispatchInfo{
+		DogName: selection.targetDog.Name,
+		AgentID: dogAgentID(selection.targetDog.Name),
+		Pane:    "",
+		Spawned: selection.spawned,
+		state: dogDispatchState{
+			sessionDelayed: true,
+			townRoot:       ctx.townRoot,
+			workDesc:       opts.WorkDesc,
+			workStartedAt:  selection.workStartedAt,
+			ownsWork:       selection.ownsWork,
+			agentOverride:  opts.AgentOverride,
+			rigsConfig:     ctx.rigsConfig,
+		},
+	}
+}
+
+func dogAgentID(name string) string {
+	return fmt.Sprintf("deacon/dogs/%s", name)
+}
+
+func startDogSession(ctx *slingDogDispatchContext, targetDog *dog.Dog, opts DogDispatchOptions) (string, error) {
+	t := tmux.NewTmux()
+	sessMgr := dog.NewSessionManager(t, ctx.townRoot, ctx.mgr)
+	pane, err := sessMgr.EnsureRunning(targetDog.Name, dog.SessionStartOptions{
+		WorkDesc:      opts.WorkDesc,
+		AgentOverride: opts.AgentOverride,
+	})
+	if err != nil {
+		return "", fmt.Errorf("starting dog session: %w", err)
+	}
+	if pane == "" {
+		return "", fmt.Errorf("dog %s session started without a pane", targetDog.Name)
+	}
+	return pane, nil
 }
 
 func dogWorksOn(d *dog.Dog, work string) bool {
@@ -283,40 +334,27 @@ func dogWorksOnHook(d *dog.Dog, work string, hooked *beads.Issue) bool {
 	return !attachedAt.Before(d.WorkStartedAt.UTC())
 }
 
-func (d *DogDispatchInfo) worksOnHook(hooked *beads.Issue) bool {
+func (d *DogDispatchInfo) WorksOnHook(hooked *beads.Issue) bool {
 	if d == nil {
 		return false
 	}
 	return dogWorksOnHook(&dog.Dog{
 		Name:          d.DogName,
 		State:         dog.StateWorking,
-		Work:          d.workDesc,
-		WorkStartedAt: d.workStartedAt,
-	}, d.workDesc, hooked)
+		Work:          d.state.workDesc,
+		WorkStartedAt: d.state.workStartedAt,
+	}, d.state.workDesc, hooked)
 }
 
-// verifyBareBeadAssignment performs the consumer-side readback required before
-// starting a dog session. Source status alone is insufficient: dog state and
-// the startup lookup must resolve the same bead. (GH#4516)
-func (d *DogDispatchInfo) verifyBareBeadAssignment(beadID string) error {
-	return d.verifyAssignment(beadID, beadID, dog.WorkKindBead)
-}
-
-// verifyFormulaAssignment applies the same consumer-side check to formula work.
-// The dog state names the formula while startup resolves the hooked source/wisp.
-func (d *DogDispatchInfo) verifyFormulaAssignment(sourceID string) error {
-	return d.verifyAssignment(sourceID, d.workDesc, dog.WorkKindFormula)
-}
-
-func (d *DogDispatchInfo) completeStartup(sourceID string, kind dog.WorkKind) (string, error) {
-	if err := d.persistWorkSource(sourceID); err != nil {
+func completeDogStartup(d *DogDispatchInfo, sourceID string, kind dog.WorkKind) (string, error) {
+	if err := persistDogWorkSource(d, sourceID); err != nil {
 		return "", err
 	}
 	var verifyErr error
 	if kind == dog.WorkKindFormula {
-		verifyErr = d.verifyFormulaAssignment(sourceID)
+		verifyErr = verifyFormulaAssignment(d, sourceID)
 	} else {
-		verifyErr = d.verifyBareBeadAssignment(sourceID)
+		verifyErr = verifyBareBeadAssignment(d, sourceID)
 	}
 	if verifyErr != nil {
 		return "", verifyErr
@@ -324,24 +362,24 @@ func (d *DogDispatchInfo) completeStartup(sourceID string, kind dog.WorkKind) (s
 	return d.StartDelayedSession()
 }
 
-func (d *DogDispatchInfo) completeFormulaStartup(sourceID string) (string, error) {
-	d.requireHook = true
-	return d.completeStartup(sourceID, dog.WorkKindFormula)
+func (d *DogDispatchInfo) CompleteFormulaStartup(sourceID string) (string, error) {
+	d.state.requireHook = true
+	return completeDogStartup(d, sourceID, dog.WorkKindFormula)
 }
 
 // completeBareDogDispatch starts the delayed dog session only after hook, convoy,
 // and prompt delivery agree. Success is reported only after notification.
 func completeBareDogDispatch(delayed *DogDispatchInfo, beadID, convoyID, attachedMoleculeID, slingSubject, slingArgs string) (string, error) {
-	delayed.requireHook = true
-	if !slingNoConvoy {
-		delayed.requireConvoy = true
-		delayed.expectedConvoy = convoyID
+	delayed.state.requireHook = true
+	if !slingState().noConvoy {
+		delayed.state.requireConvoy = true
+		delayed.state.expectedConvoy = convoyID
 	}
 	kind := dog.WorkKindBead
 	if attachedMoleculeID != "" {
 		kind = dog.WorkKindFormula
 	}
-	pane, err := delayed.completeStartup(beadID, kind)
+	pane, err := completeDogStartup(delayed, beadID, kind)
 	if err != nil {
 		return "", fmt.Errorf("completing dog dispatch: %w", err)
 	}
@@ -357,12 +395,12 @@ func completeBareDogDispatch(delayed *DogDispatchInfo, beadID, convoyID, attache
 	return pane, nil
 }
 
-func (d *DogDispatchInfo) persistWorkSource(sourceID string) error {
-	if d == nil || !d.ownsWork || sourceID == "" {
+func persistDogWorkSource(d *DogDispatchInfo, sourceID string) error {
+	if d == nil || !d.state.ownsWork || sourceID == "" {
 		return nil
 	}
-	mgr := dog.NewManager(d.townRoot, d.rigsConfig)
-	matched, err := mgr.SetWorkSourceIfMatches(d.DogName, d.workDesc, d.workStartedAt, sourceID)
+	mgr := dog.NewManager(d.state.townRoot, d.state.rigsConfig)
+	matched, err := mgr.SetWorkSourceIfMatches(d.DogName, d.state.workDesc, d.state.workStartedAt, sourceID)
 	if err != nil {
 		return fmt.Errorf("recording dog work source: %w", err)
 	}
@@ -372,44 +410,73 @@ func (d *DogDispatchInfo) persistWorkSource(sourceID string) error {
 	return nil
 }
 
-func (d *DogDispatchInfo) verifyAssignment(sourceID, expectedWork string, expectedKind dog.WorkKind) error {
+// verifyBareBeadAssignment performs the consumer-side readback required before
+// starting a dog session. Source status alone is insufficient: dog state and
+// the startup lookup must resolve the same bead. (GH#4516)
+func verifyBareBeadAssignment(d *DogDispatchInfo, beadID string) error {
+	return verifyDogAssignment(d, beadID, beadID, dog.WorkKindBead)
+}
+
+// verifyFormulaAssignment applies the same consumer-side check to formula work.
+// The dog state names the formula while startup resolves the hooked source/wisp.
+func verifyFormulaAssignment(d *DogDispatchInfo, sourceID string) error {
+	return verifyDogAssignment(d, sourceID, d.state.workDesc, dog.WorkKindFormula)
+}
+
+func verifyDogAssignment(d *DogDispatchInfo, sourceID, expectedWork string, expectedKind dog.WorkKind) error {
 	if d == nil {
 		return fmt.Errorf("missing dog dispatch state")
 	}
 
-	mgr := dog.NewManager(d.townRoot, d.rigsConfig)
+	if err := verifyDogState(d, expectedWork, expectedKind); err != nil {
+		return err
+	}
+	source, err := verifyDogSource(d, sourceID)
+	if err != nil {
+		return err
+	}
+	if err := verifyDogConvoyRelation(d, source, sourceID); err != nil {
+		return err
+	}
+	if err := verifyDogAgentHook(d, sourceID); err != nil {
+		return err
+	}
+	return verifyDogStartupHook(d, sourceID)
+}
+
+func verifyDogState(d *DogDispatchInfo, expectedWork string, expectedKind dog.WorkKind) error {
+	mgr := dog.NewManager(d.state.townRoot, d.state.rigsConfig)
 	current, err := mgr.Get(d.DogName)
 	if err != nil {
 		return fmt.Errorf("reading dog state: %w", err)
 	}
 	if current.State != dog.StateWorking || current.Work != expectedWork || current.WorkKind != expectedKind ||
-		current.WorkStartedAt.IsZero() || !current.WorkStartedAt.Equal(d.workStartedAt) {
+		current.WorkStartedAt.IsZero() || !current.WorkStartedAt.Equal(d.state.workStartedAt) {
 		return fmt.Errorf("dog state mismatch: state=%q work=%q kind=%q started=%s; want working work=%q kind=%q started=%s",
 			current.State, current.Work, current.WorkKind, current.WorkStartedAt.Format(time.RFC3339Nano),
-			expectedWork, expectedKind, d.workStartedAt.Format(time.RFC3339Nano))
+			expectedWork, expectedKind, d.state.workStartedAt.Format(time.RFC3339Nano))
 	}
+	return nil
+}
 
-	source, err := getBeadInfoFromTownRoot(d.townRoot, sourceID)
+func verifyDogSource(d *DogDispatchInfo, sourceID string) (*beadInfo, error) {
+	source, err := getBeadInfoFromTownRoot(d.state.townRoot, sourceID)
 	if err != nil {
-		return fmt.Errorf("reading source bead: %w", err)
+		return nil, fmt.Errorf("reading source bead: %w", err)
 	}
 	if source.Status != beads.StatusHooked || source.Assignee != d.AgentID {
-		return fmt.Errorf("source bead mismatch: status=%q assignee=%q; want hooked assignee=%q",
+		return nil, fmt.Errorf("source bead mismatch: status=%q assignee=%q; want hooked assignee=%q",
 			source.Status, source.Assignee, d.AgentID)
 	}
+	return source, nil
+}
 
-	if err := d.verifyConvoyRelation(source, sourceID); err != nil {
-		return err
-	}
-	if err := d.verifyAgentHook(sourceID); err != nil {
-		return err
-	}
-
+func verifyDogStartupHook(d *DogDispatchInfo, sourceID string) error {
 	resolved, err := findAssignedDogWork(RoleContext{
 		Role:     RoleDog,
 		Polecat:  d.DogName,
-		TownRoot: d.townRoot,
-		WorkDir:  filepath.Join(d.townRoot, "deacon", "dogs", d.DogName),
+		TownRoot: d.state.townRoot,
+		WorkDir:  filepath.Join(d.state.townRoot, "deacon", "dogs", d.DogName),
 	}, d.AgentID)
 	if err != nil {
 		return fmt.Errorf("resolving dog startup hook: %w", err)
@@ -424,11 +491,11 @@ func (d *DogDispatchInfo) verifyAssignment(sourceID, expectedWork string, expect
 	return nil
 }
 
-func (d *DogDispatchInfo) verifyConvoyRelation(source *beadInfo, sourceID string) error {
-	if !d.requireConvoy {
+func verifyDogConvoyRelation(d *DogDispatchInfo, source *beadInfo, sourceID string) error {
+	if !d.state.requireConvoy {
 		return nil
 	}
-	if d.expectedConvoy == "" {
+	if d.state.expectedConvoy == "" {
 		return fmt.Errorf("dog dispatch missing convoy relation for %s", sourceID)
 	}
 	fields := beads.ParseAttachmentFields(&beads.Issue{Description: source.Description})
@@ -436,18 +503,18 @@ func (d *DogDispatchInfo) verifyConvoyRelation(source *beadInfo, sourceID string
 	if fields != nil {
 		got = fields.ConvoyID
 	}
-	if got != d.expectedConvoy {
-		return fmt.Errorf("convoy mismatch: source=%q; want %q", got, d.expectedConvoy)
+	if got != d.state.expectedConvoy {
+		return fmt.Errorf("convoy mismatch: source=%q; want %q", got, d.state.expectedConvoy)
 	}
 	return nil
 }
 
-func (d *DogDispatchInfo) verifyAgentHook(sourceID string) error {
-	if !d.requireHook {
+func verifyDogAgentHook(d *DogDispatchInfo, sourceID string) error {
+	if !d.state.requireHook {
 		return nil
 	}
 	agentBeadID := beads.DogBeadIDTown(d.DogName)
-	issue, err := beads.New(filepath.Join(d.townRoot, ".beads")).Show(agentBeadID)
+	issue, err := beads.New(filepath.Join(d.state.townRoot, ".beads")).Show(agentBeadID)
 	if err != nil {
 		return fmt.Errorf("reading dog agent bead: %w", err)
 	}
@@ -465,11 +532,11 @@ var ensureDogSession = defaultEnsureDogSession
 
 func defaultEnsureDogSession(d *DogDispatchInfo) (string, error) {
 	t := tmux.NewTmux()
-	mgr := dog.NewManager(d.townRoot, d.rigsConfig)
-	sessMgr := dog.NewSessionManager(t, d.townRoot, mgr)
+	mgr := dog.NewManager(d.state.townRoot, d.state.rigsConfig)
+	sessMgr := dog.NewSessionManager(t, d.state.townRoot, mgr)
 	opts := dog.SessionStartOptions{
-		WorkDesc:      d.workDesc,
-		AgentOverride: d.agentOverride,
+		WorkDesc:      d.state.workDesc,
+		AgentOverride: d.state.agentOverride,
 	}
 	pane, err := sessMgr.EnsureRunning(d.DogName, opts)
 	if err != nil {
@@ -484,7 +551,7 @@ func defaultEnsureDogSession(d *DogDispatchInfo) (string, error) {
 // StartDelayedSession starts the dog session after bead setup is complete.
 // This should only be called when DelaySessionStart was true during dispatch.
 func (d *DogDispatchInfo) StartDelayedSession() (string, error) {
-	if !d.sessionDelayed {
+	if !d.state.sessionDelayed {
 		if d.Pane == "" {
 			return "", fmt.Errorf("dog %s session has no pane", d.DogName)
 		}
@@ -500,29 +567,29 @@ func (d *DogDispatchInfo) StartDelayedSession() (string, error) {
 	}
 
 	d.Pane = pane
-	d.sessionDelayed = false
+	d.state.sessionDelayed = false
 	return pane, nil
 }
 
-func (d *DogDispatchInfo) clearWorkIfMatches() error {
+func (d *DogDispatchInfo) ClearWorkIfMatches() error {
 	_, err := d.clearWorkIfMatchesResult()
 	return err
 }
 
 func (d *DogDispatchInfo) clearWorkIfMatchesResult() (bool, error) {
-	if d == nil || !d.ownsWork {
+	if d == nil || !d.state.ownsWork {
 		return false, nil
 	}
-	mgr := dog.NewManager(d.townRoot, d.rigsConfig)
-	return mgr.ClearWorkIfMatches(d.DogName, d.workDesc, d.workStartedAt)
+	mgr := dog.NewManager(d.state.townRoot, d.state.rigsConfig)
+	return mgr.ClearWorkIfMatches(d.DogName, d.state.workDesc, d.state.workStartedAt)
 }
 
-func (d *DogDispatchInfo) clearWorkIfMatchesAfter(beforeClear func() bool) (bool, error) {
-	if d == nil || !d.ownsWork {
+func (d *DogDispatchInfo) ClearWorkIfMatchesAfter(beforeClear func() bool) (bool, error) {
+	if d == nil || !d.state.ownsWork {
 		return false, nil
 	}
-	mgr := dog.NewManager(d.townRoot, d.rigsConfig)
-	return mgr.ClearWorkIfMatchesAfter(d.DogName, d.workDesc, d.workStartedAt, beforeClear)
+	mgr := dog.NewManager(d.state.townRoot, d.state.rigsConfig)
+	return mgr.ClearWorkIfMatchesAfter(d.DogName, d.state.workDesc, d.state.workStartedAt, beforeClear)
 }
 
 // generateDogName creates a unique dog name for pool expansion.

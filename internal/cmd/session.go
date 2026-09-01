@@ -22,20 +22,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Session command flags
-var (
-	sessionIssue               string
-	sessionForce               bool
-	sessionLines               int
-	sessionMessage             string
-	sessionFile                string
-	sessionRigFilter           string
-	sessionListJSON            bool
-	sessionStatusJSON          bool
-	sessionHealthJSON          bool
-	sessionHealthMaxInactivity time.Duration
-)
-
 var sessionCmd = &cobra.Command{
 	Use:     "session",
 	Aliases: []string{"sess"},
@@ -191,31 +177,31 @@ Examples:
 
 func init() {
 	// Start flags
-	sessionStartCmd.Flags().StringVar(&sessionIssue, "issue", "", "Issue ID to work on")
+	sessionStartCmd.Flags().String("issue", "", "Issue ID to work on")
 
 	// Stop flags
-	sessionStopCmd.Flags().BoolVarP(&sessionForce, "force", "f", false, "Force immediate shutdown")
+	sessionStopCmd.Flags().BoolP("force", "f", false, "Force immediate shutdown")
 
 	// List flags
-	sessionListCmd.Flags().StringVar(&sessionRigFilter, "rig", "", "Filter by rig name")
-	sessionListCmd.Flags().BoolVar(&sessionListJSON, "json", false, "Output as JSON")
+	sessionListCmd.Flags().String("rig", "", "Filter by rig name")
+	sessionListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Capture flags
-	sessionCaptureCmd.Flags().IntVarP(&sessionLines, "lines", "n", 100, "Number of lines to capture")
+	sessionCaptureCmd.Flags().IntP("lines", "n", 100, "Number of lines to capture")
 
 	// Inject flags
-	sessionInjectCmd.Flags().StringVarP(&sessionMessage, "message", "m", "", "Message to inject")
-	sessionInjectCmd.Flags().StringVarP(&sessionFile, "file", "f", "", "File to read message from")
+	sessionInjectCmd.Flags().StringP("message", "m", "", "Message to inject")
+	sessionInjectCmd.Flags().StringP("file", "f", "", "File to read message from")
 
 	// Restart flags
-	sessionRestartCmd.Flags().BoolVarP(&sessionForce, "force", "f", false, "Force immediate shutdown")
+	sessionRestartCmd.Flags().BoolP("force", "f", false, "Force immediate shutdown")
 
 	// Status flags
-	sessionStatusCmd.Flags().BoolVar(&sessionStatusJSON, "json", false, "Output as JSON")
+	sessionStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Health flags
-	sessionHealthCmd.Flags().BoolVar(&sessionHealthJSON, "json", false, "Output as JSON")
-	sessionHealthCmd.Flags().DurationVar(&sessionHealthMaxInactivity, "max-inactivity", 0, "Maximum tmux inactivity before reporting agent-hung (0 disables activity check)")
+	sessionHealthCmd.Flags().Bool("json", false, "Output as JSON")
+	sessionHealthCmd.Flags().Duration("max-inactivity", 0, "Maximum tmux inactivity before reporting agent-hung (0 disables activity check)")
 
 	// Add subcommands
 	sessionCmd.AddCommand(sessionStartCmd)
@@ -258,18 +244,26 @@ func parseAddress(addr string) (rigName, polecatName string, err error) {
 		return parts[0], parts[1], nil
 	}
 
-	// No slash - try to infer rig from cwd
-	if !strings.Contains(addr, "/") && addr != "" {
-		townRoot, err := workspace.FindFromCwd()
-		if err == nil && townRoot != "" {
-			inferredRig, err := inferRigFromCwd(townRoot)
-			if err == nil && inferredRig != "" {
-				return inferredRig, addr, nil
-			}
-		}
+	if inferredRig, ok := inferSessionRig(addr); ok {
+		return inferredRig, addr, nil
 	}
 
 	return "", "", fmt.Errorf("invalid address format: expected 'rig/polecat', got '%s'", addr)
+}
+
+func inferSessionRig(addr string) (string, bool) {
+	if strings.Contains(addr, "/") || addr == "" {
+		return "", false
+	}
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return "", false
+	}
+	inferredRig, err := inferRigFromCwd(townRoot)
+	if err != nil || inferredRig == "" {
+		return "", false
+	}
+	return inferredRig, true
 }
 
 // getSessionManager creates a session manager for the given rig.
@@ -286,6 +280,7 @@ func getSessionManager(rigName string) (*polecat.SessionManager, *rig.Rig, error
 }
 
 func runSessionStart(cmd *cobra.Command, args []string) error {
+	issue := commandStringFlag(cmd, "issue")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -311,7 +306,7 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := polecat.SessionStartOptions{
-		Issue: sessionIssue,
+		Issue: issue,
 	}
 
 	fmt.Printf("Starting session for %s/%s...\n", rigName, polecatName)
@@ -327,13 +322,14 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
 		agent := fmt.Sprintf("%s/%s", rigName, polecatName)
 		logger := townlog.NewLogger(townRoot)
-		_ = logger.Log(townlog.EventWake, agent, sessionIssue)
+		_ = logger.Log(townlog.EventWake, agent, issue)
 	}
 
 	return nil
 }
 
 func runSessionStop(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -344,12 +340,12 @@ func runSessionStop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if sessionForce {
+	if force {
 		fmt.Printf("Force stopping session for %s/%s...\n", rigName, polecatName)
 	} else {
 		fmt.Printf("Stopping session for %s/%s...\n", rigName, polecatName)
 	}
-	if err := polecatMgr.Stop(polecatName, sessionForce); err != nil {
+	if err := polecatMgr.Stop(polecatName, force); err != nil {
 		return fmt.Errorf("stopping session: %w", err)
 	}
 
@@ -359,7 +355,7 @@ func runSessionStop(cmd *cobra.Command, args []string) error {
 	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
 		agent := fmt.Sprintf("%s/%s", rigName, polecatName)
 		reason := "gt session stop"
-		if sessionForce {
+		if force {
 			reason = "gt session stop --force"
 		}
 		logger := townlog.NewLogger(townRoot)
@@ -369,7 +365,7 @@ func runSessionStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runSessionAttach(cmd *cobra.Command, args []string) error {
+func runSessionAttach(_ *cobra.Command, args []string) error {
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -402,50 +398,53 @@ type SessionListItem struct {
 	Running   bool   `json:"running"`
 }
 
-func runSessionList(cmd *cobra.Command, args []string) error {
-	// Find town root
+func runSessionList(cmd *cobra.Command, _ []string) error {
+	rigFilter := commandStringFlag(cmd, "rig")
+	listJSON := commandBoolFlag(cmd, "json")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Load rigs config
+	rigs, err := discoverSessionRigs(townRoot)
+	if err != nil {
+		return fmt.Errorf("discovering rigs: %w", err)
+	}
+	if rigFilter != "" {
+		rigs = filterSessionRigs(rigs, rigFilter)
+	}
+
+	allSessions := collectSessionList(rigs)
+	return outputSessionList(allSessions, listJSON)
+}
+
+func discoverSessionRigs(townRoot string) ([]*rig.Rig, error) {
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
 	if err != nil {
 		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
 	}
+	return rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot)).DiscoverRigs()
+}
 
-	// Get all rigs
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
-	rigs, err := rigMgr.DiscoverRigs()
-	if err != nil {
-		return fmt.Errorf("discovering rigs: %w", err)
-	}
-
-	// Filter if requested
-	if sessionRigFilter != "" {
-		var filtered []*rig.Rig
-		for _, r := range rigs {
-			if r.Name == sessionRigFilter {
-				filtered = append(filtered, r)
-			}
+func filterSessionRigs(rigs []*rig.Rig, name string) []*rig.Rig {
+	filtered := make([]*rig.Rig, 0, 1)
+	for _, r := range rigs {
+		if r.Name == name {
+			filtered = append(filtered, r)
 		}
-		rigs = filtered
 	}
+	return filtered
+}
 
-	// Collect sessions from all rigs
+func collectSessionList(rigs []*rig.Rig) []SessionListItem {
 	t := tmux.NewTmux()
 	var allSessions []SessionListItem
-
 	for _, r := range rigs {
-		polecatMgr := polecat.NewSessionManager(t, r)
-		infos, err := polecatMgr.List()
+		infos, err := polecat.NewSessionManager(t, r).List()
 		if err != nil {
 			continue
 		}
-
 		for _, info := range infos {
 			allSessions = append(allSessions, SessionListItem{
 				Rig:       r.Name,
@@ -455,33 +454,40 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 			})
 		}
 	}
+	return allSessions
+}
 
-	// Output
-	if sessionListJSON {
+func outputSessionList(sessions []SessionListItem, listJSON bool) error {
+	if listJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(allSessions)
+		return enc.Encode(sessions)
 	}
 
-	if len(allSessions) == 0 {
+	if len(sessions) == 0 {
 		fmt.Println("No active sessions.")
 		return nil
 	}
 
 	fmt.Printf("%s\n\n", style.Bold.Render("Active Sessions"))
-	for _, s := range allSessions {
-		status := style.Bold.Render("●")
-		if !s.Running {
-			status = style.Dim.Render("○")
-		}
-		fmt.Printf("  %s %s/%s\n", status, s.Rig, s.Polecat)
-		fmt.Printf("    %s\n", style.Dim.Render(s.SessionID))
+	for _, s := range sessions {
+		printSessionListItem(s)
 	}
 
 	return nil
 }
 
+func printSessionListItem(s SessionListItem) {
+	status := style.Bold.Render("●")
+	if !s.Running {
+		status = style.Dim.Render("○")
+	}
+	fmt.Printf("  %s %s/%s\n", status, s.Rig, s.Polecat)
+	fmt.Printf("    %s\n", style.Dim.Render(s.SessionID))
+}
+
 func runSessionCapture(cmd *cobra.Command, args []string) error {
+	lines := commandIntFlag(cmd, "lines")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -493,7 +499,6 @@ func runSessionCapture(cmd *cobra.Command, args []string) error {
 	}
 
 	// Use positional count if provided, otherwise use flag value
-	lines := sessionLines
 	if len(args) > 1 {
 		n, err := strconv.Atoi(args[1])
 		if err != nil {
@@ -515,15 +520,16 @@ func runSessionCapture(cmd *cobra.Command, args []string) error {
 }
 
 func runSessionInject(cmd *cobra.Command, args []string) error {
+	message := commandStringFlag(cmd, "message")
+	file := commandStringFlag(cmd, "file")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
 	}
 
 	// Get message
-	message := sessionMessage
-	if sessionFile != "" {
-		data, err := os.ReadFile(sessionFile)
+	if file != "" {
+		data, err := os.ReadFile(file)
 		if err != nil {
 			return fmt.Errorf("reading file: %w", err)
 		}
@@ -539,7 +545,7 @@ func runSessionInject(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := polecatMgr.Inject(polecatName, message); err != nil {
+	if err := polecat.Inject(polecatMgr, polecatName, message); err != nil {
 		return fmt.Errorf("injecting message: %w", err)
 	}
 
@@ -549,6 +555,7 @@ func runSessionInject(cmd *cobra.Command, args []string) error {
 }
 
 func runSessionRestart(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -566,25 +573,8 @@ func runSessionRestart(cmd *cobra.Command, args []string) error {
 	}
 
 	if running {
-		// Stop first
-		if sessionForce {
-			fmt.Printf("Force stopping session for %s/%s...\n", rigName, polecatName)
-		} else {
-			fmt.Printf("Stopping session for %s/%s...\n", rigName, polecatName)
-		}
-		if err := polecatMgr.Stop(polecatName, sessionForce); err != nil {
-			return fmt.Errorf("stopping session: %w", err)
-		}
-
-		// Wait for session to fully terminate before starting a new one.
-		// Without this, Start may fail or create a duplicate if the old
-		// session hasn't been cleaned up by tmux yet.
-		for i := 0; i < 10; i++ {
-			still, _ := polecatMgr.IsRunning(polecatName)
-			if !still {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
+		if err := stopSessionForRestart(polecatMgr, rigName, polecatName, force); err != nil {
+			return err
 		}
 	}
 
@@ -601,7 +591,31 @@ func runSessionRestart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func stopSessionForRestart(polecatMgr *polecat.SessionManager, rigName, polecatName string, force bool) error {
+	if force {
+		fmt.Printf("Force stopping session for %s/%s...\n", rigName, polecatName)
+	} else {
+		fmt.Printf("Stopping session for %s/%s...\n", rigName, polecatName)
+	}
+	if err := polecatMgr.Stop(polecatName, force); err != nil {
+		return fmt.Errorf("stopping session: %w", err)
+	}
+	waitForSessionStop(polecatMgr, polecatName)
+	return nil
+}
+
+func waitForSessionStop(polecatMgr *polecat.SessionManager, polecatName string) {
+	for i := 0; i < 10; i++ {
+		still, _ := polecatMgr.IsRunning(polecatName)
+		if !still {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 func runSessionStatus(cmd *cobra.Command, args []string) error {
+	statusJSON := commandBoolFlag(cmd, "json")
 	rigName, polecatName, err := parseAddress(args[0])
 	if err != nil {
 		return err
@@ -617,7 +631,7 @@ func runSessionStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting status: %w", err)
 	}
 
-	if sessionStatusJSON {
+	if statusJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(info)
@@ -651,11 +665,13 @@ func runSessionStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runSessionHealth(cmd *cobra.Command, args []string) error {
+	healthJSON := commandBoolFlag(cmd, "json")
+	maxInactivity, _ := cmd.Flags().GetDuration("max-inactivity")
 	sessionName := args[0]
-	status := tmux.NewTmux().CheckSessionHealth(sessionName, sessionHealthMaxInactivity)
-	report := newSessionHealthReport(sessionName, status, sessionHealthMaxInactivity)
+	status := tmux.NewTmux().CheckSessionHealth(sessionName, maxInactivity)
+	report := newSessionHealthReport(sessionName, status, maxInactivity)
 
-	if sessionHealthJSON {
+	if healthJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(report)
@@ -687,94 +703,97 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh %dm", hours, mins)
 }
 
-func runSessionCheck(cmd *cobra.Command, args []string) error {
-	// Find town root
+func runSessionCheck(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Load rigs config
-	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err != nil {
-		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
-	}
-
-	// Get rigs to check
-	g := git.NewGit(townRoot)
-	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
-	rigs, err := rigMgr.DiscoverRigs()
+	rigs, err := discoverSessionRigs(townRoot)
 	if err != nil {
 		return fmt.Errorf("discovering rigs: %w", err)
 	}
-
-	// Filter if specific rig requested
 	if len(args) > 0 {
-		rigFilter := args[0]
-		var filtered []*rig.Rig
-		for _, r := range rigs {
-			if r.Name == rigFilter {
-				filtered = append(filtered, r)
-			}
+		rigs, err = filterSessionCheckRigs(rigs, args[0])
+		if err != nil {
+			return err
 		}
-		if len(filtered) == 0 {
-			return fmt.Errorf("rig not found: %s", rigFilter)
-		}
-		rigs = filtered
 	}
 
 	fmt.Printf("%s Session Health Check\n\n", style.Bold.Render("🔍"))
 
-	t := tmux.NewTmux()
-	totalChecked := 0
-	totalHealthy := 0
-	totalCrashed := 0
-
-	for _, r := range rigs {
-		polecatsDir := filepath.Join(r.Path, "polecats")
-		entries, err := os.ReadDir(polecatsDir)
-		if err != nil {
-			continue // Rig might not have polecats
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			if strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-			polecatName := entry.Name()
-			sessionName := session.PolecatSessionName(session.PrefixFor(r.Name), polecatName)
-			totalChecked++
-
-			// Check if session exists
-			running, err := t.HasSession(sessionName)
-			if err != nil {
-				fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("⚠"), r.Name, polecatName, style.Dim.Render("error checking session"))
-				continue
-			}
-
-			if running {
-				fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("✓"), r.Name, polecatName, style.Dim.Render("session alive"))
-				totalHealthy++
-			} else {
-				// Check if polecat has work on hook (would need restart)
-				fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("✗"), r.Name, polecatName, style.Dim.Render("session not running"))
-				totalCrashed++
-			}
-		}
-	}
+	summary := checkSessionRigs(rigs)
 
 	// Summary
 	fmt.Printf("\n%s Summary: %d checked, %d healthy, %d not running\n",
-		style.Bold.Render("📊"), totalChecked, totalHealthy, totalCrashed)
+		style.Bold.Render("📊"), summary.checked, summary.healthy, summary.crashed)
 
-	if totalCrashed > 0 {
+	if summary.crashed > 0 {
 		fmt.Printf("\n%s To restart crashed polecats: gt session restart <rig>/<polecat>\n",
 			style.Dim.Render("Tip:"))
 	}
 
 	return nil
+}
+
+func filterSessionCheckRigs(rigs []*rig.Rig, name string) ([]*rig.Rig, error) {
+	filtered := filterSessionRigs(rigs, name)
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("rig not found: %s", name)
+	}
+	return filtered, nil
+}
+
+type sessionCheckSummary struct {
+	checked int
+	healthy int
+	crashed int
+}
+
+func checkSessionRigs(rigs []*rig.Rig) sessionCheckSummary {
+	t := tmux.NewTmux()
+	var summary sessionCheckSummary
+	for _, r := range rigs {
+		checked, healthy, crashed := checkSessionRig(t, r)
+		summary.checked += checked
+		summary.healthy += healthy
+		summary.crashed += crashed
+	}
+	return summary
+}
+
+func checkSessionRig(t *tmux.Tmux, r *rig.Rig) (checked, healthy, crashed int) {
+	entries, err := os.ReadDir(filepath.Join(r.Path, "polecats"))
+	if err != nil {
+		return 0, 0, 0
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		checked++
+		isHealthy, isCrashed := checkSessionPolecat(t, r, entry.Name())
+		if isHealthy {
+			healthy++
+		}
+		if isCrashed {
+			crashed++
+		}
+	}
+	return checked, healthy, crashed
+}
+
+func checkSessionPolecat(t *tmux.Tmux, r *rig.Rig, polecatName string) (healthy, crashed bool) {
+	sessionName := session.PolecatSessionName(session.PrefixFor(r.Name), polecatName)
+	running, err := t.HasSession(sessionName)
+	if err != nil {
+		fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("⚠"), r.Name, polecatName, style.Dim.Render("error checking session"))
+		return false, false
+	}
+	if running {
+		fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("✓"), r.Name, polecatName, style.Dim.Render("session alive"))
+		return true, false
+	}
+	fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("✗"), r.Name, polecatName, style.Dim.Render("session not running"))
+	return false, true
 }

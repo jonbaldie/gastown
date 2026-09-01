@@ -33,6 +33,15 @@ func EnsureConfigYAMLValue(beadsDir, key, value string) error {
 	}
 
 	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	newContent := updatedConfigYAMLValue(content, key, value)
+	if newContent == content {
+		return nil
+	}
+	return os.WriteFile(configPath, []byte(newContent), 0644)
+}
+
+func updatedConfigYAMLValue(content, key, value string) string {
+	wantLine := key + ": " + value
 	lines := strings.Split(content, "\n")
 	found := false
 	for i, line := range lines {
@@ -52,10 +61,7 @@ func EnsureConfigYAMLValue(beadsDir, key, value string) error {
 	if !strings.HasSuffix(newContent, "\n") {
 		newContent += "\n"
 	}
-	if newContent == content {
-		return nil
-	}
-	return os.WriteFile(configPath, []byte(newContent), 0644)
+	return newContent
 }
 
 // EnsureConfigYAMLIfMissing creates config.yaml with the required defaults when
@@ -146,19 +152,9 @@ func ConfigYAMLDisablesAutoExport(content string) bool {
 
 func ensureConfigYAML(beadsDir, prefix string, onlyIfMissing bool) error {
 	configPath := filepath.Join(beadsDir, "config.yaml")
-	wantPrefix := "prefix: " + prefix
-	wantIssuePrefix := "issue-prefix: " + prefix
-	// Gas Town rigs should disable idle-monitor to use centralized Dolt server
-	wantIdleTimeout := "dolt.idle-timeout: \"0\""
-	// Gas Town stores beads in Dolt/server-mode runtime directories that are often
-	// redirected or gitignored; bd's post-run auto-export git-add is noisy there.
-	wantExportAuto := "export.auto: \"false\""
-
 	data, err := os.ReadFile(configPath)
 	if os.IsNotExist(err) {
-		// New config: include all Gas Town defaults
-		content := wantPrefix + "\n" + wantIssuePrefix + "\n" + wantIdleTimeout + "\n" + wantExportAuto + "\n"
-		return os.WriteFile(configPath, []byte(content), 0644)
+		return os.WriteFile(configPath, []byte(configYAMLDefaultsContent(prefix)), 0644)
 	}
 	if err != nil {
 		return err
@@ -168,56 +164,36 @@ func ensureConfigYAML(beadsDir, prefix string, onlyIfMissing bool) error {
 	}
 
 	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	lines := strings.Split(content, "\n")
-	foundPrefix := false
-	foundIssuePrefix := false
-	foundIdleTimeout := false
-	foundExportAuto := false
-
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "prefix:") {
-			lines[i] = wantPrefix
-			foundPrefix = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "issue-prefix:") {
-			lines[i] = wantIssuePrefix
-			foundIssuePrefix = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "dolt.idle-timeout:") {
-			lines[i] = wantIdleTimeout
-			foundIdleTimeout = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "export.auto:") {
-			lines[i] = wantExportAuto
-			foundExportAuto = true
-			continue
-		}
-	}
-
-	if !foundPrefix {
-		lines = append(lines, wantPrefix)
-	}
-	if !foundIssuePrefix {
-		lines = append(lines, wantIssuePrefix)
-	}
-	if !foundIdleTimeout {
-		lines = append(lines, wantIdleTimeout)
-	}
-	if !foundExportAuto {
-		lines = append(lines, wantExportAuto)
-	}
-
-	newContent := strings.Join(lines, "\n")
-	if !strings.HasSuffix(newContent, "\n") {
-		newContent += "\n"
-	}
+	newContent := configYAMLDefaultsUpdated(content, prefix)
 	if newContent == content {
 		return nil
 	}
 
 	return os.WriteFile(configPath, []byte(newContent), 0644)
+}
+
+type configYAMLValue struct{ key, value string }
+
+func configYAMLDefaults(prefix string) []configYAMLValue {
+	return []configYAMLValue{
+		{"prefix", prefix},
+		{"issue-prefix", prefix},
+		{"dolt.idle-timeout", "\"0\""},
+		{"export.auto", "\"false\""},
+	}
+}
+
+func configYAMLDefaultsContent(prefix string) string {
+	var lines []string
+	for _, setting := range configYAMLDefaults(prefix) {
+		lines = append(lines, setting.key+": "+setting.value)
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func configYAMLDefaultsUpdated(content, prefix string) string {
+	for _, setting := range configYAMLDefaults(prefix) {
+		content = updatedConfigYAMLValue(content, setting.key, setting.value)
+	}
+	return content
 }

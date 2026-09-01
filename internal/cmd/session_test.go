@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -110,17 +111,17 @@ func TestSessionHealthReportJSONContract(t *testing.T) {
 }
 
 func TestRunSessionHealthJSONSessionDead(t *testing.T) {
-	oldJSON := sessionHealthJSON
-	oldMaxInactivity := sessionHealthMaxInactivity
+	oldJSON := commandBoolFlag(sessionHealthCmd, "json")
+	oldMaxInactivity, _ := sessionHealthCmd.Flags().GetDuration("max-inactivity")
 	oldStdout := os.Stdout
 	t.Cleanup(func() {
-		sessionHealthJSON = oldJSON
-		sessionHealthMaxInactivity = oldMaxInactivity
+		_ = sessionHealthCmd.Flags().Set("json", fmt.Sprint(oldJSON))
+		_ = sessionHealthCmd.Flags().Set("max-inactivity", oldMaxInactivity.String())
 		os.Stdout = oldStdout
 	})
 
-	sessionHealthJSON = true
-	sessionHealthMaxInactivity = 0
+	_ = sessionHealthCmd.Flags().Set("json", "true")
+	_ = sessionHealthCmd.Flags().Set("max-inactivity", "0s")
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe failed: %v", err)

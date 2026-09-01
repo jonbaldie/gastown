@@ -10,39 +10,35 @@ import (
 // Returns "" when no GT vars are found.
 func buildGTResourceAttrs() string {
 	var attrs []string
-	if v := os.Getenv("GT_ROLE"); v != "" {
-		attrs = append(attrs, "gt.role="+v)
-	}
-	if v := os.Getenv("GT_RIG"); v != "" {
-		attrs = append(attrs, "gt.rig="+v)
-	}
-	if v := os.Getenv("BD_ACTOR"); v != "" {
-		attrs = append(attrs, "gt.actor="+v)
-	}
-	// Polecat and crew carry their agent name in different vars.
-	if v := os.Getenv("GT_POLECAT"); v != "" {
-		attrs = append(attrs, "gt.agent="+v)
-	} else if v := os.Getenv("GT_CREW"); v != "" {
-		attrs = append(attrs, "gt.agent="+v)
-	}
-	if v := os.Getenv("GT_SESSION"); v != "" {
-		attrs = append(attrs, "gt.session="+v)
-	}
-	if v := os.Getenv("GT_RUN"); v != "" {
-		attrs = append(attrs, "gt.run_id="+v)
-	}
+	attrs = appendEnvAttr(attrs, "GT_ROLE", "gt.role")
+	attrs = appendEnvAttr(attrs, "GT_RIG", "gt.rig")
+	attrs = appendEnvAttr(attrs, "BD_ACTOR", "gt.actor")
+	attrs = appendAgentAttr(attrs)
+	attrs = appendEnvAttr(attrs, "GT_SESSION", "gt.session")
+	attrs = appendEnvAttr(attrs, "GT_RUN", "gt.run_id")
 	// Work context — set by gt prime via injectWorkContext; identifies the rig,
 	// bead, and molecule the agent is currently processing.
-	if v := os.Getenv("GT_WORK_RIG"); v != "" {
-		attrs = append(attrs, "gt.work_rig="+v)
-	}
-	if v := os.Getenv("GT_WORK_BEAD"); v != "" {
-		attrs = append(attrs, "gt.work_bead="+v)
-	}
-	if v := os.Getenv("GT_WORK_MOL"); v != "" {
-		attrs = append(attrs, "gt.work_mol="+v)
-	}
+	attrs = appendEnvAttr(attrs, "GT_WORK_RIG", "gt.work_rig")
+	attrs = appendEnvAttr(attrs, "GT_WORK_BEAD", "gt.work_bead")
+	attrs = appendEnvAttr(attrs, "GT_WORK_MOL", "gt.work_mol")
 	return strings.Join(attrs, ",")
+}
+
+func appendEnvAttr(attrs []string, envName, attrName string) []string {
+	if value := os.Getenv(envName); value != "" {
+		return append(attrs, attrName+"="+value)
+	}
+	return attrs
+}
+
+func appendAgentAttr(attrs []string) []string {
+	if value := os.Getenv("GT_POLECAT"); value != "" {
+		return append(attrs, "gt.agent="+value)
+	}
+	if value := os.Getenv("GT_CREW"); value != "" {
+		return append(attrs, "gt.agent="+value)
+	}
+	return attrs
 }
 
 // SetProcessOTELAttrs sets OTEL-related variables in the current process

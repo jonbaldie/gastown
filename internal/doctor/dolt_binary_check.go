@@ -25,7 +25,7 @@ func NewDoltBinaryCheck() *DoltBinaryCheck {
 }
 
 // Run checks if dolt is available in PATH and reports its version status.
-func (c *DoltBinaryCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *DoltBinaryCheck) Run(_ *CheckContext) *CheckResult {
 	status, version, detail := deps.CheckDolt()
 
 	switch status {

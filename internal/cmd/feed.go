@@ -14,32 +14,19 @@ import (
 	"golang.org/x/term"
 )
 
-var (
-	feedFollow   bool
-	feedLimit    int
-	feedSince    string
-	feedMol      string
-	feedType     string
-	feedRig      string
-	feedNoFollow bool
-	feedWindow   bool
-	feedPlain    bool
-	feedProblems bool
-)
-
 func init() {
 	rootCmd.AddCommand(feedCmd)
 
-	feedCmd.Flags().BoolVarP(&feedFollow, "follow", "f", false, "Stream events in real-time (default when no other flags)")
-	feedCmd.Flags().BoolVar(&feedNoFollow, "no-follow", false, "Show events once and exit")
-	feedCmd.Flags().IntVarP(&feedLimit, "limit", "n", 100, "Maximum number of events to show")
-	feedCmd.Flags().StringVar(&feedSince, "since", "", "Show events since duration (e.g., 5m, 1h, 30s)")
-	feedCmd.Flags().StringVar(&feedMol, "mol", "", "Filter by molecule/issue ID prefix")
-	feedCmd.Flags().StringVar(&feedType, "type", "", "Filter by event type (create, update, delete, comment)")
-	feedCmd.Flags().StringVar(&feedRig, "rig", "", "Filter events by rig name")
-	feedCmd.Flags().BoolVarP(&feedWindow, "window", "w", false, "Open in dedicated tmux window (creates 'feed' window)")
-	feedCmd.Flags().BoolVar(&feedPlain, "plain", false, "Use plain text output (bd activity) instead of TUI")
-	feedCmd.Flags().BoolVarP(&feedProblems, "problems", "p", false, "Start in problems view (shows stuck agents)")
+	feedCmd.Flags().BoolP("follow", "f", false, "Stream events in real-time (default when no other flags)")
+	feedCmd.Flags().Bool("no-follow", false, "Show events once and exit")
+	feedCmd.Flags().IntP("limit", "n", 100, "Maximum number of events to show")
+	feedCmd.Flags().String("since", "", "Show events since duration (e.g., 5m, 1h, 30s)")
+	feedCmd.Flags().String("mol", "", "Filter by molecule/issue ID prefix")
+	feedCmd.Flags().String("type", "", "Filter by event type (create, update, delete, comment)")
+	feedCmd.Flags().String("rig", "", "Filter events by rig name")
+	feedCmd.Flags().BoolP("window", "w", false, "Open in dedicated tmux window (creates 'feed' window)")
+	feedCmd.Flags().Bool("plain", false, "Use plain text output (bd activity) instead of TUI")
+	feedCmd.Flags().BoolP("problems", "p", false, "Start in problems view (shows stuck agents)")
 }
 
 var feedCmd = &cobra.Command{
@@ -107,7 +94,33 @@ Examples:
 	RunE: runFeed,
 }
 
-func runFeed(cmd *cobra.Command, args []string) error {
+type feedOptions struct {
+	follow   bool
+	limit    int
+	since    string
+	mol      string
+	typeName string
+	rig      string
+	noFollow bool
+	window   bool
+	plain    bool
+	problems bool
+}
+
+func runFeed(cmd *cobra.Command, _ []string) error {
+	opts := feedOptions{
+		follow:   commandBoolFlag(cmd, "follow"),
+		limit:    commandIntFlag(cmd, "limit"),
+		since:    commandStringFlag(cmd, "since"),
+		mol:      commandStringFlag(cmd, "mol"),
+		typeName: commandStringFlag(cmd, "type"),
+		rig:      commandStringFlag(cmd, "rig"),
+		noFollow: commandBoolFlag(cmd, "no-follow"),
+		window:   commandBoolFlag(cmd, "window"),
+		plain:    commandBoolFlag(cmd, "plain"),
+		problems: commandBoolFlag(cmd, "problems"),
+	}
+
 	// Must be in a Gas Town workspace
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -115,89 +128,104 @@ func runFeed(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build feed arguments for window mode
-	bdArgs := buildFeedArgs()
+	bdArgs := buildFeedArgs(opts)
 
 	// Handle --window mode: --rig is forwarded as a CLI flag via buildFeedArgs
-	if feedWindow {
-		workDir, err := os.Getwd()
+	if opts.window {
+		workDir, err := currentFeedWorkDir()
 		if err != nil {
-			return fmt.Errorf("getting current directory: %w", err)
+			return err
 		}
 		return runFeedInWindow(workDir, bdArgs)
 	}
 
 	// Use TUI by default if running in a terminal and not --plain
-	useTUI := !feedPlain && term.IsTerminal(int(os.Stdout.Fd()))
+	useTUI := !opts.plain && term.IsTerminal(int(os.Stdout.Fd()))
 
 	if useTUI {
 		// TUI mode: resolve --rig to a beads directory for BdActivitySource
-		workDir, err := os.Getwd()
+		workDir, err := resolveFeedTUIWorkDir(townRoot, opts.rig)
 		if err != nil {
-			return fmt.Errorf("getting current directory: %w", err)
+			return err
 		}
-		if feedRig != "" {
-			candidates := []string{
-				fmt.Sprintf("%s/%s/mayor/rig", townRoot, feedRig),
-				fmt.Sprintf("%s/%s", townRoot, feedRig),
-			}
-			found := false
-			for _, candidate := range candidates {
-				if _, err := os.Stat(candidate + "/.beads"); err == nil {
-					workDir = candidate
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("rig '%s' not found or has no .beads directory", feedRig)
-			}
-		}
-		return runFeedTUI(workDir, feedProblems)
+		return runFeedTUI(workDir, opts.problems)
 	}
 
 	// Plain mode: --rig is a pure event filter via PrintOptions.Rig
-	return runFeedDirect(townRoot)
+	return runFeedDirect(townRoot, opts)
+}
+
+func currentFeedWorkDir() (string, error) {
+	workDir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+	return workDir, nil
+}
+
+func resolveFeedTUIWorkDir(townRoot, rigName string) (string, error) {
+	workDir, err := currentFeedWorkDir()
+	if err != nil {
+		return "", err
+	}
+	if rigName == "" {
+		return workDir, nil
+	}
+	candidates := []string{
+		fmt.Sprintf("%s/%s/mayor/rig", townRoot, rigName),
+		fmt.Sprintf("%s/%s", townRoot, rigName),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate + "/.beads"); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("rig '%s' not found or has no .beads directory", rigName)
 }
 
 // buildFeedArgs builds the feed CLI arguments for window mode.
-func buildFeedArgs() []string {
+func buildFeedArgs(opts feedOptions) []string {
+	args := feedFollowArgs(opts)
+	return append(args, feedFilterArgs(opts)...)
+}
+
+func feedFollowArgs(opts feedOptions) []string {
+	if feedShouldFollow(opts) {
+		return []string{"--follow"}
+	}
+	return nil
+}
+
+func feedShouldFollow(opts feedOptions) bool {
+	if opts.follow {
+		return true
+	}
+	if opts.noFollow {
+		return false
+	}
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+func feedFilterArgs(opts feedOptions) []string {
 	var args []string
-
-	// Default to follow mode unless --no-follow set
-	shouldFollow := !feedNoFollow
-	if feedFollow {
-		shouldFollow = true
+	if opts.limit != 100 {
+		args = append(args, "--limit", fmt.Sprintf("%d", opts.limit))
 	}
 
-	// Auto-disable follow when stdout is not a TTY (e.g. agents, pipes),
-	// unless the user explicitly passed --follow. This prevents agents
-	// from blocking on a streaming feed that never terminates.
-	if !term.IsTerminal(int(os.Stdout.Fd())) && !feedFollow {
-		shouldFollow = false
+	if opts.since != "" {
+		args = append(args, "--since", opts.since)
 	}
 
-	if shouldFollow {
-		args = append(args, "--follow")
+	if opts.mol != "" {
+		args = append(args, "--mol", opts.mol)
 	}
 
-	if feedLimit != 100 {
-		args = append(args, "--limit", fmt.Sprintf("%d", feedLimit))
+	if opts.typeName != "" {
+		args = append(args, "--type", opts.typeName)
 	}
 
-	if feedSince != "" {
-		args = append(args, "--since", feedSince)
-	}
-
-	if feedMol != "" {
-		args = append(args, "--mol", feedMol)
-	}
-
-	if feedType != "" {
-		args = append(args, "--type", feedType)
-	}
-
-	if feedRig != "" {
-		args = append(args, "--rig", feedRig)
+	if opts.rig != "" {
+		args = append(args, "--rig", opts.rig)
 	}
 
 	return args
@@ -206,27 +234,27 @@ func buildFeedArgs() []string {
 // runFeedDirect prints events from .events.jsonl to stdout.
 // Supports --follow for tailing, and --since/--mol/--type for filtering.
 // townRoot is the resolved workspace root (incorporates --rig if set).
-func runFeedDirect(townRoot string) error {
+func runFeedDirect(townRoot string, opts feedOptions) error {
 	// Determine follow behavior:
 	// - Explicit --follow: always follow
 	// - Explicit --no-follow: never follow
 	// - Non-TTY (pipe/script): no follow unless explicitly requested
 	// - Default (TTY, no flags): follow
-	shouldFollow := feedFollow
-	if !shouldFollow && !feedNoFollow {
+	shouldFollow := opts.follow
+	if !shouldFollow && !opts.noFollow {
 		shouldFollow = term.IsTerminal(int(os.Stdout.Fd()))
 	}
 
-	opts := feed.PrintOptions{
-		Limit:  feedLimit,
+	printOpts := feed.PrintOptions{
+		Limit:  opts.limit,
 		Follow: shouldFollow,
-		Since:  feedSince,
-		Mol:    feedMol,
-		Type:   feedType,
-		Rig:    feedRig,
+		Since:  opts.since,
+		Mol:    opts.mol,
+		Type:   opts.typeName,
+		Rig:    opts.rig,
 	}
 
-	return feed.PrintGtEvents(townRoot, opts)
+	return feed.PrintGtEvents(townRoot, printOpts)
 }
 
 // runFeedTUI runs the interactive TUI feed.
@@ -309,45 +337,48 @@ func runFeedInWindow(workDir string, bdArgs []string) error {
 		return fmt.Errorf("getting current session: %w", err)
 	}
 
-	// Build the command to run in the window
-	// Use gt feed --plain instead of bd activity (which may not exist)
+	feedWindowCmd := buildFeedWindowCommand(workDir, bdArgs)
+
+	windowTarget := sessionName + ":feed"
+	return openFeedWindow(t, sessionName, windowTarget, workDir, feedWindowCmd)
+}
+
+func buildFeedWindowCommand(workDir string, bdArgs []string) string {
 	gtPath, err := os.Executable()
 	if err != nil {
 		gtPath = "gt"
 	}
-	feedWindowCmd := fmt.Sprintf("cd \"%s\" && \"%s\" feed --plain --follow", workDir, gtPath)
-	if len(bdArgs) > 0 {
-		var filteredArgs []string
-		for _, arg := range bdArgs {
-			if arg != "--follow" {
-				filteredArgs = append(filteredArgs, arg)
-			}
-		}
-		if len(filteredArgs) > 0 {
-			feedWindowCmd = fmt.Sprintf("cd \"%s\" && \"%s\" feed --plain --follow %s", workDir, gtPath, strings.Join(filteredArgs, " "))
+	base := fmt.Sprintf("cd \"%s\" && \"%s\" feed --plain --follow", workDir, gtPath)
+	filteredArgs := filterFeedWindowArgs(bdArgs)
+	if len(filteredArgs) == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s %s", base, strings.Join(filteredArgs, " "))
+}
+
+func filterFeedWindowArgs(bdArgs []string) []string {
+	var filtered []string
+	for _, arg := range bdArgs {
+		if arg != "--follow" {
+			filtered = append(filtered, arg)
 		}
 	}
+	return filtered
+}
 
-	// Check if 'feed' window already exists
-	windowTarget := sessionName + ":feed"
+func openFeedWindow(t *tmux.Tmux, sessionName, windowTarget, workDir, feedWindowCmd string) error {
 	exists, err := windowExists(t, sessionName, "feed")
 	if err != nil {
 		return fmt.Errorf("checking for feed window: %w", err)
 	}
-
 	if exists {
-		// Window exists - just switch to it
 		fmt.Printf("Switching to existing feed window...\n")
 		return selectWindow(t, windowTarget)
 	}
-
-	// Create new window named 'feed'
 	fmt.Printf("Creating feed window in session %s...\n", sessionName)
 	if err := createWindow(t, sessionName, "feed", workDir, feedWindowCmd); err != nil {
 		return fmt.Errorf("creating feed window: %w", err)
 	}
-
-	// Switch to the new window
 	return selectWindow(t, windowTarget)
 }
 

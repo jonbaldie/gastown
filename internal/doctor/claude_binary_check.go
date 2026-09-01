@@ -25,7 +25,7 @@ func NewClaudeBinaryCheck() *ClaudeBinaryCheck {
 }
 
 // Run checks if Claude Code is available in PATH and reports its version status.
-func (c *ClaudeBinaryCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *ClaudeBinaryCheck) Run(_ *CheckContext) *CheckResult {
 	status, version := deps.CheckClaudeCode()
 
 	switch status {

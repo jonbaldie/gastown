@@ -170,8 +170,12 @@ func TestLoadDisabledPatrolsFromTownSettings(t *testing.T) {
 func TestIsPatrolActive(t *testing.T) {
 	// Patrol enabled in daemon config, not in disabled list → active
 	d := &Daemon{
-		patrolConfig:    nil, // nil config = all default-enabled patrols enabled
-		disabledPatrols: nil,
+		daemonOperationalState: daemonOperationalState{
+			daemonPatrolState: daemonPatrolState{
+				patrolConfig:    nil, // nil config = all default-enabled patrols enabled
+				disabledPatrols: nil,
+			},
+		},
 	}
 	if !d.isPatrolActive("witness") {
 		t.Error("expected witness to be active with nil configs")
@@ -187,7 +191,7 @@ func TestIsPatrolActive(t *testing.T) {
 	d.disabledPatrols = nil
 	d.patrolConfig = &DaemonPatrolConfig{
 		Patrols: &PatrolsConfig{
-			Witness: &PatrolConfig{Enabled: false},
+			CorePatrols: CorePatrols{Witness: &PatrolConfig{Enabled: false}},
 		},
 	}
 	if d.isPatrolActive("witness") {
@@ -222,9 +226,11 @@ func TestDoltRemotesInterval(t *testing.T) {
 	// Custom interval
 	config := &DaemonPatrolConfig{
 		Patrols: &PatrolsConfig{
-			DoltRemotes: &DoltRemotesConfig{
-				Enabled:  true,
-				Interval: 5 * 60 * 1000000000, // 5 minutes in nanoseconds
+			DoltPatrols: DoltPatrols{
+				DoltRemotes: &DoltRemotesConfig{
+					Enabled:  true,
+					Interval: 5 * 60 * 1000000000, // 5 minutes in nanoseconds
+				},
 			},
 		},
 	}

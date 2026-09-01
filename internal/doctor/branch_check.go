@@ -33,37 +33,9 @@ func NewBranchCheck() *BranchCheck {
 
 // Run checks if persistent role directories are on main branch.
 func (c *BranchCheck) Run(ctx *CheckContext) *CheckResult {
-	var offMain []string
-	var onMain int
-
-	// Find all persistent role directories
-	dirs := c.findPersistentRoleDirs(ctx.TownRoot)
-
-	for _, dir := range dirs {
-		branch, err := c.getCurrentBranch(dir)
-		if err != nil {
-			// Skip directories that aren't git repos
-			continue
-		}
-
-		if c.isExpectedBranch(ctx.TownRoot, dir, branch) {
-			onMain++
-		} else {
-			offMain = append(offMain, fmt.Sprintf("%s (on %s)", c.relativePath(ctx.TownRoot, dir), branch))
-		}
-	}
-
-	// Cache for Fix
-	c.offMainDirs = nil
-	for _, dir := range dirs {
-		branch, err := c.getCurrentBranch(dir)
-		if err != nil {
-			continue
-		}
-		if !c.isExpectedBranch(ctx.TownRoot, dir, branch) {
-			c.offMainDirs = append(c.offMainDirs, dir)
-		}
-	}
+	// Find all persistent role directories and cache the ones Fix should update.
+	offMain, onMain, offMainDirs := c.inspectPersistentRoleDirs(ctx.TownRoot)
+	c.offMainDirs = offMainDirs
 
 	if len(offMain) == 0 {
 		if onMain == 0 {
@@ -87,6 +59,25 @@ func (c *BranchCheck) Run(ctx *CheckContext) *CheckResult {
 		Details: offMain,
 		FixHint: "Run 'gt doctor --fix' to switch to main, or manually: git checkout main && git pull",
 	}
+}
+
+// inspectPersistentRoleDirs returns the display details and directories for
+// persistent roles that are not on their expected branch.
+func (c *BranchCheck) inspectPersistentRoleDirs(townRoot string) (offMain []string, onMain int, offMainDirs []string) {
+	for _, dir := range c.findPersistentRoleDirs(townRoot) {
+		branch, err := c.getCurrentBranch(dir)
+		if err != nil {
+			// Skip directories that aren't git repos.
+			continue
+		}
+		if c.isExpectedBranch(townRoot, dir, branch) {
+			onMain++
+			continue
+		}
+		offMain = append(offMain, fmt.Sprintf("%s (on %s)", c.relativePath(townRoot, dir), branch))
+		offMainDirs = append(offMainDirs, dir)
+	}
+	return offMain, onMain, offMainDirs
 }
 
 // Fix switches all off-main directories to their expected branch.
@@ -239,42 +230,44 @@ func (c *BranchCheck) isExpectedBranch(townRoot, dir, branch string) bool {
 func (c *BranchCheck) findPersistentRoleDirs(townRoot string) []string {
 	var dirs []string
 
-	// Find all rigs
+	for _, entry := range c.townRigEntries(townRoot) {
+		dirs = append(dirs, c.persistentRoleDirsForRig(filepath.Join(townRoot, entry.Name()))...)
+	}
+
+	return dirs
+}
+
+// townRigEntries returns top-level directories that look like rigs.
+func (c *BranchCheck) townRigEntries(townRoot string) []os.DirEntry {
 	entries, err := os.ReadDir(townRoot)
 	if err != nil {
-		return dirs
+		return nil
 	}
 
+	var rigs []os.DirEntry
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || isTownInfrastructureDir(entry.Name()) {
 			continue
 		}
-		// Skip non-rig directories
-		name := entry.Name()
-		if name == "mayor" || name == ".beads" || strings.HasPrefix(name, ".") {
-			continue
-		}
-
-		rigPath := filepath.Join(townRoot, name)
-
-		// Check if this looks like a rig (has crew/, polecats/, witness/, or refinery/)
-		if !c.isRig(rigPath) {
-			continue
-		}
-
-		// Add witness/rig if exists
-		witnessRig := filepath.Join(rigPath, "witness", "rig")
-		if _, err := os.Stat(witnessRig); err == nil {
-			dirs = append(dirs, witnessRig)
-		}
-
-		// Add refinery/rig if exists
-		refineryRig := filepath.Join(rigPath, "refinery", "rig")
-		if _, err := os.Stat(refineryRig); err == nil {
-			dirs = append(dirs, refineryRig)
+		if c.isRig(filepath.Join(townRoot, entry.Name())) {
+			rigs = append(rigs, entry)
 		}
 	}
+	return rigs
+}
 
+func isTownInfrastructureDir(name string) bool {
+	return name == "mayor" || name == ".beads" || strings.HasPrefix(name, ".")
+}
+
+func (c *BranchCheck) persistentRoleDirsForRig(rigPath string) []string {
+	var dirs []string
+	for _, role := range []string{"witness", "refinery"} {
+		roleRig := filepath.Join(rigPath, role, "rig")
+		if _, err := os.Stat(roleRig); err == nil {
+			dirs = append(dirs, roleRig)
+		}
+	}
 	return dirs
 }
 
@@ -347,15 +340,7 @@ func (c *CloneDivergenceCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Gather info about each clone
-	var infos []cloneInfo
-	for _, path := range clones {
-		info, err := c.getCloneInfo(path)
-		if err != nil {
-			continue // Skip problematic clones
-		}
-		infos = append(infos, info)
-	}
+	infos := c.validCloneInfos(clones)
 
 	if len(infos) == 0 {
 		return &CheckResult{
@@ -365,24 +350,7 @@ func (c *CloneDivergenceCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Check for clones significantly behind origin/main
-	var warnings []string
-	var errors []string
-
-	for _, info := range infos {
-		relPath := c.relativePath(ctx.TownRoot, info.path)
-
-		// Only check clones on main branch (others are caught by BranchCheck)
-		if info.branch != "main" && info.branch != "master" {
-			continue
-		}
-
-		if info.behindBy > 50 {
-			errors = append(errors, fmt.Sprintf("%s: %d commits behind origin/main (EMERGENCY)", relPath, info.behindBy))
-		} else if info.behindBy > 10 {
-			warnings = append(warnings, fmt.Sprintf("%s: %d commits behind origin/main", relPath, info.behindBy))
-		}
-	}
+	warnings, errors := c.cloneDivergenceDetails(ctx.TownRoot, infos)
 
 	if len(errors) > 0 {
 		return &CheckResult{
@@ -411,71 +379,114 @@ func (c *CloneDivergenceCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
+func (c *CloneDivergenceCheck) validCloneInfos(clones []string) []cloneInfo {
+	var infos []cloneInfo
+	for _, path := range clones {
+		info, err := c.getCloneInfo(path)
+		if err == nil {
+			infos = append(infos, info)
+		}
+	}
+	return infos
+}
+
+func (c *CloneDivergenceCheck) cloneDivergenceDetails(townRoot string, infos []cloneInfo) (warnings, errors []string) {
+	for _, info := range infos {
+		if !isMainBranch(info.branch) {
+			continue
+		}
+		relPath := c.relativePath(townRoot, info.path)
+		switch {
+		case info.behindBy > 50:
+			errors = append(errors, fmt.Sprintf("%s: %d commits behind origin/main (EMERGENCY)", relPath, info.behindBy))
+		case info.behindBy > 10:
+			warnings = append(warnings, fmt.Sprintf("%s: %d commits behind origin/main", relPath, info.behindBy))
+		}
+	}
+	return warnings, errors
+}
+
+func isMainBranch(branch string) bool {
+	return branch == "main" || branch == "master"
+}
+
 // findAllClones finds all git clones in the workspace.
 func (c *CloneDivergenceCheck) findAllClones(townRoot string) []string {
 	var clones []string
 
+	for _, entry := range c.cloneRigEntries(townRoot) {
+		rigPath := filepath.Join(townRoot, entry.Name())
+		clones = append(clones, c.standardClonePaths(rigPath)...)
+		clones = append(clones, c.crewClonePaths(rigPath)...)
+		clones = append(clones, c.polecatClonePaths(rigPath, entry.Name())...)
+	}
+
+	return clones
+}
+
+func (c *CloneDivergenceCheck) cloneRigEntries(townRoot string) []os.DirEntry {
 	entries, err := os.ReadDir(townRoot)
 	if err != nil {
-		return clones
+		return nil
 	}
-
+	var rigs []os.DirEntry
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == "mayor" || entry.Name() == "docs" {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && entry.Name() != "mayor" && entry.Name() != "docs" {
+			rigs = append(rigs, entry)
+		}
+	}
+	return rigs
+}
+
+func (c *CloneDivergenceCheck) standardClonePaths(rigPath string) []string {
+	var clones []string
+	for _, location := range []string{"mayor/rig", "witness/rig", "refinery/rig"} {
+		path := filepath.Join(rigPath, location)
+		if c.isGitRepo(path) {
+			clones = append(clones, path)
+		}
+	}
+	return clones
+}
+
+func (c *CloneDivergenceCheck) crewClonePaths(rigPath string) []string {
+	crewEntries, err := os.ReadDir(filepath.Join(rigPath, "crew"))
+	if err != nil {
+		return nil
+	}
+	var clones []string
+	crewPath := filepath.Join(rigPath, "crew")
+	for _, crew := range crewEntries {
+		if !crew.IsDir() || strings.HasPrefix(crew.Name(), ".") {
 			continue
 		}
-
-		rigPath := filepath.Join(townRoot, entry.Name())
-
-		// Check standard clone locations
-		locations := []string{
-			"mayor/rig",
-			"witness/rig",
-			"refinery/rig",
-		}
-
-		for _, loc := range locations {
-			path := filepath.Join(rigPath, loc)
-			if c.isGitRepo(path) {
-				clones = append(clones, path)
-			}
-		}
-
-		// Add crew members
-		crewPath := filepath.Join(rigPath, "crew")
-		if crewEntries, err := os.ReadDir(crewPath); err == nil {
-			for _, crew := range crewEntries {
-				if crew.IsDir() && !strings.HasPrefix(crew.Name(), ".") {
-					path := filepath.Join(crewPath, crew.Name())
-					if c.isGitRepo(path) {
-						clones = append(clones, path)
-					}
-				}
-			}
-		}
-
-		// Add polecats (handle both new and old structures)
-		// New structure: polecats/<name>/<rigname>/
-		// Old structure: polecats/<name>/
-		rigName := entry.Name()
-		polecatsPath := filepath.Join(rigPath, "polecats")
-		if polecatEntries, err := os.ReadDir(polecatsPath); err == nil {
-			for _, polecat := range polecatEntries {
-				if polecat.IsDir() && !strings.HasPrefix(polecat.Name(), ".") {
-					// Try new structure first
-					path := filepath.Join(polecatsPath, polecat.Name(), rigName)
-					if !c.isGitRepo(path) {
-						// Fall back to old structure
-						path = filepath.Join(polecatsPath, polecat.Name())
-					}
-					if c.isGitRepo(path) {
-						clones = append(clones, path)
-					}
-				}
-			}
+		path := filepath.Join(crewPath, crew.Name())
+		if c.isGitRepo(path) {
+			clones = append(clones, path)
 		}
 	}
+	return clones
+}
 
+func (c *CloneDivergenceCheck) polecatClonePaths(rigPath, rigName string) []string {
+	polecatEntries, err := os.ReadDir(filepath.Join(rigPath, "polecats"))
+	if err != nil {
+		return nil
+	}
+	var clones []string
+	polecatsPath := filepath.Join(rigPath, "polecats")
+	for _, polecat := range polecatEntries {
+		if !polecat.IsDir() || strings.HasPrefix(polecat.Name(), ".") {
+			continue
+		}
+		path := filepath.Join(polecatsPath, polecat.Name(), rigName)
+		if !c.isGitRepo(path) {
+			path = filepath.Join(polecatsPath, polecat.Name())
+		}
+		if c.isGitRepo(path) {
+			clones = append(clones, path)
+		}
+	}
 	return clones
 }
 

@@ -14,13 +14,31 @@ import (
 	"github.com/jonbaldie/gastown/internal/events"
 )
 
+func (c *Client) ping(ctx context.Context) error {
+	_, err := c.call(ctx, TownRequest{Op: opPing})
+	return err
+}
+
 // Worker is the town module for session talk. Nudge, prime, mail, sling,
 // witness, cost ingest, and session start call this type.
 type Worker struct {
+	workerRuntime
+	*workerClient
+	workerReports
+}
+
+type workerRuntime struct {
 	townRoot string
-	store    *Store
-	client   *Client
 	local    *Server
+}
+
+type workerClient struct {
+	store  *Store
+	client *Client
+}
+
+type workerReports struct {
+	*workerClient
 }
 
 // Open dials a running Worker server. If none is up, it starts one.
@@ -38,17 +56,22 @@ func Open(townRoot string) (*Worker, error) {
 	client := newClient(townRoot)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := client.ping(ctx); err != nil {
+	if err := client.Ping(ctx); err != nil {
 		httpClient, httpErr := newHTTPClient(townRoot)
 		if httpErr != nil {
 			return nil, fmt.Errorf("worker open: %w", err)
 		}
-		if pingErr := httpClient.ping(ctx); pingErr != nil {
+		if pingErr := httpClient.Ping(ctx); pingErr != nil {
 			return nil, fmt.Errorf("%w: %v", ErrServerDown, pingErr)
 		}
 		client = httpClient
 	}
-	return &Worker{townRoot: townRoot, store: store, client: client}, nil
+	workerClient := &workerClient{store: store, client: client}
+	return &Worker{
+		workerRuntime: workerRuntime{townRoot: townRoot},
+		workerClient:  workerClient,
+		workerReports: workerReports{workerClient: workerClient},
+	}, nil
 }
 
 // Listen starts an in-process Worker server. Tests and `gt worker serve` use this.
@@ -59,7 +82,7 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 		return nil, err
 	}
 	client := newClient(townRoot)
-	if !srv.unixActive() {
+	if !srv.UnixActive() {
 		httpClient, err := newHTTPClient(townRoot)
 		if err != nil {
 			_ = srv.Close()
@@ -67,11 +90,11 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 		}
 		client = httpClient
 	}
+	workerClient := &workerClient{store: store, client: client}
 	return &Worker{
-		townRoot: townRoot,
-		store:    store,
-		client:   client,
-		local:    srv,
+		workerRuntime: workerRuntime{townRoot: townRoot, local: srv},
+		workerClient:  workerClient,
+		workerReports: workerReports{workerClient: workerClient},
 	}, nil
 }
 
@@ -80,15 +103,15 @@ func Listen(townRoot string, tmux TmuxSession) (*Worker, error) {
 // that transport is bound, and the loopback port when the socket is
 // unavailable. The two are returned separately because a socket path and a
 // host and port are not interchangeable to a caller that wants to connect.
-func (w *Worker) Endpoint() (network, address string) {
-	if w.local == nil || w.local.unixActive() {
+func (w *workerRuntime) Endpoint() (network, address string) {
+	if w.local == nil || w.local.UnixActive() {
 		return "unix", SocketPath(w.townRoot)
 	}
 	return "tcp", fmt.Sprintf("127.0.0.1:%d", w.local.port)
 }
 
 // Close stops an in-process server.
-func (w *Worker) Close() error {
+func (w *workerRuntime) Close() error {
 	if w.local != nil {
 		return w.local.Close()
 	}
@@ -187,7 +210,7 @@ func (w *Worker) PushContext(ctx context.Context, push ContextPush) error {
 }
 
 // LiveRun returns the live run for a bead, if any.
-func (w *Worker) LiveRun(ctx context.Context, beadID string) (*Run, error) {
+func (w *workerReports) LiveRun(ctx context.Context, beadID string) (*Run, error) {
 	resp, err := w.client.call(ctx, TownRequest{Op: opLiveBead, BeadID: beadID})
 	if err != nil {
 		return nil, err
@@ -199,7 +222,7 @@ func (w *Worker) LiveRun(ctx context.Context, beadID string) (*Run, error) {
 }
 
 // Events returns persisted lifecycle and activity events.
-func (w *Worker) Events(ctx context.Context) ([]Event, error) {
+func (w *workerReports) Events(ctx context.Context) ([]Event, error) {
 	resp, err := w.client.call(ctx, TownRequest{Op: opEvents})
 	if err != nil {
 		return nil, err
@@ -208,7 +231,7 @@ func (w *Worker) Events(ctx context.Context) ([]Event, error) {
 }
 
 // Costs returns persisted cost records from runtime telemetry.
-func (w *Worker) Costs(ctx context.Context) ([]CostRecord, error) {
+func (w *workerReports) Costs(ctx context.Context) ([]CostRecord, error) {
 	resp, err := w.client.call(ctx, TownRequest{Op: opCosts})
 	if err != nil {
 		return nil, err
@@ -218,33 +241,33 @@ func (w *Worker) Costs(ctx context.Context) ([]CostRecord, error) {
 
 // ReadCosts reads the production cost store without a live server.
 func ReadCosts(townRoot string) ([]CostRecord, error) {
-	return newStore(townRoot).readCosts()
+	return newStore(townRoot).ReadCosts()
 }
 
 // ReadEvents reads persisted Worker events without a live server.
 func ReadEvents(townRoot string) ([]Event, error) {
-	return newStore(townRoot).readEvents()
+	return newStore(townRoot).ReadEvents()
 }
 
 // ReadRun loads one run from the production store.
 func ReadRun(townRoot, runID string) (*Run, error) {
-	return newStore(townRoot).getRun(runID)
+	return newStore(townRoot).GetRun(runID)
 }
 
 // LiveRunFromStore returns the live run for a bead from the production store.
 func LiveRunFromStore(townRoot, beadID string) (*Run, error) {
-	return newStore(townRoot).liveRunForBead(beadID)
+	return newStore(townRoot).LiveRunForBead(beadID)
 }
 
 // LatestRunForBead returns the most recently updated run for a bead.
 func LatestRunForBead(townRoot, beadID string) (*Run, error) {
-	return newStore(townRoot).latestRunForBead(beadID)
+	return newStore(townRoot).LatestRunForBead(beadID)
 }
 
 // StoppedWithoutDone reports whether the bead's latest run stopped without
 // gt done. Mountain failure counts rise only in this case.
 func StoppedWithoutDone(townRoot, beadID string) bool {
-	run, err := newStore(townRoot).latestRunForBead(beadID)
+	run, err := newStore(townRoot).LatestRunForBead(beadID)
 	if err != nil || run == nil {
 		return false
 	}
@@ -253,12 +276,12 @@ func StoppedWithoutDone(townRoot, beadID string) bool {
 
 // RunBySession returns the live run for a session from the production store.
 func RunBySession(townRoot, sessionID string) (*Run, error) {
-	return newStore(townRoot).getRunBySession(sessionID)
+	return newStore(townRoot).GetRunBySession(sessionID)
 }
 
 // LatestRunForSession returns the most recently updated run for a session.
 func LatestRunForSession(townRoot, sessionID string) (*Run, error) {
-	return newStore(townRoot).latestRunForSession(sessionID)
+	return newStore(townRoot).LatestRunForSession(sessionID)
 }
 
 // MarkSessionStopped closes the latest live run for a session after its runtime
@@ -266,7 +289,7 @@ func LatestRunForSession(townRoot, sessionID string) (*Run, error) {
 // no-ops so legacy sessions can use the same shutdown path.
 func MarkSessionStopped(townRoot, sessionID string) error {
 	store := newStore(townRoot)
-	run, err := store.latestRunForSession(sessionID)
+	run, err := store.LatestRunForSession(sessionID)
 	if errors.Is(err, ErrRunNotFound) {
 		return nil
 	}
@@ -287,10 +310,10 @@ func markRunStopped(store *Store, run *Run) error {
 	run.State = StateStopped
 	run.UpdatedAt = now
 	run.StoppedAt = now
-	if err := store.putRun(run); err != nil {
+	if err := store.PutRun(run); err != nil {
 		return err
 	}
-	return store.appendEvent(Event{
+	return store.AppendEvent(Event{
 		Type: EventStopped, RunID: run.RunID, BeadID: run.BeadID,
 		SessionID: run.SessionID, Timestamp: now,
 	})
@@ -321,7 +344,7 @@ func PersistRun(townRoot string, run *Run) error {
 	if err := s.ensure(); err != nil {
 		return err
 	}
-	return s.putRun(run)
+	return s.PutRun(run)
 }
 
 // StoreHealth reports health from persisted run data. No health reply after
@@ -330,7 +353,7 @@ func StoreHealth(townRoot, sessionID string, grace time.Duration) (*Health, erro
 	if grace <= 0 {
 		grace = healthGrace()
 	}
-	run, err := newStore(townRoot).getRunBySession(sessionID)
+	run, err := newStore(townRoot).GetRunBySession(sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +393,7 @@ func serverLive(townRoot string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	return c.ping(ctx) == nil
+	return c.Ping(ctx) == nil
 }
 
 // EnsureServer starts `gt worker serve` when no transport is live.
@@ -378,20 +401,32 @@ func EnsureServer(townRoot string) error {
 	if serverLive(townRoot) {
 		return nil
 	}
+	cmd, err := startWorkerServer(townRoot)
+	if err != nil {
+		return err
+	}
+	return waitForWorkerServer(cmd, townRoot)
+}
+
+func startWorkerServer(townRoot string) (*exec.Cmd, error) {
 	bin, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("finding gt binary: %w", err)
+		return nil, fmt.Errorf("finding gt binary: %w", err)
 	}
 	if isTestExecutable(bin) {
-		return fmt.Errorf("%w: refusing to start test binary as worker server", ErrServerDown)
+		return nil, fmt.Errorf("%w: refusing to start test binary as worker server", ErrServerDown)
 	}
 	cmd := exec.Command(bin, "worker", "serve", "--town", townRoot)
 	cmd.SysProcAttr = serveSysProcAttr()
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%w: starting worker server: %v", ErrServerDown, err)
+		return nil, fmt.Errorf("%w: starting worker server: %v", ErrServerDown, err)
 	}
+	return cmd, nil
+}
+
+func waitForWorkerServer(cmd *exec.Cmd, townRoot string) error {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	deadline := time.Now().Add(5 * time.Second)

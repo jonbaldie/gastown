@@ -42,14 +42,14 @@ func SanitizeBranchSegment(s string) string {
 // IssueShower provides issue lookup without requiring a full Beads instance.
 // *Beads satisfies this interface, so existing callers need no changes.
 type IssueShower interface {
-	Show(id string) (*Issue, error)
+	Show(_ string) (*Issue, error)
 }
 
 // BranchChecker provides branch existence checks without importing the git package.
 // This avoids circular imports between beads and git.
 type BranchChecker interface {
-	BranchExists(name string) (bool, error)
-	RemoteBranchExists(remote, name string) (bool, error)
+	BranchExists(_ string) (bool, error)
+	RemoteBranchExists(_, _ string) (bool, error)
 }
 
 // GetIntegrationBranchField extracts the integration_branch field from an epic's description.
@@ -194,46 +194,8 @@ func DetectIntegrationBranch(bd IssueShower, checker BranchChecker, issueID stri
 			return "", fmt.Errorf("looking up issue %s: %w", currentID, err)
 		}
 
-		if issue.Type == "epic" {
-			// First try explicit metadata
-			integrationBranch := GetIntegrationBranchField(issue.Description)
-			if integrationBranch == "" {
-				// Fall back to default naming convention
-				integrationBranch = BuildIntegrationBranchName("", issue.ID, issue.Title)
-			}
-
-			// Check remote first (authoritative -- local refs can be stale
-			// if the remote branch was deleted without pruning)
-			exists, err := checker.RemoteBranchExists("origin", integrationBranch)
-			if err != nil {
-				// Remote check failed (network issue) -- fall back to local.
-				// Swallow local errors: detection is best-effort.
-				localExists, _ := checker.BranchExists(integrationBranch)
-				if localExists {
-					return integrationBranch, nil
-				}
-			} else if exists {
-				return integrationBranch, nil
-			}
-
-			// If the default {title} template didn't match, try the legacy
-			// {epic} template. Branches created by the old code used hardcoded
-			// "integration/" + epicID, which won't match the new {title} default.
-			if GetIntegrationBranchField(issue.Description) == "" {
-				legacyBranch := BuildIntegrationBranchName(LegacyIntegrationBranchTemplate, issue.ID, issue.Title)
-				if legacyBranch != integrationBranch {
-					exists, err := checker.RemoteBranchExists("origin", legacyBranch)
-					if err != nil {
-						localExists, _ := checker.BranchExists(legacyBranch)
-						if localExists {
-							return legacyBranch, nil
-						}
-					} else if exists {
-						return legacyBranch, nil
-					}
-				}
-			}
-			// Epic found but no integration branch - continue checking parents
+		if branch := integrationBranchForEpic(checker, issue); branch != "" {
+			return branch, nil
 		}
 
 		if issue.Parent == "" {
@@ -243,4 +205,41 @@ func DetectIntegrationBranch(bd IssueShower, checker BranchChecker, issueID stri
 	}
 
 	return "", nil
+}
+
+func integrationBranchForEpic(checker BranchChecker, issue *Issue) string {
+	if issue.Type != "epic" {
+		return ""
+	}
+
+	explicitBranch := GetIntegrationBranchField(issue.Description)
+	branch := explicitBranch
+	if branch == "" {
+		branch = BuildIntegrationBranchName("", issue.ID, issue.Title)
+	}
+	if integrationBranchExists(checker, branch) {
+		return branch
+	}
+	if explicitBranch != "" {
+		return ""
+	}
+
+	legacyBranch := BuildIntegrationBranchName(LegacyIntegrationBranchTemplate, issue.ID, issue.Title)
+	if legacyBranch != branch && integrationBranchExists(checker, legacyBranch) {
+		return legacyBranch
+	}
+	return ""
+}
+
+// integrationBranchExists treats the remote as authoritative. A local branch is
+// considered only when the remote check itself fails, so stale local refs do not
+// cause a deleted integration branch to be selected.
+func integrationBranchExists(checker BranchChecker, branch string) bool {
+	exists, err := checker.RemoteBranchExists("origin", branch)
+	if err == nil {
+		return exists
+	}
+
+	localExists, _ := checker.BranchExists(branch)
+	return localExists
 }

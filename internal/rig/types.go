@@ -62,8 +62,8 @@ type RigSummary struct {
 	HasRefinery  bool   `json:"has_refinery"`
 }
 
-// Summary returns a RigSummary for this rig.
-func (r *Rig) Summary() RigSummary {
+// Summary returns a RigSummary for the rig.
+func Summary(r *Rig) RigSummary {
 	return RigSummary{
 		Name:         r.Name,
 		PolecatCount: len(r.Polecats),

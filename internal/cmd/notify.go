@@ -38,44 +38,13 @@ func init() {
 	rootCmd.AddCommand(notifyCmd)
 }
 
-func runNotify(cmd *cobra.Command, args []string) error {
-	// Get current agent bead ID
-	cwd, err := os.Getwd()
+func runNotify(_ *cobra.Command, args []string) error {
+	bd, agentBeadID, err := resolveNotifyTarget()
 	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
+		return err
 	}
 
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	roleInfo, err := GetRoleWithContext(cwd, townRoot)
-	if err != nil {
-		return fmt.Errorf("determining role: %w", err)
-	}
-
-	ctx := RoleContext{
-		Role:     roleInfo.Role,
-		Rig:      roleInfo.Rig,
-		Polecat:  roleInfo.Polecat,
-		TownRoot: townRoot,
-		WorkDir:  cwd,
-	}
-
-	agentBeadID := getAgentBeadID(ctx)
-	if agentBeadID == "" {
-		return fmt.Errorf("could not determine agent bead ID for role %s", roleInfo.Role)
-	}
-
-	bd := beads.New(townRoot)
-
-	// Get current level
-	currentLevel, err := bd.GetAgentNotificationLevel(agentBeadID)
-	if err != nil {
-		// Agent bead might not exist yet - default to normal
-		currentLevel = beads.NotifyNormal
-	}
+	currentLevel := getNotificationLevel(bd, agentBeadID)
 
 	// No args: show current level
 	if len(args) == 0 {
@@ -84,12 +53,9 @@ func runNotify(cmd *cobra.Command, args []string) error {
 	}
 
 	// Set new level
-	newLevel := args[0]
-	switch newLevel {
-	case beads.NotifyVerbose, beads.NotifyNormal, beads.NotifyMuted:
-		// Valid level
-	default:
-		return fmt.Errorf("invalid level %q: use verbose, normal, or muted", newLevel)
+	newLevel, err := parseNotificationLevel(args[0])
+	if err != nil {
+		return err
 	}
 
 	if err := bd.UpdateAgentNotificationLevel(agentBeadID, newLevel); err != nil {
@@ -100,6 +66,56 @@ func runNotify(cmd *cobra.Command, args []string) error {
 	showNotificationLevelDescription(newLevel)
 
 	return nil
+}
+
+func resolveNotifyTarget() (*beads.Beads, string, error) {
+	// Get current agent bead ID
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, "", fmt.Errorf("getting current directory: %w", err)
+	}
+
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return nil, "", fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	roleInfo, err := GetRoleWithContext(cwd, townRoot)
+	if err != nil {
+		return nil, "", fmt.Errorf("determining role: %w", err)
+	}
+
+	ctx := RoleContext{
+		Role:     roleInfo.Role,
+		Rig:      roleInfo.Rig,
+		Polecat:  roleInfo.Polecat,
+		TownRoot: townRoot,
+		WorkDir:  cwd,
+	}
+	agentBeadID := getAgentBeadID(ctx)
+	if agentBeadID == "" {
+		return nil, "", fmt.Errorf("could not determine agent bead ID for role %s", roleInfo.Role)
+	}
+
+	return beads.New(townRoot), agentBeadID, nil
+}
+
+func getNotificationLevel(bd *beads.Beads, agentBeadID string) string {
+	level, err := bd.GetAgentNotificationLevel(agentBeadID)
+	if err != nil {
+		// Agent bead might not exist yet - default to normal
+		return beads.NotifyNormal
+	}
+	return level
+}
+
+func parseNotificationLevel(level string) (string, error) {
+	switch level {
+	case beads.NotifyVerbose, beads.NotifyNormal, beads.NotifyMuted:
+		return level, nil
+	default:
+		return "", fmt.Errorf("invalid level %q: use verbose, normal, or muted", level)
+	}
 }
 
 func showNotificationLevel(level string) {

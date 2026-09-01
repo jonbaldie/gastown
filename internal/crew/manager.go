@@ -71,12 +71,16 @@ func validateSessionID(id string) error {
 	if id == "" || id == "last" {
 		return nil
 	}
-	for _, c := range id {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
-			return fmt.Errorf("invalid session ID %q: contains character %q; session IDs may only contain alphanumeric characters, hyphens, underscores, and dots", id, string(c))
+	for _, character := range id {
+		if !isSessionIDCharacter(character) {
+			return fmt.Errorf("invalid session ID %q: contains character %q; session IDs may only contain alphanumeric characters, hyphens, underscores, and dots", id, string(character))
 		}
 	}
 	return nil
+}
+
+func isSessionIDCharacter(character rune) bool {
+	return strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.", character)
 }
 
 // buildResumeArgs validates the agent preset supports resume and returns the
@@ -147,7 +151,7 @@ func validateNewCrewName(name string) error {
 // tmuxOps is the tmux seam for crew start and stop. Production uses *tmux.Tmux.
 type tmuxOps interface {
 	session.TmuxOps
-	SetCrewCycleBindings(session string) error
+	SetCrewCycleBindings(_ string) error
 }
 
 // Manager handles crew worker lifecycle.
@@ -174,11 +178,6 @@ func (m *Manager) crewDir(name string) string {
 // stateFile returns the state file path for a crew worker.
 func (m *Manager) stateFile(name string) string {
 	return filepath.Join(m.crewDir(name), "state.json")
-}
-
-// mailDir returns the mail directory path for a crew worker.
-func (m *Manager) mailDir(name string) string {
-	return filepath.Join(m.crewDir(name), "mail")
 }
 
 // exists checks if a crew worker exists.
@@ -225,117 +224,126 @@ func (m *Manager) addLocked(name string, createBranch bool) (*CrewWorker, error)
 	if m.exists(name) {
 		return nil, ErrCrewExists
 	}
-
 	crewPath := m.crewDir(name)
-
-	// Create crew directory if needed
-	crewBaseDir := filepath.Join(m.rig.Path, "crew")
-	if err := os.MkdirAll(crewBaseDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating crew dir: %w", err)
+	defaultBranch, err := prepareCrewClone(m, crewPath)
+	if err != nil {
+		return nil, err
+	}
+	branchName, err := prepareCrewBranch(crewPath, name, defaultBranch, createBranch)
+	if err != nil {
+		return nil, err
+	}
+	if err := prepareCrewWorkspace(m.rig, name, crewPath); err != nil {
+		return nil, err
 	}
 
+	return saveNewCrewWorker(m, name, crewPath, branchName)
+}
+
+func prepareCrewClone(m *Manager, crewPath string) (string, error) {
+	if err := os.MkdirAll(filepath.Join(m.rig.Path, "crew"), 0755); err != nil {
+		return "", fmt.Errorf("creating crew dir: %w", err)
+	}
 	if m.rig.GitURL == "" {
-		return nil, fmt.Errorf("rig %q has no git URL configured — crew workspaces require a clonable repository (set git_url in rigs.json or re-add the rig with a remote URL)", m.rig.Name)
+		return "", fmt.Errorf("rig %q has no git URL configured — crew workspaces require a clonable repository (set git_url in rigs.json or re-add the rig with a remote URL)", m.rig.Name)
 	}
-
-	// Clone the rig repo on the configured default branch.
-	// CloneBranch ensures the crew lands on the rig's default_branch even when
-	// it differs from the remote's HEAD. Falls back gracefully for new/empty repos.
 	defaultBranch := m.rig.DefaultBranch()
-	if m.rig.LocalRepo != "" {
-		if err := m.git.CloneBranchWithReference(m.rig.GitURL, crewPath, defaultBranch, m.rig.LocalRepo); err != nil {
-			style.PrintWarning("could not clone branch %s with reference: %v", defaultBranch, err)
-			// Try branch without reference (network fetch), then reference without branch
-			if err := m.git.CloneBranch(m.rig.GitURL, crewPath, defaultBranch); err != nil {
-				style.PrintWarning("could not clone branch %s: %v", defaultBranch, err)
-				if err := m.git.CloneWithReference(m.rig.GitURL, crewPath, m.rig.LocalRepo); err != nil {
-					style.PrintWarning("could not clone with reference: %v", err)
-					if err := m.git.Clone(m.rig.GitURL, crewPath); err != nil {
-						return nil, fmt.Errorf("cloning rig: %w", err)
-					}
-				}
-			}
-		}
-	} else {
-		if err := m.git.CloneBranch(m.rig.GitURL, crewPath, defaultBranch); err != nil {
-			style.PrintWarning("could not clone branch %s, falling back to default: %v", defaultBranch, err)
-			if err := m.git.Clone(m.rig.GitURL, crewPath); err != nil {
-				return nil, fmt.Errorf("cloning rig: %w", err)
-			}
-		}
+	if err := cloneCrewRepository(m.git, m.rig, crewPath, defaultBranch); err != nil {
+		return "", err
 	}
-
-	// Sync remotes from mayor/rig so crew clone matches the rig's remote config.
-	// This prevents origin pointing to upstream instead of the fork.
 	if err := m.syncRemotesFromRig(crewPath); err != nil {
-		if m.rig.PushURL != "" {
-			if rmErr := os.RemoveAll(crewPath); rmErr != nil {
-				style.PrintWarning("could not clean up orphaned clone at %s: %v", crewPath, rmErr)
-			}
-			return nil, fmt.Errorf("syncing remotes from rig (push URL required): %w", err)
+		if syncErr := handleInitialRemoteSyncError(m.rig, crewPath, err); syncErr != nil {
+			return "", syncErr
 		}
-		style.PrintWarning("could not sync remotes from rig: %v", err)
 	}
+	return defaultBranch, nil
+}
 
+func cloneCrewRepository(g *git.Git, r *rig.Rig, crewPath, defaultBranch string) error {
+	if r.LocalRepo == "" {
+		if err := git.CloneBranch(g, r.GitURL, crewPath, defaultBranch); err == nil {
+			return nil
+		} else {
+			style.PrintWarning("could not clone branch %s, falling back to default: %v", defaultBranch, err)
+		}
+		return wrapCloneError(git.Clone(g, r.GitURL, crewPath))
+	}
+	if err := git.CloneBranchWithReference(g, r.GitURL, crewPath, defaultBranch, r.LocalRepo); err == nil {
+		return nil
+	} else {
+		style.PrintWarning("could not clone branch %s with reference: %v", defaultBranch, err)
+	}
+	if err := git.CloneBranch(g, r.GitURL, crewPath, defaultBranch); err == nil {
+		return nil
+	} else {
+		style.PrintWarning("could not clone branch %s: %v", defaultBranch, err)
+	}
+	if err := git.CloneWithReference(g, r.GitURL, crewPath, r.LocalRepo); err == nil {
+		return nil
+	} else {
+		style.PrintWarning("could not clone with reference: %v", err)
+	}
+	return wrapCloneError(git.Clone(g, r.GitURL, crewPath))
+}
+
+func wrapCloneError(err error) error {
+	if err != nil {
+		return fmt.Errorf("cloning rig: %w", err)
+	}
+	return nil
+}
+
+func handleInitialRemoteSyncError(r *rig.Rig, crewPath string, syncErr error) error {
+	if r.PushURL == "" {
+		style.PrintWarning("could not sync remotes from rig: %v", syncErr)
+		return nil
+	}
+	if err := os.RemoveAll(crewPath); err != nil {
+		style.PrintWarning("could not clean up orphaned clone at %s: %v", crewPath, err)
+	}
+	return fmt.Errorf("syncing remotes from rig (push URL required): %w", syncErr)
+}
+
+func prepareCrewBranch(crewPath, name, defaultBranch string, create bool) (string, error) {
+	if !create {
+		return defaultBranch, nil
+	}
+	branchName := fmt.Sprintf("crew/%s", name)
 	crewGit := git.NewGit(crewPath)
-	branchName := defaultBranch
-
-	// Optionally create a working branch
-	if createBranch {
-		branchName = fmt.Sprintf("crew/%s", name)
-		if err := crewGit.CreateBranch(branchName); err != nil {
-			_ = os.RemoveAll(crewPath) // best-effort cleanup
-			return nil, fmt.Errorf("creating branch: %w", err)
-		}
-		if err := crewGit.Checkout(branchName); err != nil {
-			_ = os.RemoveAll(crewPath) // best-effort cleanup
-			return nil, fmt.Errorf("checking out branch: %w", err)
-		}
+	if err := git.CreateBranch(crewGit, branchName); err != nil {
+		_ = os.RemoveAll(crewPath)
+		return "", fmt.Errorf("creating branch: %w", err)
 	}
-
-	// Create mail directory for mail delivery
-	mailPath := m.mailDir(name)
-	if err := os.MkdirAll(mailPath, 0755); err != nil {
-		_ = os.RemoveAll(crewPath) // best-effort cleanup
-		return nil, fmt.Errorf("creating mail dir: %w", err)
+	if err := git.Checkout(crewGit, branchName); err != nil {
+		_ = os.RemoveAll(crewPath)
+		return "", fmt.Errorf("checking out branch: %w", err)
 	}
+	return branchName, nil
+}
 
-	if err := rig.Provision(m.rig.Path, crewPath, "crew"); err != nil {
+func prepareCrewWorkspace(r *rig.Rig, name, crewPath string) error {
+	if err := os.MkdirAll(filepath.Join(crewPath, "mail"), 0755); err != nil {
+		_ = os.RemoveAll(crewPath)
+		return fmt.Errorf("creating mail dir: %w", err)
+	}
+	if err := rig.Provision(r.Path, crewPath, "crew"); err != nil {
 		style.PrintWarning("could not provision crew workspace: %v", err)
 	}
-
-	addTownRoot := filepath.Dir(m.rig.Path)
-	addRuntimeConfig := config.ResolveWorkerAgentConfig(name, addTownRoot, m.rig.Path)
-	crewSettingsDir := config.RoleSettingsDir("crew", m.rig.Path)
-	if err := runtime.EnsureSettingsForRole(crewSettingsDir, crewPath, "crew", addRuntimeConfig); err != nil {
+	townRoot := filepath.Dir(r.Path)
+	runtimeConfig := config.ResolveWorkerAgentConfig(name, townRoot, r.Path)
+	if err := runtime.EnsureSettingsForRole(config.RoleSettingsDir("crew", r.Path), crewPath, "crew", runtimeConfig); err != nil {
 		style.PrintWarning("could not install runtime settings: %v", err)
 	}
+	return nil
+}
 
-	// NOTE: Slash commands (.claude/commands/) are provisioned at town level by gt install.
-	// All agents inherit them via Claude's directory traversal - no per-workspace copies needed.
-
-	// NOTE: We intentionally do NOT write to CLAUDE.md here.
-	// Gas Town context is injected ephemerally via SessionStart hook (gt prime).
-	// Writing to CLAUDE.md would overwrite project instructions and leak
-	// Gas Town internals into the project repo when workers commit/push.
-
-	// Create crew worker state
+func saveNewCrewWorker(m *Manager, name, crewPath, branchName string) (*CrewWorker, error) {
 	now := time.Now()
-	crew := &CrewWorker{
-		Name:      name,
-		Rig:       m.rig.Name,
-		ClonePath: crewPath,
-		Branch:    branchName,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	// Save state
+	crew := &CrewWorker{Name: name, Rig: m.rig.Name, ClonePath: crewPath, Branch: branchName, CreatedAt: now, UpdatedAt: now}
 	if err := m.saveState(crew); err != nil {
-		_ = os.RemoveAll(crewPath) // best-effort cleanup
+		_ = os.RemoveAll(crewPath)
 		return nil, fmt.Errorf("saving state: %w", err)
 	}
-
 	return crew, nil
 }
 
@@ -347,92 +355,100 @@ func (m *Manager) syncRemotesFromRig(crewPath string) error {
 	if _, err := os.Stat(rigRepoPath); err != nil {
 		return fmt.Errorf("mayor/rig not found at %s", rigRepoPath)
 	}
-
 	rigGit := git.NewGit(rigRepoPath)
 	crewGit := git.NewGit(crewPath)
-
-	remotes, err := rigGit.Remotes()
+	remotes, err := git.Remotes(rigGit)
 	if err != nil {
 		return fmt.Errorf("reading rig remotes: %w", err)
 	}
-
 	for _, remote := range remotes {
-		if remote == "" || remote == "mayor" {
-			continue // Skip empty and local-only remotes
-		}
-
-		url, err := rigGit.RemoteURL(remote)
-		if err != nil {
-			continue
-		}
-
-		// Check if remote exists in crew clone
-		existingURL, existErr := crewGit.RemoteURL(remote)
-		if existErr != nil {
-			// Remote doesn't exist — add it
-			if _, addErr := crewGit.AddRemote(remote, url); addErr != nil {
-				style.PrintWarning("could not add remote %s: %v", remote, addErr)
-			}
-		} else if existingURL != url {
-			// Remote exists but URL differs — update it
-			if _, setErr := crewGit.SetRemoteURL(remote, url); setErr != nil {
-				style.PrintWarning("could not update remote %s: %v", remote, setErr)
-			}
-		}
-
-		// Sync push URL for read-only upstream forks.
-		// Dual-source authority model: origin's push URL comes from town.json
-		// (via m.rig.PushURL, which config.json populates). Non-origin remotes
-		// get push URLs from mayor's git config. This split relies on town.json
-		// and config.json staying in sync — RegisterRig writes both to ensure this.
-		if remote == "origin" {
-			configPushURL := strings.TrimSpace(m.rig.PushURL)
-			if configPushURL != "" {
-				if cfgErr := crewGit.ConfigurePushURL(remote, configPushURL); cfgErr != nil {
-					return fmt.Errorf("syncing origin push URL: %w", cfgErr)
-				}
-			} else {
-				// Config has no push URL — only clear if crew has a stale custom push URL.
-				crewPush, pushErr := crewGit.GetPushURL(remote)
-				crewFetch, fetchErr := crewGit.RemoteURL(remote)
-				if pushErr != nil || fetchErr != nil {
-					style.PrintWarning("could not read crew remote URLs for %s, skipping cleanup: push=%v fetch=%v", remote, pushErr, fetchErr)
-				} else if crewPush != crewFetch {
-					style.PrintWarning("clearing stale push URL for %s (was: %s)", remote, util.RedactURL(crewPush))
-					if clrErr := crewGit.ClearPushURL(remote); clrErr != nil {
-						style.PrintWarning("could not clear push URL for %s: %v", remote, clrErr)
-					}
-				}
-			}
-		} else {
-			pushURL, pushErr := rigGit.GetPushURL(remote)
-			if pushErr != nil {
-				style.PrintWarning("could not read push URL for %s, skipping: %v", remote, pushErr)
-			} else if pushURL != "" && pushURL != url {
-				if cfgErr := crewGit.ConfigurePushURL(remote, pushURL); cfgErr != nil {
-					style.PrintWarning("could not sync push URL for %s: %v", remote, cfgErr)
-				}
-			} else {
-				// Mayor has no custom push URL — only clear if crew has a stale one.
-				crewPush, cpErr := crewGit.GetPushURL(remote)
-				crewFetch, cfErr := crewGit.RemoteURL(remote)
-				if cpErr != nil || cfErr != nil {
-					style.PrintWarning("could not read crew remote URLs for %s, skipping cleanup: push=%v fetch=%v", remote, cpErr, cfErr)
-				} else if crewPush != crewFetch {
-					style.PrintWarning("clearing stale push URL for %s (was: %s)", remote, util.RedactURL(crewPush))
-					if clrErr := crewGit.ClearPushURL(remote); clrErr != nil {
-						style.PrintWarning("could not clear push URL for %s: %v", remote, clrErr)
-					}
-				}
-			}
+		if err := syncCrewRemote(m.rig, rigGit, crewGit, remote); err != nil {
+			return err
 		}
 	}
-
 	return nil
+}
+
+func syncCrewRemote(r *rig.Rig, rigGit, crewGit *git.Git, remote string) error {
+	if remote == "" || remote == "mayor" {
+		return nil
+	}
+	fetchURL, err := git.RemoteURL(rigGit, remote)
+	if err != nil {
+		return nil
+	}
+	syncCrewFetchURL(crewGit, remote, fetchURL)
+	if remote == "origin" {
+		return syncOriginPushURL(r, crewGit, remote)
+	}
+	syncSecondaryPushURL(rigGit, crewGit, remote, fetchURL)
+	return nil
+}
+
+func syncCrewFetchURL(crewGit *git.Git, remote, fetchURL string) {
+	existingURL, err := git.RemoteURL(crewGit, remote)
+	if err != nil {
+		if _, err := git.AddRemote(crewGit, remote, fetchURL); err != nil {
+			style.PrintWarning("could not add remote %s: %v", remote, err)
+		}
+		return
+	}
+	if existingURL != fetchURL {
+		if _, err := git.SetRemoteURL(crewGit, remote, fetchURL); err != nil {
+			style.PrintWarning("could not update remote %s: %v", remote, err)
+		}
+	}
+}
+
+func syncOriginPushURL(r *rig.Rig, crewGit *git.Git, remote string) error {
+	pushURL := strings.TrimSpace(r.PushURL)
+	if pushURL == "" {
+		clearStalePushURL(crewGit, remote)
+		return nil
+	}
+	if err := git.ConfigurePushURL(crewGit, remote, pushURL); err != nil {
+		return fmt.Errorf("syncing origin push URL: %w", err)
+	}
+	return nil
+}
+
+func syncSecondaryPushURL(rigGit, crewGit *git.Git, remote, fetchURL string) {
+	pushURL, err := git.GetPushURL(rigGit, remote)
+	if err != nil {
+		style.PrintWarning("could not read push URL for %s, skipping: %v", remote, err)
+		return
+	}
+	if pushURL == "" || pushURL == fetchURL {
+		clearStalePushURL(crewGit, remote)
+		return
+	}
+	if err := git.ConfigurePushURL(crewGit, remote, pushURL); err != nil {
+		style.PrintWarning("could not sync push URL for %s: %v", remote, err)
+	}
+}
+
+func clearStalePushURL(crewGit *git.Git, remote string) {
+	pushURL, pushErr := git.GetPushURL(crewGit, remote)
+	fetchURL, fetchErr := git.RemoteURL(crewGit, remote)
+	if pushErr != nil || fetchErr != nil {
+		style.PrintWarning("could not read crew remote URLs for %s, skipping cleanup: push=%v fetch=%v", remote, pushErr, fetchErr)
+		return
+	}
+	if pushURL == fetchURL {
+		return
+	}
+	style.PrintWarning("clearing stale push URL for %s (was: %s)", remote, util.RedactURL(pushURL))
+	if err := git.ClearPushURL(crewGit, remote); err != nil {
+		style.PrintWarning("could not clear push URL for %s: %v", remote, err)
+	}
 }
 
 // Remove deletes a crew worker.
 func (m *Manager) Remove(name string, force bool) error {
+	return removeCrew(m, name, force)
+}
+
+func removeCrew(m *Manager, name string, force bool) error {
 	if err := validateCrewName(name); err != nil {
 		return err
 	}
@@ -449,7 +465,7 @@ func (m *Manager) Remove(name string, force bool) error {
 
 	if !force {
 		crewGit := git.NewGit(crewPath)
-		hasChanges, err := crewGit.HasUncommittedChanges()
+		hasChanges, err := git.HasUncommittedChanges(crewGit)
 		if err == nil && hasChanges {
 			return ErrHasChanges
 		}
@@ -465,6 +481,10 @@ func (m *Manager) Remove(name string, force bool) error {
 
 // List returns all crew workers in the rig.
 func (m *Manager) List() ([]*CrewWorker, error) {
+	return listCrew(m)
+}
+
+func listCrew(m *Manager) ([]*CrewWorker, error) {
 	crewBaseDir := filepath.Join(m.rig.Path, "crew")
 
 	entries, err := os.ReadDir(crewBaseDir)
@@ -525,6 +545,10 @@ func (m *Manager) saveState(crew *CrewWorker) error {
 
 // loadState reads crew worker state from disk.
 func (m *Manager) loadState(name string) (*CrewWorker, error) {
+	return loadCrewState(m, name)
+}
+
+func loadCrewState(m *Manager, name string) (*CrewWorker, error) {
 	stateFile := m.stateFile(name)
 
 	data, err := os.ReadFile(stateFile)
@@ -563,21 +587,33 @@ func (m *Manager) Rename(oldName, newName string) error {
 	if err := validateNewCrewName(newName); err != nil {
 		return err
 	}
-	// Lock both names in alphabetical order to prevent deadlock.
+	firstLock, secondLock, err := lockCrewPair(m, oldName, newName)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = firstLock.Unlock() }()
+	defer func() { _ = secondLock.Unlock() }()
+	return renameCrewLocked(m, oldName, newName)
+}
+
+func lockCrewPair(m *Manager, oldName, newName string) (*flock.Flock, *flock.Flock, error) {
 	first, second := oldName, newName
 	if first > second {
 		first, second = second, first
 	}
-	fl1, err := m.lockCrew(first)
+	firstLock, err := m.lockCrew(first)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer func() { _ = fl1.Unlock() }()
-	fl2, err := m.lockCrew(second)
+	secondLock, err := m.lockCrew(second)
 	if err != nil {
-		return err
+		_ = firstLock.Unlock()
+		return nil, nil, err
 	}
-	defer func() { _ = fl2.Unlock() }()
+	return firstLock, secondLock, nil
+}
+
+func renameCrewLocked(m *Manager, oldName, newName string) error {
 	if !m.exists(oldName) {
 		return ErrCrewNotFound
 	}
@@ -588,15 +624,11 @@ func (m *Manager) Rename(oldName, newName string) error {
 	oldPath := m.crewDir(oldName)
 	newPath := m.crewDir(newName)
 
-	// Rename directory
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return fmt.Errorf("renaming crew dir: %w", err)
 	}
-
-	// Update state file with new name and path
 	crew, err := m.loadState(newName)
 	if err != nil {
-		// Rollback on error (best-effort)
 		_ = os.Rename(newPath, oldPath)
 		return fmt.Errorf("loading state: %w", err)
 	}
@@ -606,7 +638,6 @@ func (m *Manager) Rename(oldName, newName string) error {
 	crew.UpdatedAt = time.Now()
 
 	if err := m.saveState(crew); err != nil {
-		// Rollback on error (best-effort)
 		_ = os.Rename(newPath, oldPath)
 		return fmt.Errorf("saving state: %w", err)
 	}
@@ -617,6 +648,10 @@ func (m *Manager) Rename(oldName, newName string) error {
 // Pristine ensures a crew worker is up-to-date with remote.
 // It runs git pull --rebase.
 func (m *Manager) Pristine(name string) (*PristineResult, error) {
+	return pristineCrew(m, name)
+}
+
+func pristineCrew(m *Manager, name string) (*PristineResult, error) {
 	if err := validateCrewName(name); err != nil {
 		return nil, err
 	}
@@ -632,14 +667,14 @@ func (m *Manager) Pristine(name string) (*PristineResult, error) {
 	}
 
 	// Check for uncommitted changes
-	hasChanges, err := crewGit.HasUncommittedChanges()
+	hasChanges, err := git.HasUncommittedChanges(crewGit)
 	if err != nil {
 		return nil, fmt.Errorf("checking changes: %w", err)
 	}
 	result.HadChanges = hasChanges
 
 	// Pull latest (use origin and current branch)
-	if err := crewGit.Pull("origin", ""); err != nil {
+	if err := git.Pull(crewGit, "origin", ""); err != nil {
 		result.PullError = err.Error()
 	} else {
 		result.Pulled = true
@@ -672,171 +707,144 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 	if err := validateCrewName(name); err != nil {
 		return err
 	}
-
-	// Acquire lock to prevent concurrent Start/Remove races.
 	fl, err := m.lockCrew(name)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = fl.Unlock() }()
-
-	// Get or create the crew worker (using locked variants to avoid lock re-entry)
-	worker, err := m.getLocked(name)
-	if err == ErrCrewNotFound {
-		worker, err = m.addLocked(name, false) // No feature branch for crew
-		if err != nil {
-			return fmt.Errorf("creating crew workspace: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("getting crew worker: %w", err)
-	}
-
-	// Sync remotes (especially pushurl) on every start so that existing crew
-	// clones pick up config changes made after initial creation.
-	if err := m.syncRemotesFromRig(worker.ClonePath); err != nil {
-		// Non-fatal for existing clones: pushurl may not be configured.
-		// Only log when a push URL is expected but sync failed.
-		if m.rig.PushURL != "" {
-			style.PrintWarning("could not sync remotes to crew %s: %v", name, err)
-		}
-	}
-
-	// Ensure runtime settings exist in the shared crew parent directory.
-	// Settings are passed to Claude Code via --settings flag.
-	townRoot := filepath.Dir(m.rig.Path)
-	runtimeConfig := config.ResolveWorkerAgentConfig(name, townRoot, m.rig.Path)
-	crewSettingsDir := config.RoleSettingsDir("crew", m.rig.Path)
-	if err := runtime.EnsureSettingsForRole(crewSettingsDir, worker.ClonePath, "crew", runtimeConfig); err != nil {
-		return fmt.Errorf("ensuring runtime settings: %w", err)
-	}
-
-	// Build startup command before killing any existing session so a
-	// validation failure cannot leave the user without a running session.
-	var claudeCmd string
-	if opts.ResumeSessionID != "" {
-		// Validate session ID to prevent shell injection. The ID is interpolated
-		// into a shell command string, so reject anything with metacharacters.
-		if err := validateSessionID(opts.ResumeSessionID); err != nil {
-			return err
-		}
-
-		// Resume mode: build command without prompt, then append resume flag.
-		// No beacon is passed as prompt - the resumed session already has context.
-		// The SessionStart hook still fires and injects Gas Town metadata.
-		claudeCmd, err = config.BuildCrewStartupCommandWithAgentOverride(m.rig.Name, name, m.rig.Path, "", opts.AgentOverride)
-		if err != nil {
-			return fmt.Errorf("building resume command: %w", err)
-		}
-
-		// Determine agent preset for resume flag.
-		// Try worker-level agent config first, fall back to "claude".
-		agentName := opts.AgentOverride
-		if agentName == "" {
-			if rc := config.ResolveWorkerAgentConfig(name, townRoot, m.rig.Path); rc != nil && rc.Provider != "" {
-				agentName = rc.Provider
-			} else {
-				agentName = "claude"
-			}
-		}
-		resumeArgs, err := buildResumeArgs(agentName, opts.ResumeSessionID)
-		if err != nil {
-			return err
-		}
-		claudeCmd += " " + resumeArgs
-	} else {
-		// Normal start: build beacon for predecessor discovery via /resume.
-		// Only used in fresh-start mode — resumed sessions already have context.
-		address := session.BeaconRecipient("crew", name, m.rig.Name)
-		topic := opts.Topic
-		if topic == "" {
-			topic = "start"
-		}
-		beacon := session.FormatStartupBeacon(session.BeaconConfig{
-			Recipient: address,
-			Sender:    "human",
-			Topic:     topic,
-		})
-		claudeCmd, err = config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
-			Role:        "crew",
-			Rig:         m.rig.Name,
-			AgentName:   name,
-			TownRoot:    townRoot,
-			Prompt:      beacon,
-			Topic:       topic,
-			SessionName: m.SessionName(name),
-		}, m.rig.Path, beacon, opts.AgentOverride)
-		if err != nil {
-			return fmt.Errorf("building startup command: %w", err)
-		}
-	}
-
-	t := m.tmux
-	sessionID := m.SessionName(name)
-
-	// Check if session already exists — kill AFTER command is fully built
-	// so validation failures don't destroy the user's running session.
-	if opts.KillExisting {
-		if _, err := session.KillExistingSession(t, townRoot, sessionID, false); err != nil {
-			return err
-		}
-	} else if _, err := session.KillExistingSession(t, townRoot, sessionID, true); err != nil {
-		if errors.Is(err, session.ErrSessionAlive) {
-			return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
-		}
-		return err
-	}
-
-	if opts.Interactive {
-		claudeCmd = strings.Replace(claudeCmd, " --dangerously-skip-permissions", "", 1)
-	}
-
-	theme := tmux.ResolveSessionTheme(townRoot, m.rig.Name, "crew", name)
-	if theme != nil {
-		theme.Window = session.ResolveWindowTint(m.rig.Name, "crew")
-		if theme.Window == nil && session.IsWindowTintEnabled(m.rig.Name) {
-			factor := session.ResolveTintFactor(m.rig.Name)
-			theme.Window = &tmux.WindowStyle{
-				BG: tmux.DarkenColor(theme.BG, factor),
-				FG: theme.FG,
-			}
-		}
-	}
-
-	topic := opts.Topic
-	if topic == "" {
-		topic = "start"
-	}
-	_, err = session.StartSession(t, "crew", session.Work{
-		SessionID:        sessionID,
-		WorkDir:          worker.ClonePath,
-		TownRoot:         townRoot,
-		RigPath:          m.rig.Path,
-		RigName:          m.rig.Name,
-		AgentName:        name,
-		Command:          claudeCmd,
-		AgentOverride:    opts.AgentOverride,
-		RuntimeConfigDir: opts.ClaudeConfigDir,
-		Theme:            theme,
-		Beacon: session.BeaconConfig{
-			Recipient: session.BeaconRecipient("crew", name, m.rig.Name),
-			Sender:    "human",
-			Topic:     topic,
-		},
-		Interactive: opts.Interactive,
-	})
+	worker, err := prepareCrewStart(m, name)
 	if err != nil {
 		return err
 	}
-
-	_ = t.SetCrewCycleBindings(sessionID)
-
-	if !opts.Interactive {
-		if _, pollerErr := nudge.StartPoller(townRoot, sessionID); pollerErr != nil {
-			style.PrintWarning("could not start nudge poller for %s: %v", name, pollerErr)
-		}
+	townRoot := filepath.Dir(m.rig.Path)
+	command, err := buildCrewStartupCommand(m, name, townRoot, opts)
+	if err != nil {
+		return err
 	}
-
+	sessionID := m.SessionName(name)
+	if err := prepareCrewSession(m.tmux, townRoot, sessionID, opts.KillExisting); err != nil {
+		return err
+	}
+	if opts.Interactive {
+		command = strings.Replace(command, " --dangerously-skip-permissions", "", 1)
+	}
+	if err := startCrewSession(m, worker, name, townRoot, sessionID, command, opts); err != nil {
+		return err
+	}
+	finishCrewSessionStart(m.tmux, townRoot, sessionID, name, opts.Interactive)
 	return nil
+}
+
+func finishCrewSessionStart(t tmuxOps, townRoot, sessionID, name string, interactive bool) {
+	_ = t.SetCrewCycleBindings(sessionID)
+	if interactive {
+		return
+	}
+	if _, err := nudge.StartPoller(townRoot, sessionID); err != nil {
+		style.PrintWarning("could not start nudge poller for %s: %v", name, err)
+	}
+}
+
+func prepareCrewStart(m *Manager, name string) (*CrewWorker, error) {
+	worker, err := m.getLocked(name)
+	if err == ErrCrewNotFound {
+		worker, err = m.addLocked(name, false)
+		if err != nil {
+			return nil, fmt.Errorf("creating crew workspace: %w", err)
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("getting crew worker: %w", err)
+	}
+	if err := m.syncRemotesFromRig(worker.ClonePath); err != nil && m.rig.PushURL != "" {
+		style.PrintWarning("could not sync remotes to crew %s: %v", name, err)
+	}
+	townRoot := filepath.Dir(m.rig.Path)
+	runtimeConfig := config.ResolveWorkerAgentConfig(name, townRoot, m.rig.Path)
+	if err := runtime.EnsureSettingsForRole(config.RoleSettingsDir("crew", m.rig.Path), worker.ClonePath, "crew", runtimeConfig); err != nil {
+		return nil, fmt.Errorf("ensuring runtime settings: %w", err)
+	}
+	return worker, nil
+}
+
+func buildCrewStartupCommand(m *Manager, name, townRoot string, opts StartOptions) (string, error) {
+	if opts.ResumeSessionID != "" {
+		return buildCrewResumeCommand(m, name, townRoot, opts)
+	}
+	topic := crewStartTopic(opts.Topic)
+	beacon := session.FormatStartupBeacon(session.BeaconConfig{Recipient: session.BeaconRecipient("crew", name, m.rig.Name), Sender: "human", Topic: topic})
+	command, err := config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
+		Role: "crew", Rig: m.rig.Name, AgentName: name, TownRoot: townRoot, Prompt: beacon,
+		Topic: topic, SessionName: m.SessionName(name),
+	}, m.rig.Path, beacon, opts.AgentOverride)
+	if err != nil {
+		return "", fmt.Errorf("building startup command: %w", err)
+	}
+	return command, nil
+}
+
+func buildCrewResumeCommand(m *Manager, name, townRoot string, opts StartOptions) (string, error) {
+	if err := validateSessionID(opts.ResumeSessionID); err != nil {
+		return "", err
+	}
+	command, err := config.BuildCrewStartupCommandWithAgentOverride(m.rig.Name, name, m.rig.Path, "", opts.AgentOverride)
+	if err != nil {
+		return "", fmt.Errorf("building resume command: %w", err)
+	}
+	agentName := opts.AgentOverride
+	if agentName == "" {
+		agentName = resolvedCrewAgentName(name, townRoot, m.rig.Path)
+	}
+	resumeArgs, err := buildResumeArgs(agentName, opts.ResumeSessionID)
+	if err != nil {
+		return "", err
+	}
+	return command + " " + resumeArgs, nil
+}
+
+func resolvedCrewAgentName(name, townRoot, rigPath string) string {
+	if runtimeConfig := config.ResolveWorkerAgentConfig(name, townRoot, rigPath); runtimeConfig != nil && runtimeConfig.Provider != "" {
+		return runtimeConfig.Provider
+	}
+	return "claude"
+}
+
+func crewStartTopic(topic string) string {
+	if topic == "" {
+		return "start"
+	}
+	return topic
+}
+
+func prepareCrewSession(t tmuxOps, townRoot, sessionID string, killExisting bool) error {
+	_, err := session.KillExistingSession(t, townRoot, sessionID, !killExisting)
+	if errors.Is(err, session.ErrSessionAlive) {
+		return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
+	}
+	return err
+}
+
+func crewSessionTheme(townRoot, rigName, name string) *tmux.Theme {
+	theme := tmux.ResolveSessionTheme(townRoot, rigName, "crew", name)
+	if theme == nil {
+		return nil
+	}
+	theme.Window = session.ResolveWindowTint(rigName, "crew")
+	if theme.Window == nil && session.IsWindowTintEnabled(rigName) {
+		theme.Window = &tmux.WindowStyle{BG: tmux.DarkenColor(theme.BG, session.ResolveTintFactor(rigName)), FG: theme.FG}
+	}
+	return theme
+}
+
+func startCrewSession(m *Manager, worker *CrewWorker, name, townRoot, sessionID, command string, opts StartOptions) error {
+	topic := crewStartTopic(opts.Topic)
+	_, err := session.StartSession(m.tmux, "crew", session.Work{
+		SessionID: sessionID, WorkDir: worker.ClonePath, TownRoot: townRoot, RigPath: m.rig.Path,
+		RigName: m.rig.Name, AgentName: name, Command: command, AgentOverride: opts.AgentOverride,
+		RuntimeConfigDir: opts.ClaudeConfigDir, Theme: crewSessionTheme(townRoot, m.rig.Name, name),
+		Beacon:      session.BeaconConfig{Recipient: session.BeaconRecipient("crew", name, m.rig.Name), Sender: "human", Topic: topic},
+		Interactive: opts.Interactive,
+	})
+	return err
 }
 
 // Stop terminates a crew member's tmux session.

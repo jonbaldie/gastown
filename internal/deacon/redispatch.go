@@ -201,7 +201,7 @@ func (s *BeadRedispatchState) RecordAttempt(rig string) {
 }
 
 // RecordEscalation records that the bead was escalated to Mayor.
-func (s *BeadRedispatchState) RecordEscalation() {
+func RecordEscalation(s *BeadRedispatchState) {
 	s.Escalated = true
 	s.EscalatedAt = time.Now().UTC()
 }
@@ -217,13 +217,7 @@ func (s *BeadRedispatchState) RecordEscalation() {
 //   - cooldown: min time between re-dispatches (0 = use default)
 func Redispatch(townRoot, beadID, sourceRig string, maxAttempts int, cooldown time.Duration) *RedispatchResult {
 	result := &RedispatchResult{BeadID: beadID}
-
-	if maxAttempts <= 0 {
-		maxAttempts = DefaultMaxRedispatches
-	}
-	if cooldown <= 0 {
-		cooldown = DefaultRedispatchCooldown
-	}
+	maxAttempts, cooldown = normalizeRedispatchLimits(maxAttempts, cooldown)
 
 	// Load state
 	state, err := LoadRedispatchState(townRoot)
@@ -236,50 +230,12 @@ func Redispatch(townRoot, beadID, sourceRig string, maxAttempts int, cooldown ti
 	beadState := state.GetBeadState(beadID)
 	result.Attempts = beadState.AttemptCount
 
-	// Check if already escalated
-	if beadState.Escalated {
-		result.Action = "already-escalated"
-		result.Message = fmt.Sprintf("bead already escalated to Mayor at %s", beadState.EscalatedAt.Format(time.RFC3339))
-		return result
-	}
-
-	// Check cooldown
-	if beadState.IsInCooldown(cooldown) {
-		remaining := beadState.CooldownRemaining(cooldown)
-		result.Action = "cooldown"
-		result.Message = fmt.Sprintf("in cooldown (remaining: %s)", remaining.Round(time.Second))
-		return result
-	}
-
-	// Check if we should escalate instead of re-dispatching
-	if beadState.ShouldEscalate(maxAttempts) {
-		result.Action = "escalated"
-		result.Attempts = beadState.AttemptCount
-
-		// Escalate to Mayor
-		err := escalateToMayor(townRoot, beadID, beadState)
-		if err != nil {
-			result.Error = fmt.Errorf("escalating to mayor: %w", err)
-			result.Message = fmt.Sprintf("failed to escalate after %d attempts: %v", beadState.AttemptCount, err)
-		} else {
-			beadState.RecordEscalation()
-			result.Message = fmt.Sprintf("escalated to Mayor after %d failed re-dispatches", beadState.AttemptCount)
-		}
-
-		// Save state regardless of escalation success
-		if saveErr := SaveRedispatchState(townRoot, state); saveErr != nil {
-			// Log but don't fail - escalation mail was already sent
-			result.Message += fmt.Sprintf(" (warning: state save failed: %v)", saveErr)
-		}
-
-		return result
+	if terminal, handled := terminalRedispatchResult(townRoot, beadID, state, beadState, result, maxAttempts, cooldown); handled {
+		return terminal
 	}
 
 	// Determine target rig
-	targetRig := sourceRig
-	if targetRig == "" {
-		targetRig = resolveRigFromBead(townRoot, beadID)
-	}
+	targetRig := resolveRedispatchTarget(townRoot, beadID, sourceRig)
 	if targetRig == "" {
 		result.Action = "error"
 		result.Error = fmt.Errorf("cannot determine target rig for bead %s", beadID)
@@ -292,50 +248,103 @@ func Redispatch(townRoot, beadID, sourceRig string, maxAttempts int, cooldown ti
 	// failure) is treated as "not open" to avoid re-dispatching closed
 	// beads when bd show fails. (gt-sy8)
 	beadStatus := getBeadStatusForRedispatch(townRoot, beadID)
-	if beadStatus != "open" {
-		result.Action = "skipped"
-		if beadStatus == "" {
-			result.Message = "could not determine bead status (treating as not open)"
-		} else {
-			result.Message = fmt.Sprintf("bead status is %q (expected open)", beadStatus)
-		}
+	if skipped := redispatchStatusResult(result, beadStatus); skipped {
 		return result
 	}
 
-	// Determine agent override from model escalation config (if any).
-	escalationAgent := resolveAgentForRedispatch(townRoot, targetRig, beadState)
+	return dispatchRedispatch(townRoot, beadID, targetRig, state, beadState, result, maxAttempts)
+}
 
-	// Re-dispatch via gt sling
-	err = slingBead(townRoot, beadID, targetRig, escalationAgent)
-	if err != nil {
+func normalizeRedispatchLimits(maxAttempts int, cooldown time.Duration) (int, time.Duration) {
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultMaxRedispatches
+	}
+	if cooldown <= 0 {
+		cooldown = DefaultRedispatchCooldown
+	}
+	return maxAttempts, cooldown
+}
+
+func terminalRedispatchResult(townRoot, beadID string, state *RedispatchState, beadState *BeadRedispatchState, result *RedispatchResult, maxAttempts int, cooldown time.Duration) (*RedispatchResult, bool) {
+	if beadState.Escalated {
+		result.Action = "already-escalated"
+		result.Message = fmt.Sprintf("bead already escalated to Mayor at %s", beadState.EscalatedAt.Format(time.RFC3339))
+		return result, true
+	}
+	if beadState.IsInCooldown(cooldown) {
+		remaining := beadState.CooldownRemaining(cooldown)
+		result.Action = "cooldown"
+		result.Message = fmt.Sprintf("in cooldown (remaining: %s)", remaining.Round(time.Second))
+		return result, true
+	}
+	if beadState.ShouldEscalate(maxAttempts) {
+		escalateRedispatch(townRoot, beadID, state, beadState, result)
+		return result, true
+	}
+	return result, false
+}
+
+func escalateRedispatch(townRoot, beadID string, state *RedispatchState, beadState *BeadRedispatchState, result *RedispatchResult) {
+	result.Action = "escalated"
+	result.Attempts = beadState.AttemptCount
+	if err := escalateToMayor(townRoot, beadID, beadState); err != nil {
+		result.Error = fmt.Errorf("escalating to mayor: %w", err)
+		result.Message = fmt.Sprintf("failed to escalate after %d attempts: %v", beadState.AttemptCount, err)
+	} else {
+		RecordEscalation(beadState)
+		result.Message = fmt.Sprintf("escalated to Mayor after %d failed re-dispatches", beadState.AttemptCount)
+	}
+	if saveErr := SaveRedispatchState(townRoot, state); saveErr != nil {
+		result.Message += fmt.Sprintf(" (warning: state save failed: %v)", saveErr)
+	}
+}
+
+func resolveRedispatchTarget(townRoot, beadID, sourceRig string) string {
+	if sourceRig != "" {
+		return sourceRig
+	}
+	return resolveRigFromBead(townRoot, beadID)
+}
+
+func redispatchStatusResult(result *RedispatchResult, beadStatus string) bool {
+	if beadStatus == "open" {
+		return false
+	}
+	result.Action = "skipped"
+	if beadStatus == "" {
+		result.Message = "could not determine bead status (treating as not open)"
+	} else {
+		result.Message = fmt.Sprintf("bead status is %q (expected open)", beadStatus)
+	}
+	return true
+}
+
+func dispatchRedispatch(townRoot, beadID, targetRig string, state *RedispatchState, beadState *BeadRedispatchState, result *RedispatchResult, maxAttempts int) *RedispatchResult {
+	escalationAgent := resolveAgentForRedispatch(townRoot, targetRig, beadState)
+	if err := slingBead(townRoot, beadID, targetRig, escalationAgent); err != nil {
 		result.Action = "error"
 		result.Error = fmt.Errorf("slinging bead to %s: %w", targetRig, err)
-
-		// Record the failed attempt
 		beadState.LastAgent = escalationAgent
 		beadState.RecordAttempt(targetRig)
 		_ = SaveRedispatchState(townRoot, state)
-
 		return result
 	}
-
-	// Record successful dispatch
 	beadState.LastAgent = escalationAgent
 	beadState.RecordAttempt(targetRig)
 	result.Action = "redispatched"
 	result.Attempts = beadState.AttemptCount
-	if escalationAgent != "" {
-		result.Message = fmt.Sprintf("re-dispatched to %s with agent %q (attempt %d/%d)", targetRig, escalationAgent, beadState.AttemptCount, maxAttempts)
-	} else {
-		result.Message = fmt.Sprintf("re-dispatched to %s (attempt %d/%d)", targetRig, beadState.AttemptCount, maxAttempts)
-	}
-
-	// Save state
+	result.Message = redispatchSuccessMessage(targetRig, escalationAgent, beadState.AttemptCount, maxAttempts)
 	if saveErr := SaveRedispatchState(townRoot, state); saveErr != nil {
 		result.Message += fmt.Sprintf(" (warning: state save failed: %v)", saveErr)
 	}
-
 	return result
+}
+
+func redispatchSuccessMessage(targetRig, escalationAgent string, attempts, maxAttempts int) string {
+	if escalationAgent != "" {
+		return fmt.Sprintf("re-dispatched to %s with agent %q (attempt %d/%d)", targetRig, escalationAgent, attempts, maxAttempts)
+	}
+	return fmt.Sprintf("re-dispatched to %s (attempt %d/%d)", targetRig, attempts, maxAttempts)
 }
 
 // PruneRedispatchState removes entries for beads that are no longer open.

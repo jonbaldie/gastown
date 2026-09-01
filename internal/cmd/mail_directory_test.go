@@ -18,10 +18,6 @@ func TestRunMailDirectory_WellKnownAddresses(t *testing.T) {
 
 	withCwd(t, townRoot)
 
-	// Reset flag
-	mailDirJSON = false
-	defer func() { mailDirJSON = false }()
-
 	output := captureStdout(t, func() {
 		// runMailDirectory will warn on stderr about beads, but should not error
 		if err := runMailDirectory(&cobra.Command{}, nil); err != nil {
@@ -56,11 +52,8 @@ func TestRunMailDirectory_JSONOutput(t *testing.T) {
 
 	withCwd(t, townRoot)
 
-	mailDirJSON = true
-	defer func() { mailDirJSON = false }()
-
 	output := captureStdout(t, func() {
-		if err := runMailDirectory(&cobra.Command{}, nil); err != nil {
+		if err := runMailDirectory(mailDirectoryTestCommand(true), nil); err != nil {
 			t.Fatalf("runMailDirectory error: %v", err)
 		}
 	})
@@ -95,11 +88,8 @@ func TestRunMailDirectory_Deduplication(t *testing.T) {
 
 	withCwd(t, townRoot)
 
-	mailDirJSON = true
-	defer func() { mailDirJSON = false }()
-
 	output := captureStdout(t, func() {
-		if err := runMailDirectory(&cobra.Command{}, nil); err != nil {
+		if err := runMailDirectory(mailDirectoryTestCommand(true), nil); err != nil {
 			t.Fatalf("runMailDirectory error: %v", err)
 		}
 	})
@@ -128,11 +118,8 @@ func TestRunMailDirectory_SortOrder(t *testing.T) {
 
 	withCwd(t, townRoot)
 
-	mailDirJSON = true
-	defer func() { mailDirJSON = false }()
-
 	output := captureStdout(t, func() {
-		if err := runMailDirectory(&cobra.Command{}, nil); err != nil {
+		if err := runMailDirectory(mailDirectoryTestCommand(true), nil); err != nil {
 			t.Fatalf("runMailDirectory error: %v", err)
 		}
 	})
@@ -174,6 +161,12 @@ func TestDirectoryEntry_JSONTags(t *testing.T) {
 	if raw["type"] != "well-known" {
 		t.Errorf("JSON key should be 'type', got: %v", raw)
 	}
+}
+
+func mailDirectoryTestCommand(jsonOutput bool) *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("json", jsonOutput, "")
+	return cmd
 }
 
 // withCwd changes to dir for the test and restores on cleanup.

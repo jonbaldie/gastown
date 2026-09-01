@@ -89,7 +89,7 @@ func (c *SettingsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix creates missing settings/ directories.
-func (c *SettingsCheck) Fix(ctx *CheckContext) error {
+func (c *SettingsCheck) Fix(_ *CheckContext) error {
 	for _, path := range c.missingSettings {
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return fmt.Errorf("failed to create %s: %w", path, err)
@@ -207,35 +207,8 @@ func NewLegacyGastownCheck() *LegacyGastownCheck {
 
 // Run checks for legacy .gastown/ directories.
 func (c *LegacyGastownCheck) Run(ctx *CheckContext) *CheckResult {
-	var found []string
-
-	// Check town-level .gastown/
-	townGastown := filepath.Join(ctx.TownRoot, ".gastown")
-	if info, err := os.Stat(townGastown); err == nil && info.IsDir() {
-		found = append(found, ".gastown/ (town root)")
-	}
-
-	// Check each rig for .gastown/
-	rigs := c.findRigs(ctx.TownRoot)
-	for _, rig := range rigs {
-		rigGastown := filepath.Join(rig, ".gastown")
-		if info, err := os.Stat(rigGastown); err == nil && info.IsDir() {
-			relPath, _ := filepath.Rel(ctx.TownRoot, rig)
-			found = append(found, fmt.Sprintf("%s/.gastown/", relPath))
-		}
-	}
-
-	// Cache for Fix
-	c.legacyDirs = nil
-	if info, err := os.Stat(townGastown); err == nil && info.IsDir() {
-		c.legacyDirs = append(c.legacyDirs, townGastown)
-	}
-	for _, rig := range rigs {
-		rigGastown := filepath.Join(rig, ".gastown")
-		if info, err := os.Stat(rigGastown); err == nil && info.IsDir() {
-			c.legacyDirs = append(c.legacyDirs, rigGastown)
-		}
-	}
+	found, legacyDirs := findLegacyGastownDirs(ctx.TownRoot, c.findRigs(ctx.TownRoot))
+	c.legacyDirs = legacyDirs
 
 	if len(found) == 0 {
 		return &CheckResult{
@@ -254,8 +227,31 @@ func (c *LegacyGastownCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
+func findLegacyGastownDirs(townRoot string, rigs []string) (found, legacyDirs []string) {
+	townGastown := filepath.Join(townRoot, ".gastown")
+	if isDirectory(townGastown) {
+		found = append(found, ".gastown/ (town root)")
+		legacyDirs = append(legacyDirs, townGastown)
+	}
+	for _, rig := range rigs {
+		rigGastown := filepath.Join(rig, ".gastown")
+		if !isDirectory(rigGastown) {
+			continue
+		}
+		relPath, _ := filepath.Rel(townRoot, rig)
+		found = append(found, fmt.Sprintf("%s/.gastown/", relPath))
+		legacyDirs = append(legacyDirs, rigGastown)
+	}
+	return found, legacyDirs
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 // Fix removes legacy .gastown/ directories.
-func (c *LegacyGastownCheck) Fix(ctx *CheckContext) error {
+func (c *LegacyGastownCheck) Fix(_ *CheckContext) error {
 	for _, dir := range c.legacyDirs {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("failed to remove %s: %w", dir, err)
@@ -338,7 +334,7 @@ func (c *SessionHookCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix updates settings.json files to use 'gt prime --hook' instead of bare 'gt prime'.
-func (c *SessionHookCheck) Fix(ctx *CheckContext) error {
+func (c *SessionHookCheck) Fix(_ *CheckContext) error {
 	for _, path := range c.filesToFix {
 		if err := c.fixSettingsFile(path); err != nil {
 			return fmt.Errorf("failed to fix %s: %w", path, err)
@@ -349,72 +345,78 @@ func (c *SessionHookCheck) Fix(ctx *CheckContext) error {
 
 // fixSettingsFile updates a single settings.json file.
 func (c *SessionHookCheck) fixSettingsFile(path string) error {
-	// Read file
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 
-	// Parse JSON to get structure
 	var settings map[string]interface{}
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 
-	// Get hooks section
 	hooks, ok := settings["hooks"].(map[string]interface{})
 	if !ok {
-		return nil // No hooks section, nothing to fix
+		return nil
 	}
+	if !fixSessionHookCommands(hooks) {
+		return nil
+	}
+	return writeSettingsWithHooks(path, settings)
+}
 
+func fixSessionHookCommands(hooks map[string]interface{}) bool {
 	modified := false
-
-	// Fix SessionStart and PreCompact hooks
 	for _, hookType := range []string{"SessionStart", "PreCompact"} {
-		hookList, ok := hooks[hookType].([]interface{})
+		if fixSessionHookType(hooks[hookType]) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func fixSessionHookType(value interface{}) bool {
+	hookList, ok := value.([]interface{})
+	if !ok {
+		return false
+	}
+	modified := false
+	for _, hookEntry := range hookList {
+		entry, ok := hookEntry.(map[string]interface{})
 		if !ok {
 			continue
 		}
-
-		for _, hookEntry := range hookList {
-			entry, ok := hookEntry.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			hooksList, ok := entry["hooks"].([]interface{})
-			if !ok {
-				continue
-			}
-
-			for _, hook := range hooksList {
-				hookMap, ok := hook.(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				command, ok := hookMap["command"].(string)
-				if !ok {
-					continue
-				}
-
-				// Check if command has 'gt prime' without --hook
-				if strings.Contains(command, "gt prime") && !containsFlag(command, "--hook") {
-					// Replace 'gt prime' with 'gt prime --hook'
-					newCommand := strings.Replace(command, "gt prime", "gt prime --hook", -1)
-					hookMap["command"] = newCommand
-					modified = true
-				}
+		for _, hook := range asHookEntries(entry["hooks"]) {
+			if addSessionHookFlag(hook) {
+				modified = true
 			}
 		}
 	}
+	return modified
+}
 
-	if !modified {
+func asHookEntries(value interface{}) []interface{} {
+	hooks, ok := value.([]interface{})
+	if !ok {
 		return nil
 	}
+	return hooks
+}
 
-	// Marshal back to JSON with indentation, without HTML escaping
-	// (json.MarshalIndent escapes & as \u0026 which is valid but less readable)
+func addSessionHookFlag(value interface{}) bool {
+	hookMap, ok := value.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	command, ok := hookMap["command"].(string)
+	if !ok || !strings.Contains(command, "gt prime") || containsFlag(command, "--hook") {
+		return false
+	}
+	hookMap["command"] = strings.Replace(command, "gt prime", "gt prime --hook", -1)
+	return true
+}
+
+func writeSettingsWithHooks(path string, settings map[string]interface{}) error {
 	buf := new(strings.Builder)
 	encoder := json.NewEncoder(buf)
 	encoder.SetEscapeHTML(false)
@@ -428,7 +430,6 @@ func (c *SessionHookCheck) fixSettingsFile(path string) error {
 	if err := os.WriteFile(path, newData, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
-
 	return nil
 }
 
@@ -625,111 +626,114 @@ func NewCustomTypesCheck() *CustomTypesCheck {
 
 // Run checks if custom types are properly configured.
 func (c *CustomTypesCheck) Run(ctx *CheckContext) *CheckResult {
-	// Check if bd command is available
 	if _, err := exec.LookPath("bd"); err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "beads not installed (skipped)",
-		}
+		return c.customTypesSkipped("beads not installed (skipped)")
 	}
 
 	beadsDir := doctorConfigBeadsDir(ctx)
 	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No beads database (skipped)",
-		}
+		return c.customTypesSkipped("No beads database (skipped)")
 	}
 
-	// Get current custom types configuration
-	// Use Output() not CombinedOutput() to avoid capturing bd's stderr messages
-	cmd := beads.Spawn("config", "get", "types.custom")
-	cmd.Dir = beadsDir
-	cmd.Env = doctorConfigEnv(beadsDir)
-	output, err := cmd.Output()
+	output, err := readBeadsConfigValue(beadsDir, "types.custom")
 	if err != nil {
-		// If config key doesn't exist, types are not configured
 		c.targetBeadsDir = beadsDir
 		c.missingTypes = constants.BeadsCustomTypesList()
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: "Custom types not configured",
-			Details: []string{
-				"Gas Town custom types (agent, role, rig, convoy, slot) are not registered",
-				"This may cause bead creation/validation errors",
-			},
-			FixHint: "Run 'gt doctor --fix' or 'bd config set types.custom \"" + constants.BeadsCustomTypes + "\"'",
-		}
+		return c.customTypesMissingResult()
 	}
 
-	// Parse configured types, filtering out bd "Note:" messages that may appear in stdout
 	configuredTypes := parseConfigOutput(output)
-	configuredSet := make(map[string]bool)
-	if configuredTypes != "" {
-		for _, t := range strings.Split(configuredTypes, ",") {
-			configuredSet[strings.TrimSpace(t)] = true
-		}
-	}
-
-	// Check for missing required types
-	var missing []string
-	for _, required := range constants.BeadsCustomTypesList() {
-		if !configuredSet[required] {
-			missing = append(missing, required)
-		}
-	}
-
+	missing := missingConfigValues(configuredTypes, constants.BeadsCustomTypesList())
 	if len(missing) == 0 {
-		infraCmd := beads.Spawn("config", "get", "types.infra")
-		infraCmd.Dir = beadsDir
-		infraCmd.Env = doctorConfigEnv(beadsDir)
-		infraOutput, infraErr := infraCmd.Output()
-		configuredInfra := parseConfigOutput(infraOutput)
-		if infraErr != nil || configuredInfra != constants.BeadsInfraTypes {
-			c.targetBeadsDir = beadsDir
-			details := []string{
-				fmt.Sprintf("Configured infra types: %s", configuredInfra),
-				fmt.Sprintf("Required infra types: %s", constants.BeadsInfraTypes),
-			}
-			for _, typ := range strings.Split(configuredInfra, ",") {
-				if strings.TrimSpace(typ) == "rig" {
-					details = append(details, "rig must not be an infra type; rig identity beads are durable")
-					break
-				}
-			}
-			return &CheckResult{
-				Name:    c.Name(),
-				Status:  StatusWarning,
-				Message: "Infra types not configured for durable rig identity beads",
-				Details: details,
-				FixHint: "Run 'gt doctor --fix' to register infra types",
-			}
-		}
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "All custom and infra types registered",
-		}
+		return c.checkInfraTypes(beadsDir)
 	}
 
-	// Cache for Fix
 	c.targetBeadsDir = beadsDir
 	c.missingTypes = missing
+	return c.missingCustomTypesResult(configuredTypes, missing)
+}
 
+func (c *CustomTypesCheck) customTypesSkipped(message string) *CheckResult {
+	return &CheckResult{Name: c.Name(), Status: StatusOK, Message: message}
+}
+
+func (c *CustomTypesCheck) customTypesMissingResult() *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: "Custom types not configured",
+		Details: []string{
+			"Gas Town custom types (agent, role, rig, convoy, slot) are not registered",
+			"This may cause bead creation/validation errors",
+		},
+		FixHint: "Run 'gt doctor --fix' or 'bd config set types.custom \"" + constants.BeadsCustomTypes + "\"'",
+	}
+}
+
+func (c *CustomTypesCheck) missingCustomTypesResult(configured string, missing []string) *CheckResult {
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusWarning,
 		Message: fmt.Sprintf("%d custom type(s) missing", len(missing)),
 		Details: []string{
 			fmt.Sprintf("Missing types: %s", strings.Join(missing, ", ")),
-			fmt.Sprintf("Configured: %s", configuredTypes),
+			fmt.Sprintf("Configured: %s", configured),
 			fmt.Sprintf("Required: %s", constants.BeadsCustomTypes),
 		},
 		FixHint: "Run 'gt doctor --fix' to register missing types",
 	}
+}
+
+func (c *CustomTypesCheck) checkInfraTypes(beadsDir string) *CheckResult {
+	output, err := readBeadsConfigValue(beadsDir, "types.infra")
+	configured := parseConfigOutput(output)
+	if err == nil && configured == constants.BeadsInfraTypes {
+		return &CheckResult{Name: c.Name(), Status: StatusOK, Message: "All custom and infra types registered"}
+	}
+	c.targetBeadsDir = beadsDir
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: "Infra types not configured for durable rig identity beads",
+		Details: infraTypeDetails(configured),
+		FixHint: "Run 'gt doctor --fix' to register infra types",
+	}
+}
+
+func infraTypeDetails(configured string) []string {
+	details := []string{
+		fmt.Sprintf("Configured infra types: %s", configured),
+		fmt.Sprintf("Required infra types: %s", constants.BeadsInfraTypes),
+	}
+	for _, typ := range strings.Split(configured, ",") {
+		if strings.TrimSpace(typ) == "rig" {
+			return append(details, "rig must not be an infra type; rig identity beads are durable")
+		}
+	}
+	return details
+}
+
+func readBeadsConfigValue(beadsDir, key string) ([]byte, error) {
+	cmd := beads.Spawn("config", "get", key)
+	cmd.Dir = beadsDir
+	cmd.Env = doctorConfigEnv(beadsDir)
+	return cmd.Output()
+}
+
+func missingConfigValues(configured string, required []string) []string {
+	configuredSet := make(map[string]bool)
+	if configured != "" {
+		for _, value := range strings.Split(configured, ",") {
+			configuredSet[strings.TrimSpace(value)] = true
+		}
+	}
+	var missing []string
+	for _, value := range required {
+		if !configuredSet[value] {
+			missing = append(missing, value)
+		}
+	}
+	return missing
 }
 
 // parseConfigOutput extracts the config value from bd output, filtering out
@@ -740,7 +744,7 @@ func parseConfigOutput(output []byte) string {
 }
 
 // Fix registers the missing custom types.
-func (c *CustomTypesCheck) Fix(ctx *CheckContext) error {
+func (c *CustomTypesCheck) Fix(_ *CheckContext) error {
 	getCmd := beads.Spawn("config", "get", "types.custom")
 	getCmd.Dir = c.targetBeadsDir
 	getCmd.Env = doctorConfigEnv(c.targetBeadsDir)
@@ -881,7 +885,7 @@ func (c *CustomStatusesCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix registers the missing custom statuses by merging with existing ones.
-func (c *CustomStatusesCheck) Fix(ctx *CheckContext) error {
+func (c *CustomStatusesCheck) Fix(_ *CheckContext) error {
 	// Read existing statuses
 	getCmd := beads.Spawn("config", "get", "status.custom")
 	getCmd.Dir = c.targetBeadsDir

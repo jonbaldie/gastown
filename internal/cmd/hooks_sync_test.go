@@ -9,7 +9,14 @@ import (
 
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/hooks"
+	"github.com/spf13/cobra"
 )
+
+func hooksSyncTestCommand(dryRun bool) *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("dry-run", dryRun, "")
+	return cmd
+}
 
 func TestSyncTargetCreatesNew(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -404,8 +411,7 @@ func TestRunHooksSyncFailsClosedOnIntegrityViolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hooksSyncDryRun = false
-	err = runHooksSync(nil, nil)
+	err = runHooksSync(hooksSyncTestCommand(false), nil)
 	if err == nil {
 		t.Fatal("expected hooks sync to fail closed")
 	}
@@ -488,8 +494,7 @@ func TestRunHooksSyncNonClaudeAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hooksSyncDryRun = false
-	if err := runHooksSync(nil, nil); err != nil {
+	if err := runHooksSync(hooksSyncTestCommand(false), nil); err != nil {
 		t.Fatalf("runHooksSync failed: %v", err)
 	}
 
@@ -557,9 +562,7 @@ func TestRunHooksSyncNonClaudeAgentDryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hooksSyncDryRun = true
-	defer func() { hooksSyncDryRun = false }()
-	if err := runHooksSync(nil, nil); err != nil {
+	if err := runHooksSync(hooksSyncTestCommand(true), nil); err != nil {
 		t.Fatalf("runHooksSync dry-run failed: %v", err)
 	}
 
@@ -636,8 +639,7 @@ func TestRunHooksSyncNonClaudeAgentNestedPolecatWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hooksSyncDryRun = false
-	if err := runHooksSync(nil, nil); err != nil {
+	if err := runHooksSync(hooksSyncTestCommand(false), nil); err != nil {
 		t.Fatalf("runHooksSync failed: %v", err)
 	}
 

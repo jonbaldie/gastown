@@ -37,6 +37,44 @@ type MayorConfig struct {
 // CurrentTownSettingsVersion is the current schema version for TownSettings.
 const CurrentTownSettingsVersion = 1
 
+// TownSubsystemSettings groups optional settings for town-level runtime subsystems.
+// The fields remain flattened in TownSettings JSON through anonymous embedding.
+type TownSubsystemSettings struct {
+	// WebTimeouts configures command execution timeouts for the web dashboard.
+	WebTimeouts *WebTimeoutsConfig `json:"web_timeouts,omitempty"`
+
+	// WorkerStatus configures activity-age thresholds for worker status classification.
+	WorkerStatus *WorkerStatusConfig `json:"worker_status,omitempty"`
+
+	// FeedCurator configures event deduplication and aggregation windows.
+	FeedCurator *FeedCuratorConfig `json:"feed_curator,omitempty"`
+
+	// Convoy configures convoy behavior settings.
+	Convoy *ConvoyConfig `json:"convoy,omitempty"`
+
+	// Scheduler configures the capacity scheduler for polecat dispatch.
+	Scheduler *capacity.SchedulerConfig `json:"scheduler,omitempty"`
+
+	// Polecat configures per-polecat behavior (target/ clean hook, etc.).
+	// Added for hq-x0v7v.
+	Polecat *PolecatConfig `json:"polecat,omitempty"`
+
+	// Operational configures operational thresholds (timeouts, retries, intervals).
+	// These were previously hardcoded as Go constants throughout the codebase.
+	// All values are optional — omitted values use compiled-in defaults.
+	Operational *OperationalConfig `json:"operational,omitempty"`
+
+	// DisabledPatrols lists patrol names to disable at the town level.
+	// This provides a simple way to turn off individual daemon patrol dogs
+	// without editing mayor/daemon.json. Patrol names match the keys used
+	// in daemon.json patrols section (e.g., "deacon", "witness", "refinery",
+	// "doctor_dog", "compactor_dog", "checkpoint_dog", "wisp_reaper",
+	// "dolt_remotes", "dolt_backup", "jsonl_git_backup", "scheduled_maintenance",
+	// "main_branch_test", "handler").
+	// Example: ["doctor_dog", "compactor_dog"]
+	DisabledPatrols []string `json:"disabled_patrols,omitempty"`
+}
+
 // TownSettings represents town-level behavioral configuration (settings/config.json).
 // This contains agent configuration that applies to all rigs unless overridden.
 type TownSettings struct {
@@ -86,17 +124,7 @@ type TownSettings struct {
 	// Default: "gastown.local"
 	AgentEmailDomain string `json:"agent_email_domain,omitempty"`
 
-	// WebTimeouts configures command execution timeouts for the web dashboard.
-	WebTimeouts *WebTimeoutsConfig `json:"web_timeouts,omitempty"`
-
-	// WorkerStatus configures activity-age thresholds for worker status classification.
-	WorkerStatus *WorkerStatusConfig `json:"worker_status,omitempty"`
-
-	// FeedCurator configures event deduplication and aggregation windows.
-	FeedCurator *FeedCuratorConfig `json:"feed_curator,omitempty"`
-
-	// Convoy configures convoy behavior settings.
-	Convoy *ConvoyConfig `json:"convoy,omitempty"`
+	TownSubsystemSettings
 
 	// RoleEffort maps role names to effort levels for per-role effort configuration.
 	// Keys are role names: "mayor", "deacon", "witness", "refinery", "polecat", "crew", "boot", "dog".
@@ -111,28 +139,6 @@ type TownSettings struct {
 	// Actual model assignments live in RoleAgents and Agents.
 	// Values: "standard", "economy", "budget", or empty for custom configs.
 	CostTier string `json:"cost_tier,omitempty"`
-
-	// Scheduler configures the capacity scheduler for polecat dispatch.
-	Scheduler *capacity.SchedulerConfig `json:"scheduler,omitempty"`
-
-	// Polecat configures per-polecat behavior (target/ clean hook, etc.).
-	// Added for hq-x0v7v.
-	Polecat *PolecatConfig `json:"polecat,omitempty"`
-
-	// Operational configures operational thresholds (timeouts, retries, intervals).
-	// These were previously hardcoded as Go constants throughout the codebase.
-	// All values are optional — omitted values use compiled-in defaults.
-	Operational *OperationalConfig `json:"operational,omitempty"`
-
-	// DisabledPatrols lists patrol names to disable at the town level.
-	// This provides a simple way to turn off individual daemon patrol dogs
-	// without editing mayor/daemon.json. Patrol names match the keys used
-	// in daemon.json patrols section (e.g., "deacon", "witness", "refinery",
-	// "doctor_dog", "compactor_dog", "checkpoint_dog", "wisp_reaper",
-	// "dolt_remotes", "dolt_backup", "jsonl_git_backup", "scheduled_maintenance",
-	// "main_branch_test", "handler").
-	// Example: ["doctor_dog", "compactor_dog"]
-	DisabledPatrols []string `json:"disabled_patrols,omitempty"`
 }
 
 // NewTownSettings creates a new TownSettings with defaults.
@@ -319,31 +325,7 @@ type DaemonThresholds struct {
 	// MassDeathThreshold is session deaths within window to trigger alert (default 3).
 	MassDeathThreshold *int `json:"mass_death_threshold,omitempty"`
 
-	// DogIdleSessionTimeout is how long a dog can be idle with tmux before kill (default "1h").
-	DogIdleSessionTimeout string `json:"dog_idle_session_timeout,omitempty"`
-
-	// DogIdleRemoveTimeout is how long a dog can be idle before removal (default "4h").
-	DogIdleRemoveTimeout string `json:"dog_idle_remove_timeout,omitempty"`
-
-	// PolecatIdleSessionTimeout is how long a polecat can be idle before its session
-	// is killed to prevent API slot burn (default "15m"). Polecats are ephemeral workers;
-	// unlike dogs, they should not persist when idle.
-	PolecatIdleSessionTimeout string `json:"polecat_idle_session_timeout,omitempty"`
-
-	// PolecatSelfTerminate controls whether polecats kill their own session after
-	// gt done completes (default false). When true, polecats terminate 3 seconds
-	// after work submission instead of transitioning to IDLE. This gives fresh
-	// context windows per task, reduces token waste, and eliminates stale state
-	// issues at scale. Worktree reuse is preserved — ReuseIdlePolecat creates
-	// a fresh branch on the existing worktree.
-	PolecatSelfTerminate *bool `json:"polecat_self_terminate,omitempty"`
-
-	// StaleWorkingTimeout is how long a dog in state=working with no activity
-	// before considered stuck (default "2h").
-	StaleWorkingTimeout string `json:"stale_working_timeout,omitempty"`
-
-	// MaxDogPoolSize is target dog pool size (default 4).
-	MaxDogPoolSize *int `json:"max_dog_pool_size,omitempty"`
+	DaemonWorkerLifecycle
 
 	// MaxLifecycleMessageAge is max age of lifecycle mail before discard (default "6h").
 	MaxLifecycleMessageAge string `json:"max_lifecycle_message_age,omitempty"`
@@ -381,6 +363,37 @@ type DaemonThresholds struct {
 	// PressureMaxSessions is the maximum number of concurrent agent tmux
 	// sessions before new non-infrastructure spawns are deferred. Disabled by default (0 = unlimited).
 	PressureMaxSessions *int `json:"pressure_max_sessions,omitempty"`
+}
+
+// DaemonWorkerLifecycle contains idle, recovery, and pool sizing thresholds
+// for managed workers. It is embedded so the operational config JSON remains
+// flat for existing settings files.
+type DaemonWorkerLifecycle struct {
+	// DogIdleSessionTimeout is how long a dog can be idle with tmux before kill (default "1h").
+	DogIdleSessionTimeout string `json:"dog_idle_session_timeout,omitempty"`
+
+	// DogIdleRemoveTimeout is how long a dog can be idle before removal (default "4h").
+	DogIdleRemoveTimeout string `json:"dog_idle_remove_timeout,omitempty"`
+
+	// PolecatIdleSessionTimeout is how long a polecat can be idle before its session
+	// is killed to prevent API slot burn (default "15m"). Polecats are ephemeral workers;
+	// unlike dogs, they should not persist when idle.
+	PolecatIdleSessionTimeout string `json:"polecat_idle_session_timeout,omitempty"`
+
+	// PolecatSelfTerminate controls whether polecats kill their own session after
+	// gt done completes (default false). When true, polecats terminate 3 seconds
+	// after work submission instead of transitioning to IDLE. This gives fresh
+	// context windows per task, reduces token waste, and eliminates stale state
+	// issues at scale. Worktree reuse is preserved — ReuseIdlePolecat creates
+	// a fresh branch on the existing worktree.
+	PolecatSelfTerminate *bool `json:"polecat_self_terminate,omitempty"`
+
+	// StaleWorkingTimeout is how long a dog in state=working with no activity
+	// before considered stuck (default "2h").
+	StaleWorkingTimeout string `json:"stale_working_timeout,omitempty"`
+
+	// MaxDogPoolSize is target dog pool size (default 4).
+	MaxDogPoolSize *int `json:"max_dog_pool_size,omitempty"`
 }
 
 // DeaconThresholds configures deacon health-check and dispatch thresholds.
@@ -877,46 +890,37 @@ func (rc *RuntimeConfig) BuildCommand() string {
 func (rc *RuntimeConfig) BuildCommandWithPrompt(prompt string) string {
 	resolved := normalizeRuntimeConfig(rc)
 	base := resolved.BuildCommand()
-
-	// Use provided prompt or fall back to config
-	p := prompt
-	if p == "" {
-		p = resolved.InitialPrompt
-	}
-
-	if p == "" || resolved.PromptMode == "none" {
-		if p != "" {
-			// A non-empty prompt was silently dropped because prompt_mode is "none".
-			// This commonly happens when a user copies a codex agent entry (which ships
-			// with prompt_mode: "none") to create a claude override, inadvertently
-			// suppressing the daemon's startup beacon injection and causing a crash-loop
-			// that looks like a deacon failure. Warn so misconfiguration is self-diagnosing.
-			fmt.Fprintf(os.Stderr, "warning: agent %q has prompt_mode: \"none\" — startup prompt dropped (agent may not bootstrap correctly)\n", resolved.Command)
-		}
+	prompt = resolvedPrompt(prompt, resolved.InitialPrompt)
+	if prompt == "" || resolved.PromptMode == "none" {
+		warnDroppedPrompt(resolved, prompt)
 		return base
 	}
+	return base + runtimePromptArgument(resolved.Command, prompt)
+}
 
-	// OpenCode requires --prompt flag for initial prompt in interactive mode.
-	// Positional argument causes opencode to exit immediately.
-	// Match both "opencode" and full paths like "/home/user/.opencode/bin/opencode".
-	if resolved.Command == "opencode" || filepath.Base(resolved.Command) == "opencode" {
-		return base + " --prompt " + quoteForShell(p)
+func resolvedPrompt(prompt, initialPrompt string) string {
+	if prompt != "" {
+		return prompt
 	}
+	return initialPrompt
+}
 
-	// Copilot requires -i flag for initial prompt in interactive mode.
-	if resolved.Command == "copilot" || filepath.Base(resolved.Command) == "copilot" {
-		return base + " -i " + quoteForShell(p)
+func warnDroppedPrompt(rc *RuntimeConfig, prompt string) {
+	if prompt != "" {
+		fmt.Fprintf(os.Stderr, "warning: agent %q has prompt_mode: \"none\" — startup prompt dropped (agent may not bootstrap correctly)\n", rc.Command)
 	}
+}
 
-	// Gemini requires -i (--prompt-interactive) to auto-execute the prompt
-	// while staying in interactive mode. Positional args populate the input
-	// field but don't execute, and -p runs headless (exits after completion).
-	if resolved.Command == "gemini" || filepath.Base(resolved.Command) == "gemini" {
-		return base + " -i " + quoteForShell(p)
+func runtimePromptArgument(command, prompt string) string {
+	quotedPrompt := quoteForShell(prompt)
+	switch filepath.Base(command) {
+	case "opencode":
+		return " --prompt " + quotedPrompt
+	case "copilot", "gemini":
+		return " -i " + quotedPrompt
+	default:
+		return " " + quotedPrompt
 	}
-
-	// Quote the prompt for shell safety (positional arg for claude and others)
-	return base + " " + quoteForShell(p)
 }
 
 // BuildArgsWithPrompt returns the runtime command and args suitable for exec.
@@ -953,8 +957,16 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	// Shallow copy to avoid mutating the input
 	copy := *rc
 	rc = &copy
+	cloneNormalizedNestedConfigs(rc)
+	applyNormalizedIdentityDefaults(rc)
+	applyNormalizedSessionDefaults(rc)
+	applyNormalizedHooksDefaults(rc)
+	applyNormalizedTmuxDefaults(rc)
+	applyNormalizedInstructionsDefaults(rc)
+	return rc
+}
 
-	// Deep copy nested structs to avoid shared references
+func cloneNormalizedNestedConfigs(rc *RuntimeConfig) {
 	if rc.Session != nil {
 		s := *rc.Session
 		rc.Session = &s
@@ -971,7 +983,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 		i := *rc.Instructions
 		rc.Instructions = &i
 	}
+}
 
+func applyNormalizedIdentityDefaults(rc *RuntimeConfig) {
 	if rc.Provider == "" {
 		rc.Provider = "claude"
 	}
@@ -988,7 +1002,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.PromptMode == "" {
 		rc.PromptMode = defaultPromptMode(rc.Provider)
 	}
+}
 
+func applyNormalizedSessionDefaults(rc *RuntimeConfig) {
 	if rc.Session == nil {
 		rc.Session = &RuntimeSessionConfig{}
 	}
@@ -1000,7 +1016,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.Session.ConfigDirEnv == "" {
 		rc.Session.ConfigDirEnv = defaultConfigDirEnv(rc.Provider)
 	}
+}
 
+func applyNormalizedHooksDefaults(rc *RuntimeConfig) {
 	if rc.Hooks == nil {
 		rc.Hooks = &RuntimeHooksConfig{}
 	}
@@ -1023,7 +1041,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if !rc.Hooks.Informational {
 		rc.Hooks.Informational = defaultHooksInformational(rc.Provider)
 	}
+}
 
+func applyNormalizedTmuxDefaults(rc *RuntimeConfig) {
 	if rc.Tmux == nil {
 		rc.Tmux = &RuntimeTmuxConfig{}
 	}
@@ -1039,7 +1059,9 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.Tmux.ReadyDelayMs == 0 {
 		rc.Tmux.ReadyDelayMs = defaultReadyDelayMs(rc.Provider)
 	}
+}
 
+func applyNormalizedInstructionsDefaults(rc *RuntimeConfig) {
 	if rc.Instructions == nil {
 		rc.Instructions = &RuntimeInstructionsConfig{}
 	}
@@ -1047,8 +1069,6 @@ func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc.Instructions.File == "" {
 		rc.Instructions.File = defaultInstructionsFile(rc.Provider)
 	}
-
-	return rc
 }
 
 const codexUpdateCheckKey = "check_for_update_on_startup"
@@ -1401,28 +1421,7 @@ type MergeQueueConfig struct {
 	// Enabled controls whether the merge queue is active.
 	Enabled bool `json:"enabled"`
 
-	// IntegrationBranchPolecatEnabled controls whether polecats auto-source
-	// their worktrees from integration branches when the parent epic has one.
-	// Nil defaults to true.
-	IntegrationBranchPolecatEnabled *bool `json:"integration_branch_polecat_enabled,omitempty"`
-
-	// IntegrationBranchRefineryEnabled controls whether mq submit and gt done
-	// auto-detect integration branches as MR targets.
-	// Nil defaults to true.
-	IntegrationBranchRefineryEnabled *bool `json:"integration_branch_refinery_enabled,omitempty"`
-
-	// IntegrationBranchTemplate is the pattern for integration branch names.
-	// Supports variables: {epic}, {prefix}, {user}
-	// - {epic}: Full epic ID (e.g., "RA-123")
-	// - {prefix}: Epic prefix before first hyphen (e.g., "RA")
-	// - {user}: Git user.name (e.g., "klauern")
-	// Default: "integration/{epic}"
-	IntegrationBranchTemplate string `json:"integration_branch_template,omitempty"`
-
-	// IntegrationBranchAutoLand controls whether the refinery should automatically
-	// land integration branches when all children of the epic are closed.
-	// Nil defaults to false (manual landing required).
-	IntegrationBranchAutoLand *bool `json:"integration_branch_auto_land,omitempty"`
+	MergeQueueIntegration
 
 	// MergeStrategy controls how the refinery lands approved work: "direct" (default)
 	// merges directly to the base branch, "pr" uses the VCS provider's merge API
@@ -1441,28 +1440,7 @@ type MergeQueueConfig struct {
 	// OnConflict specifies conflict resolution strategy: "assign_back" or "auto_rebase".
 	OnConflict string `json:"on_conflict"`
 
-	// RunTests controls whether to run tests before merging.
-	// Nil defaults to true (tests are run).
-	RunTests *bool `json:"run_tests,omitempty"`
-
-	// TestCommand is the command to run for tests.
-	TestCommand string `json:"test_command,omitempty"`
-
-	// LintCommand is the command to run for linting (used by formulas).
-	LintCommand string `json:"lint_command,omitempty"`
-
-	// BuildCommand is the command to run for building (used by formulas).
-	BuildCommand string `json:"build_command,omitempty"`
-
-	// SetupCommand is the command to run for project setup (e.g., pnpm install).
-	SetupCommand string `json:"setup_command,omitempty"`
-
-	// TypecheckCommand is the command to run for type checking (e.g., tsc --noEmit).
-	TypecheckCommand string `json:"typecheck_command,omitempty"`
-
-	// DeleteMergedBranches controls whether to delete branches after merging.
-	// Nil defaults to true (merged branches are deleted).
-	DeleteMergedBranches *bool `json:"delete_merged_branches,omitempty"`
+	MergeQueueCommands
 
 	// RetryFlakyTests is the number of times to retry flaky tests.
 	RetryFlakyTests int `json:"retry_flaky_tests"`
@@ -1489,6 +1467,58 @@ type MergeQueueConfig struct {
 	ReviewDepth string `json:"review_depth,omitempty"`
 }
 
+// MergeQueueIntegration contains integration-branch behavior for a merge queue.
+type MergeQueueIntegration struct {
+	// IntegrationBranchPolecatEnabled controls whether polecats auto-source
+	// their worktrees from integration branches when the parent epic has one.
+	// Nil defaults to true.
+	IntegrationBranchPolecatEnabled *bool `json:"integration_branch_polecat_enabled,omitempty"`
+
+	// IntegrationBranchRefineryEnabled controls whether mq submit and gt done
+	// auto-detect integration branches as MR targets.
+	// Nil defaults to true.
+	IntegrationBranchRefineryEnabled *bool `json:"integration_branch_refinery_enabled,omitempty"`
+
+	// IntegrationBranchTemplate is the pattern for integration branch names.
+	// Supports variables: {epic}, {prefix}, {user}
+	// - {epic}: Full epic ID (e.g., "RA-123")
+	// - {prefix}: Epic prefix before first hyphen (e.g., "RA")
+	// - {user}: Git user.name (e.g., "klauern")
+	// Default: "integration/{epic}"
+	IntegrationBranchTemplate string `json:"integration_branch_template,omitempty"`
+
+	// IntegrationBranchAutoLand controls whether the refinery should automatically
+	// land integration branches when all children of the epic are closed.
+	// Nil defaults to false (manual landing required).
+	IntegrationBranchAutoLand *bool `json:"integration_branch_auto_land,omitempty"`
+}
+
+// MergeQueueCommands contains optional commands and gate controls used before merging.
+type MergeQueueCommands struct {
+	// RunTests controls whether to run tests before merging.
+	// Nil defaults to true (tests are run).
+	RunTests *bool `json:"run_tests,omitempty"`
+
+	// TestCommand is the command to run for tests.
+	TestCommand string `json:"test_command,omitempty"`
+
+	// LintCommand is the command to run for linting (used by formulas).
+	LintCommand string `json:"lint_command,omitempty"`
+
+	// BuildCommand is the command to run for building (used by formulas).
+	BuildCommand string `json:"build_command,omitempty"`
+
+	// SetupCommand is the command to run for project setup (e.g., pnpm install).
+	SetupCommand string `json:"setup_command,omitempty"`
+
+	// TypecheckCommand is the command to run for type checking (e.g., tsc --noEmit).
+	TypecheckCommand string `json:"typecheck_command,omitempty"`
+
+	// DeleteMergedBranches controls whether to delete branches after merging.
+	// Nil defaults to true (merged branches are deleted).
+	DeleteMergedBranches *bool `json:"delete_merged_branches,omitempty"`
+}
+
 // OnConflict strategy constants.
 const (
 	OnConflictAssignBack = "assign_back"
@@ -1497,8 +1527,8 @@ const (
 
 // IsPolecatIntegrationEnabled returns whether polecat integration branch
 // sourcing is enabled. Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsPolecatIntegrationEnabled() bool {
-	if c.IntegrationBranchPolecatEnabled == nil {
+func IsPolecatIntegrationEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.IntegrationBranchPolecatEnabled == nil {
 		return true
 	}
 	return *c.IntegrationBranchPolecatEnabled
@@ -1506,8 +1536,8 @@ func (c *MergeQueueConfig) IsPolecatIntegrationEnabled() bool {
 
 // IsRefineryIntegrationEnabled returns whether refinery/submit integration
 // branch auto-detection is enabled. Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsRefineryIntegrationEnabled() bool {
-	if c.IntegrationBranchRefineryEnabled == nil {
+func IsRefineryIntegrationEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.IntegrationBranchRefineryEnabled == nil {
 		return true
 	}
 	return *c.IntegrationBranchRefineryEnabled
@@ -1516,8 +1546,8 @@ func (c *MergeQueueConfig) IsRefineryIntegrationEnabled() bool {
 // IsIntegrationBranchAutoLandEnabled returns whether the refinery should
 // auto-land integration branches when all epic children are closed.
 // Nil-safe, defaults to false (manual landing required).
-func (c *MergeQueueConfig) IsIntegrationBranchAutoLandEnabled() bool {
-	if c.IntegrationBranchAutoLand == nil {
+func IsIntegrationBranchAutoLandEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.IntegrationBranchAutoLand == nil {
 		return false
 	}
 	return *c.IntegrationBranchAutoLand
@@ -1525,8 +1555,8 @@ func (c *MergeQueueConfig) IsIntegrationBranchAutoLandEnabled() bool {
 
 // IsRunTestsEnabled returns whether tests should run before merging.
 // Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsRunTestsEnabled() bool {
-	if c.RunTests == nil {
+func IsRunTestsEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.RunTests == nil {
 		return true
 	}
 	return *c.RunTests
@@ -1534,8 +1564,8 @@ func (c *MergeQueueConfig) IsRunTestsEnabled() bool {
 
 // IsDeleteMergedBranchesEnabled returns whether merged branches should be deleted.
 // Nil-safe, defaults to true.
-func (c *MergeQueueConfig) IsDeleteMergedBranchesEnabled() bool {
-	if c.DeleteMergedBranches == nil {
+func IsDeleteMergedBranchesEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.DeleteMergedBranches == nil {
 		return true
 	}
 	return *c.DeleteMergedBranches
@@ -1543,8 +1573,8 @@ func (c *MergeQueueConfig) IsDeleteMergedBranchesEnabled() bool {
 
 // IsJudgmentEnabled returns whether quality review is enabled for merges.
 // Nil-safe, defaults to false.
-func (c *MergeQueueConfig) IsJudgmentEnabled() bool {
-	if c.JudgmentEnabled == nil {
+func IsJudgmentEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.JudgmentEnabled == nil {
 		return false
 	}
 	return *c.JudgmentEnabled
@@ -1552,8 +1582,8 @@ func (c *MergeQueueConfig) IsJudgmentEnabled() bool {
 
 // IsRequireReviewEnabled returns whether PR reviews are required before merging.
 // Nil-safe, defaults to false.
-func (c *MergeQueueConfig) IsRequireReviewEnabled() bool {
-	if c.RequireReview == nil {
+func IsRequireReviewEnabled(c *MergeQueueConfig) bool {
+	if c == nil || c.RequireReview == nil {
 		return false
 	}
 	return *c.RequireReview
@@ -1561,8 +1591,8 @@ func (c *MergeQueueConfig) IsRequireReviewEnabled() bool {
 
 // GetReviewDepth returns the configured review depth.
 // Nil-safe, defaults to "standard".
-func (c *MergeQueueConfig) GetReviewDepth() string {
-	if c.ReviewDepth == "" {
+func GetReviewDepth(c *MergeQueueConfig) string {
+	if c == nil || c.ReviewDepth == "" {
 		return "standard"
 	}
 	return c.ReviewDepth
@@ -1576,17 +1606,21 @@ func boolPtr(b bool) *bool {
 // DefaultMergeQueueConfig returns a MergeQueueConfig with sensible defaults.
 func DefaultMergeQueueConfig() *MergeQueueConfig {
 	return &MergeQueueConfig{
-		Enabled:                          true,
-		IntegrationBranchPolecatEnabled:  boolPtr(true),
-		IntegrationBranchRefineryEnabled: boolPtr(true),
-		OnConflict:                       OnConflictAssignBack,
-		RunTests:                         boolPtr(true),
-		TestCommand:                      "",
-		DeleteMergedBranches:             boolPtr(true),
-		RetryFlakyTests:                  1,
-		PollInterval:                     "30s",
-		MaxConcurrent:                    1,
-		StaleClaimTimeout:                "30m",
+		Enabled: true,
+		MergeQueueIntegration: MergeQueueIntegration{
+			IntegrationBranchPolecatEnabled:  boolPtr(true),
+			IntegrationBranchRefineryEnabled: boolPtr(true),
+		},
+		OnConflict: OnConflictAssignBack,
+		MergeQueueCommands: MergeQueueCommands{
+			RunTests:             boolPtr(true),
+			TestCommand:          "",
+			DeleteMergedBranches: boolPtr(true),
+		},
+		RetryFlakyTests:   1,
+		PollInterval:      "30s",
+		MaxConcurrent:     1,
+		StaleClaimTimeout: "30m",
 	}
 }
 

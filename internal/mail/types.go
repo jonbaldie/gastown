@@ -89,26 +89,11 @@ type Message struct {
 	// Type indicates the message type (task, escalation, scavenge, notification, reply).
 	Type MessageType `json:"type"`
 
-	// Delivery specifies how the message is delivered (queue or interrupt).
-	// Queue: agent checks periodically. Interrupt: inject into session.
-	Delivery Delivery `json:"delivery,omitempty"`
+	MessageDelivery
 
-	// ThreadID groups related messages into a conversation thread.
-	ThreadID string `json:"thread_id,omitempty"`
+	MessageConversation
 
-	// ReplyTo is the ID of the message this is replying to.
-	ReplyTo string `json:"reply_to,omitempty"`
-
-	// Pinned marks the message as pinned (won't be auto-archived).
-	Pinned bool `json:"pinned,omitempty"`
-
-	// Wisp marks this as a transient message (stored in same DB but not synced to git).
-	// Wisp messages auto-cleanup on patrol squash.
-	Wisp bool `json:"wisp,omitempty"`
-
-	// CC contains addresses that should receive a copy of this message.
-	// CC'd recipients see the message in their inbox but are not the primary recipient.
-	CC []string `json:"cc,omitempty"`
+	MessageFlags
 
 	// Queue is the queue name for queue-routed messages.
 	// Mutually exclusive with To and Channel - a message is either direct, queued, or broadcast.
@@ -117,6 +102,14 @@ type Message struct {
 	// Channel is the channel name for broadcast messages.
 	// Mutually exclusive with To and Queue - a message is either direct, queued, or broadcast.
 	Channel string `json:"channel,omitempty"`
+}
+
+// MessageDelivery contains delivery mode, queue-claim, and acknowledgement
+// state. It is embedded to keep Message's JSON representation flat.
+type MessageDelivery struct {
+	// Delivery specifies how the message is delivered (queue or interrupt).
+	// Queue: agent checks periodically. Interrupt: inject into session.
+	Delivery Delivery `json:"delivery,omitempty"`
 
 	// ClaimedBy is the agent that claimed this queue message.
 	// Only set for queue messages after claiming.
@@ -132,6 +125,31 @@ type Message struct {
 	DeliveryAckedBy string `json:"delivery_acked_by,omitempty"`
 	// DeliveryAckedAt is when receipt was acknowledged.
 	DeliveryAckedAt *time.Time `json:"delivery_acked_at,omitempty"`
+}
+
+// MessageConversation contains thread metadata and carbon-copy recipients. It
+// is embedded to keep Message's JSON representation flat.
+type MessageConversation struct {
+	// ThreadID groups related messages into a conversation thread.
+	ThreadID string `json:"thread_id,omitempty"`
+
+	// ReplyTo is the ID of the message this is replying to.
+	ReplyTo string `json:"reply_to,omitempty"`
+
+	// CC contains addresses that should receive a copy of this message.
+	// CC'd recipients see the message in their inbox but are not the primary recipient.
+	CC []string `json:"cc,omitempty"`
+}
+
+// MessageFlags contains mailbox retention and notification flags. It is
+// embedded to keep Message's JSON representation flat.
+type MessageFlags struct {
+	// Pinned marks the message as pinned (won't be auto-archived).
+	Pinned bool `json:"pinned,omitempty"`
+
+	// Wisp marks this as a transient message (stored in same DB but not synced to git).
+	// Wisp messages auto-cleanup on patrol squash.
+	Wisp bool `json:"wisp,omitempty"`
 
 	// SuppressNotify tells the router to skip all recipient notification
 	// (no nudge, no banner). Set by the CLI when --no-notify is passed.
@@ -151,7 +169,9 @@ func NewMessage(from, to, subject, body string) *Message {
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeNotification,
-		ThreadID:  generateThreadID(),
+		MessageConversation: MessageConversation{
+			ThreadID: generateThreadID(),
+		},
 	}
 }
 
@@ -167,8 +187,10 @@ func NewReplyMessage(from, to, subject, body string, original *Message) *Message
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeReply,
-		ThreadID:  original.ThreadID,
-		ReplyTo:   original.ID,
+		MessageConversation: MessageConversation{
+			ThreadID: original.ThreadID,
+			ReplyTo:  original.ID,
+		},
 	}
 }
 
@@ -185,7 +207,9 @@ func NewQueueMessage(from, queue, subject, body string) *Message {
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeTask, // Queue messages are typically tasks
-		ThreadID:  generateThreadID(),
+		MessageConversation: MessageConversation{
+			ThreadID: generateThreadID(),
+		},
 	}
 }
 
@@ -202,7 +226,9 @@ func NewChannelMessage(from, channel, subject, body string) *Message {
 		Read:      false,
 		Priority:  PriorityNormal,
 		Type:      TypeNotification,
-		ThreadID:  generateThreadID(),
+		MessageConversation: MessageConversation{
+			ThreadID: generateThreadID(),
+		},
 	}
 }
 
@@ -229,7 +255,16 @@ func (m *Message) IsClaimed() bool {
 // Validate checks that the message has valid required fields and routing configuration.
 // Returns an error if required fields are missing or routing targets are not mutually exclusive.
 func (m *Message) Validate() error {
-	// Required fields
+	if err := validateMessageRequiredFields(m); err != nil {
+		return err
+	}
+	if err := validateMessageRouting(m); err != nil {
+		return err
+	}
+	return validateMessageClaimedFields(m)
+}
+
+func validateMessageRequiredFields(m *Message) error {
 	if m.ID == "" {
 		return fmt.Errorf("message must have an ID")
 	}
@@ -239,8 +274,10 @@ func (m *Message) Validate() error {
 	if m.Subject == "" {
 		return fmt.Errorf("message must have a Subject")
 	}
+	return nil
+}
 
-	// Routing: exactly one of To, Queue, or Channel
+func validateMessageRouting(m *Message) error {
 	count := 0
 	if m.To != "" {
 		count++
@@ -251,22 +288,22 @@ func (m *Message) Validate() error {
 	if m.Channel != "" {
 		count++
 	}
-
 	if count == 0 {
 		return fmt.Errorf("message must have exactly one of: to, queue, or channel")
 	}
 	if count > 1 {
 		return fmt.Errorf("message cannot have multiple routing targets (to, queue, channel are mutually exclusive)")
 	}
+	return nil
+}
 
-	// ClaimedBy/ClaimedAt only valid for queue messages
+func validateMessageClaimedFields(m *Message) error {
 	if m.ClaimedBy != "" && m.Queue == "" {
 		return fmt.Errorf("claimed_by is only valid for queue messages")
 	}
 	if m.ClaimedAt != nil && m.Queue == "" {
 		return fmt.Errorf("claimed_at is only valid for queue messages")
 	}
-
 	return nil
 }
 
@@ -308,17 +345,22 @@ type BeadsMessage struct {
 	Pinned      bool      `json:"pinned,omitempty"`
 	Wisp        bool      `json:"wisp,omitempty"` // Ephemeral message (not synced to git)
 
-	// Cached parsed values (populated by ParseLabels)
-	sender    string
-	threadID  string
-	replyTo   string
-	msgType   string
-	cc        []string   // CC recipients
-	queue     string     // Queue name (for queue messages)
-	channel   string     // Channel name (for broadcast messages)
-	claimedBy string     // Who claimed the queue message
-	claimedAt *time.Time // When the queue message was claimed
-	// Two-phase delivery metadata
+	beadsMessageMetadata
+}
+
+// beadsMessageMetadata caches values parsed from message labels. It is
+// embedded so the cache remains an implementation detail without changing
+// BeadsMessage's JSON representation.
+type beadsMessageMetadata struct {
+	sender          string
+	threadID        string
+	replyTo         string
+	msgType         string
+	cc              []string   // CC recipients
+	queue           string     // Queue name (for queue messages)
+	channel         string     // Channel name (for broadcast messages)
+	claimedBy       string     // Who claimed the queue message
+	claimedAt       *time.Time // When the queue message was claimed
 	deliveryState   string
 	deliveryAckedBy string
 	deliveryAckedAt *time.Time
@@ -327,45 +369,66 @@ type BeadsMessage struct {
 // ParseLabels extracts metadata from the labels array.
 // Safe to call multiple times - resets parsed state before re-parsing.
 func (bm *BeadsMessage) ParseLabels() {
-	bm.sender = ""
-	bm.threadID = ""
-	bm.replyTo = ""
-	bm.msgType = ""
-	bm.cc = nil
-	bm.queue = ""
-	bm.channel = ""
-	bm.claimedBy = ""
-	bm.claimedAt = nil
-	bm.deliveryState = ""
-	bm.deliveryAckedBy = ""
-	bm.deliveryAckedAt = nil
+	cache := &bm.beadsMessageMetadata
+	cache.sender = ""
+	cache.threadID = ""
+	cache.replyTo = ""
+	cache.msgType = ""
+	cache.cc = nil
+	cache.queue = ""
+	cache.channel = ""
+	cache.claimedBy = ""
+	cache.claimedAt = nil
+	cache.deliveryState = ""
+	cache.deliveryAckedBy = ""
+	cache.deliveryAckedAt = nil
 
 	for _, label := range bm.Labels {
-		if strings.HasPrefix(label, "from:") {
-			bm.sender = strings.TrimPrefix(label, "from:")
-		} else if strings.HasPrefix(label, "thread:") {
-			bm.threadID = strings.TrimPrefix(label, "thread:")
-		} else if strings.HasPrefix(label, "reply-to:") {
-			bm.replyTo = strings.TrimPrefix(label, "reply-to:")
-		} else if strings.HasPrefix(label, "msg-type:") {
-			bm.msgType = strings.TrimPrefix(label, "msg-type:")
-		} else if strings.HasPrefix(label, "cc:") {
-			bm.cc = append(bm.cc, strings.TrimPrefix(label, "cc:"))
-		} else if strings.HasPrefix(label, "queue:") {
-			bm.queue = strings.TrimPrefix(label, "queue:")
-		} else if strings.HasPrefix(label, "channel:") {
-			bm.channel = strings.TrimPrefix(label, "channel:")
-		} else if strings.HasPrefix(label, "claimed-by:") {
-			bm.claimedBy = strings.TrimPrefix(label, "claimed-by:")
-		} else if strings.HasPrefix(label, "claimed-at:") {
-			ts := strings.TrimPrefix(label, "claimed-at:")
-			if t, err := time.Parse(time.RFC3339, ts); err == nil {
-				bm.claimedAt = &t
-			}
-		}
+		bm.parseLabel(label)
 	}
 
 	bm.deliveryState, bm.deliveryAckedBy, bm.deliveryAckedAt = ParseDeliveryLabels(bm.Labels)
+}
+
+func (bm *BeadsMessage) parseLabel(label string) {
+	if bm.parseMessageLabel(label) {
+		return
+	}
+	bm.parseClaimedAtLabel(label)
+}
+
+func (bm *BeadsMessage) parseMessageLabel(label string) bool {
+	switch {
+	case strings.HasPrefix(label, "from:"):
+		bm.sender = strings.TrimPrefix(label, "from:")
+	case strings.HasPrefix(label, "thread:"):
+		bm.threadID = strings.TrimPrefix(label, "thread:")
+	case strings.HasPrefix(label, "reply-to:"):
+		bm.replyTo = strings.TrimPrefix(label, "reply-to:")
+	case strings.HasPrefix(label, "msg-type:"):
+		bm.msgType = strings.TrimPrefix(label, "msg-type:")
+	case strings.HasPrefix(label, "cc:"):
+		bm.cc = append(bm.cc, strings.TrimPrefix(label, "cc:"))
+	case strings.HasPrefix(label, "queue:"):
+		bm.queue = strings.TrimPrefix(label, "queue:")
+	case strings.HasPrefix(label, "channel:"):
+		bm.channel = strings.TrimPrefix(label, "channel:")
+	case strings.HasPrefix(label, "claimed-by:"):
+		bm.claimedBy = strings.TrimPrefix(label, "claimed-by:")
+	default:
+		return false
+	}
+	return true
+}
+
+func (bm *BeadsMessage) parseClaimedAtLabel(label string) {
+	if !strings.HasPrefix(label, "claimed-at:") {
+		return
+	}
+	ts := strings.TrimPrefix(label, "claimed-at:")
+	if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		bm.claimedAt = &t
+	}
 }
 
 // GetCC returns the parsed CC recipients.
@@ -415,26 +478,32 @@ func (bm *BeadsMessage) ToMessage() *Message {
 	}
 
 	return &Message{
-		ID:              bm.ID,
-		From:            identityToAddress(bm.sender),
-		To:              identityToAddress(bm.Assignee),
-		Subject:         bm.Title,
-		Body:            bm.Description,
-		Timestamp:       bm.CreatedAt,
-		Read:            bm.Status == "closed" || bm.HasLabel("read"),
-		Priority:        priority,
-		Type:            msgType,
-		ThreadID:        bm.threadID,
-		ReplyTo:         bm.replyTo,
-		Wisp:            bm.Wisp,
-		CC:              ccAddrs,
-		Queue:           bm.queue,
-		Channel:         bm.channel,
-		ClaimedBy:       bm.claimedBy,
-		ClaimedAt:       bm.claimedAt,
-		DeliveryState:   bm.deliveryState,
-		DeliveryAckedBy: bm.deliveryAckedBy,
-		DeliveryAckedAt: bm.deliveryAckedAt,
+		ID:        bm.ID,
+		From:      identityToAddress(bm.sender),
+		To:        identityToAddress(bm.Assignee),
+		Subject:   bm.Title,
+		Body:      bm.Description,
+		Timestamp: bm.CreatedAt,
+		Read:      bm.Status == "closed" || bm.HasLabel("read"),
+		Priority:  priority,
+		Type:      msgType,
+		Queue:     bm.queue,
+		Channel:   bm.channel,
+		MessageDelivery: MessageDelivery{
+			ClaimedBy:       bm.claimedBy,
+			ClaimedAt:       bm.claimedAt,
+			DeliveryState:   bm.deliveryState,
+			DeliveryAckedBy: bm.deliveryAckedBy,
+			DeliveryAckedAt: bm.deliveryAckedAt,
+		},
+		MessageConversation: MessageConversation{
+			ThreadID: bm.threadID,
+			ReplyTo:  bm.replyTo,
+			CC:       ccAddrs,
+		},
+		MessageFlags: MessageFlags{
+			Wisp: bm.Wisp,
+		},
 	}
 }
 
@@ -551,29 +620,40 @@ func ParseMessageType(s string) MessageType {
 //   - "gastown/Toast" → "gastown/Toast" (already canonical)
 //   - "gastown/refinery" → "gastown/refinery"
 func normalizeAddress(s string) string {
-	// Overseer (human operator) - no trailing slash, distinct from agents
-	if s == "overseer" {
-		return "overseer"
+	if normalized, ok := normalizeSingletonAddress(s); ok {
+		return normalized
 	}
 
-	// Town-level agents: mayor and deacon keep trailing slash
-	if s == "mayor" || s == "mayor/" {
-		return "mayor/"
+	parts := strings.Split(s, "/")
+	if normalized, ok := normalizeScopedAddress(parts); ok {
+		return normalized
 	}
-	if s == "deacon" || s == "deacon/" {
-		return "deacon/"
-	}
+	return s
+}
 
+func normalizeSingletonAddress(s string) (string, bool) {
+	switch s {
+	case "overseer":
+		return "overseer", true
+	case "mayor", "mayor/":
+		return "mayor/", true
+	case "deacon", "deacon/":
+		return "deacon/", true
+	default:
+		return "", false
+	}
+}
+
+func normalizeScopedAddress(parts []string) (string, bool) {
 	// Resolve rig-scoped town-level roles to their canonical form (gt-te23).
 	// "gastown/mayor" → "mayor/", "gastown/deacon" → "deacon/"
 	// Mayor and deacon are town-level singletons, not rig-level agents.
-	parts := strings.Split(s, "/")
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "mayor":
-			return "mayor/"
+			return "mayor/", true
 		case "deacon":
-			return "deacon/"
+			return "deacon/", true
 		}
 	}
 
@@ -582,10 +662,9 @@ func normalizeAddress(s string) string {
 	// "rig/polecat/name" → "rig/name" (legacy singular input)
 	// "rig/polecats/name" → "rig/name"
 	if len(parts) == 3 && (parts[1] == "crew" || parts[1] == "polecat" || parts[1] == "polecats") {
-		return parts[0] + "/" + parts[2]
+		return parts[0] + "/" + parts[2], true
 	}
-
-	return s
+	return "", false
 }
 
 // hasUnsafeAddressSegment reports whether an agent address could escape or

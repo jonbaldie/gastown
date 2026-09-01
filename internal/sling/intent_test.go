@@ -19,13 +19,15 @@ func TestFromContextPreservesCompleteIntent(t *testing.T) {
 		Convoy:       "hq-cv-recorded",
 		BaseBranch:   "develop",
 		ResumeBranch: "feature/resume-me",
-		NoMerge:      true,
-		ReviewOnly:   true,
-		Account:      "work",
-		Agent:        "codex",
-		HookRawBead:  true,
-		Owned:        true,
-		Mode:         "ralph",
+		SlingContextPolicy: capacity.SlingContextPolicy{
+			NoMerge:     true,
+			ReviewOnly:  true,
+			Account:     "work",
+			Agent:       "codex",
+			HookRawBead: true,
+			Owned:       true,
+			Mode:        "ralph",
+		},
 	}
 
 	intent := FromContext(fields)
@@ -75,9 +77,11 @@ func TestFromContextRoundTripThroughDurableJSON(t *testing.T) {
 		Merge:        "local",
 		Convoy:       "hq-cv-1",
 		ResumeBranch: "feature/x",
-		Owned:        true,
-		HookRawBead:  true,
-		Mode:         "ralph",
+		IntentExecutionOptions: IntentExecutionOptions{
+			Owned:       true,
+			HookRawBead: true,
+			Mode:        "ralph",
+		},
 	}
 
 	persisted := beads.FormatSlingContextDescription(ToContextFields(original, "2026-01-15T10:00:00Z"))

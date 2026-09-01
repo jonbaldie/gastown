@@ -125,8 +125,6 @@ Examples:
 	RunE: runDaemonRotateLogs,
 }
 
-var daemonRotateLogsForce bool
-
 var daemonClearBackoffCmd = &cobra.Command{
 	Use:   "clear-backoff <agent>",
 	Short: "Clear crash loop backoff for an agent",
@@ -144,11 +142,6 @@ Examples:
 	RunE: runDaemonClearBackoff,
 }
 
-var (
-	daemonLogLines  int
-	daemonLogFollow bool
-)
-
 func init() {
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
@@ -159,14 +152,14 @@ func init() {
 	daemonCmd.AddCommand(daemonClearBackoffCmd)
 	daemonCmd.AddCommand(daemonRotateLogsCmd)
 
-	daemonLogsCmd.Flags().IntVarP(&daemonLogLines, "lines", "n", 50, "Number of lines to show")
-	daemonLogsCmd.Flags().BoolVarP(&daemonLogFollow, "follow", "f", false, "Follow log output")
-	daemonRotateLogsCmd.Flags().BoolVar(&daemonRotateLogsForce, "force", false, "Rotate all logs regardless of size")
+	daemonLogsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show")
+	daemonLogsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
+	daemonRotateLogsCmd.Flags().Bool("force", false, "Rotate all logs regardless of size")
 
 	rootCmd.AddCommand(daemonCmd)
 }
 
-func runDaemonStart(cmd *cobra.Command, args []string) error {
+func runDaemonStart(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -181,50 +174,21 @@ func runDaemonStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("daemon already running (PID %d)", pid)
 	}
 
-	// Start daemon in background
-	// We use 'gt daemon run' as the actual daemon process
-	gtPath, err := os.Executable()
+	// Start daemon in background.
+	daemonProcess, err := startDaemonProcess(townRoot)
 	if err != nil {
-		return fmt.Errorf("finding executable: %w", err)
+		return err
 	}
 
-	daemonCmd := exec.Command(gtPath, "daemon", "run")
-	daemonCmd.Dir = townRoot
-
-	// Detach from terminal
-	daemonCmd.Stdin = nil
-	daemonCmd.Stdout = nil
-	daemonCmd.Stderr = nil
-	util.SetDetachedProcessGroup(daemonCmd)
-
-	if err := daemonCmd.Start(); err != nil {
-		return fmt.Errorf("starting daemon: %w", err)
-	}
-
-	// Poll for daemon to initialize and acquire the lock (up to 3s)
-	var started bool
-	for range 30 {
-		time.Sleep(100 * time.Millisecond)
-		running, pid, err = daemon.IsRunning(townRoot)
-		if err != nil {
-			return fmt.Errorf("checking daemon status: %w", err)
-		}
-		if running {
-			started = true
-			break
-		}
-	}
-	if !started {
-		if msg := readDaemonStartupFailure(townRoot, daemonCmd.Process.Pid); msg != "" {
-			return fmt.Errorf("daemon failed to start: %s", msg)
-		}
-		return fmt.Errorf("daemon failed to start (check logs with 'gt daemon logs')")
+	pid, err = waitForDaemonStart(townRoot, daemonProcess)
+	if err != nil {
+		return err
 	}
 
 	// Check if our spawned process is the one that won the race.
 	// If another concurrent start won, our process would have exited after
 	// failing to acquire the lock, and the PID file would have a different PID.
-	if pid != daemonCmd.Process.Pid {
+	if pid != daemonProcess.Process.Pid {
 		// Another daemon won the race - that's fine, report it
 		fmt.Printf("%s Daemon already running (PID %d)\n", style.Bold.Render("●"), pid)
 		return nil
@@ -234,7 +198,47 @@ func runDaemonStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonStop(cmd *cobra.Command, args []string) error {
+func startDaemonProcess(townRoot string) (*exec.Cmd, error) {
+	// We use 'gt daemon run' as the actual daemon process.
+	gtPath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("finding executable: %w", err)
+	}
+
+	daemonProcess := exec.Command(gtPath, "daemon", "run")
+	daemonProcess.Dir = townRoot
+
+	// Detach from terminal.
+	daemonProcess.Stdin = nil
+	daemonProcess.Stdout = nil
+	daemonProcess.Stderr = nil
+	util.SetDetachedProcessGroup(daemonProcess)
+
+	if err := daemonProcess.Start(); err != nil {
+		return nil, fmt.Errorf("starting daemon: %w", err)
+	}
+	return daemonProcess, nil
+}
+
+func waitForDaemonStart(townRoot string, daemonProcess *exec.Cmd) (int, error) {
+	// Poll for daemon to initialize and acquire the lock (up to 3s).
+	for range 30 {
+		time.Sleep(100 * time.Millisecond)
+		running, pid, err := daemon.IsRunning(townRoot)
+		if err != nil {
+			return 0, fmt.Errorf("checking daemon status: %w", err)
+		}
+		if running {
+			return pid, nil
+		}
+	}
+	if msg := readDaemonStartupFailure(townRoot, daemonProcess.Process.Pid); msg != "" {
+		return 0, fmt.Errorf("daemon failed to start: %s", msg)
+	}
+	return 0, fmt.Errorf("daemon failed to start (check logs with 'gt daemon logs')")
+}
+
+func runDaemonStop(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -256,7 +260,7 @@ func runDaemonStop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonStatus(cmd *cobra.Command, args []string) error {
+func runDaemonStatus(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -335,7 +339,9 @@ func readDaemonStartupFailure(townRoot string, pid int) string {
 	return ""
 }
 
-func runDaemonLogs(cmd *cobra.Command, args []string) error {
+func runDaemonLogs(cmd *cobra.Command, _ []string) error {
+	logLines := commandIntFlag(cmd, "lines")
+	logFollow := commandBoolFlag(cmd, "follow")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -347,7 +353,7 @@ func runDaemonLogs(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no log file found at %s", logFile)
 	}
 
-	if daemonLogFollow {
+	if logFollow {
 		// Use tail -f for following
 		tailCmd := exec.Command("tail", "-f", logFile)
 		tailCmd.Stdout = os.Stdout
@@ -356,13 +362,13 @@ func runDaemonLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Use tail -n for last N lines
-	tailCmd := exec.Command("tail", "-n", fmt.Sprintf("%d", daemonLogLines), logFile)
+	tailCmd := exec.Command("tail", "-n", fmt.Sprintf("%d", logLines), logFile)
 	tailCmd.Stdout = os.Stdout
 	tailCmd.Stderr = os.Stderr
 	return tailCmd.Run()
 }
 
-func runDaemonRun(cmd *cobra.Command, args []string) error {
+func runDaemonRun(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -387,7 +393,7 @@ func runDaemonRun(cmd *cobra.Command, args []string) error {
 	return d.Run()
 }
 
-func runDaemonEnableSupervisor(cmd *cobra.Command, args []string) error {
+func runDaemonEnableSupervisor(_ *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -412,7 +418,7 @@ func runDaemonEnableSupervisor(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonClearBackoff(cmd *cobra.Command, args []string) error {
+func runDaemonClearBackoff(_ *cobra.Command, args []string) error {
 	agentID := args[0]
 
 	townRoot, err := workspace.FindFromCwdOrError()
@@ -447,14 +453,15 @@ func runDaemonClearBackoff(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDaemonRotateLogs(cmd *cobra.Command, args []string) error {
+func runDaemonRotateLogs(cmd *cobra.Command, _ []string) error {
+	force := commandBoolFlag(cmd, "force")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	var result *daemon.RotateLogsResult
-	if daemonRotateLogsForce {
+	if force {
 		result = daemon.ForceRotateLogs(townRoot)
 	} else {
 		result = daemon.RotateLogs(townRoot)

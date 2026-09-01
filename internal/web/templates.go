@@ -22,16 +22,30 @@ type ConvoyData struct {
 	Rigs        []RigRow
 	Dogs        []DogRow
 	Escalations []EscalationRow
-	Health      *HealthRow
-	Queues      []QueueRow
-	Sessions    []SessionRow
-	Hooks       []HookRow
-	Mayor       *MayorStatus
-	Issues      []IssueRow
 	Activity    []ActivityRow
-	Summary     *DashboardSummary
-	Expand      string // Panel to show fullscreen (from ?expand=name)
-	CSRFToken   string // Token for CSRF protection on POST requests
+	ConvoyWorkData
+	ConvoyViewState
+}
+
+// ConvoyWorkData contains the live work-management collections used by the
+// dashboard. It is embedded so templates retain their flat field selectors.
+type ConvoyWorkData struct {
+	Queues   []QueueRow
+	Sessions []SessionRow
+	Hooks    []HookRow
+	Issues   []IssueRow
+}
+
+// ConvoyViewState contains dashboard-wide state used by the convoy template.
+// It is embedded in ConvoyData so the template can continue to address these
+// values directly while keeping the fetched collections separate from view
+// state at the Go seam.
+type ConvoyViewState struct {
+	Health    *HealthRow
+	Mayor     *MayorStatus
+	Summary   *DashboardSummary
+	Expand    string // Panel to show fullscreen (from ?expand=name)
+	CSRFToken string // Token for CSRF protection on POST requests
 }
 
 // RigRow represents a registered rig in the dashboard.

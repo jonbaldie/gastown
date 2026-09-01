@@ -195,12 +195,6 @@ func TestLaunchAsAlias_EpicInput(t *testing.T) {
 
 	_, logPath := td.Setup(t)
 
-	// Clean up shared state.
-	defer func() {
-		convoyStageLaunch = false
-		convoyLaunchForce = false
-	}()
-
 	err := runConvoyLaunch(convoyLaunchCmd, []string{"gt-epic-1"})
 
 	// The error should NOT be "stage-and-launch not yet implemented".
@@ -227,10 +221,6 @@ func TestLaunchAsAlias_EpicInput(t *testing.T) {
 		t.Errorf("bd.log should contain 'CMD:dep list gt-task-1 --json' (staging ran), got:\n%s", logContent)
 	}
 
-	// Verify convoyStageLaunch was reset by defer in runConvoyLaunch.
-	if convoyStageLaunch {
-		t.Error("convoyStageLaunch should be reset to false after runConvoyLaunch")
-	}
 }
 
 // IT-20: gt convoy launch <task-id1> <task-id2> delegates to stage+launch for
@@ -249,12 +239,6 @@ func TestLaunchAsAlias_TaskListInput(t *testing.T) {
 		Task("gt-t2", "Task Two", withRig("gastown"))
 
 	_, logPath := td.Setup(t)
-
-	// Clean up shared state.
-	defer func() {
-		convoyStageLaunch = false
-		convoyLaunchForce = false
-	}()
 
 	err := runConvoyLaunch(convoyLaunchCmd, []string{"gt-t1", "gt-t2"})
 

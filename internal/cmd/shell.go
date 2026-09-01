@@ -64,7 +64,7 @@ func init() {
 	rootCmd.AddCommand(shellCmd)
 }
 
-func runShellInstall(cmd *cobra.Command, args []string) error {
+func runShellInstall(_ *cobra.Command, _ []string) error {
 	if err := shell.Install(); err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func runShellInstall(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runShellRemove(cmd *cobra.Command, args []string) error {
+func runShellRemove(_ *cobra.Command, _ []string) error {
 	if err := shell.Remove(); err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func runShellRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runShellStatus(cmd *cobra.Command, args []string) error {
+func runShellStatus(_ *cobra.Command, _ []string) error {
 	s, err := state.Load()
 	if err != nil {
 		fmt.Println("Gas Town: not configured")

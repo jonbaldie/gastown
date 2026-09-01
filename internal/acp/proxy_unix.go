@@ -36,35 +36,36 @@ func (p *Proxy) isProcessAlive() bool {
 // On Unix, we send SIGTERM to the process group, then SIGKILL after 2 seconds
 // if the process hasn't exited.
 func (p *Proxy) terminateProcess() {
-	if p.cmd != nil && p.cmd.Process != nil {
-		debugLog(p.townRoot, "[Proxy] Shutdown: sending SIGTERM to agent process (pid=%d)", p.cmd.Process.Pid)
-		pgid, err := syscall.Getpgid(p.cmd.Process.Pid)
-		if err == nil {
-			// SAFETY: Never kill our own process group during tests/local runs
-			myPgid, _ := syscall.Getpgid(0)
-			if pgid != myPgid {
-				// Send SIGTERM to the entire process group
-				_ = syscall.Kill(-pgid, syscall.SIGTERM)
-			} else {
-				// Only kill the process itself if it shares our group
-				_ = syscall.Kill(p.cmd.Process.Pid, syscall.SIGTERM)
-			}
-		} else {
-			_ = syscall.Kill(p.cmd.Process.Pid, syscall.SIGTERM)
-		}
-
-		time.AfterFunc(2*time.Second, func() {
-			if p.cmd.ProcessState == nil || !p.cmd.ProcessState.Exited() {
-				if pgid == 0 {
-					pgid, _ = syscall.Getpgid(p.cmd.Process.Pid)
-				}
-				myPgid, _ := syscall.Getpgid(0)
-				if pgid > 0 && pgid != myPgid {
-					_ = syscall.Kill(-pgid, syscall.SIGKILL)
-				} else {
-					_ = syscall.Kill(p.cmd.Process.Pid, syscall.SIGKILL)
-				}
-			}
-		})
+	if p.cmd == nil || p.cmd.Process == nil {
+		return
 	}
+	process := p.cmd.Process
+	debugLog(p.townRoot, "[Proxy] Shutdown: sending SIGTERM to agent process (pid=%d)", process.Pid)
+	processGroupID := signalProcessOrGroup(process.Pid, syscall.SIGTERM)
+	time.AfterFunc(2*time.Second, func() {
+		if p.cmd.ProcessState == nil || !p.cmd.ProcessState.Exited() {
+			forceKillProcessOrGroup(process.Pid, processGroupID)
+		}
+	})
+}
+
+func signalProcessOrGroup(pid int, signal syscall.Signal) int {
+	processGroupID, err := syscall.Getpgid(pid)
+	if err != nil || processGroupID == syscall.Getpgrp() {
+		_ = syscall.Kill(pid, signal)
+		return processGroupID
+	}
+	_ = syscall.Kill(-processGroupID, signal)
+	return processGroupID
+}
+
+func forceKillProcessOrGroup(pid, processGroupID int) {
+	if processGroupID == 0 {
+		processGroupID, _ = syscall.Getpgid(pid)
+	}
+	if processGroupID > 0 && processGroupID != syscall.Getpgrp() {
+		_ = syscall.Kill(-processGroupID, syscall.SIGKILL)
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }

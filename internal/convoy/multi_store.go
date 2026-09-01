@@ -40,34 +40,37 @@ func (r *StoreResolver) ResolveIssues(ctx context.Context, ids []string) map[str
 		return result
 	}
 
-	// Group IDs by target store name via prefix → rig name routing.
-	// IDs whose prefix maps to HQ (empty rig name) use the "hq" store.
+	for storeName, storeIDs := range r.groupIssueIDsByStore(ids) {
+		r.resolveStoreIssues(ctx, result, storeName, storeIDs)
+	}
+	return result
+}
+
+// groupIssueIDsByStore groups IDs by their prefix-routed target store.
+func (r *StoreResolver) groupIssueIDsByStore(ids []string) map[string][]string {
 	byStore := make(map[string][]string)
 	for _, id := range ids {
-		storeName := r.storeForID(id)
-		if storeName != "" {
+		if storeName := r.storeForID(id); storeName != "" {
 			byStore[storeName] = append(byStore[storeName], id)
 		}
 	}
+	return byStore
+}
 
-	for storeName, storeIDs := range byStore {
-		store := r.stores[storeName]
-		if store == nil {
-			continue
-		}
-
-		issues, err := store.GetIssuesByIDs(ctx, storeIDs)
-		if err != nil {
-			continue
-		}
-		for _, iss := range issues {
-			if iss != nil {
-				result[iss.ID] = iss
-			}
+func (r *StoreResolver) resolveStoreIssues(ctx context.Context, result map[string]*beadsdk.Issue, storeName string, ids []string) {
+	store := r.stores[storeName]
+	if store == nil {
+		return
+	}
+	issues, err := store.GetIssuesByIDs(ctx, ids)
+	if err != nil {
+		return
+	}
+	for _, issue := range issues {
+		if issue != nil {
+			result[issue.ID] = issue
 		}
 	}
-
-	return result
 }
 
 // ResolveDepsWithMetadata fetches dependency metadata for an issue, trying

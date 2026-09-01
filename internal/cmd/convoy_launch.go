@@ -12,9 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// convoyLaunchForce controls whether to launch a convoy with warnings.
-var convoyLaunchForce bool
-
 // DispatchResult records the outcome of dispatching a single task.
 type DispatchResult struct {
 	BeadID  string
@@ -50,7 +47,15 @@ For epic/task input: runs stage + launch in one step.`,
 }
 
 func init() {
-	convoyLaunchCmd.Flags().BoolVar(&convoyLaunchForce, "force", false, "Launch even with warnings")
+	convoyLaunchCmd.Flags().Bool("force", false, "Launch even with warnings")
+}
+
+func convoyLaunchForceEnabled(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	force, err := cmd.Flags().GetBool("force")
+	return err == nil && force
 }
 
 // transitionConvoyToOpen transitions a staged convoy to open status.
@@ -264,70 +269,85 @@ func renderLaunchOutput(convoyID string, waves []Wave, results []DispatchResult,
 	return b.String()
 }
 
-// runConvoyLaunch is the handler for `gt convoy launch`.
-func runConvoyLaunch(cmd *cobra.Command, args []string) error {
-	// Step 1: Validate args.
-	if err := validateStageArgs(args); err != nil {
-		return err
-	}
-
-	// Step 2: Resolve bead types via bd show for each arg.
+func resolveLaunchBeadTypes(args []string) (map[string]*bdShowResult, error) {
 	beadTypes := make(map[string]*bdShowResult)
 	for _, arg := range args {
 		result, err := bdShow(arg)
 		if err != nil {
-			return fmt.Errorf("cannot resolve bead %s: %w", arg, err)
+			return nil, fmt.Errorf("cannot resolve bead %s: %w", arg, err)
 		}
 		beadTypes[arg] = result
 	}
+	return beadTypes, nil
+}
 
-	// Step 3: If single arg is a convoy with staged status, transition to open
-	// and dispatch Wave 1.
-	if len(args) == 1 {
-		result := beadTypes[args[0]]
-		if isConvoyIssue(result.IssueType, result.Labels) && isStagedStatus(normalizeConvoyStatus(result.Status)) {
-			convoyID := args[0]
+func stagedConvoyLaunchID(args []string, beadTypes map[string]*bdShowResult) string {
+	if len(args) != 1 {
+		return ""
+	}
+	result := beadTypes[args[0]]
+	if result == nil || !isConvoyIssue(result.IssueType, result.Labels) {
+		return ""
+	}
+	if !isStagedStatus(normalizeConvoyStatus(result.Status)) {
+		return ""
+	}
+	return args[0]
+}
 
-			if err := transitionConvoyToOpen(convoyID, convoyLaunchForce); err != nil {
-				return err
-			}
+func prepareLaunchDispatch(convoyID string) (*ConvoyDAG, []Wave, error) {
+	beads, deps, err := collectConvoyBeads(convoyID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("collect beads for dispatch: %w", err)
+	}
+	dag := buildConvoyDAG(beads, deps)
+	waves, _, err := computeWaves(dag)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compute waves for dispatch: %w", err)
+	}
+	return dag, waves, nil
+}
 
-			// Rebuild DAG from tracked beads and dispatch Wave 1.
-			beads, deps, err := collectConvoyBeads(convoyID)
-			if err != nil {
-				return fmt.Errorf("collect beads for dispatch: %w", err)
-			}
-
-			dag := buildConvoyDAG(beads, deps)
-			waves, _, err := computeWaves(dag)
-			if err != nil {
-				return fmt.Errorf("compute waves for dispatch: %w", err)
-			}
-
-			townRoot, err := workspace.FindFromCwdOrError()
-			if err != nil {
-				return fmt.Errorf("resolve town root for dispatch: %w", err)
-			}
-
-			// Check for parked/docked rigs before dispatch (gt-4owfd.1, #2120)
-			if err := checkBlockedRigsForLaunch(dag, townRoot, convoyLaunchForce); err != nil {
-				return err
-			}
-
-			results, err := dispatchWave1(convoyID, dag, waves, townRoot)
-			if err != nil {
-				return fmt.Errorf("dispatch wave 1: %w", err)
-			}
-
-			// Report results.
-			fmt.Print(renderLaunchOutput(convoyID, waves, results, dag))
-			return nil
-		}
+func launchStagedConvoy(convoyID string, force bool) error {
+	if err := transitionConvoyToOpen(convoyID, force); err != nil {
+		return err
 	}
 
-	// Step 4: For non-convoy or non-staged input, delegate to stage+launch flow.
-	// Set the --launch flag on convoyStageCmd and delegate to runConvoyStage.
-	convoyStageLaunch = true
-	defer func() { convoyStageLaunch = false }()
-	return runConvoyStage(cmd, args)
+	dag, waves, err := prepareLaunchDispatch(convoyID)
+	if err != nil {
+		return err
+	}
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("resolve town root for dispatch: %w", err)
+	}
+	if err := checkBlockedRigsForLaunch(dag, townRoot, force); err != nil {
+		return err
+	}
+	results, err := dispatchWave1(convoyID, dag, waves, townRoot)
+	if err != nil {
+		return fmt.Errorf("dispatch wave 1: %w", err)
+	}
+	fmt.Print(renderLaunchOutput(convoyID, waves, results, dag))
+	return nil
+}
+
+func delegateConvoyLaunch(cmd *cobra.Command, args []string, force bool) error {
+	return runConvoyStageWithForce(cmd, args, force, true)
+}
+
+// runConvoyLaunch is the handler for `gt convoy launch`.
+func runConvoyLaunch(cmd *cobra.Command, args []string) error {
+	if err := validateStageArgs(args); err != nil {
+		return err
+	}
+	beadTypes, err := resolveLaunchBeadTypes(args)
+	if err != nil {
+		return err
+	}
+	force := convoyLaunchForceEnabled(cmd)
+	if convoyID := stagedConvoyLaunchID(args, beadTypes); convoyID != "" {
+		return launchStagedConvoy(convoyID, force)
+	}
+	return delegateConvoyLaunch(cmd, args, force)
 }

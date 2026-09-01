@@ -77,24 +77,34 @@ func isValidMailAddress(s string) bool {
 // e.g. git-remote-s3 for s3:// URLs), plus SCP-style (user@host:path).
 // Rejects local paths, file:// URIs, flag-like strings, and bare names.
 func isValidGitURL(s string) bool {
-	if len(s) == 0 || strings.HasPrefix(s, "-") {
-		return false
-	}
-	// Reject file:// URIs (local filesystem access)
-	if strings.HasPrefix(s, "file://") {
+	if !hasValidGitURLPrefix(s) {
 		return false
 	}
 	// Accept any scheme:// URL where scheme is alphanumeric (plus + - .)
 	if idx := strings.Index(s, "://"); idx > 0 {
-		scheme := s[:idx]
-		for _, c := range scheme {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-				(c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.') {
-				return false
-			}
-		}
-		return true
+		return isValidGitScheme(s[:idx])
 	}
+	return isValidGitSCPURL(s)
+}
+
+func hasValidGitURLPrefix(s string) bool {
+	if len(s) == 0 || strings.HasPrefix(s, "-") {
+		return false
+	}
+	// Reject file:// URIs (local filesystem access)
+	return !strings.HasPrefix(s, "file://")
+}
+
+func isValidGitScheme(scheme string) bool {
+	for _, c := range scheme {
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-", c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidGitSCPURL(s string) bool {
 	// SCP-style: user@host:path (user and host non-empty, path non-empty, host has no slashes)
 	atIdx := strings.Index(s, "@")
 	colonIdx := strings.Index(s, ":")

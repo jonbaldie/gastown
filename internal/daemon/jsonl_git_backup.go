@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -87,124 +88,133 @@ func (d *Daemon) syncJsonlGitBackup() {
 
 	// Pour molecule for observability (nil-safe — all methods are no-ops on nil).
 	mol := d.pourDogMolecule(constants.MolDogJSONL, nil)
-	defer mol.close()
+	defer mol.Close()
 
 	config := d.patrolConfig.Patrols.JsonlGitBackup
-
-	// Resolve git repo path.
-	gitRepo := config.GitRepo
-	if gitRepo == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			d.logger.Printf("jsonl_git_backup: cannot determine home dir: %v", err)
-			return
-		}
-		gitRepo = filepath.Join(homeDir, ".dolt-archive", "git")
-	}
-
-	// Verify git repo exists.
-	if _, err := os.Stat(filepath.Join(gitRepo, ".git")); os.IsNotExist(err) {
-		d.logger.Printf("jsonl_git_backup: git repo %s does not exist, skipping", gitRepo)
-		return
-	}
-
-	// Determine whether to scrub (default true).
-	scrub := true
-	if config.Scrub != nil {
-		scrub = *config.Scrub
-	}
-
-	// Get database list.
-	databases := config.Databases
-	if len(databases) == 0 {
-		d.logger.Printf("jsonl_git_backup: no databases configured, skipping")
-		return
-	}
-
-	// Resolve Dolt data dir for auto-discovery of running server.
-	var dataDir string
-	if d.doltServer != nil && d.doltServer.IsEnabled() && d.doltServer.config.DataDir != "" {
-		dataDir = d.doltServer.config.DataDir
-	} else {
-		dataDir = filepath.Join(d.config.TownRoot, ".dolt-data")
-	}
-	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
-		d.logger.Printf("jsonl_git_backup: data dir %s does not exist, skipping", dataDir)
+	gitRepo, scrub, databases, dataDir, ok := d.prepareJsonlGitBackup(config)
+	if !ok {
 		return
 	}
 
 	d.logger.Printf("jsonl_git_backup: exporting %d database(s) to %s (scrub=%v)", len(databases), gitRepo, scrub)
+	counts, failed, exported := d.exportJsonlDatabases(databases, gitRepo, dataDir, scrub)
 
-	exported := 0
-	var failed []string
+	if exported == 0 {
+		d.logger.Printf("jsonl_git_backup: no databases exported successfully")
+		mol.FailStep("export", "no databases exported successfully")
+		return
+	}
+
+	mol.CloseStep("export")
+	if !d.verifyJsonlGitBackup(gitRepo, databases, counts, spikeThreshold(config), mol) {
+		mol.FailStep("push", "spike detected")
+		return
+	}
+	d.commitAndReportJsonlBackup(gitRepo, databases, counts, failed, exported, mol)
+}
+
+func (d *Daemon) prepareJsonlGitBackup(config *JsonlGitBackupConfig) (string, bool, []string, string, bool) {
+	gitRepo, ok := resolveJsonlGitRepo(d.logger, config.GitRepo)
+	if !ok || !jsonlGitRepoExists(d.logger, gitRepo) {
+		return "", false, nil, "", false
+	}
+	databases := config.Databases
+	if len(databases) == 0 {
+		d.logger.Printf("jsonl_git_backup: no databases configured, skipping")
+		return "", false, nil, "", false
+	}
+	dataDir := d.jsonlDataDir()
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		d.logger.Printf("jsonl_git_backup: data dir %s does not exist, skipping", dataDir)
+		return "", false, nil, "", false
+	}
+	scrub := config.Scrub == nil || *config.Scrub
+	return gitRepo, scrub, databases, dataDir, true
+}
+
+func resolveJsonlGitRepo(logger *log.Logger, configured string) (string, bool) {
+	if configured != "" {
+		return configured, true
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		logger.Printf("jsonl_git_backup: cannot determine home dir: %v", err)
+		return "", false
+	}
+	return filepath.Join(homeDir, ".dolt-archive", "git"), true
+}
+
+func jsonlGitRepoExists(logger *log.Logger, gitRepo string) bool {
+	if _, err := os.Stat(filepath.Join(gitRepo, ".git")); os.IsNotExist(err) {
+		logger.Printf("jsonl_git_backup: git repo %s does not exist, skipping", gitRepo)
+		return false
+	}
+	return true
+}
+
+func (d *Daemon) jsonlDataDir() string {
+	if d.doltServer != nil && d.doltServer.IsEnabled() && d.doltServer.config.DataDir != "" {
+		return d.doltServer.config.DataDir
+	}
+	return filepath.Join(d.config.TownRoot, ".dolt-data")
+}
+
+func (d *Daemon) exportJsonlDatabases(databases []string, gitRepo, dataDir string, scrub bool) (map[string]int, []string, int) {
 	counts := make(map[string]int)
+	var failed []string
+	exported := 0
 	for _, db := range databases {
 		n, err := d.exportDatabaseToJsonl(db, gitRepo, dataDir, scrub)
 		if err != nil {
 			d.logger.Printf("jsonl_git_backup: %s: export failed: %v", db, err)
 			failed = append(failed, db)
-		} else {
-			counts[db] = n
-			exported++
+			continue
 		}
+		counts[db] = n
+		exported++
 	}
+	return counts, failed, exported
+}
 
-	if exported == 0 {
-		d.logger.Printf("jsonl_git_backup: no databases exported successfully")
-		mol.failStep("export", "no databases exported successfully")
-		return
-	}
-
-	mol.closeStep("export")
-
-	// Phase D: Pollution firewall — filter test data from exports.
+func (d *Daemon) verifyJsonlGitBackup(gitRepo string, databases []string, counts map[string]int, threshold float64, mol *dogMol) bool {
 	removed := d.applyPollutionFilter(gitRepo, databases)
 	if removed > 0 {
 		d.logger.Printf("jsonl_git_backup: filtered %d total test-pollution record(s)", removed)
-		// Recount after filtering so spike detection uses accurate numbers.
 		recountAfterFilter(gitRepo, databases, counts)
 	}
-
-	// Post-scrub verification: re-scan output for any remaining pollution.
 	if remaining := d.verifyNoPollution(gitRepo, databases); remaining > 0 {
 		d.logger.Printf("jsonl_git_backup: WARNING: %d suspicious record(s) survived scrub+filter", remaining)
 		d.escalate("jsonl_git_backup", fmt.Sprintf("post-scrub verification found %d suspicious records — review JSONL exports", remaining))
 	}
-
-	mol.closeStep("verify")
-
-	// Phase D: Spike detection — compare current counts to previous commit.
-	threshold := spikeThreshold(config)
+	mol.CloseStep("verify")
 	spikes := d.verifyExportCounts(gitRepo, databases, counts, threshold)
-	if len(spikes) > 0 {
-		report := formatSpikeReport(spikes)
-		d.logger.Printf("jsonl_git_backup: HALTING — spike detected:\n%s", report)
-		d.escalate("jsonl_git_backup", report)
-		mol.failStep("push", "spike detected")
-		return // Do NOT commit — spike detected.
+	if len(spikes) == 0 {
+		return true
 	}
+	report := formatSpikeReport(spikes)
+	d.logger.Printf("jsonl_git_backup: HALTING — spike detected:\n%s", report)
+	d.escalate("jsonl_git_backup", report)
+	return false
+}
 
-	// Commit and push if anything changed.
-	// Include failed databases in commit message so staleness is visible.
+func (d *Daemon) commitAndReportJsonlBackup(gitRepo string, databases []string, counts map[string]int, failed []string, exported int, mol *dogMol) {
 	pushStatus := "ok"
 	if err := d.commitAndPushJsonlBackup(gitRepo, databases, counts, failed); err != nil {
 		d.logger.Printf("jsonl_git_backup: git operations failed: %v", err)
 		pushStatus = "failed"
-		mol.failStep("push", err.Error())
-		d.jsonlPushFailures++
-		if d.jsonlPushFailures >= maxConsecutivePushFailures {
-			d.logger.Printf("jsonl_git_backup: ESCALATION: %d consecutive push failures", d.jsonlPushFailures)
-			d.escalate("jsonl_git_backup", fmt.Sprintf("git push failed %d consecutive times", d.jsonlPushFailures))
-			// Reset to avoid flooding escalations every tick.
-			d.jsonlPushFailures = 0
+		mol.FailStep("push", err.Error())
+		d.JSONLPushFailures++
+		if d.JSONLPushFailures >= maxConsecutivePushFailures {
+			d.logger.Printf("jsonl_git_backup: ESCALATION: %d consecutive push failures", d.JSONLPushFailures)
+			d.escalate("jsonl_git_backup", fmt.Sprintf("git push failed %d consecutive times", d.JSONLPushFailures))
+			d.JSONLPushFailures = 0
 		}
 	} else {
-		d.jsonlPushFailures = 0
-		mol.closeStep("push")
+		d.JSONLPushFailures = 0
+		mol.CloseStep("push")
 	}
-
 	d.logger.Printf("jsonl_git_backup: exported %d/%d database(s), push=%s", exported, len(databases), pushStatus)
-	mol.closeStep("report")
+	mol.CloseStep("report")
 }
 
 // supplementalTables lists non-issues tables to include in JSONL backup.
@@ -276,42 +286,8 @@ func (d *Daemon) exportDatabaseToJsonl(db, gitRepo, dataDir string, scrub bool) 
 func (d *Daemon) exportTableToJsonl(table, query, dir, dataDir string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), jsonlExportTimeout)
 	defer cancel()
-
-	// Prefer querying the running server (accurate, up-to-date data) over embedded
-	// mode (reads on-disk state which may lag behind server commits).
-	host := "127.0.0.1"
-	port := 3307
-	user := "root"
-	password := ""
-	useServer := false
-	if d.doltServer != nil && d.doltServer.IsEnabled() {
-		if d.doltServer.config.Host != "" {
-			host = d.doltServer.config.Host
-		}
-		if d.doltServer.config.Port != 0 {
-			port = d.doltServer.config.Port
-		}
-		if d.doltServer.config.User != "" {
-			user = d.doltServer.config.User
-		}
-		password = d.doltServer.config.Password
-		useServer = true
-	}
-
-	var cmd *exec.Cmd
-	if useServer {
-		cmd = exec.CommandContext(ctx, "dolt",
-			"--host", host,
-			"--port", strconv.Itoa(port),
-			"--no-tls",
-			"-u", user,
-			"-p", password,
-			"sql", "-r", "json", "-q", query)
-	} else {
-		cmd = exec.CommandContext(ctx, "dolt", "sql", "-r", "json", "-q", query)
-	}
+	cmd := d.jsonlExportCommand(ctx, query, dataDir)
 	// Always set cmd.Dir to prevent stray .doltcfg/ creation (GH#2537).
-	cmd.Dir = dataDir
 	util.SetDetachedProcessGroup(cmd)
 
 	var stdout, stderr bytes.Buffer
@@ -332,12 +308,57 @@ func (d *Daemon) exportTableToJsonl(table, query, dir, dataDir string) (int, err
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		return 0, fmt.Errorf("parsing dolt output: %w", err)
 	}
+	return writeJsonlRows(dir, table, result.Rows)
+}
 
+type jsonlExportConnection struct {
+	host      string
+	port      int
+	user      string
+	password  string
+	useServer bool
+}
+
+func (d *Daemon) jsonlExportCommand(ctx context.Context, query, dataDir string) *exec.Cmd {
+	connection := d.jsonlExportConnection()
+	var cmd *exec.Cmd
+	if connection.useServer {
+		cmd = exec.CommandContext(ctx, "dolt",
+			"--host", connection.host,
+			"--port", strconv.Itoa(connection.port),
+			"--no-tls", "-u", connection.user, "-p", connection.password,
+			"sql", "-r", "json", "-q", query)
+	} else {
+		cmd = exec.CommandContext(ctx, "dolt", "sql", "-r", "json", "-q", query)
+	}
+	cmd.Dir = dataDir
+	return cmd
+}
+
+func (d *Daemon) jsonlExportConnection() jsonlExportConnection {
+	connection := jsonlExportConnection{host: "127.0.0.1", port: 3307, user: "root"}
+	if d.doltServer == nil || !d.doltServer.IsEnabled() {
+		return connection
+	}
+	connection.useServer = true
+	if d.doltServer.config.Host != "" {
+		connection.host = d.doltServer.config.Host
+	}
+	if d.doltServer.config.Port != 0 {
+		connection.port = d.doltServer.config.Port
+	}
+	if d.doltServer.config.User != "" {
+		connection.user = d.doltServer.config.User
+	}
+	connection.password = d.doltServer.config.Password
+	return connection
+}
+
+func writeJsonlRows(dir, table string, rows []json.RawMessage) (int, error) {
 	outPath := filepath.Join(dir, table+".jsonl")
 	tmpPath := outPath + ".tmp"
-
 	var buf bytes.Buffer
-	for _, row := range result.Rows {
+	for _, row := range rows {
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, row); err != nil {
 			return 0, fmt.Errorf("compacting JSON row: %w", err)
@@ -354,26 +375,34 @@ func (d *Daemon) exportTableToJsonl(table, query, dir, dataDir string) (int, err
 		return 0, fmt.Errorf("renaming %s: %w", tmpPath, err)
 	}
 
-	return len(result.Rows), nil
+	return len(rows), nil
 }
 
 // commitAndPushJsonlBackup stages, commits, and pushes JSONL files if changed.
 // The commit message includes counts for successful exports AND names of failed
 // databases, so partial failures are visible in git history.
 func (d *Daemon) commitAndPushJsonlBackup(gitRepo string, databases []string, counts map[string]int, failed []string) error {
-	// Stage all JSONL files (flat legacy files + subdirectory structure).
-	// Use "." instead of "*/" to correctly handle initially-untracked subdirectories.
 	if err := d.runGitCmd(gitRepo, gitCmdTimeout, "add", "-A", "."); err != nil {
 		return fmt.Errorf("git add: %w", err)
 	}
-
-	// Check if there are staged changes.
-	if err := d.runGitCmd(gitRepo, gitCmdTimeout, "diff", "--cached", "--quiet"); err == nil {
+	if !jsonlChangesPending(d, gitRepo) {
 		d.logger.Printf("jsonl_git_backup: no changes to commit")
 		return nil
 	}
+	msg := jsonlBackupCommitMessage(databases, counts, failed)
+	if err := d.runGitCmd(gitRepo, gitCmdTimeout, "commit", "-m", msg,
+		"--author=Gas Town Daemon <daemon@gastown.local>"); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	removeSpikeBaseline(gitRepo)
+	return d.pushJsonlBackup(gitRepo, msg)
+}
 
-	// Build commit message with counts in deterministic order.
+func jsonlChangesPending(d *Daemon, gitRepo string) bool {
+	return d.runGitCmd(gitRepo, gitCmdTimeout, "diff", "--cached", "--quiet") != nil
+}
+
+func jsonlBackupCommitMessage(databases []string, counts map[string]int, failed []string) string {
 	timestamp := time.Now().Format("2006-01-02 15:04")
 	var parts []string
 	for _, db := range databases {
@@ -386,22 +415,14 @@ func (d *Daemon) commitAndPushJsonlBackup(gitRepo string, databases []string, co
 		sort.Strings(failed)
 		msg += fmt.Sprintf(" [FAILED: %s]", strings.Join(failed, ", "))
 	}
+	return msg
+}
 
-	// Commit.
-	if err := d.runGitCmd(gitRepo, gitCmdTimeout, "commit", "-m", msg,
-		"--author=Gas Town Daemon <daemon@gastown.local>"); err != nil {
-		return fmt.Errorf("git commit: %w", err)
-	}
-
-	// Successful commit — clear any spike baseline since HEAD is now up to date.
-	removeSpikeBaseline(gitRepo)
-
-	// Push — only if a remote is configured. Skip gracefully if not.
+func (d *Daemon) pushJsonlBackup(gitRepo, msg string) error {
 	if d.hasGitRemote(gitRepo, "origin") {
-		// Detect current branch name for push (master vs main).
 		branch := d.currentGitBranch(gitRepo)
 		if branch == "" {
-			branch = "main" // fallback
+			branch = "main"
 		}
 		if err := d.runGitCmd(gitRepo, gitPushTimeout, "push", "origin", branch); err != nil {
 			return fmt.Errorf("git push: %w", err)
@@ -439,14 +460,18 @@ func gitChildEnv() []string {
 	if err != nil {
 		return env
 	}
-	if !have["HOME"] && u.HomeDir != "" {
-		env = append(env, "HOME="+u.HomeDir)
+	return appendMissingIdentity(env, have, u)
+}
+
+func appendMissingIdentity(env []string, have map[string]bool, current *user.User) []string {
+	if !have["HOME"] && current.HomeDir != "" {
+		env = append(env, "HOME="+current.HomeDir)
 	}
-	if !have["USER"] && u.Username != "" {
-		env = append(env, "USER="+u.Username)
+	if !have["USER"] && current.Username != "" {
+		env = append(env, "USER="+current.Username)
 	}
-	if !have["LOGNAME"] && u.Username != "" {
-		env = append(env, "LOGNAME="+u.Username)
+	if !have["LOGNAME"] && current.Username != "" {
+		env = append(env, "LOGNAME="+current.Username)
 	}
 	return env
 }
@@ -694,8 +719,6 @@ func removeSpikeBaseline(gitRepo string) {
 // proceeds. This prevents permanent blocking after legitimate large changes
 // (e.g., Reaper purges, filter updates).
 func (d *Daemon) verifyExportCounts(gitRepo string, databases []string, counts map[string]int, threshold float64) []spikeInfo {
-	const minAbsoluteDelta = 20 // ignore changes smaller than this many records
-
 	var spikes []spikeInfo
 	spikeBase := loadSpikeBaseline(gitRepo)
 
@@ -704,71 +727,11 @@ func (d *Daemon) verifyExportCounts(gitRepo string, databases []string, counts m
 		if !ok {
 			continue // database failed export, skip
 		}
-
-		relPath := filepath.Join(db, "issues.jsonl")
-		prevCount, err := previousCommitLineCount(gitRepo, relPath)
-		if err != nil {
-			d.logger.Printf("jsonl_git_backup: verify: %s: error reading baseline: %v", db, err)
-			continue
-		}
-		if prevCount == 0 {
-			// First export — no baseline to compare against.
-			d.logger.Printf("jsonl_git_backup: verify: %s: first export (%d records), skipping spike check", db, currentCount)
-			continue
-		}
-
-		absDelta := currentCount - prevCount
-		if absDelta < 0 {
-			absDelta = -absDelta
-		}
-		// Small absolute changes are always fine — avoids false alarms on
-		// small databases where a few issues cause large percentage swings.
-		if absDelta < minAbsoluteDelta {
-			continue
-		}
-
-		fractionalDelta := math.Abs(float64(currentCount-prevCount)) / float64(prevCount)
-
-		// Asymmetric: increases are less suspicious than drops.
-		// New issues being filed is normal growth; losing issues suggests data loss.
-		effectiveThreshold := threshold
-		if currentCount > prevCount {
-			effectiveThreshold = threshold * 2 // 2x tolerance for growth
-		}
-
-		if fractionalDelta > effectiveThreshold {
-			// Check spike baseline: if the current count is stable relative
-			// to a previously-halted count, this is a confirmed new level.
-			if spikeBase != nil {
-				if baseCount, ok := spikeBase.Counts[db]; ok && baseCount > 0 {
-					baseDelta := math.Abs(float64(currentCount-baseCount)) / float64(baseCount)
-					if baseDelta <= threshold {
-						d.logger.Printf("jsonl_git_backup: %s: count stable vs spike baseline (%d → %d, %.1f%% vs baseline %d), accepting new level",
-							db, prevCount, currentCount, fractionalDelta*100, baseCount)
-						continue // Stable relative to spike baseline — not a new spike.
-					}
-				}
-			}
-
-			spike := spikeInfo{
-				DB:       db,
-				File:     relPath,
-				Previous: prevCount,
-				Current:  currentCount,
-				Delta:    fractionalDelta,
-			}
+		spike, found := d.verifyJsonlDatabaseCount(gitRepo, db, currentCount, threshold, spikeBase)
+		if found {
 			spikes = append(spikes, spike)
-
-			direction := "jump"
-			if currentCount < prevCount {
-				direction = "drop"
-			}
-			d.logger.Printf("jsonl_git_backup: SPIKE DETECTED: %s: %s from %d to %d (%.1f%% %s, threshold %.1f%%)",
-				db, direction, prevCount, currentCount, fractionalDelta*100, direction, effectiveThreshold*100)
 		}
 	}
-
-	// Save or clear spike baseline depending on results.
 	if len(spikes) > 0 {
 		if err := saveSpikeBaseline(gitRepo, counts); err != nil {
 			d.logger.Printf("jsonl_git_backup: failed to save spike baseline: %v", err)
@@ -776,6 +739,66 @@ func (d *Daemon) verifyExportCounts(gitRepo string, databases []string, counts m
 	}
 
 	return spikes
+}
+
+func (d *Daemon) verifyJsonlDatabaseCount(gitRepo, db string, currentCount int, threshold float64, spikeBase *spikeBaseline) (spikeInfo, bool) {
+	const minAbsoluteDelta = 20
+	relPath := filepath.Join(db, "issues.jsonl")
+	prevCount, err := previousCommitLineCount(gitRepo, relPath)
+	if err != nil {
+		d.logger.Printf("jsonl_git_backup: verify: %s: error reading baseline: %v", db, err)
+		return spikeInfo{}, false
+	}
+	if prevCount == 0 {
+		d.logger.Printf("jsonl_git_backup: verify: %s: first export (%d records), skipping spike check", db, currentCount)
+		return spikeInfo{}, false
+	}
+	absDelta := currentCount - prevCount
+	if absDelta < 0 {
+		absDelta = -absDelta
+	}
+	if absDelta < minAbsoluteDelta {
+		return spikeInfo{}, false
+	}
+	fractionalDelta := math.Abs(float64(currentCount-prevCount)) / float64(prevCount)
+	effectiveThreshold := growthAdjustedThreshold(threshold, currentCount > prevCount)
+	if fractionalDelta <= effectiveThreshold {
+		return spikeInfo{}, false
+	}
+	if d.stableSpikeBaseline(db, prevCount, currentCount, fractionalDelta, threshold, spikeBase) {
+		return spikeInfo{}, false
+	}
+	direction := "jump"
+	if currentCount < prevCount {
+		direction = "drop"
+	}
+	d.logger.Printf("jsonl_git_backup: SPIKE DETECTED: %s: %s from %d to %d (%.1f%% %s, threshold %.1f%%)",
+		db, direction, prevCount, currentCount, fractionalDelta*100, direction, effectiveThreshold*100)
+	return spikeInfo{DB: db, File: relPath, Previous: prevCount, Current: currentCount, Delta: fractionalDelta}, true
+}
+
+func growthAdjustedThreshold(threshold float64, growth bool) float64 {
+	if growth {
+		return threshold * 2
+	}
+	return threshold
+}
+
+func (d *Daemon) stableSpikeBaseline(db string, prevCount, currentCount int, fractionalDelta, threshold float64, spikeBase *spikeBaseline) bool {
+	if spikeBase == nil {
+		return false
+	}
+	baseCount, ok := spikeBase.Counts[db]
+	if !ok || baseCount <= 0 {
+		return false
+	}
+	baseDelta := math.Abs(float64(currentCount-baseCount)) / float64(baseCount)
+	if baseDelta > threshold {
+		return false
+	}
+	d.logger.Printf("jsonl_git_backup: %s: count stable vs spike baseline (%d → %d, %.1f%% vs baseline %d), accepting new level",
+		db, prevCount, currentCount, fractionalDelta*100, baseCount)
+	return true
 }
 
 // formatSpikeReport creates a human-readable summary of spike anomalies for escalation.

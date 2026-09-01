@@ -186,6 +186,14 @@ func nativeSessionIDFromPath(path string) string {
 // frequently: no events are lost because the file is tailed until we switch.
 func tailJSONL(ctx context.Context, path, projectDir string, since time.Time, sessionID, agentType string, ch chan<- AgentEvent) {
 	nativeID := nativeSessionIDFromPath(path)
+	metadata := tailMetadata{
+		path:       path,
+		projectDir: projectDir,
+		since:      since,
+		sessionID:  sessionID,
+		agentType:  agentType,
+		nativeID:   nativeID,
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -197,44 +205,65 @@ func tailJSONL(ctx context.Context, path, projectDir string, since time.Time, se
 	var partial strings.Builder
 
 	for {
-		select {
-		case <-ctx.Done():
+		if !tailJSONLStep(ctx, reader, &partial, metadata, ch) {
 			return
-		default:
-		}
-
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			partial.WriteString(line)
-		}
-		if err == nil || (err == io.EOF && strings.HasSuffix(partial.String(), "\n")) {
-			fullLine := strings.TrimRight(partial.String(), "\r\n")
-			partial.Reset()
-			if fullLine != "" {
-				for _, ev := range parseClaudeCodeLine(fullLine, sessionID, agentType, nativeID) {
-					select {
-					case ch <- ev:
-					case <-ctx.Done():
-						return
-					}
-				}
-			}
-		}
-		if err == io.EOF {
-			// At EOF: check every poll whether a newer file has appeared.
-			// This detects new Claude sessions within one poll interval (500ms).
-			if newer, ok := newestJSONLIn(projectDir, since); ok && newer != path {
-				return // newer Claude session detected — caller switches
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(watchPollInterval):
-			}
-		} else if err != nil {
-			return // unexpected read error
 		}
 	}
+}
+
+type tailMetadata struct {
+	path, projectDir, sessionID, agentType, nativeID string
+	since                                            time.Time
+}
+
+func tailJSONLStep(ctx context.Context, reader *bufio.Reader, partial *strings.Builder, metadata tailMetadata, ch chan<- AgentEvent) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	line, err := reader.ReadString('\n')
+	partial.WriteString(line)
+	if completeLine(err, partial) && !emitClaudeCodeLine(ctx, partial, metadata, ch) {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	if err != io.EOF {
+		return false
+	}
+	return waitForTailPoll(ctx, metadata)
+}
+
+func waitForTailPoll(ctx context.Context, metadata tailMetadata) bool {
+	if newer, ok := newestJSONLIn(metadata.projectDir, metadata.since); ok && newer != metadata.path {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(watchPollInterval):
+		return true
+	}
+}
+
+func completeLine(err error, partial *strings.Builder) bool {
+	if err != nil && (err != io.EOF || !strings.HasSuffix(partial.String(), "\n")) {
+		return false
+	}
+	return true
+}
+
+func emitClaudeCodeLine(ctx context.Context, partial *strings.Builder, metadata tailMetadata, ch chan<- AgentEvent) bool {
+	fullLine := strings.TrimRight(partial.String(), "\r\n")
+	partial.Reset()
+	for _, ev := range parseClaudeCodeLine(fullLine, metadata.sessionID, metadata.agentType, metadata.nativeID) {
+		select {
+		case ch <- ev:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }
 
 // ── Claude Code JSONL structures ──────────────────────────────────────────────
@@ -282,58 +311,76 @@ type ccContent struct {
 // parseClaudeCodeLine parses one JSONL line and returns 0 or more AgentEvents.
 func parseClaudeCodeLine(line, sessionID, agentType, nativeSessionID string) []AgentEvent {
 	var entry ccEntry
-	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+	if !decodeConversationEntry(line, &entry) {
 		return nil
 	}
-	// Only emit events for real conversation turns.
-	if entry.Type != "assistant" && entry.Type != "user" {
-		return nil
+	ts := entryTimestamp(entry.Timestamp)
+	metadata := eventMetadata{
+		agentType:       agentType,
+		sessionID:       sessionID,
+		nativeSessionID: nativeSessionID,
+		role:            entry.Message.Role,
+		timestamp:       ts,
 	}
-	if entry.Message == nil {
-		return nil
-	}
+	events := contentEvents(entry.Message.Content, metadata)
+	return appendUsageEvent(events, entry, metadata)
+}
 
-	ts := time.Now()
-	if entry.Timestamp != "" {
-		if t, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
-			ts = t
-		}
-	}
+type eventMetadata struct {
+	agentType, sessionID, nativeSessionID, role string
+	timestamp                                   time.Time
+}
 
+func decodeConversationEntry(line string, entry *ccEntry) bool {
+	if err := json.Unmarshal([]byte(line), entry); err != nil {
+		return false
+	}
+	return (entry.Type == "assistant" || entry.Type == "user") && entry.Message != nil
+}
+
+func entryTimestamp(timestamp string) time.Time {
+	if t, err := time.Parse(time.RFC3339, timestamp); err == nil {
+		return t
+	}
+	return time.Now()
+}
+
+func contentEvents(content []ccContent, metadata eventMetadata) []AgentEvent {
 	var events []AgentEvent
-	for _, c := range entry.Message.Content {
-		var eventType, content string
-		switch c.Type {
-		case "text":
-			eventType = "text"
-			content = c.Text
-		case "thinking":
-			eventType = "thinking"
-			content = c.Thinking
-		case "tool_use":
-			eventType = "tool_use"
-			// Log tool name + full JSON input.
-			content = c.Name + ": " + string(c.Input)
-		case "tool_result":
-			eventType = "tool_result"
-			content = c.Content
-		default:
-			continue
-		}
-		if content == "" {
+	for _, block := range content {
+		eventType, text := contentEvent(block)
+		if text == "" {
 			continue
 		}
 		events = append(events, AgentEvent{
-			AgentType:       agentType,
-			SessionID:       sessionID,
-			NativeSessionID: nativeSessionID,
+			AgentType:       metadata.agentType,
+			SessionID:       metadata.sessionID,
+			NativeSessionID: metadata.nativeSessionID,
 			EventType:       eventType,
-			Role:            entry.Message.Role,
-			Content:         content,
-			Timestamp:       ts,
+			Role:            metadata.role,
+			Content:         text,
+			Timestamp:       metadata.timestamp,
 		})
 	}
+	return events
+}
 
+func contentEvent(block ccContent) (string, string) {
+	switch block.Type {
+	case "text":
+		return "text", block.Text
+	case "thinking":
+		return "thinking", block.Thinking
+	case "tool_use":
+		return "tool_use", block.Name + ": " + string(block.Input)
+	case "tool_result":
+		return "tool_result", block.Content
+	default:
+		return "", ""
+	}
+}
+
+func appendUsageEvent(events []AgentEvent, entry ccEntry, metadata eventMetadata) []AgentEvent {
 	// Emit a dedicated "usage" event once per assistant turn so token counts
 	// are not duplicated across content blocks of the same message.
 	// Check all four token fields: a cache-only turn has InputTokens == 0 and
@@ -343,12 +390,12 @@ func parseClaudeCodeLine(line, sessionID, agentType, nativeSessionID string) []A
 		u := entry.Message.Usage
 		if u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
 			events = append(events, AgentEvent{
-				AgentType:           agentType,
-				SessionID:           sessionID,
-				NativeSessionID:     nativeSessionID,
+				AgentType:           metadata.agentType,
+				SessionID:           metadata.sessionID,
+				NativeSessionID:     metadata.nativeSessionID,
 				EventType:           "usage",
 				Role:                "assistant",
-				Timestamp:           ts,
+				Timestamp:           metadata.timestamp,
 				InputTokens:         u.InputTokens,
 				OutputTokens:        u.OutputTokens,
 				CacheReadTokens:     u.CacheReadInputTokens,

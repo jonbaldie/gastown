@@ -20,17 +20,30 @@ const (
 	ThemeModeLight ThemeMode = "light"
 )
 
-// themeMode is the cached theme mode, set during init.
-var themeMode ThemeMode
+type themeState struct {
+	mode           ThemeMode
+	darkBackground bool
+}
 
-// hasDarkBackground caches whether we're in dark mode.
-var hasDarkBackground bool
+func (s *themeState) initialize(configTheme string) {
+	s.mode = resolveThemeMode(configTheme)
+	s.darkBackground = detectDarkBackground(s.mode)
+}
+
+func (s *themeState) modeValue() ThemeMode {
+	return s.mode
+}
+
+func (s *themeState) hasDarkBackground() bool {
+	return s.darkBackground
+}
+
+var terminalTheme = &themeState{}
 
 // InitTheme initializes the theme mode. Call this early in main.
 // configTheme is the value from TownSettings.CLITheme (may be empty).
 func InitTheme(configTheme string) {
-	themeMode = resolveThemeMode(configTheme)
-	hasDarkBackground = detectDarkBackground(themeMode)
+	terminalTheme.initialize(configTheme)
 }
 
 // GetThemeMode returns the current CLI color scheme mode.
@@ -39,13 +52,13 @@ func InitTheme(configTheme string) {
 //  2. Configured value from settings (passed to InitTheme)
 //  3. Default: "auto"
 func GetThemeMode() ThemeMode {
-	return themeMode
+	return terminalTheme.modeValue()
 }
 
 // HasDarkBackground returns true if we're displaying on a dark background.
 // This is used by lipgloss AdaptiveColor to select appropriate colors.
 func HasDarkBackground() bool {
-	return hasDarkBackground
+	return terminalTheme.hasDarkBackground()
 }
 
 // resolveThemeMode determines the theme mode from env and config.

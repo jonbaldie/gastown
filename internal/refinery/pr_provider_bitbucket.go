@@ -15,7 +15,7 @@ type bitbucketPRProvider struct {
 }
 
 func newBitbucketPRProvider(g *git.Git) (PRProvider, error) {
-	remoteURL, err := g.RemoteURL("origin")
+	remoteURL, err := git.RemoteURL(g, "origin")
 	if err != nil {
 		return nil, fmt.Errorf("bitbucket provider: failed to get origin remote URL: %w", err)
 	}
@@ -31,14 +31,14 @@ func newBitbucketPRProvider(g *git.Git) (PRProvider, error) {
 }
 
 func (p *bitbucketPRProvider) FindPullRequest(branch, _ string, _ int, headSHA string) (*git.PullRequestInfo, error) {
-	return p.git.FindBitbucketPullRequest(p.workspace, p.repoSlug, branch, headSHA)
+	return git.FindBitbucketPullRequest(p.git, p.workspace, p.repoSlug, branch, headSHA)
 }
 
 func (p *bitbucketPRProvider) IsPRApproved(pr *git.PullRequestInfo) (bool, error) {
-	return p.git.IsBitbucketPRApproved(p.workspace, p.repoSlug, pr.Number)
+	return git.IsBitbucketPRApproved(p.git, p.workspace, p.repoSlug, pr.Number)
 }
 
-func (p *bitbucketPRProvider) MergePR(pr *git.PullRequestInfo, method string) (string, error) {
+func (p *bitbucketPRProvider) MergePR(pr *git.PullRequestInfo, _ string) (string, error) {
 	prNumber := 0
 	if pr != nil {
 		prNumber = pr.Number

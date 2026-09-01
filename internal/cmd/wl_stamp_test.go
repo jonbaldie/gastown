@@ -8,91 +8,35 @@ import (
 )
 
 func TestValidateStampInputs_Valid(t *testing.T) {
-	// Not parallel: mutates package-level flag vars
-	// Save and restore globals
-	origQ, origR, origC := wlStampQuality, wlStampReliability, wlStampCreativity
-	origSev, origType, origCtx := wlStampSeverity, wlStampType, wlStampContextType
-	origConf := wlStampConfidence
-	defer func() {
-		wlStampQuality, wlStampReliability, wlStampCreativity = origQ, origR, origC
-		wlStampSeverity, wlStampType, wlStampContextType = origSev, origType, origCtx
-		wlStampConfidence = origConf
-	}()
+	opts := stampOptions{quality: 4, reliability: 3, creativity: 2, confidence: 0.7, severity: "leaf", stampType: "work", contextType: "completion"}
 
-	wlStampQuality = 4
-	wlStampReliability = 3
-	wlStampCreativity = 2
-	wlStampConfidence = 0.7
-	wlStampSeverity = "leaf"
-	wlStampType = "work"
-	wlStampContextType = "completion"
-
-	if err := validateStampInputs(); err != nil {
+	if err := validateStampInputs(opts); err != nil {
 		t.Errorf("validateStampInputs() = %v, want nil", err)
 	}
 }
 
 func TestValidateStampInputs_QualityOutOfRange(t *testing.T) {
-	// Not parallel: mutates package-level flag vars
-	origQ, origR, origC := wlStampQuality, wlStampReliability, wlStampCreativity
-	origSev, origType, origCtx := wlStampSeverity, wlStampType, wlStampContextType
-	defer func() {
-		wlStampQuality, wlStampReliability, wlStampCreativity = origQ, origR, origC
-		wlStampSeverity, wlStampType, wlStampContextType = origSev, origType, origCtx
-	}()
+	opts := stampOptions{quality: 6, reliability: -1, creativity: -1, severity: "leaf", stampType: "work", contextType: "completion"}
 
-	wlStampQuality = 6
-	wlStampReliability = -1
-	wlStampCreativity = -1
-	wlStampSeverity = "leaf"
-	wlStampType = "work"
-	wlStampContextType = "completion"
-
-	err := validateStampInputs()
+	err := validateStampInputs(opts)
 	if err == nil || !strings.Contains(err.Error(), "quality") {
 		t.Errorf("validateStampInputs() = %v, want quality error", err)
 	}
 }
 
 func TestValidateStampInputs_BadSeverity(t *testing.T) {
-	// Not parallel: mutates package-level flag vars
-	origQ, origR, origC := wlStampQuality, wlStampReliability, wlStampCreativity
-	origSev, origType, origCtx := wlStampSeverity, wlStampType, wlStampContextType
-	defer func() {
-		wlStampQuality, wlStampReliability, wlStampCreativity = origQ, origR, origC
-		wlStampSeverity, wlStampType, wlStampContextType = origSev, origType, origCtx
-	}()
+	opts := stampOptions{quality: 3, reliability: -1, creativity: -1, severity: "invalid", stampType: "work", contextType: "completion"}
 
-	wlStampQuality = 3
-	wlStampReliability = -1
-	wlStampCreativity = -1
-	wlStampSeverity = "invalid"
-	wlStampType = "work"
-	wlStampContextType = "completion"
-
-	err := validateStampInputs()
+	err := validateStampInputs(opts)
 	if err == nil || !strings.Contains(err.Error(), "severity") {
 		t.Errorf("validateStampInputs() = %v, want severity error", err)
 	}
 }
 
 func TestValidateStampInputs_BadStampType(t *testing.T) {
-	// Not parallel: mutates package-level flag vars
-	origQ, origR, origC := wlStampQuality, wlStampReliability, wlStampCreativity
-	origSev, origType, origCtx := wlStampSeverity, wlStampType, wlStampContextType
-	defer func() {
-		wlStampQuality, wlStampReliability, wlStampCreativity = origQ, origR, origC
-		wlStampSeverity, wlStampType, wlStampContextType = origSev, origType, origCtx
-	}()
+	opts := stampOptions{quality: 3, reliability: -1, creativity: -1, severity: "leaf", stampType: "invalid", contextType: "completion"}
 
-	wlStampQuality = 3
-	wlStampReliability = -1
-	wlStampCreativity = -1
-	wlStampSeverity = "leaf"
-	wlStampType = "invalid"
-	wlStampContextType = "completion"
-
-	err := validateStampInputs()
+	err := validateStampInputs(opts)
 	if err == nil || !strings.Contains(err.Error(), "stamp-type") {
 		t.Errorf("validateStampInputs() = %v, want stamp-type error", err)
 	}

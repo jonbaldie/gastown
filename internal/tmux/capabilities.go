@@ -24,13 +24,13 @@ func (t *Tmux) capabilities() Capabilities {
 	if t == nil {
 		return CapabilitiesForVersion(Version{})
 	}
-	if t.capsOverride != nil {
-		return *t.capsOverride
+	if t.CapsOverride != nil {
+		return *t.CapsOverride
 	}
-	t.capsOnce.Do(func() {
-		t.caps = probeCapabilities(t.binary)
+	t.CapsOnce.Do(func() {
+		t.Caps = probeCapabilities(t.binary)
 	})
-	return t.caps
+	return t.Caps
 }
 
 // ParseVersion reads a `tmux -V` line such as "tmux 3.7b".
@@ -42,7 +42,8 @@ func ParseVersion(output string) (Version, bool) {
 	raw := fields[len(fields)-1]
 	raw = strings.TrimLeft(raw, "vV")
 	end := 0
-	for end < len(raw) && (raw[end] == '.' || (raw[end] >= '0' && raw[end] <= '9')) {
+	rawLength := len(raw)
+	for end < rawLength && (raw[end] == '.' || (raw[end] >= '0' && raw[end] <= '9')) {
 		end++
 	}
 	raw = raw[:end]
@@ -91,7 +92,7 @@ func probeCapabilities(binary string) Capabilities {
 // without a real tmux binary.
 func (t *Tmux) SetCapabilities(c Capabilities) {
 	cp := c
-	t.capsOverride = &cp
+	t.CapsOverride = &cp
 }
 
 func submitEnterArgs(caps Capabilities, target string) []string {

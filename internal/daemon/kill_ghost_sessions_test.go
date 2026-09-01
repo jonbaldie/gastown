@@ -169,7 +169,7 @@ func TestKillDefaultPrefixGhosts_EmptyRegistry(t *testing.T) {
 	// Empty registry → allRigs is empty → bail immediately.
 	session.SetDefaultRegistry(session.NewPrefixRegistry())
 
-	env.daemon.killDefaultPrefixGhosts()
+	killDefaultPrefixGhosts(env.daemon)
 
 	kills := readKills(t, env.tmuxLog)
 	if len(kills) > 0 {
@@ -191,7 +191,7 @@ func TestKillDefaultPrefixGhosts_GTIsLegitimate(t *testing.T) {
 	// Even if gt-witness exists, it should NOT be killed.
 	env.addSessions(t, "gt-witness", "gt-refinery")
 
-	env.daemon.killDefaultPrefixGhosts()
+	killDefaultPrefixGhosts(env.daemon)
 
 	kills := readKills(t, env.tmuxLog)
 	if len(kills) > 0 {
@@ -213,7 +213,7 @@ func TestKillDefaultPrefixGhosts_KillsGhostPatrolSessions(t *testing.T) {
 	// Ghost sessions exist with default "gt" prefix.
 	env.addSessions(t, "gt-witness", "gt-refinery")
 
-	env.daemon.killDefaultPrefixGhosts()
+	killDefaultPrefixGhosts(env.daemon)
 
 	kills := readKills(t, env.tmuxLog)
 	if len(kills) != 2 {
@@ -241,7 +241,7 @@ func TestKillDefaultPrefixGhosts_NoKillWhenGhostsAbsent(t *testing.T) {
 
 	// No sessions file entries — nothing exists.
 
-	env.daemon.killDefaultPrefixGhosts()
+	killDefaultPrefixGhosts(env.daemon)
 
 	kills := readKills(t, env.tmuxLog)
 	if len(kills) > 0 {
@@ -266,7 +266,7 @@ func TestKillDefaultPrefixGhosts_PolecatDuplicate_Killed(t *testing.T) {
 	// Both ghost and correct sessions exist → ghost is a confirmed duplicate.
 	env.addSessions(t, "gt-furiosa", "ti-furiosa")
 
-	env.daemon.killDefaultPrefixGhosts()
+	killDefaultPrefixGhosts(env.daemon)
 
 	kills := readKills(t, env.tmuxLog)
 	found := false
@@ -301,7 +301,7 @@ func TestKillDefaultPrefixGhosts_PolecatSolo_NotKilled(t *testing.T) {
 	// Should log warning but NOT kill (may have active work).
 	env.addSessions(t, "gt-furiosa")
 
-	env.daemon.killDefaultPrefixGhosts()
+	killDefaultPrefixGhosts(env.daemon)
 
 	kills := readKills(t, env.tmuxLog)
 	for _, k := range kills {
@@ -333,7 +333,7 @@ func TestKillDefaultPrefixGhosts_PolecatSkippedWhenRigUsesDefaultPrefix(t *testi
 
 	env.addSessions(t, "gt-alice", "gt-bob")
 
-	env.daemon.killDefaultPrefixGhosts()
+	killDefaultPrefixGhosts(env.daemon)
 
 	// gtIsLegitimate should cause early return — nothing killed.
 	kills := readKills(t, env.tmuxLog)

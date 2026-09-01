@@ -9,10 +9,15 @@ import (
 // StaleBinaryCheck verifies the installed gt binary is up to date with the repo.
 type StaleBinaryCheck struct {
 	FixableCheck
+	commit string
 }
 
 // NewStaleBinaryCheck creates a new stale binary check.
-func NewStaleBinaryCheck() *StaleBinaryCheck {
+func NewStaleBinaryCheck(commit ...string) *StaleBinaryCheck {
+	configuredCommit := ""
+	if len(commit) > 0 {
+		configuredCommit = commit[0]
+	}
 	return &StaleBinaryCheck{
 		FixableCheck: FixableCheck{
 			BaseCheck: BaseCheck{
@@ -21,11 +26,12 @@ func NewStaleBinaryCheck() *StaleBinaryCheck {
 				CheckCategory:    CategoryInfrastructure,
 			},
 		},
+		commit: configuredCommit,
 	}
 }
 
 // Run checks if the binary is stale.
-func (c *StaleBinaryCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *StaleBinaryCheck) Run(_ *CheckContext) *CheckResult {
 	repoRoot, err := version.GetRepoRoot()
 	if err != nil {
 		return &CheckResult{
@@ -36,7 +42,7 @@ func (c *StaleBinaryCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	return staleResult(c.Name(), version.CheckStaleBinary(repoRoot))
+	return staleResult(c.Name(), version.CheckStaleBinary(repoRoot, c.commit))
 }
 
 // staleResult maps a completed staleness check to a doctor CheckResult.
@@ -85,7 +91,7 @@ func staleFixHint(info *version.StaleBinaryInfo) string {
 }
 
 // Fix rebuilds and installs gt.
-func (c *StaleBinaryCheck) Fix(ctx *CheckContext) error {
+func (c *StaleBinaryCheck) Fix(_ *CheckContext) error {
 	// Note: We don't auto-fix this because:
 	// 1. It requires building and installing, which takes time
 	// 2. It modifies system files outside the workspace

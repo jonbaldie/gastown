@@ -20,9 +20,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var readyJSON bool
-var readyRig string
-
 var readyCmd = &cobra.Command{
 	Use:     "ready",
 	GroupID: GroupWork,
@@ -44,8 +41,8 @@ Examples:
 }
 
 func init() {
-	readyCmd.Flags().BoolVar(&readyJSON, "json", false, "Output as JSON")
-	readyCmd.Flags().StringVar(&readyRig, "rig", "", "Filter to a specific rig")
+	readyCmd.Flags().Bool("json", false, "Output as JSON")
+	readyCmd.Flags().String("rig", "", "Filter to a specific rig")
 	rootCmd.AddCommand(readyCmd)
 }
 
@@ -74,116 +71,108 @@ type ReadySummary struct {
 	P4Count  int            `json:"p4_count"`
 }
 
-func runReady(cmd *cobra.Command, args []string) error {
-	// Find town root
+func runReady(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	rigName := commandStringFlag(cmd, "rig")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
+	rigs, err := discoverReadyRigs(townRoot, rigName)
+	if err != nil {
+		return err
+	}
+	sources := collectReadySources(townRoot, rigName, rigs)
+	sortReadySources(sources)
+	result := ReadyResult{
+		Sources:  sources,
+		Summary:  summarizeReadySources(sources),
+		TownRoot: townRoot,
+	}
+	return printReadyResult(result, jsonOutput)
+}
 
-	// Load rigs config
+func discoverReadyRigs(townRoot, rigName string) ([]*rig.Rig, error) {
 	rigsConfigPath := constants.MayorRigsPath(townRoot)
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
 	if err != nil {
 		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
 	}
-
-	// Create rig manager and discover rigs
-	g := git.NewGit(townRoot)
-	mgr := rig.NewManager(townRoot, rigsConfig, g)
-	rigs, err := mgr.DiscoverRigs()
+	rigs, err := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot)).DiscoverRigs()
 	if err != nil {
-		return fmt.Errorf("discovering rigs: %w", err)
+		return nil, fmt.Errorf("discovering rigs: %w", err)
 	}
-
-	// Filter rigs if --rig flag provided
-	if readyRig != "" {
-		var filtered []*rig.Rig
-		for _, r := range rigs {
-			if r.Name == readyRig {
-				filtered = append(filtered, r)
-				break
-			}
-		}
-		if len(filtered) == 0 {
-			return fmt.Errorf("rig not found: %s", readyRig)
-		}
-		rigs = filtered
+	if rigName == "" {
+		return rigs, nil
 	}
+	for _, r := range rigs {
+		if r.Name == rigName {
+			return []*rig.Rig{r}, nil
+		}
+	}
+	return nil, fmt.Errorf("rig not found: %s", rigName)
+}
 
-	// Collect results from all sources in parallel
+func collectReadySources(townRoot, rigName string, rigs []*rig.Rig) []ReadySource {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	sources := make([]ReadySource, 0, len(rigs)+1)
-
-	// Fetch town beads (only if not filtering to a specific rig)
-	if readyRig == "" {
+	if rigName == "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			townBeadsPath := beads.GetTownBeadsPath(townRoot)
-			townBeads := beads.New(townBeadsPath)
-			issues, err := townBeads.Ready()
-
+			src := loadTownReadySource(townRoot)
 			mu.Lock()
-			defer mu.Unlock()
-			src := ReadySource{Name: "town"}
-			if err != nil {
-				src.Error = err.Error()
-			} else {
-				// Filter out formula scaffolds (gt-579)
-				formulaNames := getFormulaNames(townBeadsPath)
-				filtered := filterFormulaScaffolds(issues, formulaNames)
-				// Defense-in-depth: also filter wisps that shouldn't appear in ready work
-				wispIDs := getWispIDs(townBeadsPath)
-				filtered = filterWisps(filtered, wispIDs)
-				// Only show work whose ID routes back to the source that reported it.
-				// Otherwise the dashboard can render a row that `gt sling <same-id>`
-				// cannot resolve because routes.jsonl points that prefix elsewhere.
-				filtered = filterReadyIssuesByRoute(townRoot, "town", filtered)
-				// Filter identity beads (agents, roles, rigs) - not actionable work
-				src.Issues = filterIdentityBeads(filtered)
-			}
 			sources = append(sources, src)
+			mu.Unlock()
 		}()
 	}
-
-	// Fetch from each rig in parallel
 	for _, r := range rigs {
 		wg.Add(1)
 		go func(r *rig.Rig) {
 			defer wg.Done()
-			// Use rig root path where rig-level beads are stored
-			// BeadsPath returns rig root; redirect system handles mayor/rig routing
-			rigBeads := beads.New(r.BeadsPath())
-			issues, err := rigBeads.Ready()
-
+			src := loadRigReadySource(townRoot, r)
 			mu.Lock()
-			defer mu.Unlock()
-			src := ReadySource{Name: r.Name}
-			if err != nil {
-				src.Error = err.Error()
-			} else {
-				// Filter out formula scaffolds (gt-579)
-				formulaNames := getFormulaNames(r.BeadsPath())
-				filtered := filterFormulaScaffolds(issues, formulaNames)
-				// Defense-in-depth: also filter wisps that shouldn't appear in ready work
-				wispIDs := getWispIDs(r.BeadsPath())
-				filtered = filterWisps(filtered, wispIDs)
-				// Only show work whose ID routes back to this rig. This keeps the
-				// Ready Across Rigs surface honest: every displayed ID must be
-				// usable by the stock `gt sling <id> <rig>` command.
-				filtered = filterReadyIssuesByRoute(townRoot, r.Name, filtered)
-				// Filter identity beads (agents, roles, rigs) - not actionable work
-				src.Issues = filterIdentityBeads(filtered)
-			}
 			sources = append(sources, src)
+			mu.Unlock()
 		}(r)
 	}
-
 	wg.Wait()
+	return sources
+}
 
-	// Sort sources: town first, then rigs alphabetically
+func loadTownReadySource(townRoot string) ReadySource {
+	townBeadsPath := beads.GetTownBeadsPath(townRoot)
+	issues, err := beads.New(townBeadsPath).Ready()
+	src := ReadySource{Name: "town"}
+	if err != nil {
+		src.Error = err.Error()
+		return src
+	}
+	src.Issues = filterReadySourceIssues(townRoot, "town", townBeadsPath, issues)
+	return src
+}
+
+func loadRigReadySource(townRoot string, r *rig.Rig) ReadySource {
+	beadsPath := r.BeadsPath()
+	issues, err := beads.New(beadsPath).Ready()
+	src := ReadySource{Name: r.Name}
+	if err != nil {
+		src.Error = err.Error()
+		return src
+	}
+	src.Issues = filterReadySourceIssues(townRoot, r.Name, beadsPath, issues)
+	return src
+}
+
+func filterReadySourceIssues(townRoot, sourceName, beadsPath string, issues []*beads.Issue) []*beads.Issue {
+	filtered := filterFormulaScaffolds(issues, getFormulaNames(beadsPath))
+	filtered = filterWisps(filtered, getWispIDs(beadsPath))
+	filtered = filterReadyIssuesByRoute(townRoot, sourceName, filtered)
+	return filterIdentityBeads(filtered)
+}
+
+func sortReadySources(sources []ReadySource) {
 	sort.Slice(sources, func(i, j int) bool {
 		if sources[i].Name == "town" {
 			return true
@@ -193,71 +182,67 @@ func runReady(cmd *cobra.Command, args []string) error {
 		}
 		return sources[i].Name < sources[j].Name
 	})
-
-	// Sort issues within each source by priority (lower number = higher priority)
 	for i := range sources {
 		sort.Slice(sources[i].Issues, func(a, b int) bool {
 			return sources[i].Issues[a].Priority < sources[i].Issues[b].Priority
 		})
 	}
+}
 
-	// Build summary
-	summary := ReadySummary{
-		BySource: make(map[string]int),
-	}
+func summarizeReadySources(sources []ReadySource) ReadySummary {
+	summary := ReadySummary{BySource: make(map[string]int)}
 	for _, src := range sources {
 		count := len(src.Issues)
 		summary.Total += count
 		summary.BySource[src.Name] = count
-		for _, issue := range src.Issues {
-			switch issue.Priority {
-			case 0:
-				summary.P0Count++
-			case 1:
-				summary.P1Count++
-			case 2:
-				summary.P2Count++
-			case 3:
-				summary.P3Count++
-			case 4:
-				summary.P4Count++
-			}
+		countReadyPriorities(&summary, src.Issues)
+	}
+	return summary
+}
+
+func countReadyPriorities(summary *ReadySummary, issues []*beads.Issue) {
+	for _, issue := range issues {
+		switch issue.Priority {
+		case 0:
+			summary.P0Count++
+		case 1:
+			summary.P1Count++
+		case 2:
+			summary.P2Count++
+		case 3:
+			summary.P3Count++
+		case 4:
+			summary.P4Count++
 		}
 	}
+}
 
-	result := ReadyResult{
-		Sources:  sources,
-		Summary:  summary,
-		TownRoot: townRoot,
-	}
-
-	// Check for source errors
-	var failedSources []string
-	for _, src := range sources {
-		if src.Error != "" {
-			failedSources = append(failedSources, src.Name)
-		}
-	}
-
-	// Output
-	if readyJSON {
+func printReadyResult(result ReadyResult, jsonOutput bool) error {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
 	}
-
 	if err := printReadyHuman(result); err != nil {
 		return err
 	}
+	return reportReadySourceErrors(result)
+}
 
-	// Surface source errors to the user
-	if len(failedSources) > 0 {
-		if len(failedSources) == len(sources) {
-			return fmt.Errorf("all sources failed to load: %s", strings.Join(failedSources, ", "))
+func reportReadySourceErrors(result ReadyResult) error {
+	var failedSources []string
+	for _, src := range result.Sources {
+		if src.Error != "" {
+			failedSources = append(failedSources, src.Name)
 		}
-		style.PrintWarning("some sources failed to load: %s (results may be incomplete)", strings.Join(failedSources, ", "))
 	}
-
+	if len(failedSources) == 0 {
+		return nil
+	}
+	if len(failedSources) == len(result.Sources) {
+		return fmt.Errorf("all sources failed to load: %s", strings.Join(failedSources, ", "))
+	}
+	style.PrintWarning("some sources failed to load: %s (results may be incomplete)", strings.Join(failedSources, ", "))
 	return nil
 }
 
@@ -266,72 +251,78 @@ func printReadyHuman(result ReadyResult) error {
 		fmt.Println("No ready work across town.")
 		return nil
 	}
-
 	fmt.Printf("%s Ready work across town:\n\n", style.Bold.Render("📋"))
-
 	for _, src := range result.Sources {
-		if src.Error != "" {
-			fmt.Printf("%s %s\n", style.Dim.Render(src.Name+"/"), style.Warning.Render("(error: "+src.Error+")"))
-			continue
-		}
-
-		count := len(src.Issues)
-		if count == 0 {
-			fmt.Printf("%s %s\n", style.Dim.Render(src.Name+"/"), style.Dim.Render("(none)"))
-			continue
-		}
-
-		fmt.Printf("%s (%d items)\n", style.Bold.Render(src.Name+"/"), count)
-		for _, issue := range src.Issues {
-			priorityStr := fmt.Sprintf("P%d", issue.Priority)
-			var priorityStyled string
-			switch issue.Priority {
-			case 0:
-				priorityStyled = style.Error.Render(priorityStr) // P0 is critical
-			case 1:
-				priorityStyled = style.Error.Render(priorityStr)
-			case 2:
-				priorityStyled = style.Warning.Render(priorityStr)
-			default:
-				priorityStyled = style.Dim.Render(priorityStr)
-			}
-
-			// Truncate title if too long
-			title := issue.Title
-			if len(title) > 60 {
-				title = title[:57] + "..."
-			}
-
-			fmt.Printf("  [%s] %s %s\n", priorityStyled, style.Dim.Render(issue.ID), title)
-		}
-		fmt.Println()
+		printReadySource(src)
 	}
-
-	// Summary line
-	parts := []string{}
-	if result.Summary.P0Count > 0 {
-		parts = append(parts, fmt.Sprintf("%d P0", result.Summary.P0Count))
-	}
-	if result.Summary.P1Count > 0 {
-		parts = append(parts, fmt.Sprintf("%d P1", result.Summary.P1Count))
-	}
-	if result.Summary.P2Count > 0 {
-		parts = append(parts, fmt.Sprintf("%d P2", result.Summary.P2Count))
-	}
-	if result.Summary.P3Count > 0 {
-		parts = append(parts, fmt.Sprintf("%d P3", result.Summary.P3Count))
-	}
-	if result.Summary.P4Count > 0 {
-		parts = append(parts, fmt.Sprintf("%d P4", result.Summary.P4Count))
-	}
-
-	if len(parts) > 0 {
-		fmt.Printf("Total: %d items ready (%s)\n", result.Summary.Total, strings.Join(parts, ", "))
-	} else {
-		fmt.Printf("Total: %d items ready\n", result.Summary.Total)
-	}
-
+	printReadySummary(result.Summary)
 	return nil
+}
+
+func printReadySource(src ReadySource) {
+	if src.Error != "" {
+		fmt.Printf("%s %s\n", style.Dim.Render(src.Name+"/"), style.Warning.Render("(error: "+src.Error+")"))
+		return
+	}
+	count := len(src.Issues)
+	if count == 0 {
+		fmt.Printf("%s %s\n", style.Dim.Render(src.Name+"/"), style.Dim.Render("(none)"))
+		return
+	}
+	fmt.Printf("%s (%d items)\n", style.Bold.Render(src.Name+"/"), count)
+	for _, issue := range src.Issues {
+		printReadyIssue(issue)
+	}
+	fmt.Println()
+}
+
+func printReadyIssue(issue *beads.Issue) {
+	title := issue.Title
+	if len(title) > 60 {
+		title = title[:57] + "..."
+	}
+	fmt.Printf("  [%s] %s %s\n", readyPriorityStyle(issue.Priority), style.Dim.Render(issue.ID), title)
+}
+
+func readyPriorityStyle(priority int) string {
+	priorityStr := fmt.Sprintf("P%d", priority)
+	switch priority {
+	case 0, 1:
+		return style.Error.Render(priorityStr)
+	case 2:
+		return style.Warning.Render(priorityStr)
+	default:
+		return style.Dim.Render(priorityStr)
+	}
+}
+
+func printReadySummary(summary ReadySummary) {
+	parts := readyPriorityParts(summary)
+	if len(parts) > 0 {
+		fmt.Printf("Total: %d items ready (%s)\n", summary.Total, strings.Join(parts, ", "))
+		return
+	}
+	fmt.Printf("Total: %d items ready\n", summary.Total)
+}
+
+func readyPriorityParts(summary ReadySummary) []string {
+	var parts []string
+	if summary.P0Count > 0 {
+		parts = append(parts, fmt.Sprintf("%d P0", summary.P0Count))
+	}
+	if summary.P1Count > 0 {
+		parts = append(parts, fmt.Sprintf("%d P1", summary.P1Count))
+	}
+	if summary.P2Count > 0 {
+		parts = append(parts, fmt.Sprintf("%d P2", summary.P2Count))
+	}
+	if summary.P3Count > 0 {
+		parts = append(parts, fmt.Sprintf("%d P3", summary.P3Count))
+	}
+	if summary.P4Count > 0 {
+		parts = append(parts, fmt.Sprintf("%d P4", summary.P4Count))
+	}
+	return parts
 }
 
 // getFormulaNames reads the formulas directory and returns a set of formula names.

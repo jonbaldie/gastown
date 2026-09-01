@@ -105,9 +105,9 @@ type LeaderboardEntry struct {
 
 // TierThreshold defines the requirements for a tier level.
 type TierThreshold struct {
-	Name             string
-	MinStamps        int
-	MinAvgEffWeight  float64
+	Name              string
+	MinStamps         int
+	MinAvgEffWeight   float64
 	MinClusterBreadth int
 }
 
@@ -500,44 +500,7 @@ func RunScorekeeper(store WLCommonsStore) ([]*LeaderboardEntry, error) {
 			continue // skip rigs with query errors
 		}
 
-		// Build top skills JSON
-		topSkillsJSON := ""
-		if len(sheet.SkillCoverage) > 0 {
-			skillMap := make(map[string]int)
-			for _, s := range sheet.SkillCoverage {
-				skillMap[s.Skill] = s.PeerStamps + s.BootBlocks
-			}
-			if b, err := json.Marshal(skillMap); err == nil {
-				topSkillsJSON = string(b)
-			}
-		}
-
-		// Build badges JSON
-		badgesJSON := ""
-		if len(sheet.Badges) > 0 {
-			badgeTypes := make([]string, len(sheet.Badges))
-			for i, b := range sheet.Badges {
-				badgeTypes[i] = b.Type
-			}
-			if b, err := json.Marshal(badgeTypes); err == nil {
-				badgesJSON = string(b)
-			}
-		}
-
-		avgQuality := 0.0
-		if g, ok := sheet.StampGeometry["quality"]; ok {
-			avgQuality = g.Avg
-		}
-
-		entry := &LeaderboardEntry{
-			Handle:         handle,
-			Tier:           sheet.Tier,
-			StampCount:     sheet.StampCount,
-			AvgQuality:     avgQuality,
-			ClusterBreadth: sheet.ClusterBreadth,
-			TopSkills:      topSkillsJSON,
-			Badges:         badgesJSON,
-		}
+		entry := leaderboardEntry(handle, sheet)
 
 		if err := store.UpsertLeaderboard(entry); err != nil {
 			continue // skip upsert failures
@@ -546,4 +509,50 @@ func RunScorekeeper(store WLCommonsStore) ([]*LeaderboardEntry, error) {
 	}
 
 	return entries, nil
+}
+
+func leaderboardEntry(handle string, sheet *CharacterSheet) *LeaderboardEntry {
+	avgQuality := 0.0
+	if geometry, ok := sheet.StampGeometry["quality"]; ok {
+		avgQuality = geometry.Avg
+	}
+	return &LeaderboardEntry{
+		Handle:         handle,
+		Tier:           sheet.Tier,
+		StampCount:     sheet.StampCount,
+		AvgQuality:     avgQuality,
+		ClusterBreadth: sheet.ClusterBreadth,
+		TopSkills:      topSkillsJSON(sheet.SkillCoverage),
+		Badges:         badgesJSON(sheet.Badges),
+	}
+}
+
+func topSkillsJSON(skills []SkillEntry) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	skillMap := make(map[string]int, len(skills))
+	for _, skill := range skills {
+		skillMap[skill.Skill] = skill.PeerStamps + skill.BootBlocks
+	}
+	b, err := json.Marshal(skillMap)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func badgesJSON(badges []BadgeRecord) string {
+	if len(badges) == 0 {
+		return ""
+	}
+	types := make([]string, len(badges))
+	for i, badge := range badges {
+		types[i] = badge.Type
+	}
+	b, err := json.Marshal(types)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

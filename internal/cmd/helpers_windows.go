@@ -41,12 +41,11 @@ func attachToTmuxSession(sessionID string) error {
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+			return NewSilentExit(exitErr.ExitCode())
 		}
 		return err
 	}
-	os.Exit(0)
-	return nil // unreachable
+	return nil
 }
 
 // execAgent runs the configured agent, replacing the current process.
@@ -73,12 +72,11 @@ func execAgent(cfg *config.RuntimeConfig, prompt string) error {
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+			return NewSilentExit(exitErr.ExitCode())
 		}
 		return err
 	}
-	os.Exit(0)
-	return nil // unreachable
+	return nil
 }
 
 // execRuntime runs the runtime CLI, replacing the current process.
@@ -108,10 +106,9 @@ func execRuntime(prompt, rigPath, configDir string) error {
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+			return NewSilentExit(exitErr.ExitCode())
 		}
 		return err
 	}
-	os.Exit(0)
-	return nil // unreachable
+	return nil
 }

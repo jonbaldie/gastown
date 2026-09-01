@@ -159,19 +159,11 @@ jobs:
           version: v2.11.4
           args: --timeout=5m
 
-  mutago:
-    name: Mutation Tests
-    if: github.event_name == 'pull_request'
+  messgo:
+    name: Production Go quality
     runs-on: ubuntu-latest
-    env:
-      BASE_REF: ${{ github.base_ref }}
     steps:
-      # Check out the PR head rather than GitHub's synthetic merge commit so
-      # mutago computes the PR's merge base against the target branch.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -179,66 +171,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install ICU4C development headers
-        run: sudo apt-get install -y libicu-dev
+      - name: Install messgo
+        run: go install github.com/quality-gates/messgo/cmd/messgo@latest
 
-      - name: Fetch PR base
-        run: >-
-          git fetch --no-tags origin
-          "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-
-      - name: Detect changed production Go code
-        id: changes
+      - name: Run messgo on production Go
         run: |
-          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD)"
-          list="$RUNNER_TEMP/mutago-files.txt"
-          # ACMR only: deleted files are gone and cannot be mutated.
-          git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
-            '*.go' ':(exclude)*_test.go' > "$list"
-          if [ ! -s "$list" ]; then
-            echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
-            echo 'No production Go code changed; skipping mutago.'
-            exit 0
-          fi
-          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
-          echo "file_list=$list" >> "$GITHUB_OUTPUT"
-          echo 'Changed production Go files:'
-          cat "$list"
-
-      - name: Install mutago
-        if: steps.changes.outputs.has_production_go == 'true'
-        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@latest
-
-      # Pass the changed files, not the recursive package pattern.
-      # --git-diff-lines restricts mutant execution to the PR diff, while
-      # coverage skips uncovered mutants before test execution. --per-test is
-      # worse here: it launches one go test process per Test* (1500+ in
-      # internal/cmd). The timeout is a multiple of the touched-package
-      # baseline; mutago reuses the coverage run for it.
-      - name: Run mutation tests
-        if: steps.changes.outputs.has_production_go == 'true'
-        env:
-          MUTAGO_FILE_LIST: ${{ steps.changes.outputs.file_list }}
-        run: |
-          mapfile -t files < "$MUTAGO_FILE_LIST"
-          mutago \
-            --coverage \
-            --test-flags=-short \
-            --git-diff-lines \
-            --git-diff-base "origin/${BASE_REF}" \
-            --timeout-coefficient 3 \
-            --ignore-msi-with-no-mutations \
-            --min-covered-msi 80 \
-            --logger-github \
-            --quiet \
-            --no-diffs \
-            "${files[@]}"
+          messgo . github unusedcode,design,codesize \
+            --ignore-tests \
+            --exclude .claude
 
   integration-shard:
     name: Integration Tests / ${{ matrix.name }}
-    # Disabled pending the merge-base-aware mutago replacement tracked by gt-4imw.
-    # Keep the complete jobs here so they remain available while the replacement
-    # gate is calibrated.
+    # Keep the complete jobs here so they remain available while the integration
+    # test gate is disabled.
     if: ${{ github.event_name == 'integration-tests-disabled' }}
     runs-on: ubuntu-latest
     strategy:
@@ -340,8 +285,17 @@ jobs:
           tmpdir="$(mktemp -d)"
           mkdir -p "$tmpdir/bin" "$tmpdir/work"
           cd "$tmpdir/work"
-          GOWORK=off CGO_ENABLED=0 GOBIN="$tmpdir/bin" \
-            go install "github.com/jonbaldie/gastown/cmd/gt@$REF"
+          for attempt in 1 2 3; do
+            if GOWORK=off CGO_ENABLED=0 GOBIN="$tmpdir/bin" \
+              go install "github.com/jonbaldie/gastown/cmd/gt@$REF"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "public go install attempt $attempt failed; retrying"
+            sleep 5
+          done
           go version -m "$tmpdir/bin/gt" | grep 'github.com/jonbaldie/gastown/cmd/gt'
           go version -m "$tmpdir/bin/gt" | grep 'mod[[:space:]]\+github.com/jonbaldie/gastown[[:space:]]'
           "$tmpdir/bin/gt" version

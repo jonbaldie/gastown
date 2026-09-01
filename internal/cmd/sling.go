@@ -3,11 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
@@ -18,183 +18,103 @@ import (
 	"github.com/jonbaldie/gastown/internal/telemetry"
 	"github.com/jonbaldie/gastown/internal/tmux"
 	"github.com/jonbaldie/gastown/internal/witness"
-	"github.com/jonbaldie/gastown/internal/worker"
 	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
-var slingCmd = &cobra.Command{
-	Use:         "sling <bead-or-formula> [target]",
-	GroupID:     GroupWork,
-	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
-	Short:       "Assign work to an agent (THE unified work dispatch command)",
-	Long: `Sling work onto an agent's hook and start working immediately.
-
-This is THE command for assigning work in Gas Town. It handles:
-  - Existing agents (mayor, crew, witness, refinery)
-  - Auto-spawning polecats when target is a rig
-  - Dispatching to dogs (Deacon's helper workers)
-  - Formula instantiation and wisp creation
-  - Auto-convoy creation for dashboard visibility
-
-Create work in the target rig:
-  File the bead where the code lives. Do not create town hq-* work beads
-  and sling them to a rig.
-
-  bd -C <town>/<rig> create --title=... --type=feature
-
-  That directory has its own .beads with the rig prefix (gt now and
-  gt rig add create it). If it is missing, bd walks up to town beads
-  and silently files hq-* work.
-  gt convoy create "..." <rig-prefix-id>
-  gt convoy add <convoy-id> <rig-prefix-id>
-  gt sling <rig-prefix-id> <rig> --merge=local   # third-party remotes
-
-  Do not sling infrastructure beads (hq-cv-*, hq-mayor, ...). Those stay at town.
-  Use --merge=local (or --push-url) for third-party public clones.
-
-Auto-Convoy:
-  When slinging a single issue (not a formula), sling automatically creates
-  a convoy to track the work unless --no-convoy is specified. This ensures
-  all work appears in 'gt convoy list', even "swarm of one" assignments.
-
-  gt sling gt-abc gastown              # Creates "Work: <issue-title>" convoy
-  gt sling gt-abc gastown --no-convoy  # Skip auto-convoy creation
-
-Town Beads:
-  Mayor-created town work (hq-*) can be slung to a rig. Sling moves the bead
-  into the target rig with the same path as "gt bead move", then dispatches
-  the new rig-prefixed ID. Convoys (hq-cv-*) and town agent/channel/group
-  beads stay in HQ and are not auto-moved.
-
-Merge Strategy (--merge):
-  Controls how completed work lands. Stored on the auto-convoy and on the issue.
-  gt sling gt-abc gastown --merge=direct  # Push branch directly to main
-  gt sling gt-abc gastown --merge=mr      # Merge queue (default)
-  gt sling gt-abc gastown --merge=local   # Keep on feature branch
-
-  An explicit --merge value wins. If --merge is omitted, sling reuses a stored
-  merge_strategy on the issue. If the issue text says "local commit only" or
-  "do not push", sling uses local and stores merge_strategy=local so later
-  dispatches keep the policy without the flag.
-
-Target Resolution:
-  gt sling gt-abc                       # Self (current agent)
-  gt sling gt-abc crew                  # Crew worker in current rig
-  gt sling gp-abc greenplace               # Auto-spawn polecat in rig
-  gt sling gt-abc greenplace/Toast         # Specific polecat
-  gt sling gt-abc gastown --crew mel    # Crew member mel in gastown
-  gt sling gt-abc mayor                 # Mayor
-  gt sling gt-abc deacon/dogs           # Auto-dispatch to idle dog
-  gt sling gt-abc deacon/dogs/alpha     # Specific dog
-
-Spawning Options (when target is a rig):
-  gt sling gp-abc greenplace --create               # Create polecat if missing
-  gt sling gp-abc greenplace --force                # Ignore unread mail
-  gt sling gp-abc greenplace --account work         # Use specific Claude account
-
-Natural Language Args:
-  gt sling gt-abc --args "patch release"
-  gt sling code-review --args "focus on security"
-
-The --args string is stored in the bead and shown via gt prime. Since the
-executor is an LLM, it interprets these instructions naturally.
-
-Stdin Mode (for shell-quoting-safe multi-line content):
-  echo "review for security issues" | gt sling gt-abc gastown --stdin
-  gt sling gt-abc gastown --stdin <<'EOF'
-  Focus on:
-  1. SQL injection in query builders
-  2. XSS in template rendering
-  EOF
-
-  # With --args on CLI, stdin goes to --message:
-  echo "Extra context here" | gt sling gt-abc gastown --args "patch release" --stdin
-
-Formula Slinging:
-  gt sling mol-release mayor/           # Cook + wisp + attach + nudge
-  gt sling towers-of-hanoi --var disks=3
-
-Formula-on-Bead (--on flag):
-  gt sling mol-review --on gt-abc       # Apply formula to existing work
-  gt sling shiny --on gt-abc crew       # Apply formula, sling to crew
-
-Compare:
-  gt hook <bead>      # Just attach (no action)
-  gt sling <bead>     # Attach + start now (keep context)
-  gt handoff <bead>   # Attach + restart (fresh context)
-
-The propulsion principle: if it's on your hook, YOU RUN IT.
-
-Batch Slinging:
-  gt sling gt-abc gt-def gt-ghi gastown   # Sling multiple beads to a rig
-  gt sling gt-abc gt-def gastown --max-concurrent 3  # Spawn 3 at a time
-
-  When multiple beads are provided with a rig target, each bead gets its own
-  polecat. This parallelizes work dispatch without running gt sling N times.
-  Use --max-concurrent to throttle spawn rate and prevent Dolt server overload.`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: runSling,
+func newSlingCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:         "sling <bead-or-formula> [target]",
+		GroupID:     GroupWork,
+		Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+		Short:       "Assign work to an agent (THE unified work dispatch command)",
+		Long:        slingCommandLong,
+		Args:        cobra.MinimumNArgs(1),
+		RunE:        runSling,
+	}
 }
 
-var (
-	slingSubject     string
-	slingMessage     string
-	slingDryRun      bool
-	slingOnTarget    string   // --on flag: target bead when slinging a formula
-	slingVars        []string // --var flag: formula variables (key=value)
-	slingArgs        string   // --args flag: natural language instructions for executor
-	slingStdin       bool     // --stdin: read --message and/or --args from stdin
-	slingHookRawBead bool     // --hook-raw-bead: hook raw bead without default formula (expert mode)
+type slingCommandState struct {
+	*slingInputState
+	*slingSpawnState
+	*slingDispatchState
+}
 
-	// Flags migrated for polecat spawning (used by sling for work assignment)
-	slingCreate        bool   // --create: create polecat if it doesn't exist
-	slingForce         bool   // --force: force spawn even if polecat has unread mail
-	slingAccount       string // --account: Claude Code account handle to use
-	slingAgent         string // --agent: override runtime agent for this sling/spawn
-	slingNoConvoy      bool   // --no-convoy: skip auto-convoy creation
-	slingOwned         bool   // --owned: mark auto-convoy as caller-managed lifecycle
-	slingNoMerge       bool   // --no-merge: skip merge queue on completion (for upstream PRs/human review)
-	slingMerge         string // --merge: merge strategy for convoy (direct/mr/local)
-	slingNoBoot        bool   // --no-boot: skip wakeRigAgents (avoid witness/refinery boot and lock contention)
-	slingMaxConcurrent int    // --max-concurrent: throttle spawn rate in batch mode (spawns N, pauses, spawns N more)
-	slingBaseBranch    string // --base-branch: override base branch for polecat worktree
-	slingResumeBranch  string // --branch: resume an existing branch instead of creating a fresh one
-	slingResumePR      int    // --pr: resume the head branch of an existing PR (resolves via gh)
-	slingRalph         bool   // --ralph: enable Ralph Wiggum loop mode for multi-step workflows
-	slingFormula       string // --formula: override formula for dispatch (default: mol-polecat-work)
-	slingCrew          string // --crew: target a crew member in the specified rig
-	slingReviewOnly    bool   // --review-only: mark work as review-only (no merge/commit/push)
-)
+type slingInputState struct {
+	subject  string
+	message  string
+	onTarget string
+	vars     []string
+	args     string
+	stdin    bool
+	formula  string
+	crew     string
+}
+
+type slingSpawnState struct {
+	create        bool
+	force         bool
+	account       string
+	agent         string
+	noBoot        bool
+	maxConcurrent int
+	baseBranch    string
+	resumeBranch  string
+	resumePR      int
+	ralph         bool
+}
+
+type slingDispatchState struct {
+	hookRawBead bool
+	noConvoy    bool
+	owned       bool
+	noMerge     bool
+	merge       string
+	reviewOnly  bool
+	dryRun      bool
+}
+
+var slingCommandStateInstance = sync.OnceValue(func() *slingCommandState {
+	return &slingCommandState{
+		slingInputState:    &slingInputState{},
+		slingSpawnState:    &slingSpawnState{},
+		slingDispatchState: &slingDispatchState{},
+	}
+})
+
+func slingState() *slingCommandState {
+	return slingCommandStateInstance()
+}
 
 func init() {
-	slingCmd.Flags().StringVarP(&slingSubject, "subject", "s", "", "Context subject for the work")
-	slingCmd.Flags().StringVarP(&slingMessage, "message", "m", "", "Context message for the work")
-	slingCmd.Flags().BoolVarP(&slingDryRun, "dry-run", "n", false, "Show what would be done")
-	slingCmd.Flags().StringVar(&slingOnTarget, "on", "", "Apply formula to existing bead (implies wisp scaffolding)")
-	slingCmd.Flags().StringArrayVar(&slingVars, "var", nil, "Formula variable (key=value), can be repeated")
-	slingCmd.Flags().StringVarP(&slingArgs, "args", "a", "", "Natural language instructions for the executor (e.g., 'patch release')")
-	slingCmd.Flags().BoolVar(&slingStdin, "stdin", false, "Read --message and/or --args from stdin (avoids shell quoting issues)")
+	slingCmd := newSlingCommand()
+	slingCmd.Flags().StringVarP(&slingState().subject, "subject", "s", "", "Context subject for the work")
+	slingCmd.Flags().StringVarP(&slingState().message, "message", "m", "", "Context message for the work")
+	slingCmd.Flags().BoolVarP(&slingState().dryRun, "dry-run", "n", false, "Show what would be done")
+	slingCmd.Flags().StringVar(&slingState().onTarget, "on", "", "Apply formula to existing bead (implies wisp scaffolding)")
+	slingCmd.Flags().StringArrayVar(&slingState().vars, "var", nil, "Formula variable (key=value), can be repeated")
+	slingCmd.Flags().StringVarP(&slingState().args, "args", "a", "", "Natural language instructions for the executor (e.g., 'patch release')")
+	slingCmd.Flags().BoolVar(&slingState().stdin, "stdin", false, "Read --message and/or --args from stdin (avoids shell quoting issues)")
 
 	// Flags for polecat spawning (when target is a rig)
-	slingCmd.Flags().BoolVar(&slingCreate, "create", false, "Create polecat if it doesn't exist")
-	slingCmd.Flags().BoolVar(&slingForce, "force", false, "Force spawn even if polecat has unread mail")
-	slingCmd.Flags().StringVar(&slingAccount, "account", "", "Claude Code account handle to use")
-	slingCmd.Flags().StringVar(&slingAgent, "agent", "", "Override agent/runtime for this sling (e.g., claude, gemini, codex, or custom alias)")
-	slingCmd.Flags().BoolVar(&slingNoConvoy, "no-convoy", false, "Skip auto-convoy creation for single-issue sling")
-	slingCmd.Flags().BoolVar(&slingOwned, "owned", false, "Mark auto-convoy as caller-managed lifecycle (no automatic witness/refinery registration)")
-	slingCmd.Flags().BoolVar(&slingHookRawBead, "hook-raw-bead", false, "Hook raw bead without default formula (expert mode)")
-	slingCmd.Flags().BoolVar(&slingNoMerge, "no-merge", false, "Skip merge queue on completion (keep work on feature branch for review)")
-	slingCmd.Flags().StringVar(&slingMerge, "merge", "", "Merge strategy: direct (push to main), mr (merge queue, default), local (keep on branch)")
-	slingCmd.Flags().BoolVar(&slingNoBoot, "no-boot", false, "Skip rig boot after polecat spawn (avoids witness/refinery lock contention)")
-	slingCmd.Flags().IntVar(&slingMaxConcurrent, "max-concurrent", 0, "Throttle spawn rate: spawn N polecats, pause, then spawn N more (0 = no throttle). Does not limit total concurrent polecats")
-	slingCmd.Flags().StringVar(&slingBaseBranch, "base-branch", "", "Override base branch for polecat worktree (e.g., 'develop', 'release/v2')")
-	slingCmd.Flags().StringVar(&slingResumeBranch, "branch", "", "Resume work on an existing branch instead of creating a fresh polecat branch (use to fix an existing PR)")
-	slingCmd.Flags().IntVar(&slingResumePR, "pr", 0, "Resume work on the head branch of an existing PR (resolved via 'gh pr view'). Mutually exclusive with --branch.")
-	slingCmd.Flags().BoolVar(&slingRalph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
-	slingCmd.Flags().StringVar(&slingFormula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
-	slingCmd.Flags().StringVar(&slingCrew, "crew", "", "Target a crew member in the specified rig (e.g., --crew mel with target gastown → gastown/crew/mel)")
-	slingCmd.Flags().BoolVar(&slingReviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push")
+	slingCmd.Flags().BoolVar(&slingState().create, "create", false, "Create polecat if it doesn't exist")
+	slingCmd.Flags().BoolVar(&slingState().force, "force", false, "Force spawn even if polecat has unread mail")
+	slingCmd.Flags().StringVar(&slingState().account, "account", "", "Claude Code account handle to use")
+	slingCmd.Flags().StringVar(&slingState().agent, "agent", "", "Override agent/runtime for this sling (e.g., claude, gemini, codex, or custom alias)")
+	slingCmd.Flags().BoolVar(&slingState().noConvoy, "no-convoy", false, "Skip auto-convoy creation for single-issue sling")
+	slingCmd.Flags().BoolVar(&slingState().owned, "owned", false, "Mark auto-convoy as caller-managed lifecycle (no automatic witness/refinery registration)")
+	slingCmd.Flags().BoolVar(&slingState().hookRawBead, "hook-raw-bead", false, "Hook raw bead without default formula (expert mode)")
+	slingCmd.Flags().BoolVar(&slingState().noMerge, "no-merge", false, "Skip merge queue on completion (keep work on feature branch for review)")
+	slingCmd.Flags().StringVar(&slingState().merge, "merge", "", "Merge strategy: direct (push to main), mr (merge queue, default), local (keep on branch)")
+	slingCmd.Flags().BoolVar(&slingState().noBoot, "no-boot", false, "Skip rig boot after polecat spawn (avoids witness/refinery lock contention)")
+	slingCmd.Flags().IntVar(&slingState().maxConcurrent, "max-concurrent", 0, "Throttle spawn rate: spawn N polecats, pause, then spawn N more (0 = no throttle). Does not limit total concurrent polecats")
+	slingCmd.Flags().StringVar(&slingState().baseBranch, "base-branch", "", "Override base branch for polecat worktree (e.g., 'develop', 'release/v2')")
+	slingCmd.Flags().StringVar(&slingState().resumeBranch, "branch", "", "Resume work on an existing branch instead of creating a fresh polecat branch (use to fix an existing PR)")
+	slingCmd.Flags().IntVar(&slingState().resumePR, "pr", 0, "Resume work on the head branch of an existing PR (resolved via 'gh pr view'). Mutually exclusive with --branch.")
+	slingCmd.Flags().BoolVar(&slingState().ralph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
+	slingCmd.Flags().StringVar(&slingState().formula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
+	slingCmd.Flags().StringVar(&slingState().crew, "crew", "", "Target a crew member in the specified rig (e.g., --crew mel with target gastown → gastown/crew/mel)")
+	slingCmd.Flags().BoolVar(&slingState().reviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push")
 
 	slingCmd.AddCommand(slingRespawnResetCmd)
 	rootCmd.AddCommand(slingCmd)
@@ -240,420 +160,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		telemetry.RecordSling(ctx, bead, target, retErr)
 	}()
-	// Polecats cannot sling - check early before writing anything.
-	// Check GT_ROLE first: coordinators (mayor, witness, etc.) may have a stale
-	// GT_POLECAT in their environment from spawning polecats. Only block if the
-	// parsed role is actually polecat (handles compound forms like
-	// "gastown/polecats/Toast"). If GT_ROLE is unset, fall back to GT_POLECAT.
-	if role := os.Getenv("GT_ROLE"); role != "" {
-		parsedRole, _, _ := parseRoleString(role)
-		if parsedRole == RolePolecat {
-			return fmt.Errorf("polecats cannot sling (use gt done for handoff)")
-		}
-	} else if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" {
-		return fmt.Errorf("polecats cannot sling (use gt done for handoff)")
-	}
-
-	// Validate --merge flag if provided
-	if slingMerge != "" {
-		switch slingMerge {
-		case "direct", "mr", "local":
-			// Valid
-		default:
-			return fmt.Errorf("invalid --merge value %q: must be direct, mr, or local", slingMerge)
-		}
-	}
-
-	// Validate --branch / --pr resume flags (gh#3602).
-	// These flags reuse an existing branch/PR head instead of creating a fresh
-	// polecat branch, letting a polecat continue work on an existing PR.
-	if slingResumeBranch != "" && slingResumePR != 0 {
-		return fmt.Errorf("--branch and --pr are mutually exclusive")
-	}
-	if (slingResumeBranch != "" || slingResumePR != 0) && slingBaseBranch != "" {
-		return fmt.Errorf("--base-branch cannot be combined with --branch or --pr (resume implies starting on the existing branch)")
-	}
-	if slingResumePR != 0 {
-		resolved, err := resolvePRBranch(slingResumePR)
-		if err != nil {
-			return fmt.Errorf("resolving --pr %d: %w", slingResumePR, err)
-		}
-		slingResumeBranch = resolved
-		fmt.Printf("%s --pr %d resolved to branch %s\n", style.Dim.Render("→"), slingResumePR, resolved)
-	}
-
-	// Disable Dolt auto-commit for all bd commands run during sling (gt-u6n6a).
-	// Under concurrent load (batch slinging), auto-commits from individual bd writes
-	// cause manifest contention and 'database is read only' errors. The Dolt server
-	// handles commits — individual auto-commits are unnecessary.
-	prevAutoCommit := os.Getenv("BD_DOLT_AUTO_COMMIT")
-	os.Setenv("BD_DOLT_AUTO_COMMIT", "off")
-	defer func() {
-		if prevAutoCommit == "" {
-			os.Unsetenv("BD_DOLT_AUTO_COMMIT")
-		} else {
-			os.Setenv("BD_DOLT_AUTO_COMMIT", prevAutoCommit)
-		}
-	}()
-
-	// Handle --stdin: read message/args from stdin (avoids shell quoting issues)
-	if slingStdin {
-		if slingMessage != "" && slingArgs != "" {
-			return fmt.Errorf("cannot use --stdin when both --message and --args are already provided")
-		}
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading stdin: %w", err)
-		}
-		stdinContent := strings.TrimRight(string(data), "\n")
-		if slingArgs == "" {
-			// Default: stdin populates --args (the primary instruction channel)
-			slingArgs = stdinContent
-		} else {
-			// --args already set on CLI, stdin goes to --message
-			slingMessage = stdinContent
-		}
-	}
-
-	// Get town root early - needed for BEADS_DIR when running bd commands
-	// This ensures hq-* beads are accessible even when running from polecat worktree
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil {
-		return fmt.Errorf("finding town root: %w", err)
-	}
-	townBeadsDir := filepath.Join(townRoot, ".beads")
-
-	// Normalize target arguments: trim trailing slashes from target to handle tab-completion
-	// artifacts like "gt sling sl-123 slingshot/" → "gt sling sl-123 slingshot"
-	// This makes sling more forgiving without breaking existing functionality.
-	// Note: Internal agent IDs like "mayor/" are outputs, not user inputs.
-	for i := range args {
-		args[i] = normalizeSlingTarget(args[i])
-	}
-
-	// --crew flag: expand target from "<rig>" to "<rig>/crew/<name>"
-	// e.g., "gt sling gt-abc gastown --crew mel" → target becomes "gastown/crew/mel"
-	if slingCrew != "" {
-		if len(args) < 2 {
-			return fmt.Errorf("--crew requires a rig target argument (e.g., gt sling <bead> <rig> --crew %s)", slingCrew)
-		}
-		target := args[len(args)-1]
-		args[len(args)-1] = target + "/crew/" + slingCrew
-	}
-
-	// Validate target format early, before any dispatch path (bead, formula, batch)
-	// can trigger resolveTarget side-effects like polecat spawning.
-	if len(args) > 1 {
-		if err := ValidateTarget(args[len(args)-1]); err != nil {
-			return err
-		}
-	}
-	if len(args) == 2 {
-		if redirected, err := applyWorkflowStepTargetOverride(args); err != nil {
-			return err
-		} else {
-			args = redirected
-		}
-	}
-
-	// Config-driven dispatch mode: check scheduler.max_polecats
-	deferred, deferErr := shouldDeferDispatch()
-	if deferErr != nil {
-		return deferErr
-	}
-
-	// Batch mode detection: multiple beads with optional rig target
-	// Pattern A (explicit rig):  gt sling gt-abc gt-def gt-ghi gastown
-	// Pattern B (auto-resolve):  gt sling gt-abc gt-def gt-ghi
-	// When len(args) > 2 and last arg is a rig, sling each bead to its own polecat.
-	// When all args look like bead IDs, auto-resolve the rig from their prefix.
-	if len(args) > 2 {
-		lastArg := args[len(args)-1]
-		if rigName, isRig := IsRigName(lastArg); isRig {
-			beadIDs := args[:len(args)-1]
-			if deferred {
-				// Reject epic/convoy IDs in batch — they must be dispatched individually
-				for _, id := range beadIDs {
-					idType, typeErr := detectSchedulerIDType(id)
-					if typeErr == nil && idType != "task" {
-						return fmt.Errorf("%s '%s' cannot be batch-scheduled with an explicit rig\nUse: gt sling %s (children auto-resolve rigs)", idType, id, id)
-					}
-				}
-				return runBatchSchedule(beadIDs, rigName, townRoot)
-			}
-			// Explicit rig: print tip about auto-resolve
-			fmt.Printf("  %s the rig can be auto-resolved from bead prefixes. "+
-				"You can omit <%s>.\n",
-				style.Dim.Render("Tip:"), rigName)
-			return runBatchSling(beadIDs, rigName, townBeadsDir)
-		}
-		// No explicit rig -- try auto-resolving from bead prefixes
-		if allBeadIDs(args) {
-			rigName, err := resolveRigFromBeadIDs(args, filepath.Dir(townBeadsDir))
-			if err != nil {
-				return err
-			}
-			return runBatchSling(args, rigName, townBeadsDir)
-		}
-	}
-
-	// Deferred routing: formula-on-bead with rig target
-	// gt sling mol-review --on gt-abc gastown  (when max_polecats > 0)
-	if deferred && slingOnTarget != "" && len(args) >= 2 {
-		rigName, isRig := IsRigName(args[len(args)-1])
-		if isRig {
-			formulaName := args[0]
-			if slingHookRawBead {
-				formulaName = ""
-			}
-			beadID := slingOnTarget
-			return scheduleBead(beadID, rigName, ScheduleOptions{
-				Formula:      formulaName,
-				Args:         slingArgs,
-				Vars:         slingVars,
-				Merge:        slingMerge,
-				BaseBranch:   slingBaseBranch,
-				ResumeBranch: slingResumeBranch,
-				NoConvoy:     slingNoConvoy,
-				Owned:        slingOwned,
-				DryRun:       slingDryRun,
-				Force:        slingForce,
-				NoMerge:      slingNoMerge,
-				ReviewOnly:   slingReviewOnly,
-				Account:      slingAccount,
-				Agent:        slingAgent,
-				HookRawBead:  slingHookRawBead,
-				Ralph:        slingRalph,
-			})
-		}
-	}
-
-	// Deferred routing: formula-on-bead without explicit rig (auto-resolve from bead prefix)
-	// gt sling mol-review --on gt-abc  (when max_polecats > 0, no explicit rig arg)
-	if deferred && slingOnTarget != "" {
-		if len(args) >= 2 {
-			// Non-rig last arg with --on in deferred mode — give clear error
-			return fmt.Errorf("'%s' is not a known rig\nUse: gt sling %s --on %s <rig>", args[len(args)-1], args[0], slingOnTarget)
-		}
-		// Auto-resolve rig from bead prefix
-		townRoot, twErr := workspace.FindFromCwdOrError()
-		if twErr != nil {
-			return twErr
-		}
-		rigName := resolveRigForBead(townRoot, slingOnTarget)
-		if rigName == "" {
-			return fmt.Errorf("cannot resolve rig for bead %s\nSpecify explicitly: gt sling %s --on %s <rig>", slingOnTarget, args[0], slingOnTarget)
-		}
-		formulaName := args[0]
-		if slingHookRawBead {
-			formulaName = ""
-		}
-		return scheduleBead(slingOnTarget, rigName, ScheduleOptions{
-			Formula:      formulaName,
-			Args:         slingArgs,
-			Vars:         slingVars,
-			Merge:        slingMerge,
-			BaseBranch:   slingBaseBranch,
-			ResumeBranch: slingResumeBranch,
-			NoConvoy:     slingNoConvoy,
-			Owned:        slingOwned,
-			DryRun:       slingDryRun,
-			Force:        slingForce,
-			NoMerge:      slingNoMerge,
-			ReviewOnly:   slingReviewOnly,
-			Account:      slingAccount,
-			Agent:        slingAgent,
-			HookRawBead:  slingHookRawBead,
-			Ralph:        slingRalph,
-		})
-	}
-
-	// Single bead + rig (2 args): deferred check before resolveTarget side-effects
-	if deferred && len(args) == 2 {
-		rigName, isRig := IsRigName(args[1])
-		if isRig {
-			// Reject epic/convoy IDs — they must be dispatched without a rig
-			// (children auto-resolve their rigs)
-			idType, err := detectSchedulerIDType(args[0])
-			if err == nil && idType != "task" {
-				return fmt.Errorf("%s cannot be scheduled with an explicit rig\nUse: gt sling %s (children auto-resolve rigs)",
-					idType, args[0])
-			}
-			if verifyBeadExists(args[0]) != nil {
-				formulaWorkDir := townRoot
-				if rigBeadsDir, ok := beads.ResolveRepoAliasBeadsDir(townRoot, rigName); ok {
-					formulaWorkDir = filepath.Dir(rigBeadsDir)
-				}
-				if verifyFormulaExists(args[0], formulaWorkDir, townRoot) == nil {
-					// Standalone formula slinging (cook+wisp+attach) is not bead-based
-					// dispatch and does not consume a scheduler slot — fall through to
-					// runSlingFormula, which handles polecat spawning via resolveTarget.
-					return runSlingFormula(ctx, args)
-				}
-			}
-			beadID := args[0]
-			formula := resolveFormula(slingFormula, slingHookRawBead, townRoot, rigName)
-			return scheduleBead(beadID, rigName, ScheduleOptions{
-				Formula:      formula,
-				Args:         slingArgs,
-				Vars:         slingVars,
-				Merge:        slingMerge,
-				BaseBranch:   slingBaseBranch,
-				ResumeBranch: slingResumeBranch,
-				NoConvoy:     slingNoConvoy,
-				Owned:        slingOwned,
-				DryRun:       slingDryRun,
-				Force:        slingForce,
-				NoMerge:      slingNoMerge,
-				ReviewOnly:   slingReviewOnly,
-				Account:      slingAccount,
-				Agent:        slingAgent,
-				HookRawBead:  slingHookRawBead,
-				Ralph:        slingRalph,
-			})
-		}
-		// Dog targets (deacon/dogs, deacon/dogs/<name>, dog:, dog:<name>) fall through
-		// to direct dispatch: dogs are a self-managed pool owned by the Deacon, not rig
-		// polecat slots, and therefore don't participate in the capacity scheduler.
-		// Without this fallthrough, dispatchFeedDog can't feed stranded convoys when a
-		// scheduler is active (bead aa-4yf2).
-		if _, isDog := IsDogTarget(args[1]); !isDog {
-			// Non-rig, non-dog target in deferred mode — reject to prevent bypassing capacity control
-			return fmt.Errorf("deferred dispatch requires a rig target: gt sling %s <rig>\n'%s' is not a known rig", args[0], args[1])
-		}
-		// else: fall through to direct dispatch path below (resolveTarget handles dogs).
-	}
-
-	// Epic/convoy auto-detection (1 arg, no rig): works for both deferred and direct
-	if len(args) == 1 {
-		idType, err := detectSchedulerIDType(args[0])
-		if err == nil && idType != "task" {
-			formula := resolveFormula(slingFormula, slingHookRawBead, townRoot, "")
-
-			switch idType {
-			case "convoy":
-				if err := validateNoTaskOnlySchedulerFlags(cmd, "convoy"); err != nil {
-					return err
-				}
-				if deferred {
-					return runConvoyScheduleByID(args[0], convoyScheduleOpts{
-						Formula:     formula,
-						HookRawBead: slingHookRawBead,
-						Force:       slingForce,
-						DryRun:      slingDryRun,
-					})
-				}
-				return runConvoySlingByID(args[0], convoyScheduleOpts{
-					Formula:     formula,
-					HookRawBead: slingHookRawBead,
-					Force:       slingForce,
-					DryRun:      slingDryRun,
-					NoBoot:      slingNoBoot,
-				})
-			case "epic":
-				if err := validateNoTaskOnlySchedulerFlags(cmd, "epic"); err != nil {
-					return err
-				}
-				if deferred {
-					return runEpicScheduleByID(args[0], epicScheduleOpts{
-						Formula:     formula,
-						HookRawBead: slingHookRawBead,
-						Force:       slingForce,
-						DryRun:      slingDryRun,
-					})
-				}
-				return runEpicSlingByID(args[0], epicScheduleOpts{
-					Formula:     formula,
-					HookRawBead: slingHookRawBead,
-					Force:       slingForce,
-					DryRun:      slingDryRun,
-					NoBoot:      slingNoBoot,
-				})
-			}
-		}
-		// task bead with deferred + no rig: error — must specify a rig
-		if deferred {
-			return fmt.Errorf("deferred dispatch requires a rig target: gt sling %s <rig>", args[0])
-		}
-	}
-
-	// 2-bead auto-resolve: gt sling gt-abc gt-def
-	if len(args) == 2 && allBeadIDs(args) {
-		if _, isRig := IsRigName(args[1]); !isRig {
-			rigName, err := resolveRigFromBeadIDs(args, filepath.Dir(townBeadsDir))
-			if err != nil {
-				return err
-			}
-			return runBatchSling(args, rigName, townBeadsDir)
-		}
-	}
-
-	// Determine mode based on flags and argument types
-	var beadID string
-	var formulaName string
-
-	if slingOnTarget != "" {
-		// Formula-on-bead mode: gt sling <formula> --on <bead>
-		formulaName = args[0]
-		beadID = slingOnTarget
-		// Verify both exist
-		if err := verifyBeadExists(beadID); err != nil {
-			return err
-		}
-		if err := verifyFormulaExists(formulaName, beads.ResolveHookDir(townRoot, beadID, ""), townRoot); err != nil {
-			return err
-		}
-	} else {
-		// Could be bead mode or standalone formula mode
-		firstArg := args[0]
-
-		// Try as bead first
-		if err := verifyBeadExists(firstArg); err == nil {
-			// It's a verified bead
-			beadID = firstArg
-		} else {
-			// Not a verified bead - try as standalone formula
-			if err := verifyFormulaExists(firstArg, townRoot, townRoot); err == nil {
-				// Standalone formula mode: gt sling <formula> [target]
-				// Deferred dispatch is handled above for the 2-arg rig case (gh#3917).
-				return runSlingFormula(ctx, args)
-			}
-			// Not a formula either - check if it looks like a bead ID (routing issue workaround).
-			// Accept it and let the actual bd update fail later if the bead doesn't exist.
-			// This fixes: gt sling bd-ka761 beads/crew/dave failing with 'not a valid bead or formula'
-			if looksLikeBeadID(firstArg) {
-				beadID = firstArg
-			} else {
-				// Neither bead nor formula
-				return fmt.Errorf("'%s' is not a valid bead or formula", firstArg)
-			}
-		}
-	}
-
-	if err := worker.RefuseLiveBead(townRoot, beadID); err != nil {
-		return err
-	}
-
-	// Deep Slinging module: every bead dispatch crosses Lifecycle.
-	// Rig targets set RigName. Named targets (dogs, Mayor, Crew, self) set Target.
-	if !slingDryRun && len(args) == 2 {
-		if rigName, isRig := IsRigName(args[1]); isRig {
-			formula := formulaName
-			if formula == "" {
-				formula = resolveFormula(slingFormula, slingHookRawBead, townRoot, rigName)
-			}
-			return runRigBeadSling(ctx, beadID, rigName, formula, townRoot, townBeadsDir)
-		}
-	}
-
-	target := ""
-	if len(args) > 1 {
-		target = args[1]
-	}
-	intent := intentFromCLIFlags(beadID, "", formulaName, townRoot, townBeadsDir)
-	intent.Target = target
-	_, err = executeDeepSling(ctx, intent)
-	return err
+	return runSlingCommand(cmd, ctx, args)
 }
 
 func normalizeSlingTarget(target string) string {
@@ -746,23 +253,8 @@ func restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info
 	if info == nil {
 		return false, nil
 	}
-	originalNoMerge, originalReviewOnly, originalAttachedAt := rawWorkflowFieldValues(originalInfo)
-	issue := &beads.Issue{Description: info.Description}
-	fields := beads.ParseAttachmentFields(issue)
-	if fields == nil {
-		if !originalNoMerge && !originalReviewOnly {
-			return false, nil
-		}
-		fields = &beads.AttachmentFields{}
-	}
-	if fields.NoMerge == originalNoMerge && fields.ReviewOnly == originalReviewOnly && fields.AttachedAt == originalAttachedAt {
-		return false, nil
-	}
-	fields.NoMerge = originalNoMerge
-	fields.ReviewOnly = originalReviewOnly
-	fields.AttachedAt = originalAttachedAt
-	newDesc := beads.SetAttachmentFields(issue, fields)
-	if newDesc == info.Description {
+	newDesc, changed := rollbackRawWorkflowDescription(info, originalInfo)
+	if !changed || newDesc == info.Description {
 		return false, nil
 	}
 	updateDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
@@ -774,6 +266,25 @@ func restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info
 		return false, err
 	}
 	return true, nil
+}
+
+func rollbackRawWorkflowDescription(info, originalInfo *beadInfo) (string, bool) {
+	originalNoMerge, originalReviewOnly, originalAttachedAt := rawWorkflowFieldValues(originalInfo)
+	issue := &beads.Issue{Description: info.Description}
+	fields := beads.ParseAttachmentFields(issue)
+	if fields == nil {
+		if !originalNoMerge && !originalReviewOnly {
+			return "", false
+		}
+		fields = &beads.AttachmentFields{}
+	}
+	if fields.NoMerge == originalNoMerge && fields.ReviewOnly == originalReviewOnly && fields.AttachedAt == originalAttachedAt {
+		return "", false
+	}
+	fields.NoMerge = originalNoMerge
+	fields.ReviewOnly = originalReviewOnly
+	fields.AttachedAt = originalAttachedAt
+	return beads.SetAttachmentFields(issue, fields), true
 }
 
 func clearRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info *beadInfo) (bool, error) {
@@ -817,7 +328,7 @@ func rollbackFailedDogDispatch(dispatch *DogDispatchInfo, townRoot, beadID, hook
 	}
 	fmt.Printf("%s Dog dispatch did not complete; rolling back %s...\n", style.Warning.Render("⚠"), dispatch.DogName)
 	restored := false
-	cleared, err := dispatch.clearWorkIfMatchesAfter(func() bool {
+	cleared, err := dispatch.ClearWorkIfMatchesAfter(func() bool {
 		restored = restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, dispatch.AgentID, expectedDescription, status, assignee, originalInfo)
 		return restored
 	})
@@ -831,7 +342,7 @@ func rollbackFailedDogDispatch(dispatch *DogDispatchInfo, townRoot, beadID, hook
 	}
 	clearRolledBackDogAgentHook(dispatch)
 	_ = dog.KillCompletedDogSession(
-		dog.NewManager(dispatch.townRoot, dispatch.rigsConfig),
+		dog.NewManager(dispatch.state.townRoot, dispatch.state.rigsConfig),
 		dispatch.DogName,
 		fmt.Sprintf("hq-dog-%s", dispatch.DogName),
 		tmux.NewTmux().KillSession,
@@ -843,12 +354,12 @@ func rollbackFailedDogDispatch(dispatch *DogDispatchInfo, townRoot, beadID, hook
 }
 
 func clearRolledBackDogAgentHook(dispatch *DogDispatchInfo) {
-	if dispatch == nil || dispatch.townRoot == "" || dispatch.DogName == "" {
+	if dispatch == nil || dispatch.state.townRoot == "" || dispatch.DogName == "" {
 		return
 	}
 	empty := ""
 	agentBeadID := beads.DogBeadIDTown(dispatch.DogName)
-	if err := beads.New(filepath.Join(dispatch.townRoot, ".beads")).UpdateAgentDescriptionFields(agentBeadID, beads.AgentFieldUpdates{HookBead: &empty}); err != nil {
+	if err := beads.New(filepath.Join(dispatch.state.townRoot, ".beads")).UpdateAgentDescriptionFields(agentBeadID, beads.AgentFieldUpdates{HookBead: &empty}); err != nil {
 		fmt.Printf("%s Could not clear dog agent hook after rollback: %v\n", style.Dim.Render("Warning:"), err)
 	}
 }
@@ -862,19 +373,39 @@ func restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, expectedAssignee
 		fmt.Printf("  %s Could not verify source bead %s before dog rollback: %v\n", style.Dim.Render("Warning:"), beadID, err)
 		return false
 	}
-	if current != nil && current.Status == originalInfo.Status && current.Assignee == originalInfo.Assignee &&
-		current.Description == originalInfo.Description {
+	if dogSlingSourceMatchesOriginal(current, originalInfo) {
 		// Dispatch failed before changing the source; it is already restored.
 		return true
 	}
-	newHookOwned := current != nil && current.Status == "hooked" && current.Assignee == expectedAssignee && current.Description == expectedDescription
-	forceTransitionOwned := current != nil && current.Status == "open" && current.Assignee == "" && current.Description == originalInfo.Description
-	if !newHookOwned && !forceTransitionOwned {
+	if !dogSlingSourceOwnedByDispatch(current, expectedAssignee, expectedDescription, originalInfo.Description) {
 		fmt.Printf("  %s Source bead %s changed after dispatch; preserving its ownership and metadata\n",
 			style.Dim.Render("○"), beadID)
 		return false
 	}
 
+	if !restoreDogSlingSourceTables(townRoot, beadID, hookWorkDir, status, assignee, originalInfo.Description, current) {
+		return false
+	}
+
+	if dogSlingSourceRestored(townRoot, beadID, status, assignee, originalInfo.Description) {
+		fmt.Printf("  %s Restored source bead %s to status=%s assignee=%s\n", style.Dim.Render("○"), beadID, status, assignee)
+		return true
+	}
+	return false
+}
+
+func dogSlingSourceMatchesOriginal(current, original *beadInfo) bool {
+	return current != nil && current.Status == original.Status && current.Assignee == original.Assignee &&
+		current.Description == original.Description
+}
+
+func dogSlingSourceOwnedByDispatch(current *beadInfo, expectedAssignee, expectedDescription, originalDescription string) bool {
+	newHookOwned := current != nil && current.Status == "hooked" && current.Assignee == expectedAssignee && current.Description == expectedDescription
+	forceTransitionOwned := current != nil && current.Status == "open" && current.Assignee == "" && current.Description == originalDescription
+	return newHookOwned || forceTransitionOwned
+}
+
+func restoreDogSlingSourceTables(townRoot, beadID, hookWorkDir, status, assignee, description string, current *beadInfo) bool {
 	// Restore source ownership and workflow metadata with a storage-level CAS.
 	// The description predicate prevents rollback from overwriting any concurrent
 	// source edit between readback and update.
@@ -883,7 +414,7 @@ func restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, expectedAssignee
 		query := fmt.Sprintf(
 			"UPDATE %s SET status=%s, assignee=%s, description=%s, updated_at=CURRENT_TIMESTAMP WHERE id=%s AND status=%s AND assignee=%s AND description=%s",
 			table,
-			sqlStringLiteral(status), sqlStringLiteral(assignee), sqlStringLiteral(originalInfo.Description),
+			sqlStringLiteral(status), sqlStringLiteral(assignee), sqlStringLiteral(description),
 			sqlStringLiteral(beadID), sqlStringLiteral(current.Status), sqlStringLiteral(current.Assignee), sqlStringLiteral(current.Description),
 		)
 		if err := BdCmd("sql", query).Dir(dir).StripBeadsDir().WithAutoCommit().Run(); err != nil {
@@ -892,14 +423,16 @@ func restoreFailedDogSlingSource(townRoot, beadID, hookWorkDir, expectedAssignee
 			return false
 		}
 	}
+	return true
+}
 
+func dogSlingSourceRestored(townRoot, beadID, status, assignee, description string) bool {
 	updated, err := getBeadInfoFromTownRoot(townRoot, beadID)
 	if err != nil {
 		fmt.Printf("  %s Could not verify source bead %s after dog rollback: %v\n", style.Dim.Render("Warning:"), beadID, err)
 		return false
 	}
-	if updated.Status == status && updated.Assignee == assignee && updated.Description == originalInfo.Description {
-		fmt.Printf("  %s Restored source bead %s to status=%s assignee=%s\n", style.Dim.Render("○"), beadID, status, assignee)
+	if updated.Status == status && updated.Assignee == assignee && updated.Description == description {
 		return true
 	}
 	fmt.Printf("  %s Source bead %s changed during rollback; preserved status=%s assignee=%s\n",
@@ -919,20 +452,11 @@ func clearPreviousDogAssignment(townRoot, assignee, beadID, originalDescription 
 		return err
 	}
 	fields := beads.ParseAttachmentFields(&beads.Issue{Description: originalDescription})
-	matches := previous.Work == beadID || (fields != nil && fields.AttachedFormula != "" && previous.Work == fields.AttachedFormula)
-	if !matches {
+	if !previousDogAssignmentMatches(previous.Work, beadID, fields) {
 		return fmt.Errorf("previous dog %s state names %q, not source %s", name, previous.Work, beadID)
 	}
 	cleared, err := mgr.ClearWorkIfMatchesAfter(name, previous.Work, previous.WorkStartedAt, func() bool {
-		t := tmux.NewTmux()
-		running, err := t.HasSession("hq-dog-" + name)
-		if err != nil {
-			return false
-		}
-		if !running {
-			return true
-		}
-		return t.KillSessionWithProcesses("hq-dog-"+name) == nil
+		return stopPreviousDogSession(name)
 	})
 	if err != nil {
 		return err
@@ -941,6 +465,22 @@ func clearPreviousDogAssignment(townRoot, assignee, beadID, originalDescription 
 		return fmt.Errorf("previous dog %s assignment changed or its session could not stop during handoff", name)
 	}
 	return nil
+}
+
+func previousDogAssignmentMatches(previousWork, beadID string, fields *beads.AttachmentFields) bool {
+	return previousWork == beadID || (fields != nil && fields.AttachedFormula != "" && previousWork == fields.AttachedFormula)
+}
+
+func stopPreviousDogSession(name string) bool {
+	t := tmux.NewTmux()
+	running, err := t.HasSession("hq-dog-" + name)
+	if err != nil {
+		return false
+	}
+	if !running {
+		return true
+	}
+	return t.KillSessionWithProcesses("hq-dog-"+name) == nil
 }
 
 func dogFormulaSourceStillOriginal(townRoot, beadID string, originalInfo *beadInfo) bool {
@@ -1041,62 +581,75 @@ func resolvePRBranch(prNumber int) (string, error) {
 // Cleanup is best-effort: each step logs warnings but continues to clean as much as possible.
 func rollbackSlingArtifacts(spawnInfo *SpawnedPolecatInfo, beadID, hookWorkDir, convoyID string) {
 	townRoot, err := workspace.FindFromCwdOrError()
-
-	// 1. Burn any attached molecules from partial formula instantiation.
-	// This clears attached_molecule metadata and closes stale wisps that
-	// otherwise block subsequent sling attempts.
-	// Some failure modes happen before any bead is hooked (e.g., wisp creation fails).
 	if beadID != "" {
-		if err != nil {
-			fmt.Printf("  %s Could not find workspace to rollback bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
-		} else {
-			info, infoErr := getBeadInfoForRollback(beadID)
-			if infoErr != nil {
-				fmt.Printf("  %s Could not inspect bead %s for stale molecules: %v\n", style.Dim.Render("Warning:"), beadID, infoErr)
-			} else {
-				existingMolecules := collectExistingMoleculesForRollback(info)
-				if depMolecules, depErr := collectExistingMoleculeDeps(beadID, townRoot); depErr != nil {
-					fmt.Printf("  %s Could not inspect canonical molecule bonds for %s: %v\n", style.Dim.Render("Warning:"), beadID, depErr)
-				} else {
-					existingMolecules = appendUniqueMolecules(existingMolecules, depMolecules...)
-				}
-				canClearWorkflowFields := len(existingMolecules) == 0
-				if len(existingMolecules) > 0 {
-					if burnErr := burnExistingMoleculesForRollback(existingMolecules, beadID, townRoot); burnErr != nil {
-						fmt.Printf("  %s Could not burn stale molecule(s) from %s: %v\n", style.Dim.Render("Warning:"), beadID, burnErr)
-					} else {
-						fmt.Printf("  %s Burned %d stale molecule(s): %s\n",
-							style.Dim.Render("○"), len(existingMolecules), strings.Join(existingMolecules, ", "))
-						if refreshed, refreshErr := getBeadInfoForRollback(beadID); refreshErr != nil {
-							fmt.Printf("  %s Could not refresh bead %s after molecule cleanup: %v\n", style.Dim.Render("Warning:"), beadID, refreshErr)
-						} else {
-							info = refreshed
-							canClearWorkflowFields = true
-						}
-					}
-				}
-				if canClearWorkflowFields {
-					if cleared, clearErr := clearRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir, info); clearErr != nil {
-						fmt.Printf("  %s Could not clear raw workflow metadata from %s: %v\n", style.Dim.Render("Warning:"), beadID, clearErr)
-					} else if cleared {
-						fmt.Printf("  %s Cleared raw workflow metadata from %s\n", style.Dim.Render("○"), beadID)
-					}
-				}
-			}
-
-			// 2. Unhook the bead (set status back to open so it can be re-slung).
-			unhookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
-			if err := BdCmd("update", beadID, "--status=open", "--assignee=").
-				Dir(unhookDir).
-				WithAutoCommit().
-				Run(); err != nil {
-				fmt.Printf("  %s Could not unhook bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
-			} else {
-				fmt.Printf("  %s Unhooked bead %s\n", style.Dim.Render("○"), beadID)
-			}
-		}
+		rollbackSlingBead(townRoot, beadID, hookWorkDir, err)
 	}
 
 	// 3. Clean up the spawned polecat (worktree, agent bead, convoy, etc.)
 	cleanupSpawnedPolecat(spawnInfo, spawnInfo.RigName, convoyID)
+}
+
+func rollbackSlingBead(townRoot, beadID, hookWorkDir string, workspaceErr error) {
+	// 1. Burn any attached molecules from partial formula instantiation.
+	// This clears attached_molecule metadata and closes stale wisps that
+	// otherwise block subsequent sling attempts.
+	// Some failure modes happen before any bead is hooked (e.g., wisp creation fails).
+	if workspaceErr != nil {
+		fmt.Printf("  %s Could not find workspace to rollback bead %s: %v\n", style.Dim.Render("Warning:"), beadID, workspaceErr)
+		return
+	}
+	info, infoErr := getBeadInfoForRollback(beadID)
+	if infoErr != nil {
+		fmt.Printf("  %s Could not inspect bead %s for stale molecules: %v\n", style.Dim.Render("Warning:"), beadID, infoErr)
+	} else {
+		rollbackSlingMolecules(townRoot, beadID, hookWorkDir, info)
+	}
+	// 2. Unhook the bead (set status back to open so it can be re-slung).
+	unhookRolledBackBead(townRoot, beadID, hookWorkDir)
+}
+
+func rollbackSlingMolecules(townRoot, beadID, hookWorkDir string, info *beadInfo) {
+	existingMolecules := collectExistingMoleculesForRollback(info)
+	if depMolecules, depErr := collectExistingMoleculeDeps(beadID, townRoot); depErr != nil {
+		fmt.Printf("  %s Could not inspect canonical molecule bonds for %s: %v\n", style.Dim.Render("Warning:"), beadID, depErr)
+	} else {
+		existingMolecules = appendUniqueMolecules(existingMolecules, depMolecules...)
+	}
+	if len(existingMolecules) == 0 {
+		clearRollbackWorkflowMetadata(beadID, townRoot, hookWorkDir, info)
+		return
+	}
+	if burnErr := burnExistingMoleculesForRollback(existingMolecules, beadID, townRoot); burnErr != nil {
+		fmt.Printf("  %s Could not burn stale molecule(s) from %s: %v\n", style.Dim.Render("Warning:"), beadID, burnErr)
+		return
+	}
+	fmt.Printf("  %s Burned %d stale molecule(s): %s\n",
+		style.Dim.Render("○"), len(existingMolecules), strings.Join(existingMolecules, ", "))
+	refreshed, refreshErr := getBeadInfoForRollback(beadID)
+	if refreshErr != nil {
+		fmt.Printf("  %s Could not refresh bead %s after molecule cleanup: %v\n", style.Dim.Render("Warning:"), beadID, refreshErr)
+		return
+	}
+	clearRollbackWorkflowMetadata(beadID, townRoot, hookWorkDir, refreshed)
+}
+
+func clearRollbackWorkflowMetadata(beadID, townRoot, hookWorkDir string, info *beadInfo) {
+	cleared, clearErr := clearRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir, info)
+	if clearErr != nil {
+		fmt.Printf("  %s Could not clear raw workflow metadata from %s: %v\n", style.Dim.Render("Warning:"), beadID, clearErr)
+	} else if cleared {
+		fmt.Printf("  %s Cleared raw workflow metadata from %s\n", style.Dim.Render("○"), beadID)
+	}
+}
+
+func unhookRolledBackBead(townRoot, beadID, hookWorkDir string) {
+	unhookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
+	if err := BdCmd("update", beadID, "--status=open", "--assignee=").
+		Dir(unhookDir).
+		WithAutoCommit().
+		Run(); err != nil {
+		fmt.Printf("  %s Could not unhook bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
+	} else {
+		fmt.Printf("  %s Unhooked bead %s\n", style.Dim.Render("○"), beadID)
+	}
 }

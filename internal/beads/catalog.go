@@ -49,35 +49,40 @@ func NewMoleculeCatalog() *MoleculeCatalog {
 // Each level follows .beads/redirect if present (for shared beads support).
 func LoadCatalog(townRoot, rigPath, projectPath string) (*MoleculeCatalog, error) {
 	catalog := NewMoleculeCatalog()
-
-	// 1. Load town-level molecules (follows redirect if present)
-	if townRoot != "" {
-		townBeadsDir := ResolveBeadsDir(townRoot)
-		townMolsPath := filepath.Join(townBeadsDir, "molecules.jsonl")
-		if err := catalog.LoadFromFile(townMolsPath, "town"); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("loading town molecules: %w", err)
-		}
+	sources := []catalogSource{
+		{path: townRoot, name: "town"},
+		{path: rigPath, name: "rig"},
+		{path: projectPath, name: "project"},
 	}
-
-	// 2. Load rig-level molecules (follows redirect if present)
-	if rigPath != "" {
-		rigBeadsDir := ResolveBeadsDir(rigPath)
-		rigMolsPath := filepath.Join(rigBeadsDir, "molecules.jsonl")
-		if err := catalog.LoadFromFile(rigMolsPath, "rig"); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("loading rig molecules: %w", err)
-		}
+	if err := catalog.loadSources(sources); err != nil {
+		return nil, err
 	}
-
-	// 3. Load project-level molecules (follows redirect if present)
-	if projectPath != "" {
-		projectBeadsDir := ResolveBeadsDir(projectPath)
-		projectMolsPath := filepath.Join(projectBeadsDir, "molecules.jsonl")
-		if err := catalog.LoadFromFile(projectMolsPath, "project"); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("loading project molecules: %w", err)
-		}
-	}
-
 	return catalog, nil
+}
+
+type catalogSource struct {
+	path string
+	name string
+}
+
+func (c *MoleculeCatalog) loadSources(sources []catalogSource) error {
+	for _, source := range sources {
+		if err := c.loadSource(source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *MoleculeCatalog) loadSource(source catalogSource) error {
+	if source.path == "" {
+		return nil
+	}
+	moleculesPath := filepath.Join(ResolveBeadsDir(source.path), "molecules.jsonl")
+	if err := c.LoadFromFile(moleculesPath, source.name); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("loading %s molecules: %w", source.name, err)
+	}
+	return nil
 }
 
 // Add adds or replaces a molecule in the catalog.
@@ -196,4 +201,3 @@ func (mol *CatalogMolecule) ToIssue() *Issue {
 		Priority:    2,
 	}
 }
-

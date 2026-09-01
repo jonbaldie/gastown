@@ -30,8 +30,8 @@ var (
 // tmuxOps is the tmux seam for witness start and stop. Production uses *tmux.Tmux.
 type tmuxOps interface {
 	session.TmuxOps
-	GetSessionInfo(name string) (*tmux.SessionInfo, error)
-	GetSessionCreatedUnix(session string) (int64, error)
+	GetSessionInfo(_ string) (*tmux.SessionInfo, error)
+	GetSessionCreatedUnix(_ string) (int64, error)
 }
 
 // Manager handles witness lifecycle and monitoring operations.
@@ -39,6 +39,14 @@ type tmuxOps interface {
 type Manager struct {
 	rig  *rig.Rig
 	tmux tmuxOps
+}
+
+type witnessStartConfig struct {
+	witnessDir       string
+	runtimeConfigDir string
+	command          string
+	extraEnv         map[string]string
+	beacon           session.BeaconConfig
 }
 
 // NewManager creates a new witness manager for a rig.
@@ -127,75 +135,126 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 		return fmt.Errorf("foreground mode is deprecated; use background mode (remove --foreground flag)")
 	}
 
-	// Check if session already exists
-	running, _ := t.HasSession(sessionID)
-	if running {
-		// Session exists - check if Claude is actually running (healthy vs zombie)
-		if t.IsAgentAlive(sessionID) {
-			// Healthy - Claude is running
-			return ErrAlreadyRunning
-		}
-		// Zombie detected — tmux alive but agent dead.
-		// Mitigate TOCTOU gap: the agent may be slow to start, appearing
-		// dead during initialization. Record session creation time, wait
-		// briefly, then re-verify before killing to avoid destroying a
-		// session that just became healthy.
-		createdAt, _ := t.GetSessionCreatedUnix(sessionID)
-		time.Sleep(constants.ZombieKillGracePeriod)
-
-		// Re-check: abort kill if agent started or session was replaced
-		if t.IsAgentAlive(sessionID) {
-			return ErrAlreadyRunning
-		}
-		if createdNow, _ := t.GetSessionCreatedUnix(sessionID); createdAt > 0 && createdNow != createdAt {
-			// Session was replaced between checks — another process already
-			// handled the zombie. Treat as already running; caller can retry.
-			return ErrAlreadyRunning
-		}
-
-		if err := session.StopSession(t, townRoot, sessionID, false); err != nil && !errors.Is(err, session.ErrNotFound) {
-			return fmt.Errorf("killing zombie session: %w", err)
-		}
+	if err := m.ensureWitnessSessionAvailable(t, townRoot, sessionID); err != nil {
+		return err
 	}
 
-	// Note: No PID check per ZFC - tmux session is the source of truth
-
-	witnessDir, err := m.prepareWitnessDir(townRoot)
+	startConfig, err := m.prepareWitnessStart(townRoot, sessionID, agentOverride, envOverrides)
+	if err != nil {
+		return err
+	}
+	result, err := session.StartSession(t, "witness", session.Work{
+		SessionID:        sessionID,
+		WorkDir:          startConfig.witnessDir,
+		TownRoot:         townRoot,
+		RigPath:          m.rig.Path,
+		RigName:          m.rig.Name,
+		AgentName:        "witness",
+		AgentOverride:    agentOverride,
+		Command:          startConfig.command,
+		RuntimeConfigDir: startConfig.runtimeConfigDir,
+		ExtraEnv:         startConfig.extraEnv,
+		Theme:            tmux.ResolveSessionTheme(townRoot, m.rig.Name, "witness", ""),
+		Beacon:           startConfig.beacon,
+		Instructions:     "Run `gt prime --hook` and begin patrol.",
+	})
 	if err != nil {
 		return err
 	}
 
-	// Ensure .gitignore has required Gas Town patterns
+	if _, pollerErr := nudge.StartPoller(townRoot, sessionID); pollerErr != nil {
+		log.Printf("warning: could not start nudge poller for %s: %v", sessionID, pollerErr)
+	}
+
+	if real, ok := t.(*tmux.Tmux); ok {
+		_ = runtime.RunStartupFallback(real, sessionID, "witness", result.RuntimeConfig)
+		initialPrompt := session.BuildStartupPrompt(startConfig.beacon, "Run `gt prime --hook` and begin patrol.")
+		_ = runtime.DeliverStartupPromptFallback(real, sessionID, initialPrompt, result.RuntimeConfig, constants.ClaudeStartTimeout)
+	}
+
+	time.Sleep(constants.ShutdownNotifyDelay)
+
+	return nil
+}
+
+func (m *Manager) ensureWitnessSessionAvailable(t tmuxOps, townRoot, sessionID string) error {
+	running, _ := t.HasSession(sessionID)
+	if !running {
+		return nil
+	}
+	if t.IsAgentAlive(sessionID) {
+		return ErrAlreadyRunning
+	}
+
+	createdAt, _ := t.GetSessionCreatedUnix(sessionID)
+	time.Sleep(constants.ZombieKillGracePeriod)
+	if t.IsAgentAlive(sessionID) {
+		return ErrAlreadyRunning
+	}
+	if createdNow, _ := t.GetSessionCreatedUnix(sessionID); createdAt > 0 && createdNow != createdAt {
+		return ErrAlreadyRunning
+	}
+	if err := session.StopSession(t, townRoot, sessionID, false); err != nil && !errors.Is(err, session.ErrNotFound) {
+		return fmt.Errorf("killing zombie session: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) prepareWitnessStart(townRoot, sessionID, agentOverride string, envOverrides []string) (witnessStartConfig, error) {
+	witnessDir, err := m.prepareWitnessDir(townRoot)
+	if err != nil {
+		return witnessStartConfig{}, err
+	}
 	if err := rig.Provision(m.rig.Path, witnessDir, "witness"); err != nil {
 		style.PrintWarning("could not provision witness workspace: %v", err)
 	}
 
+	roleConfig := m.loadWitnessRoleConfig()
+	runtimeConfigDir := resolveWitnessRuntimeConfig(townRoot)
+	command, err := buildWitnessStartCommand(m.rig.Path, m.rig.Name, townRoot, sessionID, agentOverride, roleConfig, runtimeConfigDir)
+	if err != nil {
+		return witnessStartConfig{}, err
+	}
+	beacon := session.BeaconConfig{
+		Recipient: session.BeaconRecipient("witness", "", m.rig.Name),
+		Sender:    "deacon",
+		Topic:     "patrol",
+	}
+	return witnessStartConfig{
+		witnessDir:       witnessDir,
+		runtimeConfigDir: runtimeConfigDir,
+		command:          command,
+		extraEnv:         witnessExtraEnv(roleConfig, townRoot, runtimeConfigDir, sessionID, agentOverride, m.rig.Name, envOverrides),
+		beacon:           beacon,
+	}, nil
+}
+
+func (m *Manager) loadWitnessRoleConfig() *beads.RoleConfig {
 	roleConfig, err := m.roleConfig()
 	if err != nil {
-		// Non-fatal: role config is optional. Log and continue with defaults.
 		log.Printf("warning: could not load witness role config for %s: %v", m.rig.Name, err)
-		roleConfig = nil
+		return nil
 	}
+	return roleConfig
+}
 
+func resolveWitnessRuntimeConfig(townRoot string) string {
 	accountsPath := constants.MayorAccountsPath(townRoot)
 	runtimeConfigDir, _, _ := config.ResolveAccountConfigDir(accountsPath, "")
 	if runtimeConfigDir == "" {
 		runtimeConfigDir = os.Getenv("CLAUDE_CONFIG_DIR")
 	}
+	return runtimeConfigDir
+}
 
-	command, err := buildWitnessStartCommand(m.rig.Path, m.rig.Name, townRoot, sessionID, agentOverride, roleConfig, runtimeConfigDir)
-	if err != nil {
-		return err
-	}
-
-	extraEnv := roleConfigEnvVars(roleConfig, townRoot, m.rig.Name)
+func witnessExtraEnv(roleConfig *beads.RoleConfig, townRoot, runtimeConfigDir, sessionID, agentOverride, rigName string, envOverrides []string) map[string]string {
+	extraEnv := roleConfigEnvVars(roleConfig, townRoot, rigName)
 	if extraEnv == nil {
 		extraEnv = map[string]string{}
 	}
-	// Role TOML must not override canonical AgentEnv keys (issue 2492).
 	stdEnv := config.AgentEnv(config.AgentEnvConfig{
 		Role:             "witness",
-		Rig:              m.rig.Name,
+		Rig:              rigName,
 		TownRoot:         townRoot,
 		RuntimeConfigDir: runtimeConfigDir,
 		Agent:            agentOverride,
@@ -209,44 +268,7 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 			extraEnv[key] = value
 		}
 	}
-
-	beacon := session.BeaconConfig{
-		Recipient: session.BeaconRecipient("witness", "", m.rig.Name),
-		Sender:    "deacon",
-		Topic:     "patrol",
-	}
-	result, err := session.StartSession(t, "witness", session.Work{
-		SessionID:        sessionID,
-		WorkDir:          witnessDir,
-		TownRoot:         townRoot,
-		RigPath:          m.rig.Path,
-		RigName:          m.rig.Name,
-		AgentName:        "witness",
-		Command:          command,
-		AgentOverride:    agentOverride,
-		RuntimeConfigDir: runtimeConfigDir,
-		ExtraEnv:         extraEnv,
-		Theme:            tmux.ResolveSessionTheme(townRoot, m.rig.Name, "witness", ""),
-		Beacon:           beacon,
-		Instructions:     "Run `gt prime --hook` and begin patrol.",
-	})
-	if err != nil {
-		return err
-	}
-
-	if _, pollerErr := nudge.StartPoller(townRoot, sessionID); pollerErr != nil {
-		log.Printf("warning: could not start nudge poller for %s: %v", sessionID, pollerErr)
-	}
-
-	if real, ok := t.(*tmux.Tmux); ok {
-		_ = runtime.RunStartupFallback(real, sessionID, "witness", result.RuntimeConfig)
-		initialPrompt := session.BuildStartupPrompt(beacon, "Run `gt prime --hook` and begin patrol.")
-		_ = runtime.DeliverStartupPromptFallback(real, sessionID, initialPrompt, result.RuntimeConfig, constants.ClaudeStartTimeout)
-	}
-
-	time.Sleep(constants.ShutdownNotifyDelay)
-
-	return nil
+	return extraEnv
 }
 
 func (m *Manager) roleConfig() (*beads.RoleConfig, error) {

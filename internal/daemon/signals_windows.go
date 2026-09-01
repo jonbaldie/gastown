@@ -14,10 +14,10 @@ func daemonSignals() []os.Signal {
 	}
 }
 
-func isLifecycleSignal(sig os.Signal) bool {
+func isLifecycleSignal(_ os.Signal) bool {
 	return false
 }
 
-func isReloadRestartSignal(sig os.Signal) bool {
+func isReloadRestartSignal(_ os.Signal) bool {
 	return false
 }

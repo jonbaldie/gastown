@@ -16,20 +16,6 @@ import (
 	"github.com/jonbaldie/gastown/internal/telemetry"
 )
 
-// SetStore configures an in-process beadsdk.Storage for this Mailbox.
-// When set, beads-mode methods use the store directly instead of shelling
-// out to the bd CLI. Legacy JSONL mode is unaffected.
-//
-// Callers are responsible for closing the store when done.
-func (m *Mailbox) SetStore(store beadsdk.Storage) {
-	m.store = store
-}
-
-// Store returns the in-process beadsdk.Storage, or nil if not set.
-func (m *Mailbox) Store() beadsdk.Storage {
-	return m.store
-}
-
 // NewMailboxBeadsWithStore creates a mailbox backed by an in-process beads store.
 func NewMailboxBeadsWithStore(identity, workDir string, store beadsdk.Storage) *Mailbox {
 	return &Mailbox{
@@ -154,10 +140,7 @@ func (m *Mailbox) storeAcknowledgeDeliveryForPrimary(id string) error {
 
 	si, err := m.store.GetIssue(ctx, id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return ErrMessageNotFound
-		}
-		return fmt.Errorf("store get message for delivery ack: %w", err)
+		return deliveryAckGetError(err)
 	}
 	if AddressToIdentity(si.Assignee) != m.identity {
 		return nil
@@ -168,7 +151,22 @@ func (m *Mailbox) storeAcknowledgeDeliveryForPrimary(id string) error {
 	}
 
 	toWrite := deliveryAckLabelsToWrite(m.identity, timeNow().UTC(), si.Labels)
-	for _, label := range toWrite {
+	if err := m.storeDeliveryAckLabels(ctx, id, toWrite); err != nil {
+		return err
+	}
+
+	return m.storeConvergeDelivery(ctx, id, si.Labels, toWrite)
+}
+
+func deliveryAckGetError(err error) error {
+	if strings.Contains(err.Error(), "not found") {
+		return ErrMessageNotFound
+	}
+	return fmt.Errorf("store get message for delivery ack: %w", err)
+}
+
+func (m *Mailbox) storeDeliveryAckLabels(ctx context.Context, id string, labels []string) error {
+	for _, label := range labels {
 		if err := m.store.AddLabel(ctx, id, label, ""); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				return ErrMessageNotFound
@@ -176,8 +174,11 @@ func (m *Mailbox) storeAcknowledgeDeliveryForPrimary(id string) error {
 			return fmt.Errorf("store delivery ack: %w", err)
 		}
 	}
+	return nil
+}
 
-	labelsAfterAck := append(append([]string{}, si.Labels...), toWrite...)
+func (m *Mailbox) storeConvergeDelivery(ctx context.Context, id string, existingLabels, addedLabels []string) error {
+	labelsAfterAck := append(append([]string{}, existingLabels...), addedLabels...)
 	if !deliveryPendingRemovalNeeded(labelsAfterAck) {
 		return nil
 	}

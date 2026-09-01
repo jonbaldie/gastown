@@ -80,7 +80,7 @@ exit 1
 	r := &rig.Rig{Name: "thirdparty", Path: root}
 	m := NewManager(r, git.NewGit(root), nil)
 
-	if err := m.RemoveWithOptions(polecatName, true, true, true); err != nil {
+	if err := RemoveWithOptions(m, polecatName, true, true, true); err != nil {
 		t.Fatalf("nuclear remove: %v", err)
 	}
 

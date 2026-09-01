@@ -215,68 +215,14 @@ const tailReadSize int64 = 1 << 20
 // Reads at most tailReadSize bytes from the end to bound memory usage.
 func (c *Curator) readRecentFeedEvents(window time.Duration) ([]FeedEvent, error) {
 	feedPath := filepath.Join(c.townRoot, FeedFile)
-
-	// In-process mutex complements the flock (which only coordinates across processes).
 	c.feedMu.Lock()
 	defer c.feedMu.Unlock()
-
-	// Acquire shared read lock to prevent partial reads during concurrent writes
 	fl := flock.New(feedPath + ".lock")
 	if err := fl.RLock(); err != nil {
 		return nil, fmt.Errorf("acquiring feed read lock: %w", err)
 	}
 	defer fl.Unlock() //nolint:errcheck // best-effort unlock
-
-	f, err := os.Open(feedPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("opening feed file: %w", err)
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat feed file: %w", err)
-	}
-	if info.Size() == 0 {
-		return nil, nil
-	}
-
-	// Seek to at most tailReadSize bytes before EOF
-	seekTo := info.Size() - tailReadSize
-	if seekTo < 0 {
-		seekTo = 0
-	}
-	if _, err := f.Seek(seekTo, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seeking feed file: %w", err)
-	}
-
-	scanner := bufio.NewScanner(f)
-	if seekTo > 0 {
-		scanner.Scan() // skip potential partial first line at cut point
-	}
-
-	cutoff := time.Now().Add(-window)
-	var result []FeedEvent
-	for scanner.Scan() {
-		var event FeedEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			continue
-		}
-		ts, err := time.Parse(time.RFC3339, event.Timestamp)
-		if err != nil {
-			continue
-		}
-		if !ts.Before(cutoff) {
-			result = append(result, event)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return result, fmt.Errorf("scanning feed file: %w", err)
-	}
-	return result, nil
+	return readRecentJSONL[FeedEvent](feedPath, "feed", window, func(event FeedEvent) string { return event.Timestamp })
 }
 
 // readRecentEvents reads events from the events file within the given time window.
@@ -284,44 +230,58 @@ func (c *Curator) readRecentFeedEvents(window time.Duration) ([]FeedEvent, error
 // Reads at most tailReadSize bytes from the end to bound memory usage.
 func (c *Curator) readRecentEvents(window time.Duration) ([]events.Event, error) {
 	eventsPath := filepath.Join(c.townRoot, events.EventsFile)
-	f, err := os.Open(eventsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("opening events file: %w", err)
-	}
-	defer f.Close()
+	return readRecentJSONL[events.Event](eventsPath, "events", window, func(event events.Event) string { return event.Timestamp })
+}
 
-	info, err := f.Stat()
+func readRecentJSONL[T any](path, label string, window time.Duration, timestamp func(T) string) ([]T, error) {
+	f, scanner, err := openTailScanner(path, label)
 	if err != nil {
-		return nil, fmt.Errorf("stat events file: %w", err)
+		return nil, err
 	}
-	if info.Size() == 0 {
+	if f == nil {
 		return nil, nil
 	}
+	defer f.Close()
+	return scanRecentJSONL(scanner, label, time.Now().Add(-window), timestamp)
+}
 
-	seekTo := info.Size() - tailReadSize
-	if seekTo < 0 {
-		seekTo = 0
+func openTailScanner(path, label string) (*os.File, *bufio.Scanner, error) {
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil, nil
 	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening %s file: %w", label, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("stat %s file: %w", label, err)
+	}
+	if info.Size() == 0 {
+		_ = f.Close()
+		return nil, nil, nil
+	}
+	seekTo := max(info.Size()-tailReadSize, 0)
 	if _, err := f.Seek(seekTo, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seeking events file: %w", err)
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("seeking %s file: %w", label, err)
 	}
-
 	scanner := bufio.NewScanner(f)
 	if seekTo > 0 {
 		scanner.Scan() // skip potential partial first line at cut point
 	}
+	return f, scanner, nil
+}
 
-	cutoff := time.Now().Add(-window)
-	var result []events.Event
+func scanRecentJSONL[T any](scanner *bufio.Scanner, label string, cutoff time.Time, timestamp func(T) string) ([]T, error) {
+	var result []T
 	for scanner.Scan() {
-		var event events.Event
+		var event T
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			continue
 		}
-		ts, err := time.Parse(time.RFC3339, event.Timestamp)
+		ts, err := time.Parse(time.RFC3339, timestamp(event))
 		if err != nil {
 			continue
 		}
@@ -330,7 +290,7 @@ func (c *Curator) readRecentEvents(window time.Duration) ([]events.Event, error)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return result, fmt.Errorf("scanning events file: %w", err)
+		return result, fmt.Errorf("scanning %s file: %w", label, err)
 	}
 	return result, nil
 }
@@ -354,6 +314,16 @@ func (c *Curator) countRecentSlings(actor string, window time.Duration) int {
 // writeFeedEvent writes a curated event to the feed file.
 // ZFC: Aggregation is derived from the events file, not in-memory cache.
 func (c *Curator) writeFeedEvent(event *events.Event) {
+	feedEvent := buildFeedEvent(c, event)
+	data, err := json.Marshal(feedEvent)
+	if err != nil {
+		log.Printf("warning: marshaling feed event: %v", err)
+		return
+	}
+	appendFeedData(c, append(data, '\n'))
+}
+
+func buildFeedEvent(c *Curator, event *events.Event) FeedEvent {
 	feedEvent := FeedEvent{
 		Timestamp: event.Timestamp,
 		Source:    event.Source,
@@ -362,8 +332,6 @@ func (c *Curator) writeFeedEvent(event *events.Event) {
 		Summary:   c.generateSummary(event),
 		Payload:   event.Payload,
 	}
-
-	// Check for aggregation opportunity (ZFC: derive from events file)
 	if event.Type == events.TypeSling {
 		slingCount := c.countRecentSlings(event.Actor, c.slingAggregateWindow)
 		if slingCount >= c.minAggregateCount {
@@ -371,39 +339,27 @@ func (c *Curator) writeFeedEvent(event *events.Event) {
 			feedEvent.Summary = fmt.Sprintf("%s dispatching work to %d agents", event.Actor, slingCount)
 		}
 	}
+	return feedEvent
+}
 
-	data, err := json.Marshal(feedEvent)
-	if err != nil {
-		log.Printf("warning: marshaling feed event: %v", err)
-		return
-	}
-	data = append(data, '\n')
-
+func appendFeedData(c *Curator, data []byte) {
 	feedPath := filepath.Join(c.townRoot, FeedFile)
-
-	// In-process mutex complements the flock (which only coordinates across processes).
 	c.feedMu.Lock()
 	defer c.feedMu.Unlock()
-
-	// Acquire cross-process file lock to prevent interleaved writes
 	fl := flock.New(feedPath + ".lock")
 	if err := fl.Lock(); err != nil {
 		log.Printf("warning: acquiring feed file lock: %v", err)
 		return
 	}
 	defer fl.Unlock() //nolint:errcheck // best-effort unlock
-
-	// Truncate if file exceeds max size (keep newest half to avoid thrashing)
 	if info, err := os.Stat(feedPath); err == nil && info.Size() > c.maxFeedFileSize {
 		c.truncateFeedFile(feedPath, info.Size())
 	}
-
 	f, err := os.OpenFile(feedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Printf("warning: opening feed file: %v", err)
 		return
 	}
-
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		log.Printf("warning: writing feed event: %v", err)
@@ -466,79 +422,101 @@ func (c *Curator) truncateFeedFile(feedPath string, currentSize int64) {
 
 // generateSummary creates a human-readable summary of an event.
 func (c *Curator) generateSummary(event *events.Event) string {
-	switch event.Type {
-	case events.TypeSling:
-		if target, ok := event.Payload["target"].(string); ok {
-			if bead, ok := event.Payload["bead"].(string); ok {
-				return fmt.Sprintf("%s assigned %s to %s", event.Actor, bead, target)
-			}
-		}
-		return fmt.Sprintf("%s dispatched work", event.Actor)
-
-	case events.TypeDone:
-		if bead, ok := event.Payload["bead"].(string); ok {
-			return fmt.Sprintf("%s completed work on %s", event.Actor, bead)
-		}
-		return fmt.Sprintf("%s signaled done", event.Actor)
-
-	case events.TypeHandoff:
-		return fmt.Sprintf("%s handed off to fresh session", event.Actor)
-
-	case events.TypeMail:
-		if to, ok := event.Payload["to"].(string); ok {
-			if subj, ok := event.Payload["subject"].(string); ok {
-				return fmt.Sprintf("%s → %s: %s", event.Actor, to, subj)
-			}
-		}
-		return fmt.Sprintf("%s sent mail", event.Actor)
-
-	case events.TypePatrolStarted:
-		if rig, ok := event.Payload["rig"].(string); ok {
-			return fmt.Sprintf("%s patrol started for %s", event.Actor, rig)
-		}
-		return fmt.Sprintf("%s started patrol", event.Actor)
-
-	case events.TypePatrolComplete:
-		if msg, ok := event.Payload["message"].(string); ok {
-			return msg
-		}
-		return fmt.Sprintf("%s completed patrol", event.Actor)
-
-	case events.TypeMerged:
-		if worker, ok := event.Payload["worker"].(string); ok {
-			return fmt.Sprintf("Merged work from %s", worker)
-		}
-		return "Work merged"
-
-	case events.TypeMergeFailed:
-		if reason, ok := event.Payload["reason"].(string); ok {
-			return fmt.Sprintf("Merge failed: %s", reason)
-		}
-		return "Merge failed"
-
-	case events.TypeSessionDeath:
-		session, _ := event.Payload["session"].(string)
-		reason, _ := event.Payload["reason"].(string)
-		if session != "" && reason != "" {
-			return fmt.Sprintf("Session %s terminated: %s", session, reason)
-		}
-		if session != "" {
-			return fmt.Sprintf("Session %s terminated", session)
-		}
-		return "Session terminated"
-
-	case events.TypeMassDeath:
-		count, _ := event.Payload["count"].(float64) // JSON numbers are float64
-		possibleCause, _ := event.Payload["possible_cause"].(string)
-		if count > 0 && possibleCause != "" {
-			return fmt.Sprintf("MASS DEATH: %d sessions died - %s", int(count), possibleCause)
-		}
-		if count > 0 {
-			return fmt.Sprintf("MASS DEATH: %d sessions died simultaneously", int(count))
-		}
-		return "Multiple sessions died simultaneously"
-
-	default:
-		return fmt.Sprintf("%s: %s", event.Actor, event.Type)
+	summarizers := map[string]func(*events.Event) string{
+		events.TypeSling:          summarizeSling,
+		events.TypeDone:           summarizeDone,
+		events.TypeHandoff:        summarizeHandoff,
+		events.TypeMail:           summarizeMail,
+		events.TypePatrolStarted:  summarizePatrolStarted,
+		events.TypePatrolComplete: summarizePatrolComplete,
+		events.TypeMerged:         summarizeMerged,
+		events.TypeMergeFailed:    summarizeMergeFailed,
+		events.TypeSessionDeath:   summarizeSessionDeath,
+		events.TypeMassDeath:      summarizeMassDeath,
 	}
+	if summarize, ok := summarizers[event.Type]; ok {
+		return summarize(event)
+	}
+	return fmt.Sprintf("%s: %s", event.Actor, event.Type)
+}
+
+func summarizeSling(event *events.Event) string {
+	target, targetOK := event.Payload["target"].(string)
+	bead, beadOK := event.Payload["bead"].(string)
+	if targetOK && beadOK {
+		return fmt.Sprintf("%s assigned %s to %s", event.Actor, bead, target)
+	}
+	return fmt.Sprintf("%s dispatched work", event.Actor)
+}
+
+func summarizeDone(event *events.Event) string {
+	if bead, ok := event.Payload["bead"].(string); ok {
+		return fmt.Sprintf("%s completed work on %s", event.Actor, bead)
+	}
+	return fmt.Sprintf("%s signaled done", event.Actor)
+}
+
+func summarizeHandoff(event *events.Event) string {
+	return fmt.Sprintf("%s handed off to fresh session", event.Actor)
+}
+
+func summarizeMail(event *events.Event) string {
+	to, toOK := event.Payload["to"].(string)
+	subject, subjectOK := event.Payload["subject"].(string)
+	if toOK && subjectOK {
+		return fmt.Sprintf("%s → %s: %s", event.Actor, to, subject)
+	}
+	return fmt.Sprintf("%s sent mail", event.Actor)
+}
+
+func summarizePatrolStarted(event *events.Event) string {
+	if rig, ok := event.Payload["rig"].(string); ok {
+		return fmt.Sprintf("%s patrol started for %s", event.Actor, rig)
+	}
+	return fmt.Sprintf("%s started patrol", event.Actor)
+}
+
+func summarizePatrolComplete(event *events.Event) string {
+	if message, ok := event.Payload["message"].(string); ok {
+		return message
+	}
+	return fmt.Sprintf("%s completed patrol", event.Actor)
+}
+
+func summarizeMerged(event *events.Event) string {
+	if worker, ok := event.Payload["worker"].(string); ok {
+		return fmt.Sprintf("Merged work from %s", worker)
+	}
+	return "Work merged"
+}
+
+func summarizeMergeFailed(event *events.Event) string {
+	if reason, ok := event.Payload["reason"].(string); ok {
+		return fmt.Sprintf("Merge failed: %s", reason)
+	}
+	return "Merge failed"
+}
+
+func summarizeSessionDeath(event *events.Event) string {
+	session, _ := event.Payload["session"].(string)
+	reason, _ := event.Payload["reason"].(string)
+	if session != "" && reason != "" {
+		return fmt.Sprintf("Session %s terminated: %s", session, reason)
+	}
+	if session != "" {
+		return fmt.Sprintf("Session %s terminated", session)
+	}
+	return "Session terminated"
+}
+
+func summarizeMassDeath(event *events.Event) string {
+	count, _ := event.Payload["count"].(float64)
+	possibleCause, _ := event.Payload["possible_cause"].(string)
+	if count > 0 && possibleCause != "" {
+		return fmt.Sprintf("MASS DEATH: %d sessions died - %s", int(count), possibleCause)
+	}
+	if count > 0 {
+		return fmt.Sprintf("MASS DEATH: %d sessions died simultaneously", int(count))
+	}
+	return "Multiple sessions died simultaneously"
 }

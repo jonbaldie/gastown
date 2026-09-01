@@ -28,12 +28,16 @@ import (
 const crossRigEscalationDebounce = time.Hour
 
 // crossRigEscalationState tracks last-escalation timestamps per (rig, prefix).
-// Process-local — debounce resets on daemon restart, which is fine: a new
-// process should be allowed to surface the issue once.
-var (
-	crossRigEscalationMu   sync.Mutex
-	crossRigEscalationLast = map[string]time.Time{}
-)
+// The state belongs to one scheduler dispatch run; a new process naturally
+// starts with a fresh debounce window.
+type crossRigEscalationState struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func newCrossRigEscalationState() *crossRigEscalationState {
+	return &crossRigEscalationState{last: make(map[string]time.Time)}
+}
 
 // crossRigEscalationKey returns the debounce key for a (rig, prefix) pair.
 func crossRigEscalationKey(rig, prefix string) string {
@@ -43,22 +47,15 @@ func crossRigEscalationKey(rig, prefix string) string {
 // shouldFireCrossRigEscalation reports whether enough time has elapsed since
 // the last escalation for this (rig, prefix) pair to fire a new one. Updates
 // the timestamp on a positive answer.
-func shouldFireCrossRigEscalation(rig, prefix string, now time.Time) bool {
-	crossRigEscalationMu.Lock()
-	defer crossRigEscalationMu.Unlock()
+func (state *crossRigEscalationState) shouldFire(rig, prefix string, now time.Time) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	key := crossRigEscalationKey(rig, prefix)
-	if last, ok := crossRigEscalationLast[key]; ok && now.Sub(last) < crossRigEscalationDebounce {
+	if last, ok := state.last[key]; ok && now.Sub(last) < crossRigEscalationDebounce {
 		return false
 	}
-	crossRigEscalationLast[key] = now
+	state.last[key] = now
 	return true
-}
-
-// resetCrossRigEscalationStateForTest clears the debounce map. Test-only.
-func resetCrossRigEscalationStateForTest() {
-	crossRigEscalationMu.Lock()
-	defer crossRigEscalationMu.Unlock()
-	crossRigEscalationLast = map[string]time.Time{}
 }
 
 // fireCrossRigEscalation invokes `gt escalate` with a MEDIUM severity. Best
@@ -92,22 +89,10 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		return nil, fmt.Errorf("loading scheduler state: %w", err)
 	}
 
-	settingsPath := config.TownSettingsPath(townRoot)
-	settings, err := config.LoadOrCreateTownSettings(settingsPath)
+	maxPolecats, batchSize, spawnDelay, err := schedulerDispatchSettings(townRoot, batchOverride)
 	if err != nil {
-		return nil, fmt.Errorf("loading town settings: %w", err)
+		return nil, err
 	}
-	schedulerCfg := settings.Scheduler
-	if schedulerCfg == nil {
-		schedulerCfg = capacity.DefaultSchedulerConfig()
-	}
-
-	maxPolecats := schedulerCfg.GetMaxPolecats()
-	batchSize := schedulerCfg.GetBatchSize()
-	if batchOverride > 0 {
-		batchSize = batchOverride
-	}
-	spawnDelay := schedulerCfg.GetSpawnDelay()
 
 	if cleanup && !state.Paused && maxPolecats > 0 {
 		if err := cleanupStaleContexts(townRoot); err != nil {
@@ -120,24 +105,13 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		return nil, blockedErr
 	}
 
-	snapshot, err := polecatCapacitySnapshotForTownNoCleanup(townRoot)
-	if cleanup {
-		snapshot, err = polecatCapacitySnapshotForTown(townRoot)
-	}
+	snapshot, err := schedulerCapacitySnapshot(townRoot, cleanup)
 	if err != nil {
 		return nil, fmt.Errorf("loading polecat capacity: %w", err)
 	}
 
 	ready := readySlingContextsFromAssessments(assessments)
-	dispatchPlan := capacity.PlanDispatch(snapshot.Free, batchSize, ready)
-	if len(ready) > 0 {
-		switch {
-		case state.Paused:
-			dispatchPlan = capacity.DispatchPlan{Skipped: len(ready), Reason: "paused"}
-		case maxPolecats <= 0:
-			dispatchPlan = capacity.DispatchPlan{Skipped: len(ready), Reason: "direct-mode"}
-		}
-	}
+	dispatchPlan := buildSchedulerDispatchPlanForReady(state, maxPolecats, snapshot, batchSize, ready)
 
 	return &schedulerDispatchPlan{
 		State:       state,
@@ -151,33 +125,64 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 	}, nil
 }
 
+func schedulerDispatchSettings(townRoot string, batchOverride int) (int, int, time.Duration, error) {
+	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("loading town settings: %w", err)
+	}
+	schedulerCfg := settings.Scheduler
+	if schedulerCfg == nil {
+		schedulerCfg = capacity.DefaultSchedulerConfig()
+	}
+	batchSize := capacity.GetBatchSize(schedulerCfg)
+	if batchOverride > 0 {
+		batchSize = batchOverride
+	}
+	return schedulerCfg.GetMaxPolecats(), batchSize, capacity.GetSpawnDelay(schedulerCfg), nil
+}
+
+func schedulerCapacitySnapshot(townRoot string, cleanup bool) (polecatCapacitySnapshot, error) {
+	if cleanup {
+		return polecatCapacitySnapshotForTown(townRoot)
+	}
+	return polecatCapacitySnapshotForTownNoCleanup(townRoot)
+}
+
+func buildSchedulerDispatchPlanForReady(
+	state *capacity.SchedulerState,
+	maxPolecats int,
+	snapshot polecatCapacitySnapshot,
+	batchSize int,
+	ready []capacity.PendingBead,
+) capacity.DispatchPlan {
+	dispatchPlan := capacity.PlanDispatch(snapshot.Free, batchSize, ready)
+	if len(ready) == 0 {
+		return dispatchPlan
+	}
+	switch {
+	case state.Paused:
+		return capacity.DispatchPlan{Skipped: len(ready), Reason: "paused"}
+	case maxPolecats <= 0:
+		return capacity.DispatchPlan{Skipped: len(ready), Reason: "direct-mode"}
+	default:
+		return dispatchPlan
+	}
+}
+
 // dispatchScheduledWork is the main dispatch loop for the capacity scheduler.
 // Called by both `gt scheduler run` and the daemon heartbeat.
 func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun bool) (int, error) {
+	escalationState := newCrossRigEscalationState()
 	if dryRun {
-		dispatchPlan, err := buildSchedulerDispatchPlan(townRoot, batchOverride, false)
-		if err != nil {
-			return 0, fmt.Errorf("planning dispatch: %w", err)
-		}
-		dispatchPlan.Plan = validateDryRunDispatchPlan(townRoot, dispatchPlan.Plan)
-		printSchedulerDryRunPlan(dispatchPlan)
-		return 0, nil
+		return 0, runSchedulerDryRun(townRoot, batchOverride, escalationState)
 	}
 
-	// Acquire exclusive lock to prevent concurrent dispatch
-	runtimeDir := filepath.Join(townRoot, ".runtime")
-	_ = os.MkdirAll(runtimeDir, 0755)
-	lockFile := filepath.Join(runtimeDir, "scheduler-dispatch.lock")
-	fileLock := flock.New(lockFile)
-	locked, err := fileLock.TryLock()
+	fileLock, err := acquireSchedulerDispatchLock(townRoot)
 	if err != nil {
-		return 0, fmt.Errorf("acquiring dispatch lock: %w", err)
+		return 0, err
 	}
-	if !locked {
-		if isDaemonDispatch() {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("scheduler dispatch already in progress (lock held: %s)", lockFile)
+	if fileLock == nil {
+		return 0, nil
 	}
 	defer func() { _ = fileLock.Unlock() }()
 
@@ -186,92 +191,20 @@ func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun boo
 		return 0, fmt.Errorf("planning dispatch: %w", err)
 	}
 
-	if dispatchPlan.State.Paused {
-		if !isDaemonDispatch() {
-			fmt.Printf("%s Scheduler is paused (by %s), skipping %d ready bead(s)\n",
-				style.Dim.Render("⏸"), dispatchPlan.State.PausedBy, len(dispatchPlan.Ready))
-		}
+	if schedulerDispatchPlanHandled(dispatchPlan) {
 		return 0, nil
 	}
+	return runSchedulerDispatchPlan(townRoot, actor, escalationState, dispatchPlan)
+}
 
-	// Nothing to dispatch when scheduler is in direct dispatch or disabled mode.
-	if dispatchPlan.MaxPolecats <= 0 {
-		if !isDaemonDispatch() {
-			if len(dispatchPlan.Scheduled) > 0 {
-				fmt.Printf("%s %d context bead(s) still open from a previous deferred mode\n",
-					style.Warning.Render("⚠"), len(dispatchPlan.Scheduled))
-				fmt.Printf("  Use: gt scheduler clear  (close all sling context beads)\n")
-				fmt.Printf("  Or:  gt config set scheduler.max_polecats N  (re-enable deferred dispatch)\n")
-			} else {
-				fmt.Println("No ready beads scheduled for dispatch")
-			}
-		}
-		return 0, nil
-	}
-
-	// Wire up the DispatchCycle
+func runSchedulerDispatchPlan(
+	townRoot, actor string,
+	escalationState *crossRigEscalationState,
+	dispatchPlan *schedulerDispatchPlan,
+) (int, error) {
 	successfulRigs := make(map[string]bool)
-	// Track polecat names from dispatch results, keyed by context bead ID.
 	polecatNames := make(map[string]string)
-	cycle := &capacity.DispatchCycle{
-		Validate: func(b capacity.PendingBead) error {
-			return validatePendingBeadForDispatch(townRoot, b, true)
-		},
-		Execute: func(b capacity.PendingBead) error {
-			result, err := dispatchSingleBead(b, townRoot, actor)
-			if err != nil {
-				return err
-			}
-			// Track side effects here (Execute runs exactly once, never retried).
-			if result != nil && result.PolecatName != "" {
-				polecatNames[b.ID] = result.PolecatName
-			}
-			if b.TargetRig != "" {
-				successfulRigs[b.TargetRig] = true
-			}
-			_ = events.LogFeed(events.TypeSchedulerDispatch, actor,
-				events.SchedulerDispatchPayload(b.WorkBeadID, b.TargetRig, polecatNames[b.ID]))
-			return nil
-		},
-		OnSuccess: func(b capacity.PendingBead) error {
-			// OnSuccess may be retried — only do the close here, no side effects.
-			// Route to the correct rig's beads dir (GH#3468).
-			return beadsForPendingContext(townRoot, b).CloseSlingContext(b.ID, "dispatched")
-		},
-		OnFailure: func(b capacity.PendingBead, err error) {
-			var onSuccessErr *capacity.ErrOnSuccessFailed
-			var admissionErr *polecatCapacityAdmissionError
-			if errors.As(err, &onSuccessErr) {
-				// Polecat launched but context close failed — not a true dispatch failure.
-				// Log a distinct warning so operators can distinguish from "polecat never launched".
-				fmt.Fprintf(os.Stderr, "%s Dispatch of %s succeeded but context close failed: %v\n",
-					style.Warning.Render("⚠"), b.WorkBeadID, err)
-				// Last-resort close attempt to prevent double-dispatch on next cycle.
-				// OnSuccess already retried 2x; this is a final attempt before circuit-breaking.
-				ctxBeads := beadsForPendingContext(townRoot, b)
-				if closeErr := ctxBeads.CloseSlingContext(b.ID, "dispatch-close-failed"); closeErr != nil {
-					fmt.Fprintf(os.Stderr, "%s CRITICAL: last-resort close of %s failed — risk of double-dispatch for %s: %v\n",
-						style.Warning.Render("⚠"), b.ID, b.WorkBeadID, closeErr)
-				} else {
-					// Last-resort close succeeded — context is now closed.
-					// Log feed event so dashboards can detect bead DB degradation.
-					_ = events.LogFeed(events.TypeSchedulerCloseRetry, actor,
-						events.SchedulerDispatchPayload(b.WorkBeadID, b.TargetRig, polecatNames[b.ID]))
-					// Skip recordDispatchFailure to avoid writing to a closed context.
-					return
-				}
-			} else if errors.As(err, &admissionErr) {
-				fmt.Fprintf(os.Stderr, "%s Capacity full while dispatching %s; leaving context queued: %v\n",
-					style.Dim.Render("○"), b.WorkBeadID, err)
-				return
-			} else {
-				_ = events.LogFeed(events.TypeSchedulerDispatchFailed, actor,
-					events.SchedulerDispatchFailedPayload(b.WorkBeadID, b.TargetRig, err.Error()))
-			}
-			recordDispatchFailure(beadsForPendingContext(townRoot, b), b, err)
-		},
-		SpawnDelay: dispatchPlan.SpawnDelay,
-	}
+	cycle := newSchedulerDispatchCycle(townRoot, actor, escalationState, successfulRigs, polecatNames, dispatchPlan.SpawnDelay)
 
 	report, err := cycle.RunPlan(dispatchPlan.Plan)
 	if err != nil {
@@ -286,29 +219,161 @@ func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun boo
 		wakeRigAgents(rig)
 	}
 
-	// Update runtime state with fresh read to avoid clobbering concurrent pause.
-	if report.Dispatched > 0 {
-		freshState, err := capacity.LoadState(townRoot)
-		if err != nil {
-			fmt.Printf("%s Could not reload scheduler state: %v\n", style.Dim.Render("Warning:"), err)
-		} else {
-			freshState.RecordDispatch(report.Dispatched)
-			if err := capacity.SaveState(townRoot, freshState); err != nil {
-				fmt.Printf("%s Could not save scheduler state: %v\n", style.Dim.Render("Warning:"), err)
-			}
-		}
-	}
+	updateSchedulerDispatchState(townRoot, report.Dispatched)
+	printSchedulerDispatchResult(report, dispatchPlan.Capacity)
 
+	return report.Dispatched, nil
+}
+
+func runSchedulerDryRun(townRoot string, batchOverride int, escalationState *crossRigEscalationState) error {
+	dispatchPlan, err := buildSchedulerDispatchPlan(townRoot, batchOverride, false)
+	if err != nil {
+		return fmt.Errorf("planning dispatch: %w", err)
+	}
+	dispatchPlan.Plan = validateDryRunDispatchPlan(townRoot, dispatchPlan.Plan, escalationState)
+	printSchedulerDryRunPlan(dispatchPlan)
+	return nil
+}
+
+func acquireSchedulerDispatchLock(townRoot string) (*flock.Flock, error) {
+	runtimeDir := filepath.Join(townRoot, ".runtime")
+	_ = os.MkdirAll(runtimeDir, 0755)
+	lockFile := filepath.Join(runtimeDir, "scheduler-dispatch.lock")
+	fileLock := flock.New(lockFile)
+	locked, err := fileLock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquiring dispatch lock: %w", err)
+	}
+	if locked {
+		return fileLock, nil
+	}
+	if isDaemonDispatch() {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("scheduler dispatch already in progress (lock held: %s)", lockFile)
+}
+
+func schedulerDispatchPlanHandled(dispatchPlan *schedulerDispatchPlan) bool {
+	if dispatchPlan.State.Paused {
+		if !isDaemonDispatch() {
+			fmt.Printf("%s Scheduler is paused (by %s), skipping %d ready bead(s)\n",
+				style.Dim.Render("⏸"), dispatchPlan.State.PausedBy, len(dispatchPlan.Ready))
+		}
+		return true
+	}
+	if dispatchPlan.MaxPolecats > 0 {
+		return false
+	}
+	if !isDaemonDispatch() {
+		printDirectDispatchNotice(dispatchPlan.Scheduled)
+	}
+	return true
+}
+
+func printDirectDispatchNotice(scheduled []scheduledBeadInfo) {
+	if len(scheduled) > 0 {
+		fmt.Printf("%s %d context bead(s) still open from a previous deferred mode\n",
+			style.Warning.Render("⚠"), len(scheduled))
+		fmt.Printf("  Use: gt scheduler clear  (close all sling context beads)\n")
+		fmt.Printf("  Or:  gt config set scheduler.max_polecats N  (re-enable deferred dispatch)\n")
+		return
+	}
+	fmt.Println("No ready beads scheduled for dispatch")
+}
+
+func updateSchedulerDispatchState(townRoot string, dispatched int) {
+	if dispatched <= 0 {
+		return
+	}
+	freshState, err := capacity.LoadState(townRoot)
+	if err != nil {
+		fmt.Printf("%s Could not reload scheduler state: %v\n", style.Dim.Render("Warning:"), err)
+		return
+	}
+	capacity.RecordDispatch(freshState, dispatched)
+	if err := capacity.SaveState(townRoot, freshState); err != nil {
+		fmt.Printf("%s Could not save scheduler state: %v\n", style.Dim.Render("Warning:"), err)
+	}
+}
+
+func printSchedulerDispatchResult(report capacity.DispatchReport, snapshot polecatCapacitySnapshot) {
 	if report.Dispatched > 0 || report.Failed > 0 {
 		fmt.Printf("\n%s Dispatched %d, failed %d (reason: %s)\n",
 			style.Bold.Render("✓"), report.Dispatched, report.Failed, report.Reason)
-	} else if report.Skipped > 0 {
-		printDispatchNoOp(report, dispatchPlan.Capacity)
-	} else if !isDaemonDispatch() {
-		printDispatchNoOp(report, dispatchPlan.Capacity)
+		return
 	}
+	if report.Skipped > 0 || !isDaemonDispatch() {
+		printDispatchNoOp(report, snapshot)
+	}
+}
 
-	return report.Dispatched, nil
+func newSchedulerDispatchCycle(
+	townRoot, actor string,
+	escalationState *crossRigEscalationState,
+	successfulRigs map[string]bool,
+	polecatNames map[string]string,
+	spawnDelay time.Duration,
+) *capacity.DispatchCycle {
+	return &capacity.DispatchCycle{
+		Validate: func(b capacity.PendingBead) error {
+			return validatePendingBeadForDispatch(townRoot, b, true, escalationState)
+		},
+		Execute: func(b capacity.PendingBead) error {
+			result, err := dispatchSingleBead(b, townRoot, actor)
+			if err != nil {
+				return err
+			}
+			if result != nil && result.PolecatName != "" {
+				polecatNames[b.ID] = result.PolecatName
+			}
+			if b.TargetRig != "" {
+				successfulRigs[b.TargetRig] = true
+			}
+			_ = events.LogFeed(events.TypeSchedulerDispatch, actor,
+				events.SchedulerDispatchPayload(b.WorkBeadID, b.TargetRig, polecatNames[b.ID]))
+			return nil
+		},
+		OnSuccess: func(b capacity.PendingBead) error {
+			return beadsForPendingContext(townRoot, b).CloseSlingContext(b.ID, "dispatched")
+		},
+		OnFailure: func(b capacity.PendingBead, err error) {
+			handleSchedulerDispatchFailure(townRoot, actor, polecatNames, b, err)
+		},
+		SpawnDelay: spawnDelay,
+	}
+}
+
+func handleSchedulerDispatchFailure(townRoot, actor string, polecatNames map[string]string, b capacity.PendingBead, err error) {
+	var onSuccessErr *capacity.ErrOnSuccessFailed
+	if errors.As(err, &onSuccessErr) {
+		if retrySchedulerDispatchClose(townRoot, actor, polecatNames, b, err) {
+			return
+		}
+	} else {
+		var admissionErr *polecatCapacityAdmissionError
+		if errors.As(err, &admissionErr) {
+			fmt.Fprintf(os.Stderr, "%s Capacity full while dispatching %s; leaving context queued: %v\n",
+				style.Dim.Render("○"), b.WorkBeadID, err)
+			return
+		}
+		_ = events.LogFeed(events.TypeSchedulerDispatchFailed, actor,
+			events.SchedulerDispatchFailedPayload(b.WorkBeadID, b.TargetRig, err.Error()))
+	}
+	recordDispatchFailure(beadsForPendingContext(townRoot, b), b, err)
+}
+
+func retrySchedulerDispatchClose(townRoot, actor string, polecatNames map[string]string, b capacity.PendingBead, err error) bool {
+	fmt.Fprintf(os.Stderr, "%s Dispatch of %s succeeded but context close failed: %v\n",
+		style.Warning.Render("⚠"), b.WorkBeadID, err)
+	ctxBeads := beadsForPendingContext(townRoot, b)
+	if closeErr := ctxBeads.CloseSlingContext(b.ID, "dispatch-close-failed"); closeErr != nil {
+		fmt.Fprintf(os.Stderr, "%s CRITICAL: last-resort close of %s failed — risk of double-dispatch for %s: %v\n",
+			style.Warning.Render("⚠"), b.ID, b.WorkBeadID, closeErr)
+		return false
+	}
+	_ = events.LogFeed(events.TypeSchedulerCloseRetry, actor,
+		events.SchedulerDispatchPayload(b.WorkBeadID, b.TargetRig, polecatNames[b.ID]))
+	return true
 }
 
 func printSchedulerDryRunPlan(dispatchPlan *schedulerDispatchPlan) {
@@ -429,23 +494,7 @@ func cleanupStaleContexts(townRoot string) error {
 		return err
 	}
 
-	// First pass: close invalid and circuit-broken contexts, collect work bead IDs
-	// that need status checks for stale detection.
-	var staleCheckContexts []slingContextRecord
-	var staleCheckFields []*capacity.SlingContextFields
-	for _, ctx := range contexts {
-		fields := beads.ParseSlingContextFields(ctx.issue.Description)
-		if fields == nil {
-			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "invalid-context")
-			continue
-		}
-		if fields.DispatchFailures >= maxDispatchFailures {
-			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "circuit-broken")
-			continue
-		}
-		staleCheckContexts = append(staleCheckContexts, ctx)
-		staleCheckFields = append(staleCheckFields, fields)
-	}
+	staleCheckContexts, staleCheckFields := collectStaleCheckContexts(contexts)
 
 	if len(staleCheckContexts) == 0 {
 		return nil
@@ -465,14 +514,36 @@ func cleanupStaleContexts(townRoot string) error {
 	// actively worked, and bd ready won't return it, so the dispatch query
 	// already prevents re-dispatch. The context stays open until the polecat
 	// finishes and the bead transitions to closed/tombstone.
-	for i, ctx := range staleCheckContexts {
-		fields := staleCheckFields[i]
-		info, found := workBeadInfo[fields.WorkBeadID]
+	closeStaleContexts(staleCheckContexts, staleCheckFields, workBeadInfo)
+	return nil
+}
+
+func collectStaleCheckContexts(contexts []slingContextRecord) ([]slingContextRecord, []*capacity.SlingContextFields) {
+	var staleCheckContexts []slingContextRecord
+	var staleCheckFields []*capacity.SlingContextFields
+	for _, ctx := range contexts {
+		fields := beads.ParseSlingContextFields(ctx.issue.Description)
+		if fields == nil {
+			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "invalid-context")
+			continue
+		}
+		if fields.DispatchFailures >= maxDispatchFailures {
+			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "circuit-broken")
+			continue
+		}
+		staleCheckContexts = append(staleCheckContexts, ctx)
+		staleCheckFields = append(staleCheckFields, fields)
+	}
+	return staleCheckContexts, staleCheckFields
+}
+
+func closeStaleContexts(contexts []slingContextRecord, fields []*capacity.SlingContextFields, infoByID map[string]beadStatusInfo) {
+	for i, ctx := range contexts {
+		info, found := infoByID[fields[i].WorkBeadID]
 		if found && (info.Status == "hooked" || info.Status == "closed" || info.Status == "tombstone") {
 			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "stale-work-bead")
 		}
 	}
-	return nil
 }
 
 // beadStatusInfo holds batch-fetched bead status, title, and labels.
@@ -591,19 +662,7 @@ func assessScheduledContexts(townRoot string) ([]scheduledContextAssessment, err
 		return nil, nil
 	}
 
-	candidates := make([]scheduledContextAssessment, 0, len(contexts))
-	workBeadIDs := make([]string, 0, len(contexts))
-	for _, ctx := range contexts {
-		fields := beads.ParseSlingContextFields(ctx.issue.Description)
-		if fields == nil || fields.WorkBeadID == "" || fields.TargetRig == "" {
-			continue
-		}
-		if fields.DispatchFailures >= maxDispatchFailures {
-			continue
-		}
-		candidates = append(candidates, scheduledContextAssessment{context: ctx, fields: fields})
-		workBeadIDs = append(workBeadIDs, fields.WorkBeadID)
-	}
+	candidates, workBeadIDs := scheduledContextCandidates(contexts)
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -620,6 +679,24 @@ func assessScheduledContexts(townRoot string) ([]scheduledContextAssessment, err
 	workBeadInfo := batchFetchBeadInfoByIDs(townRoot, workBeadIDs)
 	blockedWorkIDs, blockedUnknownIDs, blockedErr := listBlockedWorkBeadIDStates(townRoot, workBeadIDs)
 
+	return buildScheduledContextAssessments(candidates, workBeadInfo, blockedWorkIDs, blockedUnknownIDs), blockedErr
+}
+
+func scheduledContextCandidates(contexts []slingContextRecord) ([]scheduledContextAssessment, []string) {
+	candidates := make([]scheduledContextAssessment, 0, len(contexts))
+	workBeadIDs := make([]string, 0, len(contexts))
+	for _, ctx := range contexts {
+		fields := beads.ParseSlingContextFields(ctx.issue.Description)
+		if fields == nil || fields.WorkBeadID == "" || fields.TargetRig == "" || fields.DispatchFailures >= maxDispatchFailures {
+			continue
+		}
+		candidates = append(candidates, scheduledContextAssessment{context: ctx, fields: fields})
+		workBeadIDs = append(workBeadIDs, fields.WorkBeadID)
+	}
+	return candidates, workBeadIDs
+}
+
+func buildScheduledContextAssessments(candidates []scheduledContextAssessment, infoByID map[string]beadStatusInfo, blockedIDs, blockedUnknownIDs map[string]bool) []scheduledContextAssessment {
 	seenWork := make(map[string]bool)
 	assessments := make([]scheduledContextAssessment, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -629,16 +706,15 @@ func assessScheduledContexts(townRoot string) ([]scheduledContextAssessment, err
 		}
 		seenWork[workBeadID] = true
 
-		info, found := workBeadInfo[workBeadID]
+		info, found := infoByID[workBeadID]
 		candidate.info = info
 		candidate.found = found
-		candidate.blocked = blockedWorkIDs[workBeadID]
+		candidate.blocked = blockedIDs[workBeadID]
 		candidate.blockedUnknown = blockedUnknownIDs[workBeadID]
-		candidate.ready = isScheduledWorkBeadReady(workBeadID, info, found, blockedWorkIDs, blockedUnknownIDs)
+		candidate.ready = isScheduledWorkBeadReady(workBeadID, info, found, blockedIDs, blockedUnknownIDs)
 		assessments = append(assessments, candidate)
 	}
-
-	return assessments, blockedErr
+	return assessments
 }
 
 // getReadySlingContexts queries for sling context beads whose work beads are ready.
@@ -725,13 +801,13 @@ func dispatchSingleBead(b capacity.PendingBead, townRoot, _ string) (*SlingResul
 	return result, nil
 }
 
-func validateDryRunDispatchPlan(townRoot string, plan capacity.DispatchPlan) capacity.DispatchPlan {
+func validateDryRunDispatchPlan(townRoot string, plan capacity.DispatchPlan, escalationStates ...*crossRigEscalationState) capacity.DispatchPlan {
 	if len(plan.ToDispatch) == 0 {
 		return plan
 	}
 	validated := make([]capacity.PendingBead, 0, len(plan.ToDispatch))
 	for _, b := range plan.ToDispatch {
-		if err := validatePendingBeadForDispatch(townRoot, b, false); err != nil {
+		if err := validatePendingBeadForDispatch(townRoot, b, false, escalationStates...); err != nil {
 			fmt.Fprintf(os.Stderr, "%s dry-run_skip reason=validation bead=%s target_rig=%s: %v\n",
 				style.Dim.Render("○"), b.WorkBeadID, b.TargetRig, err)
 			plan.Skipped++
@@ -760,7 +836,7 @@ func validateDryRunDispatchPlan(townRoot string, plan capacity.DispatchPlan) cap
 	return plan
 }
 
-func validatePendingBeadForDispatch(townRoot string, b capacity.PendingBead, escalate bool) error {
+func validatePendingBeadForDispatch(townRoot string, b capacity.PendingBead, escalate bool, escalationStates ...*crossRigEscalationState) error {
 	// Cross-rig prefix guard (gt-el4). A bead whose ID prefix does not match the
 	// target rig's registered prefix must not be dispatched — the polecat would
 	// land in a rig DB that cannot resolve the bead and hang in prime.
@@ -776,7 +852,11 @@ func validatePendingBeadForDispatch(townRoot string, b capacity.PendingBead, esc
 	fmt.Fprintf(os.Stderr,
 		"%s dispatch_refused reason=cross_rig_prefix bead=%s target_rig=%s rig_prefix=%s bead_prefix=%s\n",
 		style.Warning.Render("⚠"), b.WorkBeadID, b.TargetRig, rigPrefix, gotPrefix)
-	if escalate && shouldFireCrossRigEscalation(b.TargetRig, gotPrefix, time.Now()) {
+	escalationState := newCrossRigEscalationState()
+	if len(escalationStates) > 0 && escalationStates[0] != nil {
+		escalationState = escalationStates[0]
+	}
+	if escalate && escalationState.shouldFire(b.TargetRig, gotPrefix, time.Now()) {
 		fireCrossRigEscalation(b.TargetRig, gotPrefix, b.WorkBeadID)
 	}
 	return capacity.ErrCrossRigPrefix

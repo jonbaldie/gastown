@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -624,6 +625,23 @@ func TestConvoyStageInput_ClassifyTask(t *testing.T) {
 	}
 }
 
+func TestStageInputKindLabel(t *testing.T) {
+	tests := []struct {
+		kind StageInputKind
+		want string
+	}{
+		{kind: StageInputEpic, want: "epic"},
+		{kind: StageInputConvoy, want: "convoy"},
+		{kind: StageInputTasks, want: "task"},
+	}
+
+	for _, tt := range tests {
+		if got := stageInputKindLabel(tt.kind); got != tt.want {
+			t.Errorf("stageInputKindLabel(%v) = %q, want %q", tt.kind, got, tt.want)
+		}
+	}
+}
+
 // TestConvoyStageInput_MixedTypes verifies mixed input types are rejected.
 func TestConvoyStageInput_MixedTypes(t *testing.T) {
 	types := map[string]string{"gt-epic": "epic", "gt-task": "task"}
@@ -642,6 +660,17 @@ func TestConvoyStageInput_MultipleEpicsError(t *testing.T) {
 	_, err := resolveInputKind(types)
 	if err == nil {
 		t.Fatal("expected error for multiple epics")
+	}
+}
+
+func TestConvoyStageInput_MultipleConvoysError(t *testing.T) {
+	types := map[string]string{"gt-convoy1": "convoy", "gt-convoy2": "convoy"}
+	_, err := resolveInputKind(types)
+	if err == nil {
+		t.Fatal("expected error for multiple convoys")
+	}
+	if !strings.Contains(err.Error(), "only one convoy ID allowed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -666,6 +695,246 @@ func TestConvoyStageInput_MultipleTasksOK(t *testing.T) {
 	}
 	if input.Kind != StageInputTasks {
 		t.Errorf("expected StageInputTasks, got %v", input.Kind)
+	}
+	if !reflect.DeepEqual(input.IDs, []string{"gt-a", "gt-b", "gt-c"}) || !reflect.DeepEqual(input.RawArgs, input.IDs) {
+		t.Fatalf("resolved IDs = %v, raw args = %v; want sorted matching IDs", input.IDs, input.RawArgs)
+	}
+}
+
+func TestConvoyStageOptionsFromCommand(t *testing.T) {
+	if got := convoyStageOptionsFromCommand(nil); got != (convoyStageOptions{}) {
+		t.Fatalf("nil command options = %#v, want zero value", got)
+	}
+
+	cmd := &cobra.Command{Use: "stage"}
+	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().Bool("launch", false, "")
+	cmd.Flags().String("title", "", "")
+	cmd.Flags().Bool("no-validate", false, "")
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("launch", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("title", "Release convoy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("no-validate", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := convoyStageOptions{json: true, launch: true, title: "Release convoy", noValidate: true}
+	if got := convoyStageOptionsFromCommand(cmd); got != want {
+		t.Fatalf("command options = %#v, want %#v", got, want)
+	}
+}
+
+func TestStageRestageState(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       *StageInput
+		results     map[string]*bdShowResult
+		wantRestage bool
+		wantID      string
+	}{
+		{
+			name:  "task input is never a restage",
+			input: &StageInput{Kind: StageInputTasks, IDs: []string{"task-1"}},
+		},
+		{
+			name:  "open convoy is not a restage",
+			input: &StageInput{Kind: StageInputConvoy, IDs: []string{"convoy-1"}},
+			results: map[string]*bdShowResult{
+				"convoy-1": {Status: "open"},
+			},
+		},
+		{
+			name:  "staged convoy is a restage",
+			input: &StageInput{Kind: StageInputConvoy, IDs: []string{"convoy-1"}},
+			results: map[string]*bdShowResult{
+				"convoy-1": {Status: "staged_ready"},
+			},
+			wantRestage: true,
+			wantID:      "convoy-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRestage, gotID := stageRestageState(tt.input, tt.results)
+			if gotRestage != tt.wantRestage || gotID != tt.wantID {
+				t.Fatalf("stageRestageState() = (%v, %q), want (%v, %q)", gotRestage, gotID, tt.wantRestage, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestCheckStageOverlapSkipsExistingConvoys(t *testing.T) {
+	dag := &ConvoyDAG{Nodes: map[string]*ConvoyDAGNode{
+		"task-1": {ID: "task-1", Type: "task"},
+	}}
+	tests := []struct {
+		name      string
+		input     *StageInput
+		isRestage bool
+	}{
+		{
+			name:      "restaging task input",
+			input:     &StageInput{Kind: StageInputTasks, IDs: []string{"task-1"}},
+			isRestage: true,
+		},
+		{
+			name:  "convoy input",
+			input: &StageInput{Kind: StageInputConvoy, IDs: []string{"convoy-1"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ids, autoRestage, convoyID, err := checkStageOverlap(dag, tt.input, tt.isRestage, false)
+			if err != nil {
+				t.Fatalf("checkStageOverlap() error = %v", err)
+			}
+			if ids != nil || autoRestage || convoyID != "" {
+				t.Fatalf("checkStageOverlap() = (%v, %v, %q), want (nil, false, empty)", ids, autoRestage, convoyID)
+			}
+		})
+	}
+}
+
+func TestAppendJSONValidationWaveSkipsNonEpicAndDisabledValidation(t *testing.T) {
+	waves := []Wave{{Number: 1, Tasks: []string{"task-1"}}}
+	tests := []struct {
+		name       string
+		input      *StageInput
+		noValidate bool
+	}{
+		{
+			name:  "task input",
+			input: &StageInput{Kind: StageInputTasks, IDs: []string{"task-1"}},
+		},
+		{
+			name:       "validation disabled",
+			input:      &StageInput{Kind: StageInputEpic, IDs: []string{"epic-1"}},
+			noValidate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotWaves, validationID, err := appendJSONValidationWave(nil, tt.input, waves, tt.noValidate)
+			if err != nil {
+				t.Fatalf("appendJSONValidationWave() error = %v", err)
+			}
+			if !reflect.DeepEqual(gotWaves, waves) || validationID != "" {
+				t.Fatalf("appendJSONValidationWave() = (%v, %q), want unchanged waves and no validation ID", gotWaves, validationID)
+			}
+		})
+	}
+}
+
+func TestUpdateJSONGatedWarnings(t *testing.T) {
+	result := &StageResult{}
+	gated := []GatedTask{{TaskID: "task-1", GatedBy: []string{"blocker-1"}}}
+	warns, status := updateJSONGatedWarnings(result, nil, gated, nil, "ready")
+
+	if status != "staged_warnings" {
+		t.Fatalf("status = %q, want staged_warnings", status)
+	}
+	if len(warns) != 1 || warns[0].Category != "gated" || !reflect.DeepEqual(warns[0].BeadIDs, []string{"task-1"}) {
+		t.Fatalf("warnings = %#v, want gated warning for task-1", warns)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("result warnings = %#v, want one warning", result.Warnings)
+	}
+}
+
+func TestNormalizeStageResult(t *testing.T) {
+	result := &StageResult{
+		Errors: []FindingJSON{{Category: "cycle"}},
+	}
+	normalizeStageResult(result)
+
+	if result.Errors == nil || result.Warnings == nil || result.Waves == nil || result.Tree == nil {
+		t.Fatalf("normalizeStageResult() left a nil collection: %#v", result)
+	}
+	if len(result.Errors) != 1 || result.Errors[0].BeadIDs == nil {
+		t.Fatalf("normalized errors = %#v, want preserved error with non-nil bead IDs", result.Errors)
+	}
+	if len(result.Warnings) != 0 || len(result.Waves) != 0 || len(result.Tree) != 0 {
+		t.Fatalf("normalized empty collections changed contents: %#v", result)
+	}
+}
+
+func TestNormalizeStageResultPreservesCollections(t *testing.T) {
+	warnings := []FindingJSON{{Category: "gated", BeadIDs: []string{"task-1"}}}
+	waves := []WaveJSON{{Number: 1}}
+	tree := []TreeNodeJSON{{ID: "task-1"}}
+	result := &StageResult{Warnings: warnings, Waves: waves, Tree: tree}
+
+	normalizeStageResult(result)
+
+	if !reflect.DeepEqual(result.Warnings, warnings) || !reflect.DeepEqual(result.Waves, waves) || !reflect.DeepEqual(result.Tree, tree) {
+		t.Fatalf("normalizeStageResult() changed non-nil collections: %#v", result)
+	}
+}
+
+func TestGatedWaveTasksSortsTasksAndOpenBlockers(t *testing.T) {
+	dag := &ConvoyDAG{Nodes: map[string]*ConvoyDAGNode{
+		"task-b":    {ID: "task-b", BlockedBy: []string{"closed", "open-b", "open-a"}},
+		"task-a":    {ID: "task-a", BlockedBy: []string{"tombstone"}},
+		"closed":    {ID: "closed", Status: "closed"},
+		"tombstone": {ID: "tombstone", Status: "tombstone"},
+		"open-a":    {ID: "open-a", Status: "open"},
+		"open-b":    {ID: "open-b", Status: "open"},
+	}}
+	slingable := map[string]*ConvoyDAGNode{
+		"task-a": dag.Nodes["task-a"],
+		"task-b": dag.Nodes["task-b"],
+	}
+
+	got := gatedWaveTasks(dag, slingable, map[string]int{"task-b": 1, "task-a": 1})
+	want := []GatedTask{
+		{TaskID: "task-a", GatedBy: nil},
+		{TaskID: "task-b", GatedBy: []string{"open-a", "open-b"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gatedWaveTasks() = %#v, want %#v", got, want)
+	}
+}
+
+func TestProcessWaveReturnsProcessedCount(t *testing.T) {
+	slingable := map[string]*ConvoyDAGNode{
+		"task-a": {ID: "task-a", Blocks: []string{"task-c"}},
+		"task-b": {ID: "task-b", Blocks: []string{"task-c"}},
+		"task-c": {ID: "task-c"},
+	}
+	inDegree := map[string]int{"task-a": 0, "task-b": 0, "task-c": 2}
+
+	if got := processWave(slingable, inDegree, []string{"task-a", "task-b"}); got != 2 {
+		t.Fatalf("processWave() = %d, want 2", got)
+	}
+	if !reflect.DeepEqual(inDegree, map[string]int{"task-c": 0}) {
+		t.Fatalf("remaining in-degree = %#v, want task-c ready", inDegree)
+	}
+}
+
+func TestCrossRigFindingIncludesRoutingDetails(t *testing.T) {
+	node := &ConvoyDAGNode{ID: "task-1", Type: "task", Rig: "secondary"}
+	finding, ok := crossRigFinding(node, "primary")
+
+	if !ok {
+		t.Fatal("crossRigFinding() did not report a cross-rig task")
+	}
+	if finding.Severity != "warning" || finding.Category != "cross-rig" || !reflect.DeepEqual(finding.BeadIDs, []string{"task-1"}) {
+		t.Fatalf("crossRigFinding() metadata = %#v", finding)
+	}
+	if !strings.Contains(finding.Message, "secondary") || !strings.Contains(finding.Message, "primary") {
+		t.Fatalf("crossRigFinding() message = %q, want both rig names", finding.Message)
+	}
+	if !strings.Contains(finding.SuggestedFix, "task-1") || !strings.Contains(finding.SuggestedFix, "primary") {
+		t.Fatalf("crossRigFinding() suggested fix = %q, want task and primary rig", finding.SuggestedFix)
 	}
 }
 
@@ -2489,12 +2758,8 @@ func TestJSONOutput_FlagParseErrorReturnsEnvelope(t *testing.T) {
 
 func newJSONStageTestCommand(t *testing.T) *cobra.Command {
 	t.Helper()
-	oldJSON := convoyStageJSON
-	convoyStageJSON = false
-	t.Cleanup(func() { convoyStageJSON = oldJSON })
-
 	cmd := &cobra.Command{Use: "stage", RunE: runConvoyStage}
-	cmd.Flags().BoolVar(&convoyStageJSON, "json", false, "Output machine-readable JSON")
+	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
 	cmd.SetFlagErrorFunc(convoyStageFlagError)
 	return cmd
 }
@@ -2537,7 +2802,11 @@ func TestJSONOutput_NoHumanReadableText(t *testing.T) {
 
 	testDAG.Setup(t)
 
-	// Capture stdout by setting convoyStageJSON and running the pipeline.
+	// Capture stdout while running the pipeline in JSON mode.
+	cmd := newJSONStageTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -2547,11 +2816,7 @@ func TestJSONOutput_NoHumanReadableText(t *testing.T) {
 	rErr, wErr, _ := os.Pipe()
 	os.Stderr = wErr
 
-	// Enable JSON mode.
-	convoyStageJSON = true
-	defer func() { convoyStageJSON = false }()
-
-	_ = runConvoyStage(nil, []string{"gt-j1", "gt-j2"})
+	_ = runConvoyStage(cmd, []string{"gt-j1", "gt-j2"})
 	w.Close()
 	wErr.Close()
 	os.Stdout = oldStdout
@@ -2604,10 +2869,12 @@ func TestJSONOutput_ErrorsReturnNonZeroExit(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	convoyStageJSON = true
-	defer func() { convoyStageJSON = false }()
+	cmd := newJSONStageTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatal(err)
+	}
 
-	err := runConvoyStage(nil, []string{"zz-norig"})
+	err := runConvoyStage(cmd, []string{"zz-norig"})
 	w.Close()
 	os.Stdout = old
 

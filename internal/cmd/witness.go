@@ -13,14 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Witness command flags
-var (
-	witnessForeground    bool
-	witnessStatusJSON    bool
-	witnessAgentOverride string
-	witnessEnvOverrides  []string
-)
-
 var witnessCmd = &cobra.Command{
 	Use:     "witness",
 	GroupID: GroupAgents,
@@ -120,17 +112,17 @@ Examples:
 
 func init() {
 	// Start flags
-	witnessStartCmd.Flags().BoolVar(&witnessForeground, "foreground", false, "Run in foreground (default: background)")
+	witnessStartCmd.Flags().Bool("foreground", false, "Run in foreground (default: background)")
 	_ = witnessStartCmd.Flags().MarkHidden("foreground")
-	witnessStartCmd.Flags().StringVar(&witnessAgentOverride, "agent", "", "Agent alias to run the Witness with (overrides town default)")
-	witnessStartCmd.Flags().StringArrayVar(&witnessEnvOverrides, "env", nil, "Environment variable override (KEY=VALUE, can be repeated)")
+	witnessStartCmd.Flags().String("agent", "", "Agent alias to run the Witness with (overrides town default)")
+	witnessStartCmd.Flags().StringArray("env", nil, "Environment variable override (KEY=VALUE, can be repeated)")
 
 	// Status flags
-	witnessStatusCmd.Flags().BoolVar(&witnessStatusJSON, "json", false, "Output as JSON")
+	witnessStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Restart flags
-	witnessRestartCmd.Flags().StringVar(&witnessAgentOverride, "agent", "", "Agent alias to run the Witness with (overrides town default)")
-	witnessRestartCmd.Flags().StringArrayVar(&witnessEnvOverrides, "env", nil, "Environment variable override (KEY=VALUE, can be repeated)")
+	witnessRestartCmd.Flags().String("agent", "", "Agent alias to run the Witness with (overrides town default)")
+	witnessRestartCmd.Flags().StringArray("env", nil, "Environment variable override (KEY=VALUE, can be repeated)")
 
 	// Add subcommands
 	witnessCmd.AddCommand(witnessStartCmd)
@@ -153,7 +145,33 @@ func getWitnessManager(rigName string) (*witness.Manager, error) {
 	return mgr, nil
 }
 
+type witnessStartOptions struct {
+	foreground bool
+	agent      string
+	env        []string
+}
+
+func witnessStartOptionsFromCommand(cmd *cobra.Command) (witnessStartOptions, error) {
+	foreground, err := cmd.Flags().GetBool("foreground")
+	if err != nil {
+		return witnessStartOptions{}, err
+	}
+	agent, err := cmd.Flags().GetString("agent")
+	if err != nil {
+		return witnessStartOptions{}, err
+	}
+	env, err := cmd.Flags().GetStringArray("env")
+	if err != nil {
+		return witnessStartOptions{}, err
+	}
+	return witnessStartOptions{foreground: foreground, agent: agent, env: env}, nil
+}
+
 func runWitnessStart(cmd *cobra.Command, args []string) error {
+	opts, err := witnessStartOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
 	rigName := args[0]
 
 	if err := checkRigNotParkedOrDocked(rigName); err != nil {
@@ -164,13 +182,13 @@ func runWitnessStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if witnessForeground {
+	if opts.foreground {
 		return fmt.Errorf("foreground mode is deprecated; use background mode (remove --foreground flag)")
 	}
 
 	fmt.Printf("Starting witness for %s...\n", rigName)
 
-	if err := mgr.Start(witnessForeground, witnessAgentOverride, witnessEnvOverrides); err != nil {
+	if err := mgr.Start(opts.foreground, opts.agent, opts.env); err != nil {
 		if err == witness.ErrAlreadyRunning {
 			fmt.Printf("%s Witness is already running\n", style.Dim.Render("⚠"))
 			fmt.Printf("  %s\n", style.Dim.Render("Use 'gt witness attach' to connect"))
@@ -185,7 +203,7 @@ func runWitnessStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWitnessStop(cmd *cobra.Command, args []string) error {
+func runWitnessStop(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 
 	mgr, err := getWitnessManager(rigName)
@@ -229,6 +247,10 @@ type WitnessStatusOutput struct {
 }
 
 func runWitnessStatus(cmd *cobra.Command, args []string) error {
+	jsonOutput, err := cmd.Flags().GetBool("json")
+	if err != nil {
+		return err
+	}
 	rigName := args[0]
 
 	// Get rig for polecat info
@@ -247,7 +269,7 @@ func runWitnessStatus(cmd *cobra.Command, args []string) error {
 	polecats := r.Polecats
 
 	// JSON output
-	if witnessStatusJSON {
+	if jsonOutput {
 		output := WitnessStatusOutput{
 			Running:           running,
 			RigName:           rigName,
@@ -291,7 +313,7 @@ func witnessSessionName(rigName string) string {
 	return session.WitnessSessionName(session.PrefixFor(rigName))
 }
 
-func runWitnessAttach(cmd *cobra.Command, args []string) error {
+func runWitnessAttach(_ *cobra.Command, args []string) error {
 	rigName := ""
 	if len(args) > 0 {
 		rigName = args[0]
@@ -329,6 +351,14 @@ func runWitnessAttach(cmd *cobra.Command, args []string) error {
 }
 
 func runWitnessRestart(cmd *cobra.Command, args []string) error {
+	agent, err := cmd.Flags().GetString("agent")
+	if err != nil {
+		return err
+	}
+	env, err := cmd.Flags().GetStringArray("env")
+	if err != nil {
+		return err
+	}
 	rigName := args[0]
 
 	if err := checkRigNotParkedOrDocked(rigName); err != nil {
@@ -346,7 +376,7 @@ func runWitnessRestart(cmd *cobra.Command, args []string) error {
 	_ = mgr.Stop()
 
 	// Start fresh
-	if err := mgr.Start(false, witnessAgentOverride, witnessEnvOverrides); err != nil {
+	if err := mgr.Start(false, agent, env); err != nil {
 		return fmt.Errorf("starting witness: %w", err)
 	}
 

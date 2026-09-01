@@ -6,25 +6,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/jonbaldie/gastown/internal/beads"
-	"github.com/jonbaldie/gastown/internal/events"
-	"github.com/jonbaldie/gastown/internal/nudge"
 	"github.com/jonbaldie/gastown/internal/runtime"
 	"github.com/jonbaldie/gastown/internal/session"
-	"github.com/jonbaldie/gastown/internal/style"
 	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
-var hookCmd = &cobra.Command{
-	Use:         "hook [bead-id] [target]",
-	Aliases:     []string{"work"},
-	GroupID:     GroupWork,
-	Annotations: map[string]string{AnnotationPolecatSafe: "true"},
-	Short:       "Show or attach work on a hook",
-	Long: `Show what's on your hook, or attach new work.
+func newHookCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:         "hook [bead-id] [target]",
+		Aliases:     []string{"work"},
+		GroupID:     GroupWork,
+		Annotations: map[string]string{AnnotationPolecatSafe: "true"},
+		Short:       "Show or attach work on a hook",
+		Long: `Show what's on your hook, or attach new work.
 
 With no arguments, shows your current hook status (alias for 'gt mol status').
 With a bead ID, attaches that work to your hook.
@@ -46,8 +43,9 @@ Related commands:
   gt sling <bead>    # Hook + start now (keep context)
   gt handoff <bead>  # Hook + restart (fresh context)
   gt unsling         # Remove work from hook`,
-	Args: cobra.MaximumNArgs(2),
-	RunE: runHookOrStatus,
+		Args: cobra.MaximumNArgs(2),
+		RunE: runHookOrStatus,
+	}
 }
 
 // hookStatusCmd shows hook status (alias for mol status)
@@ -121,7 +119,7 @@ Examples:
   gt hook detach gt-abc gastown/nux   # Detach gt-abc from nux's hook`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runUnslingWith(cmd, args, hookDryRun, hookForce)
+		return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 	},
 }
 
@@ -147,36 +145,30 @@ Related commands:
 	RunE: runHookClear,
 }
 
-var (
-	hookSubject string
-	hookMessage string
-	hookDryRun  bool
-	hookForce   bool
-	hookClear   bool
-)
-
 func init() {
+	hookCmd := newHookCmd()
+	state := moleculeState()
 	// Flags for attaching work (gt hook <bead-id>)
-	hookCmd.Flags().StringVarP(&hookSubject, "subject", "s", "", "Subject for handoff mail (optional)")
-	hookCmd.Flags().StringVarP(&hookMessage, "message", "m", "", "Message for handoff mail (optional)")
-	hookCmd.Flags().BoolVarP(&hookDryRun, "dry-run", "n", false, "Show what would be done")
-	hookCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Replace existing incomplete hooked bead")
-	hookCmd.Flags().BoolVar(&hookClear, "clear", false, "Clear your hook (alias for 'gt unhook')")
+	hookCmd.Flags().StringP("subject", "s", "", "Subject for handoff mail (optional)")
+	hookCmd.Flags().StringP("message", "m", "", "Message for handoff mail (optional)")
+	hookCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
+	hookCmd.Flags().BoolP("force", "f", false, "Replace existing incomplete hooked bead")
+	hookCmd.Flags().Bool("clear", false, "Clear your hook (alias for 'gt unhook')")
 
 	// --json flag for status output (used when no args, i.e., gt hook --json)
-	hookCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON (for status)")
-	hookStatusCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
-	hookShowCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	hookCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON (for status)")
+	hookStatusCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
+	hookShowCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
 	// Flags for attach subcommand
-	hookAttachCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Replace existing incomplete hooked bead")
+	hookAttachCmd.Flags().BoolP("force", "f", false, "Replace existing incomplete hooked bead")
 
 	// Flags for detach subcommand (mirror unsling flags)
-	hookDetachCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Detach even if work is incomplete")
+	hookDetachCmd.Flags().BoolP("force", "f", false, "Detach even if work is incomplete")
 
 	// Flags for clear subcommand (mirror unsling flags)
-	hookClearCmd.Flags().BoolVarP(&hookDryRun, "dry-run", "n", false, "Show what would be done")
-	hookClearCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Clear even if work is incomplete")
+	hookClearCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
+	hookClearCmd.Flags().BoolP("force", "f", false, "Clear even if work is incomplete")
 
 	hookCmd.AddCommand(hookStatusCmd)
 	hookCmd.AddCommand(hookShowCmd)
@@ -190,8 +182,8 @@ func init() {
 // runHookOrStatus dispatches to status, clear, or hook based on args/flags
 func runHookOrStatus(cmd *cobra.Command, args []string) error {
 	// --clear flag is alias for 'gt unhook'
-	if hookClear {
-		return runUnslingWith(cmd, args, hookDryRun, hookForce)
+	if commandBoolFlag(cmd, "clear") {
+		return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 	}
 	if len(args) == 0 {
 		// No args - show status
@@ -203,236 +195,7 @@ func runHookOrStatus(cmd *cobra.Command, args []string) error {
 
 // runHookClear handles 'gt hook clear' - delegates to runUnsling
 func runHookClear(cmd *cobra.Command, args []string) error {
-	return runUnslingWith(cmd, args, hookDryRun, hookForce)
-}
-
-func runHook(_ *cobra.Command, args []string) error {
-	beadID := args[0]
-	if err := ensureCurrentHookWorktreeIntegrity(); err != nil {
-		return err
-	}
-
-	// Reject non-bead-shaped first args before passing to bd show, which would
-	// emit a confusing "bead 'set' not found" error. cobra has already failed to
-	// match against a registered subcommand, so anything reaching here that
-	// doesn't look like a bead ID is almost certainly a typo'd subcommand.
-	// See GH#3701.
-	if !isBeadID(beadID) {
-		return fmt.Errorf("%q is not a bead ID. See 'gt hook --help' for available subcommands and usage", beadID)
-	}
-
-	// Parse optional target agent
-	var targetAgent string
-	if len(args) > 1 {
-		targetAgent = args[1]
-	}
-
-	// Polecats cannot hook - they use gt done for lifecycle.
-	// Check GT_ROLE first: coordinators (mayor, witness, etc.) may have a stale
-	// GT_POLECAT in their environment from spawning polecats. Only block if the
-	// parsed role is actually polecat (handles compound forms like
-	// "gastown/polecats/Toast"). If GT_ROLE is unset, fall back to GT_POLECAT.
-	if role := os.Getenv("GT_ROLE"); role != "" {
-		parsedRole, _, _ := parseRoleString(role)
-		if parsedRole == RolePolecat {
-			return fmt.Errorf("polecats cannot hook work (use gt done for handoff)")
-		}
-	} else if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" {
-		return fmt.Errorf("polecats cannot hook work (use gt done for handoff)")
-	}
-
-	// Verify the bead exists
-	if err := verifyBeadExists(beadID); err != nil {
-		return err
-	}
-
-	// Determine agent identity (target or self)
-	var agentID string
-	var err error
-	if targetAgent != "" {
-		agentID, _, _, err = resolveTargetAgent(targetAgent)
-		if err != nil {
-			return fmt.Errorf("resolving target agent: %w", err)
-		}
-	} else {
-		agentID, _, _, err = resolveSelfTarget()
-		if err != nil {
-			return fmt.Errorf("detecting agent identity: %w", err)
-		}
-	}
-
-	// Find town root - needed for bd routing and agent bead updates
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil {
-		return fmt.Errorf("finding town root: %w", err)
-	}
-	townBeadsDir := filepath.Join(townRoot, ".beads")
-
-	// Resolve the beads directory for the target agent.
-	// For remote targets, resolve from the agent bead's prefix to find the
-	// correct database. For self, use the local beads directory.
-	var workDir string
-	if targetAgent != "" {
-		agentBeadID := agentIDToBeadID(agentID, townRoot)
-		if agentBeadID == "" {
-			return fmt.Errorf("could not convert agent ID %s to bead ID", agentID)
-		}
-		rigName := strings.Split(agentID, "/")[0]
-		var fallbackPath string
-		if rigName == "mayor" || rigName == "deacon" {
-			fallbackPath = townRoot
-		} else {
-			fallbackPath = filepath.Join(townRoot, rigName)
-		}
-		workDir = beads.ResolveHookDir(townRoot, agentBeadID, fallbackPath)
-	} else {
-		workDir, err = findLocalBeadsDir()
-		if err != nil {
-			return fmt.Errorf("not in a beads workspace: %w", err)
-		}
-	}
-
-	b := beads.New(workDir)
-
-	// Check for existing hooked bead for this agent
-	existingPinned, err := b.List(beads.ListOptions{
-		Status:   beads.StatusHooked,
-		Assignee: agentID,
-		Priority: -1,
-	})
-	if err != nil {
-		return fmt.Errorf("checking existing hooked beads: %w", err)
-	}
-
-	// If there's an existing hooked bead, check if we can auto-replace
-	if len(existingPinned) > 0 {
-		existing := existingPinned[0]
-
-		// Skip if it's the same bead we're trying to pin
-		if existing.ID == beadID {
-			fmt.Printf("%s Already hooked: %s\n", style.Bold.Render("✓"), beadID)
-			return nil
-		}
-
-		// Check if existing bead is complete
-		isComplete, hasAttachment := checkPinnedBeadComplete(b, existing)
-
-		if isComplete {
-			// Auto-replace completed bead
-			fmt.Printf("%s Replacing completed bead %s...\n", style.Dim.Render("ℹ"), existing.ID)
-			if !hookDryRun {
-				if hasAttachment {
-					if err := closeCompletedHookedMolecule(workDir, existing.ID); err != nil {
-						return fmt.Errorf("closing completed bead %s: %w", existing.ID, err)
-					}
-				} else {
-					// Naked bead - just unpin, don't close (might have value)
-					status := "open"
-					if err := b.Update(existing.ID, beads.UpdateOptions{Status: &status}); err != nil {
-						return fmt.Errorf("unpinning bead %s: %w", existing.ID, err)
-					}
-				}
-			}
-		} else if hookForce {
-			// Force replace incomplete bead
-			fmt.Printf("%s Force-replacing incomplete bead %s...\n", style.Dim.Render("⚠"), existing.ID)
-			if !hookDryRun {
-				// Unpin by setting status back to open
-				status := "open"
-				if err := b.Update(existing.ID, beads.UpdateOptions{Status: &status}); err != nil {
-					return fmt.Errorf("unpinning bead %s: %w", existing.ID, err)
-				}
-			}
-		} else {
-			// Existing incomplete bead blocks new hook
-			return fmt.Errorf("existing hooked bead %s is incomplete (%s)\n  Use --force to replace, or complete the existing work first",
-				existing.ID, existing.Title)
-		}
-	}
-
-	if targetAgent != "" {
-		fmt.Printf("%s Hooking %s for %s...\n", style.Bold.Render("🪝"), beadID, agentID)
-	} else {
-		fmt.Printf("%s Hooking %s...\n", style.Bold.Render("🪝"), beadID)
-	}
-
-	if hookDryRun {
-		fmt.Printf("Would run: bd update %s --status=hooked --assignee=%s\n", beadID, agentID)
-		if hookSubject != "" {
-			fmt.Printf("  subject (for handoff mail): %s\n", hookSubject)
-		}
-		if hookMessage != "" {
-			fmt.Printf("  context (for handoff mail): %s\n", hookMessage)
-		}
-		return nil
-	}
-
-	// Hook the bead using bd update with retry logic (discovery-based approach).
-	// Run from town root so bd can find routes.jsonl for prefix-based routing.
-	// This is essential for hooking convoys (hq-* prefix) stored in town beads.
-	// Dolt can fail with concurrency errors (HTTP 400) when multiple agents write
-	// simultaneously. We retry with exponential backoff, matching sling.go behavior.
-	const hookMaxRetries = 5
-	const hookBaseBackoff = 500 * time.Millisecond
-	const hookBackoffMax = 10 * time.Second
-	var lastHookErr error
-	for attempt := 1; attempt <= hookMaxRetries; attempt++ {
-		if err := BdCmd("update", beadID, "--status=hooked", "--assignee="+agentID).
-			Dir(resolveBeadDir(beadID)).
-			StripBeadsDir().
-			WithAutoCommit().
-			Run(); err != nil {
-			lastHookErr = err
-			if attempt < hookMaxRetries {
-				backoff := slingBackoff(attempt, hookBaseBackoff, hookBackoffMax)
-				fmt.Printf("%s Hook attempt %d failed, retrying in %v...\n", style.Warning.Render("⚠"), attempt, backoff)
-				time.Sleep(backoff)
-				continue
-			}
-			return fmt.Errorf("hooking bead after %d attempts: %w", hookMaxRetries, lastHookErr)
-		}
-		break
-	}
-
-	// Emit a propulsion signal if the target is the mayor.
-	// This allows the ACP propeller to react to hook changes event-driven.
-	if agentID == "mayor/" {
-		if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
-			session := "hq-mayor"
-			message := fmt.Sprintf("Hook updated: attached bead %s", beadID)
-			_ = nudge.Enqueue(townRoot, session, nudge.QueuedNudge{
-				Sender:   "hook",
-				Message:  message,
-				Priority: nudge.PriorityNormal,
-			})
-		}
-	}
-
-	if targetAgent != "" {
-		fmt.Printf("%s Work attached to %s's hook\n", style.Bold.Render("✓"), agentID)
-	} else {
-		fmt.Printf("%s Work attached to hook (hooked bead)\n", style.Bold.Render("✓"))
-	}
-
-	// Update agent bead's hook_bead field (matches gt sling behavior)
-	// This ensures gt hook / gt mol status can find hooked work via the agent bead
-	if err := updateAgentHookBead(agentID, beadID, workDir, townBeadsDir); err != nil {
-		fmt.Printf("%s Could not update agent hook: %v\n", style.Dim.Render("Warning:"), err)
-	}
-
-	if targetAgent != "" {
-		fmt.Printf("  Use 'gt hook show %s' to verify\n", targetAgent)
-	} else {
-		fmt.Printf("  Use 'gt handoff' to restart with this work\n")
-		fmt.Printf("  Use 'gt hook' to see hook status\n")
-	}
-
-	// Log hook event to activity feed (non-fatal)
-	if err := events.LogFeed(events.TypeHook, agentID, events.HookPayload(beadID)); err != nil {
-		fmt.Fprintf(os.Stderr, "%s Warning: failed to log hook event: %v\n", style.Dim.Render("⚠"), err)
-	}
-
-	return nil
+	return runUnslingWith(cmd, args, commandBoolFlag(cmd, "dry-run"), commandBoolFlag(cmd, "force"))
 }
 
 func closeCompletedHookedMolecule(workDir, beadID string) error {
@@ -471,96 +234,106 @@ func checkPinnedBeadComplete(b *beads.Beads, issue *beads.Issue) (isComplete boo
 }
 
 // runHookShow displays another agent's hook in compact one-line format.
-func runHookShow(cmd *cobra.Command, args []string) error {
+func runHookShow(_ *cobra.Command, args []string) error {
 	if err := ensureCurrentHookWorktreeIntegrity(); err != nil {
 		return err
 	}
-
-	var target string
-	if len(args) > 0 {
-		target = normalizeHookShowTarget(args[0])
-	} else {
-		// Auto-detect current agent from context
-		agentID, _, _, err := resolveSelfTarget()
-		if err != nil {
-			return fmt.Errorf("auto-detecting agent (use explicit argument): %w", err)
-		}
-		target = agentID
+	target, err := resolveHookShowTarget(args)
+	if err != nil {
+		return err
 	}
+	workDir, err := resolveHookShowWorkDir(args, target)
+	if err != nil {
+		return err
+	}
+	hookedBeads, err := listHookShowBeads(workDir, target)
+	if err != nil {
+		return err
+	}
+	return printHookShow(target, hookedBeads)
+}
 
-	// Find beads directory.
-	// For remote rig-level targets (e.g. "myndy_monorepo/refinery"), resolve the
-	// rig's actual beads dir using the same rig-aware routing as runHook (attach).
-	// Without this, gt hook show always queries whatever DB is local (typically HQ),
-	// missing wisps stored in the target rig's database.
+func resolveHookShowTarget(args []string) (string, error) {
+	if len(args) > 0 {
+		return normalizeHookShowTarget(args[0]), nil
+	}
+	agentID, _, _, err := resolveSelfTarget()
+	if err != nil {
+		return "", fmt.Errorf("auto-detecting agent (use explicit argument): %w", err)
+	}
+	return agentID, nil
+}
+
+func resolveHookShowWorkDir(args []string, target string) (string, error) {
 	workDir, err := findLocalBeadsDir()
 	if err != nil {
-		return fmt.Errorf("not in a beads workspace: %w", err)
+		return "", fmt.Errorf("not in a beads workspace: %w", err)
 	}
-	if len(args) > 0 {
-		townRoot, townErr := workspace.FindFromCwd()
-		if townErr == nil && townRoot != "" {
-			workDir = resolveHookLookupWorkDir(workDir, target, townRoot)
-		}
+	if len(args) == 0 {
+		return workDir, nil
 	}
+	townRoot, townErr := workspace.FindFromCwd()
+	if townErr == nil && townRoot != "" {
+		workDir = resolveHookLookupWorkDir(workDir, target, townRoot)
+	}
+	return workDir, nil
+}
 
-	b := beads.New(workDir)
-	hookedBeads, err := listAssignedActiveWork(b, target)
+func listHookShowBeads(workDir, target string) ([]*beads.Issue, error) {
+	hookedBeads, err := listAssignedActiveWork(beads.New(workDir), target)
 	if err != nil {
-		return fmt.Errorf("listing active hook work: %w", err)
+		return nil, fmt.Errorf("listing active hook work: %w", err)
 	}
+	if len(hookedBeads) > 0 {
+		return hookedBeads, nil
+	}
+	return listTownHookShowBeads(target), nil
+}
 
-	// If nothing found in local beads, also check town beads for hooked convoys.
-	// Convoys (hq-cv-*) are stored in town beads (~/gt/.beads) and any agent
-	// can hook them for convoy-driver mode.
-	if len(hookedBeads) == 0 {
-		townRoot, err := findTownRoot()
-		if err == nil && townRoot != "" {
-			// Check town beads for hooked items
-			townBeadsDir := filepath.Join(townRoot, ".beads")
-			if _, err := os.Stat(townBeadsDir); err == nil {
-				townBeads := beads.New(townBeadsDir)
-				if townWork, err := listAssignedActiveWork(townBeads, target); err == nil && len(townWork) > 0 {
-					hookedBeads = townWork
-				}
-			}
-
-			// If still nothing found and town-level role, scan all rigs
-			if len(hookedBeads) == 0 && isTownLevelRole(target) {
-				hookedBeads = scanAllRigsForHookedBeads(townRoot, target)
-			}
+func listTownHookShowBeads(target string) []*beads.Issue {
+	townRoot, err := findTownRoot()
+	if err != nil || townRoot == "" {
+		return nil
+	}
+	townBeadsDir := filepath.Join(townRoot, ".beads")
+	if _, err := os.Stat(townBeadsDir); err == nil {
+		if townWork, err := listAssignedActiveWork(beads.New(townBeadsDir), target); err == nil && len(townWork) > 0 {
+			return townWork
 		}
 	}
-
-	// JSON output
-	if moleculeJSON {
-		type compactInfo struct {
-			Agent  string `json:"agent"`
-			BeadID string `json:"bead_id,omitempty"`
-			Title  string `json:"title,omitempty"`
-			Status string `json:"status"`
-		}
-		info := compactInfo{Agent: target}
-		if len(hookedBeads) > 0 {
-			info.BeadID = hookedBeads[0].ID
-			info.Title = hookedBeads[0].Title
-			info.Status = hookedBeads[0].Status
-		} else {
-			info.Status = "empty"
-		}
-		enc := json.NewEncoder(os.Stdout)
-		return enc.Encode(info)
+	if isTownLevelRole(target) {
+		return scanAllRigsForHookedBeads(townRoot, target)
 	}
+	return nil
+}
 
-	// Compact one-line output
+func printHookShow(target string, hookedBeads []*beads.Issue) error {
+	if moleculeState().json {
+		return printHookShowJSON(target, hookedBeads)
+	}
 	if len(hookedBeads) == 0 {
 		fmt.Printf("%s: (empty)\n", target)
 		return nil
 	}
-
 	bead := hookedBeads[0]
 	fmt.Printf("%s: %s '%s' [%s]\n", target, bead.ID, bead.Title, bead.Status)
 	return nil
+}
+
+func printHookShowJSON(target string, hookedBeads []*beads.Issue) error {
+	type compactInfo struct {
+		Agent  string `json:"agent"`
+		BeadID string `json:"bead_id,omitempty"`
+		Title  string `json:"title,omitempty"`
+		Status string `json:"status"`
+	}
+	info := compactInfo{Agent: target, Status: "empty"}
+	if len(hookedBeads) > 0 {
+		info.BeadID = hookedBeads[0].ID
+		info.Title = hookedBeads[0].Title
+		info.Status = hookedBeads[0].Status
+	}
+	return json.NewEncoder(os.Stdout).Encode(info)
 }
 
 func ensureCurrentHookWorktreeIntegrity() error {
@@ -584,52 +357,48 @@ func ensureCurrentHookWorktreeIntegrity() error {
 // If resolution fails, it returns the original target unchanged.
 func normalizeHookShowTarget(target string) string {
 	target = strings.TrimSpace(target)
-	if target == "" {
+	if skipNormalizeHookShowTarget(target) {
 		return target
 	}
-	if target == "." || target == ".." || (strings.ContainsAny(target, `/\\`) && !safeAgentTargetPath(target)) {
-		return target
-	}
-
-	// Use the same role/path resolver as dispatching commands, then convert
-	// the resulting tmux session back to a canonical assignee address.
-	// This keeps "hook show" target parsing aligned with sling/hook behavior.
 	if sessionName, err := resolveRoleToSession(target); err == nil && sessionName != "" {
 		if addr, ok := sessionNameToCanonicalAddress(sessionName, target); ok {
 			return addr
 		}
 	}
-
-	// Fallback for explicit/canonical addresses when resolver couldn't help.
 	if identity, err := session.ParseAddress(target); err == nil {
 		return identity.Address()
 	}
+	if expanded, ok := expandHookShowShorthand(target); ok {
+		return expanded
+	}
+	return target
+}
 
-	// Direct shorthand expansion: rig/name → rig/polecats/name or rig/crew/name.
-	// This handles the case where the session name roundtrip fails due to
-	// uninitialized prefix registry. See GH#2371.
+func skipNormalizeHookShowTarget(target string) bool {
+	if target == "" || target == "." || target == ".." {
+		return true
+	}
+	return strings.ContainsAny(target, `/\\`) && !safeAgentTargetPath(target)
+}
+
+func expandHookShowShorthand(target string) (string, bool) {
 	parts := strings.Split(target, "/")
-	if len(parts) == 2 && safeAgentPathSegment(parts[0]) && safeAgentPathSegment(parts[1]) {
-		name := parts[1]
-		// Check for known roles — don't expand those
-		switch strings.ToLower(name) {
-		case "witness", "refinery", "mayor", "deacon":
-			// Already a valid canonical address
-		default:
-			// Check if it's a crew member by looking for the directory
-			townRoot := detectTownRootFromCwd()
-			if townRoot != "" {
-				crewPath := filepath.Join(townRoot, parts[0], "crew", name)
-				if info, statErr := os.Stat(crewPath); statErr == nil && info.IsDir() {
-					return parts[0] + "/crew/" + name
-				}
-			}
-			// Default to polecat
-			return parts[0] + "/polecats/" + strings.ToLower(name)
+	if len(parts) != 2 || !safeAgentPathSegment(parts[0]) || !safeAgentPathSegment(parts[1]) {
+		return "", false
+	}
+	name := parts[1]
+	switch strings.ToLower(name) {
+	case "witness", "refinery", "mayor", "deacon":
+		return "", false
+	}
+	townRoot := detectTownRootFromCwd()
+	if townRoot != "" {
+		crewPath := filepath.Join(townRoot, parts[0], "crew", name)
+		if info, statErr := os.Stat(crewPath); statErr == nil && info.IsDir() {
+			return parts[0] + "/crew/" + name, true
 		}
 	}
-
-	return target
+	return parts[0] + "/polecats/" + strings.ToLower(name), true
 }
 
 // sessionNameToCanonicalAddress maps a tmux session name to a canonical agent

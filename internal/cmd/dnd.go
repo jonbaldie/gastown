@@ -2,11 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/style"
-	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -41,58 +39,28 @@ func init() {
 	rootCmd.AddCommand(dndCmd)
 }
 
-func runDnd(cmd *cobra.Command, args []string) error {
-	// Get current agent bead ID
-	cwd, err := os.Getwd()
+func runDnd(_ *cobra.Command, args []string) error {
+	bd, agentBeadID, err := resolveNotifyTarget()
 	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
+		return err
 	}
+	currentLevel := getNotificationLevel(bd, agentBeadID)
+	action := dndAction(args, currentLevel)
+	return runDndAction(bd, agentBeadID, currentLevel, action)
+}
 
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+func dndAction(args []string, currentLevel string) string {
+	if len(args) > 0 {
+		return args[0]
 	}
-
-	roleInfo, err := GetRoleWithContext(cwd, townRoot)
-	if err != nil {
-		return fmt.Errorf("determining role: %w", err)
+	// Toggle: if muted -> normal, else -> muted
+	if currentLevel == beads.NotifyMuted {
+		return "off"
 	}
+	return "on"
+}
 
-	ctx := RoleContext{
-		Role:     roleInfo.Role,
-		Rig:      roleInfo.Rig,
-		Polecat:  roleInfo.Polecat,
-		TownRoot: townRoot,
-		WorkDir:  cwd,
-	}
-
-	agentBeadID := getAgentBeadID(ctx)
-	if agentBeadID == "" {
-		return fmt.Errorf("could not determine agent bead ID for role %s", roleInfo.Role)
-	}
-
-	bd := beads.New(townRoot)
-
-	// Get current level
-	currentLevel, err := bd.GetAgentNotificationLevel(agentBeadID)
-	if err != nil {
-		// Agent bead might not exist yet - default to normal
-		currentLevel = beads.NotifyNormal
-	}
-
-	// Determine action
-	var action string
-	if len(args) == 0 {
-		// Toggle: if muted -> normal, else -> muted
-		if currentLevel == beads.NotifyMuted {
-			action = "off"
-		} else {
-			action = "on"
-		}
-	} else {
-		action = args[0]
-	}
-
+func runDndAction(bd *beads.Beads, agentBeadID, currentLevel, action string) error {
 	switch action {
 	case "on":
 		if err := bd.UpdateAgentNotificationLevel(agentBeadID, beads.NotifyMuted); err != nil {
@@ -108,28 +76,31 @@ func runDnd(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s DND disabled - notifications resumed\n", style.SuccessPrefix)
 
 	case "status":
-		levelDisplay := currentLevel
-		if levelDisplay == "" {
-			levelDisplay = beads.NotifyNormal
-		}
-
-		icon := "🔔"
-		description := "All important notifications"
-		switch levelDisplay {
-		case beads.NotifyVerbose:
-			icon = "🔊"
-			description = "All notifications (verbose)"
-		case beads.NotifyMuted:
-			icon = "🔕"
-			description = "Notifications muted (DND)"
-		}
-
-		fmt.Printf("%s Notification level: %s\n", icon, style.Bold.Render(levelDisplay))
-		fmt.Printf("  %s\n", style.Dim.Render(description))
+		showDndStatus(currentLevel)
 
 	default:
 		return fmt.Errorf("unknown action %q: use on, off, or status", action)
 	}
 
 	return nil
+}
+
+func showDndStatus(level string) {
+	if level == "" {
+		level = beads.NotifyNormal
+	}
+
+	icon := "🔔"
+	description := "All important notifications"
+	switch level {
+	case beads.NotifyVerbose:
+		icon = "🔊"
+		description = "All notifications (verbose)"
+	case beads.NotifyMuted:
+		icon = "🔕"
+		description = "Notifications muted (DND)"
+	}
+
+	fmt.Printf("%s Notification level: %s\n", icon, style.Bold.Render(level))
+	fmt.Printf("  %s\n", style.Dim.Render(description))
 }

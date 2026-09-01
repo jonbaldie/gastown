@@ -1,12 +1,88 @@
 package checkpoint
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSplitWIPCommitSubjects(t *testing.T) {
+	subjects := []string{
+		"newest real change",
+		WIPCommitPrefix,
+		WIPCommitPrefix + " after tests",
+		"",
+		"older real change",
+		"WIP checkpoint (auto)",
+	}
+
+	count, nonWIP := splitWIPCommitSubjects(subjects)
+	if count != 2 {
+		t.Fatalf("WIP count = %d, want 2", count)
+	}
+	want := []string{"newest real change", "older real change", "WIP checkpoint (auto)"}
+	if strings.Join(nonWIP, "|") != strings.Join(want, "|") {
+		t.Fatalf("non-WIP subjects = %q, want %q", nonWIP, want)
+	}
+}
+
+func TestSquashedCommitMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		subjects []string
+		want     string
+	}{
+		{"none", nil, "squashed WIP checkpoint commits"},
+		{"one", []string{"implement feature"}, "implement feature"},
+		{"many", []string{"newest", "middle", "oldest"}, "newest\n- middle\n- oldest"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := squashedCommitMessage(tt.subjects); got != tt.want {
+				t.Fatalf("squashedCommitMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitOutputReportsStderr(t *testing.T) {
+	_, err := gitOutput(t.TempDir(), "definitely-not-a-git-subcommand")
+	if err == nil {
+		t.Fatal("gitOutput() error = nil, want command failure")
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		t.Fatalf("gitOutput() returned raw ExitError instead of stderr context: %v", err)
+	}
+	if !strings.Contains(err.Error(), "definitely-not-a-git-subcommand") {
+		t.Fatalf("gitOutput() error = %q, want git stderr", err)
+	}
+}
+
+func TestCommitsSinceBasePropagatesMergeBaseError(t *testing.T) {
+	dir := initTestRepo(t)
+	mergeBase, subjects, err := commitsSinceBase(dir, "missing-base")
+	if err == nil || !strings.Contains(err.Error(), "finding merge-base") {
+		t.Fatalf("commitsSinceBase() error = %v, want finding merge-base error", err)
+	}
+	if mergeBase != "" || subjects != nil {
+		t.Fatalf("error result = (%q, %v), want empty values", mergeBase, subjects)
+	}
+}
+
+func TestCommitsSinceBaseReturnsMergeBaseWithNoCommits(t *testing.T) {
+	dir := initTestRepo(t)
+	mergeBase, subjects, err := commitsSinceBase(dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mergeBase == "" || subjects != nil {
+		t.Fatalf("result = (%q, %v), want merge base and nil subjects", mergeBase, subjects)
+	}
+}
 
 // initTestRepo creates a fresh git repo with an initial commit and returns its path.
 func initTestRepo(t *testing.T) string {

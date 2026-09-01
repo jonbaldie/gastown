@@ -58,19 +58,41 @@ func withModel(args []string, model string) []string {
 // MayorSpec/WorkersSpec empty means "keep existing aliases unless missing".
 func ApplyMix(townRoot, mayorSpec, workersSpec string, mayorProfile, workersProfile Profile) (mayorChanged bool, err error) {
 	settingsPath := config.TownSettingsPath(townRoot)
-	settings, err := config.LoadOrCreateTownSettings(settingsPath)
+	settings, err := loadMixSettings(settingsPath)
 	if err != nil {
-		return false, fmt.Errorf("loading town settings: %w", err)
+		return false, err
 	}
 
-	needMayor := mayorSpec != "" || settings.Agents == nil || settings.Agents[MayorAlias] == nil
-	needWorkers := workersSpec != "" || settings.Agents == nil || settings.Agents[WorkersAlias] == nil
+	needMayor := mixAliasNeedsUpdate(settings, mayorSpec, MayorAlias)
+	needWorkers := mixAliasNeedsUpdate(settings, workersSpec, WorkersAlias)
 	if !needMayor && !needWorkers {
 		return false, nil
 	}
 
 	before := mayorMixFingerprint(settings)
+	if err := applyMixConfiguration(settingsPath, settings, needMayor, needWorkers, mayorProfile, workersProfile); err != nil {
+		return false, err
+	}
+	after, err := config.LoadOrCreateTownSettings(settingsPath)
+	if err != nil {
+		return false, err
+	}
+	return mayorMixFingerprint(after) != before, nil
+}
 
+func loadMixSettings(settingsPath string) (*config.TownSettings, error) {
+	settings, err := config.LoadOrCreateTownSettings(settingsPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading town settings: %w", err)
+	}
+	return settings, nil
+}
+
+func mixAliasNeedsUpdate(settings *config.TownSettings, spec, alias string) bool {
+	return spec != "" || settings.Agents == nil || settings.Agents[alias] == nil
+}
+
+func applyMixConfiguration(settingsPath string, settings *config.TownSettings, needMayor, needWorkers bool, mayorProfile, workersProfile Profile) error {
 	if settings.Agents == nil {
 		settings.Agents = make(map[string]*config.RuntimeConfig)
 	}
@@ -81,9 +103,17 @@ func ApplyMix(townRoot, mayorSpec, workersSpec string, mayorProfile, workersProf
 		settings.Agents[WorkersAlias] = AliasConfig(workersProfile)
 	}
 	if err := config.SaveTownSettings(settingsPath, settings); err != nil {
-		return false, fmt.Errorf("saving agent aliases: %w", err)
+		return fmt.Errorf("saving agent aliases: %w", err)
 	}
 
+	assignments := mixAssignments(needMayor, needWorkers, mayorProfile, workersProfile)
+	if err := config.ApplyTownMix(settingsPath, assignments); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mixAssignments(needMayor, needWorkers bool, mayorProfile, workersProfile Profile) []config.MixAssignment {
 	var assignments []config.MixAssignment
 	if needMayor {
 		assignments = append(assignments, MixAssignments(MayorAlias, MayorRoles, mayorProfile.Effort)...)
@@ -91,15 +121,7 @@ func ApplyMix(townRoot, mayorSpec, workersSpec string, mayorProfile, workersProf
 	if needWorkers {
 		assignments = append(assignments, MixAssignments(WorkersAlias, WorkerRoles, workersProfile.Effort)...)
 	}
-	if err := config.ApplyTownMix(settingsPath, assignments); err != nil {
-		return false, err
-	}
-
-	after, err := config.LoadOrCreateTownSettings(settingsPath)
-	if err != nil {
-		return false, err
-	}
-	return mayorMixFingerprint(after) != before, nil
+	return assignments
 }
 
 func mayorMixFingerprint(settings *config.TownSettings) string {

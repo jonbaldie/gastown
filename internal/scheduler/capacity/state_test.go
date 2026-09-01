@@ -112,7 +112,7 @@ func TestRecordDispatch(t *testing.T) {
 	state := &SchedulerState{}
 
 	before := time.Now().UTC()
-	state.RecordDispatch(5)
+	RecordDispatch(state, 5)
 	after := time.Now().UTC()
 
 	if state.LastDispatchCount != 5 {

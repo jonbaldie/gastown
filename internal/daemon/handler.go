@@ -275,16 +275,7 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 		d.logger.Printf("Handler: guardian blocked plugin dog dispatch: %v", err)
 		return
 	}
-	// Get rig names for scanner
-	var rigNames []string
-	if rigsConfig != nil {
-		for name := range rigsConfig.Rigs {
-			rigNames = append(rigNames, name)
-		}
-	}
-
-	scanner := plugin.NewScanner(d.config.TownRoot, rigNames)
-	plugins, err := scanner.DiscoverAll()
+	plugins, err := d.discoverPlugins(rigsConfig)
 	if err != nil {
 		d.logger.Printf("Handler: failed to discover plugins: %v", err)
 		return
@@ -298,97 +289,96 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 	router := mail.NewRouterWithTownRoot(d.config.TownRoot, d.config.TownRoot)
 
 	for _, p := range plugins {
-		// Never auto-dispatch manual-gate plugins — they require an explicit trigger.
-		if p.Gate != nil && p.Gate.Type == plugin.GateManual {
-			d.logger.Printf("Handler: skipping plugin %s (gate=manual, requires explicit trigger)", p.Name)
+		if !d.pluginDispatchEligible(p, recorder) {
 			continue
 		}
-
-		// Only dispatch plugins with cooldown gates.
-		if p.Gate == nil || p.Gate.Type != plugin.GateCooldown {
-			continue
-		}
-
-		// Evaluate cooldown: skip if plugin ran recently.
-		if p.Gate.Duration != "" {
-			count, err := recorder.CountRunsSince(p.Name, p.Gate.Duration)
-			if err != nil {
-				d.logger.Printf("Handler: error checking cooldown for plugin %s: %v", p.Name, err)
-				continue
-			}
-			if count > 0 {
-				continue // Still in cooldown
-			}
-		}
-
-		// Find an idle dog that doesn't already have a live tmux session.
-		// A leaked session (dog marked idle before its tmux terminated) would
-		// cause sm.Start to fail with "session already running", and since
-		// mgr.List() returns dogs in directory order, GetIdleDog would always
-		// pick the same first idle dog — infinite-looping the same failed
-		// dispatch instead of advancing to the next idle dog in the pack.
-		// See gt-o24.
 		idleDog := findDispatchableDog(mgr, sm, d.logger)
 		if idleDog == nil {
 			d.logger.Printf("Handler: no dispatchable idle dogs available, deferring remaining plugins")
 			return
 		}
-
-		// Assign work and start session.
-		workDesc := fmt.Sprintf("plugin:%s", p.Name)
-		assignedState, err := mgr.AssignWorkIfIdleWithKind(idleDog.Name, workDesc, dog.WorkKindPlugin)
-		if err != nil {
-			d.logger.Printf("Handler: failed to assign work to dog %s: %v", idleDog.Name, err)
+		if !d.dispatchPlugin(mgr, sm, recorder, router, p, idleDog) {
 			continue
 		}
-		clearAssignment := func() error {
-			_, err := mgr.ClearWorkIfMatches(idleDog.Name, workDesc, assignedState.WorkStartedAt)
-			return err
-		}
+	}
+}
 
-		// Send mail with plugin instructions BEFORE starting the session
-		// so the dog finds work in its inbox on first check.
-		msg := mail.NewMessage(
-			"daemon",
-			fmt.Sprintf("deacon/dogs/%s", idleDog.Name),
-			fmt.Sprintf("Plugin: %s", p.Name),
-			p.FormatMailBody(),
-		)
-		msg.Type = mail.TypeTask
-		msg.Timestamp = time.Now()
-		if err := router.Send(msg); err != nil {
-			d.logger.Printf("Handler: failed to send mail to dog %s: %v", idleDog.Name, err)
-			// Roll back only this dispatch's assignment.
-			if clearErr := clearAssignment(); clearErr != nil {
-				d.logger.Printf("Handler: failed to clear work after mail failure for dog %s: %v", idleDog.Name, clearErr)
-			}
-			continue
+func (d *Daemon) discoverPlugins(rigsConfig *config.RigsConfig) ([]*plugin.Plugin, error) {
+	var rigNames []string
+	if rigsConfig != nil {
+		for name := range rigsConfig.Rigs {
+			rigNames = append(rigNames, name)
 		}
+	}
+	return plugin.NewScanner(d.config.TownRoot, rigNames).DiscoverAll()
+}
 
-		if err := sm.Start(idleDog.Name, dog.SessionStartOptions{
-			WorkDesc: workDesc,
-		}); err != nil {
-			d.logger.Printf("Handler: failed to start session for dog %s: %v", idleDog.Name, err)
-			// Roll back only this dispatch's assignment on session start failure.
-			if clearErr := clearAssignment(); clearErr != nil {
-				d.logger.Printf("Handler: failed to clear work after start failure for dog %s: %v", idleDog.Name, clearErr)
-			}
-			continue
-		}
+func (d *Daemon) pluginDispatchEligible(p *plugin.Plugin, recorder *plugin.Recorder) bool {
+	if p.Gate != nil && p.Gate.Type == plugin.GateManual {
+		d.logger.Printf("Handler: skipping plugin %s (gate=manual, requires explicit trigger)", p.Name)
+		return false
+	}
+	if p.Gate == nil || p.Gate.Type != plugin.GateCooldown {
+		return false
+	}
+	if p.Gate.Duration == "" {
+		return true
+	}
+	count, err := recorder.CountRunsSince(p.Name, p.Gate.Duration)
+	if err != nil {
+		d.logger.Printf("Handler: error checking cooldown for plugin %s: %v", p.Name, err)
+		return false
+	}
+	return count == 0
+}
 
-		d.logger.Printf("Handler: dispatched plugin %s to dog %s", p.Name, idleDog.Name)
+func (d *Daemon) dispatchPlugin(mgr *dog.Manager, sm *dog.SessionManager, recorder *plugin.Recorder, router *mail.Router, p *plugin.Plugin, idleDog *dog.Dog) bool {
+	workDesc := fmt.Sprintf("plugin:%s", p.Name)
+	assignedState, err := mgr.AssignWorkIfIdleWithKind(idleDog.Name, workDesc, dog.WorkKindPlugin)
+	if err != nil {
+		d.logger.Printf("Handler: failed to assign work to dog %s: %v", idleDog.Name, err)
+		return false
+	}
+	clearAssignment := func() error {
+		_, err := mgr.ClearWorkIfMatches(idleDog.Name, workDesc, assignedState.WorkStartedAt)
+		return err
+	}
+	if err := sendPluginMail(router, p, idleDog); err != nil {
+		d.logger.Printf("Handler: failed to send mail to dog %s: %v", idleDog.Name, err)
+		d.rollbackPluginAssignment(clearAssignment, idleDog.Name, "mail")
+		return false
+	}
+	if err := sm.Start(idleDog.Name, dog.SessionStartOptions{WorkDesc: workDesc}); err != nil {
+		d.logger.Printf("Handler: failed to start session for dog %s: %v", idleDog.Name, err)
+		d.rollbackPluginAssignment(clearAssignment, idleDog.Name, "start")
+		return false
+	}
+	d.logger.Printf("Handler: dispatched plugin %s to dog %s", p.Name, idleDog.Name)
+	if _, err := recorder.RecordRun(plugin.PluginRunRecord{
+		PluginName: p.Name,
+		Result:     plugin.ResultSuccess,
+		Body:       fmt.Sprintf("Dispatched to dog %s", idleDog.Name),
+	}); err != nil {
+		d.logger.Printf("Handler: failed to record dispatch for plugin %s: %v", p.Name, err)
+	}
+	return true
+}
 
-		// Record the dispatch immediately so the cooldown gate is satisfied
-		// for the next 1h regardless of what the dog does. Dogs create their
-		// own completion beads but don't reliably use the label convention the
-		// gate requires, causing infinite re-dispatch loops.
-		if _, err := recorder.RecordRun(plugin.PluginRunRecord{
-			PluginName: p.Name,
-			Result:     plugin.ResultSuccess,
-			Body:       fmt.Sprintf("Dispatched to dog %s", idleDog.Name),
-		}); err != nil {
-			d.logger.Printf("Handler: failed to record dispatch for plugin %s: %v", p.Name, err)
-		}
+func sendPluginMail(router *mail.Router, p *plugin.Plugin, idleDog *dog.Dog) error {
+	msg := mail.NewMessage(
+		"daemon",
+		fmt.Sprintf("deacon/dogs/%s", idleDog.Name),
+		fmt.Sprintf("Plugin: %s", p.Name),
+		p.FormatMailBody(),
+	)
+	msg.Type = mail.TypeTask
+	msg.Timestamp = time.Now()
+	return router.Send(msg)
+}
+
+func (d *Daemon) rollbackPluginAssignment(clearAssignment func() error, dogName, operation string) {
+	if clearErr := clearAssignment(); clearErr != nil {
+		d.logger.Printf("Handler: failed to clear work after %s failure for dog %s: %v", operation, dogName, clearErr)
 	}
 }
 

@@ -10,16 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	nowMayor          string
-	nowWorkers        string
-	nowTown           string
-	nowName           string
-	nowNoAttach       bool
-	nowRestartWorkers bool
-	nowProvisionOnly  bool
-)
-
 var nowCmd = &cobra.Command{
 	Use:     "now [path]",
 	GroupID: GroupWorkspace,
@@ -43,18 +33,26 @@ Success is: you are in the Mayor session.`,
 }
 
 func init() {
-	nowCmd.Flags().StringVar(&nowMayor, "mayor", "", "Mayor/Deacon profile: runtime[:model[:effort]]")
-	nowCmd.Flags().StringVar(&nowWorkers, "workers", "", "Worker profile: runtime[:model[:effort]]")
-	nowCmd.Flags().StringVar(&nowTown, "town", "", "Town path (default $GT_TOWN_ROOT or ~/gt)")
-	nowCmd.Flags().StringVar(&nowName, "name", "", "Rig name (default: directory name)")
-	nowCmd.Flags().BoolVar(&nowNoAttach, "no-attach", false, "Start the Mayor session without attaching")
-	nowCmd.Flags().BoolVar(&nowRestartWorkers, "restart-workers", false, "Restart Witness and Refinery so they pick up a new worker mix")
-	nowCmd.Flags().BoolVar(&nowProvisionOnly, "provision-only", false, "Finish deferred Town provision (internal)")
+	nowCmd.Flags().String("mayor", "", "Mayor/Deacon profile: runtime[:model[:effort]]")
+	nowCmd.Flags().String("workers", "", "Worker profile: runtime[:model[:effort]]")
+	nowCmd.Flags().String("town", "", "Town path (default $GT_TOWN_ROOT or ~/gt)")
+	nowCmd.Flags().String("name", "", "Rig name (default: directory name)")
+	nowCmd.Flags().Bool("no-attach", false, "Start the Mayor session without attaching")
+	nowCmd.Flags().Bool("restart-workers", false, "Restart Witness and Refinery so they pick up a new worker mix")
+	nowCmd.Flags().Bool("provision-only", false, "Finish deferred Town provision (internal)")
 	_ = nowCmd.Flags().MarkHidden("provision-only")
 	rootCmd.AddCommand(nowCmd)
 }
 
 func runNow(cmd *cobra.Command, args []string) error {
+	townFlag := commandStringFlag(cmd, "town")
+	name := commandStringFlag(cmd, "name")
+	mayorSpec := commandStringFlag(cmd, "mayor")
+	workersSpec := commandStringFlag(cmd, "workers")
+	restartWorkers := commandBoolFlag(cmd, "restart-workers")
+	noAttach := commandBoolFlag(cmd, "no-attach")
+	provisionOnly := commandBoolFlag(cmd, "provision-only")
+
 	repoArg := ""
 	if len(args) > 0 {
 		repoArg = args[0]
@@ -66,13 +64,13 @@ func runNow(cmd *cobra.Command, args []string) error {
 
 	result, err := gtnow.Run(cmd.Context(), gtnow.Options{
 		RepoArg:        repoArg,
-		TownFlag:       nowTown,
-		Name:           nowName,
-		MayorSpec:      nowMayor,
-		WorkersSpec:    nowWorkers,
-		RestartWorkers: nowRestartWorkers,
-		NoAttach:       nowNoAttach,
-		ProvisionOnly:  nowProvisionOnly,
+		TownFlag:       townFlag,
+		Name:           name,
+		MayorSpec:      mayorSpec,
+		WorkersSpec:    workersSpec,
+		RestartWorkers: restartWorkers,
+		NoAttach:       noAttach,
+		ProvisionOnly:  provisionOnly,
 		Executable:     exe,
 		Stdout:         cmd.OutOrStdout(),
 		Stderr:         cmd.ErrOrStderr(),
@@ -85,7 +83,7 @@ func runNow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if nowProvisionOnly {
+	if provisionOnly {
 		return nil
 	}
 
