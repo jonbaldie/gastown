@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -155,10 +156,11 @@ func TestScanPropagatesCandidateErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cause := errors.New("synthetic query failure")
 			state := &fakeReaperState{
 				wisps:       map[string]*fakeWisp{},
 				ops:         map[int][]string{},
-				queryErrors: map[string]error{tt.marker: fmt.Errorf("synthetic query failure")},
+				queryErrors: map[string]error{tt.marker: cause},
 			}
 			db := openFakeReaperDB(t, state)
 			defer db.Close()
@@ -166,6 +168,9 @@ func TestScanPropagatesCandidateErrors(t *testing.T) {
 			_, err := Scan(db, "testdb", time.Hour, time.Hour, time.Hour, time.Hour)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Scan error = %v, want message containing %q", err, tt.want)
+			}
+			if !errors.Is(err, cause) {
+				t.Fatalf("Scan error = %v, want wrapped cause %v", err, cause)
 			}
 		})
 	}
@@ -208,10 +213,11 @@ func TestReapDryRunPropagatesQueryErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cause := errors.New("synthetic query failure")
 			state := &fakeReaperState{
 				wisps:       map[string]*fakeWisp{},
 				ops:         map[int][]string{},
-				queryErrors: map[string]error{tt.marker: fmt.Errorf("synthetic query failure")},
+				queryErrors: map[string]error{tt.marker: cause},
 			}
 			db := openFakeReaperDB(t, state)
 			defer db.Close()
@@ -219,6 +225,9 @@ func TestReapDryRunPropagatesQueryErrors(t *testing.T) {
 			_, err := Reap(db, "testdb", time.Hour, true)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Reap error = %v, want message containing %q", err, tt.want)
+			}
+			if !errors.Is(err, cause) {
+				t.Fatalf("Reap error = %v, want wrapped cause %v", err, cause)
 			}
 		})
 	}
@@ -244,24 +253,64 @@ func TestReapMutatingPropagatesCommitAndFinalScanErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cause := errors.New("synthetic reaping failure")
+			execErrors := make(map[string]error, len(tt.execError))
+			for marker := range tt.execError {
+				execErrors[marker] = cause
+			}
+			queryErrors := make(map[string]error, len(tt.queryErr))
+			for marker := range tt.queryErr {
+				queryErrors[marker] = cause
+			}
 			now := time.Now().UTC()
 			state := &fakeReaperState{
 				wisps: map[string]*fakeWisp{
 					"stale": {id: "stale", status: "open", issueType: "task", createdAt: now.Add(-48 * time.Hour)},
 				},
 				ops:              map[int][]string{},
-				queryErrors:      tt.queryErr,
-				execErrors:       tt.execError,
+				queryErrors:      queryErrors,
+				execErrors:       execErrors,
 				rejectNilContext: true,
 			}
 			db := openFakeReaperDB(t, state)
 			defer db.Close()
 
-			_, err := Reap(db, "testdb", time.Hour, false)
+			result, err := Reap(db, "testdb", time.Hour, false)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Reap error = %v, want message containing %q", err, tt.want)
 			}
+			if !errors.Is(err, cause) {
+				t.Fatalf("Reap error = %v, want wrapped cause %v", err, cause)
+			}
+			if result == nil || result.Database != "testdb" || result.Reaped != 1 {
+				t.Fatalf("Reap result = %#v, want partial result for one reaped wisp", result)
+			}
 		})
+	}
+}
+
+func TestCommitReapedWispsReportsDoltCommitFailure(t *testing.T) {
+	cause := errors.New("synthetic commit failure")
+	state := &fakeReaperState{
+		wisps:      map[string]*fakeWisp{},
+		ops:        map[int][]string{},
+		execErrors: map[string]error{"CALL DOLT_COMMIT": cause},
+	}
+	db := openFakeReaperDB(t, state)
+	defer db.Close()
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("open connection: %v", err)
+	}
+	defer conn.Close()
+
+	committed, err := commitReapedWisps(context.Background(), conn, "testdb", 1)
+	if !committed {
+		t.Fatal("commitReapedWisps committed = false, want true after SQL commit")
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("commitReapedWisps error = %v, want wrapped cause %v", err, cause)
 	}
 }
 
