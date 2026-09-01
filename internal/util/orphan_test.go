@@ -56,6 +56,37 @@ func TestParseEtime(t *testing.T) {
 	}
 }
 
+func TestParseEtimeIdentifiesInvalidPart(t *testing.T) {
+	tests := []struct {
+		input string
+		part  string
+	}{
+		{input: "bad:30", part: "minutes"},
+		{input: "bad:01:30", part: "hours"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.part, func(t *testing.T) {
+			_, err := parseEtime(tt.input)
+			if err == nil {
+				t.Fatal("parseEtime() error = nil, want an error")
+			}
+			if !strings.Contains(err.Error(), "parsing "+tt.part) {
+				t.Errorf("parseEtime() error = %q, want it to identify %s", err, tt.part)
+			}
+		})
+	}
+}
+
+func TestIsAgentOrphanCommName(t *testing.T) {
+	if !isAgentOrphanCommName("claude") {
+		t.Error("isAgentOrphanCommName(\"claude\") = false, want true")
+	}
+	if isAgentOrphanCommName("ordinary-shell") {
+		t.Error("isAgentOrphanCommName(\"ordinary-shell\") = true, want false")
+	}
+}
+
 func TestFindOrphanedClaudeProcesses(t *testing.T) {
 	// Live test that checks for orphaned processes on the current system.
 	// Should not fail — just returns whatever orphans exist (likely none in CI).
