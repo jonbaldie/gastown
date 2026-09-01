@@ -100,6 +100,14 @@ func TestCheckHelpFlag(t *testing.T) {
 	}
 }
 
+func TestNowCommandIsNotRegistered(t *testing.T) {
+	for _, command := range rootCmd.Commands() {
+		if command.Name() == "now" {
+			t.Fatal("removed now command is still registered")
+		}
+	}
+}
+
 func TestCheckHelpFlag_EdgeCases(t *testing.T) {
 	testCmd := &cobra.Command{
 		Use:   "test",

@@ -58,7 +58,7 @@ func (c *MayorBinaryCheck) Run(ctx *CheckContext) *CheckResult {
 			Name:    c.Name(),
 			Status:  StatusError,
 			Message: fmt.Sprintf("Mayor agent %q has no command", settings.RoleAgents["mayor"]),
-			FixHint: "Install the Mayor runtime CLI, or run gt now with a runtime that is on PATH",
+			FixHint: "Install the configured Mayor runtime CLI or change the Mayor mix agent",
 		}
 	}
 

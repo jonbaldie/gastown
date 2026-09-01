@@ -907,7 +907,7 @@ func (c *DefaultBranchExistsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix fetches origin tracking refs in the rig's bare repo so origin/<default_branch>
-// exists after a local gt now clone.
+// exists after a local clone.
 func (c *DefaultBranchExistsCheck) Fix(ctx *CheckContext) error {
 	if ctx.RigName == "" {
 		return nil
@@ -972,7 +972,7 @@ func (c *DefaultBranchAllRigsCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix fetches origin tracking refs for every rig whose default_branch is missing
-// as refs/remotes/origin/<branch>. Local gt now clones have the branch as
+// as refs/remotes/origin/<branch>. Local clones may have the branch as
 // refs/heads/<branch> but never materialized the tracking ref.
 func (c *DefaultBranchAllRigsCheck) Fix(ctx *CheckContext) error {
 	entries, err := os.ReadDir(ctx.TownRoot)

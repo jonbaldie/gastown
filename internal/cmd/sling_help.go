@@ -15,7 +15,7 @@ Create work in the target rig:
 
   bd -C <town>/<rig> create --title=... --type=feature
 
-  That directory has its own .beads with the rig prefix (gt now and
+  That directory has its own .beads with the rig prefix (gt from and
   gt rig add create it). If it is missing, bd walks up to town beads
   and silently files hq-* work.
   gt convoy create "..." <rig-prefix-id>

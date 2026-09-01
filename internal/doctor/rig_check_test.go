@@ -1,17 +1,12 @@
 package doctor
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/jonbaldie/gastown/internal/config"
-	"github.com/jonbaldie/gastown/internal/git"
-	"github.com/jonbaldie/gastown/internal/rig"
 )
 
 func installMockBdInitOnly(t *testing.T) {
@@ -585,12 +580,8 @@ func TestDefaultBranchAllRigsCheck_Fixable(t *testing.T) {
 	}
 }
 
-// TestDefaultBranchAllRigsCheck_LocalNowRigIsHealthy is the feedback loop for
-// the gt now false positive: AddLocalRig clones --bare --local and must
-// materialize refs/remotes/origin/<default_branch> so doctor and polecats
-// can resolve origin/<branch>.
-func TestDefaultBranchAllRigsCheck_LocalNowRigIsHealthy(t *testing.T) {
-	townRoot, rigName, bareRepo := registerLocalNowRig(t)
+func TestDefaultBranchAllRigsCheck_LocalRigIsHealthy(t *testing.T) {
+	townRoot, rigName, bareRepo := registerBareLocalRigWithOriginTracking(t)
 
 	refs := listGitRefs(t, bareRepo)
 	t.Logf("bare repo refs:\n%s", refs)
@@ -598,14 +589,14 @@ func TestDefaultBranchAllRigsCheck_LocalNowRigIsHealthy(t *testing.T) {
 	check := NewDefaultBranchAllRigsCheck()
 	result := check.Run(&CheckContext{TownRoot: townRoot})
 	if result.Status != StatusOK {
-		t.Fatalf("default-branch-all-rigs on a gt now local rig: status=%v message=%q details=%v\nrefs:\n%s",
+		t.Fatalf("default-branch-all-rigs on a local rig: status=%v message=%q details=%v\nrefs:\n%s",
 			result.Status, result.Message, result.Details, refs)
 	}
 
 	exists := NewDefaultBranchExistsCheck()
 	existsResult := exists.Run(&CheckContext{TownRoot: townRoot, RigName: rigName})
 	if existsResult.Status != StatusOK {
-		t.Fatalf("default-branch-exists on a gt now local rig: status=%v message=%q details=%v\nrefs:\n%s",
+		t.Fatalf("default-branch-exists on a local rig: status=%v message=%q details=%v\nrefs:\n%s",
 			existsResult.Status, existsResult.Message, existsResult.Details, refs)
 	}
 }
@@ -644,7 +635,7 @@ func TestDefaultBranchAllRigsCheck_FixFetchesLocalOrigin(t *testing.T) {
 }
 
 func TestDefaultBranchAllRigsCheck_MissingBranchStillErrors(t *testing.T) {
-	townRoot, _, _ := registerLocalNowRig(t)
+	townRoot, _, _ := registerBareLocalRigWithOriginTracking(t)
 	rigDir := filepath.Join(townRoot, "proj")
 	if err := os.WriteFile(filepath.Join(rigDir, "config.json"), []byte(`{"default_branch":"develop"}`), 0644); err != nil {
 		t.Fatal(err)
@@ -659,27 +650,11 @@ func TestDefaultBranchAllRigsCheck_MissingBranchStillErrors(t *testing.T) {
 	}
 }
 
-func registerLocalNowRig(t *testing.T) (townRoot, rigName, bareRepo string) {
+func registerBareLocalRigWithOriginTracking(t *testing.T) (townRoot, rigName, bareRepo string) {
 	t.Helper()
-
-	src := t.TempDir()
-	runGit(t, src, "init", "--initial-branch=main")
-	runGit(t, src, "config", "user.email", "test@test.com")
-	runGit(t, src, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# proj\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, src, "add", ".")
-	runGit(t, src, "commit", "-m", "init")
-
-	townRoot = t.TempDir()
-	rigsConfig := &config.RigsConfig{Version: 1, Rigs: map[string]config.RigEntry{}}
-	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
-	rigName = "proj"
-	if _, err := mgr.AddLocalRig(context.Background(), rigName, src); err != nil {
-		t.Fatalf("AddLocalRig: %v", err)
-	}
-	return townRoot, rigName, filepath.Join(townRoot, rigName, ".repo.git")
+	townRoot, rigName, bareRepo = registerBareLocalRigWithoutOriginTracking(t)
+	runGit(t, "", "-c", "protocol.file.allow=always", "--git-dir", bareRepo, "fetch", "origin")
+	return townRoot, rigName, bareRepo
 }
 
 func registerBareLocalRigWithoutOriginTracking(t *testing.T) (townRoot, rigName, bareRepo string) {

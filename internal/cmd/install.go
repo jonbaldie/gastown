@@ -257,13 +257,6 @@ func initTownBeads(townPath string) error {
 	return initTownBeadsWith(townPath, buildBdInitArgs(townPath), 20, 500*time.Millisecond, "10s")
 }
 
-func initNowBeads(townPath string) error {
-	args := append(append([]string{}, buildBdInitArgs(townPath)...),
-		"--skip-agents", "--skip-hooks", "--non-interactive", "--quiet",
-		"--external", "--role", "maintainer")
-	return initTownBeadsWith(townPath, args, 40, 50*time.Millisecond, "2s")
-}
-
 func initTownBeadsWith(townPath string, bdInitArgs []string, attempts int, delay time.Duration, waitLabel string) error {
 	if err := waitForInstallDoltReady(townPath, attempts, delay, waitLabel); err != nil {
 		return err

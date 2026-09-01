@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`gt now` has been removed.** Create a Town with `gt install` or `gt from`,
+  then start it with `gt up`.
+
 ## [1.3.7] - 2026-08-27
 
 ### Fixed
