@@ -74,6 +74,41 @@ func TestFindSimilar(t *testing.T) {
 	}
 }
 
+func TestFindSimilarOrdersCandidatesByDescendingScore(t *testing.T) {
+	got := FindSimilar("cat", []string{"cut", "cat"}, 2)
+	if len(got) != 2 || got[0] != "cat" || got[1] != "cut" {
+		t.Fatalf("FindSimilar order = %v, want [cat cut]", got)
+	}
+}
+
+func TestSimilarityScoringComponents(t *testing.T) {
+	tests := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{name: "prefix score", got: prefixScore("alphabet", "alpine"), want: 3 * ScorePrefixWeight},
+		{name: "suffix score", got: suffixScore("testing", "nesting"), want: 6 * ScoreSuffixWeight},
+		{name: "weighted match", got: weightedMatchScore(3, 7), want: 21},
+		{name: "full containment", got: containsScore("cat", "concatenate"), want: 3 * ScoreContainsFullWeight},
+		{name: "edit distance", got: distanceScore("cat", "cut"), want: 2 * ScoreDistanceWeight},
+		{name: "common characters", got: commonCharsScore("aabc", "caa"), want: 3 * ScoreCommonCharsWeight},
+		{name: "prefix mismatch", got: commonPrefixLength("abx", "aby"), want: 2},
+		{name: "complete shorter prefix", got: commonPrefixLength("ab", "abcd"), want: 2},
+		{name: "common character count", got: commonChars("aabc", "caa"), want: 3},
+		{name: "absolute negative", got: abs(-7), want: 7},
+		{name: "absolute positive", got: abs(7), want: 7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("score = %d, want %d", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLevenshteinDistance(t *testing.T) {
 	tests := []struct {
 		a, b string
