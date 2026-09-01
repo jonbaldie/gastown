@@ -1475,6 +1475,8 @@ func TestPushSubmoduleChanges_Integration(t *testing.T) {
 
 	// Make a new commit in the submodule (but don't push it to submodule remote)
 	subPath := filepath.Join(parent, "libs", "sub")
+	testRunGit(t, subPath, "config", "user.email", "test@test.com")
+	testRunGit(t, subPath, "config", "user.name", "Test User")
 	if err := os.WriteFile(filepath.Join(subPath, "new.go"), []byte("package lib\n// new\n"), 0644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
