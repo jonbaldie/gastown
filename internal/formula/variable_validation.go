@@ -61,95 +61,8 @@ func isHandlebarsKeyword(name string) bool {
 //
 // Variables with any definition in [vars] (even with default="") are considered valid.
 func (f *Formula) ValidateTemplateVariables() error {
-	// Collect all text that might contain variables
-	var allText strings.Builder
-
-	// Description
-	allText.WriteString(f.Description)
-	allText.WriteString("\n")
-
-	// Steps (workflow)
-	for _, step := range f.Steps {
-		allText.WriteString(step.Title)
-		allText.WriteString("\n")
-		allText.WriteString(step.Description)
-		allText.WriteString("\n")
-	}
-
-	// Legs (convoy)
-	for _, leg := range f.Legs {
-		allText.WriteString(leg.Title)
-		allText.WriteString("\n")
-		allText.WriteString(leg.Description)
-		allText.WriteString("\n")
-		allText.WriteString(leg.Focus)
-		allText.WriteString("\n")
-	}
-
-	// Synthesis
-	if f.Synthesis != nil {
-		allText.WriteString(f.Synthesis.Title)
-		allText.WriteString("\n")
-		allText.WriteString(f.Synthesis.Description)
-		allText.WriteString("\n")
-	}
-
-	// Template (expansion)
-	for _, tmpl := range f.Template {
-		allText.WriteString(tmpl.Title)
-		allText.WriteString("\n")
-		allText.WriteString(tmpl.Description)
-		allText.WriteString("\n")
-	}
-
-	// Aspects
-	for _, aspect := range f.Aspects {
-		allText.WriteString(aspect.Title)
-		allText.WriteString("\n")
-		allText.WriteString(aspect.Description)
-		allText.WriteString("\n")
-		allText.WriteString(aspect.Focus)
-		allText.WriteString("\n")
-	}
-
-	// Prompts
-	for _, prompt := range f.Prompts {
-		allText.WriteString(prompt)
-		allText.WriteString("\n")
-	}
-
-	// Inputs (descriptions may contain variable references)
-	for _, input := range f.Inputs {
-		allText.WriteString(input.Description)
-		allText.WriteString("\n")
-		allText.WriteString(input.Default)
-		allText.WriteString("\n")
-	}
-
-	// Output
-	if f.Output != nil {
-		allText.WriteString(f.Output.Directory)
-		allText.WriteString("\n")
-		allText.WriteString(f.Output.LegPattern)
-		allText.WriteString("\n")
-		allText.WriteString(f.Output.Synthesis)
-		allText.WriteString("\n")
-	}
-
-	// Extract all variables used
-	usedVars := ExtractTemplateVariables(allText.String())
-
-	// Check each against defined vars and inputs
-	var undefined []string
-	for _, v := range usedVars {
-		if _, defined := f.Vars[v]; defined {
-			continue
-		}
-		if _, defined := f.Inputs[v]; defined {
-			continue
-		}
-		undefined = append(undefined, v)
-	}
+	usedVars := ExtractTemplateVariables(formulaTemplateText(f))
+	undefined := undefinedTemplateVariables(f, usedVars)
 
 	if len(undefined) > 0 {
 		return fmt.Errorf("undefined template variables: %s (add to [vars] section with default=\"\" for computed values)",
@@ -159,3 +72,85 @@ func (f *Formula) ValidateTemplateVariables() error {
 	return nil
 }
 
+func formulaTemplateText(f *Formula) string {
+	var text strings.Builder
+	appendText(&text, f.Description)
+	appendStepText(&text, f.Steps)
+	appendLegText(&text, f.Legs)
+	appendSynthesisText(&text, f.Synthesis)
+	appendTemplateText(&text, f.Template)
+	appendAspectText(&text, f.Aspects)
+	appendPromptText(&text, f.Prompts)
+	appendInputText(&text, f.Inputs)
+	appendOutputText(&text, f.Output)
+	return text.String()
+}
+
+func appendText(builder *strings.Builder, values ...string) {
+	for _, value := range values {
+		builder.WriteString(value)
+		builder.WriteByte('\n')
+	}
+}
+
+func appendStepText(builder *strings.Builder, steps []Step) {
+	for _, step := range steps {
+		appendText(builder, step.Title, step.Description)
+	}
+}
+
+func appendLegText(builder *strings.Builder, legs []Leg) {
+	for _, leg := range legs {
+		appendText(builder, leg.Title, leg.Description, leg.Focus)
+	}
+}
+
+func appendSynthesisText(builder *strings.Builder, synthesis *Synthesis) {
+	if synthesis != nil {
+		appendText(builder, synthesis.Title, synthesis.Description)
+	}
+}
+
+func appendTemplateText(builder *strings.Builder, templates []Template) {
+	for _, template := range templates {
+		appendText(builder, template.Title, template.Description)
+	}
+}
+
+func appendAspectText(builder *strings.Builder, aspects []Aspect) {
+	for _, aspect := range aspects {
+		appendText(builder, aspect.Title, aspect.Description, aspect.Focus)
+	}
+}
+
+func appendPromptText(builder *strings.Builder, prompts map[string]string) {
+	for _, prompt := range prompts {
+		appendText(builder, prompt)
+	}
+}
+
+func appendInputText(builder *strings.Builder, inputs map[string]Input) {
+	for _, input := range inputs {
+		appendText(builder, input.Description, input.Default)
+	}
+}
+
+func appendOutputText(builder *strings.Builder, output *Output) {
+	if output != nil {
+		appendText(builder, output.Directory, output.LegPattern, output.Synthesis)
+	}
+}
+
+func undefinedTemplateVariables(f *Formula, usedVars []string) []string {
+	var undefined []string
+	for _, variable := range usedVars {
+		if _, defined := f.Vars[variable]; defined {
+			continue
+		}
+		if _, defined := f.Inputs[variable]; defined {
+			continue
+		}
+		undefined = append(undefined, variable)
+	}
+	return undefined
+}

@@ -13,12 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// wl command flags
-var (
-	wlJoinHandle      string
-	wlJoinDisplayName string
-)
-
 var wlCmd = &cobra.Command{
 	Use:     "wl",
 	GroupID: GroupWork,
@@ -63,8 +57,8 @@ Examples:
 }
 
 func init() {
-	wlJoinCmd.Flags().StringVar(&wlJoinHandle, "handle", "", "Rig handle for registration (default: DoltHub org)")
-	wlJoinCmd.Flags().StringVar(&wlJoinDisplayName, "display-name", "", "Display name for the rig registry")
+	wlJoinCmd.Flags().String("handle", "", "Rig handle for registration (default: DoltHub org)")
+	wlJoinCmd.Flags().String("display-name", "", "Display name for the rig registry")
 
 	wlCmd.AddCommand(wlJoinCmd)
 	rootCmd.AddCommand(wlCmd)
@@ -72,63 +66,28 @@ func init() {
 
 func runWlJoin(cmd *cobra.Command, args []string) error {
 	upstream := args[0]
+	handleFlag := commandStringFlag(cmd, "handle")
+	displayNameFlag := commandStringFlag(cmd, "display-name")
 
-	// Parse upstream path (validate early)
-	_, _, err := wasteland.ParseUpstream(upstream)
+	token, forkOrg, err := validateWlJoin(upstream)
 	if err != nil {
 		return err
 	}
 
-	// Require DoltHub credentials
-	token := doltserver.DoltHubToken()
-	if token == "" {
-		return fmt.Errorf("DOLTHUB_TOKEN environment variable is required\n\nGet your token from https://www.dolthub.com/settings/tokens")
-	}
-
-	forkOrg := doltserver.DoltHubOrg()
-	if forkOrg == "" {
-		return fmt.Errorf("DOLTHUB_ORG environment variable is required\n\nSet this to your DoltHub organization name")
-	}
-
-	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Fast path: check if already joined before loading town config.
-	// This avoids failing on unrelated town-config errors for the no-op case.
-	if existing, loadErr := wasteland.LoadConfig(townRoot); loadErr == nil {
-		if existing.Upstream == upstream {
-			fmt.Printf("%s Already joined wasteland: %s\n", style.Bold.Render("⚠"), upstream)
-			fmt.Printf("  Handle: %s\n", existing.RigHandle)
-			fmt.Printf("  Fork: %s/%s\n", existing.ForkOrg, existing.ForkDB)
-			fmt.Printf("  Local: %s\n", existing.LocalDir)
-			return nil
-		}
-		return fmt.Errorf("already joined to %s; run gt wl leave first", existing.Upstream)
+	if done, err := reportExistingWlJoin(townRoot, upstream); err != nil {
+		return err
+	} else if done {
+		return nil
 	}
 
-	// Load town config for identity (only needed for fresh join)
-	townConfigPath := filepath.Join(townRoot, workspace.PrimaryMarker)
-	townCfg, err := config.LoadTownConfig(townConfigPath)
+	townCfg, handle, displayName, err := resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag)
 	if err != nil {
-		return fmt.Errorf("loading town config: %w", err)
-	}
-
-	// Determine town handle
-	handle := wlJoinHandle
-	if handle == "" {
-		handle = forkOrg
-	}
-
-	displayName := wlJoinDisplayName
-	if displayName == "" {
-		if townCfg.PublicName != "" {
-			displayName = townCfg.PublicName
-		} else {
-			displayName = townCfg.Name
-		}
+		return err
 	}
 
 	ownerEmail := townCfg.Owner
@@ -151,4 +110,61 @@ func runWlJoin(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Local: %s\n", cfg.LocalDir)
 	fmt.Printf("\n  %s\n", style.Dim.Render("Next: gt wl browse  — browse the wanted board"))
 	return nil
+}
+
+func validateWlJoin(upstream string) (string, string, error) {
+	// Parse upstream path (validate early).
+	if _, _, err := wasteland.ParseUpstream(upstream); err != nil {
+		return "", "", err
+	}
+
+	// Require DoltHub credentials.
+	token := doltserver.DoltHubToken()
+	if token == "" {
+		return "", "", fmt.Errorf("DOLTHUB_TOKEN environment variable is required\n\nGet your token from https://www.dolthub.com/settings/tokens")
+	}
+	forkOrg := doltserver.DoltHubOrg()
+	if forkOrg == "" {
+		return "", "", fmt.Errorf("DOLTHUB_ORG environment variable is required\n\nSet this to your DoltHub organization name")
+	}
+	return token, forkOrg, nil
+}
+
+func reportExistingWlJoin(townRoot, upstream string) (bool, error) {
+	// Check before loading town config so the no-op path remains independent of
+	// unrelated town-config errors.
+	existing, err := wasteland.LoadConfig(townRoot)
+	if err != nil {
+		return false, nil
+	}
+	if existing.Upstream != upstream {
+		return false, fmt.Errorf("already joined to %s; run gt wl leave first", existing.Upstream)
+	}
+	fmt.Printf("%s Already joined wasteland: %s\n", style.Bold.Render("⚠"), upstream)
+	fmt.Printf("  Handle: %s\n", existing.RigHandle)
+	fmt.Printf("  Fork: %s/%s\n", existing.ForkOrg, existing.ForkDB)
+	fmt.Printf("  Local: %s\n", existing.LocalDir)
+	return true, nil
+}
+
+func resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag string) (*config.TownConfig, string, string, error) {
+	// Load town config for identity (only needed for a fresh join).
+	townConfigPath := filepath.Join(townRoot, workspace.PrimaryMarker)
+	townCfg, err := config.LoadTownConfig(townConfigPath)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("loading town config: %w", err)
+	}
+
+	handle := handleFlag
+	if handle == "" {
+		handle = forkOrg
+	}
+	displayName := displayNameFlag
+	if displayName == "" {
+		displayName = townCfg.PublicName
+		if displayName == "" {
+			displayName = townCfg.Name
+		}
+	}
+	return townCfg, handle, displayName, nil
 }

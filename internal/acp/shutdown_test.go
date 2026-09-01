@@ -22,7 +22,7 @@ func TestProxy_GracefulShutdownOnEOF(t *testing.T) {
 
 	// Start forwardToAgent in a goroutine
 	p.wg.Add(1)
-	go p.forwardToAgent()
+	go forwardToAgent(p)
 
 	// Close stdinWriter to trigger EOF
 	stdinWriter.Close()
@@ -57,7 +57,7 @@ func TestProxy_GracefulShutdownAfterInput(t *testing.T) {
 
 	// Start forwardToAgent in a goroutine
 	p.wg.Add(1)
-	go p.forwardToAgent()
+	go forwardToAgent(p)
 
 	// Write some data
 	stdinWriter.Write([]byte(`{"jsonrpc":"2.0","method":"test"}` + "\n"))

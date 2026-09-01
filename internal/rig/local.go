@@ -15,53 +15,22 @@ import (
 	"github.com/jonbaldie/gastown/internal/git"
 )
 
+type localRigSetup struct {
+	absSrc  string
+	gitURL  string
+	prefix  string
+	rigPath string
+	srcGit  *git.Git
+}
+
 // AddLocalRig registers a local git repository as a rig without a network clone.
 // Polecat worktrees later share objects from a local bare clone of srcRepo.
 func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, error) {
-	if m.RigExists(name) {
-		return nil, ErrRigExists
-	}
-	if strings.ContainsAny(name, "-. /\\") {
-		return nil, fmt.Errorf("rig name %q contains invalid characters", name)
-	}
-	for _, reserved := range reservedRigNames {
-		if strings.EqualFold(name, reserved) {
-			return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", reserved)
-		}
-	}
-
-	absSrc, err := filepath.Abs(srcRepo)
+	setup, err := m.prepareLocalRig(name, srcRepo)
 	if err != nil {
-		return nil, fmt.Errorf("resolving local repo: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(absSrc); err == nil {
-		absSrc = resolved
-	}
-
-	srcGit := git.NewGit(absSrc)
-	if !srcGit.IsRepo() {
-		return nil, fmt.Errorf("not a git repository: %s", absSrc)
-	}
-	empty, err := srcGit.IsEmpty()
-	if err != nil {
-		return nil, fmt.Errorf("checking repository: %w", err)
-	}
-	if empty {
-		return nil, fmt.Errorf("repository %s is empty (no commits). Push at least one commit before adding it as a rig", absSrc)
-	}
-
-	gitURL := fileURL(absSrc)
-	prefix := deriveBeadsPrefix(name)
-	if err := m.checkLocalRigPrefix(prefix, name); err != nil {
 		return nil, err
 	}
-
-	rigPath := filepath.Join(m.townRoot, name)
-	if _, err := os.Stat(rigPath); err == nil {
-		return nil, fmt.Errorf("directory already exists: %s", rigPath)
-	}
-
-	if err := os.MkdirAll(rigPath, 0755); err != nil {
+	if err := os.MkdirAll(setup.rigPath, 0755); err != nil {
 		return nil, fmt.Errorf("creating rig directory: %w", err)
 	}
 	success := false
@@ -69,71 +38,167 @@ func (m *Manager) AddLocalRig(ctx context.Context, name, srcRepo string) (*Rig, 
 		if success {
 			return
 		}
-		_ = os.RemoveAll(rigPath)
+		_ = os.RemoveAll(setup.rigPath)
 		if _, ok := m.config.Rigs[name]; ok {
 			delete(m.config.Rigs, name)
 			_ = config.SaveRigsConfig(filepath.Join(m.townRoot, "mayor", "rigs.json"), m.config)
 		}
 	}()
-	rigConfig := &RigConfig{
-		Type:      "rig",
-		Version:   CurrentRigConfigVersion,
-		Name:      name,
-		GitURL:    gitURL,
-		LocalRepo: absSrc,
-		CreatedAt: time.Now(),
-		Beads:     &BeadsConfig{Prefix: prefix},
-	}
-	if branch := srcGit.DefaultBranch(); branch != "" {
-		rigConfig.DefaultBranch = branch
-	}
-	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
-		return nil, fmt.Errorf("saving rig config: %w", err)
-	}
-	if err := fenceRigBeadsWalkUp(rigPath, prefix); err != nil {
+	if err := m.saveLocalRigConfig(setup, name); err != nil {
 		return nil, err
 	}
-
-	if err := os.MkdirAll(filepath.Join(rigPath, "polecats"), 0755); err != nil {
-		return nil, fmt.Errorf("creating polecats dir: %w", err)
+	if err := m.createLocalRigDirs(setup.rigPath); err != nil {
+		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(rigPath, "crew"), 0755); err != nil {
-		return nil, fmt.Errorf("creating crew dir: %w", err)
+	if err := m.cloneLocalRig(ctx, setup); err != nil {
+		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(rigPath, "settings"), 0755); err != nil {
-		return nil, fmt.Errorf("creating settings dir: %w", err)
-	}
-
-	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-	if err := m.git.CloneBareLocal(ctx, absSrc, bareRepoPath); err != nil {
-		return nil, fmt.Errorf("sharing local git objects: %w", err)
-	}
-
-	if m.config.Rigs == nil {
-		m.config.Rigs = make(map[string]config.RigEntry)
-	}
-	m.config.Rigs[name] = config.RigEntry{
-		GitURL:    gitURL,
-		LocalRepo: absSrc,
-		AddedAt:   time.Now(),
-		BeadsConfig: &config.BeadsConfig{
-			Prefix: prefix,
-		},
-	}
-	rigsPath := filepath.Join(m.townRoot, "mayor", "rigs.json")
-	if err := config.SaveRigsConfig(rigsPath, m.config); err != nil {
-		return nil, fmt.Errorf("registering rig in rigs.json: %w", err)
-	}
-
-	// Sling resolves rig aliases through town routes.jsonl. The prefix fence
-	// stops bd -C walk-up; without this route, ResolveRepoAliasBeadsDir still
-	// fails until detached provision finishes InitializeRigBeads.
-	if err := m.appendRigRoute(rigPath, name, prefix, RigBeadsInitOptions{RequireDolt: true}); err != nil {
+	if err := m.registerLocalRig(setup, name); err != nil {
 		return nil, err
 	}
 
 	success = true
 	return m.loadRig(name, m.config.Rigs[name])
+}
+
+func (m *Manager) prepareLocalRig(name, srcRepo string) (localRigSetup, error) {
+	if err := m.validateLocalRigName(name); err != nil {
+		return localRigSetup{}, err
+	}
+
+	absSrc, err := resolveLocalRepoPath(srcRepo)
+	if err != nil {
+		return localRigSetup{}, err
+	}
+	srcGit := git.NewGit(absSrc)
+	if err := validateLocalRepo(absSrc, srcGit); err != nil {
+		return localRigSetup{}, err
+	}
+
+	prefix := deriveBeadsPrefix(name)
+	if err := m.checkLocalRigPrefix(prefix, name); err != nil {
+		return localRigSetup{}, err
+	}
+	rigPath := filepath.Join(m.townRoot, name)
+	if _, err := os.Stat(rigPath); err == nil {
+		return localRigSetup{}, fmt.Errorf("directory already exists: %s", rigPath)
+	}
+	return localRigSetup{
+		absSrc:  absSrc,
+		gitURL:  fileURL(absSrc),
+		prefix:  prefix,
+		rigPath: rigPath,
+		srcGit:  srcGit,
+	}, nil
+}
+
+func (m *Manager) validateLocalRigName(name string) error {
+	if m.RigExists(name) {
+		return ErrRigExists
+	}
+	if strings.ContainsAny(name, "-. /\\") {
+		return fmt.Errorf("rig name %q contains invalid characters", name)
+	}
+	for _, reserved := range reservedRigNames {
+		if strings.EqualFold(name, reserved) {
+			return fmt.Errorf("rig name %q is reserved for town-level infrastructure", reserved)
+		}
+	}
+	return nil
+}
+
+func validateLocalRepo(absSrc string, srcGit *git.Git) error {
+	if !git.IsRepo(srcGit) {
+		return fmt.Errorf("not a git repository: %s", absSrc)
+	}
+	empty, err := git.IsEmpty(srcGit)
+	if err != nil {
+		return fmt.Errorf("checking repository: %w", err)
+	}
+	if empty {
+		return fmt.Errorf("repository %s is empty (no commits). Push at least one commit before adding it as a rig", absSrc)
+	}
+	return nil
+}
+
+func resolveLocalRepoPath(srcRepo string) (string, error) {
+	absSrc, err := filepath.Abs(srcRepo)
+	if err != nil {
+		return "", fmt.Errorf("resolving local repo: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absSrc); err == nil {
+		absSrc = resolved
+	}
+	return absSrc, nil
+}
+
+func (m *Manager) saveLocalRigConfig(setup localRigSetup, name string) error {
+	rigConfig := &RigConfig{
+		Type:      "rig",
+		Version:   CurrentRigConfigVersion,
+		Name:      name,
+		GitURL:    setup.gitURL,
+		LocalRepo: setup.absSrc,
+		CreatedAt: time.Now(),
+		Beads:     &BeadsConfig{Prefix: setup.prefix},
+	}
+	if branch := git.DefaultBranch(setup.srcGit); branch != "" {
+		rigConfig.DefaultBranch = branch
+	}
+	if err := m.saveRigConfig(setup.rigPath, rigConfig); err != nil {
+		return fmt.Errorf("saving rig config: %w", err)
+	}
+	if err := fenceRigBeadsWalkUp(setup.rigPath, setup.prefix); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) createLocalRigDirs(rigPath string) error {
+	if err := os.MkdirAll(filepath.Join(rigPath, "polecats"), 0755); err != nil {
+		return fmt.Errorf("creating polecats dir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(rigPath, "crew"), 0755); err != nil {
+		return fmt.Errorf("creating crew dir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(rigPath, "settings"), 0755); err != nil {
+		return fmt.Errorf("creating settings dir: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) cloneLocalRig(ctx context.Context, setup localRigSetup) error {
+	bareRepoPath := filepath.Join(setup.rigPath, ".repo.git")
+	if err := git.CloneBareLocal(m.git, ctx, setup.absSrc, bareRepoPath); err != nil {
+		return fmt.Errorf("sharing local git objects: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) registerLocalRig(setup localRigSetup, name string) error {
+	if m.config.Rigs == nil {
+		m.config.Rigs = make(map[string]config.RigEntry)
+	}
+	m.config.Rigs[name] = config.RigEntry{
+		GitURL:    setup.gitURL,
+		LocalRepo: setup.absSrc,
+		AddedAt:   time.Now(),
+		BeadsConfig: &config.BeadsConfig{
+			Prefix: setup.prefix,
+		},
+	}
+	rigsPath := filepath.Join(m.townRoot, "mayor", "rigs.json")
+	if err := config.SaveRigsConfig(rigsPath, m.config); err != nil {
+		return fmt.Errorf("registering rig in rigs.json: %w", err)
+	}
+
+	// Sling resolves rig aliases through town routes.jsonl. The prefix fence
+	// stops bd -C walk-up; without this route, ResolveRepoAliasBeadsDir still
+	// fails until detached provision finishes InitializeRigBeads.
+	if err := m.appendRigRoute(setup.rigPath, name, setup.prefix, RigBeadsInitOptions{RequireDolt: true}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // FindByLocalRepo returns the registered rig whose LocalRepo matches srcRepo.

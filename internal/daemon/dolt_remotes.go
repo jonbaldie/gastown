@@ -35,40 +35,19 @@ func (d *Daemon) pushDoltRemotes() {
 		return
 	}
 
-	// Need dolt server to be configured for data dir
-	if d.doltServer == nil || !d.doltServer.IsEnabled() {
-		d.logger.Printf("dolt_remotes: dolt server not configured, skipping")
-		return
-	}
-
-	dataDir := d.doltServer.config.DataDir
-	if dataDir == "" {
-		d.logger.Printf("dolt_remotes: no data dir configured, skipping")
+	dataDir, ok := d.doltRemotesDataDir()
+	if !ok {
 		return
 	}
 
 	config := d.patrolConfig.Patrols.DoltRemotes
 	remote := config.Remote
-	branch := config.Branch
-	if branch == "" {
-		branch = "main"
-	}
+	branch := doltRemoteBranch(config.Branch)
 
-	// Get list of databases to push.
-	// When a specific remote is configured, filter by it.
-	// When no remote is configured, discover databases with any remote.
-	databases := config.Databases
-	if len(databases) == 0 {
-		var err error
-		if remote != "" {
-			databases, err = d.discoverDatabasesWithRemotes(dataDir, remote)
-		} else {
-			databases, err = d.discoverDatabasesWithAnyRemote(dataDir)
-		}
-		if err != nil {
-			d.logger.Printf("dolt_remotes: error discovering databases: %v", err)
-			return
-		}
+	databases, err := d.doltRemoteDatabases(dataDir, config.Databases, remote)
+	if err != nil {
+		d.logger.Printf("dolt_remotes: error discovering databases: %v", err)
+		return
 	}
 
 	if len(databases) == 0 {
@@ -76,17 +55,55 @@ func (d *Daemon) pushDoltRemotes() {
 		return
 	}
 
-	if remote != "" {
-		d.logger.Printf("dolt_remotes: pushing %d database(s) to %s/%s", len(databases), remote, branch)
-	} else {
-		d.logger.Printf("dolt_remotes: pushing %d database(s) (auto-detected remotes)/%s", len(databases), branch)
-	}
+	d.logDoltRemotePlan(len(databases), remote, branch)
+	pushed := d.pushDoltRemoteDatabases(dataDir, databases, remote, branch)
 
+	d.logger.Printf("dolt_remotes: pushed %d/%d database(s)", pushed, len(databases))
+}
+
+func (d *Daemon) doltRemotesDataDir() (string, bool) {
+	if d.doltServer == nil || !d.doltServer.IsEnabled() {
+		d.logger.Printf("dolt_remotes: dolt server not configured, skipping")
+		return "", false
+	}
+	dataDir := d.doltServer.config.DataDir
+	if dataDir == "" {
+		d.logger.Printf("dolt_remotes: no data dir configured, skipping")
+		return "", false
+	}
+	return dataDir, true
+}
+
+func doltRemoteBranch(branch string) string {
+	if branch == "" {
+		return "main"
+	}
+	return branch
+}
+
+func (d *Daemon) doltRemoteDatabases(dataDir string, configured []string, remote string) ([]string, error) {
+	if len(configured) > 0 {
+		return configured, nil
+	}
+	if remote != "" {
+		return d.discoverDatabasesWithRemotes(dataDir, remote)
+	}
+	return d.discoverDatabasesWithAnyRemote(dataDir)
+}
+
+func (d *Daemon) logDoltRemotePlan(databaseCount int, remote, branch string) {
+	if remote == "" {
+		d.logger.Printf("dolt_remotes: pushing %d database(s) (auto-detected remotes)/%s", databaseCount, branch)
+		return
+	}
+	d.logger.Printf("dolt_remotes: pushing %d database(s) to %s/%s", databaseCount, remote, branch)
+}
+
+func (d *Daemon) pushDoltRemoteDatabases(dataDir string, databases []string, remote, branch string) int {
 	pushed := 0
 	for _, db := range databases {
 		pushRemote := remote
 		if pushRemote == "" {
-			// Auto-detect the remote name for this database
 			pushRemote = d.findDatabaseRemote(dataDir, db)
 			if pushRemote == "" {
 				d.logger.Printf("dolt_remotes: %s: no remote found, skipping", db)
@@ -95,12 +112,11 @@ func (d *Daemon) pushDoltRemotes() {
 		}
 		if err := d.pushDatabase(dataDir, db, pushRemote, branch); err != nil {
 			d.logger.Printf("dolt_remotes: %s: push failed: %v", db, err)
-		} else {
-			pushed++
+			continue
 		}
+		pushed++
 	}
-
-	d.logger.Printf("dolt_remotes: pushed %d/%d database(s)", pushed, len(databases))
+	return pushed
 }
 
 // pushDatabase commits pending changes and pushes a single database to its remote.

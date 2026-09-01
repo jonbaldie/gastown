@@ -51,11 +51,13 @@ func writeDeaconHeartbeat(t *testing.T, townRoot string, age time.Duration) {
 func newTestDaemonWithStores(t *testing.T, townRoot string, stores map[string]beadsdk.Storage) *Daemon {
 	t.Helper()
 	return &Daemon{
-		config:      &Config{TownRoot: townRoot},
-		logger:      log.New(io.Discard, "", 0),
-		tmux:        tmux.NewTmux(),
-		beadsStores: stores,
-		ctx:         context.Background(),
+		config: &Config{TownRoot: townRoot},
+		logger: log.New(io.Discard, "", 0),
+		tmux:   tmux.NewTmux(),
+		ctx:    context.Background(),
+		daemonOperationalState: daemonOperationalState{
+			daemonPatrolState: daemonPatrolState{beadsStores: stores},
+		},
 	}
 }
 
@@ -123,12 +125,14 @@ func TestHasActiveWork(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &Daemon{
-				config:      &Config{TownRoot: t.TempDir()},
-				logger:      log.New(io.Discard, "", 0),
-				beadsStores: tc.stores,
-				ctx:         context.Background(),
+				config: &Config{TownRoot: t.TempDir()},
+				logger: log.New(io.Discard, "", 0),
+				ctx:    context.Background(),
+				daemonOperationalState: daemonOperationalState{
+					daemonPatrolState: daemonPatrolState{beadsStores: tc.stores},
+				},
 			}
-			got := d.hasActiveWork()
+			got := hasActiveWork(d)
 			if got != tc.want {
 				t.Errorf("hasActiveWork() = %v, want %v", got, tc.want)
 			}
@@ -218,7 +222,7 @@ func TestEnsureBootRunning_IdleGuard(t *testing.T) {
 			}
 
 			d := newTestDaemonWithStores(t, townRoot, tc.stores)
-			d.ensureBootRunning()
+			ensureBootRunning(d)
 
 			data, err := os.ReadFile(tmuxLog)
 			if err != nil {

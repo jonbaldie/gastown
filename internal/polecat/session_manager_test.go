@@ -58,10 +58,10 @@ func setupSessionBranchTestRepo(t *testing.T) (string, *git.Git) {
 	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 		t.Fatalf("write README.md: %v", err)
 	}
-	if err := repoGit.Add("README.md"); err != nil {
+	if err := git.Add(repoGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := repoGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(repoGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -125,13 +125,13 @@ func TestHasPolecat(t *testing.T) {
 	}
 	m := NewSessionManager(tmux.NewTmux(), r)
 
-	if !m.hasPolecat("Toast") {
+	if !sessionHasPolecat(m, "Toast") {
 		t.Error("expected hasPolecat(Toast) = true")
 	}
-	if !m.hasPolecat("Cheedo") {
+	if !sessionHasPolecat(m, "Cheedo") {
 		t.Error("expected hasPolecat(Cheedo) = true")
 	}
-	if m.hasPolecat("Unknown") {
+	if sessionHasPolecat(m, "Unknown") {
 		t.Error("expected hasPolecat(Unknown) = false")
 	}
 }
@@ -232,7 +232,7 @@ func TestInjectNotFound(t *testing.T) {
 	}
 	m := NewSessionManager(tmux.NewTmux(), r)
 
-	err := m.Inject("Toast", "hello")
+	err := Inject(m, "Toast", "hello")
 	if err != ErrSessionNotFound {
 		t.Errorf("Inject = %v, want ErrSessionNotFound", err)
 	}
@@ -339,34 +339,34 @@ func TestPolecatStartInjectsFallbackEnvVars(t *testing.T) {
 func TestEnsureCanonicalSessionBranch_UsesOriginDefaultBranch(t *testing.T) {
 	workDir, repoGit := setupSessionBranchTestRepo(t)
 
-	baseSHA, err := repoGit.Rev("origin/main")
+	baseSHA, err := git.Rev(repoGit, "origin/main")
 	if err != nil {
 		t.Fatalf("resolve origin/main: %v", err)
 	}
-	if err := repoGit.CheckoutNewBranch("polecat/toast-old", "main"); err != nil {
+	if err := git.CheckoutNewBranch(repoGit, "polecat/toast-old", "main"); err != nil {
 		t.Fatalf("checkout stale polecat branch: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(workDir, "stale.txt"), []byte("stale\n"), 0644); err != nil {
 		t.Fatalf("write stale.txt: %v", err)
 	}
-	if err := repoGit.Add("stale.txt"); err != nil {
+	if err := git.Add(repoGit, "stale.txt"); err != nil {
 		t.Fatalf("git add stale.txt: %v", err)
 	}
-	if err := repoGit.Commit("stale local polecat commit"); err != nil {
+	if err := git.Commit(repoGit, "stale local polecat commit"); err != nil {
 		t.Fatalf("git commit stale.txt: %v", err)
 	}
-	staleSHA, err := repoGit.Rev("HEAD")
+	staleSHA, err := git.Rev(repoGit, "HEAD")
 	if err != nil {
 		t.Fatalf("resolve stale HEAD: %v", err)
 	}
 
 	sm := NewSessionManager(tmux.NewTmux(), &rig.Rig{Name: "gastown", Path: workDir})
-	branch := sm.ensureCanonicalSessionBranch(repoGit, "toast", SessionStartOptions{Issue: "gt-9qb"})
+	branch := sessionEnsureCanonicalBranch(sm, repoGit, "toast", SessionStartOptions{Issue: "gt-9qb"})
 	if !strings.Contains(branch, "/gt-9qb+") {
 		t.Fatalf("fresh session branch = %q, want issue-scoped branch", branch)
 	}
 
-	staleAncestor, err := repoGit.IsAncestor(staleSHA, branch)
+	staleAncestor, err := git.IsAncestor(repoGit, staleSHA, branch)
 	if err != nil {
 		t.Fatalf("check stale ancestry: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestEnsureCanonicalSessionBranch_UsesOriginDefaultBranch(t *testing.T) {
 		t.Fatalf("fresh session branch %q unexpectedly includes stale local commit %s", branch, staleSHA)
 	}
 
-	baseAncestor, err := repoGit.IsAncestor(baseSHA, branch)
+	baseAncestor, err := git.IsAncestor(repoGit, baseSHA, branch)
 	if err != nil {
 		t.Fatalf("check canonical ancestry: %v", err)
 	}
@@ -387,12 +387,12 @@ func TestEnsureCanonicalSessionBranch_KeepsCurrentIssueBranch(t *testing.T) {
 	workDir, repoGit := setupSessionBranchTestRepo(t)
 
 	currentBranch := "polecat/toast/gt-9qb@seed"
-	if err := repoGit.CheckoutNewBranch(currentBranch, "main"); err != nil {
+	if err := git.CheckoutNewBranch(repoGit, currentBranch, "main"); err != nil {
 		t.Fatalf("checkout current issue branch: %v", err)
 	}
 
 	sm := NewSessionManager(tmux.NewTmux(), &rig.Rig{Name: "gastown", Path: workDir})
-	branch := sm.ensureCanonicalSessionBranch(repoGit, "toast", SessionStartOptions{Issue: "gt-9qb"})
+	branch := sessionEnsureCanonicalBranch(sm, repoGit, "toast", SessionStartOptions{Issue: "gt-9qb"})
 	if branch != currentBranch {
 		t.Fatalf("ensureCanonicalSessionBranch changed active issue branch: got %q want %q", branch, currentBranch)
 	}
@@ -466,7 +466,7 @@ func TestSessionManager_resolveBeadsDir(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Test the SessionManager's resolveBeadsDir method directly
-			resolved := m.resolveBeadsDir(tc.issueID, polecatWorkDir)
+			resolved := sessionResolveBeadsDir(m, tc.issueID, polecatWorkDir)
 			if resolved != tc.expectedDir {
 				t.Errorf("resolveBeadsDir(%q, %q) = %q, want %q",
 					tc.issueID, polecatWorkDir, resolved, tc.expectedDir)
@@ -583,7 +583,7 @@ func TestVerifyStartupNudgeDelivery_IdleAgent(t *testing.T) {
 	// plus overhead = ~60s. Use 90s for safety.
 	done := make(chan struct{})
 	go func() {
-		m.verifyStartupNudgeDelivery(sessionName, rc, "check your hook")
+		sessionVerifyStartupNudge(m, sessionName, rc, "check your hook")
 		close(done)
 	}()
 
@@ -604,7 +604,7 @@ func TestVerifyStartupNudgeDelivery_NilConfig(t *testing.T) {
 	m := NewSessionManager(tmux.NewTmux(), r)
 
 	// Should return immediately without error for nil config
-	m.verifyStartupNudgeDelivery("nonexistent-session", nil, "")
+	sessionVerifyStartupNudge(m, "nonexistent-session", nil, "")
 
 	// And for config without prompt prefix
 	rc := &config.RuntimeConfig{
@@ -613,7 +613,7 @@ func TestVerifyStartupNudgeDelivery_NilConfig(t *testing.T) {
 			ReadyDelayMs:      1000,
 		},
 	}
-	m.verifyStartupNudgeDelivery("nonexistent-session", rc, "")
+	sessionVerifyStartupNudge(m, "nonexistent-session", rc, "")
 }
 
 func TestPromptlessFallbackIncludesPrimeAndWorkInstructions(t *testing.T) {
@@ -732,7 +732,7 @@ func TestModeAStartupVerifyIsNonBlocking(t *testing.T) {
 
 	launchStart := time.Now()
 	go func() {
-		m.verifyStartupNudgeDelivery(sessionName, rc, "[GAS TOWN] test ← witness / Run `gt prime --hook`")
+		sessionVerifyStartupNudge(m, sessionName, rc, "[GAS TOWN] test ← witness / Run `gt prime --hook`")
 		close(goroutineDone)
 	}()
 	callerReturned <- time.Since(launchStart)
@@ -825,7 +825,7 @@ func TestPolecatSlot(t *testing.T) {
 	sm := NewSessionManager(tmux.NewTmux(), r)
 
 	// No polecats — should return 0
-	if slot := sm.polecatSlot("alpha"); slot != 0 {
+	if slot := sessionPolecatSlot(sm, "alpha"); slot != 0 {
 		t.Errorf("empty dir: got slot %d, want 0", slot)
 	}
 
@@ -845,7 +845,7 @@ func TestPolecatSlot(t *testing.T) {
 		{"gamma", 2},
 	}
 	for _, tt := range tests {
-		if slot := sm.polecatSlot(tt.name); slot != tt.want {
+		if slot := sessionPolecatSlot(sm, tt.name); slot != tt.want {
 			t.Errorf("polecatSlot(%q) = %d, want %d", tt.name, slot, tt.want)
 		}
 	}
@@ -854,14 +854,12 @@ func TestPolecatSlot(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(polecatsDir, ".hidden"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if slot := sm.polecatSlot("beta"); slot != 1 {
+	if slot := sessionPolecatSlot(sm, "beta"); slot != 1 {
 		t.Errorf("with hidden dir: polecatSlot(beta) = %d, want 1", slot)
 	}
 }
 
 func TestParseFreshBranchName_RoundTrip(t *testing.T) {
-	sm := &SessionManager{}
-
 	cases := []struct {
 		name    string
 		polecat string
@@ -877,7 +875,7 @@ func TestParseFreshBranchName_RoundTrip(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			branch := sm.freshBranchName(c.polecat, c.issue)
+			branch := sessionFreshBranchName(c.polecat, c.issue)
 			meta := parseFreshBranchName(branch)
 			if !meta.ok {
 				t.Fatalf("parseFreshBranchName(%q) not ok", branch)

@@ -13,8 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var mailDirJSON bool
-
 var mailDirectoryCmd = &cobra.Command{
 	Use:     "directory",
 	Aliases: []string{"dir", "addresses"},
@@ -38,77 +36,33 @@ type DirectoryEntry struct {
 }
 
 func init() {
-	mailDirectoryCmd.Flags().BoolVar(&mailDirJSON, "json", false, "Output as JSON")
-	mailCmd.AddCommand(mailDirectoryCmd)
+	mailDirectoryCmd.Flags().Bool("json", false, "Output as JSON")
+	getMailCommand().AddCommand(mailDirectoryCmd)
 }
 
-func runMailDirectory(cmd *cobra.Command, args []string) error {
+func runMailDirectory(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	b := beads.New(townRoot)
+	entries, warnings := collectMailDirectoryEntries(beads.New(townRoot))
+
+	if commandBoolFlag(cmd, "json") {
+		return writeMailDirectoryJSON(entries)
+	}
+	return writeMailDirectoryText(entries, warnings)
+}
+
+func collectMailDirectoryEntries(b *beads.Beads) ([]DirectoryEntry, int) {
 	var entries []DirectoryEntry
-	var warnings int
+	warnings := 0
 
-	// 1. Agent addresses
-	agents, err := b.ListAgentBeads()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list agents: %v\n", err)
-		warnings++
-	} else {
-		for id := range agents {
-			addr := mail.AgentBeadIDToAddress(id)
-			if addr != "" {
-				entries = append(entries, DirectoryEntry{Address: addr, Type: "agent"})
-			}
-		}
-	}
-
-	// 2. Group addresses
-	groups, err := b.ListGroupBeads()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list groups: %v\n", err)
-		warnings++
-	} else {
-		for name := range groups {
-			entries = append(entries, DirectoryEntry{Address: "group:" + name, Type: "group"})
-		}
-	}
-
-	// 3. Queue addresses
-	queues, err := b.ListQueueBeads()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list queues: %v\n", err)
-		warnings++
-	} else {
-		for id, issue := range queues {
-			if issue == nil {
-				continue
-			}
-			fields := beads.ParseQueueFields(issue.Description)
-			if fields.Name == "" {
-				fmt.Fprintf(os.Stderr, "warning: queue %s has no name field, skipping\n", id)
-				continue
-			}
-			entries = append(entries, DirectoryEntry{Address: "queue:" + fields.Name, Type: "queue"})
-		}
-	}
-
-	// 4. Channel addresses
-	channels, err := b.ListChannelBeads()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list channels: %v\n", err)
-		warnings++
-	} else {
-		for name := range channels {
-			entries = append(entries, DirectoryEntry{Address: "channel:" + name, Type: "channel"})
-		}
-	}
-
-	// 5. Well-known addresses
-	wellKnown := []DirectoryEntry{
+	entries, warnings = appendAgentDirectoryEntries(b, entries, warnings)
+	entries, warnings = appendGroupDirectoryEntries(b, entries, warnings)
+	entries, warnings = appendQueueDirectoryEntries(b, entries, warnings)
+	entries, warnings = appendChannelDirectoryEntries(b, entries, warnings)
+	entries = append(entries, []DirectoryEntry{
 		{Address: "mayor/", Type: "well-known"},
 		{Address: "--human", Type: "well-known"},
 		{Address: "--self", Type: "well-known"},
@@ -116,35 +70,96 @@ func runMailDirectory(cmd *cobra.Command, args []string) error {
 		{Address: "@crew", Type: "special"},
 		{Address: "@witnesses", Type: "special"},
 		{Address: "@overseer", Type: "special"},
-	}
-	entries = append(entries, wellKnown...)
+	}...)
 
-	// Deduplicate (e.g., mayor/ may appear as both agent and well-known)
-	seen := make(map[string]bool)
-	deduped := entries[:0]
-	for _, e := range entries {
-		if !seen[e.Address] {
-			seen[e.Address] = true
-			deduped = append(deduped, e)
-		}
-	}
-	entries = deduped
-
-	// Sort by type then address
+	entries = deduplicateDirectoryEntries(entries)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Type != entries[j].Type {
 			return entries[i].Type < entries[j].Type
 		}
 		return entries[i].Address < entries[j].Address
 	})
+	return entries, warnings
+}
 
-	if mailDirJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(entries)
+func appendAgentDirectoryEntries(b *beads.Beads, entries []DirectoryEntry, warnings int) ([]DirectoryEntry, int) {
+	agents, err := b.ListAgentBeads()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list agents: %v\n", err)
+		return entries, warnings + 1
 	}
+	for id := range agents {
+		addr := mail.AgentBeadIDToAddress(id)
+		if addr != "" {
+			entries = append(entries, DirectoryEntry{Address: addr, Type: "agent"})
+		}
+	}
+	return entries, warnings
+}
 
-	// Text output grouped by type
+func appendGroupDirectoryEntries(b *beads.Beads, entries []DirectoryEntry, warnings int) ([]DirectoryEntry, int) {
+	groups, err := b.ListGroupBeads()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list groups: %v\n", err)
+		return entries, warnings + 1
+	}
+	for name := range groups {
+		entries = append(entries, DirectoryEntry{Address: "group:" + name, Type: "group"})
+	}
+	return entries, warnings
+}
+
+func appendQueueDirectoryEntries(b *beads.Beads, entries []DirectoryEntry, warnings int) ([]DirectoryEntry, int) {
+	queues, err := b.ListQueueBeads()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list queues: %v\n", err)
+		return entries, warnings + 1
+	}
+	for id, issue := range queues {
+		if issue == nil {
+			continue
+		}
+		fields := beads.ParseQueueFields(issue.Description)
+		if fields.Name == "" {
+			fmt.Fprintf(os.Stderr, "warning: queue %s has no name field, skipping\n", id)
+			continue
+		}
+		entries = append(entries, DirectoryEntry{Address: "queue:" + fields.Name, Type: "queue"})
+	}
+	return entries, warnings
+}
+
+func appendChannelDirectoryEntries(b *beads.Beads, entries []DirectoryEntry, warnings int) ([]DirectoryEntry, int) {
+	channels, err := b.ListChannelBeads()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list channels: %v\n", err)
+		return entries, warnings + 1
+	}
+	for name := range channels {
+		entries = append(entries, DirectoryEntry{Address: "channel:" + name, Type: "channel"})
+	}
+	return entries, warnings
+}
+
+func deduplicateDirectoryEntries(entries []DirectoryEntry) []DirectoryEntry {
+	seen := make(map[string]bool)
+	deduped := entries[:0]
+	for _, entry := range entries {
+		if !seen[entry.Address] {
+			seen[entry.Address] = true
+			deduped = append(deduped, entry)
+		}
+	}
+	return deduped
+}
+
+func writeMailDirectoryJSON(entries []DirectoryEntry) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(entries)
+}
+
+func writeMailDirectoryText(entries []DirectoryEntry, warnings int) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ADDRESS\tTYPE")
 	for _, e := range entries {

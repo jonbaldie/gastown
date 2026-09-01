@@ -644,13 +644,17 @@ func TestStoreUpdateAddLabels(t *testing.T) {
 
 func TestStoreUpdateAddLabelsError(t *testing.T) {
 	store := newMockStorage()
-	store.addLabelErr = errors.New("label add failed")
+	addLabelErr := errors.New("label add failed")
+	store.addLabelErr = addLabelErr
 	b := newTestBeads(store)
 
 	store.CreateIssue(context.Background(), &beadsdk.Issue{Title: "x"}, "test")
 	err := b.Update("test-1", UpdateOptions{AddLabels: []string{"bug"}})
 	if err == nil {
 		t.Fatal("expected error from label add")
+	}
+	if !errors.Is(err, addLabelErr) {
+		t.Fatalf("expected wrapped add-label error, got %v", err)
 	}
 }
 
@@ -702,13 +706,17 @@ func TestStoreUpdateSetLabels(t *testing.T) {
 
 func TestStoreUpdateSetLabelsGetError(t *testing.T) {
 	store := newMockStorage()
-	store.getLabelsErr = errors.New("get labels failed")
+	getLabelsErr := errors.New("get labels failed")
+	store.getLabelsErr = getLabelsErr
 	b := newTestBeads(store)
 
 	store.CreateIssue(context.Background(), &beadsdk.Issue{Title: "x"}, "test")
 	err := b.Update("test-1", UpdateOptions{SetLabels: []string{"new"}})
 	if err == nil {
 		t.Fatal("expected error from get labels")
+	}
+	if !errors.Is(err, getLabelsErr) {
+		t.Fatalf("expected wrapped get-labels error, got %v", err)
 	}
 }
 

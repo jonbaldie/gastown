@@ -27,7 +27,7 @@ func NewHooksBaseCheck() *HooksBaseCheck {
 }
 
 // Run checks whether hooks-base.json exists.
-func (c *HooksBaseCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *HooksBaseCheck) Run(_ *CheckContext) *CheckResult {
 	if _, err := hooks.LoadBase(); err == nil {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -49,7 +49,7 @@ func (c *HooksBaseCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix creates hooks-base.json from current defaults.
-func (c *HooksBaseCheck) Fix(ctx *CheckContext) error {
+func (c *HooksBaseCheck) Fix(_ *CheckContext) error {
 	if _, err := hooks.LoadBase(); err == nil {
 		return nil // already exists
 	}

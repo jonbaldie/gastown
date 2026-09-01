@@ -87,36 +87,50 @@ func (f *Formula) validateConvoy() error {
 		return fmt.Errorf("convoy formula requires at least one leg")
 	}
 
-	// Check leg IDs are unique
+	seen, err := validateLegIDs(f.Legs)
+	if err != nil {
+		return err
+	}
+	if err := validateSynthesisDependencies(f.Synthesis, seen); err != nil {
+		return err
+	}
+	return validateRequiredUnless(f.Inputs)
+}
+
+func validateLegIDs(legs []Leg) (map[string]bool, error) {
 	seen := make(map[string]bool)
-	for _, leg := range f.Legs {
+	for _, leg := range legs {
 		if leg.ID == "" {
-			return fmt.Errorf("leg missing required id field")
+			return nil, fmt.Errorf("leg missing required id field")
 		}
 		if seen[leg.ID] {
-			return fmt.Errorf("duplicate leg id: %s", leg.ID)
+			return nil, fmt.Errorf("duplicate leg id: %s", leg.ID)
 		}
 		seen[leg.ID] = true
 	}
+	return seen, nil
+}
 
-	// Validate synthesis depends_on references valid legs
-	if f.Synthesis != nil {
-		for _, dep := range f.Synthesis.DependsOn {
-			if !seen[dep] {
-				return fmt.Errorf("synthesis depends_on references unknown leg: %s", dep)
-			}
+func validateSynthesisDependencies(synthesis *Synthesis, legIDs map[string]bool) error {
+	if synthesis == nil {
+		return nil
+	}
+	for _, dep := range synthesis.DependsOn {
+		if !legIDs[dep] {
+			return fmt.Errorf("synthesis depends_on references unknown leg: %s", dep)
 		}
 	}
+	return nil
+}
 
-	// Validate RequiredUnless references point to existing input keys
-	for name, input := range f.Inputs {
+func validateRequiredUnless(inputs map[string]Input) error {
+	for name, input := range inputs {
 		for _, ref := range input.RequiredUnless {
-			if _, ok := f.Inputs[ref]; !ok {
+			if _, ok := inputs[ref]; !ok {
 				return fmt.Errorf("input %q has required_unless referencing unknown input %q", name, ref)
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -126,25 +140,12 @@ func (f *Formula) validateWorkflow() error {
 		return fmt.Errorf("workflow formula requires at least one step")
 	}
 
-	// Check step IDs are unique
-	seen := make(map[string]bool)
-	for _, step := range f.Steps {
-		if step.ID == "" {
-			return fmt.Errorf("step missing required id field")
-		}
-		if seen[step.ID] {
-			return fmt.Errorf("duplicate step id: %s", step.ID)
-		}
-		seen[step.ID] = true
+	seen, err := validateWorkflowStepIDs(f.Steps)
+	if err != nil {
+		return err
 	}
-
-	// Validate step needs references
-	for _, step := range f.Steps {
-		for _, need := range step.Needs {
-			if !seen[need] {
-				return fmt.Errorf("step %q needs unknown step: %s", step.ID, need)
-			}
-		}
+	if err := validateWorkflowNeeds(f.Steps, seen); err != nil {
+		return err
 	}
 
 	// Check for cycles
@@ -152,6 +153,31 @@ func (f *Formula) validateWorkflow() error {
 		return err
 	}
 
+	return nil
+}
+
+func validateWorkflowStepIDs(steps []Step) (map[string]bool, error) {
+	seen := make(map[string]bool)
+	for _, step := range steps {
+		if step.ID == "" {
+			return nil, fmt.Errorf("step missing required id field")
+		}
+		if seen[step.ID] {
+			return nil, fmt.Errorf("duplicate step id: %s", step.ID)
+		}
+		seen[step.ID] = true
+	}
+	return seen, nil
+}
+
+func validateWorkflowNeeds(steps []Step, seen map[string]bool) error {
+	for _, step := range steps {
+		for _, need := range step.Needs {
+			if !seen[need] {
+				return fmt.Errorf("step %q needs unknown step: %s", step.ID, need)
+			}
+		}
+	}
 	return nil
 }
 
@@ -273,85 +299,78 @@ func checkDependencyCycles(deps map[string][]string) error {
 // Only applicable to workflow and expansion formulas.
 // Returns an error if there are cycles.
 func (f *Formula) TopologicalSort() ([]string, error) {
-	var items []string
-	var deps map[string][]string
+	items, deps, err := topologicalData(f)
+	if err != nil {
+		return nil, err
+	}
+	return topologicalOrder(items, deps)
+}
 
+func topologicalData(f *Formula) ([]string, map[string][]string, error) {
 	switch f.Type {
 	case TypeWorkflow:
-		for _, step := range f.Steps {
-			items = append(items, step.ID)
-		}
-		deps = make(map[string][]string)
-		for _, step := range f.Steps {
-			deps[step.ID] = step.Needs
-		}
+		return workflowTopologicalData(f.Steps)
 	case TypeExpansion:
-		for _, tmpl := range f.Template {
-			items = append(items, tmpl.ID)
-		}
-		deps = make(map[string][]string)
-		for _, tmpl := range f.Template {
-			deps[tmpl.ID] = tmpl.Needs
-		}
+		return expansionTopologicalData(f.Template)
 	case TypeConvoy:
-		// Convoy legs are parallel; return all leg IDs
-		for _, leg := range f.Legs {
-			items = append(items, leg.ID)
-		}
-		return items, nil
+		return legIDs(f.Legs), nil, nil
 	case TypeAspect:
-		// Aspect aspects are parallel; return all aspect IDs
-		for _, aspect := range f.Aspects {
-			items = append(items, aspect.ID)
-		}
-		return items, nil
+		return aspectIDs(f.Aspects), nil, nil
 	default:
-		return nil, fmt.Errorf("unsupported formula type for topological sort")
+		return nil, nil, fmt.Errorf("unsupported formula type for topological sort")
 	}
+}
 
-	// Kahn's algorithm
+func workflowTopologicalData(steps []Step) ([]string, map[string][]string, error) {
+	items := make([]string, 0, len(steps))
+	deps := make(map[string][]string, len(steps))
+	for _, step := range steps {
+		items = append(items, step.ID)
+		deps[step.ID] = step.Needs
+	}
+	return items, deps, nil
+}
+
+func expansionTopologicalData(templates []Template) ([]string, map[string][]string, error) {
+	items := make([]string, 0, len(templates))
+	deps := make(map[string][]string, len(templates))
+	for _, tmpl := range templates {
+		items = append(items, tmpl.ID)
+		deps[tmpl.ID] = tmpl.Needs
+	}
+	return items, deps, nil
+}
+
+func legIDs(legs []Leg) []string {
+	items := make([]string, 0, len(legs))
+	for _, leg := range legs {
+		items = append(items, leg.ID)
+	}
+	return items
+}
+
+func aspectIDs(aspects []Aspect) []string {
+	items := make([]string, 0, len(aspects))
+	for _, aspect := range aspects {
+		items = append(items, aspect.ID)
+	}
+	return items
+}
+
+func topologicalOrder(items []string, deps map[string][]string) ([]string, error) {
 	inDegree := make(map[string]int)
 	for _, id := range items {
 		inDegree[id] = 0
 	}
 	for _, id := range items {
-		for _, dep := range deps[id] {
+		for range deps[id] {
 			inDegree[id]++
-			_ = dep // dep already exists (validated)
 		}
 	}
 
-	// Find all nodes with no dependencies
-	var queue []string
-	for _, id := range items {
-		if inDegree[id] == 0 {
-			queue = append(queue, id)
-		}
-	}
-
-	// Build reverse adjacency (who depends on me)
-	dependents := make(map[string][]string)
-	for _, id := range items {
-		for _, dep := range deps[id] {
-			dependents[dep] = append(dependents[dep], id)
-		}
-	}
-
-	var result []string
-	for len(queue) > 0 {
-		// Pop from queue
-		id := queue[0]
-		queue = queue[1:]
-		result = append(result, id)
-
-		// Reduce in-degree of dependents
-		for _, dependent := range dependents[id] {
-			inDegree[dependent]--
-			if inDegree[dependent] == 0 {
-				queue = append(queue, dependent)
-			}
-		}
-	}
+	queue := topologicalQueue(items, inDegree)
+	dependents := reverseDependencies(items, deps)
+	result := drainTopologicalQueue(queue, inDegree, dependents)
 
 	if len(result) != len(items) {
 		return nil, fmt.Errorf("cycle detected in dependencies")
@@ -360,60 +379,112 @@ func (f *Formula) TopologicalSort() ([]string, error) {
 	return result, nil
 }
 
-// ReadySteps returns steps that have no unmet dependencies.
-// completed is a set of step IDs that have been completed.
-func (f *Formula) ReadySteps(completed map[string]bool) []string {
-	var ready []string
+func topologicalQueue(items []string, inDegree map[string]int) []string {
+	var queue []string
+	for _, id := range items {
+		if inDegree[id] == 0 {
+			queue = append(queue, id)
+		}
+	}
+	return queue
+}
 
-	switch f.Type {
-	case TypeWorkflow:
-		for _, step := range f.Steps {
-			if completed[step.ID] {
-				continue
-			}
-			allMet := true
-			for _, need := range step.Needs {
-				if !completed[need] {
-					allMet = false
-					break
-				}
-			}
-			if allMet {
-				ready = append(ready, step.ID)
-			}
+func reverseDependencies(items []string, deps map[string][]string) map[string][]string {
+	dependents := make(map[string][]string)
+	for _, id := range items {
+		for _, dep := range deps[id] {
+			dependents[dep] = append(dependents[dep], id)
 		}
-	case TypeExpansion:
-		for _, tmpl := range f.Template {
-			if completed[tmpl.ID] {
-				continue
-			}
-			allMet := true
-			for _, need := range tmpl.Needs {
-				if !completed[need] {
-					allMet = false
-					break
-				}
-			}
-			if allMet {
-				ready = append(ready, tmpl.ID)
-			}
+	}
+	return dependents
+}
+
+func drainTopologicalQueue(queue []string, inDegree map[string]int, dependents map[string][]string) []string {
+	var result []string
+	for {
+		if len(queue) == 0 {
+			break
 		}
-	case TypeConvoy:
-		// All legs are ready unless already completed
-		for _, leg := range f.Legs {
-			if !completed[leg.ID] {
-				ready = append(ready, leg.ID)
-			}
-		}
-	case TypeAspect:
-		// All aspects are ready unless already completed
-		for _, aspect := range f.Aspects {
-			if !completed[aspect.ID] {
-				ready = append(ready, aspect.ID)
+		id := queue[0]
+		queue = queue[1:]
+		result = append(result, id)
+		for _, dependent := range dependents[id] {
+			inDegree[dependent]--
+			if inDegree[dependent] == 0 {
+				queue = append(queue, dependent)
 			}
 		}
 	}
+	return result
+}
 
+// ReadySteps returns steps that have no unmet dependencies.
+// completed is a set of step IDs that have been completed.
+func (f *Formula) ReadySteps(completed map[string]bool) []string {
+	switch f.Type {
+	case TypeWorkflow:
+		return readyWorkflowSteps(f.Steps, completed)
+	case TypeExpansion:
+		return readyExpansionSteps(f.Template, completed)
+	case TypeConvoy:
+		// All legs are ready unless already completed
+		return readyLegs(f.Legs, completed)
+	case TypeAspect:
+		// All aspects are ready unless already completed
+		return readyAspects(f.Aspects, completed)
+	}
+
+	return nil
+}
+
+func readyWorkflowSteps(steps []Step, completed map[string]bool) []string {
+	var ready []string
+	for _, step := range steps {
+		if completed[step.ID] || !needsCompleted(step.Needs, completed) {
+			continue
+		}
+		ready = append(ready, step.ID)
+	}
+	return ready
+}
+
+func readyExpansionSteps(templates []Template, completed map[string]bool) []string {
+	var ready []string
+	for _, tmpl := range templates {
+		if completed[tmpl.ID] || !needsCompleted(tmpl.Needs, completed) {
+			continue
+		}
+		ready = append(ready, tmpl.ID)
+	}
+	return ready
+}
+
+func needsCompleted(needs []string, completed map[string]bool) bool {
+	for _, need := range needs {
+		if !completed[need] {
+			return false
+		}
+	}
+	return true
+}
+
+func readyLegs(legs []Leg, completed map[string]bool) []string {
+	var ready []string
+	for _, leg := range legs {
+		if !completed[leg.ID] {
+			ready = append(ready, leg.ID)
+		}
+	}
+	return ready
+}
+
+func readyAspects(aspects []Aspect, completed map[string]bool) []string {
+	var ready []string
+	for _, aspect := range aspects {
+		if !completed[aspect.ID] {
+			ready = append(ready, aspect.ID)
+		}
+	}
 	return ready
 }
 
@@ -512,11 +583,8 @@ func Resolve(formula *Formula, searchPaths []string) (*Formula, error) {
 // resolveChain is the recursive workhorse for Resolve; chain tracks the current
 // extends chain for cycle detection.
 func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Formula, error) {
-	// Cycle detection
-	for _, name := range chain {
-		if name == formula.Name {
-			return nil, fmt.Errorf("circular extends detected: %s", strings.Join(append(chain, formula.Name), " -> "))
-		}
+	if err := checkExtendsCycle(formula.Name, chain); err != nil {
+		return nil, err
 	}
 
 	// No inheritance or composition — validate and return as-is.
@@ -528,7 +596,31 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 	}
 
 	chain = append(chain, formula.Name)
+	merged := newMergedFormula(formula)
+	if err := mergeParentFormulas(merged, formula.Extends, searchPaths, chain); err != nil {
+		return nil, err
+	}
+	mergeChildFormula(merged, formula)
+	if err := applyComposeRules(merged, formula.Compose, searchPaths); err != nil {
+		return nil, err
+	}
 
+	if err := merged.Validate(); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func checkExtendsCycle(formulaName string, chain []string) error {
+	for _, name := range chain {
+		if name == formulaName {
+			return fmt.Errorf("circular extends detected: %s", strings.Join(append(chain, formulaName), " -> "))
+		}
+	}
+	return nil
+}
+
+func newMergedFormula(formula *Formula) *Formula {
 	merged := &Formula{
 		Name:        formula.Name,
 		Description: formula.Description,
@@ -536,22 +628,26 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 		Version:     formula.Version,
 		Pour:        formula.Pour,
 		Agent:       formula.Agent,
-		Compose:     formula.Compose,
 		Vars:        make(map[string]Var),
+		FormulaComposition: FormulaComposition{
+			Compose: formula.Compose,
+		},
 	}
 	if merged.Type == "" {
 		merged.Type = TypeWorkflow
 	}
+	return merged
+}
 
-	// Merge each parent in order.
-	for _, parentName := range formula.Extends {
+func mergeParentFormulas(merged *Formula, extends, searchPaths, chain []string) error {
+	for _, parentName := range extends {
 		parent, err := loadFormulaByName(parentName, searchPaths)
 		if err != nil {
-			return nil, fmt.Errorf("extends %q: %w", parentName, err)
+			return fmt.Errorf("extends %q: %w", parentName, err)
 		}
 		parent, err = resolveChain(parent, searchPaths, chain)
 		if err != nil {
-			return nil, fmt.Errorf("resolve parent %q: %w", parentName, err)
+			return fmt.Errorf("resolve parent %q: %w", parentName, err)
 		}
 
 		// Inherit vars (child overrides take precedence later).
@@ -568,8 +664,10 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 			merged.Description = parent.Description
 		}
 	}
+	return nil
+}
 
-	// Apply child vars (override any inherited).
+func mergeChildFormula(merged, formula *Formula) {
 	for name, v := range formula.Vars {
 		merged.Vars[name] = v
 	}
@@ -579,23 +677,21 @@ func resolveChain(formula *Formula, searchPaths []string, chain []string) (*Form
 	if formula.Description != "" {
 		merged.Description = formula.Description
 	}
+}
 
-	// Apply compose expand rules.
-	if formula.Compose != nil {
-		for _, rule := range formula.Compose.Expand {
-			expanded, err := applyExpandRule(merged.Steps, rule, searchPaths)
-			if err != nil {
-				return nil, fmt.Errorf("compose expand %q with %q: %w", rule.Target, rule.With, err)
-			}
-			merged.Steps = expanded
+func applyComposeRules(merged *Formula, compose *ComposeRules, searchPaths []string) error {
+	if compose == nil {
+		return nil
+	}
+	for _, rule := range compose.Expand {
+		expanded, err := applyExpandRule(merged.Steps, rule, searchPaths)
+		if err != nil {
+			return fmt.Errorf("compose expand %q with %q: %w", rule.Target, rule.With, err)
 		}
-		// compose.aspects is recorded but not yet acted upon (future work).
+		merged.Steps = expanded
 	}
-
-	if err := merged.Validate(); err != nil {
-		return nil, err
-	}
-	return merged, nil
+	// compose.aspects is recorded but not yet acted upon (future work).
+	return nil
 }
 
 // loadFormulaByName loads a formula by name: embedded FS first, then searchPaths.
@@ -621,76 +717,93 @@ func loadFormulaByName(name string, searchPaths []string) (*Formula, error) {
 // expansion formula.  Steps that depended on the target are updated to depend on
 // the last expanded step instead.
 func applyExpandRule(steps []Step, rule *ExpandRule, searchPaths []string) ([]Step, error) {
-	// Load the expansion formula.
-	expansion, err := loadFormulaByName(rule.With, searchPaths)
+	expansion, err := loadExpansionFormula(rule.With, searchPaths)
 	if err != nil {
-		return nil, fmt.Errorf("expansion formula %q: %w", rule.With, err)
+		return nil, err
+	}
+	targetIdx, targetStep, err := findTargetStep(steps, rule.Target)
+	if err != nil {
+		return nil, err
+	}
+	expanded := buildExpandedSteps(expansion.Template, rule, targetStep)
+	return replaceExpandedStep(steps, targetIdx, expanded, rule.Target), nil
+}
+
+func loadExpansionFormula(name string, searchPaths []string) (*Formula, error) {
+	expansion, err := loadFormulaByName(name, searchPaths)
+	if err != nil {
+		return nil, fmt.Errorf("expansion formula %q: %w", name, err)
 	}
 	if expansion.Type != TypeExpansion {
-		return nil, fmt.Errorf("formula %q is type %q, want %q", rule.With, expansion.Type, TypeExpansion)
+		return nil, fmt.Errorf("formula %q is type %q, want %q", name, expansion.Type, TypeExpansion)
 	}
 	if len(expansion.Template) == 0 {
-		return nil, fmt.Errorf("expansion formula %q has no template steps", rule.With)
+		return nil, fmt.Errorf("expansion formula %q has no template steps", name)
 	}
+	return expansion, nil
+}
 
-	// Locate the target step.
-	targetIdx := -1
-	var targetStep Step
-	for i, s := range steps {
-		if s.ID == rule.Target {
-			targetIdx = i
-			targetStep = s
-			break
+func findTargetStep(steps []Step, target string) (int, Step, error) {
+	for i, step := range steps {
+		if step.ID == target {
+			return i, step, nil
 		}
 	}
-	if targetIdx == -1 {
-		return nil, fmt.Errorf("target step %q not found in formula steps", rule.Target)
-	}
+	return -1, Step{}, fmt.Errorf("target step %q not found in formula steps", target)
+}
 
-	// Build expanded steps from the expansion template.
-	expanded := make([]Step, 0, len(expansion.Template))
-	for _, tmpl := range expansion.Template {
-		newStep := Step{
-			ID:          expandPlaceholders(tmpl.ID, rule.Target, targetStep),
-			Title:       expandPlaceholders(tmpl.Title, rule.Target, targetStep),
-			Description: expandPlaceholders(tmpl.Description, rule.Target, targetStep),
-			Acceptance:  expandPlaceholders(tmpl.Acceptance, rule.Target, targetStep),
-		}
-		if len(tmpl.Needs) == 0 {
-			// First expanded step inherits the target's own needs.
-			newStep.Needs = append([]string(nil), targetStep.Needs...)
-		} else {
-			newStep.Needs = make([]string, len(tmpl.Needs))
-			for i, need := range tmpl.Needs {
-				newStep.Needs[i] = expandPlaceholders(need, rule.Target, targetStep)
-			}
-		}
-		expanded = append(expanded, newStep)
+func buildExpandedSteps(templates []Template, rule *ExpandRule, targetStep Step) []Step {
+	expanded := make([]Step, 0, len(templates))
+	for _, tmpl := range templates {
+		expanded = append(expanded, buildExpandedStep(tmpl, rule, targetStep))
 	}
+	return expanded
+}
 
+func buildExpandedStep(tmpl Template, rule *ExpandRule, targetStep Step) Step {
+	step := Step{
+		ID:          expandPlaceholders(tmpl.ID, rule.Target, targetStep),
+		Title:       expandPlaceholders(tmpl.Title, rule.Target, targetStep),
+		Description: expandPlaceholders(tmpl.Description, rule.Target, targetStep),
+		Acceptance:  expandPlaceholders(tmpl.Acceptance, rule.Target, targetStep),
+	}
+	if len(tmpl.Needs) == 0 {
+		// First expanded step inherits the target's own needs.
+		step.Needs = append([]string(nil), targetStep.Needs...)
+		return step
+	}
+	step.Needs = make([]string, len(tmpl.Needs))
+	for i, need := range tmpl.Needs {
+		step.Needs[i] = expandPlaceholders(need, rule.Target, targetStep)
+	}
+	return step
+}
+
+func replaceExpandedStep(steps []Step, targetIdx int, expanded []Step, target string) []Step {
 	lastExpanded := expanded[len(expanded)-1].ID
-
-	// Rebuild step list: replace target with expanded steps; update dependents.
 	result := make([]Step, 0, len(steps)-1+len(expanded))
 	for i, step := range steps {
 		if i == targetIdx {
 			result = append(result, expanded...)
 			continue
 		}
-		// Rewrite any needs that referenced the replaced target.
-		updated := false
-		for j, need := range step.Needs {
-			if need == rule.Target {
-				if !updated {
-					step.Needs = append([]string(nil), step.Needs...)
-					updated = true
-				}
-				step.Needs[j] = lastExpanded
-			}
-		}
-		result = append(result, step)
+		result = append(result, rewriteStepDependency(step, target, lastExpanded))
 	}
-	return result, nil
+	return result
+}
+
+func rewriteStepDependency(step Step, target, replacement string) Step {
+	updated := false
+	for j, need := range step.Needs {
+		if need == target {
+			if !updated {
+				step.Needs = append([]string(nil), step.Needs...)
+				updated = true
+			}
+			step.Needs[j] = replacement
+		}
+	}
+	return step
 }
 
 // expandPlaceholders replaces {target} and {target.title}/{target.description}

@@ -46,22 +46,6 @@ Examples:
 	RunE: runOrphans,
 }
 
-var (
-	orphansDays int
-	orphansAll  bool
-	orphansRig  string
-
-	// Kill commits command flags
-	orphansKillDryRun bool
-	orphansKillDays   int
-	orphansKillAll    bool
-	orphansKillForce  bool
-
-	// Process orphan flags
-	orphansProcsForce      bool
-	orphansProcsAggressive bool
-)
-
 // Commit orphan kill command
 var orphansKillCmd = &cobra.Command{
 	Use:   "kill",
@@ -155,21 +139,21 @@ Examples:
 }
 
 func init() {
-	orphansCmd.Flags().IntVar(&orphansDays, "days", 7, "Show orphans from last N days")
-	orphansCmd.Flags().BoolVar(&orphansAll, "all", false, "Show all orphans (no date filter)")
-	orphansCmd.PersistentFlags().StringVar(&orphansRig, "rig", "", "Target rig name (required when not in a rig directory)")
+	orphansCmd.Flags().Int("days", 7, "Show orphans from last N days")
+	orphansCmd.Flags().Bool("all", false, "Show all orphans (no date filter)")
+	orphansCmd.PersistentFlags().String("rig", "", "Target rig name (required when not in a rig directory)")
 
 	// Kill commits command flags
-	orphansKillCmd.Flags().BoolVar(&orphansKillDryRun, "dry-run", false, "Preview without deleting")
-	orphansKillCmd.Flags().IntVar(&orphansKillDays, "days", 7, "Kill orphans from last N days")
-	orphansKillCmd.Flags().BoolVar(&orphansKillAll, "all", false, "Kill all orphans (no date filter)")
-	orphansKillCmd.Flags().BoolVar(&orphansKillForce, "force", false, "Skip confirmation prompt")
+	orphansKillCmd.Flags().Bool("dry-run", false, "Preview without deleting")
+	orphansKillCmd.Flags().Int("days", 7, "Kill orphans from last N days")
+	orphansKillCmd.Flags().Bool("all", false, "Kill all orphans (no date filter)")
+	orphansKillCmd.Flags().Bool("force", false, "Skip confirmation prompt")
 
 	// Process orphan kill command flags
-	orphansProcsKillCmd.Flags().BoolVarP(&orphansProcsForce, "force", "f", false, "Kill without confirmation")
+	orphansProcsKillCmd.Flags().BoolP("force", "f", false, "Kill without confirmation")
 
 	// Aggressive flag for all procs commands (persistent so it applies to subcommands)
-	orphansProcsCmd.PersistentFlags().BoolVar(&orphansProcsAggressive, "aggressive", false, "Use tmux session verification to find ALL orphans (not just PPID=1)")
+	orphansProcsCmd.PersistentFlags().Bool("aggressive", false, "Use tmux session verification to find ALL orphans (not just PPID=1)")
 
 	// Wire up subcommands
 	orphansProcsCmd.AddCommand(orphansProcsListCmd)
@@ -181,6 +165,50 @@ func init() {
 	rootCmd.AddCommand(orphansCmd)
 }
 
+type orphansOptions struct {
+	days int
+	all  bool
+	rig  string
+}
+
+type orphansKillOptions struct {
+	days   int
+	all    bool
+	dryRun bool
+	force  bool
+	rig    string
+}
+
+type orphanProcessesOptions struct {
+	force      bool
+	aggressive bool
+}
+
+func orphansOptionsFromCommand(cmd *cobra.Command) orphansOptions {
+	return orphansOptions{
+		days: commandIntFlag(cmd, "days"),
+		all:  commandBoolFlag(cmd, "all"),
+		rig:  commandStringFlag(cmd, "rig"),
+	}
+}
+
+func orphansKillOptionsFromCommand(cmd *cobra.Command) orphansKillOptions {
+	return orphansKillOptions{
+		days:   commandIntFlag(cmd, "days"),
+		all:    commandBoolFlag(cmd, "all"),
+		dryRun: commandBoolFlag(cmd, "dry-run"),
+		force:  commandBoolFlag(cmd, "force"),
+		rig:    commandStringFlag(cmd, "rig"),
+	}
+}
+
+func orphanProcessesOptionsFromCommand(cmd *cobra.Command) orphanProcessesOptions {
+	return orphanProcessesOptions{
+		force:      commandBoolFlag(cmd, "force"),
+		aggressive: commandBoolFlag(cmd, "aggressive"),
+	}
+}
+
 // OrphanCommit represents an unreachable commit
 type OrphanCommit struct {
 	SHA     string
@@ -189,110 +217,155 @@ type OrphanCommit struct {
 	Subject string
 }
 
-func runOrphans(cmd *cobra.Command, args []string) error {
-	// Find workspace to determine rig root
+type orphansScan struct {
+	opts          orphansOptions
+	rigName       string
+	r             *rig.Rig
+	mayorPath     string
+	commitOrphans []OrphanCommit
+	filtered      []OrphanCommit
+}
+
+func runOrphans(cmd *cobra.Command, _ []string) error {
+	scan, err := beginOrphansScan(orphansOptionsFromCommand(cmd))
+	if err != nil {
+		return err
+	}
+	found, err := reportOrphanCommits(scan)
+	if err != nil {
+		return err
+	}
+	foundBranches, skipped := reportOrphanBranches(scan)
+	printSkippedPolecats(skipped)
+	printOrphansEmpty(scan, found || foundBranches)
+	return nil
+}
+
+func beginOrphansScan(opts orphansOptions) (*orphansScan, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Find rig: use --rig flag if provided, otherwise infer from cwd
-	var rigName string
-	var r *rig.Rig
-	if orphansRig != "" {
-		_, r, err = getRig(orphansRig)
-		if err != nil {
-			return err
-		}
-		rigName = orphansRig
-	} else {
-		rigName, r, err = findCurrentRig(townRoot)
-		if err != nil {
-			return fmt.Errorf("not in a rig directory. Use --rig <name> to specify the target rig, or run from within a rig directory")
-		}
-	}
-
-	// We need to run from the mayor's clone (main git repo for the rig)
-	mayorPath := r.Path + "/mayor/rig"
-	foundAnything := false
-
-	// --- Orphaned commits (git fsck) ---
-	fmt.Printf("Scanning for orphaned commits in %s...\n\n", rigName)
-
-	orphans, err := findOrphanCommits(mayorPath)
+	rigName, r, err := resolveOrphansRig(opts.rig, townRoot)
 	if err != nil {
-		return fmt.Errorf("finding orphans: %w", err)
+		return nil, err
 	}
+	return &orphansScan{
+		opts:      opts,
+		rigName:   rigName,
+		r:         r,
+		mayorPath: r.Path + "/mayor/rig",
+	}, nil
+}
 
-	// Filter by date unless --all
-	cutoff := time.Now().AddDate(0, 0, -orphansDays)
+func resolveOrphansRig(rigName, townRoot string) (string, *rig.Rig, error) {
+	if rigName != "" {
+		_, r, err := getRig(rigName)
+		if err != nil {
+			return "", nil, err
+		}
+		return rigName, r, nil
+	}
+	name, r, err := findCurrentRig(townRoot)
+	if err != nil {
+		return "", nil, fmt.Errorf("not in a rig directory. Use --rig <name> to specify the target rig, or run from within a rig directory")
+	}
+	return name, r, nil
+}
+
+func filterOrphanCommits(orphans []OrphanCommit, days int, all bool) []OrphanCommit {
+	cutoff := time.Now().AddDate(0, 0, -days)
 	var filtered []OrphanCommit
 	for _, o := range orphans {
-		if orphansAll || o.Date.After(cutoff) {
+		if all || o.Date.After(cutoff) {
 			filtered = append(filtered, o)
 		}
 	}
+	return filtered
+}
 
-	if len(filtered) > 0 {
-		foundAnything = true
-		fmt.Printf("%s Found %d orphaned commit(s):\n\n", style.Warning.Render("⚠"), len(filtered))
-		for _, o := range filtered {
-			age := formatAge(o.Date)
-			fmt.Printf("  %s %s\n", style.Bold.Render(shortHash(o.SHA)), o.Subject)
-			fmt.Printf("    %s by %s\n\n", style.Dim.Render(age), o.Author)
-		}
-		fmt.Printf("%s\n", style.Dim.Render("To recover a commit:"))
-		fmt.Printf("%s\n", style.Dim.Render("  git cherry-pick <sha>     # Apply to current branch"))
-		fmt.Printf("%s\n", style.Dim.Render("  git show <sha>            # View full commit"))
-		fmt.Printf("%s\n\n", style.Dim.Render("  git branch rescue <sha>   # Create branch from commit"))
-	}
-
-	// --- Unmerged polecat worktree branches ---
-	defaultBranch := r.DefaultBranch()
-	fmt.Printf("Scanning polecat worktrees for unmerged branches...\n\n")
-
-	polecatBranches, skipped, err := findOrphanPolecatBranches(r.Path, rigName, defaultBranch)
+func reportOrphanCommits(scan *orphansScan) (bool, error) {
+	fmt.Printf("Scanning for orphaned commits in %s...\n\n", scan.rigName)
+	orphans, err := findOrphanCommits(scan.mayorPath)
 	if err != nil {
-		// Non-fatal: report the error but continue
-		fmt.Printf("%s Could not scan polecat worktrees: %v\n\n", style.Dim.Render("ℹ"), err)
-	} else if len(polecatBranches) > 0 {
-		foundAnything = true
-		fmt.Printf("%s Found %d unmerged polecat branch(es):\n\n", style.Warning.Render("⚠"), len(polecatBranches))
-		for _, b := range polecatBranches {
-			fmt.Printf("  %s %s (%d commit(s) ahead of %s)\n",
-				style.Bold.Render(b.Polecat), b.Branch, b.AheadCount, defaultBranch)
-			if b.LatestSubject != "" {
-				fmt.Printf("    %s %s\n", style.Dim.Render("latest:"), b.LatestSubject)
-			}
-			if b.HasUncommitted {
-				fmt.Printf("    %s\n", style.Warning.Render("has uncommitted changes"))
-			}
-			fmt.Printf("    %s %s\n", style.Dim.Render("path:"), b.WorktreePath)
-			fmt.Println()
-		}
-		fmt.Printf("%s\n", style.Dim.Render("To recover polecat work:"))
-		fmt.Printf("  %s\n", style.Dim.Render("cd <path>                   # Enter the worktree (see path above)"))
-		fmt.Printf("  %s\n\n", style.Dim.Render(fmt.Sprintf("git log %s..HEAD        # View unmerged commits", defaultBranch)))
+		return false, fmt.Errorf("finding orphans: %w", err)
 	}
+	scan.commitOrphans = orphans
+	scan.filtered = filterOrphanCommits(orphans, scan.opts.days, scan.opts.all)
+	if len(scan.filtered) == 0 {
+		return false, nil
+	}
+	printOrphanCommitList(scan.filtered)
+	return true, nil
+}
 
-	if len(skipped) > 0 {
-		fmt.Printf("%s Skipped %d polecat(s) due to errors:\n", style.Warning.Render("⚠"), len(skipped))
-		for _, s := range skipped {
-			fmt.Printf("  %s: %s\n", s.Polecat, s.Err)
+func printOrphanCommitList(filtered []OrphanCommit) {
+	fmt.Printf("%s Found %d orphaned commit(s):\n\n", style.Warning.Render("⚠"), len(filtered))
+	for _, o := range filtered {
+		fmt.Printf("  %s %s\n", style.Bold.Render(shortHash(o.SHA)), o.Subject)
+		fmt.Printf("    %s by %s\n\n", style.Dim.Render(formatAge(o.Date)), o.Author)
+	}
+	fmt.Printf("%s\n", style.Dim.Render("To recover a commit:"))
+	fmt.Printf("%s\n", style.Dim.Render("  git cherry-pick <sha>     # Apply to current branch"))
+	fmt.Printf("%s\n", style.Dim.Render("  git show <sha>            # View full commit"))
+	fmt.Printf("%s\n\n", style.Dim.Render("  git branch rescue <sha>   # Create branch from commit"))
+}
+
+func reportOrphanBranches(scan *orphansScan) (bool, []skippedPolecat) {
+	defaultBranch := scan.r.DefaultBranch()
+	fmt.Printf("Scanning polecat worktrees for unmerged branches...\n\n")
+	polecatBranches, skipped, err := findOrphanPolecatBranches(scan.r.Path, scan.rigName, defaultBranch)
+	if err != nil {
+		fmt.Printf("%s Could not scan polecat worktrees: %v\n\n", style.Dim.Render("ℹ"), err)
+		return false, skipped
+	}
+	if len(polecatBranches) == 0 {
+		return false, skipped
+	}
+	printOrphanBranchList(polecatBranches, defaultBranch)
+	return true, skipped
+}
+
+func printOrphanBranchList(polecatBranches []OrphanBranch, defaultBranch string) {
+	fmt.Printf("%s Found %d unmerged polecat branch(es):\n\n", style.Warning.Render("⚠"), len(polecatBranches))
+	for _, b := range polecatBranches {
+		fmt.Printf("  %s %s (%d commit(s) ahead of %s)\n",
+			style.Bold.Render(b.Polecat), b.Branch, b.AheadCount, defaultBranch)
+		if b.LatestSubject != "" {
+			fmt.Printf("    %s %s\n", style.Dim.Render("latest:"), b.LatestSubject)
 		}
+		if b.HasUncommitted {
+			fmt.Printf("    %s\n", style.Warning.Render("has uncommitted changes"))
+		}
+		fmt.Printf("    %s %s\n", style.Dim.Render("path:"), b.WorktreePath)
 		fmt.Println()
 	}
+	fmt.Printf("%s\n", style.Dim.Render("To recover polecat work:"))
+	fmt.Printf("  %s\n", style.Dim.Render("cd <path>                   # Enter the worktree (see path above)"))
+	fmt.Printf("  %s\n\n", style.Dim.Render(fmt.Sprintf("git log %s..HEAD        # View unmerged commits", defaultBranch)))
+}
 
-	if !foundAnything {
-		if len(orphans) > 0 && len(filtered) == 0 {
-			fmt.Printf("%s No orphaned commits in the last %d days\n", style.Bold.Render("✓"), orphansDays)
-			fmt.Printf("%s Use --days=N or --all to see older orphans\n", style.Dim.Render("Hint:"))
-		} else {
-			fmt.Printf("%s No orphaned work found\n", style.Bold.Render("✓"))
-		}
+func printSkippedPolecats(skipped []skippedPolecat) {
+	if len(skipped) == 0 {
+		return
 	}
+	fmt.Printf("%s Skipped %d polecat(s) due to errors:\n", style.Warning.Render("⚠"), len(skipped))
+	for _, s := range skipped {
+		fmt.Printf("  %s: %s\n", s.Polecat, s.Err)
+	}
+	fmt.Println()
+}
 
-	return nil
+func printOrphansEmpty(scan *orphansScan, foundAnything bool) {
+	if foundAnything {
+		return
+	}
+	if len(scan.commitOrphans) > 0 && len(scan.filtered) == 0 {
+		fmt.Printf("%s No orphaned commits in the last %d days\n", style.Bold.Render("✓"), scan.opts.days)
+		fmt.Printf("%s Use --days=N or --all to see older orphans\n", style.Dim.Render("Hint:"))
+		return
+	}
+	fmt.Printf("%s No orphaned work found\n", style.Bold.Render("✓"))
 }
 
 // OrphanBranch represents a polecat worktree with unmerged work.
@@ -338,146 +411,146 @@ func findOrphanPolecatBranches(rigPath, rigName, defaultBranch string) ([]Orphan
 	polecatsDir := filepath.Join(rigPath, constants.DirPolecats)
 	entries, err := os.ReadDir(polecatsDir)
 	if os.IsNotExist(err) {
-		return nil, nil, nil // No polecats directory
+		return nil, nil, nil
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading polecats dir: %w", err)
 	}
-
 	var branches []OrphanBranch
 	var skipped []skippedPolecat
-
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-
-		polecatName := entry.Name()
-
-		worktreePath := resolvePolecatWorktree(polecatsDir, polecatName, rigName)
-		if worktreePath == "" {
-			continue // No valid git worktree
-		}
-
-		g := gitpkg.NewGit(worktreePath)
-
-		// Get current branch
-		branch, err := g.CurrentBranch()
-		if err != nil {
-			skipped = append(skipped, skippedPolecat{polecatName, fmt.Sprintf("cannot determine branch: %v", err)})
+		branch, skip, ok := inspectPolecatWorktree(polecatsDir, entry.Name(), rigName, defaultBranch)
+		if skip != nil {
+			skipped = append(skipped, *skip)
 			continue
 		}
-		branch = strings.TrimSpace(branch)
-		if branch == "" || branch == "HEAD" || branch == defaultBranch {
-			continue // On default branch or detached HEAD — nothing unmerged
+		if ok {
+			branches = append(branches, branch)
 		}
-
-		// Count commits ahead of default branch (try local ref, then origin/)
-		baseRef := defaultBranch
-		revListCmd := exec.Command("git", "-C", worktreePath, "rev-list", "--count", baseRef+"..HEAD")
-		countOut, err := revListCmd.Output()
-		if err != nil {
-			baseRef = "origin/" + defaultBranch
-			revListCmd = exec.Command("git", "-C", worktreePath, "rev-list", "--count", baseRef+"..HEAD")
-			countOut, err = revListCmd.Output()
-			if err != nil {
-				skipped = append(skipped, skippedPolecat{polecatName, fmt.Sprintf("rev-list failed: %v", err)})
-				continue
-			}
-		}
-		count, err := strconv.Atoi(strings.TrimSpace(string(countOut)))
-		if err != nil || count == 0 {
-			continue // No commits ahead
-		}
-
-		// Get the latest commit subject
-		logCmd := exec.Command("git", "-C", worktreePath, "log", "-1", "--format=%s")
-		logOut, err := logCmd.Output()
-		latestSubject := ""
-		if err != nil {
-			skipped = append(skipped, skippedPolecat{polecatName, fmt.Sprintf("git log failed: %v", err)})
-			continue
-		}
-		latestSubject = strings.TrimSpace(string(logOut))
-
-		// Check for uncommitted changes
-		gitStatus, err := g.Status()
-		hasUncommitted := false
-		if err != nil {
-			skipped = append(skipped, skippedPolecat{polecatName, fmt.Sprintf("git status failed: %v", err)})
-			continue
-		}
-		hasUncommitted = !gitStatus.Clean
-
-		branches = append(branches, OrphanBranch{
-			Polecat:        polecatName,
-			Branch:         branch,
-			AheadCount:     count,
-			LatestSubject:  latestSubject,
-			HasUncommitted: hasUncommitted,
-			WorktreePath:   worktreePath,
-		})
 	}
-
 	return branches, skipped, nil
+}
+
+func inspectPolecatWorktree(polecatsDir, polecatName, rigName, defaultBranch string) (OrphanBranch, *skippedPolecat, bool) {
+	worktreePath := resolvePolecatWorktree(polecatsDir, polecatName, rigName)
+	if worktreePath == "" {
+		return OrphanBranch{}, nil, false
+	}
+	branch, skip := polecatUnmergedBranch(worktreePath, polecatName, defaultBranch)
+	if skip != nil || branch == "" {
+		return OrphanBranch{}, skip, false
+	}
+	count, skip := polecatAheadCount(worktreePath, polecatName, defaultBranch)
+	if skip != nil || count == 0 {
+		return OrphanBranch{}, skip, false
+	}
+	subject, uncommitted, skip := polecatWorktreeState(worktreePath, polecatName)
+	if skip != nil {
+		return OrphanBranch{}, skip, false
+	}
+	return OrphanBranch{
+		Polecat:        polecatName,
+		Branch:         branch,
+		AheadCount:     count,
+		LatestSubject:  subject,
+		HasUncommitted: uncommitted,
+		WorktreePath:   worktreePath,
+	}, nil, true
+}
+
+func polecatUnmergedBranch(worktreePath, polecatName, defaultBranch string) (string, *skippedPolecat) {
+	branch, err := gitpkg.CurrentBranch(gitpkg.NewGit(worktreePath))
+	if err != nil {
+		return "", &skippedPolecat{polecatName, fmt.Sprintf("cannot determine branch: %v", err)}
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" || branch == "HEAD" || branch == defaultBranch {
+		return "", nil
+	}
+	return branch, nil
+}
+
+func polecatAheadCount(worktreePath, polecatName, defaultBranch string) (int, *skippedPolecat) {
+	countOut, err := exec.Command("git", "-C", worktreePath, "rev-list", "--count", defaultBranch+"..HEAD").Output()
+	if err != nil {
+		countOut, err = exec.Command("git", "-C", worktreePath, "rev-list", "--count", "origin/"+defaultBranch+"..HEAD").Output()
+		if err != nil {
+			return 0, &skippedPolecat{polecatName, fmt.Sprintf("rev-list failed: %v", err)}
+		}
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(string(countOut)))
+	if err != nil {
+		return 0, nil
+	}
+	return count, nil
+}
+
+func polecatWorktreeState(worktreePath, polecatName string) (string, bool, *skippedPolecat) {
+	logOut, err := exec.Command("git", "-C", worktreePath, "log", "-1", "--format=%s").Output()
+	if err != nil {
+		return "", false, &skippedPolecat{polecatName, fmt.Sprintf("git log failed: %v", err)}
+	}
+	gitStatus, err := gitpkg.Status(gitpkg.NewGit(worktreePath))
+	if err != nil {
+		return "", false, &skippedPolecat{polecatName, fmt.Sprintf("git status failed: %v", err)}
+	}
+	return strings.TrimSpace(string(logOut)), !gitStatus.Clean, nil
 }
 
 // findOrphanCommits runs git fsck and parses orphaned commits
 func findOrphanCommits(repoPath string) ([]OrphanCommit, error) {
-	// Run git fsck to find unreachable objects
+	shas, err := unreachableCommitSHAs(repoPath)
+	if err != nil || len(shas) == 0 {
+		return nil, err
+	}
+	return collectOrphanCommitDetails(repoPath, shas), nil
+}
+
+func unreachableCommitSHAs(repoPath string) ([]string, error) {
 	fsckCmd := exec.Command("git", "fsck", "--unreachable", "--no-reflogs")
 	fsckCmd.Dir = repoPath
-
 	var fsckOut, fsckErr bytes.Buffer
 	fsckCmd.Stdout = &fsckOut
 	fsckCmd.Stderr = &fsckErr
-
-	if err := fsckCmd.Run(); err != nil {
-		// git fsck returns non-zero if there are issues, but we still get output
-		// Only fail if we got no output at all
-		if fsckOut.Len() == 0 {
-			// Include stderr in error message for debugging
-			errMsg := strings.TrimSpace(fsckErr.String())
-			if errMsg != "" {
-				return nil, fmt.Errorf("git fsck failed: %w (%s)", err, errMsg)
-			}
-			return nil, fmt.Errorf("git fsck failed: %w", err)
-		}
+	if err := fsckCmd.Run(); err != nil && fsckOut.Len() == 0 {
+		return nil, fsckFailure(err, fsckErr.String())
 	}
+	return parseUnreachableCommitSHAs(&fsckOut), nil
+}
 
-	// Parse commit SHAs from output
+func fsckFailure(err error, stderr string) error {
+	errMsg := strings.TrimSpace(stderr)
+	if errMsg != "" {
+		return fmt.Errorf("git fsck failed: %w (%s)", err, errMsg)
+	}
+	return fmt.Errorf("git fsck failed: %w", err)
+}
+
+func parseUnreachableCommitSHAs(fsckOut *bytes.Buffer) []string {
 	var commitSHAs []string
-	scanner := bufio.NewScanner(&fsckOut)
+	scanner := bufio.NewScanner(fsckOut)
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Format: "unreachable commit <sha>"
 		if strings.HasPrefix(line, "unreachable commit ") {
-			sha := strings.TrimPrefix(line, "unreachable commit ")
-			commitSHAs = append(commitSHAs, sha)
+			commitSHAs = append(commitSHAs, strings.TrimPrefix(line, "unreachable commit "))
 		}
 	}
+	return commitSHAs
+}
 
-	if len(commitSHAs) == 0 {
-		return nil, nil
-	}
-
-	// Get details for each commit
+func collectOrphanCommitDetails(repoPath string, commitSHAs []string) []OrphanCommit {
 	var orphans []OrphanCommit
 	for _, sha := range commitSHAs {
 		commit, err := getCommitDetails(repoPath, sha)
-		if err != nil {
-			continue // Skip commits we can't parse
-		}
-
-		// Skip stash-like and routine sync commits
-		if isNoiseCommit(commit.Subject) {
+		if err != nil || isNoiseCommit(commit.Subject) {
 			continue
 		}
-
 		orphans = append(orphans, commit)
 	}
-
-	return orphans, nil
+	return orphans
 }
 
 // getCommitDetails retrieves commit metadata
@@ -547,156 +620,194 @@ func formatAge(t time.Time) string {
 }
 
 // runOrphansKill removes orphaned commits and kills orphaned processes
-func runOrphansKill(cmd *cobra.Command, args []string) error {
+type orphansKillRun struct {
+	opts            orphansKillOptions
+	rigName         string
+	mayorPath       string
+	commitOrphans   []OrphanCommit
+	filteredCommits []OrphanCommit
+	procOrphans     []OrphanProcess
+}
+
+func runOrphansKill(cmd *cobra.Command, _ []string) error {
+	k, err := beginOrphansKill(cmd)
+	if err != nil {
+		return err
+	}
+	if err := loadOrphansKillTargets(k); err != nil {
+		return err
+	}
+	if len(k.filteredCommits) == 0 && len(k.procOrphans) == 0 {
+		fmt.Printf("%s No orphans found\n", style.Bold.Render("✓"))
+		return nil
+	}
+	printOrphansKillPlan(k)
+	if k.opts.dryRun {
+		fmt.Printf("%s Dry run - no changes made\n", style.Dim.Render("ℹ"))
+		return nil
+	}
+	if !confirmOrphansKill(k) {
+		return nil
+	}
+	return executeOrphansKill(k)
+}
+
+func beginOrphansKill(cmd *cobra.Command) (*orphansKillRun, error) {
+	opts := orphansKillOptionsFromCommand(cmd)
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-
-	// Find rig: use --rig flag if provided, otherwise infer from cwd
-	var rigName string
-	var r *rig.Rig
-	if orphansRig != "" {
-		_, r, err = getRig(orphansRig)
-		if err != nil {
-			return err
-		}
-		rigName = orphansRig
-	} else {
-		rigName, r, err = findCurrentRig(townRoot)
-		if err != nil {
-			return fmt.Errorf("not in a rig directory. Use --rig <name> to specify the target rig, or run from within a rig directory")
-		}
+	rigName, r, err := resolveOrphansRig(opts.rig, townRoot)
+	if err != nil {
+		return nil, err
 	}
+	return &orphansKillRun{
+		opts:      opts,
+		rigName:   rigName,
+		mayorPath: r.Path + "/mayor/rig",
+	}, nil
+}
 
-	mayorPath := r.Path + "/mayor/rig"
-
-	// Find orphaned commits
-	fmt.Printf("Scanning for orphaned commits in %s...\n", rigName)
-	commitOrphans, err := findOrphanCommits(mayorPath)
+func loadOrphansKillTargets(k *orphansKillRun) error {
+	fmt.Printf("Scanning for orphaned commits in %s...\n", k.rigName)
+	commitOrphans, err := findOrphanCommits(k.mayorPath)
 	if err != nil {
 		return fmt.Errorf("finding orphan commits: %w", err)
 	}
-
-	// Filter commits by date
-	cutoff := time.Now().AddDate(0, 0, -orphansKillDays)
-	var filteredCommits []OrphanCommit
-	for _, o := range commitOrphans {
-		if orphansKillAll || o.Date.After(cutoff) {
-			filteredCommits = append(filteredCommits, o)
-		}
-	}
-
-	// Find orphaned processes
+	k.commitOrphans = commitOrphans
+	k.filteredCommits = filterOrphanCommits(commitOrphans, k.opts.days, k.opts.all)
 	fmt.Printf("Scanning for orphaned Claude processes...\n\n")
 	procOrphans, err := findOrphanProcesses()
 	if err != nil {
 		return fmt.Errorf("finding orphan processes: %w", err)
 	}
+	k.procOrphans = procOrphans
+	return nil
+}
 
-	// Check if there's anything to do
-	if len(filteredCommits) == 0 && len(procOrphans) == 0 {
-		fmt.Printf("%s No orphans found\n", style.Bold.Render("✓"))
-		return nil
-	}
-
-	// Show orphaned commits
-	if len(filteredCommits) > 0 {
-		fmt.Printf("%s Found %d orphaned commit(s) to remove:\n\n", style.Warning.Render("⚠"), len(filteredCommits))
-		for _, o := range filteredCommits {
+func printOrphansKillPlan(k *orphansKillRun) {
+	if len(k.filteredCommits) > 0 {
+		fmt.Printf("%s Found %d orphaned commit(s) to remove:\n\n", style.Warning.Render("⚠"), len(k.filteredCommits))
+		for _, o := range k.filteredCommits {
 			fmt.Printf("  %s %s\n", style.Bold.Render(shortHash(o.SHA)), o.Subject)
 			fmt.Printf("    %s by %s\n\n", style.Dim.Render(formatAge(o.Date)), o.Author)
 		}
-	} else if len(commitOrphans) > 0 {
+	} else if len(k.commitOrphans) > 0 {
 		fmt.Printf("%s No orphaned commits in the last %d days (use --days=N or --all)\n\n",
-			style.Dim.Render("ℹ"), orphansKillDays)
+			style.Dim.Render("ℹ"), k.opts.days)
 	}
-
-	// Show orphaned processes
-	if len(procOrphans) > 0 {
-		fmt.Printf("%s Found %d orphaned Claude process(es) to kill:\n\n", style.Warning.Render("⚠"), len(procOrphans))
-		for _, o := range procOrphans {
-			displayArgs := o.Args
-			if len(displayArgs) > 80 {
-				displayArgs = displayArgs[:77] + "..."
-			}
-			fmt.Printf("  %s %s\n", style.Bold.Render(fmt.Sprintf("PID %d", o.PID)), displayArgs)
-		}
-		fmt.Println()
+	if len(k.procOrphans) == 0 {
+		return
 	}
-
-	if orphansKillDryRun {
-		fmt.Printf("%s Dry run - no changes made\n", style.Dim.Render("ℹ"))
-		return nil
+	fmt.Printf("%s Found %d orphaned Claude process(es) to kill:\n\n", style.Warning.Render("⚠"), len(k.procOrphans))
+	for _, o := range k.procOrphans {
+		fmt.Printf("  %s %s\n", style.Bold.Render(fmt.Sprintf("PID %d", o.PID)), truncateOrphanArgs(o.Args))
 	}
+	fmt.Println()
+}
 
-	// Confirmation
-	if !orphansKillForce {
-		fmt.Printf("%s\n", style.Warning.Render("WARNING: This operation is irreversible!"))
-		total := len(filteredCommits) + len(procOrphans)
-		fmt.Printf("Remove %d orphan(s)? [y/N] ", total)
-		var response string
-		_, _ = fmt.Scanln(&response)
-		if strings.ToLower(strings.TrimSpace(response)) != "y" {
-			fmt.Printf("%s Canceled\n", style.Dim.Render("ℹ"))
-			return nil
-		}
+func truncateOrphanArgs(args string) string {
+	if len(args) > 80 {
+		return args[:77] + "..."
 	}
+	return args
+}
 
-	// Kill orphaned commits
-	if len(filteredCommits) > 0 {
-		fmt.Printf("\nRunning git gc --prune=now...\n")
-		gcCmd := exec.Command("git", "gc", "--prune=now")
-		gcCmd.Dir = mayorPath
-		gcCmd.Stdout = os.Stdout
-		gcCmd.Stderr = os.Stderr
-		if err := gcCmd.Run(); err != nil {
-			return fmt.Errorf("git gc failed: %w", err)
-		}
-		fmt.Printf("%s Removed %d orphaned commit(s)\n", style.Bold.Render("✓"), len(filteredCommits))
+func confirmOrphansKill(k *orphansKillRun) bool {
+	if k.opts.force {
+		return true
 	}
-
-	// Kill orphaned processes
-	if len(procOrphans) > 0 {
-		fmt.Printf("\nKilling orphaned processes...\n")
-		// Use SIGKILL with --force for immediate termination, SIGTERM otherwise
-		signal := syscall.SIGTERM
-		if orphansKillForce {
-			signal = syscall.SIGKILL
-		}
-
-		var killed, failed int
-		for _, o := range procOrphans {
-			proc, err := os.FindProcess(o.PID)
-			if err != nil {
-				fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), o.PID, err)
-				failed++
-				continue
-			}
-
-			if err := proc.Signal(signal); err != nil {
-				if err == os.ErrProcessDone {
-					fmt.Printf("  %s PID %d: already terminated\n", style.Dim.Render("○"), o.PID)
-					continue
-				}
-				fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), o.PID, err)
-				failed++
-				continue
-			}
-
-			fmt.Printf("  %s PID %d killed\n", style.Bold.Render("✓"), o.PID)
-			killed++
-		}
-
-		fmt.Printf("%s %d process(es) killed", style.Bold.Render("✓"), killed)
-		if failed > 0 {
-			fmt.Printf(", %d failed", failed)
-		}
-		fmt.Println()
+	fmt.Printf("%s\n", style.Warning.Render("WARNING: This operation is irreversible!"))
+	fmt.Printf("Remove %d orphan(s)? [y/N] ", len(k.filteredCommits)+len(k.procOrphans))
+	var response string
+	_, _ = fmt.Scanln(&response)
+	if strings.ToLower(strings.TrimSpace(response)) != "y" {
+		fmt.Printf("%s Canceled\n", style.Dim.Render("ℹ"))
+		return false
 	}
+	return true
+}
 
+func executeOrphansKill(k *orphansKillRun) error {
+	if err := pruneOrphanCommits(k); err != nil {
+		return err
+	}
+	killOrphanProcessList(k.procOrphans, k.opts.force)
 	fmt.Printf("\n%s Orphan cleanup complete\n", style.Bold.Render("✓"))
 	return nil
+}
+
+func pruneOrphanCommits(k *orphansKillRun) error {
+	if len(k.filteredCommits) == 0 {
+		return nil
+	}
+	fmt.Printf("\nRunning git gc --prune=now...\n")
+	gcCmd := exec.Command("git", "gc", "--prune=now")
+	gcCmd.Dir = k.mayorPath
+	gcCmd.Stdout = os.Stdout
+	gcCmd.Stderr = os.Stderr
+	if err := gcCmd.Run(); err != nil {
+		return fmt.Errorf("git gc failed: %w", err)
+	}
+	fmt.Printf("%s Removed %d orphaned commit(s)\n", style.Bold.Render("✓"), len(k.filteredCommits))
+	return nil
+}
+
+func killOrphanProcessList(orphans []OrphanProcess, force bool) {
+	if len(orphans) == 0 {
+		return
+	}
+	fmt.Printf("\nKilling orphaned processes...\n")
+	signal := syscall.SIGTERM
+	if force {
+		signal = syscall.SIGKILL
+	}
+	killed, failed := signalOrphanProcesses(orphans, signal)
+	fmt.Printf("%s %d process(es) killed", style.Bold.Render("✓"), killed)
+	if failed > 0 {
+		fmt.Printf(", %d failed", failed)
+	}
+	fmt.Println()
+}
+
+func signalOrphanProcesses(orphans []OrphanProcess, signal os.Signal) (int, int) {
+	var killed, failed int
+	for _, o := range orphans {
+		switch signalOrphanPID(o.PID, signal) {
+		case orphanSignalKilled:
+			killed++
+		case orphanSignalFailed:
+			failed++
+		}
+	}
+	return killed, failed
+}
+
+type orphanSignalResult int
+
+const (
+	orphanSignalKilled orphanSignalResult = iota
+	orphanSignalFailed
+	orphanSignalGone
+)
+
+func signalOrphanPID(pid int, signal os.Signal) orphanSignalResult {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), pid, err)
+		return orphanSignalFailed
+	}
+	if err := proc.Signal(signal); err != nil {
+		if err == os.ErrProcessDone {
+			fmt.Printf("  %s PID %d: already terminated\n", style.Dim.Render("○"), pid)
+			return orphanSignalGone
+		}
+		fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), pid, err)
+		return orphanSignalFailed
+	}
+	fmt.Printf("  %s PID %d killed\n", style.Bold.Render("✓"), pid)
+	return orphanSignalKilled
 }
 
 // OrphanProcess represents a Claude process that has become orphaned (PPID=1)
@@ -707,63 +818,42 @@ type OrphanProcess struct {
 
 // findOrphanProcesses finds Claude processes with PPID=1 (orphaned)
 func findOrphanProcesses() ([]OrphanProcess, error) {
-	// Run ps to get all processes with PID, PPID, and args
-	cmd := exec.Command("ps", "-eo", "pid,ppid,args")
-	out, err := cmd.Output()
+	out, err := exec.Command("ps", "-eo", "pid,ppid,args").Output()
 	if err != nil {
 		return nil, fmt.Errorf("running ps: %w", err)
 	}
-
 	var orphans []OrphanProcess
 	scanner := bufio.NewScanner(bytes.NewReader(out))
-
-	// Skip header line
 	if scanner.Scan() {
 		// First line is header, skip it
 	}
-
 	for scanner.Scan() {
-		line := scanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
+		proc, ok := parseOrphanProcessLine(scanner.Text())
+		if ok {
+			orphans = append(orphans, proc)
 		}
-
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-
-		ppid, err := strconv.Atoi(fields[1])
-		if err != nil {
-			continue
-		}
-
-		// Only interested in orphans (PPID=1)
-		if ppid != 1 {
-			continue
-		}
-
-		// Reconstruct the args (rest of the fields)
-		args := strings.Join(fields[2:], " ")
-
-		// Check if it's a claude-related process
-		if !isClaudeProcess(args) {
-			continue
-		}
-
-		// Exclude processes we don't want to kill
-		if isExcludedProcess(args) {
-			continue
-		}
-
-		orphans = append(orphans, OrphanProcess{
-			PID:  pid,
-			Args: args,
-		})
 	}
-
 	return orphans, nil
+}
+
+func parseOrphanProcessLine(line string) (OrphanProcess, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return OrphanProcess{}, false
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return OrphanProcess{}, false
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil || ppid != 1 {
+		return OrphanProcess{}, false
+	}
+	args := strings.Join(fields[2:], " ")
+	if !isClaudeProcess(args) || isExcludedProcess(args) {
+		return OrphanProcess{}, false
+	}
+	return OrphanProcess{PID: pid, Args: args}, true
 }
 
 // isClaudeProcess checks if the process is claude-related
@@ -794,8 +884,9 @@ func isExcludedProcess(args string) bool {
 }
 
 // runOrphansListProcesses lists orphaned Claude processes
-func runOrphansListProcesses(cmd *cobra.Command, args []string) error {
-	if orphansProcsAggressive {
+func runOrphansListProcesses(cmd *cobra.Command, _ []string) error {
+	opts := orphanProcessesOptionsFromCommand(cmd)
+	if opts.aggressive {
 		return runOrphansListProcessesAggressive()
 	}
 
@@ -870,158 +961,98 @@ func formatProcessAge(seconds int) string {
 }
 
 // runOrphansKillProcesses kills orphaned Claude processes
-func runOrphansKillProcesses(cmd *cobra.Command, args []string) error {
-	if orphansProcsAggressive {
-		return runOrphansKillProcessesAggressive()
+func runOrphansKillProcesses(cmd *cobra.Command, _ []string) error {
+	opts := orphanProcessesOptionsFromCommand(cmd)
+	if opts.aggressive {
+		return runOrphansKillProcessesAggressive(opts.force)
 	}
-
 	orphans, err := findOrphanProcesses()
 	if err != nil {
 		return fmt.Errorf("finding orphan processes: %w", err)
 	}
-
 	if len(orphans) == 0 {
 		fmt.Printf("%s No orphaned Claude processes found (PPID=1)\n", style.Bold.Render("✓"))
 		fmt.Printf("%s Use --aggressive to find orphans via tmux session verification\n", style.Dim.Render("Hint:"))
 		return nil
 	}
+	printOrphanProcessKillList(orphans)
+	if !confirmOrphanProcessKill(opts.force, len(orphans)) {
+		return nil
+	}
+	return signalAndSummarizeOrphanProcesses(orphans, opts.force)
+}
 
-	// Show what we're about to kill
+func printOrphanProcessKillList(orphans []OrphanProcess) {
 	fmt.Printf("%s Found %d orphaned Claude process(es) with PPID=1:\n\n", style.Warning.Render("⚠"), len(orphans))
 	for _, o := range orphans {
-		displayArgs := o.Args
-		if len(displayArgs) > 80 {
-			displayArgs = displayArgs[:77] + "..."
-		}
-		fmt.Printf("  %s %s\n", style.Bold.Render(fmt.Sprintf("PID %d", o.PID)), displayArgs)
+		fmt.Printf("  %s %s\n", style.Bold.Render(fmt.Sprintf("PID %d", o.PID)), truncateOrphanArgs(o.Args))
 	}
 	fmt.Println()
+}
 
-	// Confirm unless --force
-	if !orphansProcsForce {
-		fmt.Printf("Kill these %d process(es)? [y/N] ", len(orphans))
-		var response string
-		_, _ = fmt.Scanln(&response)
-		response = strings.ToLower(strings.TrimSpace(response))
-		if response != "y" && response != "yes" {
-			fmt.Println("Aborted")
-			return nil
-		}
+func confirmOrphanProcessKill(force bool, count int) bool {
+	if force {
+		return true
 	}
+	fmt.Printf("Kill these %d process(es)? [y/N] ", count)
+	var response string
+	_, _ = fmt.Scanln(&response)
+	response = strings.ToLower(strings.TrimSpace(response))
+	if response != "y" && response != "yes" {
+		fmt.Println("Aborted")
+		return false
+	}
+	return true
+}
 
-	// Kill the processes
-	// Use SIGKILL with --force for immediate termination, SIGTERM otherwise
+func signalAndSummarizeOrphanProcesses(orphans []OrphanProcess, force bool) error {
 	signal := syscall.SIGTERM
-	if orphansProcsForce {
+	if force {
 		signal = syscall.SIGKILL
 	}
-
-	var killed, failed int
-	for _, o := range orphans {
-		proc, err := os.FindProcess(o.PID)
-		if err != nil {
-			fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), o.PID, err)
-			failed++
-			continue
-		}
-
-		if err := proc.Signal(signal); err != nil {
-			// Process may have already exited
-			if err == os.ErrProcessDone {
-				fmt.Printf("  %s PID %d: already terminated\n", style.Dim.Render("○"), o.PID)
-				continue
-			}
-			fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), o.PID, err)
-			failed++
-			continue
-		}
-
-		fmt.Printf("  %s PID %d killed\n", style.Bold.Render("✓"), o.PID)
-		killed++
-	}
-
+	killed, failed := signalOrphanProcesses(orphans, signal)
 	fmt.Printf("\n%s %d killed", style.Bold.Render("Summary:"), killed)
 	if failed > 0 {
 		fmt.Printf(", %d failed", failed)
 	}
 	fmt.Println()
-
 	return nil
 }
 
 // runOrphansKillProcessesAggressive kills orphans using tmux session verification.
 // This kills ALL Claude processes not in any gt-* or hq-* tmux session.
-func runOrphansKillProcessesAggressive() error {
+func runOrphansKillProcessesAggressive(force bool) error {
 	zombies, err := util.FindZombieClaudeProcesses()
 	if err != nil {
 		return fmt.Errorf("finding zombie processes: %w", err)
 	}
-
 	if len(zombies) == 0 {
 		fmt.Printf("%s No orphaned Claude processes found (aggressive mode)\n", style.Bold.Render("✓"))
 		return nil
 	}
+	printAggressiveZombieList(zombies)
+	if !confirmOrphanProcessKill(force, len(zombies)) {
+		return nil
+	}
+	return signalAndSummarizeOrphanProcesses(orphanProcessesFromZombies(zombies), force)
+}
 
-	// Show what we're about to kill
+func printAggressiveZombieList(zombies []util.ZombieProcess) {
 	fmt.Printf("%s Found %d orphaned Claude process(es) not in any tmux session:\n\n", style.Warning.Render("⚠"), len(zombies))
 	for _, z := range zombies {
-		ageStr := formatProcessAge(z.Age)
 		fmt.Printf("  %s %s (age: %s, tty: %s)\n",
 			style.Bold.Render(fmt.Sprintf("PID %d", z.PID)),
 			z.Cmd,
-			style.Dim.Render(ageStr),
+			style.Dim.Render(formatProcessAge(z.Age)),
 			z.TTY)
 	}
 	fmt.Println()
+}
 
-	// Confirm unless --force
-	if !orphansProcsForce {
-		fmt.Printf("Kill these %d process(es)? [y/N] ", len(zombies))
-		var response string
-		_, _ = fmt.Scanln(&response)
-		response = strings.ToLower(strings.TrimSpace(response))
-		if response != "y" && response != "yes" {
-			fmt.Println("Aborted")
-			return nil
-		}
+func orphanProcessesFromZombies(zombies []util.ZombieProcess) []OrphanProcess {
+	out := make([]OrphanProcess, len(zombies))
+	for i, z := range zombies {
+		out[i] = OrphanProcess{PID: z.PID, Args: z.Cmd}
 	}
-
-	// Kill the processes
-	// Use SIGKILL with --force for immediate termination, SIGTERM otherwise
-	signal := syscall.SIGTERM
-	if orphansProcsForce {
-		signal = syscall.SIGKILL
-	}
-
-	var killed, failed int
-	for _, z := range zombies {
-		proc, err := os.FindProcess(z.PID)
-		if err != nil {
-			fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), z.PID, err)
-			failed++
-			continue
-		}
-
-		if err := proc.Signal(signal); err != nil {
-			// Process may have already exited
-			if err == os.ErrProcessDone {
-				fmt.Printf("  %s PID %d: already terminated\n", style.Dim.Render("○"), z.PID)
-				continue
-			}
-			fmt.Printf("  %s PID %d: %v\n", style.Error.Render("✗"), z.PID, err)
-			failed++
-			continue
-		}
-
-		fmt.Printf("  %s PID %d killed\n", style.Bold.Render("✓"), z.PID)
-		killed++
-	}
-
-	fmt.Printf("\n%s %d killed", style.Bold.Render("Summary:"), killed)
-	if failed > 0 {
-		fmt.Printf(", %d failed", failed)
-	}
-	fmt.Println()
-
-	return nil
+	return out
 }

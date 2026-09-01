@@ -4,14 +4,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Flags for mail hook command (mirror of hook command flags)
-var (
-	mailHookSubject string
-	mailHookMessage string
-	mailHookDryRun  bool
-	mailHookForce   bool
-)
-
 var mailHookCmd = &cobra.Command{
 	Use:   "hook <mail-id>",
 	Short: "Attach mail to your hook (alias for 'gt hook attach')",
@@ -37,22 +29,16 @@ Related commands:
 }
 
 func init() {
-	mailHookCmd.Flags().StringVarP(&mailHookSubject, "subject", "s", "", "Subject for handoff mail (optional)")
-	mailHookCmd.Flags().StringVarP(&mailHookMessage, "message", "m", "", "Message for handoff mail (optional)")
-	mailHookCmd.Flags().BoolVarP(&mailHookDryRun, "dry-run", "n", false, "Show what would be done")
-	mailHookCmd.Flags().BoolVarP(&mailHookForce, "force", "f", false, "Replace existing incomplete hooked bead")
+	mailHookCmd.Flags().StringP("subject", "s", "", "Subject for handoff mail (optional)")
+	mailHookCmd.Flags().StringP("message", "m", "", "Message for handoff mail (optional)")
+	mailHookCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done")
+	mailHookCmd.Flags().BoolP("force", "f", false, "Replace existing incomplete hooked bead")
 
-	mailCmd.AddCommand(mailHookCmd)
+	getMailCommand().AddCommand(mailHookCmd)
 }
 
 // runMailHook attaches mail to the hook - delegates to the hook command's logic
 func runMailHook(cmd *cobra.Command, args []string) error {
-	// Copy flags to hook command's globals (they share the same functionality)
-	hookSubject = mailHookSubject
-	hookMessage = mailHookMessage
-	hookDryRun = mailHookDryRun
-	hookForce = mailHookForce
-
 	// Delegate to the hook command's run function
 	return runHook(cmd, args)
 }

@@ -211,16 +211,38 @@ func (c *CheckMisclassifiedWisps) purgeRigBatch(ctx *CheckContext, workDir, rigN
 		return nil
 	}
 
-	// Step 1: Migrate issues to wisps table (INSERT IGNORE skips duplicates).
+	if err := migrateMisclassifiedWisp(workDir, idList); err != nil {
+		return fmt.Errorf("migrate to wisps: %w", err)
+	}
+	if err := copyMisclassifiedWispAux(workDir, idList); err != nil {
+		return fmt.Errorf("copying wisp_dependencies: %w", err)
+	}
+	if err := retargetMisclassifiedWispDependencies(workDir, idList); err != nil {
+		return err
+	}
+	deleteMisclassifiedWispAux(workDir, idList)
+	if err := deleteMisclassifiedWispIssues(workDir, idList); err != nil {
+		return fmt.Errorf("delete from issues: %w", err)
+	}
+
+	// Step 5: Commit to Dolt history.
+	commitMsg := "fix: migrate misplaced ephemeral beads to wisps table (gt doctor)"
+	if err := doltserver.CommitServerWorkingSet(ctx.TownRoot, rigName, commitMsg); err != nil {
+		_ = err // Non-fatal
+	}
+
+	return nil
+}
+
+func migrateMisclassifiedWisp(workDir, idList string) error {
 	migrateQuery := fmt.Sprintf(
 		"INSERT IGNORE INTO wisps (id, title, description, status, issue_type, agent_state, role_type, rig, hook_bead, role_bead, created_at, updated_at, created_by, owner, assignee, priority, ephemeral, wisp_type, mol_type, metadata) "+
 			"SELECT id, title, description, status, issue_type, agent_state, role_type, rig, hook_bead, role_bead, created_at, updated_at, created_by, owner, assignee, priority, 1, wisp_type, mol_type, metadata FROM issues WHERE id IN (%s)",
 		idList)
-	if err := execBdSQLWrite(workDir, migrateQuery); err != nil {
-		return fmt.Errorf("migrate to wisps: %w", err)
-	}
+	return execBdSQLWrite(workDir, migrateQuery)
+}
 
-	// Step 2: Copy auxiliary data to wisp_* tables.
+func copyMisclassifiedWispAux(workDir, idList string) error {
 	auxCopies := []struct {
 		table string
 		query string
@@ -255,8 +277,12 @@ func (c *CheckMisclassifiedWisps) purgeRigBatch(ctx *CheckContext, workDir, rigN
 		}
 	}
 	if err := copyErrors["wisp_dependencies"]; err != nil {
-		return fmt.Errorf("copying wisp_dependencies: %w", err)
+		return err
 	}
+	return nil
+}
+
+func retargetMisclassifiedWispDependencies(workDir, idList string) error {
 	if bdTableExistsDoctor(workDir, "wisp_dependencies") {
 		if err := execBdSQLWrite(workDir, fmt.Sprintf("UPDATE wisp_dependencies SET depends_on_wisp_id = depends_on_issue_id, depends_on_issue_id = NULL WHERE depends_on_issue_id IN (%s)", idList)); err != nil {
 			return fmt.Errorf("retargeting incoming wisp_dependencies: %w", err)
@@ -267,8 +293,10 @@ func (c *CheckMisclassifiedWisps) purgeRigBatch(ctx *CheckContext, workDir, rigN
 			return fmt.Errorf("retargeting incoming dependencies: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Step 3: Delete from auxiliary tables first (referential integrity).
+func deleteMisclassifiedWispAux(workDir, idList string) {
 	auxDeletes := []string{
 		fmt.Sprintf("DELETE FROM labels WHERE issue_id IN (%s)", idList),
 		fmt.Sprintf("DELETE FROM comments WHERE issue_id IN (%s)", idList),
@@ -278,20 +306,11 @@ func (c *CheckMisclassifiedWisps) purgeRigBatch(ctx *CheckContext, workDir, rigN
 	for _, q := range auxDeletes {
 		_ = execBdSQLWrite(workDir, q) // Best-effort: table may not exist
 	}
+}
 
-	// Step 4: Delete from issues table.
+func deleteMisclassifiedWispIssues(workDir, idList string) error {
 	deleteQuery := fmt.Sprintf("DELETE FROM issues WHERE id IN (%s)", idList)
-	if err := execBdSQLWrite(workDir, deleteQuery); err != nil {
-		return fmt.Errorf("delete from issues: %w", err)
-	}
-
-	// Step 5: Commit to Dolt history.
-	commitMsg := "fix: migrate misplaced ephemeral beads to wisps table (gt doctor)"
-	if err := doltserver.CommitServerWorkingSet(ctx.TownRoot, rigName, commitMsg); err != nil {
-		_ = err // Non-fatal
-	}
-
-	return nil
+	return execBdSQLWrite(workDir, deleteQuery)
 }
 
 // bdTableExistsDoctor checks if a table exists by attempting to query it.

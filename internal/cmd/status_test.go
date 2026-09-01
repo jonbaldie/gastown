@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -53,9 +54,8 @@ func TestDiscoverRigAgents_UsesRigPrefix(t *testing.T) {
 
 	allAgentBeads := map[string]*beads.Issue{
 		"bd-beads-witness": {
-			ID:         "bd-beads-witness",
-			AgentState: "running",
-			HookBead:   "bd-hook",
+			ID:               "bd-beads-witness",
+			IssueAgentFields: beads.IssueAgentFields{AgentState: "running", HookBead: "bd-hook"},
 		},
 	}
 	allHookBeads := map[string]*beads.Issue{
@@ -197,6 +197,33 @@ func TestBuildStatusIndicator_DNDMutedShowsBadge(t *testing.T) {
 	}
 }
 
+func TestAgentRuntimeJSONFlattensWork(t *testing.T) {
+	data, err := json.Marshal(AgentRuntime{
+		Name: "polecat-1",
+		AgentWork: AgentWork{
+			HasWork:   true,
+			WorkTitle: "Implement feature",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal AgentRuntime: %v", err)
+	}
+
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatalf("unmarshal AgentRuntime JSON: %v", err)
+	}
+	if _, ok := encoded["has_work"]; !ok {
+		t.Fatalf("JSON omitted flattened has_work field: %s", data)
+	}
+	if _, ok := encoded["work_title"]; !ok {
+		t.Fatalf("JSON omitted flattened work_title field: %s", data)
+	}
+	if _, ok := encoded["AgentWork"]; ok {
+		t.Fatalf("JSON nested AgentWork: %s", data)
+	}
+}
+
 func TestOutputStatusText_IncludesDNDSection(t *testing.T) {
 	status := TownStatus{
 		Name:     "gt",
@@ -209,7 +236,7 @@ func TestOutputStatusText_IncludesDNDSection(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := outputStatusText(&buf, status); err != nil {
+	if err := outputStatusText(&buf, status, false); err != nil {
 		t.Fatalf("outputStatusText error: %v", err)
 	}
 	out := buf.String()
@@ -222,17 +249,7 @@ func TestOutputStatusText_IncludesDNDSection(t *testing.T) {
 }
 
 func TestRunStatusWatch_RejectsZeroInterval(t *testing.T) {
-	oldInterval := statusInterval
-	oldWatch := statusWatch
-	defer func() {
-		statusInterval = oldInterval
-		statusWatch = oldWatch
-	}()
-
-	statusInterval = 0
-	statusWatch = true
-
-	err := runStatusWatch(nil, nil)
+	err := runStatusWatch(statusOptions{watch: true, interval: 0})
 	if err == nil {
 		t.Fatal("expected error for zero interval, got nil")
 	}
@@ -242,17 +259,7 @@ func TestRunStatusWatch_RejectsZeroInterval(t *testing.T) {
 }
 
 func TestRunStatusWatch_RejectsNegativeInterval(t *testing.T) {
-	oldInterval := statusInterval
-	oldWatch := statusWatch
-	defer func() {
-		statusInterval = oldInterval
-		statusWatch = oldWatch
-	}()
-
-	statusInterval = -5
-	statusWatch = true
-
-	err := runStatusWatch(nil, nil)
+	err := runStatusWatch(statusOptions{watch: true, interval: -5})
 	if err == nil {
 		t.Fatal("expected error for negative interval, got nil")
 	}
@@ -262,20 +269,7 @@ func TestRunStatusWatch_RejectsNegativeInterval(t *testing.T) {
 }
 
 func TestRunStatusWatch_RejectsJSONCombo(t *testing.T) {
-	oldJSON := statusJSON
-	oldWatch := statusWatch
-	oldInterval := statusInterval
-	defer func() {
-		statusJSON = oldJSON
-		statusWatch = oldWatch
-		statusInterval = oldInterval
-	}()
-
-	statusJSON = true
-	statusWatch = true
-	statusInterval = 2
-
-	err := runStatusWatch(nil, nil)
+	err := runStatusWatch(statusOptions{json: true, watch: true, interval: 2})
 	if err == nil {
 		t.Fatal("expected error for --json + --watch, got nil")
 	}

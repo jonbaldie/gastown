@@ -80,27 +80,21 @@ Example:
 	RunE: runRigConfigUnset,
 }
 
-// Flags
-var (
-	rigConfigShowLayers bool
-	rigConfigSetGlobal  bool
-	rigConfigSetBlock   bool
-)
-
 func init() {
 	rigCmd.AddCommand(rigConfigCmd)
 	rigConfigCmd.AddCommand(rigConfigShowCmd)
 	rigConfigCmd.AddCommand(rigConfigSetCmd)
 	rigConfigCmd.AddCommand(rigConfigUnsetCmd)
 
-	rigConfigShowCmd.Flags().BoolVar(&rigConfigShowLayers, "layers", false, "Show which layer each value comes from")
+	rigConfigShowCmd.Flags().Bool("layers", false, "Show which layer each value comes from")
 
-	rigConfigSetCmd.Flags().BoolVar(&rigConfigSetGlobal, "global", false, "Set in bead layer (persistent, synced)")
-	rigConfigSetCmd.Flags().BoolVar(&rigConfigSetBlock, "block", false, "Block inheritance for this key")
+	rigConfigSetCmd.Flags().Bool("global", false, "Set in bead layer (persistent, synced)")
+	rigConfigSetCmd.Flags().Bool("block", false, "Block inheritance for this key")
 }
 
 func runRigConfigShow(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
+	showLayers := commandBoolFlag(cmd, "layers")
 
 	townRoot, r, err := getRig(rigName)
 	if err != nil {
@@ -110,7 +104,7 @@ func runRigConfigShow(cmd *cobra.Command, args []string) error {
 	// Collect all known keys
 	allKeys := getConfigKeys(townRoot, r)
 
-	if rigConfigShowLayers {
+	if showLayers {
 		// Show with sources
 		fmt.Printf("%-25s %-15s %s\n", "Key", "Value", "Source")
 		fmt.Printf("%-25s %-15s %s\n", "---", "-----", "------")
@@ -146,16 +140,11 @@ func runRigConfigShow(cmd *cobra.Command, args []string) error {
 func runRigConfigSet(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	key := args[1]
+	setGlobal := commandBoolFlag(cmd, "global")
+	setBlock := commandBoolFlag(cmd, "block")
 
-	// Validate: --block requires no value, otherwise value is required
-	if rigConfigSetBlock {
-		if len(args) > 2 {
-			return fmt.Errorf("--block does not take a value")
-		}
-	} else {
-		if len(args) < 3 {
-			return fmt.Errorf("value is required (use --block to block inheritance instead)")
-		}
+	if err := validateRigConfigSetArgs(args, setBlock); err != nil {
+		return err
 	}
 
 	townRoot, r, err := getRig(rigName)
@@ -163,45 +152,66 @@ func runRigConfigSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if rigConfigSetBlock {
-		// Block inheritance via wisp layer
-		wispCfg := wisp.NewConfig(townRoot, r.Name)
-		if err := wispCfg.Block(key); err != nil {
-			return fmt.Errorf("blocking %s: %w", key, err)
-		}
-		fmt.Printf("%s Blocked %s for rig %s\n", style.Success.Render("✓"), key, rigName)
-		return nil
+	if setBlock {
+		return blockRigConfig(townRoot, r, rigName, key)
 	}
 
-	value := args[2]
+	return setRigConfigValue(townRoot, r, rigName, key, args[2], setGlobal)
+}
 
-	if rigConfigSetGlobal {
-		// Set in bead layer (rig identity bead labels)
+func validateRigConfigSetArgs(args []string, setBlock bool) error {
+	// --block requires no value, otherwise value is required.
+	if setBlock && len(args) > 2 {
+		return fmt.Errorf("--block does not take a value")
+	}
+	if !setBlock && len(args) < 3 {
+		return fmt.Errorf("value is required (use --block to block inheritance instead)")
+	}
+	return nil
+}
+
+func blockRigConfig(townRoot string, r *rig.Rig, rigName, key string) error {
+	// Block inheritance via wisp layer.
+	wispCfg := wisp.NewConfig(townRoot, r.Name)
+	if err := wispCfg.Block(key); err != nil {
+		return fmt.Errorf("blocking %s: %w", key, err)
+	}
+	fmt.Printf("%s Blocked %s for rig %s\n", style.Success.Render("✓"), key, rigName)
+	return nil
+}
+
+func setRigConfigValue(townRoot string, r *rig.Rig, rigName, key, value string, setGlobal bool) error {
+	if setGlobal {
+		// Set in bead layer (rig identity bead labels).
 		if err := setBeadLabel(townRoot, r, key, value); err != nil {
 			return fmt.Errorf("setting bead label: %w", err)
 		}
 		fmt.Printf("%s Set %s=%s in bead layer for rig %s\n", style.Success.Render("✓"), key, value, rigName)
-	} else {
-		// Set in wisp layer
-		wispCfg := wisp.NewConfig(townRoot, r.Name)
-		// Try to parse as appropriate type
-		var typedValue interface{} = value
-		if b, err := strconv.ParseBool(value); err == nil {
-			typedValue = b
-		} else if i, err := strconv.Atoi(value); err == nil {
-			typedValue = i
-		}
-		if err := wispCfg.Set(key, typedValue); err != nil {
-			return fmt.Errorf("setting %s: %w", key, err)
-		}
-		fmt.Printf("%s Set %s=%s in wisp layer for rig %s\n", style.Success.Render("✓"), key, value, rigName)
-		style.PrintWarning("this value is ephemeral and will not survive a rig reset — use --global to persist")
+		return nil
 	}
 
+	// Set in wisp layer.
+	wispCfg := wisp.NewConfig(townRoot, r.Name)
+	typedValue := parseRigConfigValue(value)
+	if err := wispCfg.Set(key, typedValue); err != nil {
+		return fmt.Errorf("setting %s: %w", key, err)
+	}
+	fmt.Printf("%s Set %s=%s in wisp layer for rig %s\n", style.Success.Render("✓"), key, value, rigName)
+	style.PrintWarning("this value is ephemeral and will not survive a rig reset — use --global to persist")
 	return nil
 }
 
-func runRigConfigUnset(cmd *cobra.Command, args []string) error {
+func parseRigConfigValue(value string) interface{} {
+	if b, err := strconv.ParseBool(value); err == nil {
+		return b
+	}
+	if i, err := strconv.Atoi(value); err == nil {
+		return i
+	}
+	return value
+}
+
+func runRigConfigUnset(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	key := args[1]
 
@@ -223,18 +233,32 @@ func runRigConfigUnset(cmd *cobra.Command, args []string) error {
 func getConfigKeys(townRoot string, r *rig.Rig) []string {
 	keySet := make(map[string]bool)
 
-	// System defaults
-	for k := range rig.SystemDefaults {
-		keySet[k] = true
-	}
+	addSystemConfigKeys(keySet)
+	addWispConfigKeys(townRoot, r, keySet)
+	addBeadConfigKeys(townRoot, r, keySet)
 
-	// Wisp keys
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func addSystemConfigKeys(keySet map[string]bool) {
+	for key := range rig.SystemDefaults {
+		keySet[key] = true
+	}
+}
+
+func addWispConfigKeys(townRoot string, r *rig.Rig, keySet map[string]bool) {
 	wispCfg := wisp.NewConfig(townRoot, r.Name)
-	for _, k := range wispCfg.Keys() {
-		keySet[k] = true
+	for _, key := range wispCfg.Keys() {
+		keySet[key] = true
 	}
+}
 
-	// Bead labels (from rig identity bead)
+func addBeadConfigKeys(townRoot string, r *rig.Rig, keySet map[string]bool) {
 	prefix := "gt"
 	if r.Config != nil && r.Config.Prefix != "" {
 		prefix = r.Config.Prefix
@@ -244,24 +268,19 @@ func getConfigKeys(townRoot string, r *rig.Rig) []string {
 	bd := beads.NewWithBeadsDir(townRoot, beadsDir)
 	if issue, err := bd.Show(rigBeadID); err == nil {
 		for _, label := range issue.Labels {
-			// Labels are in format "key:value"
-			for i, c := range label {
-				if c == ':' {
-					keySet[label[:i]] = true
-					break
-				}
-			}
+			addBeadLabelKey(keySet, label)
 		}
 	}
+}
 
-	// Sort keys
-	keys := make([]string, 0, len(keySet))
-	for k := range keySet {
-		keys = append(keys, k)
+func addBeadLabelKey(keySet map[string]bool, label string) {
+	// Labels are in format "key:value".
+	for i, c := range label {
+		if c == ':' {
+			keySet[label[:i]] = true
+			break
+		}
 	}
-	sort.Strings(keys)
-
-	return keys
 }
 
 // setBeadLabel sets a label on the rig identity bead.

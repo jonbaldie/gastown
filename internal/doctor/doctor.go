@@ -53,51 +53,9 @@ func (d *Doctor) RunStreaming(ctx *CheckContext, w io.Writer, slowThreshold time
 	report := NewReport()
 
 	for _, check := range d.checks {
-		// Stream: print check name before running
-		if w != nil {
-			fmt.Fprintf(w, "  %s  %s...", ui.RenderMuted("○"), check.Name())
-		}
-
-		start := time.Now()
-		result := check.Run(ctx)
-		result.Elapsed = time.Since(start)
-
-		// Ensure check name is populated
-		if result.Name == "" {
-			result.Name = check.Name()
-		}
-		// Set category from check if available
-		if cg, ok := check.(categoryGetter); ok && result.Category == "" {
-			result.Category = cg.Category()
-		}
-
-		// Stream: overwrite line with result
-		if w != nil {
-			var statusIcon string
-			switch result.Status {
-			case StatusOK:
-				statusIcon = ui.RenderPassIcon()
-			case StatusWarning:
-				statusIcon = ui.RenderWarnIcon()
-			case StatusError:
-				statusIcon = ui.RenderFailIcon()
-			}
-			// Check if slow (hourglass replaces spaces to maintain alignment)
-			isSlow := slowThreshold > 0 && result.Elapsed >= slowThreshold
-			slowIndicator := "  "
-			if isSlow {
-				report.Summary.Slow++
-				slowIndicator = "⏳"
-			}
-			fmt.Fprintf(w, "\r  %s%s%s", statusIcon, slowIndicator, result.Name)
-			if result.Message != "" {
-				fmt.Fprintf(w, "%s", ui.RenderMuted(" "+result.Message))
-			}
-			if isSlow {
-				fmt.Fprintf(w, "%s", ui.RenderMuted(" ("+formatDuration(result.Elapsed)+")"))
-			}
-			fmt.Fprintln(w)
-		}
+		streamCheckStart(w, check)
+		result := d.runTimedCheck(check, ctx)
+		streamCheckResult(w, result, slowThreshold, report)
 
 		report.Add(result)
 	}
@@ -123,6 +81,67 @@ func safeFixCheck(check Check, ctx *CheckContext) (retErr error) {
 	return check.Fix(ctx)
 }
 
+func streamCheckStart(w io.Writer, check Check) {
+	if w != nil {
+		fmt.Fprintf(w, "  %s  %s...", ui.RenderMuted("○"), check.Name())
+	}
+}
+
+func (d *Doctor) runTimedCheck(check Check, ctx *CheckContext) *CheckResult {
+	start := time.Now()
+	result := check.Run(ctx)
+	result.Elapsed = time.Since(start)
+	setCheckMetadata(check, result)
+	return result
+}
+
+func setCheckMetadata(check Check, result *CheckResult) {
+	if result.Name == "" {
+		result.Name = check.Name()
+	}
+	if cg, ok := check.(categoryGetter); ok && result.Category == "" {
+		result.Category = cg.Category()
+	}
+}
+
+func streamCheckResult(w io.Writer, result *CheckResult, slowThreshold time.Duration, report *Report) {
+	if w == nil {
+		return
+	}
+	statusIcon := statusIcon(result.Status)
+	isSlow := slowThreshold > 0 && result.Elapsed >= slowThreshold
+	slowIndicator := "  "
+	if isSlow {
+		report.Summary.Slow++
+		slowIndicator = "⏳"
+	}
+	fmt.Fprintf(w, "\r  %s%s%s", statusIcon, slowIndicator, result.Name)
+	writeResultMessage(w, result, isSlow)
+	fmt.Fprintln(w)
+}
+
+func statusIcon(status CheckStatus) string {
+	switch status {
+	case StatusOK:
+		return ui.RenderPassIcon()
+	case StatusWarning:
+		return ui.RenderWarnIcon()
+	case StatusError:
+		return ui.RenderFailIcon()
+	default:
+		return ""
+	}
+}
+
+func writeResultMessage(w io.Writer, result *CheckResult, isSlow bool) {
+	if result.Message != "" {
+		fmt.Fprintf(w, "%s", ui.RenderMuted(" "+result.Message))
+	}
+	if isSlow {
+		fmt.Fprintf(w, "%s", ui.RenderMuted(" ("+formatDuration(result.Elapsed)+")"))
+	}
+}
+
 // FixStreaming runs all checks with auto-fix and optional real-time output.
 // If w is non-nil, prints each check name as it starts and result when done.
 // If slowThreshold > 0, shows hourglass icon for slow checks.
@@ -130,108 +149,82 @@ func (d *Doctor) FixStreaming(ctx *CheckContext, w io.Writer, slowThreshold time
 	report := NewReport()
 
 	for _, check := range d.checks {
-		// Stream: print check name before running
-		if w != nil {
-			fmt.Fprintf(w, "  %s  %s...", ui.RenderMuted("○"), check.Name())
-		}
-
-		start := time.Now()
-		result := check.Run(ctx)
-		if result.Name == "" {
-			result.Name = check.Name()
-		}
-		// Set category from check if available
-		if cg, ok := check.(categoryGetter); ok && result.Category == "" {
-			result.Category = cg.Category()
-		}
-
-		// Attempt fix if check failed and is fixable
-		committedFixingLine := false
-		if result.Status != StatusOK && check.CanFix() {
-			if w != nil {
-				// Commit a "(fixing)..." line without the pre-fix fail/warn status.
-				// Check.Fix commonly writes to stdout (fmt.Printf). Those newlines
-				// would pin a \r-overwritten pre-fix fail line on screen, so
-				// `gt doctor --fix` reported claude-settings as failed after
-				// the files were already repaired.
-				fmt.Fprintf(w, "\r  %s %s%s\n", ui.RenderFixIcon(), check.Name(), ui.RenderMuted(" (fixing)..."))
-				committedFixingLine = true
-			}
-
-			err := safeFixCheck(check, ctx)
-			if err == nil {
-				// Re-run check to verify fix worked
-				result = check.Run(ctx)
-				if result.Name == "" {
-					result.Name = check.Name()
-				}
-				// Set category again after re-run
-				if cg, ok := check.(categoryGetter); ok && result.Category == "" {
-					result.Category = cg.Category()
-				}
-				// Update message to indicate fix was applied
-				if result.Status == StatusOK {
-					result.Message = result.Message + " (fixed)"
-					result.Fixed = true
-				}
-			} else if errors.Is(err, ErrSkippedNoStart) {
-				// Fix skipped due to --no-start flag
-				result.Details = append(result.Details, "Skipped: --no-start suppresses startup")
-			} else {
-				// Fix failed, add error to details
-				result.Details = append(result.Details, "Fix failed: "+err.Error())
-			}
-		}
-
-		// Record total elapsed time including any fix attempts
-		result.Elapsed = time.Since(start)
-
-		// Stream: print final result (overwrite the checking line, or a new
-		// line when Fix() already wrote past it).
-		if w != nil {
-			var statusIcon string
-			if result.Fixed {
-				statusIcon = ui.RenderFixIcon()
-			} else {
-				switch result.Status {
-				case StatusOK:
-					statusIcon = ui.RenderPassIcon()
-				case StatusWarning:
-					statusIcon = ui.RenderWarnIcon()
-				case StatusError:
-					statusIcon = ui.RenderFailIcon()
-				}
-			}
-			// Check if slow (hourglass replaces spaces to maintain alignment)
-			// Fix icon (🔧) is double-width, so use one less padding space
-			isSlow := slowThreshold > 0 && result.Elapsed >= slowThreshold
-			slowIndicator := "  "
-			if result.Fixed {
-				slowIndicator = " "
-			}
-			if isSlow {
-				report.Summary.Slow++
-				slowIndicator = "⏳"
-			}
-			if committedFixingLine {
-				// Fix() already advanced stdout; do not \r-overwrite its last line.
-				fmt.Fprintf(w, "  %s%s%s", statusIcon, slowIndicator, result.Name)
-			} else {
-				fmt.Fprintf(w, "\r  %s%s%s", statusIcon, slowIndicator, result.Name)
-			}
-			if result.Message != "" {
-				fmt.Fprintf(w, "%s", ui.RenderMuted(" "+result.Message))
-			}
-			if isSlow {
-				fmt.Fprintf(w, "%s", ui.RenderMuted(" ("+formatDuration(result.Elapsed)+")"))
-			}
-			fmt.Fprintln(w)
-		}
+		streamCheckStart(w, check)
+		result, committedFixingLine := d.runTimedFix(check, ctx, w)
+		streamFixResult(w, result, slowThreshold, report, committedFixingLine)
 
 		report.Add(result)
 	}
 
 	return report
+}
+
+func (d *Doctor) runTimedFix(check Check, ctx *CheckContext, w io.Writer) (*CheckResult, bool) {
+	start := time.Now()
+	result := check.Run(ctx)
+	setCheckMetadata(check, result)
+	committedFixingLine := false
+	if result.Status != StatusOK && check.CanFix() {
+		result, committedFixingLine = d.applyFix(check, ctx, w, result)
+	}
+	result.Elapsed = time.Since(start)
+	return result, committedFixingLine
+}
+
+func (d *Doctor) applyFix(check Check, ctx *CheckContext, w io.Writer, result *CheckResult) (*CheckResult, bool) {
+	committedFixingLine := false
+	if w != nil {
+		fmt.Fprintf(w, "\r  %s %s%s\n", ui.RenderFixIcon(), check.Name(), ui.RenderMuted(" (fixing)..."))
+		committedFixingLine = true
+	}
+
+	err := safeFixCheck(check, ctx)
+	if err == nil {
+		result = d.runTimedCheckWithoutTiming(check, ctx)
+		if result.Status == StatusOK {
+			result.Message += " (fixed)"
+			result.Fixed = true
+		}
+		return result, committedFixingLine
+	}
+	if errors.Is(err, ErrSkippedNoStart) {
+		result.Details = append(result.Details, "Skipped: --no-start suppresses startup")
+	} else {
+		result.Details = append(result.Details, "Fix failed: "+err.Error())
+	}
+	return result, committedFixingLine
+}
+
+func (d *Doctor) runTimedCheckWithoutTiming(check Check, ctx *CheckContext) *CheckResult {
+	result := check.Run(ctx)
+	setCheckMetadata(check, result)
+	return result
+}
+
+func streamFixResult(w io.Writer, result *CheckResult, slowThreshold time.Duration, report *Report, committedFixingLine bool) {
+	if w == nil {
+		return
+	}
+	status := statusIcon(result.Status)
+	if result.Fixed {
+		status = ui.RenderFixIcon()
+	}
+	isSlow := slowThreshold > 0 && result.Elapsed >= slowThreshold
+	slowIndicator := "  "
+	if result.Fixed {
+		slowIndicator = " "
+	}
+	if isSlow {
+		report.Summary.Slow++
+		slowIndicator = "⏳"
+	}
+	linePrefix := "\r  "
+	if committedFixingLine {
+		linePrefix = "  "
+	}
+	fmt.Fprintf(w, "%s%s%s%s", linePrefix, status, slowIndicator, result.Name)
+	writeResultMessage(w, result, isSlow)
+	fmt.Fprintln(w)
 }
 
 // BaseCheck provides a base implementation for checks that don't support auto-fix.
@@ -263,7 +256,7 @@ func (b *BaseCheck) CanFix() bool {
 }
 
 // Fix returns an error indicating this check cannot be auto-fixed.
-func (b *BaseCheck) Fix(ctx *CheckContext) error {
+func (b *BaseCheck) Fix(_ *CheckContext) error {
 	return ErrCannotFix
 }
 

@@ -127,20 +127,22 @@ echo []
 
 	t.Setenv("DOG_ALLOW_SOURCE_SHOW", "1")
 	dispatch := &DogDispatchInfo{
-		DogName:       "alpha",
-		AgentID:       "deacon/dogs/alpha",
-		townRoot:      townRoot,
-		workDesc:      "gt-new",
-		workStartedAt: startedAt,
-		ownsWork:      true,
-		rigsConfig:    rigs,
+		DogName: "alpha",
+		AgentID: "deacon/dogs/alpha",
+		state: dogDispatchState{
+			townRoot:      townRoot,
+			workDesc:      "gt-new",
+			workStartedAt: startedAt,
+			ownsWork:      true,
+			rigsConfig:    rigs,
+		},
 	}
-	if err := dispatch.verifyBareBeadAssignment("gt-new"); err != nil {
+	if err := verifyBareBeadAssignment(dispatch, "gt-new"); err != nil {
 		t.Fatalf("verifyBareBeadAssignment: %v", err)
 	}
 
 	t.Setenv("DOG_SOURCE_ASSIGNEE", "gastown/crew/other")
-	if err := dispatch.verifyBareBeadAssignment("gt-new"); err == nil {
+	if err := verifyBareBeadAssignment(dispatch, "gt-new"); err == nil {
 		t.Fatal("verifyBareBeadAssignment accepted a source bead assigned to another agent")
 	}
 
@@ -165,8 +167,8 @@ echo []
 	if formulaWork == nil || formulaWork.ID != "gt-new" {
 		t.Fatalf("formula lookup = %+v, want exact attached formula gt-new", formulaWork)
 	}
-	dispatch.workDesc = "code-review"
-	if err := dispatch.verifyFormulaAssignment("gt-new"); err != nil {
+	dispatch.state.workDesc = "code-review"
+	if err := verifyFormulaAssignment(dispatch, "gt-new"); err != nil {
 		t.Fatalf("verifyFormulaAssignment: %v", err)
 	}
 

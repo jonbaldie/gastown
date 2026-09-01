@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,9 @@ func TestValidateRejectsMalformedGitfile(t *testing.T) {
 	if !errors.Is(err, ErrIntegrityViolation) {
 		t.Fatalf("Validate() error = %v, want ErrIntegrityViolation", err)
 	}
+	if !strings.Contains(err.Error(), "malformed .git file") {
+		t.Fatalf("Validate() error = %v, want malformed .git detail", err)
+	}
 }
 
 func TestValidateRejectsMissingGitdirTarget(t *testing.T) {
@@ -83,6 +87,9 @@ func TestValidateRejectsMissingGitdirTarget(t *testing.T) {
 	err := Validate(root, IntegrityOptions{Require: true})
 	if !errors.Is(err, ErrIntegrityViolation) {
 		t.Fatalf("Validate() error = %v, want ErrIntegrityViolation", err)
+	}
+	if !strings.Contains(err.Error(), "gitdir target missing") {
+		t.Fatalf("Validate() error = %v, want missing-target detail", err)
 	}
 }
 
@@ -107,6 +114,35 @@ func TestValidateHonorsTownRootBoundary(t *testing.T) {
 	err := Validate(townRoot, IntegrityOptions{TownRoot: townRoot, Require: true})
 	if !errors.Is(err, ErrIntegrityViolation) {
 		t.Fatalf("Validate() error = %v, want ErrIntegrityViolation", err)
+	}
+}
+
+func TestFindGitMarkerPropagatesInspectionErrors(t *testing.T) {
+	_, _, err := findGitMarker("invalid\x00path", "")
+	if !errors.Is(err, ErrIntegrityViolation) {
+		t.Fatalf("findGitMarker() error = %v, want ErrIntegrityViolation", err)
+	}
+}
+
+func TestSearchBoundsResolvesPathAndStop(t *testing.T) {
+	path, stop, err := searchBounds("relative/path", "relative")
+	if err != nil {
+		t.Fatalf("searchBounds() error = %v", err)
+	}
+	if !filepath.IsAbs(path) || !strings.HasSuffix(path, filepath.Join("relative", "path")) {
+		t.Fatalf("searchBounds() path = %q, want absolute relative/path", path)
+	}
+	if !filepath.IsAbs(stop) || !strings.HasSuffix(stop, "relative") {
+		t.Fatalf("searchBounds() stop = %q, want absolute relative", stop)
+	}
+}
+
+func TestAtSearchStop(t *testing.T) {
+	if !atSearchStop("/town", "/town") {
+		t.Fatal("atSearchStop() = false for matching non-empty boundary")
+	}
+	if atSearchStop("/town", "") {
+		t.Fatal("atSearchStop() = true for empty boundary")
 	}
 }
 

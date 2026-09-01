@@ -66,7 +66,7 @@ func init() {
 	tapGuardCmd.AddCommand(tapGuardPRWorkflowCmd)
 }
 
-func runTapGuardPRWorkflow(cmd *cobra.Command, args []string) error {
+func runTapGuardPRWorkflow(_ *cobra.Command, _ []string) error {
 	// Check if we're in a Gas Town agent context
 	if isGasTownAgentContext() {
 		fmt.Fprintln(os.Stderr, "")

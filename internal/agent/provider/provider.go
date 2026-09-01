@@ -29,13 +29,13 @@ type ToolCallback func(ctx context.Context, name string, args map[string]any) (C
 type SessionStartCallback func(ctx context.Context, info ServerInfo) error
 
 type ACPProvider interface {
-	Initialize(ctx context.Context, clientName, clientVersion string) (*InitializeResult, error)
-	ListTools(ctx context.Context) ([]Tool, error)
-	CallTool(ctx context.Context, name string, args map[string]any) (*CallToolResult, error)
-	CreateMessage(ctx context.Context, params CreateMessageParams) (*CreateMessageResult, error)
+	Initialize(_ context.Context, _, _ string) (*InitializeResult, error)
+	ListTools(_ context.Context) ([]Tool, error)
+	CallTool(_ context.Context, _ string, _ map[string]any) (*CallToolResult, error)
+	CreateMessage(_ context.Context, _ CreateMessageParams) (*CreateMessageResult, error)
 	GetStatus() AgentStatus
-	OnToolCall(callback ToolCallback)
-	OnSessionStart(callback SessionStartCallback)
+	OnToolCall(_ ToolCallback)
+	OnSessionStart(_ SessionStartCallback)
 	Close() error
 }
 
@@ -92,7 +92,7 @@ func (p *BaseProvider) OnSessionStart(callback SessionStartCallback) {
 	p.mu.Unlock()
 }
 
-func (p *BaseProvider) ListTools(ctx context.Context) ([]Tool, error) {
+func (p *BaseProvider) ListTools(_ context.Context) ([]Tool, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.tools, nil
@@ -127,7 +127,7 @@ func NewLocalProvider(config ACPProviderConfig) *LocalProvider {
 	}
 }
 
-func (p *LocalProvider) Initialize(ctx context.Context, clientName, clientVersion string) (*InitializeResult, error) {
+func (p *LocalProvider) Initialize(ctx context.Context, _, _ string) (*InitializeResult, error) {
 	p.setState(StateReady)
 	result := &InitializeResult{
 		ProtocolVersion: "2024-11-05",
@@ -171,7 +171,7 @@ func (p *LocalProvider) CallTool(ctx context.Context, name string, args map[stri
 	return &result, nil
 }
 
-func (p *LocalProvider) CreateMessage(ctx context.Context, params CreateMessageParams) (*CreateMessageResult, error) {
+func (p *LocalProvider) CreateMessage(_ context.Context, _ CreateMessageParams) (*CreateMessageResult, error) {
 	return nil, fmt.Errorf("CreateMessage not supported for local provider")
 }
 
@@ -180,7 +180,7 @@ func (p *LocalProvider) Close() error {
 	return nil
 }
 
-func TranslateGastownMessage(from, to, subject, body string) Message {
+func TranslateGastownMessage(_, _, subject, body string) Message {
 	var content string
 	if subject != "" && body != "" {
 		content = fmt.Sprintf("**Subject:** %s\n\n%s", subject, body)

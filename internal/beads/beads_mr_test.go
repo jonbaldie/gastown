@@ -143,7 +143,7 @@ func TestUnresolvedBlockingDependencyIDs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := unresolvedBlockingDependencyIDs(&Issue{Dependencies: tt.deps})
+			got, _ := unresolvedBlockingDependencyIDs(&Issue{IssueDependencyFields: IssueDependencyFields{Dependencies: tt.deps}})
 			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
 				t.Fatalf("unresolvedBlockingDependencyIDs() = %#v, want %#v", got, tt.want)
 			}
@@ -273,19 +273,22 @@ func unmarshalIssueForTest(t *testing.T, data string) *Issue {
 }
 
 func TestHasUnresolvedBlockersFallsBackToListFields(t *testing.T) {
-	if !HasUnresolvedBlockers(&Issue{BlockedByCount: 1}) {
+	if !HasUnresolvedBlockers(&Issue{IssueDependencyFields: IssueDependencyFields{BlockedByCount: 1}}) {
 		t.Fatal("BlockedByCount fallback should block when detailed dependencies are absent")
 	}
-	if !HasUnresolvedBlockers(&Issue{DependencyCount: 1}) {
+	if !HasUnresolvedBlockers(&Issue{IssueDependencyFields: IssueDependencyFields{DependencyCount: 1}}) {
 		t.Fatal("DependencyCount fallback should fail closed when detailed dependencies are absent")
 	}
-	if got := FirstUnresolvedBlockerID(&Issue{DependencyCount: 1}); got != "" {
+	if got := FirstUnresolvedBlockerID(&Issue{IssueDependencyFields: IssueDependencyFields{DependencyCount: 1}}); got != "" {
 		t.Fatalf("FirstUnresolvedBlockerID() = %q, want empty when only count is available", got)
 	}
 	if got := FirstUnresolvedBlockerID(&Issue{BlockedBy: []string{"external:gt:gt-blocker"}}); got != "gt-blocker" {
 		t.Fatalf("FirstUnresolvedBlockerID() = %q, want gt-blocker", got)
 	}
-	if HasUnresolvedBlockers(&Issue{Dependencies: []IssueDep{{ID: "gt-closed", Status: "closed", DependencyType: "blocks"}}, BlockedByCount: 1}) {
+	if HasUnresolvedBlockers(&Issue{IssueDependencyFields: IssueDependencyFields{
+		Dependencies:   []IssueDep{{ID: "gt-closed", Status: "closed", DependencyType: "blocks"}},
+		BlockedByCount: 1,
+	}}) {
 		t.Fatal("detailed closed dependency should override stale list blocker count")
 	}
 }

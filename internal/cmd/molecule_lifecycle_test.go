@@ -40,10 +40,10 @@ func TestExtractRoleFromIdentity(t *testing.T) {
 // TestSquashJitterInvalidDuration verifies that an invalid --jitter value
 // returns a parse error immediately (before any workspace operations).
 func TestSquashJitterInvalidDuration(t *testing.T) {
-	prev := moleculeJitter
-	t.Cleanup(func() { moleculeJitter = prev })
+	prev := moleculeState().jitter
+	t.Cleanup(func() { moleculeState().jitter = prev })
 
-	moleculeJitter = "bogus"
+	moleculeState().jitter = "bogus"
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 
@@ -59,10 +59,10 @@ func TestSquashJitterInvalidDuration(t *testing.T) {
 // TestSquashJitterNegativeDuration verifies that a negative --jitter value
 // is rejected with a clear error rather than silently skipped.
 func TestSquashJitterNegativeDuration(t *testing.T) {
-	prev := moleculeJitter
-	t.Cleanup(func() { moleculeJitter = prev })
+	prev := moleculeState().jitter
+	t.Cleanup(func() { moleculeState().jitter = prev })
 
-	moleculeJitter = "-5s"
+	moleculeState().jitter = "-5s"
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 
@@ -80,8 +80,8 @@ func TestSquashJitterNegativeDuration(t *testing.T) {
 // This tests the parse path only — the command will fail at workspace lookup
 // since we run from a temp directory outside any gastown workspace.
 func TestSquashJitterZeroDuration(t *testing.T) {
-	prev := moleculeJitter
-	t.Cleanup(func() { moleculeJitter = prev })
+	prev := moleculeState().jitter
+	t.Cleanup(func() { moleculeState().jitter = prev })
 
 	// Run from a temp dir so workspace.FindFromCwd() fails
 	tmpDir := t.TempDir()
@@ -94,7 +94,7 @@ func TestSquashJitterZeroDuration(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	moleculeJitter = "0s"
+	moleculeState().jitter = "0s"
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 
@@ -111,8 +111,8 @@ func TestSquashJitterZeroDuration(t *testing.T) {
 // TestSquashJitterContextCancellation verifies that the jitter sleep respects
 // context cancellation and returns promptly instead of blocking.
 func TestSquashJitterContextCancellation(t *testing.T) {
-	prev := moleculeJitter
-	t.Cleanup(func() { moleculeJitter = prev })
+	prev := moleculeState().jitter
+	t.Cleanup(func() { moleculeState().jitter = prev })
 
 	// Run from a temp dir so workspace.FindFromCwd() fails
 	tmpDir := t.TempDir()
@@ -126,7 +126,7 @@ func TestSquashJitterContextCancellation(t *testing.T) {
 	}
 
 	// Use a long jitter so the sleep would block if cancellation didn't work
-	moleculeJitter = "10m"
+	moleculeState().jitter = "10m"
 	cmd := &cobra.Command{}
 
 	// Create a pre-cancelled context
@@ -281,21 +281,21 @@ exit /b 0
 	}
 
 	// Save and restore global flag state
-	prevOn := slingOnTarget
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevOn := slingState().onTarget
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingOnTarget = prevOn
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().onTarget = prevOn
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingVars = nil
-	slingOnTarget = "gt-abc123" // The base bead
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().vars = nil
+	slingState().onTarget = "gt-abc123" // The base bead
 
 	if err := runSling(nil, []string{"mol-polecat-work"}); err != nil {
 		t.Fatalf("runSling: %v", err)
@@ -475,21 +475,21 @@ exit /b 0
 	}
 
 	// Save and restore global flag state
-	prevOn := slingOnTarget
-	prevVars := slingVars
-	prevDryRun := slingDryRun
-	prevNoConvoy := slingNoConvoy
+	prevOn := slingState().onTarget
+	prevVars := slingState().vars
+	prevDryRun := slingState().dryRun
+	prevNoConvoy := slingState().noConvoy
 	t.Cleanup(func() {
-		slingOnTarget = prevOn
-		slingVars = prevVars
-		slingDryRun = prevDryRun
-		slingNoConvoy = prevNoConvoy
+		slingState().onTarget = prevOn
+		slingState().vars = prevVars
+		slingState().dryRun = prevDryRun
+		slingState().noConvoy = prevNoConvoy
 	})
 
-	slingDryRun = false
-	slingNoConvoy = true
-	slingVars = nil
-	slingOnTarget = "gt-abc123" // The base bead
+	slingState().dryRun = false
+	slingState().noConvoy = true
+	slingState().vars = nil
+	slingState().onTarget = "gt-abc123" // The base bead
 
 	if err := runSling(nil, []string{"mol-polecat-work"}); err != nil {
 		t.Fatalf("runSling: %v", err)
@@ -612,9 +612,9 @@ exit 0
 	}
 
 	// Save and restore global flag state
-	prevJSON := moleculeJSON
-	t.Cleanup(func() { moleculeJSON = prevJSON })
-	moleculeJSON = false
+	prevJSON := moleculeState().json
+	t.Cleanup(func() { moleculeState().json = prevJSON })
+	moleculeState().json = false
 
 	err = runMoleculeBurn(nil, []string{"witness"})
 	if err != nil {
@@ -712,20 +712,20 @@ exit 0
 	}
 
 	// Save and restore global flag state
-	prevJSON := moleculeJSON
-	prevJitter := moleculeJitter
-	prevNoDigest := moleculeNoDigest
-	prevSummary := moleculeSummary
+	prevJSON := moleculeState().json
+	prevJitter := moleculeState().jitter
+	prevNoDigest := moleculeState().noDigest
+	prevSummary := moleculeState().summary
 	t.Cleanup(func() {
-		moleculeJSON = prevJSON
-		moleculeJitter = prevJitter
-		moleculeNoDigest = prevNoDigest
-		moleculeSummary = prevSummary
+		moleculeState().json = prevJSON
+		moleculeState().jitter = prevJitter
+		moleculeState().noDigest = prevNoDigest
+		moleculeState().summary = prevSummary
 	})
-	moleculeJSON = false
-	moleculeJitter = ""
-	moleculeNoDigest = true // skip digest to simplify mock
-	moleculeSummary = ""
+	moleculeState().json = false
+	moleculeState().jitter = ""
+	moleculeState().noDigest = true // skip digest to simplify mock
+	moleculeState().summary = ""
 
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
@@ -821,9 +821,9 @@ exit 0
 		t.Fatalf("chdir: %v", err)
 	}
 
-	prevJSON := moleculeJSON
-	t.Cleanup(func() { moleculeJSON = prevJSON })
-	moleculeJSON = false
+	prevJSON := moleculeState().json
+	t.Cleanup(func() { moleculeState().json = prevJSON })
+	moleculeState().json = false
 
 	err = runMoleculeBurn(nil, []string{"witness"})
 	if err != nil {

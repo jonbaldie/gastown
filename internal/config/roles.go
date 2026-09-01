@@ -218,8 +218,14 @@ func mergeRoleDefinition(base, override *RoleDefinition) {
 
 	// Role and Scope are immutable
 	// (can't change a witness to a mayor via override)
+	mergeRoleSession(base, override)
+	mergeRoleEnv(base, override)
+	mergeRoleHealth(base, override)
+	mergeRolePrompts(base, override)
+}
 
-	// Session config
+// Session config
+func mergeRoleSession(base, override *RoleDefinition) {
 	if override.Session.Pattern != "" {
 		base.Session.Pattern = override.Session.Pattern
 	}
@@ -235,8 +241,10 @@ func mergeRoleDefinition(base, override *RoleDefinition) {
 	if override.Session.StartCommand != "" {
 		base.Session.StartCommand = override.Session.StartCommand
 	}
+}
 
-	// Env vars (merge, don't replace)
+// Env vars (merge, don't replace)
+func mergeRoleEnv(base, override *RoleDefinition) {
 	if override.Env != nil {
 		if base.Env == nil {
 			base.Env = make(map[string]string)
@@ -245,8 +253,10 @@ func mergeRoleDefinition(base, override *RoleDefinition) {
 			base.Env[k] = v
 		}
 	}
+}
 
-	// Health config
+// Health config
+func mergeRoleHealth(base, override *RoleDefinition) {
 	if override.Health.PingTimeout.Duration != 0 {
 		base.Health.PingTimeout = override.Health.PingTimeout
 	}
@@ -262,8 +272,10 @@ func mergeRoleDefinition(base, override *RoleDefinition) {
 	if override.Health.HungSessionThreshold.Duration != 0 {
 		base.Health.HungSessionThreshold = override.Health.HungSessionThreshold
 	}
+}
 
-	// Prompts
+// Prompts
+func mergeRolePrompts(base, override *RoleDefinition) {
 	if override.Nudge != "" {
 		base.Nudge = override.Nudge
 	}
@@ -283,4 +295,3 @@ func ExpandPattern(pattern, townRoot, rig, name, role, prefix string) string {
 	result = strings.ReplaceAll(result, "{prefix}", prefix)
 	return result
 }
-

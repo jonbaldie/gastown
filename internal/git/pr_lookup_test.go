@@ -24,7 +24,7 @@ exit 1
 	g := NewGit(dir)
 	addGitHubRemotes(t, g)
 
-	pr, err := g.LookupPullRequest(PullRequestRef{URL: "https://github.com/upstream/repo/pull/42", Branch: "fix/deleted-head"})
+	pr, err := LookupPullRequest(g, PullRequestRef{URL: "https://github.com/upstream/repo/pull/42", Branch: "fix/deleted-head"})
 	if err != nil {
 		t.Fatalf("LookupPullRequest: %v", err)
 	}
@@ -49,7 +49,7 @@ exit 1
 	g := NewGit(dir)
 	addGitHubRemotes(t, g)
 
-	_, err := g.LookupPullRequest(PullRequestRef{URL: "https://github.com/upstream/repo/pull/42", Branch: "fix/drift", HeadSHA: "submitted"})
+	_, err := LookupPullRequest(g, PullRequestRef{URL: "https://github.com/upstream/repo/pull/42", Branch: "fix/drift", HeadSHA: "submitted"})
 	if err == nil || !strings.Contains(err.Error(), "head changed") {
 		t.Fatalf("LookupPullRequest err = %v, want head changed", err)
 	}
@@ -68,7 +68,7 @@ exit 1
 	g := NewGit(dir)
 	addGitHubRemotes(t, g)
 
-	pr, err := g.LookupPullRequest(PullRequestRef{Branch: "fix/fork-head", HeadOwner: "blairsilverberg"})
+	pr, err := LookupPullRequest(g, PullRequestRef{Branch: "fix/fork-head", HeadOwner: "blairsilverberg"})
 	if err != nil {
 		t.Fatalf("LookupPullRequest: %v", err)
 	}
@@ -93,11 +93,11 @@ exit 1
 	g := NewGit(dir)
 	addGitHubRemotes(t, g)
 
-	_, err := g.LookupPullRequest(PullRequestRef{Branch: "shared"})
+	_, err := LookupPullRequest(g, PullRequestRef{Branch: "shared"})
 	if !errors.Is(err, ErrPullRequestAmbiguous) {
 		t.Fatalf("LookupPullRequest err = %v, want ErrPullRequestAmbiguous", err)
 	}
-	if !g.HasOpenPR("shared") {
+	if !HasOpenPR(g, "shared") {
 		t.Fatal("HasOpenPR should protect branch deletion on ambiguous lookup")
 	}
 }
@@ -115,7 +115,7 @@ exit 1
 	g := NewGit(dir)
 	addGitHubRemotes(t, g)
 
-	pr, err := g.LookupPullRequest(PullRequestRef{Branch: "shared", HeadSHA: "wanted"})
+	pr, err := LookupPullRequest(g, PullRequestRef{Branch: "shared", HeadSHA: "wanted"})
 	if err != nil {
 		t.Fatalf("LookupPullRequest: %v", err)
 	}
@@ -137,7 +137,7 @@ exit 1
 	g := NewGit(dir)
 	addGitHubRemotes(t, g)
 
-	number, err := g.FindPRNumberForRef(PullRequestRef{Number: 99})
+	number, err := FindPRNumberForRef(g, PullRequestRef{Number: 99})
 	if err != nil {
 		t.Fatalf("FindPRNumberForRef: %v", err)
 	}
@@ -165,14 +165,14 @@ exit 1
 	g := NewGit(dir)
 	pr := &PullRequestInfo{Number: 42, URL: "https://github.com/upstream/repo/pull/42", BaseRepo: "upstream/repo", HeadSHA: "abc123"}
 
-	approved, err := g.IsPullRequestApproved(pr)
+	approved, err := IsPullRequestApproved(g, pr)
 	if err != nil {
 		t.Fatalf("IsPullRequestApproved: %v", err)
 	}
 	if !approved {
 		t.Fatal("IsPullRequestApproved = false, want true")
 	}
-	if _, err := g.GhPrMergePullRequest(pr, "squash"); err != nil {
+	if _, err := GhPrMergePullRequest(g, pr, "squash"); err != nil {
 		t.Fatalf("GhPrMergePullRequest: %v", err)
 	}
 
@@ -204,10 +204,10 @@ func installFakeGH(t *testing.T, script string) string {
 
 func addGitHubRemotes(t *testing.T, g *Git) {
 	t.Helper()
-	if _, err := g.AddRemote("origin", "https://github.com/fork/repo.git"); err != nil && !strings.Contains(err.Error(), "already exists") {
+	if _, err := AddRemote(g, "origin", "https://github.com/fork/repo.git"); err != nil && !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("AddRemote origin: %v", err)
 	}
-	if err := g.AddUpstreamRemote("https://github.com/upstream/repo.git"); err != nil {
+	if err := AddUpstreamRemote(g, "https://github.com/upstream/repo.git"); err != nil {
 		t.Fatalf("AddUpstreamRemote: %v", err)
 	}
 }

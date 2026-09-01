@@ -13,8 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var configMixJSON bool
-
 var configMixCmd = &cobra.Command{
 	Use:   "mix [assignment...]",
 	Short: "Mix agent types across roles and crew",
@@ -35,7 +33,11 @@ use a changed mix.`,
 	RunE: runConfigMix,
 }
 
-func runConfigMix(_ *cobra.Command, args []string) error {
+func runConfigMix(cmd *cobra.Command, args []string) error {
+	jsonOutput, err := cmd.Flags().GetBool("json")
+	if err != nil {
+		return fmt.Errorf("reading json flag: %w", err)
+	}
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -57,7 +59,7 @@ func runConfigMix(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("loading town settings: %w", err)
 	}
 	mix := config.DescribeTownMix(settings)
-	if configMixJSON {
+	if jsonOutput {
 		report := struct {
 			config.TownMix
 			Binaries []config.MixBinary `json:"binaries"`

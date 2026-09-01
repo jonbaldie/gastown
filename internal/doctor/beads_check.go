@@ -129,40 +129,8 @@ func (c *PrefixMismatchCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Build map of route path -> prefix from routes.jsonl
-	routePrefixByPath := make(map[string]string)
-	for _, r := range routes {
-		// Normalize: strip trailing hyphen from prefix for comparison
-		prefix := strings.TrimSuffix(r.Prefix, "-")
-		routePrefixByPath[r.Path] = prefix
-	}
-
-	// Check each rig in rigs.json against routes.jsonl
-	var mismatches []string
-	mismatchData := make(map[string][2]string) // rigName -> [rigsJsonPrefix, routesPrefix]
-
-	for rigName, rigEntry := range rigsConfig.Rigs {
-		// Skip rigs without beads config
-		if rigEntry.BeadsConfig == nil || rigEntry.BeadsConfig.Prefix == "" {
-			continue
-		}
-
-		rigsJsonPrefix := rigEntry.BeadsConfig.Prefix
-		expectedPath := determineRigBeadsPath(ctx.TownRoot, rigName)
-
-		// Find the route for this rig
-		routePrefix, hasRoute := routePrefixByPath[expectedPath]
-		if !hasRoute {
-			// No route for this rig - routes-config check handles this
-			continue
-		}
-
-		// Compare prefixes (both should be without trailing hyphen)
-		if rigsJsonPrefix != routePrefix {
-			mismatches = append(mismatches, rigName)
-			mismatchData[rigName] = [2]string{rigsJsonPrefix, routePrefix}
-		}
-	}
+	routePrefixByPath := routePrefixesByPath(routes)
+	mismatches, mismatchData := findPrefixMismatches(ctx.TownRoot, rigsConfig, routePrefixByPath)
 
 	if len(mismatches) == 0 {
 		return &CheckResult{
@@ -172,21 +140,48 @@ func (c *PrefixMismatchCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// Build details
-	var details []string
-	for _, rigName := range mismatches {
-		data := mismatchData[rigName]
-		details = append(details, fmt.Sprintf("Rig '%s': rigs.json says '%s', routes.jsonl uses '%s'",
-			rigName, data[0], data[1]))
-	}
-
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusWarning,
 		Message: fmt.Sprintf("%d prefix mismatch(es) between rigs.json and routes.jsonl", len(mismatches)),
-		Details: details,
+		Details: prefixMismatchDetails(mismatches, mismatchData),
 		FixHint: "Run 'gt doctor --fix' to update rigs.json with correct prefixes",
 	}
+}
+
+func routePrefixesByPath(routes []beads.Route) map[string]string {
+	prefixes := make(map[string]string, len(routes))
+	for _, route := range routes {
+		prefixes[route.Path] = strings.TrimSuffix(route.Prefix, "-")
+	}
+	return prefixes
+}
+
+func findPrefixMismatches(townRoot string, rigsConfig *rigsConfigFile, routePrefixes map[string]string) ([]string, map[string][2]string) {
+	var mismatches []string
+	mismatchData := make(map[string][2]string)
+	for rigName, rigEntry := range rigsConfig.Rigs {
+		if rigEntry.BeadsConfig == nil || rigEntry.BeadsConfig.Prefix == "" {
+			continue
+		}
+		expectedPath := determineRigBeadsPath(townRoot, rigName)
+		routePrefix, hasRoute := routePrefixes[expectedPath]
+		if !hasRoute || rigEntry.BeadsConfig.Prefix == routePrefix {
+			continue
+		}
+		mismatches = append(mismatches, rigName)
+		mismatchData[rigName] = [2]string{rigEntry.BeadsConfig.Prefix, routePrefix}
+	}
+	return mismatches, mismatchData
+}
+
+func prefixMismatchDetails(mismatches []string, mismatchData map[string][2]string) []string {
+	details := make([]string, 0, len(mismatches))
+	for _, rigName := range mismatches {
+		data := mismatchData[rigName]
+		details = append(details, fmt.Sprintf("Rig '%s': rigs.json says '%s', routes.jsonl uses '%s'", rigName, data[0], data[1]))
+	}
+	return details
 }
 
 // Fix updates rigs.json to match the prefixes in routes.jsonl.
@@ -206,39 +201,40 @@ func (c *PrefixMismatchCheck) Fix(ctx *CheckContext) error {
 		return nil // Nothing to fix
 	}
 
-	// Build map of route path -> prefix from routes.jsonl
-	routePrefixByPath := make(map[string]string)
-	for _, r := range routes {
-		prefix := strings.TrimSuffix(r.Prefix, "-")
-		routePrefixByPath[r.Path] = prefix
-	}
-
-	// Update each rig's prefix to match routes.jsonl
-	modified := false
-	for rigName, rigEntry := range rigsConfig.Rigs {
-		expectedPath := determineRigBeadsPath(ctx.TownRoot, rigName)
-		routePrefix, hasRoute := routePrefixByPath[expectedPath]
-		if !hasRoute {
-			continue
-		}
-
-		// Ensure BeadsConfig exists
-		if rigEntry.BeadsConfig == nil {
-			rigEntry.BeadsConfig = &rigsConfigBeadsConfig{}
-		}
-
-		if rigEntry.BeadsConfig.Prefix != routePrefix {
-			rigEntry.BeadsConfig.Prefix = routePrefix
-			rigsConfig.Rigs[rigName] = rigEntry
-			modified = true
-		}
-	}
+	modified := updatePrefixMismatchConfig(ctx.TownRoot, rigsConfig, routePrefixesByPath(routes))
 
 	if modified {
 		return saveRigsConfig(rigsPath, rigsConfig)
 	}
 
 	return nil
+}
+
+func updatePrefixMismatchConfig(townRoot string, rigsConfig *rigsConfigFile, routePrefixes map[string]string) bool {
+	modified := false
+	for rigName, rigEntry := range rigsConfig.Rigs {
+		if updateRigPrefixFromRoute(townRoot, rigsConfig, rigName, rigEntry, routePrefixes) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func updateRigPrefixFromRoute(townRoot string, rigsConfig *rigsConfigFile, rigName string, rigEntry rigsConfigEntry, routePrefixes map[string]string) bool {
+	expectedPath := determineRigBeadsPath(townRoot, rigName)
+	routePrefix, hasRoute := routePrefixes[expectedPath]
+	if !hasRoute {
+		return false
+	}
+	if rigEntry.BeadsConfig == nil {
+		rigEntry.BeadsConfig = &rigsConfigBeadsConfig{}
+	}
+	if rigEntry.BeadsConfig.Prefix == routePrefix {
+		return false
+	}
+	rigEntry.BeadsConfig.Prefix = routePrefix
+	rigsConfig.Rigs[rigName] = rigEntry
+	return true
 }
 
 // rigsConfigEntry is a local type for loading rigs.json without importing config package
@@ -286,7 +282,7 @@ func saveRigsConfig(path string, cfg *rigsConfigFile) error {
 // dbPrefixGetter abstracts querying the database for issue_prefix.
 // Allows mocking in tests without shelling out to bd.
 type dbPrefixGetter interface {
-	GetDBPrefix(rigPath string) (string, error)
+	GetDBPrefix(_ string) (string, error)
 }
 
 // realDBPrefixGetter shells out to bd to query the database.
@@ -372,35 +368,17 @@ func (c *DatabasePrefixCheck) Run(ctx *CheckContext) *CheckResult {
 	c.mismatches = nil // Reset
 
 	beadsDir := filepath.Join(ctx.TownRoot, ".beads")
-
-	// Load routes.jsonl
 	routes, err := beads.LoadRoutes(beadsDir)
 	if err != nil {
-		return &CheckResult{
-			Name:     c.Name(),
-			Status:   StatusOK,
-			Message:  "No routes.jsonl found (nothing to check)",
-			Category: c.Category(),
-		}
+		return databasePrefixStatus(c, StatusOK, "No routes.jsonl found (nothing to check)", nil)
 	}
 	if len(routes) == 0 {
-		return &CheckResult{
-			Name:     c.Name(),
-			Status:   StatusOK,
-			Message:  "No routes configured (nothing to check)",
-			Category: c.Category(),
-		}
+		return databasePrefixStatus(c, StatusOK, "No routes configured (nothing to check)", nil)
 	}
 
-	// Check if bd command is available (skip when using injected mock)
 	if c.prefixGetter == nil {
 		if _, err := exec.LookPath("bd"); err != nil {
-			return &CheckResult{
-				Name:     c.Name(),
-				Status:   StatusOK,
-				Message:  "beads not installed (skipped)",
-				Category: c.Category(),
-			}
+			return databasePrefixStatus(c, StatusOK, "beads not installed (skipped)", nil)
 		}
 	}
 
@@ -409,70 +387,58 @@ func (c *DatabasePrefixCheck) Run(ctx *CheckContext) *CheckResult {
 		getter = &realDBPrefixGetter{}
 	}
 
-	// Resolve the town root's canonical beads directory so we can detect
-	// rigs that redirect to the shared town database.
 	townBeadsDir, _ := filepath.Abs(beads.ResolveBeadsDir(ctx.TownRoot))
-
-	var problems []string
-
-	for _, route := range routes {
-		// Skip town root route
-		if route.Path == "." || route.Path == "" {
-			continue
-		}
-
-		rigPath := filepath.Join(ctx.TownRoot, route.Path)
-		rigBeadsDir := beads.ResolveBeadsDir(rigPath)
-
-		// Check if beads directory exists
-		if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
-			continue
-		}
-
-		// Skip rigs whose beads redirect resolves to the town root database.
-		// These rigs share the town DB; the prefix is owned by the town root
-		// route, not by this rig. "Fixing" them would overwrite the shared
-		// database's issue_prefix with the rig's route prefix.
-		absRigBeadsDir, _ := filepath.Abs(rigBeadsDir)
-		if absRigBeadsDir == townBeadsDir {
-			continue
-		}
-
-		dbPrefix, err := getter.GetDBPrefix(rigPath)
-		if err != nil {
-			continue
-		}
-
-		routesPrefix := strings.TrimSuffix(route.Prefix, "-")
-
-		if dbPrefix != routesPrefix {
-			problems = append(problems, fmt.Sprintf("Route '%s': routes.jsonl says '%s', database has '%s'",
-				route.Path, routesPrefix, dbPrefix))
-			c.mismatches = append(c.mismatches, databasePrefixMismatch{
-				rigPath:      route.Path,
-				routesPrefix: routesPrefix,
-				dbPrefix:     dbPrefix,
-			})
-		}
-	}
+	problems := c.findDatabasePrefixMismatches(ctx.TownRoot, routes, getter, townBeadsDir)
 
 	if len(c.mismatches) == 0 {
-		return &CheckResult{
-			Name:     c.Name(),
-			Status:   StatusOK,
-			Message:  "All database prefixes match routes.jsonl",
-			Category: c.Category(),
-		}
+		return databasePrefixStatus(c, StatusOK, "All database prefixes match routes.jsonl", nil)
 	}
 
-	return &CheckResult{
-		Name:     c.Name(),
-		Status:   StatusWarning,
-		Message:  fmt.Sprintf("%d database prefix mismatch(es) with routes.jsonl", len(c.mismatches)),
-		Details:  problems,
-		FixHint:  "Run 'gt doctor --fix' to update database configs to match routes.jsonl",
-		Category: c.Category(),
+	return databasePrefixStatus(c, StatusWarning,
+		fmt.Sprintf("%d database prefix mismatch(es) with routes.jsonl", len(c.mismatches)), problems)
+}
+
+func databasePrefixStatus(c *DatabasePrefixCheck, status CheckStatus, message string, details []string) *CheckResult {
+	return &CheckResult{Name: c.Name(), Status: status, Message: message, Details: details, Category: c.Category()}
+}
+
+func (c *DatabasePrefixCheck) findDatabasePrefixMismatches(townRoot string, routes []beads.Route, getter dbPrefixGetter, townBeadsDir string) []string {
+	var problems []string
+	for _, route := range routes {
+		mismatch, problem, ok := databasePrefixMismatchForRoute(townRoot, route, getter, townBeadsDir)
+		if !ok {
+			continue
+		}
+		c.mismatches = append(c.mismatches, mismatch)
+		problems = append(problems, problem)
 	}
+	return problems
+}
+
+func databasePrefixMismatchForRoute(townRoot string, route beads.Route, getter dbPrefixGetter, townBeadsDir string) (databasePrefixMismatch, string, bool) {
+	if route.Path == "." || route.Path == "" {
+		return databasePrefixMismatch{}, "", false
+	}
+	rigPath := filepath.Join(townRoot, route.Path)
+	rigBeadsDir := beads.ResolveBeadsDir(rigPath)
+	if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
+		return databasePrefixMismatch{}, "", false
+	}
+	absRigBeadsDir, _ := filepath.Abs(rigBeadsDir)
+	if absRigBeadsDir == townBeadsDir {
+		return databasePrefixMismatch{}, "", false
+	}
+	dbPrefix, err := getter.GetDBPrefix(rigPath)
+	if err != nil {
+		return databasePrefixMismatch{}, "", false
+	}
+	routesPrefix := strings.TrimSuffix(route.Prefix, "-")
+	if dbPrefix == routesPrefix {
+		return databasePrefixMismatch{}, "", false
+	}
+	mismatch := databasePrefixMismatch{rigPath: route.Path, routesPrefix: routesPrefix, dbPrefix: dbPrefix}
+	problem := fmt.Sprintf("Route '%s': routes.jsonl says '%s', database has '%s'", route.Path, routesPrefix, dbPrefix)
+	return mismatch, problem, true
 }
 
 // Fix updates database configs to match routes.jsonl prefixes.

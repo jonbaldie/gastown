@@ -78,14 +78,14 @@ func TestDeliverNudgeFallsBackToTmuxWhenWorkerHasNoRun(t *testing.T) {
 	const sessionName = "hq-mayor"
 	tmuxtest.StartSession(t, realTmux, socket, sessionName, "exec cat")
 
-	origMode := nudgeModeFlag
-	origPriority := nudgePriorityFlag
+	origMode := nudgeState().mode
+	origPriority := nudgeState().priority
 	t.Cleanup(func() {
-		nudgeModeFlag = origMode
-		nudgePriorityFlag = origPriority
+		nudgeState().mode = origMode
+		nudgeState().priority = origPriority
 	})
-	nudgeModeFlag = NudgeModeImmediate
-	nudgePriorityFlag = nudge.PriorityUrgent
+	nudgeState().mode = NudgeModeImmediate
+	nudgeState().priority = nudge.PriorityUrgent
 
 	const message = "worker-fallback-delivered"
 	tm := tmux.NewTmuxWithSocketAndBinary(socket, realTmux)

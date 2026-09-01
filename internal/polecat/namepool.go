@@ -264,7 +264,8 @@ func (p *NamePool) Allocate() (string, error) {
 	names := p.getNames()
 
 	// Try to find first available name from the theme
-	for i := 0; i < len(names) && i < p.MaxSize; i++ {
+	nameCount := len(names)
+	for i := 0; i < nameCount && i < p.MaxSize; i++ {
 		name := names[i]
 		if !p.InUse[name] {
 			p.InUse[name] = true
@@ -595,21 +596,8 @@ func ParseThemeFile(path string) ([]string, error) {
 	var names []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		name := strings.ToLower(line)
-		if len(name) <= 3 {
-			fmt.Fprintf(os.Stderr, "warning: skipping name %q (must be >3 characters)\n", name)
-			continue
-		}
-		if !validPoolNameRe.MatchString(name) {
-			fmt.Fprintf(os.Stderr, "warning: skipping invalid name %q (must be lowercase alphanumeric with hyphens)\n", name)
-			continue
-		}
-		if reservedPolecatName(name) {
-			fmt.Fprintf(os.Stderr, "warning: skipping reserved name %q\n", name)
+		name, ok := parseThemeLine(scanner.Text())
+		if !ok {
 			continue
 		}
 		if seen[name] {
@@ -628,6 +616,27 @@ func ParseThemeFile(path string) ([]string, error) {
 		return nil, fmt.Errorf("no valid names in theme file %s", filepath.Base(path))
 	}
 	return names, nil
+}
+
+func parseThemeLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	name := strings.ToLower(line)
+	if len(name) <= 3 {
+		fmt.Fprintf(os.Stderr, "warning: skipping name %q (must be >3 characters)\n", name)
+		return "", false
+	}
+	if !validPoolNameRe.MatchString(name) {
+		fmt.Fprintf(os.Stderr, "warning: skipping invalid name %q (must be lowercase alphanumeric with hyphens)\n", name)
+		return "", false
+	}
+	if reservedPolecatName(name) {
+		fmt.Fprintf(os.Stderr, "warning: skipping reserved name %q\n", name)
+		return "", false
+	}
+	return name, true
 }
 
 // ResolveThemeNames resolves a theme name to its list of names.

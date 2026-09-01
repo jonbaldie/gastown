@@ -15,19 +15,19 @@ import (
 // It also checks metadata.json files for port consistency with the running server.
 type StaleDoltPortCheck struct {
 	FixableCheck
-	stalePorts      []stalePortInfo
-	staleMetadata   []staleMetadataInfo
+	stalePorts    []stalePortInfo
+	staleMetadata []staleMetadataInfo
 }
 
 type stalePortInfo struct {
-	path       string
-	port       int
+	path        string
+	port        int
 	correctPort int
 }
 
 type staleMetadataInfo struct {
-	path       string
-	port       int
+	path        string
+	port        int
 	correctPort int
 }
 
@@ -48,7 +48,7 @@ func NewStaleDoltPortCheck() *StaleDoltPortCheck {
 func (c *StaleDoltPortCheck) Run(ctx *CheckContext) *CheckResult {
 	c.stalePorts = nil
 	c.staleMetadata = nil
-	
+
 	// Get the correct port from the main Dolt config
 	correctPort := c.getCorrectPort(ctx)
 	if correctPort == 0 {
@@ -57,55 +57,21 @@ func (c *StaleDoltPortCheck) Run(ctx *CheckContext) *CheckResult {
 
 	// Find all dolt-server.port files
 	portFiles := c.findPortFiles(ctx.TownRoot)
-	
-	var details []string
-	for _, portFile := range portFiles {
-		data, err := os.ReadFile(portFile)
-		if err != nil {
-			continue
-		}
-
-		portStr := strings.TrimSpace(string(data))
-		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			continue
-		}
-
-		// Check if port matches the correct port
-		if port != correctPort {
-			c.stalePorts = append(c.stalePorts, stalePortInfo{
-				path:       portFile,
-				port:       port,
-				correctPort: correctPort,
-			})
-			relPath, _ := filepath.Rel(ctx.TownRoot, portFile)
-			details = append(details, fmt.Sprintf("Stale port file %s has port %d (should be %d)", relPath, port, correctPort))
-		}
-	}
+	stalePorts, portDetails := stalePortDetails(ctx.TownRoot, portFiles, correctPort)
+	c.stalePorts = stalePorts
 
 	// Check metadata.json files for port consistency
 	metadataFiles := c.findMetadataFiles(ctx.TownRoot)
-	for _, metaFile := range metadataFiles {
-		port := c.getPortFromMetadata(metaFile)
-		if port > 0 && port != correctPort {
-			c.staleMetadata = append(c.staleMetadata, staleMetadataInfo{
-				path:       metaFile,
-				port:       port,
-				correctPort: correctPort,
-			})
-			relPath, _ := filepath.Rel(ctx.TownRoot, metaFile)
-			details = append(details, fmt.Sprintf("metadata.json %s has port %d (should be %d)", relPath, port, correctPort))
-		}
-	}
+	staleMetadata, metadataDetails := staleMetadataDetails(ctx.TownRoot, metadataFiles, correctPort, c)
+	c.staleMetadata = staleMetadata
 
 	// Also check for stale dolt config directories with wrong ports
 	staleConfigs := c.findStaleDoltConfigs(ctx.TownRoot, correctPort)
-	for _, config := range staleConfigs {
-		relPath, _ := filepath.Rel(ctx.TownRoot, config)
-		details = append(details, fmt.Sprintf("Stale Dolt config directory: %s (contains wrong port configuration)", relPath))
-	}
+	configDetails := staleConfigDetails(ctx.TownRoot, staleConfigs)
+	details := append(portDetails, metadataDetails...)
+	details = append(details, configDetails...)
 
-	if len(c.stalePorts) == 0 && len(c.staleMetadata) == 0 && len(staleConfigs) == 0 {
+	if len(stalePorts) == 0 && len(staleMetadata) == 0 && len(staleConfigs) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusOK,
@@ -122,22 +88,65 @@ func (c *StaleDoltPortCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
+func stalePortDetails(townRoot string, portFiles []string, correctPort int) ([]stalePortInfo, []string) {
+	var stale []stalePortInfo
+	var details []string
+	for _, portFile := range portFiles {
+		data, err := os.ReadFile(portFile)
+		if err != nil {
+			continue
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || port == correctPort {
+			continue
+		}
+		stale = append(stale, stalePortInfo{path: portFile, port: port, correctPort: correctPort})
+		relPath, _ := filepath.Rel(townRoot, portFile)
+		details = append(details, fmt.Sprintf("Stale port file %s has port %d (should be %d)", relPath, port, correctPort))
+	}
+	return stale, details
+}
+
+func staleMetadataDetails(townRoot string, metadataFiles []string, correctPort int, check *StaleDoltPortCheck) ([]staleMetadataInfo, []string) {
+	var stale []staleMetadataInfo
+	var details []string
+	for _, metaFile := range metadataFiles {
+		port := check.getPortFromMetadata(metaFile)
+		if port <= 0 || port == correctPort {
+			continue
+		}
+		stale = append(stale, staleMetadataInfo{path: metaFile, port: port, correctPort: correctPort})
+		relPath, _ := filepath.Rel(townRoot, metaFile)
+		details = append(details, fmt.Sprintf("metadata.json %s has port %d (should be %d)", relPath, port, correctPort))
+	}
+	return stale, details
+}
+
+func staleConfigDetails(townRoot string, configs []string) []string {
+	details := make([]string, 0, len(configs))
+	for _, config := range configs {
+		relPath, _ := filepath.Rel(townRoot, config)
+		details = append(details, fmt.Sprintf("Stale Dolt config directory: %s (contains wrong port configuration)", relPath))
+	}
+	return details
+}
+
 // Fix removes stale Dolt port files and fixes metadata.json port mismatches.
-func (c *StaleDoltPortCheck) Fix(ctx *CheckContext) error {
+func (c *StaleDoltPortCheck) Fix(_ *CheckContext) error {
 	// Remove stale port files
 	for _, info := range c.stalePorts {
 		if err := os.Remove(info.path); err != nil {
 			return fmt.Errorf("could not remove stale port file %s: %w", info.path, err)
 		}
 	}
-	
+
 	// Fix metadata.json files with wrong ports
 	for _, info := range c.staleMetadata {
 		if err := c.fixMetadataPort(info.path, info.correctPort); err != nil {
 			return fmt.Errorf("could not fix metadata.json %s: %w", info.path, err)
 		}
 	}
-	
+
 	return nil
 }
 

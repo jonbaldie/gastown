@@ -217,7 +217,7 @@ func TestProblemAgentNeedsAttention(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.state.String(), func(t *testing.T) {
 			agent := &ProblemAgent{State: tt.state}
-			if got := agent.NeedsAttention(); got != tt.expected {
+			if got := agent.State.NeedsAttention(); got != tt.expected {
 				t.Errorf("ProblemAgent{State: %s}.NeedsAttention() = %v, want %v",
 					tt.state, got, tt.expected)
 			}
@@ -242,9 +242,9 @@ func TestThresholdConstants(t *testing.T) {
 func TestCheckAll_GUPPViolation(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Toast"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Toast",
-		HookBead:  "gt-abc12",
-		UpdatedAt: time.Now().Add(-45 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Toast",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-abc12"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-45 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-Toast"] = true // session alive
 
@@ -272,9 +272,9 @@ func TestCheckAll_GUPPViolation(t *testing.T) {
 func TestCheckAll_Stalled(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Pearl"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Pearl",
-		HookBead:  "gt-def34",
-		UpdatedAt: time.Now().Add(-20 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Pearl",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-def34"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-20 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-Pearl"] = true
 
@@ -296,9 +296,9 @@ func TestCheckAll_Stalled(t *testing.T) {
 func TestCheckAll_Working(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Max"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Max",
-		HookBead:  "gt-xyz89",
-		UpdatedAt: time.Now().Add(-2 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Max",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-xyz89"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-2 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-Max"] = true
 
@@ -320,9 +320,9 @@ func TestCheckAll_Working(t *testing.T) {
 func TestCheckAll_Idle(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Joe"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Joe",
-		HookBead:  "", // no hooked work
-		UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Joe",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: ""}, // no hooked work
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-Joe"] = true
 
@@ -344,9 +344,9 @@ func TestCheckAll_Idle(t *testing.T) {
 func TestCheckAll_Zombie(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Dead"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Dead",
-		HookBead:  "gt-work1",
-		UpdatedAt: time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Dead",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-work1"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-10 * time.Minute).Format(time.RFC3339)},
 	}
 	// session NOT alive (not in mock.sessions)
 
@@ -371,25 +371,25 @@ func TestCheckAll_MultipleAgents(t *testing.T) {
 
 	// GUPP violation agent
 	mock.agents["gt-gastown-polecat-Stuck"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Stuck",
-		HookBead:  "gt-work1",
-		UpdatedAt: now.Add(-40 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Stuck",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-work1"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: now.Add(-40 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-Stuck"] = true
 
 	// Working agent
 	mock.agents["gt-gastown-polecat-Happy"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Happy",
-		HookBead:  "gt-work2",
-		UpdatedAt: now.Add(-2 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Happy",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-work2"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: now.Add(-2 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-Happy"] = true
 
 	// Idle agent
 	mock.agents["gt-gastown-polecat-Lazy"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Lazy",
-		HookBead:  "",
-		UpdatedAt: now.Add(-5 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Lazy",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: ""},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-Lazy"] = true
 
@@ -446,9 +446,9 @@ func TestCheckAll_ListError(t *testing.T) {
 func TestCheckAll_TownLevelAgent(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["hq-mayor"] = &beads.Issue{
-		ID:        "hq-mayor",
-		HookBead:  "",
-		UpdatedAt: time.Now().Add(-3 * time.Minute).Format(time.RFC3339),
+		ID:               "hq-mayor",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: ""},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-3 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["hq-mayor"] = true
 
@@ -476,9 +476,9 @@ func TestCheckAll_TownLevelAgent(t *testing.T) {
 func TestCheckAll_RigSingleton(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-witness"] = &beads.Issue{
-		ID:        "gt-gastown-witness",
-		HookBead:  "",
-		UpdatedAt: time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-witness",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: ""},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-1 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-witness"] = true
 
@@ -506,9 +506,9 @@ func TestCheckAll_RigSingleton(t *testing.T) {
 func TestCheckAll_CrewAgent(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-crew-joe"] = &beads.Issue{
-		ID:        "gt-gastown-crew-joe",
-		HookBead:  "gt-task1",
-		UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-crew-joe",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-task1"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339)},
 	}
 	mock.sessions["gt-crew-joe"] = true
 
@@ -564,8 +564,8 @@ func TestDeriveSessionName(t *testing.T) {
 func TestCheckAll_InvalidBeadID(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["nohyphen"] = &beads.Issue{
-		ID:        "nohyphen",
-		UpdatedAt: time.Now().Format(time.RFC3339),
+		ID:               "nohyphen",
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Format(time.RFC3339)},
 	}
 
 	detector := NewStuckDetectorWithSource(mock)
@@ -585,9 +585,9 @@ func TestCheckAll_InvalidBeadID(t *testing.T) {
 func TestCheckAll_SessionError(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Alpha"] = &beads.Issue{
-		ID:        "gt-gastown-polecat-Alpha",
-		HookBead:  "gt-work1",
-		UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+		ID:               "gt-gastown-polecat-Alpha",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-work1"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339)},
 	}
 	// Session error (e.g., tmux socket contention) - should NOT mark as zombie
 	mock.sessionErr = fmt.Errorf("tmux: socket not found")
@@ -615,10 +615,10 @@ func TestCheckAll_SessionError(t *testing.T) {
 func TestCheckAll_RalphcatNotStalled(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Ralph"] = &beads.Issue{
-		ID:       "gt-gastown-polecat-Ralph",
-		HookBead: "gt-abc12",
+		ID:               "gt-gastown-polecat-Ralph",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-abc12"},
 		// 45 minutes idle — stalled for normal polecat, but fine for ralphcat
-		UpdatedAt: time.Now().Add(-45 * time.Minute).Format(time.RFC3339),
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-45 * time.Minute).Format(time.RFC3339)},
 		// Description contains mode: ralph (agent fields)
 		Description: "Polecat Ralph\n\nrole_type: polecat\nrig: gastown\nagent_state: working\nhook_bead: gt-abc12\ncleanup_status: null\nactive_mr: null\nnotification_level: null\nmode: ralph",
 	}
@@ -644,10 +644,10 @@ func TestCheckAll_RalphcatNotStalled(t *testing.T) {
 func TestCheckAll_RalphcatStalled(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Ralph2"] = &beads.Issue{
-		ID:          "gt-gastown-polecat-Ralph2",
-		HookBead:    "gt-def34",
-		UpdatedAt:   time.Now().Add(-150 * time.Minute).Format(time.RFC3339), // 2.5 hours
-		Description: "Polecat Ralph2\n\nrole_type: polecat\nrig: gastown\nagent_state: working\nhook_bead: gt-def34\ncleanup_status: null\nactive_mr: null\nnotification_level: null\nmode: ralph",
+		ID:               "gt-gastown-polecat-Ralph2",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-def34"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-150 * time.Minute).Format(time.RFC3339)}, // 2.5 hours
+		Description:      "Polecat Ralph2\n\nrole_type: polecat\nrig: gastown\nagent_state: working\nhook_bead: gt-def34\ncleanup_status: null\nactive_mr: null\nnotification_level: null\nmode: ralph",
 	}
 	mock.sessions["gt-Ralph2"] = true
 
@@ -670,10 +670,10 @@ func TestCheckAll_RalphcatStalled(t *testing.T) {
 func TestCheckAll_RalphcatGUPP(t *testing.T) {
 	mock := newMockHealthSource()
 	mock.agents["gt-gastown-polecat-Ralph3"] = &beads.Issue{
-		ID:          "gt-gastown-polecat-Ralph3",
-		HookBead:    "gt-ghi56",
-		UpdatedAt:   time.Now().Add(-300 * time.Minute).Format(time.RFC3339), // 5 hours
-		Description: "Polecat Ralph3\n\nrole_type: polecat\nrig: gastown\nagent_state: working\nhook_bead: gt-ghi56\ncleanup_status: null\nactive_mr: null\nnotification_level: null\nmode: ralph",
+		ID:               "gt-gastown-polecat-Ralph3",
+		IssueAgentFields: beads.IssueAgentFields{HookBead: "gt-ghi56"},
+		IssueAuditFields: beads.IssueAuditFields{UpdatedAt: time.Now().Add(-300 * time.Minute).Format(time.RFC3339)}, // 5 hours
+		Description:      "Polecat Ralph3\n\nrole_type: polecat\nrig: gastown\nagent_state: working\nhook_bead: gt-ghi56\ncleanup_status: null\nactive_mr: null\nnotification_level: null\nmode: ralph",
 	}
 	mock.sessions["gt-Ralph3"] = true
 

@@ -508,15 +508,15 @@ func TestCompareScoredIssues_UsesDeterministicIDTieBreaker(t *testing.T) {
 
 	first := scoredIssue{
 		issue: &beads.Issue{
-			ID:        "gt-1",
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			ID:               "gt-1",
+			IssueAuditFields: beads.IssueAuditFields{CreatedAt: time.Now().UTC().Format(time.RFC3339)},
 		},
 		score: 10,
 	}
 	second := scoredIssue{
 		issue: &beads.Issue{
-			ID:        "gt-2",
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			ID:               "gt-2",
+			IssueAuditFields: beads.IssueAuditFields{CreatedAt: time.Now().UTC().Format(time.RFC3339)},
 		},
 		score: 10,
 	}

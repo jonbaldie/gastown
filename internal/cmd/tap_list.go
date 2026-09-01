@@ -25,11 +25,9 @@ Examples:
 	RunE: runTapList,
 }
 
-var tapListGuardsOnly bool
-
 func init() {
 	tapCmd.AddCommand(tapListCmd)
-	tapListCmd.Flags().BoolVar(&tapListGuardsOnly, "guards", false, "Show only guard handlers")
+	tapListCmd.Flags().Bool("guards", false, "Show only guard handlers")
 }
 
 // tapHandler describes a tap handler for display.
@@ -42,9 +40,16 @@ type tapHandler struct {
 	implemented bool
 }
 
-func runTapList(cmd *cobra.Command, args []string) error {
-	// Built-in handlers (implemented as Go commands)
-	handlers := []tapHandler{
+func runTapList(cmd *cobra.Command, _ []string) error {
+	guardsOnly := commandBoolFlag(cmd, "guards")
+	handlers := builtInTapHandlers()
+	handlers = appendRegistryTapHandlers(handlers, guardsOnly)
+	handlers = prepareTapHandlers(handlers, guardsOnly)
+	return renderTapHandlers(handlers)
+}
+
+func builtInTapHandlers() []tapHandler {
+	return []tapHandler{
 		{
 			name:        "pr-workflow",
 			kind:        "guard",
@@ -62,36 +67,41 @@ func runTapList(cmd *cobra.Command, args []string) error {
 			implemented: true,
 		},
 	}
+}
 
-	// Try to load registry for additional handlers
+func appendRegistryTapHandlers(handlers []tapHandler, guardsOnly bool) []tapHandler {
 	townRoot, err := workspace.FindFromCwd()
-	if err == nil {
-		registry, err := LoadRegistry(townRoot)
-		if err == nil {
-			for name, def := range registry.Hooks {
-				// Skip hooks already listed as built-in
-				if isBuiltIn(name, handlers) {
-					continue
-				}
-
-				kind := classifyHook(def.Command)
-				if tapListGuardsOnly && kind != "guard" {
-					continue
-				}
-
-				handlers = append(handlers, tapHandler{
-					name:        name,
-					kind:        kind,
-					description: def.Description,
-					event:       def.Event,
-					matchers:    def.Matchers,
-					implemented: def.Enabled,
-				})
-			}
-		}
+	if err != nil {
+		return handlers
 	}
+	registry, err := LoadRegistry(townRoot)
+	if err != nil {
+		return handlers
+	}
+	for name, def := range registry.Hooks {
+		// Skip hooks already listed as built-in.
+		if isBuiltIn(name, handlers) {
+			continue
+		}
 
-	// Sort by kind then name
+		kind := classifyHook(def.Command)
+		if guardsOnly && kind != "guard" {
+			continue
+		}
+
+		handlers = append(handlers, tapHandler{
+			name:        name,
+			kind:        kind,
+			description: def.Description,
+			event:       def.Event,
+			matchers:    def.Matchers,
+			implemented: def.Enabled,
+		})
+	}
+	return handlers
+}
+
+func prepareTapHandlers(handlers []tapHandler, guardsOnly bool) []tapHandler {
 	sort.Slice(handlers, func(i, j int) bool {
 		if handlers[i].kind != handlers[j].kind {
 			return handlers[i].kind < handlers[j].kind
@@ -99,57 +109,67 @@ func runTapList(cmd *cobra.Command, args []string) error {
 		return handlers[i].name < handlers[j].name
 	})
 
-	if tapListGuardsOnly {
-		var filtered []tapHandler
-		for _, h := range handlers {
-			if h.kind == "guard" {
-				filtered = append(filtered, h)
-			}
-		}
-		handlers = filtered
+	if !guardsOnly {
+		return handlers
 	}
+	var filtered []tapHandler
+	for _, h := range handlers {
+		if h.kind == "guard" {
+			filtered = append(filtered, h)
+		}
+	}
+	return filtered
+}
 
+func renderTapHandlers(handlers []tapHandler) error {
 	if len(handlers) == 0 {
 		fmt.Println(style.Dim.Render("No tap handlers found"))
 		return nil
 	}
 
 	fmt.Printf("\n%s Tap Handlers\n\n", style.Bold.Render("⚡"))
-
-	// Group by kind
-	byKind := make(map[string][]tapHandler)
+	byKind := groupTapHandlersByKind(handlers)
 	kindOrder := []string{"guard", "audit", "inject", "check", "hook"}
-	for _, h := range handlers {
-		byKind[h.kind] = append(byKind[h.kind], h)
-	}
-
 	for _, kind := range kindOrder {
 		group := byKind[kind]
 		if len(group) == 0 {
 			continue
 		}
+		renderTapHandlerGroup(kind, group)
+	}
+	return nil
+}
 
-		kindLabel := cases.Title(language.English).String(kind) + "s"
-		fmt.Printf("%s %s\n", style.Bold.Render("▸"), kindLabel)
+func groupTapHandlersByKind(handlers []tapHandler) map[string][]tapHandler {
+	byKind := make(map[string][]tapHandler)
+	for _, h := range handlers {
+		byKind[h.kind] = append(byKind[h.kind], h)
+	}
+	return byKind
+}
 
-		for _, h := range group {
-			statusIcon := "●"
-			statusStyle := style.Success
-			if !h.implemented {
-				statusIcon = "○"
-				statusStyle = style.Dim
-			}
+func renderTapHandlerGroup(kind string, group []tapHandler) {
+	kindLabel := cases.Title(language.English).String(kind) + "s"
+	fmt.Printf("%s %s\n", style.Bold.Render("▸"), kindLabel)
+	for _, h := range group {
+		renderTapHandler(h)
+	}
+	fmt.Println()
+}
 
-			fmt.Printf("  %s %s\n", statusStyle.Render(statusIcon), style.Bold.Render(h.name))
-			fmt.Printf("    %s\n", h.description)
-			fmt.Printf("    %s %s  %s %s\n",
-				style.Dim.Render("event:"), h.event,
-				style.Dim.Render("matchers:"), strings.Join(h.matchers, ", "))
-		}
-		fmt.Println()
+func renderTapHandler(handler tapHandler) {
+	statusIcon := "●"
+	statusStyle := style.Success
+	if !handler.implemented {
+		statusIcon = "○"
+		statusStyle = style.Dim
 	}
 
-	return nil
+	fmt.Printf("  %s %s\n", statusStyle.Render(statusIcon), style.Bold.Render(handler.name))
+	fmt.Printf("    %s\n", handler.description)
+	fmt.Printf("    %s %s  %s %s\n",
+		style.Dim.Render("event:"), handler.event,
+		style.Dim.Render("matchers:"), strings.Join(handler.matchers, ", "))
 }
 
 func isBuiltIn(name string, handlers []tapHandler) bool {

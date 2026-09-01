@@ -6,11 +6,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// townCycleSession is the --session flag for town next/prev commands.
-// When run via tmux key binding (run-shell), the session context may not be
-// correct, so we pass the session name explicitly via #{session_name} expansion.
-var townCycleSession string
-
 // getTownLevelSessions returns the town-level session names for the current workspace.
 func getTownLevelSessions() []string {
 	mayorSession := getMayorSessionName()
@@ -24,7 +19,7 @@ func getTownLevelSessions() []string {
 // tmux run-shell which may execute from outside the workspace directory.
 func isTownLevelSession(sessionName string) bool {
 	// Town-level sessions are identified by their fixed names
-	mayorSession := getMayorSessionName()  // "hq-mayor"
+	mayorSession := getMayorSessionName()   // "hq-mayor"
 	deaconSession := getDeaconSessionName() // "hq-deacon"
 	return sessionName == mayorSession || sessionName == deaconSession
 }
@@ -34,8 +29,8 @@ func init() {
 	townCmd.AddCommand(townNextCmd)
 	townCmd.AddCommand(townPrevCmd)
 
-	townNextCmd.Flags().StringVar(&townCycleSession, "session", "", "Override current session (used by tmux binding)")
-	townPrevCmd.Flags().StringVar(&townCycleSession, "session", "", "Override current session (used by tmux binding)")
+	townNextCmd.Flags().String("session", "", "Override current session (used by tmux binding)")
+	townPrevCmd.Flags().String("session", "", "Override current session (used by tmux binding)")
 }
 
 var townCmd = &cobra.Command{
@@ -53,7 +48,8 @@ Town sessions cycle between Mayor and Deacon.
 This command is typically invoked via the C-b n keybinding when in a
 town-level session (Mayor or Deacon).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cycleTownSession(1, townCycleSession)
+		session, _ := cmd.Flags().GetString("session")
+		return cycleTownSession(1, session, "")
 	},
 }
 
@@ -66,14 +62,15 @@ Town sessions cycle between Mayor and Deacon.
 This command is typically invoked via the C-b p keybinding when in a
 town-level session (Mayor or Deacon).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cycleTownSession(-1, townCycleSession)
+		session, _ := cmd.Flags().GetString("session")
+		return cycleTownSession(-1, session, "")
 	},
 }
 
 // cycleTownSession switches to the next or previous town-level session.
 // direction: 1 for next, -1 for previous
 // sessionOverride: if non-empty, use this instead of detecting current session
-func cycleTownSession(direction int, sessionOverride string) error {
+func cycleTownSession(direction int, sessionOverride, clientOverride string) error {
 	currentSession, err := resolveCurrentSession(sessionOverride)
 	if err != nil {
 		return fmt.Errorf("not in a tmux session: %w", err)
@@ -91,7 +88,7 @@ func cycleTownSession(direction int, sessionOverride string) error {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
 
-	return cycleInGroup(direction, currentSession, sessions)
+	return cycleInGroup(direction, currentSession, sessions, clientOverride)
 }
 
 // findRunningTownSessions returns a list of currently running town-level sessions.

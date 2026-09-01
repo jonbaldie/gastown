@@ -49,7 +49,7 @@ type ScheduledMaintenanceConfig struct {
 }
 
 // maintenanceCheckInterval returns the configured check interval, or the default (5m).
-func maintenanceCheckInterval(config *DaemonPatrolConfig) time.Duration {
+func maintenanceCheckInterval(_ *DaemonPatrolConfig) time.Duration {
 	// The check interval is not user-configurable — it's internal.
 	// We just need to poll often enough to catch the window.
 	return defaultMaintenanceCheckInterval
@@ -145,32 +145,23 @@ func shouldRunMaintenance(now time.Time, lastRun time.Time, interval string) boo
 // runScheduledMaintenance checks if we're in the maintenance window and
 // if any database exceeds the commit threshold, runs `gt maintain --force`.
 func (d *Daemon) runScheduledMaintenance() {
-	if !d.isPatrolActive("scheduled_maintenance") {
-		return
-	}
-
-	window := maintenanceWindow(d.patrolConfig)
-	if window == "" {
-		d.logger.Printf("scheduled_maintenance: no window configured, skipping")
+	window, ok := d.scheduledMaintenanceWindow()
+	if !ok {
 		return
 	}
 
 	now := time.Now()
-
-	// Check if we're in the maintenance window.
 	if !isInMaintenanceWindow(now, window) {
 		return // Not in window — silent skip (this fires every 5 minutes)
 	}
 
-	// Check if we already ran recently (respect interval).
 	interval := maintenanceInterval(d.patrolConfig)
-	if !shouldRunMaintenance(now, d.lastMaintenanceRun, interval) {
+	if !shouldRunMaintenance(now, d.LastMaintenanceRun, interval) {
 		return // Already ran this window
 	}
 
 	d.logger.Printf("scheduled_maintenance: in window %s, checking commit counts", window)
 
-	// Check if any database exceeds the threshold.
 	threshold := maintenanceThreshold(d.patrolConfig)
 	databases := d.compactorDatabases() // Reuse the same DB discovery
 	if len(databases) == 0 {
@@ -178,7 +169,29 @@ func (d *Daemon) runScheduledMaintenance() {
 		return
 	}
 
-	needsMaintenance := false
+	if !d.databasesNeedMaintenance(databases, threshold) {
+		d.logger.Printf("scheduled_maintenance: all databases below threshold, skipping")
+		d.LastMaintenanceRun = now // Don't re-check until next interval
+		return
+	}
+
+	d.executeScheduledMaintenance(threshold)
+	d.LastMaintenanceRun = now
+}
+
+func (d *Daemon) scheduledMaintenanceWindow() (string, bool) {
+	if !d.isPatrolActive("scheduled_maintenance") {
+		return "", false
+	}
+	window := maintenanceWindow(d.patrolConfig)
+	if window == "" {
+		d.logger.Printf("scheduled_maintenance: no window configured, skipping")
+		return "", false
+	}
+	return window, true
+}
+
+func (d *Daemon) databasesNeedMaintenance(databases []string, threshold int) bool {
 	for _, dbName := range databases {
 		commitCount, err := d.compactorCountCommits(dbName)
 		if err != nil {
@@ -188,20 +201,15 @@ func (d *Daemon) runScheduledMaintenance() {
 		if commitCount >= threshold {
 			d.logger.Printf("scheduled_maintenance: %s: %d commits >= threshold %d — maintenance needed",
 				dbName, commitCount, threshold)
-			needsMaintenance = true
-			break
+			return true
 		}
 		d.logger.Printf("scheduled_maintenance: %s: %d commits (below threshold %d)",
 			dbName, commitCount, threshold)
 	}
+	return false
+}
 
-	if !needsMaintenance {
-		d.logger.Printf("scheduled_maintenance: all databases below threshold, skipping")
-		d.lastMaintenanceRun = now // Don't re-check until next interval
-		return
-	}
-
-	// Run gt maintain --force --threshold <threshold>
+func (d *Daemon) executeScheduledMaintenance(threshold int) {
 	d.logger.Printf("scheduled_maintenance: running gt maintain --force --threshold %d", threshold)
 
 	cmd := exec.CommandContext(d.ctx, d.gtPath, "maintain", "--force",
@@ -212,20 +220,22 @@ func (d *Daemon) runScheduledMaintenance() {
 	if err != nil {
 		d.logger.Printf("scheduled_maintenance: gt maintain failed: %v\nOutput: %s", err, string(output))
 		d.escalate("scheduled_maintenance", fmt.Sprintf("gt maintain --force failed: %v", err))
-	} else {
-		d.logger.Printf("scheduled_maintenance: gt maintain completed successfully")
-		if len(output) > 0 {
-			// Log last few lines of output
-			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-			tail := lines
-			if len(tail) > 5 {
-				tail = tail[len(tail)-5:]
-			}
-			for _, line := range tail {
-				d.logger.Printf("scheduled_maintenance: %s", line)
-			}
-		}
+		return
 	}
 
-	d.lastMaintenanceRun = now
+	d.logger.Printf("scheduled_maintenance: gt maintain completed successfully")
+	d.logScheduledMaintenanceOutput(output)
+}
+
+func (d *Daemon) logScheduledMaintenanceOutput(output []byte) {
+	if len(output) == 0 {
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) > 5 {
+		lines = lines[len(lines)-5:]
+	}
+	for _, line := range lines {
+		d.logger.Printf("scheduled_maintenance: %s", line)
+	}
 }

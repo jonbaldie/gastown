@@ -52,14 +52,6 @@ func newGitRepo(t *testing.T) string {
 	return dir
 }
 
-// setBinaryCommit overrides the build-time commit for the duration of the test.
-func setBinaryCommit(t *testing.T, c string) {
-	t.Helper()
-	orig := Commit
-	t.Cleanup(func() { Commit = orig })
-	Commit = c
-}
-
 func TestShortCommit(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -109,13 +101,10 @@ func TestCommitsMatch(t *testing.T) {
 	}
 }
 
-func TestSetCommit(t *testing.T) {
-	original := Commit
-	defer func() { Commit = original }()
-
-	SetCommit("abc123def456")
-	if Commit != "abc123def456" {
-		t.Errorf("SetCommit did not set Commit; got %q", Commit)
+func TestCheckStaleBinaryCommitOverride(t *testing.T) {
+	info := CheckStaleBinary(t.TempDir(), "abc123def456")
+	if info.BinaryCommit != "abc123def456" {
+		t.Errorf("CheckStaleBinary did not use commit override; got %q", info.BinaryCommit)
 	}
 }
 
@@ -144,12 +133,8 @@ func TestIsBuildBranch(t *testing.T) {
 }
 
 func TestCheckStaleBinary_NoCommit(t *testing.T) {
-	original := Commit
-	defer func() { Commit = original }()
-
-	Commit = ""
-	// Force resolveCommitHash to return empty by clearing Commit
-	// (vcs.revision from build info may still be set, so this test
+	// Force resolveCommitHash to use embedded build info when no override is
+	// supplied (vcs.revision may still be set, so this test
 	// verifies the error path when no commit is available)
 	info := CheckStaleBinary(t.TempDir())
 	if info == nil {
@@ -173,9 +158,7 @@ func TestCheckStaleBinary_FeatureBranchBinaryAtMainTip(t *testing.T) {
 	gitRun(t, dir, "branch", "-M", "main")
 	gitRun(t, dir, "checkout", "-q", "-b", "feat/x")
 	gitCommit(t, dir, "c.go", "unmerged feature work")
-	setBinaryCommit(t, mainTip)
-
-	info := CheckStaleBinary(dir)
+	info := CheckStaleBinary(dir, mainTip)
 	if info.Error != nil {
 		t.Fatalf("unexpected error: %v", info.Error)
 	}
@@ -207,9 +190,7 @@ func TestCheckStaleBinary_FeatureBranchBinaryBehindMain(t *testing.T) {
 	gitRun(t, dir, "branch", "-M", "main")
 	gitRun(t, dir, "checkout", "-q", "-b", "feat/x")
 	gitCommit(t, dir, "d.go", "feature work")
-	setBinaryCommit(t, old)
-
-	info := CheckStaleBinary(dir)
+	info := CheckStaleBinary(dir, old)
 	if info.Error != nil {
 		t.Fatalf("unexpected error: %v", info.Error)
 	}
@@ -240,9 +221,7 @@ func TestCheckStaleBinary_OnMainBehind(t *testing.T) {
 	old := gitCommit(t, dir, "a.go", "1")
 	tip := gitCommit(t, dir, "b.go", "2")
 	gitRun(t, dir, "branch", "-M", "main")
-	setBinaryCommit(t, old)
-
-	info := CheckStaleBinary(dir)
+	info := CheckStaleBinary(dir, old)
 	if info.Error != nil {
 		t.Fatalf("unexpected error: %v", info.Error)
 	}
@@ -269,9 +248,7 @@ func TestCheckStaleBinary_NoBuildBranchSkips(t *testing.T) {
 	dir := newGitRepo(t)
 	c1 := gitCommit(t, dir, "a.go", "1")
 	gitRun(t, dir, "branch", "-M", "feature/only")
-	setBinaryCommit(t, c1)
-
-	info := CheckStaleBinary(dir)
+	info := CheckStaleBinary(dir, c1)
 	if info.Error != nil {
 		t.Fatalf("unexpected error: %v", info.Error)
 	}
@@ -293,9 +270,7 @@ func TestCheckStaleBinary_BinaryCommitMissingSkips(t *testing.T) {
 	dir := newGitRepo(t)
 	gitCommit(t, dir, "a.go", "1")
 	gitRun(t, dir, "branch", "-M", "main")
-	setBinaryCommit(t, "ffffffffffffffffffffffffffffffffffffffff")
-
-	info := CheckStaleBinary(dir)
+	info := CheckStaleBinary(dir, "ffffffffffffffffffffffffffffffffffffffff")
 	if info.Error != nil {
 		t.Fatalf("unexpected error: %v", info.Error)
 	}

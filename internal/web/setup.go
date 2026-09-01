@@ -47,36 +47,35 @@ func NewSetupAPIHandler(csrfToken string) *SetupAPIHandler {
 
 // ServeHTTP routes setup API requests.
 func (h *SetupAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// No CORS headers — the setup page is served from the same origin.
-
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	// Validate CSRF token on all POST requests.
-	if r.Method == http.MethodPost && h.csrfToken != "" {
-		if r.Header.Get("X-Dashboard-Token") != h.csrfToken {
-			h.sendError(w, "Invalid or missing dashboard token", http.StatusForbidden)
-			return
-		}
+	if !h.validSetupCSRF(r) {
+		h.sendError(w, "Invalid or missing dashboard token", http.StatusForbidden)
+		return
 	}
+	routeSetupAPI(h, w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
 
-	path := strings.TrimPrefix(r.URL.Path, "/api")
-	switch {
-	case path == "/install" && r.Method == http.MethodPost:
-		h.handleInstall(w, r)
-	case path == "/rig/add" && r.Method == http.MethodPost:
-		h.handleRigAdd(w, r)
-	case path == "/check-workspace" && r.Method == http.MethodPost:
-		h.handleCheckWorkspace(w, r)
-	case path == "/launch" && r.Method == http.MethodPost:
-		h.handleLaunch(w, r)
-	case path == "/status" && r.Method == http.MethodGet:
-		h.handleStatus(w, r)
-	default:
+func routeSetupAPI(h *SetupAPIHandler, w http.ResponseWriter, r *http.Request, path string) {
+	routes := map[string]func(http.ResponseWriter, *http.Request){
+		http.MethodPost + " /install":         h.handleInstall,
+		http.MethodPost + " /rig/add":         h.handleRigAdd,
+		http.MethodPost + " /check-workspace": h.handleCheckWorkspace,
+		http.MethodPost + " /launch":          h.handleLaunch,
+		http.MethodGet + " /status":           h.handleStatus,
+	}
+	handle, ok := routes[r.Method+" "+path]
+	if !ok {
 		http.Error(w, "Not found", http.StatusNotFound)
+		return
 	}
+	handle(w, r)
+}
+
+func (h *SetupAPIHandler) validSetupCSRF(r *http.Request) bool {
+	return r.Method != http.MethodPost || h.csrfToken == "" || r.Header.Get("X-Dashboard-Token") == h.csrfToken
 }
 
 // InstallRequest is the request body for installing a new workspace.
@@ -223,89 +222,83 @@ func (h *SetupAPIHandler) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Path == "" {
-		h.sendError(w, "Path is required", http.StatusBadRequest)
+	launch, err := prepareDashboardLaunch(req)
+	if err != nil {
+		h.sendError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := startDashboard(launch); err != nil {
+		h.sendError(w, "Failed to start dashboard: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !waitForDashboard(launch) {
+		h.sendError(w, "New dashboard failed to start", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"message":  fmt.Sprintf("Dashboard launching from %s", launch.path),
+		"redirect": fmt.Sprintf("http://%s:%d", requestHostname(r.Host), launch.port),
+	})
+}
 
-	// Expand ~ to home directory (with path cleaning to prevent traversal)
+type dashboardLaunch struct {
+	path string
+	port int
+	bind string
+}
+
+func prepareDashboardLaunch(req LaunchRequest) (dashboardLaunch, error) {
+	if req.Path == "" {
+		return dashboardLaunch{}, fmt.Errorf("path is required")
+	}
 	path, err := expandHomePath(req.Path)
 	if err != nil {
 		log.Printf("handleLaunch: expandHomePath(%q) failed: %v", req.Path, err)
-		h.sendError(w, "Invalid path", http.StatusBadRequest)
-		return
+		return dashboardLaunch{}, fmt.Errorf("invalid path")
 	}
-
 	port := req.Port
 	if port == 0 {
 		port = 8080
 	}
-	// Upper bound is 65534 (not 65535) to reserve room for newPort = port + 1
 	if port < 1 || port > 65534 {
-		h.sendError(w, "Port must be between 1 and 65534", http.StatusBadRequest)
-		return
+		return dashboardLaunch{}, fmt.Errorf("port must be between 1 and 65534")
 	}
-
-	// Use PATH lookup for gt binary. Do NOT use os.Executable() here - during
-	// tests it returns the test binary, causing fork bombs when executed.
-
-	// Start new dashboard on a DIFFERENT port first, then we'll tell the browser to go there
-	newPort := port + 1
-
-	// Propagate bind address so the child dashboard listens on the same interface.
 	bind := req.Bind
 	if bind == "" {
 		bind = "127.0.0.1"
 	}
+	return dashboardLaunch{path: path, port: port + 1, bind: bind}, nil
+}
 
-	// Start new dashboard process from the workspace directory
-	cmd := exec.Command("gt", "dashboard", "--port", fmt.Sprintf("%d", newPort), "--bind", bind)
-	cmd.Dir = path
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+func startDashboard(launch dashboardLaunch) error {
+	cmd := exec.Command("gt", "dashboard", "--port", fmt.Sprintf("%d", launch.port), "--bind", launch.bind)
+	cmd.Dir, cmd.Stdout, cmd.Stderr = launch.path, os.Stdout, os.Stderr
+	return cmd.Start()
+}
 
-	if err := cmd.Start(); err != nil {
-		h.sendError(w, "Failed to start dashboard: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Wait for the new server to be ready.
-	// Use the bind address for the health check; if binding to all interfaces,
-	// probe via localhost since 0.0.0.0 is not directly connectable.
-	probeHost := bind
+func waitForDashboard(launch dashboardLaunch) bool {
+	probeHost := launch.bind
 	if probeHost == "0.0.0.0" {
 		probeHost = "127.0.0.1"
 	}
-	ready := false
-	for i := 0; i < 30; i++ { // Try for 3 seconds
-		resp, err := http.Get(fmt.Sprintf("http://%s:%d/api/commands", probeHost, newPort))
+	for range 30 {
+		resp, err := http.Get(fmt.Sprintf("http://%s:%d/api/commands", probeHost, launch.port))
 		if err == nil {
 			_ = resp.Body.Close()
-			ready = true
-			break
+			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	return false
+}
 
-	if !ready {
-		h.sendError(w, "New dashboard failed to start", http.StatusInternalServerError)
-		return
+func requestHostname(hostport string) string {
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		return host
 	}
-
-	// Build redirect URL using the Host header from the incoming request so the
-	// browser reaches the child dashboard via the same hostname it used for the
-	// parent (works for both localhost and remote/IP access).
-	redirectHost := r.Host
-	if host, _, err := net.SplitHostPort(redirectHost); err == nil {
-		redirectHost = host
-	}
-	// Send success response with the new port to redirect to
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":  true,
-		"message":  fmt.Sprintf("Dashboard launching from %s", path),
-		"redirect": fmt.Sprintf("http://%s:%d", redirectHost, newPort),
-	})
+	return hostport
 }
 
 func (h *SetupAPIHandler) handleCheckWorkspace(w http.ResponseWriter, r *http.Request) {

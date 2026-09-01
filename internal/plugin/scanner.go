@@ -94,26 +94,28 @@ func (s *Scanner) scanDirectory(dir string, location Location, rigName string) (
 
 	var plugins []*Plugin
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		if strings.HasPrefix(entry.Name(), ".") {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 
-		pluginDir := filepath.Join(dir, entry.Name())
-		plugin, err := s.loadPlugin(pluginDir, location, rigName)
-		if err != nil {
-			// Log warning but continue with other plugins
-			fmt.Fprintf(os.Stderr, "Warning: loading plugin %q: %v\n", entry.Name(), err)
-			continue
-		}
+		plugin := s.scanDirectoryEntry(dir, entry, location, rigName)
 		if plugin != nil {
 			plugins = append(plugins, plugin)
 		}
 	}
 
 	return plugins, nil
+}
+
+func (s *Scanner) scanDirectoryEntry(dir string, entry os.DirEntry, location Location, rigName string) *Plugin {
+	pluginDir := filepath.Join(dir, entry.Name())
+	plugin, err := s.loadPlugin(pluginDir, location, rigName)
+	if err != nil {
+		// Log warning but continue with other plugins.
+		fmt.Fprintf(os.Stderr, "Warning: loading plugin %q: %v\n", entry.Name(), err)
+		return nil
+	}
+	return plugin
 }
 
 // loadPlugin loads a plugin from its directory.

@@ -122,7 +122,7 @@ func TestManagerGetPrefersHookedBeadOverStaleAgentHook(t *testing.T) {
 		t.Fatalf("create current issue: %v", err)
 	}
 
-	assignee := mgr.assigneeID("toast")
+	assignee := assigneeID(mgr, "toast")
 	hooked := beads.StatusHooked
 	if err := mgr.beads.Update(current.ID, beads.UpdateOptions{
 		Status:   &hooked,
@@ -131,7 +131,7 @@ func TestManagerGetPrefersHookedBeadOverStaleAgentHook(t *testing.T) {
 		t.Fatalf("hook current issue: %v", err)
 	}
 
-	agentID := mgr.agentBeadID("toast")
+	agentID := agentBeadID(mgr, "toast")
 	if _, err := mgr.beads.CreateOrReopenAgentBead(agentID, assignee, &beads.AgentFields{
 		HookBead:   stale.ID,
 		AgentState: string(beads.AgentStateWorking),
@@ -139,9 +139,9 @@ func TestManagerGetPrefersHookedBeadOverStaleAgentHook(t *testing.T) {
 		t.Fatalf("create agent bead with stale hook: %v", err)
 	}
 
-	p, err := mgr.Get("toast")
+	p, err := Get(mgr, "toast")
 	if err != nil {
-		t.Fatalf("mgr.Get(toast): %v", err)
+		t.Fatalf("Get(mgr, toast): %v", err)
 	}
 
 	if p.State != StateWorking {
@@ -200,8 +200,8 @@ func TestManagerTreatsLiveSessionWithoutWorkAsReviewNeeded(t *testing.T) {
 	tm := tmux.NewTmux()
 	mgr := NewManager(r, git.NewGit(rigPath), tm)
 
-	agentID := mgr.agentBeadID("toast")
-	assignee := mgr.assigneeID("toast")
+	agentID := agentBeadID(mgr, "toast")
+	assignee := assigneeID(mgr, "toast")
 	if _, err := mgr.beads.CreateOrReopenAgentBead(agentID, assignee, &beads.AgentFields{
 		AgentState: string(beads.AgentStateIdle),
 	}); err != nil {
@@ -211,9 +211,9 @@ func TestManagerTreatsLiveSessionWithoutWorkAsReviewNeeded(t *testing.T) {
 	sessionName := NewSessionManager(tm, r).SessionName("toast")
 	startLiveSession(t, sessionName)
 
-	p, err := mgr.Get("toast")
+	p, err := Get(mgr, "toast")
 	if err != nil {
-		t.Fatalf("mgr.Get(toast): %v", err)
+		t.Fatalf("Get(mgr, toast): %v", err)
 	}
 	if p.State != StateReviewNeeded {
 		t.Fatalf("polecat state = %q, want %q when tmux session is alive without work", p.State, StateReviewNeeded)
@@ -222,9 +222,9 @@ func TestManagerTreatsLiveSessionWithoutWorkAsReviewNeeded(t *testing.T) {
 		t.Fatalf("polecat issue = %q, want empty when no active hooked/assigned work exists", p.Issue)
 	}
 
-	idle, err := mgr.FindIdlePolecat()
+	idle, err := FindIdlePolecat(mgr)
 	if err != nil {
-		t.Fatalf("mgr.FindIdlePolecat(): %v", err)
+		t.Fatalf("FindIdlePolecat(mgr): %v", err)
 	}
 	if idle != nil {
 		t.Fatalf("FindIdlePolecat() = %q, want nil while session %s needs review", idle.Name, sessionName)

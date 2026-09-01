@@ -84,8 +84,8 @@ func TestEnsureBootRunning_DoesNotSpawnEveryTick(t *testing.T) {
 	}
 
 	// Simulate two adjacent heartbeats.
-	d.ensureBootRunning()
-	d.ensureBootRunning()
+	ensureBootRunning(d)
+	ensureBootRunning(d)
 
 	data, err := os.ReadFile(tmuxLog)
 	if err != nil {
@@ -141,7 +141,7 @@ func TestEnsureBootRunning_SuppressesWhenDeaconHealthy(t *testing.T) {
 
 	// Even though cooldown has expired (bootLastSpawned is zero),
 	// idle suppression should prevent spawning.
-	d.ensureBootRunning()
+	ensureBootRunning(d)
 
 	data, err := os.ReadFile(tmuxLog)
 	if err != nil {
@@ -194,7 +194,7 @@ func TestEnsureBootRunning_SpawnsWhenDeaconUnhealthy(t *testing.T) {
 	}
 
 	// When last action was "wake" (not "nothing"), Boot should still spawn.
-	d.ensureBootRunning()
+	ensureBootRunning(d)
 
 	data, err := os.ReadFile(tmuxLog)
 	if err != nil {

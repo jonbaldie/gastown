@@ -38,7 +38,7 @@ func TestGetPatrolRigs_FiltersNonOperationalRigs(t *testing.T) {
 		logger: log.New(os.Stderr, "[test] ", 0),
 	}
 
-	got := d.getPatrolRigs("witness")
+	got := getPatrolRigs(d, "witness")
 	slices.Sort(got)
 	// When Dolt is unavailable, isRigOperational() fails safe and returns false
 	// for all rigs (can't verify docked status). This prevents witnesses from

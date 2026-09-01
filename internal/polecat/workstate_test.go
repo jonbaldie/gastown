@@ -10,7 +10,7 @@ func TestDecideWorkstateCanonicalFields(t *testing.T) {
 	}{
 		{
 			name: "clean idle is reusable and safe",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "main"},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "main"}},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictSafeToNuke, Reason: "reusable", Reusable: true, SafeToNuke: true, ReuseStatus: "idle-clean"},
 		},
 		{
@@ -30,57 +30,57 @@ func TestDecideWorkstateCanonicalFields(t *testing.T) {
 		},
 		{
 			name: "unsubmitted branch needs mq submit",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", MQCheckRequired: true, HasSubmittableWork: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true}},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsMQSubmit, Reason: "mq-not-submitted", NeedsRecovery: true, NeedsMQSubmit: true, MQStatus: "not_submitted", CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed"},
 		},
 		{
 			name: "mq lookup uncertainty blocks cleanup",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", MQCheckRequired: true, MQLookupFailed: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, MQLookupFailed: true}},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "mq-lookup-failed", NeedsRecovery: true, MQStatus: "unknown", CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed", Blockers: []string{"mq_status=unknown"}},
 		},
 		{
 			name: "open work with unpushed commits needs recovery",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", UnpushedCommits: 1},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test", UnpushedCommits: 1}},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "git-unpushed", NeedsRecovery: true, CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed", Blockers: []string{"git_state=has_unpushed unpushed_commits=1"}},
 		},
 		{
 			name: "mr submission makes mq submitted",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", MQCheckRequired: true, HasSubmittableWork: true, MRSubmitted: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true, MRSubmitted: true}},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictSafeToNuke, Reason: "reusable", Reusable: true, SafeToNuke: true, MQStatus: "submitted", ReuseStatus: "idle-preserved"},
 		},
 		{
 			name: "terminal source alone does not prove mq submitted",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", MQCheckRequired: true, HasSubmittableWork: true, AssignedBeadTerminal: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true}, AssignedBeadTerminal: true},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsMQSubmit, Reason: "mq-not-submitted", NeedsRecovery: true, NeedsMQSubmit: true, MQStatus: "not_submitted", CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed"},
 		},
 		{
 			name: "dirty worktree blocks terminal source",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", GitDirty: true, GitDirtyReason: "git_state=has_uncommitted uncommitted_files=1", MQCheckRequired: true, HasSubmittableWork: true, AssignedBeadTerminal: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test", GitDirty: true, GitDirtyReason: "git_state=has_uncommitted uncommitted_files=1"}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true}, AssignedBeadTerminal: true},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "git-dirty", NeedsRecovery: true, CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed", Blockers: []string{"git_state=has_uncommitted uncommitted_files=1"}},
 		},
 		{
 			name: "stash blocks terminal source",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", StashCount: 1, MQCheckRequired: true, HasSubmittableWork: true, AssignedBeadTerminal: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test", StashCount: 1}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true}, AssignedBeadTerminal: true},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "git-stash", NeedsRecovery: true, CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed", Blockers: []string{"git_state=has_stash stash_count=1"}},
 		},
 		{
 			name: "terminal source does not suppress unpreserved commits",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", UnpushedCommits: 1, MQCheckRequired: true, HasSubmittableWork: true, AssignedBeadTerminal: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test", UnpushedCommits: 1}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true}, AssignedBeadTerminal: true},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "git-unpushed", NeedsRecovery: true, CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed", Blockers: []string{"git_state=has_unpushed unpushed_commits=1"}},
 		},
 		{
 			name: "push failure blocks terminal source",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", PushFailed: true, MQCheckRequired: true, HasSubmittableWork: true, AssignedBeadTerminal: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: WorkstateMQFacts{PushFailed: true, MQCheckRequired: true, HasSubmittableWork: true}, AssignedBeadTerminal: true},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "push-failed", NeedsRecovery: true, CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed", Blockers: []string{"push_failed=true"}},
 		},
 		{
 			name: "mr failure blocks terminal source",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", MRFailed: true, MQCheckRequired: true, HasSubmittableWork: true, AssignedBeadTerminal: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: WorkstateMQFacts{MRFailed: true, MQCheckRequired: true, HasSubmittableWork: true}, AssignedBeadTerminal: true},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictNeedsRecovery, Reason: "mr-failed", NeedsRecovery: true, CountsTowardCapacity: true, ReuseStatus: "idle-recovery-needed", Blockers: []string{"mr_failed=true"}},
 		},
 		{
 			name: "open active mr blocks terminal source",
-			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, Branch: "polecat/test", ActiveMR: "gt-mr-open", ActiveMRBlocker: "active_mr=gt-mr-open status=open", MQCheckRequired: true, HasSubmittableWork: true, AssignedBeadTerminal: true},
+			in:   WorkstateInput{State: StateIdle, CleanupStatus: CleanupClean, ActiveMR: "gt-mr-open", ActiveMRBlocker: "active_mr=gt-mr-open status=open", WorkstateGitFacts: WorkstateGitFacts{Branch: "polecat/test"}, WorkstateMQFacts: WorkstateMQFacts{MQCheckRequired: true, HasSubmittableWork: true}, AssignedBeadTerminal: true},
 			want: WorkstateDisposition{Verdict: WorkstateVerdictPendingMR, Reason: "active-mr-open", ReuseStatus: "idle-pr-open", Blockers: []string{"active_mr=gt-mr-open status=open"}},
 		},
 		{

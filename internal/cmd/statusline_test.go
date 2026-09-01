@@ -71,12 +71,17 @@ func TestRunStatusLineReadsSessionEnvironment(t *testing.T) {
 	t.Cleanup(func() { _ = tm.KillServer() })
 
 	oldSocket := tmux.GetDefaultSocket()
-	oldSession := statusLineSession
+	oldSession, err := statusLineCmd.Flags().GetString("session")
+	if err != nil {
+		t.Fatalf("GetString(session): %v", err)
+	}
 	tmux.SetDefaultSocket(socket)
-	statusLineSession = sessionName
+	if err := statusLineCmd.Flags().Set("session", sessionName); err != nil {
+		t.Fatalf("Set(session): %v", err)
+	}
 	t.Cleanup(func() {
 		tmux.SetDefaultSocket(oldSocket)
-		statusLineSession = oldSession
+		_ = statusLineCmd.Flags().Set("session", oldSession)
 	})
 
 	// Conflicting process values prove the named session, not the fallback

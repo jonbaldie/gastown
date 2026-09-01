@@ -23,7 +23,7 @@ func TestAuthorityForBeadRoutesByPrefix(t *testing.T) {
 	if rig.WorkDir() != town.rigDir {
 		t.Fatalf("ForBead(gt-abc).WorkDir() = %q, want %q", rig.WorkDir(), town.rigDir)
 	}
-	if !rig.Routed() {
+	if !rig.routed {
 		t.Fatal("ForBead(gt-abc) should be routed")
 	}
 
@@ -34,7 +34,7 @@ func TestAuthorityForBeadRoutesByPrefix(t *testing.T) {
 	if hq.WorkDir() != town.root {
 		t.Fatalf("ForBead(hq-mayor).WorkDir() = %q, want %q", hq.WorkDir(), town.root)
 	}
-	if !hq.Routed() {
+	if !hq.routed {
 		t.Fatal("ForBead(hq-mayor) should be routed")
 	}
 }
@@ -47,7 +47,7 @@ func TestAuthorityForBeadUnknownPrefixUsesFallback(t *testing.T) {
 	if s.BeadsDir() != town.townBeads {
 		t.Fatalf("unknown prefix BeadsDir() = %q, want town fallback %q", s.BeadsDir(), town.townBeads)
 	}
-	if s.Routed() {
+	if s.routed {
 		t.Fatal("unknown prefix should not be routed")
 	}
 }
@@ -111,7 +111,7 @@ func TestAuthorityFromBeadsDirWithoutTownFallsBack(t *testing.T) {
 	if s.BeadsDir() != fallback {
 		t.Fatalf("no-town BeadsDir() = %q, want %q", s.BeadsDir(), fallback)
 	}
-	if s.Routed() {
+	if s.routed {
 		t.Fatal("no-town prefix should not be routed")
 	}
 }

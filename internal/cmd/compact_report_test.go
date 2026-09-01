@@ -555,10 +555,8 @@ func TestRunDailyDigestStopsBeforeMailWhenAuditCloseFails(t *testing.T) {
 		t.Skip("shell script command stubs not supported on Windows")
 	}
 	mailLog := setupCompactReportCommandStubs(t)
-	resetCompactReportFlags(t)
-	compactReportDate = "2026-05-15"
 
-	err := runDailyDigest()
+	err := runDailyDigest(compactReportOptions{date: "2026-05-15"})
 	if err == nil {
 		t.Fatal("want audit bead close error, got nil")
 	}
@@ -573,9 +571,8 @@ func TestRunWeeklyRollupStopsBeforeMailWhenAuditCloseFails(t *testing.T) {
 		t.Skip("shell script command stubs not supported on Windows")
 	}
 	mailLog := setupCompactReportCommandStubs(t)
-	resetCompactReportFlags(t)
 
-	err := runWeeklyRollup()
+	err := runWeeklyRollup(compactReportOptions{})
 	if err == nil {
 		t.Fatal("want audit bead close error, got nil")
 	}
@@ -583,28 +580,6 @@ func TestRunWeeklyRollupStopsBeforeMailWhenAuditCloseFails(t *testing.T) {
 		t.Fatalf("error = %v, want auto-close failure", err)
 	}
 	assertNoMailSent(t, mailLog)
-}
-
-func resetCompactReportFlags(t *testing.T) {
-	oldDryRun := compactReportDryRun
-	oldWeekly := compactReportWeekly
-	oldVerbose := compactReportVerbose
-	oldDate := compactReportDate
-	oldJSON := compactReportJSON
-
-	compactReportDryRun = false
-	compactReportWeekly = false
-	compactReportVerbose = false
-	compactReportDate = ""
-	compactReportJSON = false
-
-	t.Cleanup(func() {
-		compactReportDryRun = oldDryRun
-		compactReportWeekly = oldWeekly
-		compactReportVerbose = oldVerbose
-		compactReportDate = oldDate
-		compactReportJSON = oldJSON
-	})
 }
 
 func setupCompactReportCommandStubs(t *testing.T) string {

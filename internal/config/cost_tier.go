@@ -305,8 +305,16 @@ func ApplyCostTier(settings *TownSettings, tier CostTier) error {
 		return fmt.Errorf("invalid cost tier: %q (valid: %s)", tier, strings.Join(ValidCostTiers(), ", "))
 	}
 
-	agents := CostTierAgents(tier)
+	applyTierRoleAgents(settings, roleAgents)
+	applyTierAgents(settings, tier, CostTierAgents(tier))
+	applyTierEffort(settings, CostTierRoleEffort(tier))
 
+	// Track the tier for display purposes
+	settings.CostTier = string(tier)
+	return nil
+}
+
+func applyTierRoleAgents(settings *TownSettings, roleAgents map[string]string) {
 	if settings.RoleAgents == nil {
 		settings.RoleAgents = make(map[string]string)
 	}
@@ -319,7 +327,9 @@ func ApplyCostTier(settings *TownSettings, tier CostTier) error {
 			settings.RoleAgents[role] = agentName
 		}
 	}
+}
 
+func applyTierAgents(settings *TownSettings, tier CostTier, agents map[string]*RuntimeConfig) {
 	if settings.Agents == nil {
 		settings.Agents = make(map[string]*RuntimeConfig)
 	}
@@ -334,9 +344,9 @@ func ApplyCostTier(settings *TownSettings, tier CostTier) error {
 			settings.Agents[name] = rc
 		}
 	}
+}
 
-	// Apply effort level defaults for the tier
-	roleEffort := CostTierRoleEffort(tier)
+func applyTierEffort(settings *TownSettings, roleEffort map[string]string) {
 	if settings.RoleEffort == nil {
 		settings.RoleEffort = make(map[string]string)
 	}
@@ -349,10 +359,6 @@ func ApplyCostTier(settings *TownSettings, tier CostTier) error {
 			settings.RoleEffort[role] = effort
 		}
 	}
-
-	// Track the tier for display purposes
-	settings.CostTier = string(tier)
-	return nil
 }
 
 // GetCurrentTier infers the current cost tier from the settings' RoleAgents.

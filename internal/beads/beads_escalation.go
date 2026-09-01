@@ -36,133 +36,93 @@ func FormatEscalationDescription(title string, fields *EscalationFields) string 
 		return title
 	}
 
-	var lines []string
-	lines = append(lines, title)
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("severity: %s", fields.Severity))
-	lines = append(lines, fmt.Sprintf("reason: %s", fields.Reason))
-	if fields.Source != "" {
-		lines = append(lines, fmt.Sprintf("source: %s", fields.Source))
-	} else {
-		lines = append(lines, "source: null")
+	lines := []string{title, "",
+		formatEscalationField("severity", fields.Severity),
+		formatEscalationField("reason", fields.Reason),
+		formatNullableEscalationField("source", fields.Source),
+		formatEscalationField("escalated_by", fields.EscalatedBy),
+		formatEscalationField("escalated_at", fields.EscalatedAt),
+		formatNullableEscalationField("acked_by", fields.AckedBy),
+		formatNullableEscalationField("acked_at", fields.AckedAt),
+		formatNullableEscalationField("closed_by", fields.ClosedBy),
+		formatNullableEscalationField("closed_reason", fields.ClosedReason),
+		formatNullableEscalationField("related_bead", fields.RelatedBead),
+		formatNullableEscalationField("original_severity", fields.OriginalSeverity),
+		fmt.Sprintf("reescalation_count: %d", fields.ReescalationCount),
+		formatNullableEscalationField("last_reescalated_at", fields.LastReescalatedAt),
+		formatNullableEscalationField("last_reescalated_by", fields.LastReescalatedBy),
+		formatNullableEscalationField("fingerprint", fields.Fingerprint),
 	}
-	lines = append(lines, fmt.Sprintf("escalated_by: %s", fields.EscalatedBy))
-	lines = append(lines, fmt.Sprintf("escalated_at: %s", fields.EscalatedAt))
-
-	if fields.AckedBy != "" {
-		lines = append(lines, fmt.Sprintf("acked_by: %s", fields.AckedBy))
-	} else {
-		lines = append(lines, "acked_by: null")
-	}
-
-	if fields.AckedAt != "" {
-		lines = append(lines, fmt.Sprintf("acked_at: %s", fields.AckedAt))
-	} else {
-		lines = append(lines, "acked_at: null")
-	}
-
-	if fields.ClosedBy != "" {
-		lines = append(lines, fmt.Sprintf("closed_by: %s", fields.ClosedBy))
-	} else {
-		lines = append(lines, "closed_by: null")
-	}
-
-	if fields.ClosedReason != "" {
-		lines = append(lines, fmt.Sprintf("closed_reason: %s", fields.ClosedReason))
-	} else {
-		lines = append(lines, "closed_reason: null")
-	}
-
-	if fields.RelatedBead != "" {
-		lines = append(lines, fmt.Sprintf("related_bead: %s", fields.RelatedBead))
-	} else {
-		lines = append(lines, "related_bead: null")
-	}
-
-	// Reescalation fields
-	if fields.OriginalSeverity != "" {
-		lines = append(lines, fmt.Sprintf("original_severity: %s", fields.OriginalSeverity))
-	} else {
-		lines = append(lines, "original_severity: null")
-	}
-	lines = append(lines, fmt.Sprintf("reescalation_count: %d", fields.ReescalationCount))
-	if fields.LastReescalatedAt != "" {
-		lines = append(lines, fmt.Sprintf("last_reescalated_at: %s", fields.LastReescalatedAt))
-	} else {
-		lines = append(lines, "last_reescalated_at: null")
-	}
-	if fields.LastReescalatedBy != "" {
-		lines = append(lines, fmt.Sprintf("last_reescalated_by: %s", fields.LastReescalatedBy))
-	} else {
-		lines = append(lines, "last_reescalated_by: null")
-	}
-	if fields.Fingerprint != "" {
-		lines = append(lines, fmt.Sprintf("fingerprint: %s", fields.Fingerprint))
-	} else {
-		lines = append(lines, "fingerprint: null")
-	}
-
 	return strings.Join(lines, "\n")
+}
+
+func formatEscalationField(key, value string) string {
+	return fmt.Sprintf("%s: %s", key, value)
+}
+
+func formatNullableEscalationField(key, value string) string {
+	if value == "" {
+		value = "null"
+	}
+	return formatEscalationField(key, value)
 }
 
 // ParseEscalationFields extracts escalation fields from an issue's description.
 func ParseEscalationFields(description string) *EscalationFields {
 	fields := &EscalationFields{}
-
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "null" || value == "" {
-			value = ""
-		}
-
-		switch strings.ToLower(key) {
-		case "severity":
-			fields.Severity = value
-		case "reason":
-			fields.Reason = value
-		case "source":
-			fields.Source = value
-		case "escalated_by":
-			fields.EscalatedBy = value
-		case "escalated_at":
-			fields.EscalatedAt = value
-		case "acked_by":
-			fields.AckedBy = value
-		case "acked_at":
-			fields.AckedAt = value
-		case "closed_by":
-			fields.ClosedBy = value
-		case "closed_reason":
-			fields.ClosedReason = value
-		case "related_bead":
-			fields.RelatedBead = value
-		case "original_severity":
-			fields.OriginalSeverity = value
-		case "reescalation_count":
-			if n, err := strconv.Atoi(value); err == nil {
-				fields.ReescalationCount = n
-			}
-		case "last_reescalated_at":
-			fields.LastReescalatedAt = value
-		case "last_reescalated_by":
-			fields.LastReescalatedBy = value
-		case "fingerprint":
-			fields.Fingerprint = value
-		}
+		setEscalationField(fields, line)
 	}
-
 	return fields
+}
+
+func setEscalationField(fields *EscalationFields, line string) {
+	key, value, ok := escalationFieldLine(line)
+	if !ok {
+		return
+	}
+	if key == "reescalation_count" {
+		if count, err := strconv.Atoi(value); err == nil {
+			fields.ReescalationCount = count
+		}
+		return
+	}
+	if destination, ok := escalationStringFields(fields)[key]; ok {
+		*destination = value
+	}
+}
+
+func escalationFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIdx := strings.Index(line, ":")
+	if line == "" || colonIdx == -1 {
+		return "", "", false
+	}
+	key := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
+	value := strings.TrimSpace(line[colonIdx+1:])
+	if value == "null" {
+		value = ""
+	}
+	return key, value, true
+}
+
+func escalationStringFields(fields *EscalationFields) map[string]*string {
+	return map[string]*string{
+		"severity":            &fields.Severity,
+		"reason":              &fields.Reason,
+		"source":              &fields.Source,
+		"escalated_by":        &fields.EscalatedBy,
+		"escalated_at":        &fields.EscalatedAt,
+		"acked_by":            &fields.AckedBy,
+		"acked_at":            &fields.AckedAt,
+		"closed_by":           &fields.ClosedBy,
+		"closed_reason":       &fields.ClosedReason,
+		"related_bead":        &fields.RelatedBead,
+		"original_severity":   &fields.OriginalSeverity,
+		"last_reescalated_at": &fields.LastReescalatedAt,
+		"last_reescalated_by": &fields.LastReescalatedBy,
+		"fingerprint":         &fields.Fingerprint,
+	}
 }
 
 // CreateEscalationBead creates an escalation bead for tracking escalations.

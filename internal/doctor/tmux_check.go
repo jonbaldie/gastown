@@ -29,76 +29,98 @@ func NewLinkedPaneCheck() *LinkedPaneCheck {
 }
 
 // Run checks for linked panes across Gas Town tmux sessions.
-func (c *LinkedPaneCheck) Run(ctx *CheckContext) *CheckResult {
+func (c *LinkedPaneCheck) Run(_ *CheckContext) *CheckResult {
 	t := tmux.NewTmux()
 
 	sessions, err := t.ListSessions()
 	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: "Could not list tmux sessions",
-			Details: []string{err.Error()},
-		}
+		return linkedPaneListError(c, err)
 	}
 
-	// Filter to Gas Town sessions only
-	var gtSessions []string
-	for _, s := range sessions {
-		if session.IsKnownSession(s) {
-			gtSessions = append(gtSessions, s)
-		}
-	}
+	gtSessions := knownSessions(sessions)
 
 	if len(gtSessions) < 2 {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "Not enough sessions to check for linking",
-		}
+		return linkedPaneNotEnoughResult(c)
 	}
 
-	// Map pane IDs to sessions that contain them
-	paneToSessions := make(map[string][]string)
+	paneToSessions := c.collectPaneSessions(gtSessions)
+	conflicts, linkedSessionSet := linkedPaneConflicts(paneToSessions)
+	c.cacheLinkedSessions(linkedSessionSet)
+	return c.linkedPaneResult(gtSessions, conflicts)
+}
 
-	for _, session := range gtSessions {
-		panes, err := c.getSessionPanes(session)
+func linkedPaneListError(c *LinkedPaneCheck, err error) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: "Could not list tmux sessions",
+		Details: []string{err.Error()},
+	}
+}
+
+func linkedPaneNotEnoughResult(c *LinkedPaneCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "Not enough sessions to check for linking",
+	}
+}
+
+func knownSessions(sessions []string) []string {
+	var known []string
+	for _, name := range sessions {
+		if session.IsKnownSession(name) {
+			known = append(known, name)
+		}
+	}
+	return known
+}
+
+func (c *LinkedPaneCheck) collectPaneSessions(sessions []string) map[string][]string {
+	paneToSessions := make(map[string][]string)
+	for _, name := range sessions {
+		panes, err := c.getSessionPanes(name)
 		if err != nil {
 			continue
 		}
 		for _, pane := range panes {
-			paneToSessions[pane] = append(paneToSessions[pane], session)
+			paneToSessions[pane] = append(paneToSessions[pane], name)
 		}
 	}
+	return paneToSessions
+}
 
-	// Find panes shared by multiple sessions
+func linkedPaneConflicts(paneToSessions map[string][]string) ([]string, map[string]bool) {
 	var conflicts []string
 	linkedSessionSet := make(map[string]bool)
-
 	for pane, sessions := range paneToSessions {
-		if len(sessions) > 1 {
-			conflicts = append(conflicts, fmt.Sprintf("Pane %s shared by: %s", pane, strings.Join(sessions, ", ")))
-			for _, s := range sessions {
-				linkedSessionSet[s] = true
-			}
+		if len(sessions) <= 1 {
+			continue
+		}
+		conflicts = append(conflicts, fmt.Sprintf("Pane %s shared by: %s", pane, strings.Join(sessions, ", ")))
+		for _, name := range sessions {
+			linkedSessionSet[name] = true
 		}
 	}
+	return conflicts, linkedSessionSet
+}
 
-	// Cache for Fix (exclude mayor session since we don't want to kill it)
+func (c *LinkedPaneCheck) cacheLinkedSessions(linkedSessionSet map[string]bool) {
 	mayorSession := session.MayorSessionName()
-
 	c.linkedSessions = nil
-	for sess := range linkedSessionSet {
-		if mayorSession == "" || sess != mayorSession {
-			c.linkedSessions = append(c.linkedSessions, sess)
+	for name := range linkedSessionSet {
+		if mayorSession == "" || name != mayorSession {
+			c.linkedSessions = append(c.linkedSessions, name)
 		}
 	}
+}
 
+func (c *LinkedPaneCheck) linkedPaneResult(sessions, conflicts []string) *CheckResult {
 	if len(conflicts) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusOK,
-			Message: fmt.Sprintf("All %d Gas Town sessions have independent panes", len(gtSessions)),
+			Message: fmt.Sprintf("All %d Gas Town sessions have independent panes", len(sessions)),
 		}
 	}
 
@@ -113,7 +135,7 @@ func (c *LinkedPaneCheck) Run(ctx *CheckContext) *CheckResult {
 
 // Fix kills sessions with linked panes (except mayor session).
 // The daemon will recreate them with independent panes.
-func (c *LinkedPaneCheck) Fix(ctx *CheckContext) error {
+func (c *LinkedPaneCheck) Fix(_ *CheckContext) error {
 	if len(c.linkedSessions) == 0 {
 		return nil
 	}

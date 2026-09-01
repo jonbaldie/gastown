@@ -5,5 +5,5 @@ import (
 	"github.com/jonbaldie/gastown/internal/git"
 )
 
-// Compile-time assertion: Git must satisfy BranchChecker.
-var _ beads.BranchChecker = (*git.Git)(nil)
+// Compile-time assertion: Checker satisfies BranchChecker.
+var _ beads.BranchChecker = git.Checker{}

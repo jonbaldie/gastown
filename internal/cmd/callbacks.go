@@ -104,20 +104,19 @@ Unknown message types are logged but left unprocessed.`,
 	RunE: runCallbacksProcess,
 }
 
-var (
-	callbacksDryRun  bool
-	callbacksVerbose bool
-)
-
 func init() {
-	callbacksProcessCmd.Flags().BoolVar(&callbacksDryRun, "dry-run", false, "Show what would be processed without taking action")
-	callbacksProcessCmd.Flags().BoolVarP(&callbacksVerbose, "verbose", "v", false, "Show detailed processing info")
+	callbacksProcessCmd.Flags().Bool("dry-run", false, "Show what would be processed without taking action")
+	callbacksProcessCmd.Flags().BoolP("verbose", "v", false, "Show detailed processing info")
 
 	callbacksCmd.AddCommand(callbacksProcessCmd)
 	rootCmd.AddCommand(callbacksCmd)
 }
 
-func runCallbacksProcess(cmd *cobra.Command, args []string) error {
+func runCallbacksProcess(cmd *cobra.Command, _ []string) error {
+	dryRun, verbose, err := callbacksOptionsFromCommand(cmd)
+	if err != nil {
+		return err
+	}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -142,62 +141,72 @@ func runCallbacksProcess(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("%s Processing %d callback(s)\n", style.Bold.Render("●"), len(messages))
+	results := processCallbacks(townRoot, messages, dryRun, verbose)
+	printCallbacksSummary(results, dryRun)
+	return nil
+}
 
-	var results []CallbackResult
-	for _, msg := range messages {
-		result := processCallback(townRoot, msg, callbacksDryRun)
-		results = append(results, result)
-
-		// Print result
-		if result.Error != nil {
-			fmt.Printf("  %s %s: %v\n",
-				style.Error.Render("✗"),
-				msg.Subject,
-				result.Error)
-		} else if result.Handled {
-			fmt.Printf("  %s [%s] %s\n",
-				style.Bold.Render("✓"),
-				result.CallbackType,
-				result.Action)
-		} else {
-			fmt.Printf("  %s [%s] %s\n",
-				style.Dim.Render("○"),
-				result.CallbackType,
-				result.Action)
-		}
-
-		if callbacksVerbose {
-			fmt.Printf("      From: %s\n", msg.From)
-			fmt.Printf("      Subject: %s\n", msg.Subject)
-		}
+func callbacksOptionsFromCommand(cmd *cobra.Command) (dryRun, verbose bool, err error) {
+	if cmd == nil {
+		return false, false, nil
 	}
+	dryRun, err = cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return false, false, err
+	}
+	verbose, err = cmd.Flags().GetBool("verbose")
+	return dryRun, verbose, err
+}
 
-	// Summary
-	handled := 0
-	errors := 0
-	for _, r := range results {
-		if r.Handled {
+func processCallbacks(townRoot string, messages []*mail.Message, dryRun, verbose bool) []CallbackResult {
+	results := make([]CallbackResult, 0, len(messages))
+	for _, msg := range messages {
+		result := processCallback(townRoot, msg, dryRun)
+		results = append(results, result)
+		printCallbackResult(msg, result, verbose)
+	}
+	return results
+}
+
+func printCallbackResult(msg *mail.Message, result CallbackResult, verbose bool) {
+	switch {
+	case result.Error != nil:
+		fmt.Printf("  %s %s: %v\n", style.Error.Render("✗"), msg.Subject, result.Error)
+	case result.Handled:
+		fmt.Printf("  %s [%s] %s\n", style.Bold.Render("✓"), result.CallbackType, result.Action)
+	default:
+		fmt.Printf("  %s [%s] %s\n", style.Dim.Render("○"), result.CallbackType, result.Action)
+	}
+	if verbose {
+		fmt.Printf("      From: %s\n", msg.From)
+		fmt.Printf("      Subject: %s\n", msg.Subject)
+	}
+}
+
+func printCallbacksSummary(results []CallbackResult, dryRun bool) {
+	handled, errors := callbackCounts(results)
+	fmt.Println()
+	if dryRun {
+		fmt.Printf("%s Dry run: would process %d/%d callbacks\n", style.Dim.Render("○"), handled, len(results))
+		return
+	}
+	fmt.Printf("%s Processed %d/%d callbacks", style.Bold.Render("✓"), handled, len(results))
+	if errors > 0 {
+		fmt.Printf(" (%d errors)", errors)
+	}
+	fmt.Println()
+}
+
+func callbackCounts(results []CallbackResult) (handled, errors int) {
+	for _, result := range results {
+		if result.Handled {
 			handled++
 		}
-		if r.Error != nil {
+		if result.Error != nil {
 			errors++
 		}
 	}
-
-	fmt.Println()
-	if callbacksDryRun {
-		fmt.Printf("%s Dry run: would process %d/%d callbacks\n",
-			style.Dim.Render("○"), handled, len(results))
-	} else {
-		fmt.Printf("%s Processed %d/%d callbacks",
-			style.Bold.Render("✓"), handled, len(results))
-		if errors > 0 {
-			fmt.Printf(" (%d errors)", errors)
-		}
-		fmt.Println()
-	}
-
-	return nil
+	return handled, errors
 }
 
 // processCallback handles a single callback message and returns the result.
@@ -210,47 +219,42 @@ func processCallback(townRoot string, msg *mail.Message, dryRun bool) CallbackRe
 
 	// Classify the callback
 	result.CallbackType = classifyCallback(msg.Subject)
-
-	// Handle based on type
-	switch result.CallbackType {
-	case CallbackPolecatDone:
-		result.Action, result.Error = handlePolecatDone(townRoot, msg, dryRun)
-		result.Handled = result.Error == nil
-
-	case CallbackMergeCompleted:
-		result.Action, result.Error = handleMergeCompleted(townRoot, msg, dryRun)
-		result.Handled = result.Error == nil
-
-	case CallbackMergeRejected:
-		result.Action, result.Error = handleMergeRejected(townRoot, msg, dryRun)
-		result.Handled = result.Error == nil
-
-	case CallbackHelp:
-		result.Action, result.Error = handleHelp(townRoot, msg, dryRun)
-		result.Handled = result.Error == nil
-
-	case CallbackEscalation:
-		result.Action, result.Error = handleEscalation(townRoot, msg, dryRun)
-		result.Handled = result.Error == nil
-
-	case CallbackSling:
-		result.Action, result.Error = handleSling(townRoot, msg, dryRun)
-		result.Handled = result.Error == nil
-
-	default:
-		result.Action = "unknown message type, skipped"
-		result.Handled = false
-	}
+	result.Action, result.Error = dispatchCallback(townRoot, msg, result.CallbackType, dryRun)
+	result.Handled = result.CallbackType != CallbackUnknown && result.Error == nil
 
 	// Archive handled messages (unless dry-run)
-	if result.Handled && !dryRun {
-		router := mail.NewRouter(townRoot)
-		if mailbox, err := router.GetMailbox("mayor/"); err == nil {
-			_ = mailbox.Delete(msg.ID)
-		}
-	}
+	archiveCallback(townRoot, msg.ID, result.Handled, dryRun)
 
 	return result
+}
+
+func dispatchCallback(townRoot string, msg *mail.Message, callbackType CallbackType, dryRun bool) (string, error) {
+	switch callbackType {
+	case CallbackPolecatDone:
+		return handlePolecatDone(townRoot, msg, dryRun)
+	case CallbackMergeCompleted:
+		return handleMergeCompleted(townRoot, msg, dryRun)
+	case CallbackMergeRejected:
+		return handleMergeRejected(townRoot, msg, dryRun)
+	case CallbackHelp:
+		return handleHelp(townRoot, msg, dryRun)
+	case CallbackEscalation:
+		return handleEscalation(townRoot, msg, dryRun)
+	case CallbackSling:
+		return handleSling(townRoot, msg, dryRun)
+	default:
+		return "unknown message type, skipped", nil
+	}
+}
+
+func archiveCallback(townRoot, messageID string, handled, dryRun bool) {
+	if !handled || dryRun {
+		return
+	}
+	router := mail.NewRouter(townRoot)
+	if mailbox, err := router.GetMailbox("mayor/"); err == nil {
+		_ = mailbox.Delete(messageID)
+	}
 }
 
 // classifyCallback determines the type of callback from the subject line.
@@ -414,7 +418,7 @@ func handleHelp(townRoot string, msg *mail.Message, dryRun bool) (string, error)
 
 	// Forward to overseer (human) with assessed priority
 	router := mail.NewRouter(townRoot)
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	fwd := &mail.Message{
 		From:    "mayor/",
 		To:      "overseer",
@@ -449,7 +453,7 @@ func handleEscalation(townRoot string, msg *mail.Message, dryRun bool) (string, 
 
 	// Forward to overseer with urgent priority
 	router := mail.NewRouter(townRoot)
-	defer router.WaitPendingNotifications()
+	defer mail.WaitPendingNotifications(router)
 	fwd := &mail.Message{
 		From:     "mayor/",
 		To:       "overseer",

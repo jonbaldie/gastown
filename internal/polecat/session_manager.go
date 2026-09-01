@@ -178,7 +178,7 @@ func (m *SessionManager) clonePath(polecat string) string {
 //   - polecat/<name>-<timestamp> otherwise
 //
 // parseFreshBranchName is the structural inverse.
-func (m *SessionManager) freshBranchName(polecatName, issue string) string {
+func sessionFreshBranchName(polecatName, issue string) string {
 	ts := strconv.FormatInt(time.Now().UnixMilli(), 36)
 	return FormatGeneratedBranchName(polecatName, issue, ts)
 }
@@ -203,13 +203,13 @@ func parseFreshBranchName(branch string) freshBranchMeta {
 	return freshBranchMeta{polecat: meta.Polecat, issue: meta.Issue, ok: true}
 }
 
-func (m *SessionManager) canonicalSessionStartPoint(g *git.Git) string {
+func sessionCanonicalStartPoint(m *SessionManager, g *git.Git) string {
 	defaultBranch := ""
 	if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
 		defaultBranch = rigCfg.DefaultBranch
 	}
 	if defaultBranch == "" {
-		defaultBranch = g.RemoteDefaultBranch()
+		defaultBranch = git.RemoteDefaultBranch(g)
 	}
 	if defaultBranch == "" {
 		return ""
@@ -241,13 +241,13 @@ func shouldCreateFreshSessionBranch(currentBranch, issue, canonicalBranch string
 	return issue != "" && meta.ok
 }
 
-func (m *SessionManager) ensureCanonicalSessionBranch(g *git.Git, polecat string, opts SessionStartOptions) string {
-	currentBranch, err := g.CurrentBranch()
+func sessionEnsureCanonicalBranch(m *SessionManager, g *git.Git, polecat string, opts SessionStartOptions) string {
+	currentBranch, err := git.CurrentBranch(g)
 	if err != nil {
 		return ""
 	}
 
-	startPoint := m.canonicalSessionStartPoint(g)
+	startPoint := sessionCanonicalStartPoint(m, g)
 	if startPoint == "" {
 		debugSession("canonical session start point unresolved", fmt.Errorf("no default branch in rig config or remote"))
 		return currentBranch
@@ -259,11 +259,11 @@ func (m *SessionManager) ensureCanonicalSessionBranch(g *git.Git, polecat string
 
 	// Refresh origin refs before branching so recovered sessions start from the
 	// canonical remote base instead of any preserved local polecat branch.
-	if err := g.Fetch("origin"); err != nil {
+	if err := git.Fetch(g, "origin"); err != nil {
 		debugSession("fetch origin for canonical session branch", err)
 	}
 
-	exists, err := g.RefExists(startPoint)
+	exists, err := git.RefExists(g, startPoint)
 	if err != nil {
 		debugSession("check canonical session start point", err)
 		return currentBranch
@@ -273,8 +273,8 @@ func (m *SessionManager) ensureCanonicalSessionBranch(g *git.Git, polecat string
 		return currentBranch
 	}
 
-	newBranch := m.freshBranchName(polecat, opts.Issue)
-	if err := g.CheckoutNewBranch(newBranch, startPoint); err != nil {
+	newBranch := sessionFreshBranchName(polecat, opts.Issue)
+	if err := git.CheckoutNewBranch(g, newBranch, startPoint); err != nil {
 		debugSession("auto-checkout fresh branch on canonical base", err)
 		return currentBranch
 	}
@@ -283,7 +283,7 @@ func (m *SessionManager) ensureCanonicalSessionBranch(g *git.Git, polecat string
 }
 
 // hasPolecat checks if the polecat exists in this rig.
-func (m *SessionManager) hasPolecat(polecat string) bool {
+func sessionHasPolecat(m *SessionManager, polecat string) bool {
 	polecatPath := m.polecatDir(polecat)
 	info, err := os.Stat(polecatPath)
 	if err != nil {
@@ -295,7 +295,7 @@ func (m *SessionManager) hasPolecat(polecat string) bool {
 // polecatSlot returns a unique integer slot index for this polecat based on its
 // position among existing polecat directories. This enables port offsetting and
 // resource isolation when multiple polecats run in parallel (GH#954).
-func (m *SessionManager) polecatSlot(polecat string) int {
+func sessionPolecatSlot(m *SessionManager, polecat string) int {
 	polecatsDir := filepath.Join(m.rig.Path, "polecats")
 	entries, err := os.ReadDir(polecatsDir)
 	if err != nil {
@@ -315,164 +315,207 @@ func (m *SessionManager) polecatSlot(polecat string) int {
 }
 
 // Start creates and starts a new session for a polecat.
+type sessionStartPlan struct {
+	m                     *SessionManager
+	polecat               string
+	opts                  SessionStartOptions
+	sessionID             string
+	workDir               string
+	townRoot              string
+	runtimeConfig         *config.RuntimeConfig
+	extra                 map[string]string
+	beacon                session.BeaconConfig
+	fallbackInfo          *runtime.StartupFallbackInfo
+	startupNudgeContent   string
+	startupPromptFallback string
+}
+
 func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
-	if !m.hasPolecat(polecat) {
-		return fmt.Errorf("%w: %s", ErrPolecatNotFound, polecat)
+	p, err := preparePolecatSessionStart(m, polecat, opts)
+	if err != nil {
+		return err
 	}
+	if err := launchPolecatSession(p); err != nil {
+		return err
+	}
+	return finishPolecatSessionStart(p)
+}
 
+func preparePolecatSessionStart(m *SessionManager, polecat string, opts SessionStartOptions) (*sessionStartPlan, error) {
+	if !sessionHasPolecat(m, polecat) {
+		return nil, fmt.Errorf("%w: %s", ErrPolecatNotFound, polecat)
+	}
 	sessionID := m.SessionName(polecat)
+	if err := killStalePolecatTmuxSession(m, sessionID); err != nil {
+		return nil, err
+	}
+	workDir := opts.WorkDir
+	if workDir == "" {
+		workDir = m.clonePath(polecat)
+	}
+	if opts.Issue != "" {
+		if err := sessionValidateIssue(m, opts.Issue, workDir); err != nil {
+			return nil, err
+		}
+	}
+	p := &sessionStartPlan{
+		m:         m,
+		polecat:   polecat,
+		opts:      opts,
+		sessionID: sessionID,
+		workDir:   workDir,
+		townRoot:  filepath.Dir(m.rig.Path),
+	}
+	if err := resolveSessionStartRuntime(p); err != nil {
+		return nil, err
+	}
+	buildSessionStartBeacon(p)
+	buildSessionStartEnv(p)
+	return p, nil
+}
 
-	// Check if session already exists.
-	// If an existing session's pane process has died, kill the stale session
-	// and proceed rather than returning ErrSessionRunning (gt-jn40ft).
-	//
-	// For zombie detection, use IsAgentAlive directly rather than the
-	// heartbeat-primary isSessionStale path. The pane process is often a
-	// shell or wrapper that outlives the agent, so heartbeat-fresh + pane-PID
-	// alive can hide a dead agent — wedging gt session restart with
-	// ErrSessionRunning on the very zombie state recovery is meant to handle
-	// (hq-k1ot / np-tt5s). A false-negative here is recoverable: Start is
-	// about to (re)create the session, so killing a transiently-misclassified
-	// healthy session just churns one creation cycle. Patrol-side cleanup
-	// (manager.go:cleanupOrphanedDirs) intentionally keeps the conservative
-	// isSessionProcessDead path to avoid killing healthy sessions during
-	// transient pgrep/ps failures.
+func killStalePolecatTmuxSession(m *SessionManager, sessionID string) error {
 	if _, err := session.KillExistingSession(m.tmux, filepath.Dir(m.rig.Path), sessionID, true); err != nil {
 		if errors.Is(err, session.ErrSessionAlive) {
 			return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
 		}
 		return fmt.Errorf("killing stale session %s: %w", sessionID, err)
 	}
+	return nil
+}
 
-	// Determine working directory
-	workDir := opts.WorkDir
-	if workDir == "" {
-		workDir = m.clonePath(polecat)
+func resolveSessionStartRuntime(p *sessionStartPlan) error {
+	if p.opts.Agent == "" {
+		p.runtimeConfig = config.ResolveRoleAgentConfig("polecat", p.townRoot, p.m.rig.Path)
+		return nil
 	}
-
-	// Validate issue exists and isn't tombstoned BEFORE creating session.
-	// This prevents CPU spin loops from agents retrying work on invalid issues.
-	if opts.Issue != "" {
-		if err := m.validateIssue(opts.Issue, workDir); err != nil {
-			return err
-		}
+	rc, _, err := config.ResolveAgentConfigWithOverride(p.townRoot, p.m.rig.Path, p.opts.Agent)
+	if err != nil {
+		return fmt.Errorf("resolving agent config for %s: %w", p.opts.Agent, err)
 	}
+	p.runtimeConfig = rc
+	return nil
+}
 
-	townRoot := filepath.Dir(m.rig.Path)
-	var runtimeConfig *config.RuntimeConfig
-	if opts.Agent != "" {
-		rc, _, err := config.ResolveAgentConfigWithOverride(townRoot, m.rig.Path, opts.Agent)
-		if err != nil {
-			return fmt.Errorf("resolving agent config for %s: %w", opts.Agent, err)
-		}
-		runtimeConfig = rc
-	} else {
-		runtimeConfig = config.ResolveRoleAgentConfig("polecat", townRoot, m.rig.Path)
-	}
-
-	fallbackInfo := runtime.GetStartupFallbackInfo(runtimeConfig)
-	address := session.BeaconRecipient("polecat", polecat, m.rig.Name)
-	beaconConfig := session.BeaconConfig{
-		Recipient:               address,
+func buildSessionStartBeacon(p *sessionStartPlan) {
+	p.fallbackInfo = runtime.GetStartupFallbackInfo(p.runtimeConfig)
+	p.beacon = session.BeaconConfig{
+		Recipient:               session.BeaconRecipient("polecat", p.polecat, p.m.rig.Name),
 		Sender:                  "witness",
 		Topic:                   "assigned",
-		MolID:                   opts.Issue,
-		IncludePrimeInstruction: fallbackInfo.IncludePrimeInBeacon,
-		ExcludeWorkInstructions: fallbackInfo.SendStartupNudge,
+		MolID:                   p.opts.Issue,
+		IncludePrimeInstruction: p.fallbackInfo.IncludePrimeInBeacon,
+		ExcludeWorkInstructions: p.fallbackInfo.SendStartupNudge,
 	}
-	startupNudgeContent := runtime.StartupNudgeContent()
-	startupPromptFallback := session.BuildStartupPrompt(beaconConfig, startupNudgeContent)
+	p.startupNudgeContent = runtime.StartupNudgeContent()
+	p.startupPromptFallback = session.BuildStartupPrompt(p.beacon, p.startupNudgeContent)
+}
 
-	extra := map[string]string{
-		"GT_POLECAT_PATH": workDir,
-		"GT_TOWN_ROOT":    townRoot,
-		"POLECAT_SLOT":    fmt.Sprintf("%d", m.polecatSlot(polecat)),
+func buildSessionStartEnv(p *sessionStartPlan) {
+	p.extra = map[string]string{
+		"GT_POLECAT_PATH": p.workDir,
+		"GT_TOWN_ROOT":    p.townRoot,
+		"POLECAT_SLOT":    fmt.Sprintf("%d", sessionPolecatSlot(p.m, p.polecat)),
 	}
-	if g := git.NewGit(workDir); g != nil {
-		if branch := m.ensureCanonicalSessionBranch(g, polecat, opts); branch != "" {
-			extra["GT_BRANCH"] = branch
+	if g := git.NewGit(p.workDir); g != nil {
+		if branch := sessionEnsureCanonicalBranch(p.m, g, p.polecat, p.opts); branch != "" {
+			p.extra["GT_BRANCH"] = branch
 		}
 	}
+}
 
-	result, err := session.StartSession(m.tmux, "polecat", session.Work{
-		SessionID:        sessionID,
-		WorkDir:          workDir,
-		TownRoot:         townRoot,
-		RigPath:          m.rig.Path,
-		RigName:          m.rig.Name,
-		AgentName:        polecat,
-		Command:          opts.Command,
-		Beacon:           beaconConfig,
-		AgentOverride:    opts.Agent,
-		RuntimeConfigDir: opts.RuntimeConfigDir,
-		ExtraEnv:         extra,
-		Theme:            tmux.ResolveSessionTheme(townRoot, m.rig.Name, "polecat", polecat),
+func launchPolecatSession(p *sessionStartPlan) error {
+	result, err := session.StartSession(p.m.tmux, "polecat", session.Work{
+		SessionID:        p.sessionID,
+		WorkDir:          p.workDir,
+		TownRoot:         p.townRoot,
+		RigPath:          p.m.rig.Path,
+		RigName:          p.m.rig.Name,
+		AgentName:        p.polecat,
+		Command:          p.opts.Command,
+		Beacon:           p.beacon,
+		AgentOverride:    p.opts.Agent,
+		RuntimeConfigDir: p.opts.RuntimeConfigDir,
+		ExtraEnv:         p.extra,
+		Theme:            tmux.ResolveSessionTheme(p.townRoot, p.m.rig.Name, "polecat", p.polecat),
 	})
 	if err != nil {
 		return err
 	}
-	runtimeConfig = result.RuntimeConfig
-
-	// Hook the issue to the polecat if provided via --issue flag
-	if opts.Issue != "" {
-		agentID := fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat)
-		if err := m.hookIssue(opts.Issue, agentID, workDir); err != nil {
-			style.PrintWarning("could not hook issue %s: %v", opts.Issue, err)
-		}
-	}
-
-	agentID := fmt.Sprintf("%s/%s", m.rig.Name, polecat)
-	debugSession("SetPaneDiedHook", m.tmux.SetPaneDiedHook(sessionID, agentID))
-
-	// Handle fallback nudges for non-hook agents.
-	// See StartupFallbackInfo in runtime package for the fallback matrix.
-	if fallbackInfo.SendBeaconNudge {
-		debugSession("DeliverStartupPromptFallback",
-			runtime.DeliverStartupPromptFallback(m.tmux, sessionID, startupPromptFallback, runtimeConfig, constants.ClaudeStartTimeout))
-	} else {
-		if fallbackInfo.StartupNudgeDelayMs > 0 {
-			primeWaitRC := runtime.RuntimeConfigWithMinDelay(runtimeConfig, fallbackInfo.StartupNudgeDelayMs)
-			debugSession("WaitForPrimeReady", m.tmux.WaitForRuntimeReady(sessionID, primeWaitRC, constants.ClaudeStartTimeout))
-		}
-
-		if fallbackInfo.SendStartupNudge {
-			debugSession("SendStartupNudge", m.tmux.NudgeSession(sessionID, startupNudgeContent))
-		}
-	}
-
-	if fallbackInfo.SendStartupNudge {
-		verifyContent := startupNudgeContent
-		if fallbackInfo.SendBeaconNudge {
-			verifyContent = startupPromptFallback
-		}
-		m.verifyStartupNudgeDelivery(sessionID, runtimeConfig, verifyContent)
-	}
-
-	if !fallbackInfo.SendBeaconNudge && !fallbackInfo.SendStartupNudge {
-		go m.verifyStartupNudgeDelivery(sessionID, runtimeConfig, startupNudgeContent)
-	}
-
-	_ = runtime.RunStartupFallback(m.tmux, sessionID, "polecat", runtimeConfig)
-
-	gtAgent, _ := m.tmux.GetEnvironment(sessionID, "GT_AGENT")
-	if gtAgent == "" {
-		_ = m.tmux.KillSessionWithProcesses(sessionID)
-		return fmt.Errorf("GT_AGENT not set in session %s (command=%q); "+
-			"witness patrol will misidentify this polecat as a zombie and auto-nuke it. "+
-			"Ensure RuntimeConfig.ResolvedAgent is set during agent config resolution",
-			sessionID, runtimeConfig.Command)
-	}
-
-	TouchSessionHeartbeat(townRoot, sessionID)
-
+	p.runtimeConfig = result.RuntimeConfig
 	return nil
 }
 
-// isSessionStale checks if a tmux session's pane process has died.
+func finishPolecatSessionStart(p *sessionStartPlan) error {
+	hookSessionStartIssue(p)
+	debugSession("SetPaneDiedHook", p.m.tmux.SetPaneDiedHook(p.sessionID, fmt.Sprintf("%s/%s", p.m.rig.Name, p.polecat)))
+	deliverSessionStartFallbacks(p)
+	return requireSessionStartGTAgent(p)
+}
+
+func hookSessionStartIssue(p *sessionStartPlan) {
+	if p.opts.Issue == "" {
+		return
+	}
+	agentID := fmt.Sprintf("%s/polecats/%s", p.m.rig.Name, p.polecat)
+	if err := sessionHookIssue(p.m, p.opts.Issue, agentID, p.workDir); err != nil {
+		style.PrintWarning("could not hook issue %s: %v", p.opts.Issue, err)
+	}
+}
+
+func deliverSessionStartFallbacks(p *sessionStartPlan) {
+	if p.fallbackInfo.SendBeaconNudge {
+		debugSession("DeliverStartupPromptFallback",
+			runtime.DeliverStartupPromptFallback(p.m.tmux, p.sessionID, p.startupPromptFallback, p.runtimeConfig, constants.ClaudeStartTimeout))
+	} else {
+		deliverSessionStartNudge(p)
+	}
+	verifySessionStartNudge(p)
+	_ = runtime.RunStartupFallback(p.m.tmux, p.sessionID, "polecat", p.runtimeConfig)
+}
+
+func deliverSessionStartNudge(p *sessionStartPlan) {
+	if p.fallbackInfo.StartupNudgeDelayMs > 0 {
+		primeWaitRC := runtime.RuntimeConfigWithMinDelay(p.runtimeConfig, p.fallbackInfo.StartupNudgeDelayMs)
+		debugSession("WaitForPrimeReady", p.m.tmux.WaitForRuntimeReady(p.sessionID, primeWaitRC, constants.ClaudeStartTimeout))
+	}
+	if p.fallbackInfo.SendStartupNudge {
+		debugSession("SendStartupNudge", p.m.tmux.NudgeSession(p.sessionID, p.startupNudgeContent))
+	}
+}
+
+func verifySessionStartNudge(p *sessionStartPlan) {
+	if p.fallbackInfo.SendStartupNudge {
+		verifyContent := p.startupNudgeContent
+		if p.fallbackInfo.SendBeaconNudge {
+			verifyContent = p.startupPromptFallback
+		}
+		sessionVerifyStartupNudge(p.m, p.sessionID, p.runtimeConfig, verifyContent)
+		return
+	}
+	if !p.fallbackInfo.SendBeaconNudge {
+		go sessionVerifyStartupNudge(p.m, p.sessionID, p.runtimeConfig, p.startupNudgeContent)
+	}
+}
+
+func requireSessionStartGTAgent(p *sessionStartPlan) error {
+	gtAgent, _ := p.m.tmux.GetEnvironment(p.sessionID, "GT_AGENT")
+	if gtAgent != "" {
+		TouchSessionHeartbeat(p.townRoot, p.sessionID)
+		return nil
+	}
+	_ = p.m.tmux.KillSessionWithProcesses(p.sessionID)
+	return fmt.Errorf("GT_AGENT not set in session %s (command=%q); "+
+		"witness patrol will misidentify this polecat as a zombie and auto-nuke it. "+
+		"Ensure RuntimeConfig.ResolvedAgent is set during agent config resolution",
+		p.sessionID, p.runtimeConfig.Command)
+}
+
+// IsSessionStale checks if a tmux session's pane process has died.
 // A stale session exists in tmux but its main process (the agent) is no longer running.
 // This happens when the agent crashes during startup but tmux keeps the dead pane.
 // Delegates to isSessionProcessDead to avoid duplicating process-check logic (gt-qgzj1h).
-func (m *SessionManager) isSessionStale(sessionID string) bool {
+func SessionIsStale(m *SessionManager, sessionID string) bool {
 	return isSessionProcessDead(m.tmux, sessionID, filepath.Dir(m.rig.Path))
 }
 
@@ -499,55 +542,61 @@ func (m *SessionManager) IsRunning(polecat string) (bool, error) {
 // Status returns detailed status for a polecat session.
 func (m *SessionManager) Status(polecat string) (*SessionInfo, error) {
 	sessionID := m.SessionName(polecat)
-
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("checking session: %w", err)
 	}
-
 	info := &SessionInfo{
 		Polecat:   polecat,
 		SessionID: sessionID,
 		Running:   running,
 		RigName:   m.rig.Name,
 	}
-
 	if !running {
 		return info, nil
 	}
+	return fillRunningSessionInfo(m, info, sessionID)
+}
 
+func fillRunningSessionInfo(m *SessionManager, info *SessionInfo, sessionID string) (*SessionInfo, error) {
 	tmuxInfo, err := m.tmux.GetSessionInfo(sessionID)
 	if err != nil {
 		return info, nil
 	}
-
 	info.Attached = tmuxInfo.Attached
 	info.Windows = tmuxInfo.Windows
-
-	if tmuxInfo.Created != "" {
-		formats := []string{
-			"2006-01-02 15:04:05",
-			"Mon Jan 2 15:04:05 2006",
-			"Mon Jan _2 15:04:05 2006",
-			time.ANSIC,
-			time.UnixDate,
-		}
-		for _, format := range formats {
-			if t, err := time.Parse(format, tmuxInfo.Created); err == nil {
-				info.Created = t
-				break
-			}
-		}
-	}
-
-	if tmuxInfo.Activity != "" {
-		var activityUnix int64
-		if _, err := fmt.Sscanf(tmuxInfo.Activity, "%d", &activityUnix); err == nil && activityUnix > 0 {
-			info.LastActivity = time.Unix(activityUnix, 0)
-		}
-	}
-
+	parseSessionCreated(info, tmuxInfo.Created)
+	parseSessionActivity(info, tmuxInfo.Activity)
 	return info, nil
+}
+
+func parseSessionCreated(info *SessionInfo, created string) {
+	if created == "" {
+		return
+	}
+	formats := []string{
+		"2006-01-02 15:04:05",
+		"Mon Jan 2 15:04:05 2006",
+		"Mon Jan _2 15:04:05 2006",
+		time.ANSIC,
+		time.UnixDate,
+	}
+	for _, format := range formats {
+		if t, err := time.Parse(format, created); err == nil {
+			info.Created = t
+			return
+		}
+	}
+}
+
+func parseSessionActivity(info *SessionInfo, activity string) {
+	if activity == "" {
+		return
+	}
+	var activityUnix int64
+	if _, err := fmt.Sscanf(activity, "%d", &activityUnix); err == nil && activityUnix > 0 {
+		info.LastActivity = time.Unix(activityUnix, 0)
+	}
 }
 
 // List returns information about all sessions for this rig.
@@ -630,7 +679,7 @@ func (m *SessionManager) Capture(polecat string, lines int) (string, error) {
 }
 
 // CaptureSession returns the recent output from a session by raw session ID.
-func (m *SessionManager) CaptureSession(sessionID string, lines int) (string, error) {
+func CaptureSession(m *SessionManager, sessionID string, lines int) (string, error) {
 	running, err := m.tmux.HasSession(sessionID)
 	if err != nil {
 		return "", fmt.Errorf("checking session: %w", err)
@@ -643,7 +692,7 @@ func (m *SessionManager) CaptureSession(sessionID string, lines int) (string, er
 }
 
 // Inject sends a message to a polecat session.
-func (m *SessionManager) Inject(polecat, message string) error {
+func Inject(m *SessionManager, polecat, message string) error {
 	sessionID := m.SessionName(polecat)
 
 	running, err := m.tmux.HasSession(sessionID)
@@ -682,7 +731,7 @@ func (m *SessionManager) StopAll(force bool) error {
 // resolveBeadsDir determines the correct working directory for bd commands
 // on a given issue. This enables cross-rig beads resolution via routes.jsonl.
 // This is the core fix for GitHub issue #1056.
-func (m *SessionManager) resolveBeadsDir(issueID, fallbackDir string) string {
+func sessionResolveBeadsDir(m *SessionManager, issueID, fallbackDir string) string {
 	townRoot := filepath.Dir(m.rig.Path)
 	return beads.ResolveHookDir(townRoot, issueID, fallbackDir)
 }
@@ -690,8 +739,8 @@ func (m *SessionManager) resolveBeadsDir(issueID, fallbackDir string) string {
 // validateIssue checks that an issue exists and is not in a terminal state.
 // This must be called before starting a session to avoid CPU spin loops
 // from agents retrying work on invalid issues.
-func (m *SessionManager) validateIssue(issueID, workDir string) error {
-	bdWorkDir := m.resolveBeadsDir(issueID, workDir)
+func sessionValidateIssue(m *SessionManager, issueID, workDir string) error {
+	bdWorkDir := sessionResolveBeadsDir(m, issueID, workDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), constants.BdCommandTimeout)
 	defer cancel()
@@ -731,65 +780,60 @@ func (m *SessionManager) validateIssue(issueID, workDir string) error {
 //
 // Non-fatal: if verification fails or times out, the session is left running.
 // The witness zombie patrol will eventually detect and handle truly idle polecats.
-func (m *SessionManager) verifyStartupNudgeDelivery(sessionID string, rc *config.RuntimeConfig, retryContent string) {
-	// Only verify for agents with prompt detection. Without ReadyPromptPrefix,
-	// we can't distinguish "idle at prompt" from "busy processing".
-	if rc == nil || rc.Tmux == nil || rc.Tmux.ReadyPromptPrefix == "" {
+func sessionVerifyStartupNudge(m *SessionManager, sessionID string, rc *config.RuntimeConfig, retryContent string) {
+	if !canVerifyStartupNudge(rc) {
 		return
 	}
+	retryStartupNudgeDelivery(m, sessionID, startupNudgeRetryContent(retryContent))
+}
 
-	// Use configurable thresholds from operational config so operators can tune
-	// via settings/config.json without rebuilding. Both fall back to compiled-in
-	// defaults when no config is present. (Re-wired after revert of #3100.)
-	townRoot := filepath.Dir(m.rig.Path)
-	opCfg := config.LoadOperationalConfig(townRoot)
-	sessionCfg := opCfg.GetSessionConfig()
+func canVerifyStartupNudge(rc *config.RuntimeConfig) bool {
+	return rc != nil && rc.Tmux != nil && rc.Tmux.ReadyPromptPrefix != ""
+}
+
+func startupNudgeRetryContent(retryContent string) string {
+	if strings.TrimSpace(retryContent) != "" {
+		return retryContent
+	}
+	return runtime.StartupNudgeContent()
+}
+
+func retryStartupNudgeDelivery(m *SessionManager, sessionID, retryContent string) {
+	sessionCfg := config.LoadOperationalConfig(filepath.Dir(m.rig.Path)).GetSessionConfig()
 	verifyDelay := sessionCfg.StartupNudgeVerifyDelayD()
 	maxRetries := sessionCfg.StartupNudgeMaxRetriesV()
-
-	if strings.TrimSpace(retryContent) == "" {
-		retryContent = runtime.StartupNudgeContent()
-	}
-
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		// Wait for the agent to process the nudge before checking.
-		time.Sleep(verifyDelay)
-
-		// Check if session is still alive
-		running, err := m.tmux.HasSession(sessionID)
-		if err != nil || !running {
-			return // Session died, nothing to verify
-		}
-
-		// Use IsIdle instead of IsAtPrompt: IsIdle checks for the "esc to
-		// interrupt" busy indicator. If Claude is processing (loading context,
-		// running tools, generating a response), the status bar shows the busy
-		// indicator and IsIdle returns false — even though ❯ may still be
-		// visible in the pane from before Claude started output.
-		if !m.tmux.IsIdle(sessionID) {
-			return // Agent is busy — nudge was received and is being processed
-		}
-
-		// Agent is truly idle (no busy indicator, prompt visible) — nudge was likely lost. Retry.
-		fmt.Fprintf(os.Stderr, "[startup-nudge] attempt %d/%d: agent %s idle at prompt, retrying nudge\n",
-			attempt, maxRetries, sessionID)
-		if err := m.tmux.NudgeSession(sessionID, retryContent); err != nil {
-			fmt.Fprintf(os.Stderr, "[startup-nudge] retry nudge failed for %s: %v\n", sessionID, err)
+		if !retryOneStartupNudge(m, sessionID, retryContent, attempt, maxRetries, verifyDelay) {
 			return
 		}
 	}
-
-	// If we exhausted retries and the agent is still idle, log a warning.
-	// The witness zombie patrol will handle this case.
 	if m.tmux.IsIdle(sessionID) {
 		fmt.Fprintf(os.Stderr, "[startup-nudge] WARNING: agent %s still idle after %d nudge retries\n",
 			sessionID, maxRetries)
 	}
 }
 
+func retryOneStartupNudge(m *SessionManager, sessionID, retryContent string, attempt, maxRetries int, verifyDelay time.Duration) bool {
+	time.Sleep(verifyDelay)
+	running, err := m.tmux.HasSession(sessionID)
+	if err != nil || !running {
+		return false
+	}
+	if !m.tmux.IsIdle(sessionID) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "[startup-nudge] attempt %d/%d: agent %s idle at prompt, retrying nudge\n",
+		attempt, maxRetries, sessionID)
+	if err := m.tmux.NudgeSession(sessionID, retryContent); err != nil {
+		fmt.Fprintf(os.Stderr, "[startup-nudge] retry nudge failed for %s: %v\n", sessionID, err)
+		return false
+	}
+	return true
+}
+
 // hookIssue pins an issue to a polecat's hook using bd update.
-func (m *SessionManager) hookIssue(issueID, agentID, workDir string) error {
-	bdWorkDir := m.resolveBeadsDir(issueID, workDir)
+func sessionHookIssue(m *SessionManager, issueID, agentID, workDir string) error {
+	bdWorkDir := sessionResolveBeadsDir(m, issueID, workDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), constants.BdCommandTimeout)
 	defer cancel()

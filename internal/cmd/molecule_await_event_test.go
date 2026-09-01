@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jonbaldie/gastown/internal/channelevents"
+	"github.com/spf13/cobra"
 )
 
 func TestCalculateEventTimeout(t *testing.T) {
@@ -110,16 +113,17 @@ func TestCalculateEventTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set package-level variables
-			awaitEventTimeout = tt.timeout
-			awaitEventBackoffBase = tt.backoffBase
-			awaitEventBackoffMult = tt.backoffMult
-			if tt.backoffMult == 0 {
-				awaitEventBackoffMult = 2 // default
+			opts := awaitEventOptions{
+				timeout:     tt.timeout,
+				backoffBase: tt.backoffBase,
+				backoffMult: tt.backoffMult,
+				backoffMax:  tt.backoffMax,
 			}
-			awaitEventBackoffMax = tt.backoffMax
+			if tt.backoffMult == 0 {
+				opts.backoffMult = 2 // default
+			}
 
-			got, err := calculateEventTimeout(tt.idleCycles)
+			got, err := calculateEventTimeout(opts, tt.idleCycles)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("calculateEventTimeout() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -279,9 +283,9 @@ func TestValidChannelName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := validChannelName.MatchString(tt.input)
+			got := channelevents.ValidChannelName.MatchString(tt.input)
 			if got != tt.valid {
-				t.Errorf("validChannelName.MatchString(%q) = %v, want %v", tt.input, got, tt.valid)
+				t.Errorf("ValidChannelName.MatchString(%q) = %v, want %v", tt.input, got, tt.valid)
 			}
 		})
 	}
@@ -603,41 +607,19 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	oldChannel := awaitEventChannel
-	oldTimeout := awaitEventTimeout
-	oldBackoffBase := awaitEventBackoffBase
-	oldBackoffMult := awaitEventBackoffMult
-	oldBackoffMax := awaitEventBackoffMax
-	oldQuiet := awaitEventQuiet
-	oldAgentBead := awaitEventAgentBead
-	oldCleanup := awaitEventCleanup
-	oldContextCheck := awaitEventContextCheckInterval
-	oldJSON := moleculeJSON
-	t.Cleanup(func() {
-		awaitEventChannel = oldChannel
-		awaitEventTimeout = oldTimeout
-		awaitEventBackoffBase = oldBackoffBase
-		awaitEventBackoffMult = oldBackoffMult
-		awaitEventBackoffMax = oldBackoffMax
-		awaitEventQuiet = oldQuiet
-		awaitEventAgentBead = oldAgentBead
-		awaitEventCleanup = oldCleanup
-		awaitEventContextCheckInterval = oldContextCheck
-		moleculeJSON = oldJSON
-	})
+	cmd := &cobra.Command{}
+	cmd.Flags().String("channel", "test", "")
+	cmd.Flags().String("timeout", timeout, "")
+	cmd.Flags().String("backoff-base", "", "")
+	cmd.Flags().Int("backoff-mult", 2, "")
+	cmd.Flags().String("backoff-max", "", "")
+	cmd.Flags().String("agent-bead", "gt-agent", "")
+	cmd.Flags().Bool("quiet", true, "")
+	cmd.Flags().Bool("cleanup", false, "")
+	cmd.Flags().String("context-check-interval", contextCheck, "")
+	cmd.Flags().Bool("json", false, "")
 
-	awaitEventChannel = "test"
-	awaitEventTimeout = timeout
-	awaitEventBackoffBase = ""
-	awaitEventBackoffMult = 2
-	awaitEventBackoffMax = ""
-	awaitEventQuiet = true
-	awaitEventAgentBead = "gt-agent"
-	awaitEventCleanup = false
-	awaitEventContextCheckInterval = contextCheck
-	moleculeJSON = false
-
-	if err := runMoleculeAwaitEvent(nil, nil); err != nil {
+	if err := runMoleculeAwaitEvent(cmd, nil); err != nil {
 		t.Fatalf("runMoleculeAwaitEvent: %v", err)
 	}
 

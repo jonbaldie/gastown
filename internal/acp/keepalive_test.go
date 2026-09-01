@@ -49,7 +49,7 @@ func TestProxy_RunKeepAlive_Logic(t *testing.T) {
 
 	tickerChan := make(chan time.Time)
 	p.wg.Add(1)
-	go p.runKeepAlive(tickerChan)
+	go runKeepAlive(p, tickerChan)
 
 	// Case 1: Idle for 50s -> should send heartbeat
 	p.lastActivity.Store(time.Now().Add(-50 * time.Second).UnixNano())
@@ -106,7 +106,7 @@ func TestProxy_RunKeepAlive_Logic(t *testing.T) {
 	}
 
 	// Case 5: Propelled mode -> should NOT send heartbeat
-	p.SetPropelled(true)
+	setPropelled(p, true)
 	p.lastActivity.Store(time.Now().Add(-50 * time.Second).UnixNano())
 	tickerChan <- time.Now()
 

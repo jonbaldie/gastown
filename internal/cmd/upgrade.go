@@ -17,12 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	upgradeDryRun  bool
-	upgradeVerbose bool
-	upgradeNoStart bool
-)
-
 var upgradeCmd = &cobra.Command{
 	Use:     "upgrade",
 	GroupID: GroupDiag,
@@ -50,10 +44,16 @@ Examples:
 }
 
 func init() {
-	upgradeCmd.Flags().BoolVar(&upgradeDryRun, "dry-run", false, "Show what would change without modifying anything")
-	upgradeCmd.Flags().BoolVarP(&upgradeVerbose, "verbose", "v", false, "Show detailed output")
-	upgradeCmd.Flags().BoolVar(&upgradeNoStart, "no-start", false, "Suppress starting daemon/agents during doctor fix")
+	upgradeCmd.Flags().Bool("dry-run", false, "Show what would change without modifying anything")
+	upgradeCmd.Flags().BoolP("verbose", "v", false, "Show detailed output")
+	upgradeCmd.Flags().Bool("no-start", false, "Suppress starting daemon/agents during doctor fix")
 	rootCmd.AddCommand(upgradeCmd)
+}
+
+type upgradeOptions struct {
+	dryRun  bool
+	verbose bool
+	noStart bool
 }
 
 // upgradeResult tracks what changed in each step.
@@ -64,13 +64,18 @@ type upgradeResult struct {
 	details []string
 }
 
-func runUpgrade(cmd *cobra.Command, args []string) error {
+func runUpgrade(cmd *cobra.Command, _ []string) error {
+	opts := upgradeOptions{
+		dryRun:  commandBoolFlag(cmd, "dry-run"),
+		verbose: commandBoolFlag(cmd, "verbose"),
+		noStart: commandBoolFlag(cmd, "no-start"),
+	}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	if upgradeDryRun {
+	if opts.dryRun {
 		fmt.Printf("\n%s Dry run — showing what would change\n", style.Bold.Render("gt upgrade"))
 	} else {
 		fmt.Printf("\n%s Post-install migration\n", style.Bold.Render("gt upgrade"))
@@ -79,41 +84,41 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	var results []upgradeResult
 
 	// Step 1: Run doctor --fix for structural checks
-	r1 := upgradeDoctor(townRoot)
+	r1 := upgradeDoctor(townRoot, opts)
 	results = append(results, r1)
 
 	// Step 2: Sync AGENTS.md from embedded template
-	r2 := upgradeAgentsMD(townRoot)
+	r2 := upgradeAgentsMD(townRoot, opts.dryRun)
 	results = append(results, r2)
 
 	// Step 3: Ensure daemon.json lifecycle defaults
-	r3 := upgradeDaemonConfig(townRoot)
+	r3 := upgradeDaemonConfig(townRoot, opts.dryRun)
 	results = append(results, r3)
 
 	// Step 4: Sync hooks registry to settings.json
-	r4 := upgradeHooksSync(townRoot)
+	r4 := upgradeHooksSync(townRoot, opts)
 	results = append(results, r4)
 
 	// Step 5: Update formulas from embedded copies
-	r5 := upgradeFormulas(townRoot)
+	r5 := upgradeFormulas(townRoot, opts.dryRun)
 	results = append(results, r5)
 
 	// Print summary
-	printUpgradeSummary(results)
+	printUpgradeSummary(results, opts.dryRun)
 
 	return nil
 }
 
 // upgradeDoctor runs doctor --fix and returns the result.
-func upgradeDoctor(townRoot string) upgradeResult {
+func upgradeDoctor(townRoot string, opts upgradeOptions) upgradeResult {
 	result := upgradeResult{step: "Structural checks"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("1."), "Running structural checks (doctor --fix)...")
 
 	ctx := &doctor.CheckContext{
 		TownRoot: townRoot,
-		Verbose:  upgradeVerbose,
-		NoStart:  upgradeNoStart,
+		Verbose:  opts.verbose,
+		NoStart:  opts.noStart,
 	}
 
 	d := doctor.NewDoctor()
@@ -121,7 +126,7 @@ func upgradeDoctor(townRoot string) upgradeResult {
 	// Register the same checks as gt doctor (subset most relevant to upgrade)
 	d.RegisterAll(doctor.WorkspaceChecks()...)
 	d.Register(doctor.NewGlobalStateCheck())
-	d.Register(doctor.NewStaleBinaryCheck())
+	d.Register(doctor.NewStaleBinaryCheck(resolveCommitHash()))
 	d.Register(doctor.NewBeadsBinaryCheck())
 	d.Register(doctor.NewDoltBinaryCheck())
 	d.Register(doctor.NewClaudeBinaryCheck())
@@ -161,7 +166,7 @@ func upgradeDoctor(townRoot string) upgradeResult {
 	d.Register(doctor.NewRoleBeadsCheck())
 
 	var report *doctor.Report
-	if upgradeDryRun {
+	if opts.dryRun {
 		report = d.RunStreaming(ctx, os.Stdout, 0)
 	} else {
 		report = d.FixStreaming(ctx, os.Stdout, 0)
@@ -182,23 +187,17 @@ func upgradeDoctor(townRoot string) upgradeResult {
 }
 
 // upgradeAgentsMD syncs the town-root identity pair from the embedded template.
-func upgradeAgentsMD(townRoot string) upgradeResult {
+func upgradeAgentsMD(townRoot string, dryRun bool) upgradeResult {
 	result := upgradeResult{step: "AGENTS.md sync"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("2."), "Syncing AGENTS.md from template...")
 
 	expected := templates.TownRootAgentsMD()
-	current, err := os.ReadFile(filepath.Join(townRoot, instructions.CanonicalFile))
+	current, err := readTownAgentsMD(townRoot)
 	if err != nil && !os.IsNotExist(err) {
 		result.details = append(result.details, fmt.Sprintf("error reading: %v", err))
 		fmt.Printf("     %s Could not read AGENTS.md: %v\n", style.ErrorPrefix, err)
 		return result
-	}
-	if os.IsNotExist(err) {
-		if data, readErr := os.ReadFile(filepath.Join(townRoot, instructions.AliasFile)); readErr == nil {
-			current = data
-			err = nil
-		}
 	}
 
 	pairValid := instructions.TownPairValid(townRoot)
@@ -207,19 +206,37 @@ func upgradeAgentsMD(townRoot string) upgradeResult {
 		return result
 	}
 
-	if upgradeDryRun {
-		if os.IsNotExist(err) {
-			fmt.Printf("     %s AGENTS.md %s\n", style.WarningPrefix, style.Dim.Render("would create"))
-		} else {
-			fmt.Printf("     %s AGENTS.md %s\n", style.WarningPrefix, style.Dim.Render("would update"))
-		}
-		result.changed = 1
-		if !pairValid {
-			result.changed++
-		}
-		return result
+	if dryRun {
+		return reportAgentsMDDryRun(result, err, pairValid)
 	}
+	return provisionAgentsMD(townRoot, expected, result, err)
+}
 
+func readTownAgentsMD(townRoot string) ([]byte, error) {
+	current, err := os.ReadFile(filepath.Join(townRoot, instructions.CanonicalFile))
+	if !os.IsNotExist(err) {
+		return current, err
+	}
+	if data, readErr := os.ReadFile(filepath.Join(townRoot, instructions.AliasFile)); readErr == nil {
+		return data, nil
+	}
+	return current, err
+}
+
+func reportAgentsMDDryRun(result upgradeResult, readErr error, pairValid bool) upgradeResult {
+	status := "would update"
+	if os.IsNotExist(readErr) {
+		status = "would create"
+	}
+	fmt.Printf("     %s AGENTS.md %s\n", style.WarningPrefix, style.Dim.Render(status))
+	result.changed = 1
+	if !pairValid {
+		result.changed++
+	}
+	return result
+}
+
+func provisionAgentsMD(townRoot, expected string, result upgradeResult, readErr error) upgradeResult {
 	changed, provErr := instructions.Provision(townRoot, expected, "")
 	if provErr != nil {
 		result.details = append(result.details, fmt.Sprintf("error writing: %v", provErr))
@@ -231,7 +248,7 @@ func upgradeAgentsMD(townRoot string) upgradeResult {
 		return result
 	}
 
-	if os.IsNotExist(err) {
+	if os.IsNotExist(readErr) {
 		fmt.Printf("     %s AGENTS.md %s\n", style.SuccessPrefix, style.Dim.Render("created"))
 		result.changed = 1
 	} else {
@@ -245,7 +262,7 @@ func upgradeAgentsMD(townRoot string) upgradeResult {
 }
 
 // upgradeDaemonConfig ensures daemon.json has lifecycle defaults.
-func upgradeDaemonConfig(townRoot string) upgradeResult {
+func upgradeDaemonConfig(townRoot string, dryRun bool) upgradeResult {
 	result := upgradeResult{step: "Daemon config"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("3."), "Ensuring daemon.json lifecycle defaults...")
@@ -271,7 +288,7 @@ func upgradeDaemonConfig(townRoot string) upgradeResult {
 	}
 
 	// File doesn't exist — create with defaults
-	if upgradeDryRun {
+	if dryRun {
 		fmt.Printf("     %s daemon.json %s\n", style.WarningPrefix, style.Dim.Render("would create with defaults"))
 		result.changed = 1
 		return result
@@ -290,7 +307,7 @@ func upgradeDaemonConfig(townRoot string) upgradeResult {
 }
 
 // upgradeHooksSync syncs hook registry to all settings.json files.
-func upgradeHooksSync(townRoot string) upgradeResult {
+func upgradeHooksSync(townRoot string, opts upgradeOptions) upgradeResult {
 	result := upgradeResult{step: "Hooks sync"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("4."), "Syncing hooks to settings.json...")
@@ -302,16 +319,30 @@ func upgradeHooksSync(townRoot string) upgradeResult {
 		return result
 	}
 
-	updated := 0
-	created := 0
-	unchanged := 0
-	errors := 0
+	summary := syncUpgradeTargets(townRoot, targets, opts)
+	result.changed = summary.updated + summary.created
+	if summary.errors > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d sync errors", summary.errors))
+	}
+	printUpgradeHooksSummary(summary, opts)
 
+	return result
+}
+
+type hookSyncSummary struct {
+	updated   int
+	created   int
+	unchanged int
+	errors    int
+}
+
+func syncUpgradeTargets(townRoot string, targets []hooks.Target, opts upgradeOptions) hookSyncSummary {
+	var summary hookSyncSummary
 	for _, target := range targets {
-		syncRes, err := syncTarget(target, upgradeDryRun)
+		syncRes, err := syncTarget(target, opts.dryRun)
 		if err != nil {
-			errors++
-			if upgradeVerbose {
+			summary.errors++
+			if opts.verbose {
 				relPath, _ := filepath.Rel(townRoot, target.Path)
 				fmt.Printf("     %s %s: %v\n", style.ErrorPrefix, relPath, err)
 			}
@@ -322,103 +353,112 @@ func upgradeHooksSync(townRoot string) upgradeResult {
 		if pathErr != nil {
 			relPath = target.Path
 		}
+		summary.record(syncRes)
+		printUpgradeHookTarget(relPath, syncRes, opts)
+	}
+	return summary
+}
 
-		switch syncRes {
-		case syncCreated:
-			created++
-			if upgradeVerbose {
-				if upgradeDryRun {
-					fmt.Printf("     %s %s %s\n", style.WarningPrefix, relPath, style.Dim.Render("(would create)"))
-				} else {
-					fmt.Printf("     %s %s %s\n", style.SuccessPrefix, relPath, style.Dim.Render("(created)"))
-				}
-			}
-		case syncUpdated:
-			updated++
-			if upgradeVerbose {
-				if upgradeDryRun {
-					fmt.Printf("     %s %s %s\n", style.WarningPrefix, relPath, style.Dim.Render("(would update)"))
-				} else {
-					fmt.Printf("     %s %s %s\n", style.SuccessPrefix, relPath, style.Dim.Render("(updated)"))
-				}
-			}
-		case syncUnchanged:
-			unchanged++
+func (s *hookSyncSummary) record(result syncResult) {
+	switch result {
+	case syncCreated:
+		s.created++
+	case syncUpdated:
+		s.updated++
+	case syncUnchanged:
+		s.unchanged++
+	}
+}
+
+func printUpgradeHookTarget(relPath string, syncRes syncResult, opts upgradeOptions) {
+	if !opts.verbose || syncRes == syncUnchanged {
+		return
+	}
+	prefix := style.SuccessPrefix
+	verb := "updated"
+	if opts.dryRun {
+		prefix = style.WarningPrefix
+		verb = "would update"
+	}
+	if syncRes == syncCreated {
+		verb = "created"
+		if opts.dryRun {
+			verb = "would create"
 		}
 	}
+	fmt.Printf("     %s %s %s\n", prefix, relPath, style.Dim.Render("("+verb+")"))
+}
 
-	result.changed = updated + created
-
-	// Summary line
+func printUpgradeHooksSummary(summary hookSyncSummary, opts upgradeOptions) {
 	var parts []string
-	if updated > 0 {
-		parts = append(parts, fmt.Sprintf("%d updated", updated))
+	if summary.updated > 0 {
+		parts = append(parts, fmt.Sprintf("%d updated", summary.updated))
 	}
-	if created > 0 {
-		parts = append(parts, fmt.Sprintf("%d created", created))
+	if summary.created > 0 {
+		parts = append(parts, fmt.Sprintf("%d created", summary.created))
 	}
-	if unchanged > 0 {
-		parts = append(parts, fmt.Sprintf("%d unchanged", unchanged))
+	if summary.unchanged > 0 {
+		parts = append(parts, fmt.Sprintf("%d unchanged", summary.unchanged))
 	}
-	if errors > 0 {
-		parts = append(parts, fmt.Sprintf("%d errors", errors))
-		result.details = append(result.details, fmt.Sprintf("%d sync errors", errors))
+	if summary.errors > 0 {
+		parts = append(parts, fmt.Sprintf("%d errors", summary.errors))
 	}
-
-	summary := strings.Join(parts, ", ")
-	if result.changed > 0 {
-		if upgradeDryRun {
-			fmt.Printf("     %s %s %s\n", style.WarningPrefix, "settings.json", style.Dim.Render(summary))
-		} else {
-			fmt.Printf("     %s %s %s\n", style.SuccessPrefix, "settings.json", style.Dim.Render(summary))
-		}
-	} else {
-		fmt.Printf("     %s %s %s\n", style.SuccessPrefix, "settings.json", style.Dim.Render(summary))
+	prefix := style.SuccessPrefix
+	if opts.dryRun && summary.updated+summary.created > 0 {
+		prefix = style.WarningPrefix
 	}
-
-	return result
+	fmt.Printf("     %s %s %s\n", prefix, "settings.json", style.Dim.Render(strings.Join(parts, ", ")))
 }
 
 // upgradeFormulas updates formulas from embedded copies.
-func upgradeFormulas(townRoot string) upgradeResult {
+func upgradeFormulas(townRoot string, dryRun bool) upgradeResult {
+	if dryRun {
+		return checkFormulaUpgrade(townRoot)
+	}
+	return applyFormulaUpgrade(townRoot)
+}
+
+func checkFormulaUpgrade(townRoot string) upgradeResult {
 	result := upgradeResult{step: "Formulas"}
 
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("5."), "Updating formulas from embedded copies...")
 
-	if upgradeDryRun {
-		// In dry-run mode, just check health
-		report, err := formula.CheckFormulaHealth(townRoot)
-		if err != nil {
-			result.details = append(result.details, fmt.Sprintf("health check error: %v", err))
-			fmt.Printf("     %s Could not check formulas: %v\n", style.ErrorPrefix, err)
-			return result
-		}
-
-		needsUpdate := report.Outdated + report.Missing + report.New + report.Untracked
-		if needsUpdate == 0 {
-			fmt.Printf("     %s %d formulas %s\n", style.SuccessPrefix, report.OK, style.Dim.Render("up-to-date"))
-			return result
-		}
-
-		result.changed = needsUpdate
-		if report.Outdated > 0 {
-			result.details = append(result.details, fmt.Sprintf("%d would update", report.Outdated))
-		}
-		if report.Missing > 0 {
-			result.details = append(result.details, fmt.Sprintf("%d would reinstall", report.Missing))
-		}
-		if report.New > 0 {
-			result.details = append(result.details, fmt.Sprintf("%d would install", report.New))
-		}
-		if report.Modified > 0 {
-			result.skipped = report.Modified
-			result.details = append(result.details, fmt.Sprintf("%d locally modified (skipped)", report.Modified))
-		}
-
-		fmt.Printf("     %s formulas: %s\n", style.WarningPrefix, style.Dim.Render(strings.Join(result.details, ", ")))
+	// In dry-run mode, just check health.
+	report, err := formula.CheckFormulaHealth(townRoot)
+	if err != nil {
+		result.details = append(result.details, fmt.Sprintf("health check error: %v", err))
+		fmt.Printf("     %s Could not check formulas: %v\n", style.ErrorPrefix, err)
 		return result
 	}
 
+	needsUpdate := report.Outdated + report.Missing + report.New + report.Untracked
+	if needsUpdate == 0 {
+		fmt.Printf("     %s %d formulas %s\n", style.SuccessPrefix, report.OK, style.Dim.Render("up-to-date"))
+		return result
+	}
+
+	result.changed = needsUpdate
+	if report.Outdated > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d would update", report.Outdated))
+	}
+	if report.Missing > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d would reinstall", report.Missing))
+	}
+	if report.New > 0 {
+		result.details = append(result.details, fmt.Sprintf("%d would install", report.New))
+	}
+	if report.Modified > 0 {
+		result.skipped = report.Modified
+		result.details = append(result.details, fmt.Sprintf("%d locally modified (skipped)", report.Modified))
+	}
+
+	fmt.Printf("     %s formulas: %s\n", style.WarningPrefix, style.Dim.Render(strings.Join(result.details, ", ")))
+	return result
+}
+
+func applyFormulaUpgrade(townRoot string) upgradeResult {
+	result := upgradeResult{step: "Formulas"}
+	fmt.Printf("\n  %s %s\n", style.Bold.Render("5."), "Updating formulas from embedded copies...")
 	updated, skipped, reinstalled, err := formula.UpdateFormulas(townRoot)
 	if err != nil {
 		result.details = append(result.details, fmt.Sprintf("update error: %v", err))
@@ -457,7 +497,7 @@ func upgradeFormulas(townRoot string) upgradeResult {
 }
 
 // printUpgradeSummary prints a final summary of what changed.
-func printUpgradeSummary(results []upgradeResult) {
+func printUpgradeSummary(results []upgradeResult, dryRun bool) {
 	totalChanged := 0
 	var issues []string
 
@@ -471,7 +511,7 @@ func printUpgradeSummary(results []upgradeResult) {
 	}
 
 	fmt.Println()
-	if upgradeDryRun {
+	if dryRun {
 		if totalChanged == 0 {
 			fmt.Printf("  %s Workspace is up-to-date — nothing to change\n", style.SuccessPrefix)
 		} else {

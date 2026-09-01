@@ -165,7 +165,7 @@ var (
 )
 
 // RecordPing records that a health check ping was sent to an agent.
-func (s *AgentHealthState) RecordPing() {
+func RecordPing(s *AgentHealthState) {
 	s.LastPingTime = time.Now().UTC()
 }
 

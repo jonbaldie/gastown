@@ -3,12 +3,59 @@ package mayor
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/workspace"
 )
+
+func TestACPAgentArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		rc   *config.RuntimeConfig
+		want []string
+	}{
+		{
+			name: "runtime fallback",
+			rc:   &config.RuntimeConfig{Args: []string{"--runtime"}},
+			want: []string{"--runtime"},
+		},
+		{
+			name: "native adapter",
+			rc: &config.RuntimeConfig{ACP: &config.ACPConfig{
+				Mode: config.ACPModeNative,
+				Args: []string{"--debug"},
+			}},
+			want: []string{"--debug"},
+		},
+		{
+			name: "subcommand",
+			rc: &config.RuntimeConfig{ACP: &config.ACPConfig{
+				Command: "acp",
+				Args:    []string{"--debug"},
+			}},
+			want: []string{"acp", "--debug"},
+		},
+		{
+			name: "flag",
+			rc: &config.RuntimeConfig{ACP: &config.ACPConfig{
+				Mode: config.ACPModeFlag,
+				Args: []string{"--experimental-acp"},
+			}},
+			want: []string{"--experimental-acp"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := acpAgentArgs(tt.rc); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("acpAgentArgs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestNewManager(t *testing.T) {
 	m := NewManager("/tmp/test-town")

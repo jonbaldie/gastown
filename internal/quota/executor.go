@@ -13,21 +13,21 @@ import (
 // Separating this from scan.go's TmuxClient keeps read-only scanning distinct
 // from the write operations required by rotation execution.
 type TmuxExecutor interface {
-	SetEnvironment(session, key, value string) error
-	GetPaneID(session string) (string, error)
-	SetRemainOnExit(pane string, on bool) error
-	KillPaneProcesses(pane string) error
-	ClearHistory(pane string) error
-	RespawnPane(pane, command string) error
-	AcceptStartupDialogs(session string) error
-	AcceptWorkspaceTrustDialog(session string) error
-	AcceptBypassPermissionsWarning(session string) error
+	SetEnvironment(_, _, _ string) error
+	GetPaneID(_ string) (string, error)
+	SetRemainOnExit(_ string, _ bool) error
+	KillPaneProcesses(_ string) error
+	ClearHistory(_ string) error
+	RespawnPane(_, _ string) error
+	AcceptStartupDialogs(_ string) error
+	AcceptWorkspaceTrustDialog(_ string) error
+	AcceptBypassPermissionsWarning(_ string) error
 }
 
 // Logger allows the Rotator to emit non-fatal warnings without depending
 // on the CLI style package.
 type Logger interface {
-	Warn(format string, args ...interface{})
+	Warn(_ string, _ ...interface{})
 }
 
 // SessionLinker symlinks a session file from its current account into a target
@@ -47,6 +47,12 @@ type Rotator struct {
 	sessionLinker  SessionLinker                        // optional: symlinks session for resume (nil = no resume)
 	townRoot       string                               // needed for session discovery
 	agentName      string                               // needed for BuildResumeCommand (default "claude")
+}
+
+type rotationPreparation struct {
+	newConfigDir string
+	respawnCmd   string
+	pane         string
 }
 
 // NewRotator creates a Rotator with all dependencies injected.
@@ -150,106 +156,115 @@ func (r *Rotator) executeOne(state *config.QuotaState, mu *sync.Mutex, session, 
 		NewAccount: newAccount,
 	}
 
-	// --- Validation phase: read-only, no side effects ---
-
-	// 1. Resolve old account from tmux session environment.
-	oldConfigDir, err := r.tmuxClient.GetEnvironment(session, "CLAUDE_CONFIG_DIR")
-	if err == nil {
-		for handle, acct := range r.accounts.Accounts {
-			if acct.ConfigDir == oldConfigDir || util.ExpandHome(acct.ConfigDir) == oldConfigDir {
-				result.OldAccount = handle
-				break
-			}
-		}
+	result.OldAccount = r.resolveOldAccount(session)
+	prep, ok := r.prepareRotation(session, newAccount, &result)
+	if !ok {
+		return result
 	}
 
-	// 2. Resolve new account config dir.
+	r.applyRotation(state, mu, session, newAccount, prep, &result)
+	return result
+}
+
+func (r *Rotator) resolveOldAccount(session string) string {
+	oldConfigDir, err := r.tmuxClient.GetEnvironment(session, "CLAUDE_CONFIG_DIR")
+	if err != nil {
+		return ""
+	}
+	for handle, acct := range r.accounts.Accounts {
+		if acct.ConfigDir == oldConfigDir || util.ExpandHome(acct.ConfigDir) == oldConfigDir {
+			return handle
+		}
+	}
+	return ""
+}
+
+func (r *Rotator) prepareRotation(session, newAccount string, result *RotateResult) (rotationPreparation, bool) {
 	newAcct, ok := r.accounts.Accounts[newAccount]
 	if !ok {
 		result.Error = fmt.Sprintf("account %q not found in config", newAccount)
-		return result
+		return rotationPreparation{}, false
 	}
-	newConfigDir := util.ExpandHome(newAcct.ConfigDir)
 
-	// 3. Read CLAUDE_SESSION_ID from tmux session environment for resume support.
-	var sessionID string
+	newConfigDir := util.ExpandHome(newAcct.ConfigDir)
+	respawnCmd, ok := r.buildRespawnCommand(session, newConfigDir, result)
+	if !ok {
+		return rotationPreparation{}, false
+	}
+
+	respawnCmd = config.PrependEnv(respawnCmd, map[string]string{
+		"CLAUDE_CONFIG_DIR": newConfigDir,
+	})
+	pane, err := r.tmuxExec.GetPaneID(session)
+	if err != nil {
+		result.Error = fmt.Sprintf("getting pane: %v", err)
+		return rotationPreparation{}, false
+	}
+
+	return rotationPreparation{
+		newConfigDir: newConfigDir,
+		respawnCmd:   respawnCmd,
+		pane:         pane,
+	}, true
+}
+
+func (r *Rotator) buildRespawnCommand(session, newConfigDir string, result *RotateResult) (string, bool) {
 	sessionIDEnv := config.GetSessionIDEnvVar(r.agentName)
+	var sessionID string
 	if sessionIDEnv != "" {
 		sessionID, _ = r.tmuxClient.GetEnvironment(session, sessionIDEnv)
 	}
 
-	// 4. Build restart command (always, as fallback).
 	respawnCmd, err := r.restartCommand(session)
 	if err != nil {
 		result.Error = fmt.Sprintf("building restart command: %v", err)
-		return result
+		return "", false
 	}
 
-	// 5. If session ID found + linker available, attempt resume command.
-	if sessionID != "" && r.sessionLinker != nil {
-		cleanup, linkErr := r.sessionLinker(r.townRoot, sessionID, newConfigDir)
-		if linkErr != nil {
-			r.log.Warn("could not symlink session for resume in %s: %v (falling back to fresh start)", session, linkErr)
-		} else {
-			resumeCmd := config.BuildResumeCommand(r.agentName, sessionID)
-			if resumeCmd != "" {
-				respawnCmd = resumeCmd
-				result.ResumedSession = sessionID
-			}
-			// Cleanup is deferred — the symlink should persist so Claude can read
-			// the session file during resume. We don't call cleanup here.
-			_ = cleanup
-		}
+	if sessionID == "" || r.sessionLinker == nil {
+		return respawnCmd, true
 	}
 
-	// 6. Prepend CLAUDE_CONFIG_DIR using OS-aware env syntax.
-	respawnCmd = config.PrependEnv(respawnCmd, map[string]string{
-		"CLAUDE_CONFIG_DIR": newConfigDir,
-	})
-
-	// 7. Validate target pane exists.
-	pane, err := r.tmuxExec.GetPaneID(session)
-	if err != nil {
-		result.Error = fmt.Sprintf("getting pane: %v", err)
-		return result
+	cleanup, linkErr := r.sessionLinker(r.townRoot, sessionID, newConfigDir)
+	if linkErr != nil {
+		r.log.Warn("could not symlink session for resume in %s: %v (falling back to fresh start)", session, linkErr)
+		return respawnCmd, true
 	}
 
-	// --- Mutation phase: all validation passed ---
+	resumeCmd := config.BuildResumeCommand(r.agentName, sessionID)
+	if resumeCmd != "" {
+		result.ResumedSession = sessionID
+		respawnCmd = resumeCmd
+	}
+	// Cleanup is deferred — the symlink should persist so Claude can read
+	// the session file during resume. We don't call cleanup here.
+	_ = cleanup
+	return respawnCmd, true
+}
 
-	// 8. Set new CLAUDE_CONFIG_DIR in tmux session environment.
-	if err := r.tmuxExec.SetEnvironment(session, "CLAUDE_CONFIG_DIR", newConfigDir); err != nil {
+func (r *Rotator) applyRotation(state *config.QuotaState, mu *sync.Mutex, session, newAccount string, prep rotationPreparation, result *RotateResult) {
+	if err := r.tmuxExec.SetEnvironment(session, "CLAUDE_CONFIG_DIR", prep.newConfigDir); err != nil {
 		result.Error = fmt.Sprintf("setting CLAUDE_CONFIG_DIR: %v", err)
-		return result
+		return
 	}
 
-	// Set remain-on-exit to prevent pane destruction during restart.
-	if err := r.tmuxExec.SetRemainOnExit(pane, true); err != nil {
+	if err := r.tmuxExec.SetRemainOnExit(prep.pane, true); err != nil {
 		r.log.Warn("could not set remain-on-exit for %s: %v", session, err)
 	}
-
-	// Kill existing processes.
-	if err := r.tmuxExec.KillPaneProcesses(pane); err != nil {
+	if err := r.tmuxExec.KillPaneProcesses(prep.pane); err != nil {
 		r.log.Warn("could not kill pane processes for %s: %v", session, err)
 	}
-
-	// Clear scrollback.
-	if err := r.tmuxExec.ClearHistory(pane); err != nil {
+	if err := r.tmuxExec.ClearHistory(prep.pane); err != nil {
 		r.log.Warn("could not clear history for %s: %v", session, err)
 	}
-
-	// Respawn with new account.
-	if err := r.tmuxExec.RespawnPane(pane, respawnCmd); err != nil {
+	if err := r.tmuxExec.RespawnPane(prep.pane, prep.respawnCmd); err != nil {
 		result.Error = fmt.Sprintf("respawning pane: %v", err)
-		return result
+		return
 	}
-
-	// 9. Accept startup dialogs (non-critical).
 	if err := r.tmuxExec.AcceptStartupDialogs(session); err != nil {
 		r.log.Warn("could not accept startup dialogs for %s: %v", session, err)
 	}
 
-	// 10. Update in-memory quota state (no disk I/O here).
-	// Lock only for the map mutation — tmux I/O above runs lock-free.
 	mu.Lock()
 	existing := state.Accounts[newAccount]
 	existing.LastUsed = time.Now().UTC().Format(time.RFC3339)
@@ -257,5 +272,4 @@ func (r *Rotator) executeOne(state *config.QuotaState, mu *sync.Mutex, session, 
 	mu.Unlock()
 
 	result.Rotated = true
-	return result
 }

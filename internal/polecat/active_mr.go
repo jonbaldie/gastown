@@ -10,7 +10,7 @@ import (
 
 // IssueReader is the subset of beads lookup needed to classify active_mr.
 type IssueReader interface {
-	Show(issueID string) (*beads.Issue, error)
+	Show(_ string) (*beads.Issue, error)
 }
 
 // ActiveMRInput describes the active merge-request context for a polecat.

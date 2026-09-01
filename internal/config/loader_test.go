@@ -225,16 +225,20 @@ func TestRigSettingsWithCustomMergeQueue(t *testing.T) {
 		Type:    "rig-settings",
 		Version: 1,
 		MergeQueue: &MergeQueueConfig{
-			Enabled:                          true,
-			IntegrationBranchPolecatEnabled:  boolPtr(false),
-			IntegrationBranchRefineryEnabled: boolPtr(false),
-			OnConflict:                       OnConflictAutoRebase,
-			RunTests:                         boolPtr(true),
-			TestCommand:                      "make test",
-			DeleteMergedBranches:             boolPtr(false),
-			RetryFlakyTests:                  3,
-			PollInterval:                     "1m",
-			MaxConcurrent:                    2,
+			Enabled: true,
+			MergeQueueIntegration: MergeQueueIntegration{
+				IntegrationBranchPolecatEnabled:  boolPtr(false),
+				IntegrationBranchRefineryEnabled: boolPtr(false),
+			},
+			OnConflict: OnConflictAutoRebase,
+			MergeQueueCommands: MergeQueueCommands{
+				RunTests:             boolPtr(true),
+				TestCommand:          "make test",
+				DeleteMergedBranches: boolPtr(false),
+			},
+			RetryFlakyTests: 3,
+			PollInterval:    "1m",
+			MaxConcurrent:   2,
 		},
 	}
 
@@ -410,22 +414,22 @@ func TestDefaultMergeQueueConfig(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("Enabled should be true by default")
 	}
-	if !cfg.IsPolecatIntegrationEnabled() {
+	if !IsPolecatIntegrationEnabled(cfg) {
 		t.Error("IsPolecatIntegrationEnabled should be true by default")
 	}
-	if !cfg.IsRefineryIntegrationEnabled() {
+	if !IsRefineryIntegrationEnabled(cfg) {
 		t.Error("IsRefineryIntegrationEnabled should be true by default")
 	}
 	if cfg.OnConflict != OnConflictAssignBack {
 		t.Errorf("OnConflict = %q, want %q", cfg.OnConflict, OnConflictAssignBack)
 	}
-	if !cfg.IsRunTestsEnabled() {
+	if !IsRunTestsEnabled(cfg) {
 		t.Error("IsRunTestsEnabled should be true by default")
 	}
 	if cfg.TestCommand != "" {
 		t.Errorf("TestCommand = %q, want empty (language-agnostic default)", cfg.TestCommand)
 	}
-	if !cfg.IsDeleteMergedBranchesEnabled() {
+	if !IsDeleteMergedBranchesEnabled(cfg) {
 		t.Error("IsDeleteMergedBranchesEnabled should be true by default")
 	}
 	if cfg.RetryFlakyTests != 1 {
@@ -523,7 +527,7 @@ func TestMergeSettingsCommand(t *testing.T) {
 
 	t.Run("repo only", func(t *testing.T) {
 		t.Parallel()
-		repo := &MergeQueueConfig{TestCommand: "repo-test", BuildCommand: "repo-build"}
+		repo := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "repo-test", BuildCommand: "repo-build"}}
 		result := MergeSettingsCommand(repo, nil)
 		if result.TestCommand != "repo-test" {
 			t.Errorf("expected 'repo-test', got %q", result.TestCommand)
@@ -532,8 +536,8 @@ func TestMergeSettingsCommand(t *testing.T) {
 
 	t.Run("local overrides repo", func(t *testing.T) {
 		t.Parallel()
-		repo := &MergeQueueConfig{TestCommand: "repo-test", BuildCommand: "repo-build", LintCommand: "repo-lint"}
-		local := &MergeQueueConfig{TestCommand: "local-test"}
+		repo := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "repo-test", BuildCommand: "repo-build", LintCommand: "repo-lint"}}
+		local := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "local-test"}}
 		result := MergeSettingsCommand(repo, local)
 		if result.TestCommand != "local-test" {
 			t.Errorf("expected 'local-test', got %q", result.TestCommand)
@@ -548,7 +552,7 @@ func TestMergeSettingsCommand(t *testing.T) {
 
 	t.Run("local only", func(t *testing.T) {
 		t.Parallel()
-		local := &MergeQueueConfig{TestCommand: "local-test"}
+		local := &MergeQueueConfig{MergeQueueCommands: MergeQueueCommands{TestCommand: "local-test"}}
 		result := MergeSettingsCommand(nil, local)
 		if result.TestCommand != "local-test" {
 			t.Errorf("expected 'local-test', got %q", result.TestCommand)
@@ -5404,19 +5408,19 @@ func TestMergeQueueConfig_PartialJSON_BoolDefaults(t *testing.T) {
 				t.Fatalf("json.Unmarshal: %v", err)
 			}
 
-			if got := cfg.IsRunTestsEnabled(); got != tt.wantRunTests {
+			if got := IsRunTestsEnabled(&cfg); got != tt.wantRunTests {
 				t.Errorf("IsRunTestsEnabled() = %v, want %v", got, tt.wantRunTests)
 			}
-			if got := cfg.IsDeleteMergedBranchesEnabled(); got != tt.wantDeleteMerged {
+			if got := IsDeleteMergedBranchesEnabled(&cfg); got != tt.wantDeleteMerged {
 				t.Errorf("IsDeleteMergedBranchesEnabled() = %v, want %v", got, tt.wantDeleteMerged)
 			}
-			if got := cfg.IsPolecatIntegrationEnabled(); got != tt.wantPolecatIntegration {
+			if got := IsPolecatIntegrationEnabled(&cfg); got != tt.wantPolecatIntegration {
 				t.Errorf("IsPolecatIntegrationEnabled() = %v, want %v", got, tt.wantPolecatIntegration)
 			}
-			if got := cfg.IsRefineryIntegrationEnabled(); got != tt.wantRefineryIntegration {
+			if got := IsRefineryIntegrationEnabled(&cfg); got != tt.wantRefineryIntegration {
 				t.Errorf("IsRefineryIntegrationEnabled() = %v, want %v", got, tt.wantRefineryIntegration)
 			}
-			if got := cfg.IsIntegrationBranchAutoLandEnabled(); got != tt.wantAutoLand {
+			if got := IsIntegrationBranchAutoLandEnabled(&cfg); got != tt.wantAutoLand {
 				t.Errorf("IsIntegrationBranchAutoLandEnabled() = %v, want %v", got, tt.wantAutoLand)
 			}
 		})

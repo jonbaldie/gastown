@@ -27,8 +27,8 @@ type ScanResult struct {
 // This allows testing without a real tmux server.
 type TmuxClient interface {
 	ListSessions() ([]string, error)
-	CapturePane(session string, lines int) (string, error)
-	GetEnvironment(session, key string) (string, error)
+	CapturePane(_ string, _ int) (string, error)
+	GetEnvironment(_, _ string) (string, error)
 }
 
 // Scanner detects rate-limited and near-limit sessions by examining tmux pane content.
@@ -118,22 +118,11 @@ func (s *Scanner) ScanAll() ([]ScanResult, error) {
 
 // scanSession examines a single tmux session for rate-limit and near-limit indicators.
 func (s *Scanner) scanSession(session string) ScanResult {
-	result := ScanResult{Session: session}
-
-	// Always capture CLAUDE_CONFIG_DIR for rotation planning, even if
-	// the account handle can't be resolved (unknown account sessions).
-	// Falls back to ~/.claude (Claude Code's default) when the env var isn't set.
-	if configDir, err := s.tmux.GetEnvironment(session, "CLAUDE_CONFIG_DIR"); err == nil {
-		result.ConfigDir = strings.TrimSpace(configDir)
-	} else {
-		home, _ := os.UserHomeDir()
-		if home != "" {
-			result.ConfigDir = home + "/.claude"
-		}
+	result := ScanResult{
+		Session:       session,
+		ConfigDir:     s.sessionConfigDir(session),
+		AccountHandle: s.resolveAccountHandle(session),
 	}
-
-	// Derive account from CLAUDE_CONFIG_DIR
-	result.AccountHandle = s.resolveAccountHandle(session)
 
 	// Capture pane content
 	content, err := s.tmux.CapturePane(session, scanLines)
@@ -142,50 +131,65 @@ func (s *Scanner) scanSession(session string) ScanResult {
 		return result
 	}
 
-	// Only check the bottom checkLines for rate-limit patterns.
-	// If the rate limit was resolved (e.g., /login), subsequent output
-	// pushes the message above this window, avoiding false positives.
+	// Only check the bottom checkLines for rate-limit patterns. If the rate
+	// limit was resolved, subsequent output pushes the message above this
+	// window, avoiding false positives.
+	bottomLines := bottomScanLines(content)
+
+	// Check hard rate-limit patterns first
+	if line := findMatchingLine(bottomLines, s.patterns); line != "" {
+		result.RateLimited = true
+		result.MatchedLine = line
+		result.ResetsAt = parseResetTime(line)
+		return result
+	}
+
+	// No hard limit detected — check near-limit warning patterns
+	if line := findMatchingLine(bottomLines, s.warningPatterns); line != "" {
+		result.NearLimit = true
+		result.MatchedLine = line
+		return result
+	}
+
+	return result
+}
+
+func (s *Scanner) sessionConfigDir(session string) string {
+	// Always capture CLAUDE_CONFIG_DIR for rotation planning, even if the
+	// account handle can't be resolved. Fall back to ~/.claude when unset.
+	configDir, err := s.tmux.GetEnvironment(session, "CLAUDE_CONFIG_DIR")
+	if err == nil {
+		return strings.TrimSpace(configDir)
+	}
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
+	}
+	return home + "/.claude"
+}
+
+func bottomScanLines(content string) []string {
 	allLines := strings.Split(content, "\n")
 	start := len(allLines) - checkLines
 	if start < 0 {
 		start = 0
 	}
-	bottomLines := allLines[start:]
+	return allLines[start:]
+}
 
-	// Check hard rate-limit patterns first
-	for _, line := range bottomLines {
+func findMatchingLine(lines []string, patterns []*regexp.Regexp) string {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		for _, re := range s.patterns {
+		for _, re := range patterns {
 			if re.MatchString(line) {
-				result.RateLimited = true
-				result.MatchedLine = line
-				result.ResetsAt = parseResetTime(line)
-				return result
+				return line
 			}
 		}
 	}
-
-	// No hard limit detected — check near-limit warning patterns
-	if len(s.warningPatterns) > 0 {
-		for _, line := range bottomLines {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			for _, re := range s.warningPatterns {
-				if re.MatchString(line) {
-					result.NearLimit = true
-					result.MatchedLine = line
-					return result
-				}
-			}
-		}
-	}
-
-	return result
+	return ""
 }
 
 // resolveAccountHandle maps a session's active account back to a handle.

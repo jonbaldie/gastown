@@ -75,7 +75,7 @@ func (c *DeprecatedMergeQueueKeysCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // Fix removes deprecated keys from all affected settings files.
-func (c *DeprecatedMergeQueueKeysCheck) Fix(ctx *CheckContext) error {
+func (c *DeprecatedMergeQueueKeysCheck) Fix(_ *CheckContext) error {
 	for settingsPath, keys := range c.affectedFiles {
 		if err := removeDeprecatedKeys(settingsPath, keys); err != nil {
 			return fmt.Errorf("fixing %s: %w", settingsPath, err)

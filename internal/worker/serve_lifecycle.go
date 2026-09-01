@@ -21,28 +21,39 @@ func FindServePIDs(townRoot string) []int {
 	if err != nil {
 		return nil
 	}
-	townAbs := canonicalTownRoot(townRoot)
-	self := os.Getpid()
+	return collectServePIDs(table, townRoot, canonicalTownRoot(townRoot), os.Getpid())
+}
+
+func collectServePIDs(table process.Table, townRoot, townAbs string, self int) []int {
 	seen := map[int]bool{}
 	var pids []int
 	for _, p := range table.All() {
-		if p.PID == self || p.PID <= 0 || seen[p.PID] || !process.Alive(p.PID) {
+		if !eligibleServePID(p, self, seen) {
 			continue
 		}
-		line := p.Args
-		if line == "" {
-			line = process.CommandLine(p.PID)
-		}
-		if !isTownWorkerServeArgs(line, townRoot) && !isTownWorkerServeArgs(line, townAbs) {
-			fallback := process.CommandLine(p.PID)
-			if !isTownWorkerServeArgs(fallback, townRoot) && !isTownWorkerServeArgs(fallback, townAbs) {
-				continue
-			}
+		if !servePIDMatchesTown(p, townRoot, townAbs) {
+			continue
 		}
 		seen[p.PID] = true
 		pids = append(pids, p.PID)
 	}
 	return pids
+}
+
+func eligibleServePID(p process.Proc, self int, seen map[int]bool) bool {
+	return p.PID != self && p.PID > 0 && !seen[p.PID] && process.Alive(p.PID)
+}
+
+func servePIDMatchesTown(p process.Proc, townRoot, townAbs string) bool {
+	line := p.Args
+	if line == "" {
+		line = process.CommandLine(p.PID)
+	}
+	if isTownWorkerServeArgs(line, townRoot) || isTownWorkerServeArgs(line, townAbs) {
+		return true
+	}
+	fallback := process.CommandLine(p.PID)
+	return isTownWorkerServeArgs(fallback, townRoot) || isTownWorkerServeArgs(fallback, townAbs)
 }
 
 func canonicalTownRoot(townRoot string) string {
@@ -88,22 +99,44 @@ func isTownWorkerServeArgs(args, townRoot string) bool {
 		return false
 	}
 	fields := strings.Fields(args)
-	sawWorker := false
-	sawServe := false
 	for i, field := range fields {
-		base := filepath.Base(field)
-		switch {
-		case field == "worker" || base == "worker":
-			sawWorker = true
-		case sawWorker && (field == "serve" || base == "serve"):
-			sawServe = true
-		case field == "--town" && i+1 < len(fields) && sameTownPath(fields[i+1], townRoot):
-			return sawWorker && sawServe
-		case strings.HasPrefix(field, "--town=") && sameTownPath(strings.TrimPrefix(field, "--town="), townRoot):
-			return sawWorker && sawServe
+		if townArgumentMatches(fields, i, field, townRoot) {
+			return hasWorkerServePrefix(fields[:i])
 		}
 	}
 	return false
+}
+
+func townArgumentMatches(fields []string, index int, field, townRoot string) bool {
+	if field == "--town" {
+		return index+1 < len(fields) && sameTownPath(fields[index+1], townRoot)
+	}
+	if strings.HasPrefix(field, "--town=") {
+		return sameTownPath(strings.TrimPrefix(field, "--town="), townRoot)
+	}
+	return false
+}
+
+func hasWorkerServePrefix(fields []string) bool {
+	sawWorker := false
+	for _, field := range fields {
+		if isWorkerToken(field) {
+			sawWorker = true
+			continue
+		}
+		if sawWorker && isServeToken(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWorkerToken(field string) bool {
+	return field == "worker" || filepath.Base(field) == "worker"
+}
+
+func isServeToken(field string) bool {
+	return field == "serve" || filepath.Base(field) == "serve"
 }
 
 func sameTownPath(got, want string) bool {

@@ -11,83 +11,117 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	agentLogSession   string
-	agentLogWorkDir   string
-	agentLogAgentType string
-	agentLogSince     string
-	agentLogRunID     string
-)
-
-var agentLogCmd = &cobra.Command{
-	Use:    "agent-log",
-	Short:  "Stream agent conversation events to OTLP log endpoint (invoked by session lifecycle)",
-	Hidden: true,
-	RunE:   runAgentLog,
+type agentLogOptions struct {
+	session   string
+	workDir   string
+	agentType string
+	since     string
+	runID     string
 }
 
 func init() {
-	agentLogCmd.Flags().StringVar(&agentLogSession, "session", "", "Gas Town tmux session name (used as log tag)")
-	agentLogCmd.Flags().StringVar(&agentLogWorkDir, "work-dir", "", "Agent working directory (used to locate conversation log files)")
-	agentLogCmd.Flags().StringVar(&agentLogAgentType, "agent", "claudecode", "Agent type (claudecode, opencode)")
-	agentLogCmd.Flags().StringVar(&agentLogSince, "since", "", "Only watch JSONL files modified at or after this RFC3339 timestamp (filters out pre-existing Claude sessions)")
-	agentLogCmd.Flags().StringVar(&agentLogRunID, "run-id", "", "GASTA run identifier (GT_RUN); injected into every agent.event for waterfall correlation")
-	_ = agentLogCmd.MarkFlagRequired("session")
-	_ = agentLogCmd.MarkFlagRequired("work-dir")
-	rootCmd.AddCommand(agentLogCmd)
+	rootCmd.AddCommand(newAgentLogCommand())
 }
 
-func runAgentLog(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
-	// Inject run ID into context so every RecordAgentEvent call carries run.id.
-	// Falls back to GT_RUN env var when --run-id is not provided.
-	if agentLogRunID != "" {
-		ctx = telemetry.WithRunID(ctx, agentLogRunID)
-	} else if envRunID := os.Getenv("GT_RUN"); envRunID != "" {
-		ctx = telemetry.WithRunID(ctx, envRunID)
+func newAgentLogCommand() *cobra.Command {
+	opts := &agentLogOptions{agentType: "claudecode"}
+	cmd := &cobra.Command{
+		Use:    "agent-log",
+		Short:  "Stream agent conversation events to OTLP log endpoint (invoked by session lifecycle)",
+		Hidden: true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runAgentLog(opts)
+		},
 	}
+	cmd.Flags().StringVar(&opts.session, "session", "", "Gas Town tmux session name (used as log tag)")
+	cmd.Flags().StringVar(&opts.workDir, "work-dir", "", "Agent working directory (used to locate conversation log files)")
+	cmd.Flags().StringVar(&opts.agentType, "agent", opts.agentType, "Agent type (claudecode, opencode)")
+	cmd.Flags().StringVar(&opts.since, "since", "", "Only watch JSONL files modified at or after this RFC3339 timestamp (filters out pre-existing Claude sessions)")
+	cmd.Flags().StringVar(&opts.runID, "run-id", "", "GASTA run identifier (GT_RUN); injected into every agent.event for waterfall correlation")
+	_ = cmd.MarkFlagRequired("session")
+	_ = cmd.MarkFlagRequired("work-dir")
+	return cmd
+}
 
-	provider, err := telemetry.Init(ctx, "gastown", "")
+func runAgentLog(opts *agentLogOptions) error {
+	ctx := agentLogContext(opts)
+	provider := initAgentLogTelemetry(ctx)
+	defer shutdownAgentLogTelemetry(provider)
+
+	since, err := parseAgentLogSince(opts.since)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: telemetry init failed: %v\n", err)
-	}
-	if provider != nil {
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = provider.Shutdown(shutdownCtx)
-		}()
+		return err
 	}
 
-	// Parse --since timestamp. When provided by activateAgentLogging, this is
-	// approximately the GT session start time, ensuring we only watch Claude
-	// instances spawned by this Gas Town session (not pre-existing user sessions
-	// or other Gas Town rigs running in the same work dir).
-	var since time.Time
-	if agentLogSince != "" {
-		since, err = time.Parse(time.RFC3339, agentLogSince)
-		if err != nil {
-			return fmt.Errorf("parsing --since %q: %w", agentLogSince, err)
-		}
+	adapter, err := newAgentLogAdapter(opts.agentType)
+	if err != nil {
+		return err
 	}
 
-	adapter := agentlog.NewAdapter(agentLogAgentType)
-	if adapter == nil {
-		return fmt.Errorf("unknown agent type %q; supported: claudecode, opencode", agentLogAgentType)
-	}
-
-	ch, err := adapter.Watch(ctx, agentLogSession, agentLogWorkDir, since)
+	ch, err := adapter.Watch(ctx, opts.session, opts.workDir, since)
 	if err != nil {
 		return fmt.Errorf("starting watcher: %w", err)
 	}
 
 	for ev := range ch {
-		if ev.EventType == "usage" {
-			telemetry.RecordAgentTokenUsage(ctx, ev.SessionID, ev.NativeSessionID,
-				ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheCreationTokens)
-		} else {
-			telemetry.RecordAgentEvent(ctx, ev.SessionID, ev.AgentType, ev.EventType, ev.Role, ev.Content, ev.NativeSessionID, ev.Timestamp)
-		}
+		recordAgentLogEvent(ctx, ev)
 	}
 	return nil
+}
+
+func agentLogContext(opts *agentLogOptions) context.Context {
+	ctx := context.Background()
+	runID := opts.runID
+	if runID == "" {
+		runID = os.Getenv("GT_RUN")
+	}
+	if runID != "" {
+		ctx = telemetry.WithRunID(ctx, runID)
+	}
+	return ctx
+}
+
+func initAgentLogTelemetry(ctx context.Context) *telemetry.Provider {
+	provider, err := telemetry.Init(ctx, "gastown", "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: telemetry init failed: %v\n", err)
+	}
+	return provider
+}
+
+func shutdownAgentLogTelemetry(provider *telemetry.Provider) {
+	if provider == nil {
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = provider.Shutdown(shutdownCtx)
+}
+
+func parseAgentLogSince(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	since, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing --since %q: %w", raw, err)
+	}
+	return since, nil
+}
+
+func newAgentLogAdapter(agentType string) (agentlog.AgentAdapter, error) {
+	adapter := agentlog.NewAdapter(agentType)
+	if adapter == nil {
+		return nil, fmt.Errorf("unknown agent type %q; supported: claudecode, opencode", agentType)
+	}
+	return adapter, nil
+}
+
+func recordAgentLogEvent(ctx context.Context, ev agentlog.AgentEvent) {
+	if ev.EventType == "usage" {
+		telemetry.RecordAgentTokenUsage(ctx, ev.SessionID, ev.NativeSessionID,
+			ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheCreationTokens)
+		return
+	}
+	telemetry.RecordAgentEvent(ctx, ev.SessionID, ev.AgentType, ev.EventType, ev.Role, ev.Content, ev.NativeSessionID, ev.Timestamp)
 }

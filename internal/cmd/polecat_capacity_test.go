@@ -454,15 +454,15 @@ func TestStandaloneFormulaRigTargetAcquiresSingleAdmission(t *testing.T) {
 	oldAcquire := acquirePolecatAdmissionFn
 	oldSpawn := spawnPolecatForSling
 	oldFind := findHookedFormulaSingletonFn
-	oldDryRun, oldNoBoot := slingDryRun, slingNoBoot
+	oldDryRun, oldNoBoot := slingState().dryRun, slingState().noBoot
 	t.Cleanup(func() {
 		acquirePolecatAdmissionFn = oldAcquire
 		spawnPolecatForSling = oldSpawn
 		findHookedFormulaSingletonFn = oldFind
-		slingDryRun, slingNoBoot = oldDryRun, oldNoBoot
+		slingState().dryRun, slingState().noBoot = oldDryRun, oldNoBoot
 	})
-	slingDryRun = false
-	slingNoBoot = true
+	slingState().dryRun = false
+	slingState().noBoot = true
 	admissions := 0
 	acquirePolecatAdmissionFn = func(townRootArg, rigName, beadID, operation string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
 		admissions++
@@ -499,14 +499,14 @@ func TestStandaloneFormulaExistingPolecatNoopDoesNotRequireCapacity(t *testing.T
 	oldAcquire := acquirePolecatAdmissionFn
 	oldResolve := resolveTargetAgentFn
 	oldFind := findHookedFormulaSingletonFn
-	oldDryRun := slingDryRun
+	oldDryRun := slingState().dryRun
 	t.Cleanup(func() {
 		acquirePolecatAdmissionFn = oldAcquire
 		resolveTargetAgentFn = oldResolve
 		findHookedFormulaSingletonFn = oldFind
-		slingDryRun = oldDryRun
+		slingState().dryRun = oldDryRun
 	})
-	slingDryRun = false
+	slingState().dryRun = false
 	acquirePolecatAdmissionFn = func(townRootArg, rigName, beadID, operation string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
 		t.Fatalf("no-op existing formula should not acquire capacity, got (%q,%q,%q,%q)", townRootArg, rigName, beadID, operation)
 		return nil, polecatCapacitySnapshot{}, nil

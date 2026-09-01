@@ -128,14 +128,14 @@ func setupWaitIdleSendKeysFailure(t *testing.T, waitIdle time.Duration) (townRoo
 	t.Helper()
 	realTmux := tmuxtest.RealTmuxOrSkip(t)
 
-	origMode := nudgeModeFlag
-	origPriority := nudgePriorityFlag
+	origMode := nudgeState().mode
+	origPriority := nudgeState().priority
 	origWait := waitIdleTimeout
 	origWatch := idleWatcherTimeout
 	origInterval := idleWatcherPollInterval
 	t.Cleanup(func() {
-		nudgeModeFlag = origMode
-		nudgePriorityFlag = origPriority
+		nudgeState().mode = origMode
+		nudgeState().priority = origPriority
 		waitIdleTimeout = origWait
 		idleWatcherTimeout = origWatch
 		idleWatcherPollInterval = origInterval
@@ -155,8 +155,8 @@ func setupWaitIdleSendKeysFailure(t *testing.T, waitIdle time.Duration) (townRoo
 	stub := tmuxtest.InstallStub(t)
 	tm = tmux.NewTmuxWithSocketAndBinary(socket, stub)
 
-	nudgeModeFlag = NudgeModeWaitIdle
-	nudgePriorityFlag = nudge.PriorityNormal
+	nudgeState().mode = NudgeModeWaitIdle
+	nudgeState().priority = nudge.PriorityNormal
 	waitIdleTimeout = waitIdle
 	idleWatcherTimeout = 5 * time.Second
 	idleWatcherPollInterval = 800 * time.Millisecond

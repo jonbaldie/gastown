@@ -25,7 +25,7 @@ func TestStripOverlayInstructionFiles_RemovesAgentsOverlay(t *testing.T) {
 	}
 
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-		if _, err := g.ShowFile("HEAD", name); err == nil {
+		if _, err := git.ShowFile(g, "HEAD", name); err == nil {
 			t.Errorf("%s still present on HEAD after strip", name)
 		}
 	}
@@ -43,7 +43,7 @@ func TestStripOverlayInstructionFiles_RemovesLocalPair(t *testing.T) {
 		t.Fatal("expected local overlay pair to be stripped")
 	}
 	for _, name := range []string{"AGENTS.local.md", "CLAUDE.local.md"} {
-		if _, err := g.ShowFile("HEAD", name); err == nil {
+		if _, err := git.ShowFile(g, "HEAD", name); err == nil {
 			t.Errorf("%s still present on HEAD after strip", name)
 		}
 	}
@@ -67,7 +67,7 @@ func TestStripOverlayInstructionFiles_RestoresConstitution(t *testing.T) {
 	if !stripOverlayInstructionFiles(g, "main", "main") {
 		t.Fatal("expected constitution restore")
 	}
-	got, err := g.ShowFile("HEAD", "CLAUDE.md")
+	got, err := git.ShowFile(g, "HEAD", "CLAUDE.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestStripOverlayInstructionFiles_LeavesConstitutionAlone(t *testing.T) {
 	if stripOverlayInstructionFiles(g, "main", "main") {
 		t.Fatal("constitution-only branch should not create a strip commit")
 	}
-	got, err := g.ShowFile("HEAD", "CLAUDE.md")
+	got, err := git.ShowFile(g, "HEAD", "CLAUDE.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestStripOverlayInstructionFiles_LeavesNonOverlayLocalAgents(t *testing.T) 
 	if stripOverlayInstructionFiles(g, "main", "main") {
 		t.Fatal("non-overlay AGENTS.local.md should not be stripped")
 	}
-	got, err := g.ShowFile("HEAD", "AGENTS.local.md")
+	got, err := git.ShowFile(g, "HEAD", "AGENTS.local.md")
 	if err != nil {
 		t.Fatal(err)
 	}

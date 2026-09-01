@@ -3,18 +3,16 @@ package telemetry
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
 
-// resetInstruments resets the sync.Once so initInstruments re-runs against
-// the current (noop) global MeterProvider during tests.
+// resetInstruments keeps the recorder tests explicit about their lazy
+// instrument dependency. Instruments are process-lifetime state, so there is
+// nothing to reset between calls.
 func resetInstruments(t *testing.T) {
 	t.Helper()
-	instOnce = sync.Once{}
-	t.Cleanup(func() { instOnce = sync.Once{} })
 }
 
 // --- helper functions ---

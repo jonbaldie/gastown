@@ -15,50 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// MQ command flags
-var (
-	// Submit flags
-	mqSubmitBranch    string
-	mqSubmitIssue     string
-	mqSubmitEpic      string
-	mqSubmitPriority  int
-	mqSubmitNoCleanup bool
-	mqSubmitSkipDeps  bool
-	mqSubmitResubmit  bool
-
-	// Retry flags
-	mqRetryNow bool
-
-	// Reject flags
-	mqRejectReason string
-	mqRejectNotify bool
-	mqRejectStdin  bool // Read reason from stdin
-
-	// List command flags
-	mqListReady  bool
-	mqListStatus string
-	mqListWorker string
-	mqListEpic   string
-	mqListJSON   bool
-	mqListVerify bool
-
-	// Status command flags
-	mqStatusJSON bool
-
-	// Integration land flags
-	mqIntegrationLandForce     bool
-	mqIntegrationLandSkipTests bool
-	mqIntegrationLandDryRun    bool
-
-	// Integration status flags
-	mqIntegrationStatusJSON bool
-
-	// Integration create flags
-	mqIntegrationCreateBranch     string
-	mqIntegrationCreateBaseBranch string
-	mqIntegrationCreateForce      bool
-)
-
 var mqCmd = &cobra.Command{
 	Use:     "mq",
 	Aliases: []string{"mr"},
@@ -166,8 +122,6 @@ Examples:
 }
 
 // Post-merge flags
-var mqPostMergeSkipBranchDelete bool
-
 var mqPostMergeCmd = &cobra.Command{
 	Use:   "post-merge <rig> <mr-id>",
 	Short: "Run post-merge cleanup (close MR, delete branch)",
@@ -190,17 +144,17 @@ Examples:
 }
 
 type mqPostMergeManager interface {
-	FindMRForPostMerge(idOrBranch string) (*refinery.MergeRequest, error)
-	PostMergeMR(mr *refinery.MergeRequest) (*refinery.PostMergeResult, error)
+	FindMRForPostMerge(_ string) (*refinery.MergeRequest, error)
+	PostMergeMR(_ *refinery.MergeRequest) (*refinery.PostMergeResult, error)
 }
 
 type mqPostMergeGit interface {
-	VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error
-	PushRemoteBranchTip(remote, branch string) (string, error)
-	HasOpenPullRequest(ref git.PullRequestRef) bool
-	Rev(ref string) (string, error)
-	DeleteRemoteBranchIfAt(remote, branch, expectedHash string) error
-	DeleteBranch(branch string, force bool) error
+	VerifyPushedCommitReachableFromPushTarget(_, _, _ string) error
+	PushRemoteBranchTip(_, _ string) (string, error)
+	HasOpenPullRequest(_ git.PullRequestRef) bool
+	Rev(_ string) (string, error)
+	DeleteRemoteBranchIfAt(_, _, _ string) error
+	DeleteBranch(_ string, _ bool) error
 }
 
 type mqPostMergeBranchCleanup struct {
@@ -331,35 +285,35 @@ Example:
 
 func init() {
 	// Submit flags
-	mqSubmitCmd.Flags().StringVar(&mqSubmitBranch, "branch", "", "Source branch (default: current branch)")
-	mqSubmitCmd.Flags().StringVar(&mqSubmitIssue, "issue", "", "Source issue ID (default: parse from branch name)")
-	mqSubmitCmd.Flags().StringVar(&mqSubmitEpic, "epic", "", "Target epic's integration branch instead of main")
-	mqSubmitCmd.Flags().IntVarP(&mqSubmitPriority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
-	mqSubmitCmd.Flags().BoolVar(&mqSubmitNoCleanup, "no-cleanup", false, "Don't auto-cleanup after submit (for polecats)")
-	mqSubmitCmd.Flags().BoolVar(&mqSubmitSkipDeps, "skip-deps", false, "Skip molecule step dependency check")
-	mqSubmitCmd.Flags().BoolVar(&mqSubmitResubmit, "resubmit", false, "Resubmit after a fix (skips dependency check)")
+	mqSubmitCmd.Flags().String("branch", "", "Source branch (default: current branch)")
+	mqSubmitCmd.Flags().String("issue", "", "Source issue ID (default: parse from branch name)")
+	mqSubmitCmd.Flags().String("epic", "", "Target epic's integration branch instead of main")
+	mqSubmitCmd.Flags().IntP("priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
+	mqSubmitCmd.Flags().Bool("no-cleanup", false, "Don't auto-cleanup after submit (for polecats)")
+	mqSubmitCmd.Flags().Bool("skip-deps", false, "Skip molecule step dependency check")
+	mqSubmitCmd.Flags().Bool("resubmit", false, "Resubmit after a fix (skips dependency check)")
 
 	// Retry flags
-	mqRetryCmd.Flags().BoolVar(&mqRetryNow, "now", false, "Immediately process instead of waiting for refinery loop")
+	mqRetryCmd.Flags().Bool("now", false, "Immediately process instead of waiting for refinery loop")
 
 	// List flags
-	mqListCmd.Flags().BoolVar(&mqListReady, "ready", false, "Show only ready-to-merge (no blockers)")
-	mqListCmd.Flags().StringVar(&mqListStatus, "status", "", "Filter by status (open, in_progress, closed)")
-	mqListCmd.Flags().StringVar(&mqListWorker, "worker", "", "Filter by worker name")
-	mqListCmd.Flags().StringVar(&mqListEpic, "epic", "", "Show MRs targeting integration/<epic>")
-	mqListCmd.Flags().BoolVar(&mqListJSON, "json", false, "Output as JSON")
-	mqListCmd.Flags().BoolVar(&mqListVerify, "verify", false, "Verify branches exist in git (shows MISSING for deleted branches)")
+	mqListCmd.Flags().Bool("ready", false, "Show only ready-to-merge (no blockers)")
+	mqListCmd.Flags().String("status", "", "Filter by status (open, in_progress, closed)")
+	mqListCmd.Flags().String("worker", "", "Filter by worker name")
+	mqListCmd.Flags().String("epic", "", "Show MRs targeting integration/<epic>")
+	mqListCmd.Flags().Bool("json", false, "Output as JSON")
+	mqListCmd.Flags().Bool("verify", false, "Verify branches exist in git (shows MISSING for deleted branches)")
 
 	// Reject flags
-	mqRejectCmd.Flags().StringVarP(&mqRejectReason, "reason", "r", "", "Reason for rejection (required unless --stdin)")
-	mqRejectCmd.Flags().BoolVar(&mqRejectNotify, "notify", false, "Send mail notification to worker")
-	mqRejectCmd.Flags().BoolVar(&mqRejectStdin, "stdin", false, "Read reason from stdin (avoids shell quoting issues)")
+	mqRejectCmd.Flags().StringP("reason", "r", "", "Reason for rejection (required unless --stdin)")
+	mqRejectCmd.Flags().Bool("notify", false, "Send mail notification to worker")
+	mqRejectCmd.Flags().Bool("stdin", false, "Read reason from stdin (avoids shell quoting issues)")
 
 	// Status flags
-	mqStatusCmd.Flags().BoolVar(&mqStatusJSON, "json", false, "Output as JSON")
+	mqStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Post-merge flags
-	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeSkipBranchDelete, "skip-branch-delete", false, "Skip remote branch deletion")
+	mqPostMergeCmd.Flags().Bool("skip-branch-delete", false, "Skip remote branch deletion")
 
 	// Add subcommands
 	mqCmd.AddCommand(mqSubmitCmd)
@@ -370,19 +324,19 @@ func init() {
 	mqCmd.AddCommand(mqPostMergeCmd)
 
 	// Integration branch subcommands
-	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBranch, "branch", "", "Override branch name template (supports {title}, {epic}, {prefix}, {user})")
-	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBaseBranch, "base-branch", "", "Create integration branch from this branch instead of main")
-	mqIntegrationCreateCmd.Flags().BoolVar(&mqIntegrationCreateForce, "force", false, "Recreate integration branch even if one already exists")
+	mqIntegrationCreateCmd.Flags().String("branch", "", "Override branch name template (supports {title}, {epic}, {prefix}, {user})")
+	mqIntegrationCreateCmd.Flags().String("base-branch", "", "Create integration branch from this branch instead of main")
+	mqIntegrationCreateCmd.Flags().Bool("force", false, "Recreate integration branch even if one already exists")
 	mqIntegrationCmd.AddCommand(mqIntegrationCreateCmd)
 
 	// Integration land flags
-	mqIntegrationLandCmd.Flags().BoolVar(&mqIntegrationLandForce, "force", false, "Land even if some MRs still open")
-	mqIntegrationLandCmd.Flags().BoolVar(&mqIntegrationLandSkipTests, "skip-tests", false, "Skip test run")
-	mqIntegrationLandCmd.Flags().BoolVar(&mqIntegrationLandDryRun, "dry-run", false, "Preview only, make no changes")
+	mqIntegrationLandCmd.Flags().Bool("force", false, "Land even if some MRs still open")
+	mqIntegrationLandCmd.Flags().Bool("skip-tests", false, "Skip test run")
+	mqIntegrationLandCmd.Flags().Bool("dry-run", false, "Preview only, make no changes")
 	mqIntegrationCmd.AddCommand(mqIntegrationLandCmd)
 
 	// Integration status flags
-	mqIntegrationStatusCmd.Flags().BoolVar(&mqIntegrationStatusJSON, "json", false, "Output as JSON")
+	mqIntegrationStatusCmd.Flags().Bool("json", false, "Output as JSON")
 	mqIntegrationCmd.AddCommand(mqIntegrationStatusCmd)
 
 	mqCmd.AddCommand(mqIntegrationCmd)
@@ -393,39 +347,14 @@ func init() {
 // findCurrentRig determines the current rig from the working directory.
 // Returns the rig name and rig object, or an error if not in a rig.
 func findCurrentRig(townRoot string) (string, *rig.Rig, error) {
-	cwd, err := os.Getwd()
+	rigName, err := currentRigName(townRoot)
 	if err != nil {
-		return "", nil, fmt.Errorf("getting current directory: %w", err)
-	}
-
-	// Get relative path from town root to cwd
-	relPath, err := filepath.Rel(townRoot, cwd)
-	if err != nil {
-		return "", nil, fmt.Errorf("computing relative path: %w", err)
-	}
-
-	// The first component of the relative path should be the rig name
-	parts := strings.Split(relPath, string(filepath.Separator))
-	rigName := ""
-	if len(parts) > 0 && parts[0] != "" && parts[0] != "." {
-		rigName = parts[0]
-	}
-
-	// When gt is invoked via shell alias (cd ~/gt && gt), cwd is the town
-	// root and relPath is ".". Fall back to GT_RIG env var.
-	if rigName == "" {
-		rigName = os.Getenv("GT_RIG")
-	}
-	if rigName == "" {
-		return "", nil, fmt.Errorf("not inside a rig directory (and GT_RIG not set)")
+		return "", nil, err
 	}
 
 	// Load rig manager and get the rig
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err != nil {
-		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
-	}
+	rigsConfig := loadRigsConfig(rigsConfigPath)
 
 	g := git.NewGit(townRoot)
 	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
@@ -437,7 +366,61 @@ func findCurrentRig(townRoot string) (string, *rig.Rig, error) {
 	return rigName, r, nil
 }
 
+func currentRigName(townRoot string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+	relPath, err := filepath.Rel(townRoot, cwd)
+	if err != nil {
+		return "", fmt.Errorf("computing relative path: %w", err)
+	}
+
+	parts := strings.Split(relPath, string(filepath.Separator))
+	if len(parts) > 0 && parts[0] != "" && parts[0] != "." {
+		return parts[0], nil
+	}
+	if rigName := os.Getenv("GT_RIG"); rigName != "" {
+		return rigName, nil
+	}
+	return "", fmt.Errorf("not inside a rig directory (and GT_RIG not set)")
+}
+
+func loadRigsConfig(path string) *config.RigsConfig {
+	rigsConfig, err := config.LoadRigsConfig(path)
+	if err != nil {
+		return &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
+	}
+	return rigsConfig
+}
+
+func readMQBoolFlag(cmd *cobra.Command, name string) (bool, error) {
+	if cmd == nil {
+		return false, nil
+	}
+	value, err := cmd.Flags().GetBool(name)
+	if err != nil {
+		return false, fmt.Errorf("reading --%s: %w", name, err)
+	}
+	return value, nil
+}
+
+func readMQStringFlag(cmd *cobra.Command, name string) (string, error) {
+	if cmd == nil {
+		return "", nil
+	}
+	value, err := cmd.Flags().GetString(name)
+	if err != nil {
+		return "", fmt.Errorf("reading --%s: %w", name, err)
+	}
+	return value, nil
+}
+
 func runMQRetry(cmd *cobra.Command, args []string) error {
+	now, err := readMQBoolFlag(cmd, "now")
+	if err != nil {
+		return err
+	}
 	rigName := args[0]
 	mrID := args[1]
 
@@ -464,14 +447,14 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 	}
 
 	// Perform the retry
-	if err := mgr.Retry(mrID, mqRetryNow); err != nil {
+	if err := mgr.Retry(mrID, now); err != nil {
 		if err == refinery.ErrMRNotFailed {
 			return fmt.Errorf("merge request '%s' has not failed (status: %s)", mrID, mr.Status)
 		}
 		return fmt.Errorf("retrying merge request: %w", err)
 	}
 
-	if mqRetryNow {
+	if now {
 		fmt.Printf("%s Merge request processed\n", style.Bold.Render("✓"))
 	} else {
 		fmt.Printf("%s Merge request queued for retry\n", style.Bold.Render("✓"))
@@ -482,21 +465,9 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 }
 
 func runMQReject(cmd *cobra.Command, args []string) error {
-	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
-	if mqRejectStdin {
-		if mqRejectReason != "" {
-			return fmt.Errorf("cannot use --stdin with --reason/-r")
-		}
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return fmt.Errorf("reading stdin: %w", err)
-		}
-		mqRejectReason = strings.TrimRight(string(data), "\n")
-	}
-
-	// Require reason via --reason or --stdin
-	if mqRejectReason == "" {
-		return fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
+	reason, notify, err := readMQRejectOptions(cmd)
+	if err != nil {
+		return err
 	}
 
 	rigName := args[0]
@@ -507,27 +478,57 @@ func runMQReject(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	result, err := mgr.RejectMR(mrIDOrBranch, mqRejectReason, mqRejectNotify)
+	result, err := mgr.RejectMR(mrIDOrBranch, reason, notify)
 	if err != nil {
 		return fmt.Errorf("rejecting MR: %w", err)
 	}
 
 	fmt.Printf("%s Rejected: %s\n", style.Bold.Render("✗"), result.Branch)
 	fmt.Printf("  Worker: %s\n", result.Worker)
-	fmt.Printf("  Reason: %s\n", mqRejectReason)
+	fmt.Printf("  Reason: %s\n", reason)
 
 	if result.IssueID != "" {
 		fmt.Printf("  Issue:  %s %s\n", result.IssueID, style.Dim.Render("(not closed - work not done)"))
 	}
 
-	if mqRejectNotify {
+	if notify {
 		fmt.Printf("  %s\n", style.Dim.Render("Worker notified via mail"))
 	}
 
 	return nil
 }
 
-func runMQPostMerge(_ *cobra.Command, args []string) error {
+func readMQRejectOptions(cmd *cobra.Command) (string, bool, error) {
+	reason, err := readMQStringFlag(cmd, "reason")
+	if err != nil {
+		return "", false, err
+	}
+	notify, err := readMQBoolFlag(cmd, "notify")
+	if err != nil {
+		return "", false, err
+	}
+	stdin, err := readMQBoolFlag(cmd, "stdin")
+	if err != nil {
+		return "", false, err
+	}
+
+	if stdin {
+		if reason != "" {
+			return "", false, fmt.Errorf("cannot use --stdin with --reason/-r")
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", false, fmt.Errorf("reading stdin: %w", err)
+		}
+		reason = strings.TrimRight(string(data), "\n")
+	}
+	if reason == "" {
+		return "", false, fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
+	}
+	return reason, notify, nil
+}
+
+func runMQPostMerge(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
 
@@ -540,11 +541,22 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("post-merge proof: %w", err)
 	}
 
-	result, branchCleanup, err := runVerifiedMQPostMerge(mgr, r.Path, rigGit, mrID, mqPostMergeSkipBranchDelete)
+	skipBranchDelete := false
+	if cmd != nil {
+		skipBranchDelete, err = cmd.Flags().GetBool("skip-branch-delete")
+		if err != nil {
+			return fmt.Errorf("reading --skip-branch-delete: %w", err)
+		}
+	}
+	result, branchCleanup, err := runVerifiedMQPostMerge(mgr, r.Path, gitPostMergeAdapter{rigGit}, mrID, skipBranchDelete)
 	if err != nil {
 		return fmt.Errorf("post-merge cleanup: %w", err)
 	}
 
+	return printMQPostMergeResult(result, branchCleanup)
+}
+
+func printMQPostMergeResult(result *refinery.PostMergeResult, branchCleanup mqPostMergeBranchCleanup) error {
 	mr := result.MR
 	fmt.Printf("%s Post-merge: %s\n", style.Bold.Render("✓"), mr.ID)
 	fmt.Printf("  Branch: %s\n", mr.Branch)
@@ -559,6 +571,11 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 		fmt.Printf("  %s Source issue: %s %s\n", style.Dim.Render("○"), result.SourceIssueID, style.Dim.Render("(already closed or not found)"))
 	}
 
+	printMQPostMergeBranchCleanup(mr.Branch, branchCleanup)
+	return nil
+}
+
+func printMQPostMergeBranchCleanup(branch string, branchCleanup mqPostMergeBranchCleanup) {
 	if branchCleanup.NoBranch {
 		fmt.Printf("  %s No branch name in MR (skipping branch delete)\n", style.Dim.Render("○"))
 	} else if branchCleanup.Skipped {
@@ -566,18 +583,16 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 	} else if branchCleanup.Disabled {
 		fmt.Printf("  %s Branch delete disabled by config\n", style.Dim.Render("○"))
 	} else if branchCleanup.OpenPR {
-		fmt.Printf("  %s Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", style.Dim.Render("○"), mr.Branch)
+		fmt.Printf("  %s Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", style.Dim.Render("○"), branch)
 	} else if branchCleanup.AlreadyGone {
-		fmt.Printf("  %s Remote branch already absent: %s\n", style.Dim.Render("○"), mr.Branch)
+		fmt.Printf("  %s Remote branch already absent: %s\n", style.Dim.Render("○"), branch)
 	} else if branchCleanup.RemoteDeleted {
-		fmt.Printf("  %s Deleted remote branch: %s\n", style.Success.Render("✓"), mr.Branch)
+		fmt.Printf("  %s Deleted remote branch: %s\n", style.Success.Render("✓"), branch)
 	}
 
 	if branchCleanup.LocalDeleted {
-		fmt.Printf("  %s Deleted local branch: %s\n", style.Success.Render("✓"), mr.Branch)
+		fmt.Printf("  %s Deleted local branch: %s\n", style.Success.Render("✓"), branch)
 	}
-
-	return nil
 }
 
 func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPostMergeGit, mrID string, skipBranchDelete bool) (*refinery.PostMergeResult, mqPostMergeBranchCleanup, error) {
@@ -644,28 +659,37 @@ func cleanupMQPostMergeBranch(rigPath string, rigGit mqPostMergeGit, mr *refiner
 		return cleanup, fmt.Errorf("remote branch delete %s: missing submitted commit_sha", cleanup.Branch)
 	}
 
-	// Deleting a branch with an open PR causes GitHub to auto-close the PR as
-	// "closed" (not "merged"), destroying the PR audit trail. (gas-fk4)
-	if rigGit.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: cleanup.Branch, HeadSHA: expectedHead}) {
-		cleanup.OpenPR = true
-	} else {
-		remoteTip, err := rigGit.PushRemoteBranchTip("origin", cleanup.Branch)
-		if err != nil {
-			return cleanup, fmt.Errorf("remote branch delete %s: read remote branch tip: %w", cleanup.Branch, err)
-		}
-		if strings.TrimSpace(remoteTip) == "" {
-			cleanup.AlreadyGone = true
-		} else if err := rigGit.DeleteRemoteBranchIfAt("origin", cleanup.Branch, expectedHead); err != nil {
-			return cleanup, fmt.Errorf("remote branch delete %s at %s: %w", cleanup.Branch, expectedHead, err)
-		} else {
-			cleanup.RemoteDeleted = true
-		}
+	if err := applyMQPostMergeRemoteCleanup(rigGit, mr, &cleanup, expectedHead); err != nil {
+		return cleanup, err
 	}
 
 	if deleteMQPostMergeLocalBranchIfAt(rigGit, cleanup.Branch, expectedHead) {
 		cleanup.LocalDeleted = true
 	}
 	return cleanup, nil
+}
+
+func applyMQPostMergeRemoteCleanup(rigGit mqPostMergeGit, mr *refinery.MergeRequest, cleanup *mqPostMergeBranchCleanup, expectedHead string) error {
+	// Deleting a branch with an open PR causes GitHub to auto-close the PR as
+	// "closed" (not "merged"), destroying the PR audit trail. (gas-fk4)
+	if rigGit.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: cleanup.Branch, HeadSHA: expectedHead}) {
+		cleanup.OpenPR = true
+		return nil
+	}
+
+	remoteTip, err := rigGit.PushRemoteBranchTip("origin", cleanup.Branch)
+	if err != nil {
+		return fmt.Errorf("remote branch delete %s: read remote branch tip: %w", cleanup.Branch, err)
+	}
+	if strings.TrimSpace(remoteTip) == "" {
+		cleanup.AlreadyGone = true
+		return nil
+	}
+	if err := rigGit.DeleteRemoteBranchIfAt("origin", cleanup.Branch, expectedHead); err != nil {
+		return fmt.Errorf("remote branch delete %s at %s: %w", cleanup.Branch, expectedHead, err)
+	}
+	cleanup.RemoteDeleted = true
+	return nil
 }
 
 func deleteMQPostMergeLocalBranchIfAt(rigGit mqPostMergeGit, branch, expectedHead string) bool {
@@ -682,5 +706,5 @@ func mqDeleteMergedBranchesEnabled(rigPath string) bool {
 	if err != nil || settings.MergeQueue == nil {
 		return true
 	}
-	return settings.MergeQueue.IsDeleteMergedBranchesEnabled()
+	return config.IsDeleteMergedBranchesEnabled(settings.MergeQueue)
 }

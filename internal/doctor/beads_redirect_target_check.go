@@ -43,8 +43,6 @@ func NewBeadsRedirectTargetCheck() *BeadsRedirectTargetCheck {
 
 // Run checks all worktree redirect files to verify their targets exist and are valid.
 func (c *BeadsRedirectTargetCheck) Run(ctx *CheckContext) *CheckResult {
-	var broken []brokenTarget
-
 	rigDirs, err := findRigDirs(ctx.TownRoot)
 	if err != nil {
 		return &CheckResult{
@@ -54,82 +52,7 @@ func (c *BeadsRedirectTargetCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	for _, rigDir := range rigDirs {
-		worktrees := getWorktreePaths(rigDir)
-		for _, wt := range worktrees {
-			if !dirExists(wt) {
-				continue
-			}
-
-			redirectFile := filepath.Join(wt, ".beads", "redirect")
-			data, err := os.ReadFile(redirectFile)
-			if err != nil {
-				// No redirect file — not our concern (StaleBeadsRedirectCheck handles missing redirects)
-				continue
-			}
-
-			target := strings.TrimSpace(string(data))
-			if target == "" {
-				continue
-			}
-
-			// Resolve the target path relative to the worktree.
-			// Absolute paths are used as-is (same logic as beads.ResolveBeadsDir).
-			var resolved string
-			if filepath.IsAbs(target) {
-				resolved = filepath.Clean(target)
-			} else {
-				resolved = filepath.Clean(filepath.Join(wt, target))
-			}
-
-			// Check 1: Does the target directory exist?
-			info, err := os.Stat(resolved)
-			if os.IsNotExist(err) {
-				relWt, _ := filepath.Rel(ctx.TownRoot, wt)
-				broken = append(broken, brokenTarget{
-					worktreePath: wt,
-					target:       target,
-					resolvedPath: resolved,
-					reason:       fmt.Sprintf("target does not exist: %s", relWt),
-				})
-				continue
-			}
-			if err != nil {
-				relWt, _ := filepath.Rel(ctx.TownRoot, wt)
-				broken = append(broken, brokenTarget{
-					worktreePath: wt,
-					target:       target,
-					resolvedPath: resolved,
-					reason:       fmt.Sprintf("target not accessible: %s (%v)", relWt, err),
-				})
-				continue
-			}
-
-			// Check 2: Is it a directory?
-			if !info.IsDir() {
-				relWt, _ := filepath.Rel(ctx.TownRoot, wt)
-				broken = append(broken, brokenTarget{
-					worktreePath: wt,
-					target:       target,
-					resolvedPath: resolved,
-					reason:       fmt.Sprintf("target is not a directory: %s", relWt),
-				})
-				continue
-			}
-
-			// Check 3: Does the target have a working beads setup?
-			// A valid beads directory should have at least one of: dolt/, redirect, config.yaml
-			if !hasBeadsSetup(resolved) {
-				relWt, _ := filepath.Rel(ctx.TownRoot, wt)
-				broken = append(broken, brokenTarget{
-					worktreePath: wt,
-					target:       target,
-					resolvedPath: resolved,
-					reason:       fmt.Sprintf("target has no beads setup: %s", relWt),
-				})
-			}
-		}
-	}
+	broken := findBrokenRedirectTargets(ctx.TownRoot, rigDirs)
 
 	c.brokenTargets = broken
 
@@ -141,20 +64,76 @@ func (c *BeadsRedirectTargetCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	var details []string
-	for _, bt := range broken {
-		relWt, _ := filepath.Rel(ctx.TownRoot, bt.worktreePath)
-		relTarget, _ := filepath.Rel(ctx.TownRoot, bt.resolvedPath)
-		details = append(details, fmt.Sprintf("%s → %s (%s)", relWt, relTarget, bt.reason))
-	}
-
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusWarning,
 		Message: fmt.Sprintf("%d broken redirect target(s)", len(broken)),
-		Details: details,
+		Details: brokenRedirectDetails(ctx.TownRoot, broken),
 		FixHint: "Run 'gt doctor --fix' to repair redirects, or 'bd init' to initialize beads",
 	}
+}
+
+func findBrokenRedirectTargets(townRoot string, rigDirs []string) []brokenTarget {
+	var broken []brokenTarget
+	for _, rigDir := range rigDirs {
+		for _, worktreePath := range getWorktreePaths(rigDir) {
+			if target, ok := inspectRedirectTarget(townRoot, worktreePath); ok {
+				broken = append(broken, target)
+			}
+		}
+	}
+	return broken
+}
+
+func inspectRedirectTarget(townRoot, worktreePath string) (brokenTarget, bool) {
+	if !dirExists(worktreePath) {
+		return brokenTarget{}, false
+	}
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".beads", "redirect"))
+	if err != nil {
+		// No redirect file — not our concern (StaleBeadsRedirectCheck handles missing redirects).
+		return brokenTarget{}, false
+	}
+	target := strings.TrimSpace(string(data))
+	if target == "" {
+		return brokenTarget{}, false
+	}
+	resolved := resolveRedirectTarget(worktreePath, target)
+	return brokenRedirectTarget(townRoot, worktreePath, target, resolved)
+}
+
+func resolveRedirectTarget(worktreePath, target string) string {
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target)
+	}
+	return filepath.Clean(filepath.Join(worktreePath, target))
+}
+
+func brokenRedirectTarget(townRoot, worktreePath, target, resolved string) (brokenTarget, bool) {
+	relWorktree, _ := filepath.Rel(townRoot, worktreePath)
+	info, err := os.Stat(resolved)
+	switch {
+	case os.IsNotExist(err):
+		return brokenTarget{worktreePath: worktreePath, target: target, resolvedPath: resolved, reason: fmt.Sprintf("target does not exist: %s", relWorktree)}, true
+	case err != nil:
+		return brokenTarget{worktreePath: worktreePath, target: target, resolvedPath: resolved, reason: fmt.Sprintf("target not accessible: %s (%v)", relWorktree, err)}, true
+	case !info.IsDir():
+		return brokenTarget{worktreePath: worktreePath, target: target, resolvedPath: resolved, reason: fmt.Sprintf("target is not a directory: %s", relWorktree)}, true
+	case !hasBeadsSetup(resolved):
+		return brokenTarget{worktreePath: worktreePath, target: target, resolvedPath: resolved, reason: fmt.Sprintf("target has no beads setup: %s", relWorktree)}, true
+	default:
+		return brokenTarget{}, false
+	}
+}
+
+func brokenRedirectDetails(townRoot string, broken []brokenTarget) []string {
+	details := make([]string, 0, len(broken))
+	for _, target := range broken {
+		relWorktree, _ := filepath.Rel(townRoot, target.worktreePath)
+		relTarget, _ := filepath.Rel(townRoot, target.resolvedPath)
+		details = append(details, fmt.Sprintf("%s → %s (%s)", relWorktree, relTarget, target.reason))
+	}
+	return details
 }
 
 // Fix attempts to repair broken redirect targets by recomputing redirects.
@@ -166,55 +145,13 @@ func (c *BeadsRedirectTargetCheck) Run(ctx *CheckContext) *CheckResult {
 func (c *BeadsRedirectTargetCheck) Fix(ctx *CheckContext) error {
 	var unfixable []string
 
-	for _, bt := range c.brokenTargets {
-		// If the redirect target directory exists but lacks beads setup,
-		// try to create config.yaml from metadata.json before giving up.
-		// This handles the case where gt rig add partially completed: the
-		// dolt database and metadata.json exist but config.yaml was never
-		// written (e.g., due to a crash or interrupted setup).
-		if strings.Contains(bt.reason, "no beads setup") && dirExists(bt.resolvedPath) {
-			rigName := extractRigName(ctx.TownRoot, bt.worktreePath)
-			if err := beads.EnsureConfigYAMLFromMetadataIfMissing(bt.resolvedPath, rigName); err != nil {
-				log.Printf("[doctor] beads-redirect-target: could not create config.yaml from metadata in %s: %v", bt.resolvedPath, err)
-			} else if hasBeadsSetup(bt.resolvedPath) {
-				continue // Fixed — config.yaml created successfully
+	for _, target := range c.brokenTargets {
+		if err := fixBrokenRedirectTarget(ctx, target); err != nil {
+			relWorktree, _ := filepath.Rel(ctx.TownRoot, target.worktreePath)
+			if relWorktree == "." || relWorktree == "" {
+				relWorktree = target.worktreePath
 			}
-		}
-
-		// Check if the rig's canonical beads location exists
-		relPath, err := filepath.Rel(ctx.TownRoot, bt.worktreePath)
-		if err != nil {
-			unfixable = append(unfixable, bt.worktreePath)
-			continue
-		}
-		parts := strings.Split(filepath.ToSlash(relPath), "/")
-		if len(parts) < 2 {
-			unfixable = append(unfixable, bt.worktreePath)
-			continue
-		}
-
-		rigRoot := filepath.Join(ctx.TownRoot, parts[0])
-		rigBeads := filepath.Join(rigRoot, ".beads")
-		mayorBeads := filepath.Join(rigRoot, "mayor", "rig", ".beads")
-
-		// Check if either canonical location exists and has beads
-		canonicalExists := false
-		if hasBeadsSetup(rigBeads) {
-			canonicalExists = true
-		} else if hasBeadsSetup(mayorBeads) {
-			canonicalExists = true
-		}
-
-		if !canonicalExists {
-			relWt, _ := filepath.Rel(ctx.TownRoot, bt.worktreePath)
-			unfixable = append(unfixable, relWt)
-			continue
-		}
-
-		// Canonical location exists — recompute and rewrite the redirect
-		if err := recomputeRedirect(ctx.TownRoot, bt.worktreePath); err != nil {
-			relWt, _ := filepath.Rel(ctx.TownRoot, bt.worktreePath)
-			unfixable = append(unfixable, relWt)
+			unfixable = append(unfixable, relWorktree)
 		}
 	}
 
@@ -224,6 +161,41 @@ func (c *BeadsRedirectTargetCheck) Fix(ctx *CheckContext) error {
 	}
 
 	return nil
+}
+
+func fixBrokenRedirectTarget(ctx *CheckContext, target brokenTarget) error {
+	// If the redirect target directory exists but lacks beads setup, try to create
+	// config.yaml from metadata.json before recomputing the redirect.
+	if strings.Contains(target.reason, "no beads setup") && dirExists(target.resolvedPath) {
+		rigName := extractRigName(ctx.TownRoot, target.worktreePath)
+		if err := beads.EnsureConfigYAMLFromMetadataIfMissing(target.resolvedPath, rigName); err != nil {
+			log.Printf("[doctor] beads-redirect-target: could not create config.yaml from metadata in %s: %v", target.resolvedPath, err)
+		} else if hasBeadsSetup(target.resolvedPath) {
+			return nil
+		}
+	}
+
+	rigBeads, mayorBeads, ok := canonicalBeadsPaths(ctx.TownRoot, target.worktreePath)
+	if !ok {
+		return fmt.Errorf("invalid worktree path")
+	}
+	if !hasBeadsSetup(rigBeads) && !hasBeadsSetup(mayorBeads) {
+		return fmt.Errorf("no canonical beads found")
+	}
+	return recomputeRedirect(ctx.TownRoot, target.worktreePath)
+}
+
+func canonicalBeadsPaths(townRoot, worktreePath string) (string, string, bool) {
+	relPath, err := filepath.Rel(townRoot, worktreePath)
+	if err != nil {
+		return "", "", false
+	}
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	rigRoot := filepath.Join(townRoot, parts[0])
+	return filepath.Join(rigRoot, ".beads"), filepath.Join(rigRoot, "mayor", "rig", ".beads"), true
 }
 
 // extractRigName derives the rig name from a worktree path within a town.

@@ -120,7 +120,7 @@ while True:
 	}
 
 	tm := tmux.NewTmuxWithSocket("gt-fix-shutdown-dolt")
-	if err := runImmediateShutdown(tm, nil, townRoot); err != nil {
+	if err := runImmediateShutdown(tm, nil, townRoot, shutdownOptions{}); err != nil {
 		t.Fatalf("runImmediateShutdown: %v", err)
 	}
 
@@ -251,7 +251,7 @@ func TestImmediateShutdownKillsLatePolecatSession(t *testing.T) {
 		_ = tm.NewSession(late, "")
 	}()
 
-	if err := runImmediateShutdown(tm, []string{early}, t.TempDir()); err != nil {
+	if err := runImmediateShutdown(tm, []string{early}, t.TempDir(), shutdownOptions{}); err != nil {
 		t.Fatalf("runImmediateShutdown: %v", err)
 	}
 
@@ -291,11 +291,7 @@ func TestShutdownDoesNotClaimIdleWhenSessionsExist(t *testing.T) {
 		}
 	}
 
-	oldYes, oldForce := shutdownYes, shutdownForce
-	shutdownYes, shutdownForce = true, true
-	t.Cleanup(func() {
-		shutdownYes, shutdownForce = oldYes, oldForce
-	})
+	forceShutdownConfirmation(t)
 
 	out := captureStdout(t, func() {
 		if err := runShutdown(shutdownCmd, nil); err != nil {
@@ -377,11 +373,7 @@ while True:
 		t.Fatalf("InitRegistry: %v", err)
 	}
 
-	oldYes, oldForce := shutdownYes, shutdownForce
-	shutdownYes, shutdownForce = true, true
-	t.Cleanup(func() {
-		shutdownYes, shutdownForce = oldYes, oldForce
-	})
+	forceShutdownConfirmation(t)
 
 	out := captureStdout(t, func() {
 		if err := runShutdown(shutdownCmd, nil); err != nil {
@@ -398,4 +390,21 @@ while True:
 	if running {
 		t.Fatal("shutdown left town Dolt running")
 	}
+}
+
+func forceShutdownConfirmation(t *testing.T) {
+	t.Helper()
+	flags := shutdownCmd.Flags()
+	oldYes, _ := flags.GetBool("yes")
+	oldForce, _ := flags.GetBool("force")
+	if err := flags.Set("yes", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := flags.Set("force", "true"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = flags.Set("yes", strconv.FormatBool(oldYes))
+		_ = flags.Set("force", strconv.FormatBool(oldForce))
+	})
 }

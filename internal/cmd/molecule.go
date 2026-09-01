@@ -1,16 +1,25 @@
 package cmd
 
 import (
+	"sync"
+
 	"github.com/spf13/cobra"
 )
 
-// Molecule command flags
-var (
-	moleculeJSON      bool
-	moleculeJitter    string // jitter duration for squash (e.g. "10s")
-	moleculeSummary   string // optional summary for squash digest
-	moleculeNoDigest  bool   // skip digest bead creation on squash
-)
+type moleculeCommandState struct {
+	json     bool
+	jitter   string // jitter duration for squash (e.g. "10s")
+	summary  string // optional summary for squash digest
+	noDigest bool   // skip digest bead creation on squash
+}
+
+var moleculeCommandStateInstance = sync.OnceValue(func() *moleculeCommandState {
+	return &moleculeCommandState{}
+})
+
+func moleculeState() *moleculeCommandState {
+	return moleculeCommandStateInstance()
+}
 
 var moleculeCmd = &cobra.Command{
 	Use:         "mol",
@@ -42,7 +51,6 @@ TO DISPATCH WORK (with molecules):
   gt sling mol-xxx target   # Pour formula + sling to agent
   gt formulas               # List available formulas`,
 }
-
 
 var moleculeProgressCmd = &cobra.Command{
 	Use:   "progress <root-issue-id>",
@@ -175,7 +183,6 @@ Examples:
 	RunE: runMoleculeCurrent,
 }
 
-
 var moleculeBurnCmd = &cobra.Command{
 	Use:   "burn [target]",
 	Short: "Burn current molecule without creating a digest",
@@ -227,28 +234,29 @@ IMPORTANT: Always use 'gt mol step done' to complete steps. Do not manually
 close steps with 'bd close' - that skips the auto-continuation logic.`,
 }
 
-
 func init() {
+	state := moleculeState()
+
 	// Progress flags
-	moleculeProgressCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	moleculeProgressCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
 	// Attachment flags
-	moleculeAttachmentCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	moleculeAttachmentCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
 	// Status flags
-	moleculeStatusCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	moleculeStatusCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
 	// Current flags
-	moleculeCurrentCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	moleculeCurrentCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
 	// Burn flags
-	moleculeBurnCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
+	moleculeBurnCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
 
 	// Squash flags
-	moleculeSquashCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
-	moleculeSquashCmd.Flags().StringVar(&moleculeJitter, "jitter", "", "Sleep a random duration from 0 to this value before squashing (e.g. '10s') to reduce concurrent Dolt lock contention")
-	moleculeSquashCmd.Flags().StringVar(&moleculeSummary, "summary", "", "Optional summary for the squash digest (e.g. patrol observations)")
-	moleculeSquashCmd.Flags().BoolVar(&moleculeNoDigest, "no-digest", false, "Skip digest bead creation (for patrol molecules that run frequently)")
+	moleculeSquashCmd.Flags().BoolVar(&state.json, "json", false, "Output as JSON")
+	moleculeSquashCmd.Flags().StringVar(&state.jitter, "jitter", "", "Sleep a random duration from 0 to this value before squashing (e.g. '10s') to reduce concurrent Dolt lock contention")
+	moleculeSquashCmd.Flags().StringVar(&state.summary, "summary", "", "Optional summary for the squash digest (e.g. patrol observations)")
+	moleculeSquashCmd.Flags().BoolVar(&state.noDigest, "no-digest", false, "Skip digest bead creation (for patrol molecules that run frequently)")
 
 	// Add step subcommand with its children
 	moleculeStepCmd.AddCommand(moleculeStepDoneCmd)

@@ -8,7 +8,7 @@ import (
 // an interface so tests can drive the decision logic without standing up a full
 // git repo for every gating case.
 type rebaseGit interface {
-	Rebase(onto string) error
+	Rebase(_ string) error
 	AbortRebase() error
 }
 

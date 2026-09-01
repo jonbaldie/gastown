@@ -23,10 +23,6 @@ import (
 // with many rigs.
 const maxConcurrentWorkingChecks = 8
 
-var (
-	statusLineSession string
-)
-
 var statusLineCmd = &cobra.Command{
 	Use:   "status-line",
 	Short: "Output status line content for tmux (internal use)",
@@ -41,83 +37,95 @@ to specify which tmux session to query.`,
 
 func init() {
 	rootCmd.AddCommand(statusLineCmd)
-	statusLineCmd.Flags().StringVar(&statusLineSession, "session", "", "Tmux session name")
+	statusLineCmd.Flags().String("session", "", "Tmux session name")
 }
 
-func runStatusLine(cmd *cobra.Command, args []string) error {
-	// Check E-stop first — prepend red indicator if active
-	if townRoot, twErr := workspace.FindFromCwd(); twErr == nil {
-		showEstop := false
-		var info *estop.Info
-		if estop.IsActive(townRoot) {
-			showEstop = true
-			info = estop.Read(townRoot)
-		} else {
-			// Check per-rig E-stop
-			rigEnv := os.Getenv("GT_RIG")
-			if rigEnv != "" && estop.IsRigActive(townRoot, rigEnv) {
-				showEstop = true
-				info = estop.ReadRig(townRoot, rigEnv)
-			}
-		}
-		if showEstop {
-			ts := ""
-			if info != nil && !info.Timestamp.IsZero() {
-				ts = info.Timestamp.Format("15:04")
-			}
-			fmt.Printf("#[bg=red,fg=white,bold] ESTOP %s #[default] ", ts)
-		}
-	}
+func runStatusLine(cmd *cobra.Command, _ []string) error {
+	sessionName := commandStringFlag(cmd, "session")
+	printStatusLineEstop()
 
 	t := tmux.NewTmux()
+	env := readStatusLineEnvironment(t, sessionName)
+	return dispatchStatusLine(t, sessionName, env)
+}
 
-	// Get session environment
-	var rigName, polecat, crew, issue, role string
+type statusLineEnvironment struct {
+	rigName string
+	polecat string
+	crew    string
+	issue   string
+	role    string
+}
 
-	if statusLineSession != "" {
-		// Fetch the session environment in one tmux call. Missing variables are
-		// intentionally left empty and handled gracefully below.
-		env, _ := t.GetAllEnvironment(statusLineSession)
-		rigName = env["GT_RIG"]
-		polecat = env["GT_POLECAT"]
-		crew = env["GT_CREW"]
-		issue = env["GT_ISSUE"]
-		role = env["GT_ROLE"]
-	} else {
-		// Fallback to process environment
-		rigName = os.Getenv("GT_RIG")
-		polecat = os.Getenv("GT_POLECAT")
-		crew = os.Getenv("GT_CREW")
-		issue = os.Getenv("GT_ISSUE")
-		role = os.Getenv("GT_ROLE")
+func printStatusLineEstop() {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return
 	}
 
-	// Get session names for comparison
-	mayorSession := getMayorSessionName()
-	deaconSession := getDeaconSessionName()
+	showEstop := false
+	var info *estop.Info
+	if estop.IsActive(townRoot) {
+		showEstop = true
+		info = estop.Read(townRoot)
+	} else {
+		rigEnv := os.Getenv("GT_RIG")
+		if rigEnv != "" && estop.IsRigActive(townRoot, rigEnv) {
+			showEstop = true
+			info = estop.ReadRig(townRoot, rigEnv)
+		}
+	}
+	if !showEstop {
+		return
+	}
 
-	// Determine identity and output based on role
-	if role == "mayor" || statusLineSession == mayorSession {
+	ts := ""
+	if info != nil && !info.Timestamp.IsZero() {
+		ts = info.Timestamp.Format("15:04")
+	}
+	fmt.Printf("#[bg=red,fg=white,bold] ESTOP %s #[default] ", ts)
+}
+
+func readStatusLineEnvironment(t *tmux.Tmux, sessionName string) statusLineEnvironment {
+	if sessionName != "" {
+		// Fetch the session environment in one tmux call. Missing variables are
+		// intentionally left empty and handled gracefully below.
+		env, _ := t.GetAllEnvironment(sessionName)
+		return statusLineEnvironment{
+			rigName: env["GT_RIG"],
+			polecat: env["GT_POLECAT"],
+			crew:    env["GT_CREW"],
+			issue:   env["GT_ISSUE"],
+			role:    env["GT_ROLE"],
+		}
+	}
+	return statusLineEnvironment{
+		rigName: os.Getenv("GT_RIG"),
+		polecat: os.Getenv("GT_POLECAT"),
+		crew:    os.Getenv("GT_CREW"),
+		issue:   os.Getenv("GT_ISSUE"),
+		role:    os.Getenv("GT_ROLE"),
+	}
+}
+
+func dispatchStatusLine(t *tmux.Tmux, sessionName string, env statusLineEnvironment) error {
+	if env.role == "mayor" || sessionName == getMayorSessionName() {
 		return runMayorStatusLine(t)
 	}
 
-	// Deacon status line
-	if role == "deacon" || statusLineSession == deaconSession {
+	if env.role == "deacon" || sessionName == getDeaconSessionName() {
 		return runDeaconStatusLine(t)
 	}
 
-	// Witness status line (session naming: gt-<rig>-witness)
-	if role == "witness" || strings.HasSuffix(statusLineSession, "-witness") {
-		return runWitnessStatusLine(t, rigName)
+	if env.role == "witness" || strings.HasSuffix(sessionName, "-witness") {
+		return runWitnessStatusLine(t, env.rigName, sessionName)
 	}
 
-	// Refinery status line
-	if role == "refinery" || strings.HasSuffix(statusLineSession, "-refinery") {
-		return runRefineryStatusLine(rigName)
+	if env.role == "refinery" || strings.HasSuffix(sessionName, "-refinery") {
+		return runRefineryStatusLine(env.rigName, sessionName)
 	}
 
-	// Crew/Polecat status line
-	return runWorkerStatusLine(polecat, crew, issue)
+	return runWorkerStatusLine(env.polecat, env.crew, env.issue)
 }
 
 // runWorkerStatusLine outputs status for crew or polecat sessions.
@@ -151,114 +159,116 @@ func runWorkerStatusLine(polecat, crew, issue string) error {
 	return nil
 }
 
+type mayorRigStatus struct {
+	hasWitness  bool
+	hasRefinery bool
+	opState     string // "OPERATIONAL", "PARKED", or "DOCKED"
+}
+
+type mayorAgentHealth struct {
+	total   int
+	working int
+}
+
+type mayorPendingCheck struct {
+	session string
+	health  *mayorAgentHealth
+}
+
+type mayorRigInfo struct {
+	name   string
+	status *mayorRigStatus
+}
+
 func runMayorStatusLine(t *tmux.Tmux) error {
-	// Count active sessions by listing tmux sessions
 	sessions, err := t.ListSessions()
 	if err != nil {
 		return nil // Silent fail
 	}
 
-	// Get town root from mayor pane's working directory
-	var townRoot string
 	mayorSession := getMayorSessionName()
-	paneDir, err := t.GetPaneWorkDir(mayorSession)
-	if err == nil && paneDir != "" {
-		townRoot, _ = workspace.Find(paneDir)
+	townRoot := statusLineTownRoot(t, mayorSession)
+	registeredRigs := registeredStatusLineRigs(townRoot)
+	rigStatuses, healthByType, hasDeacon, pending := collectMayorStatus(sessions, registeredRigs)
+	checkMayorWorkingSessions(t, pending)
+	for _, status := range rigStatuses {
+		// Status-line is a tmux hot path. Do not query beads for dock/park state here;
+		// `gt rig list/status` remains the authoritative live status view.
+		status.opState = "OPERATIONAL"
 	}
 
-	// Load registered rigs to validate against
-	registeredRigs := make(map[string]bool)
-	if townRoot != "" {
-		rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-		if rigsConfig, err := config.LoadRigsConfig(rigsConfigPath); err == nil {
-			for rigName := range rigsConfig.Rigs {
-				registeredRigs[rigName] = true
-			}
-		}
+	parts := buildMayorAgentParts(healthByType, hasDeacon)
+	rigs := buildMayorRigInfos(rigStatuses)
+	sortMayorRigInfos(rigs)
+	rigParts := renderMayorRigParts(rigs, townRoot)
+	if len(rigParts) > 0 {
+		parts = append(parts, strings.Join(rigParts, " "))
 	}
 
-	// Track per-rig status for LED indicators and sorting
-	type rigStatus struct {
-		hasWitness  bool
-		hasRefinery bool
-		opState     string // "OPERATIONAL", "PARKED", or "DOCKED"
-	}
-	rigStatuses := make(map[string]*rigStatus)
+	fmt.Print(strings.Join(parts, " | ") + " |")
+	return nil
+}
 
-	// Initialize for all registered rigs
+func collectMayorStatus(sessions []string, registeredRigs map[string]bool) (map[string]*mayorRigStatus, map[AgentType]*mayorAgentHealth, bool, []mayorPendingCheck) {
+	rigStatuses := make(map[string]*mayorRigStatus, len(registeredRigs))
 	for rigName := range registeredRigs {
-		rigStatuses[rigName] = &rigStatus{}
+		rigStatuses[rigName] = &mayorRigStatus{}
 	}
-
-	// Track per-agent-type health (working/zombie counts)
-	type agentHealth struct {
-		total   int
-		working int
-	}
-	healthByType := map[AgentType]*agentHealth{
+	healthByType := map[AgentType]*mayorAgentHealth{
 		AgentWitness:  {},
 		AgentRefinery: {},
 	}
-
-	// Track deacon presence (just icon, no count)
+	var pending []mayorPendingCheck
 	hasDeacon := false
-
-	// First pass: categorize sessions and build rig status. This is cheap
-	// (no subprocesses) so it stays a single sequential pass; only the
-	// working-state check below needs to fan out.
-	type pendingCheck struct {
-		session string
-		health  *agentHealth
-	}
-	var pending []pendingCheck
 
 	for _, s := range sessions {
 		agent := categorizeSession(s)
 		if agent == nil {
 			continue
 		}
-
-		// Track rig-level status (witness/refinery presence)
-		// Polecats are not tracked in tmux - they're a GC concern, not a display concern
-		if agent.Rig != "" && registeredRigs[agent.Rig] {
-			if rigStatuses[agent.Rig] == nil {
-				rigStatuses[agent.Rig] = &rigStatus{}
-			}
-			switch agent.Type {
-			case AgentWitness:
-				rigStatuses[agent.Rig].hasWitness = true
-			case AgentRefinery:
-				rigStatuses[agent.Rig].hasRefinery = true
-			}
-		}
-
-		// Track agent health (skip Mayor and Crew)
-		if health := healthByType[agent.Type]; health != nil {
-			health.total++
-			pending = append(pending, pendingCheck{session: s, health: health})
-		}
-
-		// Track deacon presence (just the icon, no count)
-		if agent.Type == AgentDeacon {
+		if recordMayorSession(s, agent, registeredRigs, rigStatuses, healthByType, &pending) {
 			hasDeacon = true
 		}
 	}
+	return rigStatuses, healthByType, hasDeacon, pending
+}
 
-	// Second pass: detect working state (✻ symbol) concurrently. Each check
-	// is an independent `tmux capture-pane` subprocess call; run serially
-	// this scales status-line latency linearly with agent count, which is
-	// directly visible as tmux status-bar redraw lag on towns with many rigs.
+func recordMayorSession(s string, agent *AgentSession, registeredRigs map[string]bool, rigStatuses map[string]*mayorRigStatus, healthByType map[AgentType]*mayorAgentHealth, pending *[]mayorPendingCheck) bool {
+	if agent.Rig != "" && registeredRigs[agent.Rig] {
+		status := rigStatuses[agent.Rig]
+		if status == nil {
+			status = &mayorRigStatus{}
+			rigStatuses[agent.Rig] = status
+		}
+		setMayorRigAgentStatus(status, agent.Type)
+	}
+	if health := healthByType[agent.Type]; health != nil {
+		health.total++
+		*pending = append(*pending, mayorPendingCheck{session: s, health: health})
+	}
+	return agent.Type == AgentDeacon
+}
+
+func setMayorRigAgentStatus(status *mayorRigStatus, agentType AgentType) {
+	switch agentType {
+	case AgentWitness:
+		status.hasWitness = true
+	case AgentRefinery:
+		status.hasRefinery = true
+	}
+}
+
+func checkMayorWorkingSessions(t *tmux.Tmux, pending []mayorPendingCheck) {
 	sem := make(chan struct{}, maxConcurrentWorkingChecks)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	for _, c := range pending {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(c pendingCheck) {
+		go func(c mayorPendingCheck) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			working := isSessionWorking(t, c.session)
-			if working {
+			if isSessionWorking(t, c.session) {
 				mu.Lock()
 				c.health.working++
 				mu.Unlock()
@@ -266,24 +276,11 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		}(c)
 	}
 	wg.Wait()
+}
 
-	// Status-line is a tmux hot path. Do not query beads for dock/park state here;
-	// `gt rig list/status` remains the authoritative live status view.
-	for _, status := range rigStatuses {
-		status.opState = "OPERATIONAL"
-	}
-
-	// Build status
-	var parts []string
-
-	// Add per-agent-type health in consistent order
-	// Format: "1/3 👁️" = 1 working out of 3 total
-	// Only show agent types that have sessions
-	// Note: Polecats excluded - idle state is misleading noise
-	// Deacon gets just an icon (no count) - shown separately below
-	agentOrder := []AgentType{AgentWitness, AgentRefinery}
+func buildMayorAgentParts(healthByType map[AgentType]*mayorAgentHealth, hasDeacon bool) []string {
 	var agentParts []string
-	for _, agentType := range agentOrder {
+	for _, agentType := range []AgentType{AgentWitness, AgentRefinery} {
 		health := healthByType[agentType]
 		if health.total == 0 {
 			continue
@@ -291,96 +288,75 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		icon := AgentTypeIcons[agentType]
 		agentParts = append(agentParts, fmt.Sprintf("%d/%d %s", health.working, health.total, icon))
 	}
+	var parts []string
 	if len(agentParts) > 0 {
 		parts = append(parts, strings.Join(agentParts, " "))
 	}
-
-	// Add deacon icon if running (just presence, no count)
 	if hasDeacon {
 		parts = append(parts, AgentTypeIcons[AgentDeacon])
 	}
+	return parts
+}
 
-	// Build rig status display with LED indicators (see GetRigLED for definitions)
-
-	// Create sortable rig list
-	type rigInfo struct {
-		name   string
-		status *rigStatus
-	}
-	var rigs []rigInfo
-	for rigName, status := range rigStatuses {
-		// Skip docked rigs — they're intentionally disabled and don't need display.
-		// Reserve 🛑 for error states (crashed agents, unreachable Dolt, etc.).
+func buildMayorRigInfos(statuses map[string]*mayorRigStatus) []mayorRigInfo {
+	rigs := make([]mayorRigInfo, 0, len(statuses))
+	for rigName, status := range statuses {
 		if status.opState == "DOCKED" {
 			continue
 		}
-		rigs = append(rigs, rigInfo{name: rigName, status: status})
+		rigs = append(rigs, mayorRigInfo{name: rigName, status: status})
 	}
+	return rigs
+}
 
-	// Sort by: 1) running state, 2) operational state, 3) alphabetical
+func sortMayorRigInfos(rigs []mayorRigInfo) {
 	sort.Slice(rigs, func(i, j int) bool {
 		isRunningI := rigs[i].status.hasWitness || rigs[i].status.hasRefinery
 		isRunningJ := rigs[j].status.hasWitness || rigs[j].status.hasRefinery
-
-		// Primary sort: running rigs before non-running rigs
 		if isRunningI != isRunningJ {
 			return isRunningI
 		}
-
-		// Secondary sort: operational state (for non-running rigs: OPERATIONAL < PARKED < DOCKED)
 		stateOrder := map[string]int{"OPERATIONAL": 0, "PARKED": 1, "DOCKED": 2}
 		stateI := stateOrder[rigs[i].status.opState]
 		stateJ := stateOrder[rigs[j].status.opState]
 		if stateI != stateJ {
 			return stateI < stateJ
 		}
-
-		// Tertiary sort: alphabetical
 		return rigs[i].name < rigs[j].name
 	})
+}
 
-	// Build display with group separators
-	var rigParts []string
-	var lastGroup string
+func renderMayorRigParts(rigs []mayorRigInfo, townRoot string) []string {
+	var parts []string
+	lastGroup := ""
 	for _, rig := range rigs {
-		isRunning := rig.status.hasWitness || rig.status.hasRefinery
-		var currentGroup string
-		if isRunning {
-			currentGroup = "running"
-		} else {
-			currentGroup = "idle-" + rig.status.opState
-		}
-
-		// Add separator when group changes (running -> non-running, or different opStates within non-running)
+		currentGroup, part := mayorRigPart(rig, townRoot, len(rigs))
 		if lastGroup != "" && lastGroup != currentGroup {
-			rigParts = append(rigParts, "|")
+			parts = append(parts, "|")
 		}
 		lastGroup = currentGroup
-
-		status := rig.status
-		led := GetRigLED(status.hasWitness, status.hasRefinery, status.opState)
-
-		// All icons get 1 space, Park gets 2
-		space := " "
-		if led == "🅿️" {
-			space = "  "
-		}
-		// Abbreviate rig names to beads prefix when >2 rigs
-		displayName := rig.name
-		if len(rigs) > 2 && townRoot != "" {
-			if prefix := config.GetRigPrefix(townRoot, rig.name); prefix != "" {
-				displayName = prefix
-			}
-		}
-		rigParts = append(rigParts, led+space+displayName)
+		parts = append(parts, part)
 	}
+	return parts
+}
 
-	if len(rigParts) > 0 {
-		parts = append(parts, strings.Join(rigParts, " "))
+func mayorRigPart(rig mayorRigInfo, townRoot string, rigCount int) (string, string) {
+	currentGroup := "idle-" + rig.status.opState
+	if rig.status.hasWitness || rig.status.hasRefinery {
+		currentGroup = "running"
 	}
-
-	fmt.Print(strings.Join(parts, " | ") + " |")
-	return nil
+	led := GetRigLED(rig.status.hasWitness, rig.status.hasRefinery, rig.status.opState)
+	space := " "
+	if led == "🅿️" {
+		space = "  "
+	}
+	displayName := rig.name
+	if rigCount > 2 && townRoot != "" {
+		if prefix := config.GetRigPrefix(townRoot, rig.name); prefix != "" {
+			displayName = prefix
+		}
+	}
+	return currentGroup, led + space + displayName
 }
 
 // runDeaconStatusLine outputs status for the deacon session.
@@ -393,36 +369,10 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 	}
 
 	// Get town root from deacon pane's working directory. Config files only; no beads.
-	var townRoot string
 	deaconSession := getDeaconSessionName()
-	paneDir, err := t.GetPaneWorkDir(deaconSession)
-	if err == nil && paneDir != "" {
-		townRoot, _ = workspace.Find(paneDir)
-	}
-
-	// Load registered rigs to validate against
-	registeredRigs := make(map[string]bool)
-	if townRoot != "" {
-		rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-		if rigsConfig, err := config.LoadRigsConfig(rigsConfigPath); err == nil {
-			for rigName := range rigsConfig.Rigs {
-				registeredRigs[rigName] = true
-			}
-		}
-	}
-
-	rigs := make(map[string]bool)
-	for _, s := range sessions {
-		agent := categorizeSession(s)
-		if agent == nil {
-			continue
-		}
-		// Only count registered rigs
-		if agent.Rig != "" && registeredRigs[agent.Rig] {
-			rigs[agent.Rig] = true
-		}
-	}
-	rigCount := len(rigs)
+	townRoot := statusLineTownRoot(t, deaconSession)
+	registeredRigs := registeredStatusLineRigs(townRoot)
+	rigCount := countRegisteredDeaconRigs(sessions, registeredRigs)
 
 	// Build status
 	// Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
@@ -433,16 +383,51 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 	return nil
 }
 
+func statusLineTownRoot(t *tmux.Tmux, sessionName string) string {
+	paneDir, err := t.GetPaneWorkDir(sessionName)
+	if err != nil || paneDir == "" {
+		return ""
+	}
+	townRoot, _ := workspace.Find(paneDir)
+	return townRoot
+}
+
+func registeredStatusLineRigs(townRoot string) map[string]bool {
+	registered := make(map[string]bool)
+	if townRoot == "" {
+		return registered
+	}
+	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	if err != nil {
+		return registered
+	}
+	for rigName := range rigsConfig.Rigs {
+		registered[rigName] = true
+	}
+	return registered
+}
+
+func countRegisteredDeaconRigs(sessions []string, registered map[string]bool) int {
+	rigs := make(map[string]bool)
+	for _, s := range sessions {
+		agent := categorizeSession(s)
+		if agent == nil {
+			continue
+		}
+		// Only count registered rigs
+		if agent.Rig != "" && registered[agent.Rig] {
+			rigs[agent.Rig] = true
+		}
+	}
+	return len(rigs)
+}
+
 // runWitnessStatusLine outputs status for a witness session.
 // Shows: crew count, hook or mail preview
 // Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
-func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
-	if rigName == "" {
-		// Try to extract from session name: <prefix>-witness
-		if identity, err := session.ParseSessionName(statusLineSession); err == nil && identity.Role == session.RoleWitness {
-			rigName = identity.Rig
-		}
-	}
+func runWitnessStatusLine(t *tmux.Tmux, rigName, sessionName string) error {
+	rigName = witnessRigName(rigName, sessionName)
 
 	// Count crew in this rig (crew are persistent, worth tracking)
 	sessions, err := t.ListSessions()
@@ -450,16 +435,7 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 		return nil // Silent fail
 	}
 
-	crewCount := 0
-	for _, s := range sessions {
-		agent := categorizeSession(s)
-		if agent == nil {
-			continue
-		}
-		if agent.Rig == rigName && agent.Type == AgentCrew {
-			crewCount++
-		}
-	}
+	crewCount := countCrewSessions(sessions, rigName)
 
 	// Build status
 	var parts []string
@@ -474,12 +450,34 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 	return nil
 }
 
+func witnessRigName(rigName, sessionName string) string {
+	if rigName != "" {
+		return rigName
+	}
+	identity, err := session.ParseSessionName(sessionName)
+	if err == nil && identity.Role == session.RoleWitness {
+		return identity.Rig
+	}
+	return ""
+}
+
+func countCrewSessions(sessions []string, rigName string) int {
+	count := 0
+	for _, s := range sessions {
+		agent := categorizeSession(s)
+		if agent != nil && agent.Rig == rigName && agent.Type == AgentCrew {
+			count++
+		}
+	}
+	return count
+}
+
 // runRefineryStatusLine outputs status for a refinery session.
 // Shows: MQ length, current item, hook or mail preview
-func runRefineryStatusLine(rigName string) error {
+func runRefineryStatusLine(rigName, sessionName string) error {
 	if rigName == "" {
 		// Try to extract from session name: <prefix>-refinery
-		if identity, err := session.ParseSessionName(statusLineSession); err == nil && identity.Role == session.RoleRefinery {
+		if identity, err := session.ParseSessionName(sessionName); err == nil && identity.Role == session.RoleRefinery {
 			rigName = identity.Rig
 		}
 	}

@@ -54,65 +54,89 @@ func (p *PullRequestInfo) Merged() bool {
 
 // LookupPullRequest resolves a PR using one authoritative path: recorded URL or
 // number first, otherwise an unambiguous target-repo head lookup.
-func (g *Git) LookupPullRequest(ref PullRequestRef) (*PullRequestInfo, error) {
-	targetRepo, err := g.pullRequestTargetRepo(ref.TargetRepo)
+func LookupPullRequest(g *Git, ref PullRequestRef) (*PullRequestInfo, error) {
+	targetRepo, err := pullRequestTargetRepo(g, ref.TargetRepo)
 	if err != nil {
 		return nil, err
 	}
+	if pr, handled, err := lookupRecordedPullRequest(g, ref, targetRepo); handled {
+		return pr, err
+	}
+	return lookupPullRequestByBranch(g, ref, targetRepo)
+}
 
+func lookupRecordedPullRequest(g *Git, ref PullRequestRef, targetRepo string) (*PullRequestInfo, bool, error) {
 	if strings.TrimSpace(ref.URL) != "" {
-		pr, err := g.viewPullRequest(strings.TrimSpace(ref.URL), targetRepo)
-		if err != nil {
-			return nil, err
-		}
-		pr.LookupSource = "recorded-url"
-		if err := validatePullRequestHead(pr, strings.TrimSpace(ref.HeadSHA)); err != nil {
-			return nil, err
-		}
-		return pr, nil
+		return viewRecordedPullRequest(g, strings.TrimSpace(ref.URL), targetRepo, "recorded-url", ref.HeadSHA)
 	}
 	if ref.Number > 0 {
-		pr, err := g.viewPullRequest(strconv.Itoa(ref.Number), targetRepo)
-		if err != nil {
-			return nil, err
-		}
-		pr.LookupSource = "recorded-number"
-		if err := validatePullRequestHead(pr, strings.TrimSpace(ref.HeadSHA)); err != nil {
-			return nil, err
-		}
-		return pr, nil
+		return viewRecordedPullRequest(g, strconv.Itoa(ref.Number), targetRepo, "recorded-number", ref.HeadSHA)
 	}
+	return nil, false, nil
+}
 
+func viewRecordedPullRequest(g *Git, selector, targetRepo, source, headSHA string) (*PullRequestInfo, bool, error) {
+	pr, err := viewPullRequest(g, selector, targetRepo)
+	if err != nil {
+		return nil, true, err
+	}
+	pr.LookupSource = source
+	return pr, true, validatePullRequestHead(pr, strings.TrimSpace(headSHA))
+}
+
+func lookupPullRequestByBranch(g *Git, ref PullRequestRef, targetRepo string) (*PullRequestInfo, error) {
 	branch := strings.TrimSpace(ref.Branch)
 	if branch == "" {
 		return nil, fmt.Errorf("%w: no recorded PR URL/number or branch", ErrPullRequestNotFound)
 	}
-	if strings.TrimSpace(ref.HeadOwner) != "" {
-		return g.lookupPullRequestByQualifiedHead(targetRepo, strings.TrimSpace(ref.HeadOwner), branch, strings.TrimSpace(ref.HeadSHA))
+	headSHA := strings.TrimSpace(ref.HeadSHA)
+	if owner := strings.TrimSpace(ref.HeadOwner); owner != "" {
+		return lookupPullRequestByQualifiedHead(g, targetRepo, owner, branch, headSHA)
 	}
-	return g.lookupPullRequestByHead(targetRepo, branch, strings.TrimSpace(ref.HeadSHA))
+	return lookupPullRequestByHead(g, targetRepo, branch, headSHA)
 }
 
 // HasOpenPullRequest checks whether the ref resolves to an open PR. Errors and
 // ambiguity are treated as protected so callers do not delete a branch blindly.
-func (g *Git) HasOpenPullRequest(ref PullRequestRef) bool {
-	pr, err := g.LookupPullRequest(ref)
+func HasOpenPullRequest(g *Git, ref PullRequestRef) bool {
+	pr, err := LookupPullRequest(g, ref)
 	if err != nil {
 		return !errors.Is(err, ErrPullRequestNotFound)
 	}
 	return pr.Open()
 }
 
-func (g *Git) pullRequestTargetRepo(explicit string) (string, error) {
+// FindPRNumber returns the GitHub PR number for the given branch, or 0 if none exists.
+func FindPRNumber(g *Git, branch string) (int, error) {
+	return FindPRNumberForRef(g, PullRequestRef{Branch: branch})
+}
+
+// FindPRNumberForRef returns an open GitHub PR number using recorded PR identity
+// before falling back to an unambiguous target-repo branch lookup.
+func FindPRNumberForRef(g *Git, ref PullRequestRef) (int, error) {
+	pr, err := LookupPullRequest(g, ref)
+	if err != nil {
+		if errors.Is(err, ErrPullRequestNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if !pr.Open() {
+		return 0, nil
+	}
+	return pr.Number, nil
+}
+
+func pullRequestTargetRepo(g *Git, explicit string) (string, error) {
 	if strings.TrimSpace(explicit) != "" {
 		return strings.TrimSpace(explicit), nil
 	}
-	if upstreamURL, err := g.GetUpstreamURL(); err == nil && upstreamURL != "" {
+	if upstreamURL, err := GetUpstreamURL(g); err == nil && upstreamURL != "" {
 		if repo, parseErr := githubRepoFromRemoteURL(upstreamURL); parseErr == nil {
 			return repo, nil
 		}
 	}
-	originURL, err := g.RemoteURL("origin")
+	originURL, err := RemoteURL(g, "origin")
 	if err != nil {
 		return "", fmt.Errorf("resolve target repo from origin remote: %w", err)
 	}
@@ -136,12 +160,8 @@ func githubRepoFromRemoteURL(raw string) (string, error) {
 	return parts[0] + "/" + parts[1], nil
 }
 
-func (g *Git) viewPullRequest(selector, targetRepo string) (*PullRequestInfo, error) {
-	args := []string{"pr", "view", selector, "--json", "number,url,state,mergedAt,headRefName,headRefOid,headRepository,headRepositoryOwner"}
-	if targetRepo != "" && !strings.HasPrefix(selector, "http://") && !strings.HasPrefix(selector, "https://") {
-		args = append(args, "--repo", targetRepo)
-	}
-	out, err := g.runGH(args...)
+func viewPullRequest(g *Git, selector, targetRepo string) (*PullRequestInfo, error) {
+	out, err := runGH(g, ghViewPullRequestArgs(selector, targetRepo)...)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view %s failed: %w", selector, err)
 	}
@@ -150,6 +170,28 @@ func (g *Git) viewPullRequest(selector, targetRepo string) (*PullRequestInfo, er
 		return nil, fmt.Errorf("parse gh pr view %s: %w", selector, err)
 	}
 	pr := raw.toInfo()
+	if err := applyViewedPullRequestRepo(pr, selector, targetRepo); err != nil {
+		return nil, err
+	}
+	return pr, nil
+}
+
+func ghViewPullRequestArgs(selector, targetRepo string) []string {
+	args := []string{"pr", "view", selector, "--json", "number,url,state,mergedAt,headRefName,headRefOid,headRepository,headRepositoryOwner"}
+	if shouldPassRepoToGHView(selector, targetRepo) {
+		args = append(args, "--repo", targetRepo)
+	}
+	return args
+}
+
+func shouldPassRepoToGHView(selector, targetRepo string) bool {
+	if targetRepo == "" {
+		return false
+	}
+	return !strings.HasPrefix(selector, "http://") && !strings.HasPrefix(selector, "https://")
+}
+
+func applyViewedPullRequestRepo(pr *PullRequestInfo, selector, targetRepo string) error {
 	if pr.BaseRepo == "" {
 		if repo, ok := githubRepoFromPullURL(selector); ok {
 			pr.BaseRepo = repo
@@ -158,13 +200,13 @@ func (g *Git) viewPullRequest(selector, targetRepo string) (*PullRequestInfo, er
 		}
 	}
 	if targetRepo != "" && pr.BaseRepo != "" && !strings.EqualFold(pr.BaseRepo, targetRepo) {
-		return nil, fmt.Errorf("recorded PR %s targets %s, want %s", selector, pr.BaseRepo, targetRepo)
+		return fmt.Errorf("recorded PR %s targets %s, want %s", selector, pr.BaseRepo, targetRepo)
 	}
-	return pr, nil
+	return nil
 }
 
-func (g *Git) lookupPullRequestByHead(targetRepo, branch, headSHA string) (*PullRequestInfo, error) {
-	out, err := g.runGH("pr", "list", "--repo", targetRepo, "--head", branch, "--state", "all", "--json", "number,url,state,mergedAt,headRefName,headRefOid,headRepository,headRepositoryOwner", "--limit", "100")
+func lookupPullRequestByHead(g *Git, targetRepo, branch, headSHA string) (*PullRequestInfo, error) {
+	out, err := runGH(g, "pr", "list", "--repo", targetRepo, "--head", branch, "--state", "all", "--json", "number,url,state,mergedAt,headRefName,headRefOid,headRepository,headRepositoryOwner", "--limit", "100")
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list head %s in %s failed: %w", branch, targetRepo, err)
 	}
@@ -175,8 +217,8 @@ func (g *Git) lookupPullRequestByHead(targetRepo, branch, headSHA string) (*Pull
 	return selectPullRequest(raw, targetRepo, branch, headSHA, "head")
 }
 
-func (g *Git) lookupPullRequestByQualifiedHead(targetRepo, headOwner, branch, headSHA string) (*PullRequestInfo, error) {
-	out, err := g.runGH("api", "-X", "GET", "repos/"+targetRepo+"/pulls", "-f", "state=all", "-f", "head="+headOwner+":"+branch)
+func lookupPullRequestByQualifiedHead(g *Git, targetRepo, headOwner, branch, headSHA string) (*PullRequestInfo, error) {
+	out, err := runGH(g, "api", "-X", "GET", "repos/"+targetRepo+"/pulls", "-f", "state=all", "-f", "head="+headOwner+":"+branch)
 	if err != nil {
 		return nil, fmt.Errorf("gh api pull lookup head %s:%s in %s failed: %w", headOwner, branch, targetRepo, err)
 	}
@@ -191,7 +233,7 @@ func (g *Git) lookupPullRequestByQualifiedHead(targetRepo, headOwner, branch, he
 	return selectPullRequest(prs, targetRepo, branch, headSHA, "qualified-head")
 }
 
-func (g *Git) runGH(args ...string) ([]byte, error) {
+func runGH(g *Git, args ...string) ([]byte, error) {
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = g.workDir
 	out, err := cmd.CombinedOutput()
@@ -202,33 +244,48 @@ func (g *Git) runGH(args ...string) ([]byte, error) {
 }
 
 func selectPullRequest(raw []ghPullRequest, targetRepo, branch, headSHA, source string) (*PullRequestInfo, error) {
+	matches := matchingPullRequests(raw, targetRepo, branch, headSHA, source)
+	switch {
+	case len(matches) == 0:
+		return nil, fmt.Errorf("%w: no PR for head %s in %s", ErrPullRequestNotFound, branch, targetRepo)
+	case len(matches) > 1:
+		return nil, fmt.Errorf("%w: head %s in %s matched %d PRs: %s", ErrPullRequestAmbiguous, branch, targetRepo, len(matches), describePullRequestMatches(matches))
+	default:
+		return matches[0], nil
+	}
+}
+
+func matchingPullRequests(raw []ghPullRequest, targetRepo, branch, headSHA, source string) []*PullRequestInfo {
 	matches := make([]*PullRequestInfo, 0, len(raw))
 	for _, candidate := range raw {
 		pr := candidate.toInfo()
-		if pr.BaseRepo == "" {
-			pr.BaseRepo = targetRepo
-		}
-		if pr.HeadRefName != "" && pr.HeadRefName != branch {
+		if !pullRequestMatchesHead(pr, targetRepo, branch, headSHA) {
 			continue
-		}
-		if pr.BaseRepo != "" && !strings.EqualFold(pr.BaseRepo, targetRepo) {
-			continue
-		}
-		if headSHA != "" {
-			if pr.HeadSHA == "" || pr.HeadSHA != headSHA {
-				continue
-			}
 		}
 		pr.LookupSource = source
 		matches = append(matches, pr)
 	}
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("%w: no PR for head %s in %s", ErrPullRequestNotFound, branch, targetRepo)
+	return matches
+}
+
+func pullRequestMatchesHead(pr *PullRequestInfo, targetRepo, branch, headSHA string) bool {
+	if pr.BaseRepo == "" {
+		pr.BaseRepo = targetRepo
 	}
-	if len(matches) > 1 {
-		return nil, fmt.Errorf("%w: head %s in %s matched %d PRs: %s", ErrPullRequestAmbiguous, branch, targetRepo, len(matches), describePullRequestMatches(matches))
+	if pr.HeadRefName != "" && pr.HeadRefName != branch {
+		return false
 	}
-	return matches[0], nil
+	if pr.BaseRepo != "" && !strings.EqualFold(pr.BaseRepo, targetRepo) {
+		return false
+	}
+	return pullRequestMatchesSHA(pr, headSHA)
+}
+
+func pullRequestMatchesSHA(pr *PullRequestInfo, headSHA string) bool {
+	if headSHA == "" {
+		return true
+	}
+	return pr.HeadSHA != "" && pr.HeadSHA == headSHA
 }
 
 func validatePullRequestHead(pr *PullRequestInfo, headSHA string) error {

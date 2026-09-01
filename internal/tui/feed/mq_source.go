@@ -14,7 +14,7 @@ type MQEventSource struct {
 
 // NewMQEventSource creates a stub source that produces no events.
 // The mrqueue event log is no longer written.
-func NewMQEventSource(beadsDir string) (*MQEventSource, error) {
+func NewMQEventSource(_ string) (*MQEventSource, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	source := &MQEventSource{
@@ -32,7 +32,7 @@ func NewMQEventSource(beadsDir string) (*MQEventSource, error) {
 }
 
 // NewMQEventSourceFromWorkDir creates an MQ event source (stub).
-func NewMQEventSourceFromWorkDir(workDir string) (*MQEventSource, error) {
+func NewMQEventSourceFromWorkDir(_ string) (*MQEventSource, error) {
 	return NewMQEventSource("")
 }
 

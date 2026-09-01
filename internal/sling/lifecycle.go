@@ -9,5 +9,5 @@ import "context"
 // seam. Callers do not acquire the per-bead flock, run the cross-rig guard,
 // or wake the witness themselves.
 type Lifecycle interface {
-	Execute(ctx context.Context, intent Intent) (*Outcome, error)
+	Execute(_ context.Context, _ Intent) (*Outcome, error)
 }

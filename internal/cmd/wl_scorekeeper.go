@@ -12,11 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	wlScorekeeperJSON bool
-	wlScorekeeperPush bool
-)
-
 var wlScorekeeperCmd = &cobra.Command{
 	Use:   "scorekeeper",
 	Short: "Compute tier standings and update leaderboard",
@@ -39,12 +34,20 @@ EXAMPLES:
 }
 
 func init() {
-	wlScorekeeperCmd.Flags().BoolVar(&wlScorekeeperJSON, "json", false, "Output computation summary as JSON")
-	wlScorekeeperCmd.Flags().BoolVar(&wlScorekeeperPush, "push", false, "Push updated commons to DoltHub after computation")
+	wlScorekeeperCmd.Flags().Bool("json", false, "Output computation summary as JSON")
+	wlScorekeeperCmd.Flags().Bool("push", false, "Push updated commons to DoltHub after computation")
 	wlCmd.AddCommand(wlScorekeeperCmd)
 }
 
-func runWlScorekeeper(cmd *cobra.Command, args []string) error {
+func runWlScorekeeper(cmd *cobra.Command, _ []string) error {
+	jsonOutput, err := cmd.Flags().GetBool("json")
+	if err != nil {
+		return err
+	}
+	if _, err := cmd.Flags().GetBool("push"); err != nil {
+		return err
+	}
+
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
@@ -56,11 +59,11 @@ func runWlScorekeeper(cmd *cobra.Command, args []string) error {
 	}
 
 	store := doltserver.NewWLCommonsWithDB(townRoot, dbName)
-	return runScorekeeperWithStore(store)
+	return runScorekeeperWithStore(store, jsonOutput)
 }
 
-func runScorekeeperWithStore(store doltserver.WLCommonsStore) error {
-	if !wlScorekeeperJSON {
+func runScorekeeperWithStore(store doltserver.WLCommonsStore, jsonOutput bool) error {
+	if !jsonOutput {
 		fmt.Printf("%s Running scorekeeper...\n", style.Bold.Render("⚡"))
 	}
 
@@ -75,7 +78,7 @@ func runScorekeeperWithStore(store doltserver.WLCommonsStore) error {
 		tierDist[e.Tier]++
 	}
 
-	if wlScorekeeperJSON {
+	if jsonOutput {
 		summary := struct {
 			RigsScored  int            `json:"rigs_scored"`
 			TierDist    map[string]int `json:"tier_distribution"`

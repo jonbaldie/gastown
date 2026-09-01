@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,15 +37,15 @@ func TestResolvePathToSessionRejectsUnsafeSegments(t *testing.T) {
 func TestHandoffStdinFlag(t *testing.T) {
 	t.Run("errors when both stdin and message provided", func(t *testing.T) {
 		// Save and restore flag state
-		origMessage := handoffMessage
-		origStdin := handoffStdin
+		origMessage := commandStringFlag(handoffCmd, "message")
+		origStdin := commandBoolFlag(handoffCmd, "stdin")
 		defer func() {
-			handoffMessage = origMessage
-			handoffStdin = origStdin
+			_ = handoffCmd.Flags().Set("message", origMessage)
+			_ = handoffCmd.Flags().Set("stdin", fmt.Sprint(origStdin))
 		}()
 
-		handoffMessage = "some message"
-		handoffStdin = true
+		_ = handoffCmd.Flags().Set("message", "some message")
+		_ = handoffCmd.Flags().Set("stdin", "true")
 
 		err := runHandoff(handoffCmd, nil)
 		if err == nil {
@@ -656,17 +657,17 @@ func TestHandoffPolecatEnvCheck(t *testing.T) {
 			t.Setenv("TMUX_PANE", "")
 
 			// Reset flags to avoid interference
-			origMessage := handoffMessage
-			origStdin := handoffStdin
-			origAuto := handoffAuto
+			origMessage := commandStringFlag(handoffCmd, "message")
+			origStdin := commandBoolFlag(handoffCmd, "stdin")
+			origAuto := commandBoolFlag(handoffCmd, "auto")
 			defer func() {
-				handoffMessage = origMessage
-				handoffStdin = origStdin
-				handoffAuto = origAuto
+				_ = handoffCmd.Flags().Set("message", origMessage)
+				_ = handoffCmd.Flags().Set("stdin", fmt.Sprint(origStdin))
+				_ = handoffCmd.Flags().Set("auto", fmt.Sprint(origAuto))
 			}()
-			handoffMessage = ""
-			handoffStdin = false
-			handoffAuto = false
+			_ = handoffCmd.Flags().Set("message", "")
+			_ = handoffCmd.Flags().Set("stdin", "false")
+			_ = handoffCmd.Flags().Set("auto", "false")
 
 			// The polecat path tries to exec "gt done" which will fail in tests.
 			// We capture stdout to detect the "Polecat detected" message, which
@@ -783,12 +784,10 @@ func TestWarnHandoffGitStatus(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("x"), 0644)
 		os.Chdir(dir)
 		t.Cleanup(func() { os.Chdir(origCwd) })
-		// Simulate --no-git-check by setting the flag
-		origFlag := handoffNoGitCheck
-		handoffNoGitCheck = true
-		defer func() { handoffNoGitCheck = origFlag }()
+		// Simulate --no-git-check by skipping the warning call.
+		noGitCheck := true
 		output := captureStderr(t, func() {
-			if !handoffNoGitCheck {
+			if !noGitCheck {
 				warnHandoffGitStatus()
 			}
 		})

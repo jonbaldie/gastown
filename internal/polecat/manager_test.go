@@ -256,10 +256,10 @@ func setupCanonicalBranchManagerTest(t *testing.T) (*Manager, string) {
 		t.Fatalf("write README.md: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("README.md"); err != nil {
+	if err := git.Add(mayorGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -282,7 +282,7 @@ func createStalePolecatCommit(t *testing.T, repoPath, startPoint, branchName str
 	t.Helper()
 
 	repoGit := git.NewGit(repoPath)
-	if err := repoGit.CheckoutNewBranch(branchName, startPoint); err != nil {
+	if err := git.CheckoutNewBranch(repoGit, branchName, startPoint); err != nil {
 		t.Fatalf("checkout stale branch %s from %s: %v", branchName, startPoint, err)
 	}
 
@@ -290,14 +290,14 @@ func createStalePolecatCommit(t *testing.T, repoPath, startPoint, branchName str
 	if err := os.WriteFile(filepath.Join(repoPath, fileName), []byte(branchName+"\n"), 0644); err != nil {
 		t.Fatalf("write stale branch marker: %v", err)
 	}
-	if err := repoGit.Add(fileName); err != nil {
+	if err := git.Add(repoGit, fileName); err != nil {
 		t.Fatalf("git add stale branch marker: %v", err)
 	}
-	if err := repoGit.Commit("Create stale polecat branch"); err != nil {
+	if err := git.Commit(repoGit, "Create stale polecat branch"); err != nil {
 		t.Fatalf("git commit stale branch marker: %v", err)
 	}
 
-	sha, err := repoGit.Rev("HEAD")
+	sha, err := git.Rev(repoGit, "HEAD")
 	if err != nil {
 		t.Fatalf("resolve stale branch commit: %v", err)
 	}
@@ -342,9 +342,9 @@ esac
 	}
 
 	mgr := NewManager(&rig.Rig{Name: "testrig", Path: rigPath}, git.NewGit(rigPath), nil)
-	p, err := mgr.Get("toast")
+	p, err := Get(mgr, "toast")
 	if err != nil {
-		t.Fatalf("mgr.Get(toast): %v", err)
+		t.Fatalf("Get(mgr, toast): %v", err)
 	}
 	if p.State != StateDone {
 		t.Fatalf("polecat state = %q, want %q", p.State, StateDone)
@@ -398,7 +398,7 @@ func TestListEmpty(t *testing.T) {
 	}
 	m := NewManager(r, git.NewGit(root), nil)
 
-	polecats, err := m.List()
+	polecats, err := List(m)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestGetNotFound(t *testing.T) {
 	}
 	m := NewManager(r, git.NewGit(root), nil)
 
-	_, err := m.Get("nonexistent")
+	_, err := Get(m, "nonexistent")
 	if err != ErrPolecatNotFound {
 		t.Errorf("Get = %v, want ErrPolecatNotFound", err)
 	}
@@ -429,7 +429,7 @@ func TestRemoveNotFound(t *testing.T) {
 	}
 	m := NewManager(r, git.NewGit(root), nil)
 
-	err := m.Remove("nonexistent", false)
+	err := Remove(m, "nonexistent", false)
 	if err != ErrPolecatNotFound {
 		t.Errorf("Remove = %v, want ErrPolecatNotFound", err)
 	}
@@ -476,7 +476,7 @@ func TestPolecatDir(t *testing.T) {
 	}
 	m := NewManager(r, git.NewGit(r.Path), nil)
 
-	dir := m.polecatDir("Toast")
+	dir := polecatDir(m, "Toast")
 	expected := "/home/user/ai/test-rig/polecats/Toast"
 	if filepath.ToSlash(dir) != expected {
 		t.Errorf("polecatDir = %q, want %q", dir, expected)
@@ -490,7 +490,7 @@ func TestAssigneeID(t *testing.T) {
 	}
 	m := NewManager(r, git.NewGit(r.Path), nil)
 
-	id := m.assigneeID("Toast")
+	id := assigneeID(m, "Toast")
 	expected := "test-rig/polecats/Toast"
 	if id != expected {
 		t.Errorf("assigneeID = %q, want %q", id, expected)
@@ -519,9 +519,9 @@ func TestAgentBeadID_Deterministic(t *testing.T) {
 	m1 := NewManager(r, git.NewGit(rigPath), nil)
 	m2 := NewManager(r, git.NewGit(rigPath), nil)
 
-	id1a := m1.agentBeadID("Toast")
-	id1b := m1.agentBeadID("Toast")
-	id2 := m2.agentBeadID("Toast")
+	id1a := agentBeadID(m1, "Toast")
+	id1b := agentBeadID(m1, "Toast")
+	id2 := agentBeadID(m2, "Toast")
 
 	// Same Manager, repeated calls — must be identical.
 	if id1a != id1b {
@@ -551,7 +551,7 @@ func TestAgentBeadID_Deterministic(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	m3 := NewManager(r, git.NewGit(rigPath), nil)
-	id3 := m3.agentBeadID("Toast")
+	id3 := agentBeadID(m3, "Toast")
 	if id1a != id3 {
 		t.Errorf("agentBeadID differs after cwd change: %q (original) vs %q (after chdir)", id1a, id3)
 	}
@@ -572,7 +572,7 @@ func TestNewManager_NamepoolFromRigConfig(t *testing.T) {
 
 	r := &rig.Rig{Name: "myrig", Path: rigPath}
 	m := NewManager(r, git.NewGit(rigPath), nil)
-	pool := m.GetNamePool()
+	pool := GetNamePool(m)
 
 	name, err := pool.Allocate()
 	if err != nil {
@@ -615,7 +615,7 @@ func TestGetReturnsWorkingWithoutBeads(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Get should return polecat with StateWorking (assume active if beads unavailable)
-	polecat, err := m.Get("Test")
+	polecat, err := Get(m, "Test")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestListWithPolecats(t *testing.T) {
 	}
 	m := NewManager(r, git.NewGit(root), nil)
 
-	polecats, err := m.List()
+	polecats, err := List(m)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestSetStateWithoutBeads(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// SetState should succeed (no-op when no issue assigned)
-	err := m.SetState("Test", StateWorking)
+	err := SetState(m, "Test", StateWorking)
 	if err != nil {
 		t.Errorf("SetState: %v (expected no error when no beads/issue)", err)
 	}
@@ -713,7 +713,7 @@ func TestClearIssueWithoutAssignment(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// ClearIssue should succeed even when no issue assigned
-	err := m.ClearIssue("Test")
+	err := ClearIssue(m, "Test")
 	if err != nil {
 		t.Errorf("ClearIssue: %v (expected no error when no assignment)", err)
 	}
@@ -752,10 +752,10 @@ func TestAddWithOptions_HasAgentsMD(t *testing.T) {
 
 	// Commit AGENTS.md so it's part of the repo
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("AGENTS.md"); err != nil {
+	if err := git.Add(mayorGit, "AGENTS.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Add AGENTS.md"); err != nil {
+	if err := git.Commit(mayorGit, "Add AGENTS.md"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -795,7 +795,7 @@ func TestAddWithOptions_HasAgentsMD(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Create polecat via AddWithOptions
-	polecat, err := m.AddWithOptions("TestAgent", AddOptions{})
+	polecat, err := AddWithOptions(m, "TestAgent", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
@@ -915,7 +915,7 @@ func TestReconcilePoolWith(t *testing.T) {
 			m := NewManager(r, nil, nil)
 
 			// Call ReconcilePoolWith
-			m.ReconcilePoolWith(tt.namesWithDirs, tt.namesWithSessions)
+			ReconcilePoolWith(m, tt.namesWithDirs, tt.namesWithSessions)
 
 			// Verify in-use names
 			gotInUse := m.namePool.ActiveNames()
@@ -1004,7 +1004,7 @@ func TestReconcilePoolWith_KeepsDirBackedStaleSession(t *testing.T) {
 	writeStaleHeartbeat(activeSession)
 	writeStaleHeartbeat(orphanSession)
 
-	m.ReconcilePoolWith([]string{activeName}, []string{activeName, orphanName})
+	ReconcilePoolWith(m, []string{activeName}, []string{activeName, orphanName})
 
 	running, err := tm.HasSession(activeSession)
 	if err != nil {
@@ -1065,7 +1065,7 @@ func TestReconcilePoolWith_Allocation(t *testing.T) {
 
 	// Mark first few pool names as in-use via directories
 	// (furiosa, nux, slit are first 3 in mad-max theme)
-	m.ReconcilePoolWith([]string{"furiosa", "nux", "slit"}, []string{})
+	ReconcilePoolWith(m, []string{"furiosa", "nux", "slit"}, []string{})
 
 	// First allocation should skip in-use names
 	name, err := m.namePool.Allocate()
@@ -1101,7 +1101,7 @@ func TestReconcilePoolWith_OrphanDoesNotBlockAllocation(t *testing.T) {
 	m := NewManager(r, nil, nil)
 
 	// furiosa has orphan session (no dir) - should NOT block allocation
-	m.ReconcilePoolWith([]string{}, []string{"furiosa"})
+	ReconcilePoolWith(m, []string{}, []string{"furiosa"})
 
 	// furiosa should be available (orphan session killed, name freed)
 	name, err := m.namePool.Allocate()
@@ -1305,7 +1305,7 @@ func TestBuildBranchName(t *testing.T) {
 			g := git.NewGit(tmpDir)
 			m := NewManager(r, g, nil)
 
-			got := m.buildBranchName("alpha", tt.issue)
+			got := buildBranchName(m, "alpha", tt.issue)
 
 			// For default templates, just check prefix since timestamp varies
 			if tt.template == "" {
@@ -1355,7 +1355,7 @@ func TestBuildBranchName_ClaudeActionCompatible(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := m.buildBranchName(c.polecat, c.issue)
+			got := buildBranchName(m, c.polecat, c.issue)
 			if strings.Contains(got, "@") {
 				t.Fatalf("buildBranchName(%q, %q) = %q contains @", c.polecat, c.issue, got)
 			}
@@ -1427,10 +1427,10 @@ func TestAddWithOptions_NoPrimeMDCreatedLocally(t *testing.T) {
 		t.Fatalf("write README.md: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("README.md"); err != nil {
+	if err := git.Add(mayorGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit without PRIME.md"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit without PRIME.md"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -1456,7 +1456,7 @@ func TestAddWithOptions_NoPrimeMDCreatedLocally(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Create polecat
-	polecat, err := m.AddWithOptions("TestNoLocal", AddOptions{})
+	polecat, err := AddWithOptions(m, "TestNoLocal", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
@@ -1485,19 +1485,19 @@ func TestAddWithOptions_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 	mgr, mayorRig := setupCanonicalBranchManagerTest(t)
 
 	mayorGit := git.NewGit(mayorRig)
-	baseSHA, err := mayorGit.Rev("origin/main")
+	baseSHA, err := git.Rev(mayorGit, "origin/main")
 	if err != nil {
 		t.Fatalf("resolve origin/main: %v", err)
 	}
 	staleSHA := createStalePolecatCommit(t, mayorRig, "main", "polecat/stale-source")
 
-	polecat, err := mgr.AddWithOptions("toast", AddOptions{})
+	polecat, err := AddWithOptions(mgr, "toast", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
 
 	worktreeGit := git.NewGit(polecat.ClonePath)
-	staleAncestor, err := worktreeGit.IsAncestor(staleSHA, polecat.Branch)
+	staleAncestor, err := git.IsAncestor(worktreeGit, staleSHA, polecat.Branch)
 	if err != nil {
 		t.Fatalf("check stale ancestry: %v", err)
 	}
@@ -1505,7 +1505,7 @@ func TestAddWithOptions_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 		t.Fatalf("new polecat branch %q unexpectedly includes stale local commit %s", polecat.Branch, staleSHA)
 	}
 
-	baseAncestor, err := worktreeGit.IsAncestor(baseSHA, polecat.Branch)
+	baseAncestor, err := git.IsAncestor(worktreeGit, baseSHA, polecat.Branch)
 	if err != nil {
 		t.Fatalf("check canonical ancestry: %v", err)
 	}
@@ -1522,7 +1522,7 @@ func TestAllocateAndAdd_CriticalDiskLeavesNoPolecatOrAllocation(t *testing.T) {
 	}
 	t.Cleanup(func() { checkDiskSpace = originalCheck })
 
-	name, polecat, err := mgr.AllocateAndAdd(AddOptions{})
+	name, polecat, err := AllocateAndAdd(mgr, AddOptions{})
 	if !errors.Is(err, ErrDiskSpaceLow) {
 		t.Fatalf("AllocateAndAdd error = %v, want ErrDiskSpaceLow", err)
 	}
@@ -1546,7 +1546,7 @@ func TestAllocateAndAdd_RunsWispSetupCommand(t *testing.T) {
 	mgr, _ := setupCanonicalBranchManagerTest(t)
 	writeWispSetupCommand(t, mgr, setupCommandWriteMarker("setup-marker"))
 
-	_, polecat, err := mgr.AllocateAndAdd(AddOptions{})
+	_, polecat, err := AllocateAndAdd(mgr, AddOptions{})
 	if err != nil {
 		t.Fatalf("AllocateAndAdd: %v", err)
 	}
@@ -1564,7 +1564,7 @@ func TestAddWithOptions_SetupCommandFailureRollsBack(t *testing.T) {
 	mgr, _ := setupCanonicalBranchManagerTest(t)
 	writeWispSetupCommand(t, mgr, setupCommandFail())
 
-	_, err := mgr.AddWithOptions("toast", AddOptions{})
+	_, err := AddWithOptions(mgr, "toast", AddOptions{})
 	if err == nil {
 		t.Fatal("AddWithOptions should fail when setup_command fails")
 	}
@@ -1581,14 +1581,14 @@ func TestAddWithOptions_SetupCommandFailureRollsBack(t *testing.T) {
 func TestReuseIdlePolecat_RunsSetupCommand(t *testing.T) {
 	mgr, _ := setupCanonicalBranchManagerTest(t)
 
-	polecat, err := mgr.AddWithOptions("toast", AddOptions{})
+	polecat, err := AddWithOptions(mgr, "toast", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
-	_ = git.NewGit(polecat.ClonePath).CleanForce()
+	_ = git.CleanForce(git.NewGit(polecat.ClonePath))
 	writeWispSetupCommand(t, mgr, setupCommandWriteMarker("reuse-setup-marker"))
 
-	reused, err := mgr.ReuseIdlePolecat("toast", AddOptions{HookBead: "gt-next"})
+	reused, err := ReuseIdlePolecat(mgr, "toast", AddOptions{HookBead: "gt-next"})
 	if err != nil {
 		t.Fatalf("ReuseIdlePolecat: %v", err)
 	}
@@ -1608,14 +1608,14 @@ func TestReuseIdlePolecat_RunsSetupCommand(t *testing.T) {
 func TestReuseIdlePolecat_SetupCommandFailureCleansWorktree(t *testing.T) {
 	mgr, _ := setupCanonicalBranchManagerTest(t)
 
-	polecat, err := mgr.AddWithOptions("toast", AddOptions{})
+	polecat, err := AddWithOptions(mgr, "toast", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
-	_ = git.NewGit(polecat.ClonePath).CleanForce()
+	_ = git.CleanForce(git.NewGit(polecat.ClonePath))
 	writeWispSetupCommand(t, mgr, setupCommandWriteMarkerAndFail("dirty-setup-marker"))
 
-	_, err = mgr.ReuseIdlePolecat("toast", AddOptions{HookBead: "gt-next"})
+	_, err = ReuseIdlePolecat(mgr, "toast", AddOptions{HookBead: "gt-next"})
 	if err == nil {
 		t.Fatal("ReuseIdlePolecat should fail when setup_command fails")
 	}
@@ -1623,7 +1623,7 @@ func TestReuseIdlePolecat_SetupCommandFailureCleansWorktree(t *testing.T) {
 		t.Fatalf("error = %q, want setup_command failure", err.Error())
 	}
 
-	dirtyPath := filepath.Join(mgr.clonePath("toast"), "dirty-setup-marker")
+	dirtyPath := filepath.Join(clonePath(mgr, "toast"), "dirty-setup-marker")
 	if _, statErr := os.Stat(dirtyPath); !os.IsNotExist(statErr) {
 		t.Fatalf("dirty setup marker %s still exists after setup_command cleanup", dirtyPath)
 	}
@@ -1668,24 +1668,24 @@ func TestReuseIdlePolecat_UsesCanonicalOriginDefaultBranch(t *testing.T) {
 	mgr, mayorRig := setupCanonicalBranchManagerTest(t)
 
 	mayorGit := git.NewGit(mayorRig)
-	baseSHA, err := mayorGit.Rev("origin/main")
+	baseSHA, err := git.Rev(mayorGit, "origin/main")
 	if err != nil {
 		t.Fatalf("resolve origin/main: %v", err)
 	}
 
-	polecat, err := mgr.AddWithOptions("toast", AddOptions{})
+	polecat, err := AddWithOptions(mgr, "toast", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
 
 	staleSHA := createStalePolecatCommit(t, polecat.ClonePath, "HEAD", "polecat/toast-stale")
 
-	_, err = mgr.ReuseIdlePolecat("toast", AddOptions{HookBead: "gt-next"})
+	_, err = ReuseIdlePolecat(mgr, "toast", AddOptions{HookBead: "gt-next"})
 	if !errors.Is(err, ErrPolecatNeedsRecovery) {
 		t.Fatalf("ReuseIdlePolecat error = %v, want ErrPolecatNeedsRecovery", err)
 	}
 	worktreeGit := git.NewGit(polecat.ClonePath)
-	currentSHA, err := worktreeGit.Rev("HEAD")
+	currentSHA, err := git.Rev(worktreeGit, "HEAD")
 	if err != nil {
 		t.Fatalf("resolve current HEAD: %v", err)
 	}
@@ -1716,7 +1716,7 @@ func TestAddWithOptions_ResumeBranch(t *testing.T) {
 		t.Fatalf("update-ref origin/%s: %v\n%s", prBranch, err, out)
 	}
 
-	polecat, err := mgr.AddWithOptions("toast", AddOptions{ResumeBranch: prBranch})
+	polecat, err := AddWithOptions(mgr, "toast", AddOptions{ResumeBranch: prBranch})
 	if err != nil {
 		t.Fatalf("AddWithOptions with ResumeBranch: %v", err)
 	}
@@ -1726,7 +1726,7 @@ func TestAddWithOptions_ResumeBranch(t *testing.T) {
 	}
 
 	worktreeGit := git.NewGit(polecat.ClonePath)
-	current, err := worktreeGit.CurrentBranch()
+	current, err := git.CurrentBranch(worktreeGit)
 	if err != nil {
 		t.Fatalf("CurrentBranch: %v", err)
 	}
@@ -1736,7 +1736,7 @@ func TestAddWithOptions_ResumeBranch(t *testing.T) {
 
 	// The PR commit must be reachable from HEAD — proves we attached to the
 	// existing branch rather than starting fresh from main.
-	reachable, err := worktreeGit.IsAncestor(prCommit, "HEAD")
+	reachable, err := git.IsAncestor(worktreeGit, prCommit, "HEAD")
 	if err != nil {
 		t.Fatalf("IsAncestor: %v", err)
 	}
@@ -1823,10 +1823,10 @@ func TestAddWithOptions_NoFilesAddedToRepo(t *testing.T) {
 
 	// Commit everything
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit - clean repo"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit - clean repo"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -1859,7 +1859,7 @@ func TestAddWithOptions_NoFilesAddedToRepo(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Create polecat
-	polecat, err := m.AddWithOptions("TestClean", AddOptions{})
+	polecat, err := AddWithOptions(m, "TestClean", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
@@ -1951,10 +1951,10 @@ func TestAddWithOptions_SettingsInstalledInPolecatsDir(t *testing.T) {
 	}
 
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -1980,7 +1980,7 @@ func TestAddWithOptions_SettingsInstalledInPolecatsDir(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Create polecat
-	polecat, err := m.AddWithOptions("TestSettings", AddOptions{})
+	polecat, err := AddWithOptions(m, "TestSettings", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
@@ -2086,14 +2086,14 @@ func TestPendingMarkerBlocksReallocation(t *testing.T) {
 	if err := os.MkdirAll(polecatsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	pendingPath := m.pendingPath("furiosa")
+	pendingPath := pendingPath(m, "furiosa")
 	if err := os.WriteFile(pendingPath, []byte("999"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	// Simulate a concurrent reconcile (no directories exist, only the marker).
 	// reconcilePoolInternal should treat "furiosa" as in-use via the marker.
-	m.reconcilePoolInternal()
+	reconcilePoolInternal(m)
 
 	// Now allocate — should NOT get furiosa (it's reserved by .pending).
 	name, err := m.namePool.Allocate()
@@ -2127,7 +2127,7 @@ func TestStalePendingMarkerIsCleanedUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pendingPath := m.pendingPath("furiosa")
+	pendingPath := pendingPath(m, "furiosa")
 	if err := os.WriteFile(pendingPath, []byte("999"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -2139,7 +2139,7 @@ func TestStalePendingMarkerIsCleanedUp(t *testing.T) {
 	}
 
 	// cleanupOrphanPolecatState should remove stale markers.
-	m.cleanupOrphanPolecatState()
+	cleanupOrphanPolecatState(m)
 
 	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
 		t.Errorf("stale .pending file was not cleaned up by cleanupOrphanPolecatState")
@@ -2159,7 +2159,7 @@ func TestCleanupOrphanPolecatStatePreservesUnverifiedBrokenPolecat(t *testing.T)
 		t.Fatal(err)
 	}
 
-	m.cleanupOrphanPolecatState()
+	cleanupOrphanPolecatState(m)
 
 	if _, err := os.Stat(polecatDir); err != nil {
 		t.Fatalf("broken named polecat dir was removed without safety proof: %v", err)
@@ -2188,7 +2188,7 @@ func TestCleanupOrphanPolecatStatePreservesOldLayoutWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.cleanupOrphanPolecatState()
+	cleanupOrphanPolecatState(m)
 
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("old-layout worktree was removed by orphan cleanup: %v", err)
@@ -2202,7 +2202,7 @@ func TestReclaimBrokenIdlePolecatRemovesCleanStructuralFailure(t *testing.T) {
 		t.Skip("tmux is required to prove no live polecat session")
 	}
 
-	p, err := mgr.AddWithOptions("toast", AddOptions{})
+	p, err := AddWithOptions(mgr, "toast", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
@@ -2210,10 +2210,10 @@ func TestReclaimBrokenIdlePolecatRemovesCleanStructuralFailure(t *testing.T) {
 		t.Fatalf("break worktree .git: %v", err)
 	}
 
-	if err := mgr.ReclaimBrokenIdlePolecat("toast"); err != nil {
+	if err := ReclaimBrokenIdlePolecat(mgr, "toast"); err != nil {
 		t.Fatalf("ReclaimBrokenIdlePolecat: %v", err)
 	}
-	if _, err := os.Stat(mgr.polecatDir("toast")); !os.IsNotExist(err) {
+	if _, err := os.Stat(polecatDir(mgr, "toast")); !os.IsNotExist(err) {
 		t.Fatalf("polecat dir still exists after reclaim, stat err=%v", err)
 	}
 }
@@ -2221,7 +2221,7 @@ func TestReclaimBrokenIdlePolecatRemovesCleanStructuralFailure(t *testing.T) {
 func TestReclaimBrokenIdlePolecatFailsClosedWithoutSessionEvidence(t *testing.T) {
 	mgr, _ := setupCanonicalBranchManagerTest(t)
 
-	p, err := mgr.AddWithOptions("toast", AddOptions{})
+	p, err := AddWithOptions(mgr, "toast", AddOptions{})
 	if err != nil {
 		t.Fatalf("AddWithOptions: %v", err)
 	}
@@ -2229,11 +2229,11 @@ func TestReclaimBrokenIdlePolecatFailsClosedWithoutSessionEvidence(t *testing.T)
 		t.Fatalf("break worktree .git: %v", err)
 	}
 
-	err = mgr.ReclaimBrokenIdlePolecat("toast")
+	err = ReclaimBrokenIdlePolecat(mgr, "toast")
 	if err == nil || !strings.Contains(err.Error(), "session_state=unverified") {
 		t.Fatalf("ReclaimBrokenIdlePolecat error = %v, want session evidence blocker", err)
 	}
-	if _, statErr := os.Stat(mgr.polecatDir("toast")); statErr != nil {
+	if _, statErr := os.Stat(polecatDir(mgr, "toast")); statErr != nil {
 		t.Fatalf("polecat dir should be preserved after blocked reclaim: %v", statErr)
 	}
 }
@@ -2263,10 +2263,10 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -2286,7 +2286,7 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Allocate a name (simulates what gt sling does before AddWithOptions)
-	name, err := m.AllocateName()
+	name, err := AllocateName(m)
 	if err != nil {
 		t.Fatalf("AllocateName: %v", err)
 	}
@@ -2298,7 +2298,7 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 	}
 
 	// Try to create polecat — should fail because origin/main doesn't exist
-	_, err = m.AddWithOptions(name, AddOptions{})
+	_, err = AddWithOptions(m, name, AddOptions{})
 	if err == nil {
 		t.Fatal("AddWithOptions should have failed without origin/main ref")
 	}
@@ -2312,13 +2312,13 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 	}
 
 	// Verify polecat directory was cleaned up
-	polecatDir := m.polecatDir(name)
+	polecatDir := polecatDir(m, name)
 	if _, err := os.Stat(polecatDir); !os.IsNotExist(err) {
 		t.Errorf("polecat directory %s still exists after failed AddWithOptions", polecatDir)
 	}
 
 	// Verify pending marker was cleaned up
-	pendingPath := m.pendingPath(name)
+	pendingPath := pendingPath(m, name)
 	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
 		t.Errorf("pending marker %s still exists after failed AddWithOptions", pendingPath)
 	}
@@ -2347,10 +2347,10 @@ func TestAddWithOptions_RollbackCleansWorktree(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 
@@ -2438,13 +2438,13 @@ esac
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Allocate a name
-	name, err := m.AllocateName()
+	name, err := AllocateName(m)
 	if err != nil {
 		t.Fatalf("AllocateName: %v", err)
 	}
 
 	// AddWithOptions should fail at agent bead creation (mock bd fails on create)
-	_, err = m.AddWithOptions(name, AddOptions{})
+	_, err = AddWithOptions(m, name, AddOptions{})
 	if err == nil {
 		t.Fatal("AddWithOptions should have failed with mock bd failing on create")
 	}
@@ -2458,7 +2458,7 @@ esac
 	}
 
 	// Verify polecat directory was cleaned up
-	polecatDir := m.polecatDir(name)
+	polecatDir := polecatDir(m, name)
 	if _, err := os.Stat(polecatDir); !os.IsNotExist(err) {
 		t.Errorf("polecat directory %s still exists after rollback", polecatDir)
 	}
@@ -2557,11 +2557,11 @@ esac
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	m := NewManager(&rig.Rig{Name: rigName, Path: rigPath}, git.NewGit(rigPath), nil)
-	agentID := m.agentBeadID("rust")
-	if err := m.createAgentBeadWithRetry(agentID, &beads.AgentFields{RoleType: "polecat", Rig: rigName, AgentState: "spawning"}); err != nil {
+	agentID := agentBeadID(m, "rust")
+	if err := createAgentBeadWithRetry(m, agentID, &beads.AgentFields{RoleType: "polecat", Rig: rigName, AgentState: "spawning"}); err != nil {
 		t.Fatalf("createAgentBeadWithRetry: %v", err)
 	}
-	if err := m.resetAgentBeadForReuse(agentID, "test reset"); err != nil {
+	if err := resetAgentBeadForReuse(m, agentID, "test reset"); err != nil {
 		t.Fatalf("resetAgentBeadForReuse: %v", err)
 	}
 
@@ -2605,10 +2605,10 @@ func TestAllocateAndAdd_NoDuplicateNames(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("."); err != nil {
+	if err := git.Add(mayorGit, "."); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 	cmdRemote := exec.Command("git", "remote", "add", "origin", "/nonexistent/repo")
@@ -2633,7 +2633,7 @@ func TestAllocateAndAdd_NoDuplicateNames(t *testing.T) {
 
 	for i := 0; i < concurrency; i++ {
 		go func() {
-			name, _, err := m.AllocateAndAdd(AddOptions{})
+			name, _, err := AllocateAndAdd(m, AddOptions{})
 			results <- result{name: name, err: err}
 		}()
 	}
@@ -2715,7 +2715,7 @@ func TestReuseIdlePolecat_KillsLiveSession(t *testing.T) {
 	// Call ReuseIdlePolecat — it will kill the session, then fail on worktree
 	// operations (no real git repo). The important thing is it does NOT return
 	// ErrSessionRunning.
-	_, reuseErr := mgr.ReuseIdlePolecat(polecatName, AddOptions{})
+	_, reuseErr := ReuseIdlePolecat(mgr, polecatName, AddOptions{})
 
 	// Verify it did NOT return ErrSessionRunning (the old buggy behavior)
 	if errors.Is(reuseErr, ErrSessionRunning) {
@@ -2779,10 +2779,10 @@ func TestRepairWorktreeWithOptions_KillsLiveSession(t *testing.T) {
 		t.Fatalf("write README: %v", err)
 	}
 	mayorGit := git.NewGit(mayorRig)
-	if err := mayorGit.Add("README.md"); err != nil {
+	if err := git.Add(mayorGit, "README.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	if err := mayorGit.Commit("Initial commit"); err != nil {
+	if err := git.Commit(mayorGit, "Initial commit"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 	cmd = exec.Command("git", "remote", "add", "origin", mayorRig)
@@ -2798,7 +2798,7 @@ func TestRepairWorktreeWithOptions_KillsLiveSession(t *testing.T) {
 
 	polecatName := "toast"
 	oldClonePath := filepath.Join(rigPath, "polecats", polecatName, rigName)
-	if err := mayorGit.WorktreeAddFromRef(oldClonePath, "old-toast", "HEAD"); err != nil {
+	if err := git.WorktreeAddFromRef(mayorGit, oldClonePath, "old-toast", "HEAD"); err != nil {
 		t.Fatalf("create old worktree: %v", err)
 	}
 
@@ -2817,7 +2817,7 @@ func TestRepairWorktreeWithOptions_KillsLiveSession(t *testing.T) {
 	TouchSessionHeartbeat(townRoot, sessionName)
 
 	mgr := NewManager(&rig.Rig{Name: rigName, Path: rigPath}, git.NewGit(rigPath), tm)
-	if _, err := mgr.RepairWorktreeWithOptions(polecatName, true, AddOptions{HookBead: "gt-next"}); err != nil {
+	if _, err := RepairWorktreeWithOptions(mgr, polecatName, true, AddOptions{HookBead: "gt-next"}); err != nil {
 		t.Fatalf("RepairWorktreeWithOptions: %v", err)
 	}
 
@@ -2879,7 +2879,7 @@ func TestReuseIdlePolecat_KillsStaleSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, reuseErr := mgr.ReuseIdlePolecat(polecatName, AddOptions{})
+	_, reuseErr := ReuseIdlePolecat(mgr, polecatName, AddOptions{})
 
 	// Should not return ErrSessionRunning
 	if errors.Is(reuseErr, ErrSessionRunning) {
@@ -2930,7 +2930,7 @@ func TestReuseIdlePolecat_NoSessionNoop(t *testing.T) {
 	mgr := NewManager(r, git.NewGit(rigPath), tm)
 
 	// No tmux session, no heartbeat — the common idle case
-	_, reuseErr := mgr.ReuseIdlePolecat(polecatName, AddOptions{})
+	_, reuseErr := ReuseIdlePolecat(mgr, polecatName, AddOptions{})
 
 	// Should not return ErrSessionRunning
 	if errors.Is(reuseErr, ErrSessionRunning) {

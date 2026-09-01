@@ -146,8 +146,10 @@ func TestReviewOnlyCloseRejectsNotesAndDesignEvidence(t *testing.T) {
 		ID:          "gt-review",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Notes:       "FINDINGS: reviewed and no code changes needed",
-		Design:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+		IssueAuditFields: beads.IssueAuditFields{
+			Notes:  "FINDINGS: reviewed and no code changes needed",
+			Design: "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+		},
 	}
 
 	reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, "abc123")
@@ -161,11 +163,13 @@ func TestReviewOnlyCloseAllowsFreshEvidenceComment(t *testing.T) {
 		ID:          "gt-review",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Comments: []beads.Comment{
-			{
-				Author:    "gastown/polecats/toast",
-				CreatedAt: "2026-07-01T12:05:00Z",
-				Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+		IssueAgentFields: beads.IssueAgentFields{
+			Comments: []beads.Comment{
+				{
+					Author:    "gastown/polecats/toast",
+					CreatedAt: "2026-07-01T12:05:00Z",
+					Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
+				},
 			},
 		},
 	}
@@ -181,9 +185,11 @@ func TestReviewOnlyGeneratedCommentsDoNotCountAsEvidence(t *testing.T) {
 		ID:          "gt-review",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Comments: []beads.Comment{
-			{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:05:00Z", Text: "verified_push_skipped: --skip-verify on no-MR close\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
-			{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:06:00Z", Text: "MR created: gt-wisp-abc\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
+		IssueAgentFields: beads.IssueAgentFields{
+			Comments: []beads.Comment{
+				{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:05:00Z", Text: "verified_push_skipped: --skip-verify on no-MR close\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
+				{Author: "gastown/polecats/toast", CreatedAt: "2026-07-01T12:06:00Z", Text: "MR created: gt-wisp-abc\nPR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123"},
+			},
 		},
 	}
 
@@ -207,11 +213,11 @@ func TestReviewOnlyCloseRejectsStaleComment(t *testing.T) {
 				ID:          "gt-review",
 				Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 				Assignee:    "gastown/polecats/toast",
-				Comments: []beads.Comment{{
+				IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 					Author:    "gastown/polecats/toast",
 					CreatedAt: tt.createdAt,
 					Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
-				}},
+				}}},
 			}
 
 			reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, "abc123")
@@ -243,11 +249,11 @@ func TestReviewOnlyCloseRejectsWrongAuthorOrHead(t *testing.T) {
 				ID:          "gt-review",
 				Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 				Assignee:    "gastown/polecats/toast",
-				Comments: []beads.Comment{{
+				IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 					Author:    tt.author,
 					CreatedAt: "2026-07-01T12:05:00Z",
 					Text:      text,
-				}},
+				}}},
 			}
 			reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, tt.current)
 			if reason == "" || !fatal {
@@ -272,11 +278,11 @@ func TestReviewOnlyCloseRejectsMissingAssigneeOrInvalidCommentTime(t *testing.T)
 				ID:          "gt-review",
 				Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 				Assignee:    tt.assignee,
-				Comments: []beads.Comment{{
+				IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 					Author:    "gastown/polecats/toast",
 					CreatedAt: tt.createdAt,
 					Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
-				}},
+				}}},
 			}
 			reason, fatal := doneReviewOnlyCloseSkipReasonForHead(nil, issue.ID, issue, "abc123")
 			if reason == "" || !fatal {
@@ -300,9 +306,9 @@ func TestNonReviewOnlyCloseDoesNotRequireEvidence(t *testing.T) {
 
 func TestNonReviewOnlyReviewGateDoesNotChangeCriteriaHandling(t *testing.T) {
 	issue := &beads.Issue{
-		ID:                 "gt-review",
-		Description:        "no_merge: true\n",
-		AcceptanceCriteria: "- [ ] still open\n",
+		ID:               "gt-review",
+		Description:      "no_merge: true\n",
+		IssueAuditFields: beads.IssueAuditFields{AcceptanceCriteria: "- [ ] still open\n"},
 	}
 
 	reason, fatal := doneSourceCloseSkipReason(nil, issue.ID, issue)
@@ -476,11 +482,11 @@ func TestDirectMergeRejectsUnsafeSourceBeforePush(t *testing.T) {
 		Type:        "task",
 		Description: "review_only: true\nattached_at: 2026-07-01T12:00:00Z\n",
 		Assignee:    "gastown/polecats/toast",
-		Comments: []beads.Comment{{
+		IssueAgentFields: beads.IssueAgentFields{Comments: []beads.Comment{{
 			Author:    "gastown/polecats/toast",
 			CreatedAt: "2026-07-01T12:05:00Z",
 			Text:      "PR-SHERIFF-EVIDENCE: pass\nhead_sha: abc123",
-		}},
+		}}},
 	}
 	tests := []struct {
 		name        string
@@ -521,7 +527,7 @@ func TestDirectMergeRejectsUnsafeSourceBeforePush(t *testing.T) {
 		{
 			name:       "unchecked criteria",
 			issueID:    "gt-work",
-			issue:      &beads.Issue{ID: "gt-work", Type: "task", AcceptanceCriteria: "- [ ] still open\n"},
+			issue:      &beads.Issue{ID: "gt-work", Type: "task", IssueAuditFields: beads.IssueAuditFields{AcceptanceCriteria: "- [ ] still open\n"}},
 			wantReason: "unchecked acceptance criteria",
 		},
 		{
@@ -1568,7 +1574,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 		defer os.Remove(implFile)
 
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1588,7 +1594,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		// Verify uncommitted
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1597,15 +1603,15 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		// Simulate the auto-commit safety net
-		if err := g.StageSafetyNet(); err != nil {
+		if err := gitpkg.StageSafetyNet(g); err != nil {
 			t.Fatalf("StageSafetyNet: %v", err)
 		}
-		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+		if err := gitpkg.Commit(g, "fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
 		}
 
 		// Verify clean after auto-commit
-		ws2, err := g.CheckUncommittedWork()
+		ws2, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork after commit: %v", err)
 		}
@@ -1626,7 +1632,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 		defer os.RemoveAll(runtimeDir)
 
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1669,7 +1675,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		writeFile(".beads/.runtime/state.json", "{}\n")
 
 		g := gitpkg.NewGit(repo)
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1677,14 +1683,14 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatal("expected mixed source and runtime changes")
 		}
 
-		if err := g.StageSafetyNet(); err != nil {
+		if err := gitpkg.StageSafetyNet(g); err != nil {
 			t.Fatalf("StageSafetyNet: %v", err)
 		}
-		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+		if err := gitpkg.Commit(g, "fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
 		}
 
-		changed, err := g.DiffNameOnly("HEAD~1", "HEAD")
+		changed, err := gitpkg.DiffNameOnly(g, "HEAD~1", "HEAD")
 		if err != nil {
 			t.Fatalf("DiffNameOnly: %v", err)
 		}
@@ -1692,7 +1698,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatalf("auto-save committed %v, want only src/handler.go", changed)
 		}
 
-		wsAfter, err := g.CheckUncommittedWork()
+		wsAfter, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork after commit: %v", err)
 		}
@@ -1722,7 +1728,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		g := gitpkg.NewGit(repo)
-		ws, err := g.CheckUncommittedWork()
+		ws, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork: %v", err)
 		}
@@ -1730,14 +1736,14 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatal("source plus binary should not be safety-net clean before auto-save")
 		}
 
-		if err := g.StageSafetyNet(); err != nil {
+		if err := gitpkg.StageSafetyNet(g); err != nil {
 			t.Fatalf("StageSafetyNet: %v", err)
 		}
-		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+		if err := gitpkg.Commit(g, "fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
 			t.Fatalf("git commit: %v", err)
 		}
 
-		changed, err := g.DiffNameOnly("HEAD~1", "HEAD")
+		changed, err := gitpkg.DiffNameOnly(g, "HEAD~1", "HEAD")
 		if err != nil {
 			t.Fatalf("DiffNameOnly: %v", err)
 		}
@@ -1745,7 +1751,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 			t.Fatalf("auto-save committed %v, want only src.go", changed)
 		}
 
-		wsAfter, err := g.CheckUncommittedWork()
+		wsAfter, err := gitpkg.CheckUncommittedWork(g)
 		if err != nil {
 			t.Fatalf("CheckUncommittedWork after commit: %v", err)
 		}
@@ -1781,7 +1787,7 @@ func TestSyncGuardWithUncommittedChanges(t *testing.T) {
 	}
 
 	g := gitpkg.NewGit(dir)
-	ws, err := g.CheckUncommittedWork()
+	ws, err := gitpkg.CheckUncommittedWork(g)
 	if err != nil {
 		t.Fatalf("CheckUncommittedWork: %v", err)
 	}

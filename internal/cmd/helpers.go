@@ -124,7 +124,7 @@ func isShellCommand(cmd string) bool {
 func ensureDefaultBranch(dir, roleName, rigPath string) error {
 	g := git.NewGit(dir)
 
-	branch, err := g.CurrentBranch()
+	branch, err := git.CurrentBranch(g)
 	if err != nil {
 		// Not a git repo or other error, skip check
 		return fmt.Errorf("could not determine current branch: %w", err)
@@ -138,7 +138,7 @@ func ensureDefaultBranch(dir, roleName, rigPath string) error {
 
 	if branch == defaultBranch {
 		// Already on default branch — still pull to ensure up-to-date
-		if err := g.Pull("origin", defaultBranch); err != nil {
+		if err := git.Pull(g, "origin", defaultBranch); err != nil {
 			return fmt.Errorf("pull failed on %s: %w", defaultBranch, err)
 		}
 		fmt.Printf("  %s Already on %s, pulled latest\n", style.Success.Render("✓"), defaultBranch)
@@ -147,12 +147,12 @@ func ensureDefaultBranch(dir, roleName, rigPath string) error {
 
 	// Not on default branch — switch to it
 	fmt.Printf("  %s is on branch '%s', switching to %s...\n", roleName, branch, defaultBranch)
-	if err := g.Checkout(defaultBranch); err != nil {
+	if err := git.Checkout(g, defaultBranch); err != nil {
 		return fmt.Errorf("could not switch to %s: %w", defaultBranch, err)
 	}
 
 	// Pull latest
-	if err := g.Pull("origin", defaultBranch); err != nil {
+	if err := git.Pull(g, "origin", defaultBranch); err != nil {
 		return fmt.Errorf("pull failed on %s: %w", defaultBranch, err)
 	}
 	fmt.Printf("  %s Switched to %s and pulled latest\n", style.Success.Render("✓"), defaultBranch)
@@ -166,7 +166,7 @@ func ensureDefaultBranch(dir, roleName, rigPath string) error {
 func warnIfNotDefaultBranch(dir, roleName, rigPath string) {
 	g := git.NewGit(dir)
 
-	branch, err := g.CurrentBranch()
+	branch, err := git.CurrentBranch(g)
 	if err != nil {
 		return
 	}

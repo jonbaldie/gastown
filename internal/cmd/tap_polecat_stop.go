@@ -39,103 +39,119 @@ func init() {
 	tapCmd.AddCommand(tapPolecatStopCmd)
 }
 
-func runTapPolecatStop(cmd *cobra.Command, args []string) error {
-	// Only applies to polecats
-	polecatName := os.Getenv("GT_POLECAT")
-	if polecatName == "" {
-		return nil // Not a polecat session — nothing to do
+func runTapPolecatStop(_ *cobra.Command, _ []string) error {
+	polecatName, sessionName, townRoot, ok := tapPolecatContext()
+	if !ok || tapPolecatAlreadyDone(townRoot, sessionName) {
+		return nil
 	}
 
-	sessionName := os.Getenv("GT_SESSION")
-	if sessionName == "" {
-		return nil // No session tracking — can't check state
-	}
-
-	// Find town root for heartbeat check
-	townRoot, _, _ := workspace.FindFromCwdWithFallback()
-	if townRoot == "" {
-		townRoot = os.Getenv("GT_TOWN_ROOT")
-	}
-	if townRoot == "" {
-		return nil // Can't find workspace — exit quietly
-	}
-
-	// Check heartbeat state: if already "exiting" or "idle", gt done already ran
-	hb := polecat.ReadSessionHeartbeat(townRoot, sessionName)
-	if hb != nil {
-		state := hb.EffectiveState()
-		if state == polecat.HeartbeatExiting || state == polecat.HeartbeatIdle {
-			return nil // gt done already ran or polecat is idle — nothing to do
-		}
-	}
-
-	// Check if the polecat is on a feature branch with work to submit.
 	rigName := os.Getenv("GT_RIG")
 	if rigName == "" {
 		return nil
 	}
 
-	// Reconstruct polecat worktree path
-	polecatDir := filepath.Join(townRoot, rigName, "polecats", polecatName)
-	// Try the nested clone layout first (polecats/<name>/<rig>/)
-	cloneDir := filepath.Join(polecatDir, rigName)
-	if _, err := os.Stat(filepath.Join(cloneDir, ".git")); err != nil {
-		// Fall back to flat layout
-		cloneDir = polecatDir
-		if _, err := os.Stat(filepath.Join(cloneDir, ".git")); err != nil {
-			return nil // No git repo found — exit quietly
-		}
+	cloneDir, ok := tapPolecatCloneDir(townRoot, rigName, polecatName)
+	if !ok {
+		return nil
 	}
 
-	// Check current branch — skip if on main/master
-	branchCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "HEAD")
-	branchOut, err := branchCmd.Output()
-	if err != nil {
-		return nil // Can't determine branch — exit quietly
-	}
-	branch := strings.TrimSpace(string(branchOut))
-	if branch == "main" || branch == "master" || branch == "HEAD" {
-		return nil // On default branch — nothing to submit
+	branch, ok := tapPolecatBranch(cloneDir)
+	if !ok || isDefaultBranch(branch) {
+		return nil
 	}
 
 	pending, reason, err := polecatStopPendingWork(cloneDir, branch)
 	if err != nil || !pending {
-		return nil // Can't check, or no work to submit — don't block session stop
+		return nil
 	}
 
-	// Polecat has pending work! Run gt done as a safety net.
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "⚠️  Polecat %s has pending work on branch %s (%s)\n", polecatName, branch, reason)
-	fmt.Fprintf(os.Stderr, "   Auto-running gt done as safety net...\n")
-	fmt.Fprintf(os.Stderr, "\n")
+	runTapPolecatDone(polecatName, branch, reason, cloneDir, os.Stderr)
+	return nil
+}
 
-	// Find gt binary path
+func tapPolecatContext() (polecatName, sessionName, townRoot string, ok bool) {
+	polecatName = os.Getenv("GT_POLECAT")
+	sessionName = os.Getenv("GT_SESSION")
+	if polecatName == "" || sessionName == "" {
+		return "", "", "", false
+	}
+
+	townRoot, _, _ = workspace.FindFromCwdWithFallback()
+	if townRoot == "" {
+		townRoot = os.Getenv("GT_TOWN_ROOT")
+	}
+	return polecatName, sessionName, townRoot, townRoot != ""
+}
+
+func tapPolecatAlreadyDone(townRoot, sessionName string) bool {
+	hb := polecat.ReadSessionHeartbeat(townRoot, sessionName)
+	if hb == nil {
+		return false
+	}
+	state := hb.EffectiveState()
+	return state == polecat.HeartbeatExiting || state == polecat.HeartbeatIdle
+}
+
+func tapPolecatCloneDir(townRoot, rigName, polecatName string) (string, bool) {
+	polecatDir := filepath.Join(townRoot, rigName, "polecats", polecatName)
+	cloneDir := filepath.Join(polecatDir, rigName)
+	if hasGitDirectory(cloneDir) {
+		return cloneDir, true
+	}
+	if hasGitDirectory(polecatDir) {
+		return polecatDir, true
+	}
+	return "", false
+}
+
+func hasGitDirectory(path string) bool {
+	_, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil
+}
+
+func tapPolecatBranch(cloneDir string) (string, bool) {
+	branchOut, err := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(branchOut)), true
+}
+
+func isDefaultBranch(branch string) bool {
+	if branch == "main" || branch == "master" || branch == "HEAD" {
+		return true
+	}
+	return false
+}
+
+func runTapPolecatDone(polecatName, branch, reason, cloneDir string, stderr *os.File) {
+	fmt.Fprintf(stderr, "\n")
+	fmt.Fprintf(stderr, "⚠️  Polecat %s has pending work on branch %s (%s)\n", polecatName, branch, reason)
+	fmt.Fprintf(stderr, "   Auto-running gt done as safety net...\n")
+	fmt.Fprintf(stderr, "\n")
+
 	gtBin, err := os.Executable()
 	if err != nil {
 		gtBin = "gt"
 	}
 
-	// Run gt done in the polecat's worktree context
 	doneCmd := exec.Command(gtBin, "done")
 	doneCmd.Dir = cloneDir
 	doneCmd.Stdout = os.Stdout
-	doneCmd.Stderr = os.Stderr
+	doneCmd.Stderr = stderr
 	// Inherit environment (GT_POLECAT, GT_RIG, etc. are already set)
 	doneCmd.Env = os.Environ()
 
 	if err := doneCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Auto gt done failed: %v\n", err)
-		fmt.Fprintf(os.Stderr, "   Witness will handle cleanup.\n")
+		fmt.Fprintf(stderr, "⚠️  Auto gt done failed: %v\n", err)
+		fmt.Fprintf(stderr, "   Witness will handle cleanup.\n")
 		// Don't return error — don't block session stop
-		return nil
 	}
-
-	return nil
 }
 
 func polecatStopPendingWork(cloneDir, branch string) (bool, string, error) {
 	g := git.NewGit(cloneDir)
-	workStatus, err := g.CheckUncommittedWork()
+	workStatus, err := git.CheckUncommittedWork(g)
 	if err != nil {
 		return false, "", err
 	}
@@ -147,7 +163,7 @@ func polecatStopPendingWork(cloneDir, branch string) (bool, string, error) {
 		return true, fmt.Sprintf("%d branch stash(es)", workStatus.StashCount), nil
 	}
 
-	targetStatus, err := g.BranchTargetStatus(branch, "origin", nil)
+	targetStatus, err := git.BranchTargetStatus(g, branch, "origin", nil)
 	if err != nil {
 		return false, "", err
 	}

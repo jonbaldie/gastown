@@ -64,61 +64,58 @@ func applySGR(params string, dim bool) bool {
 		return false
 	}
 	fields := strings.Split(params, ";")
-	for i := 0; i < len(fields); i++ {
-		switch fields[i] {
-		case "", "0":
-			dim = false
-		case "2":
-			dim = true
-		case "22":
-			dim = false
-		case "38", "48", "58":
-			if i+1 >= len(fields) {
-				continue
-			}
-			switch fields[i+1] {
-			case "5":
-				i += 2
-			case "2":
-				i += 4
-			}
-		}
+	fieldCount := len(fields)
+	for i := 0; i < fieldCount; i++ {
+		var skip int
+		dim, skip = applySGRField(fields, i, dim)
+		i += skip
 	}
 	return dim
+}
+
+func applySGRField(fields []string, index int, dim bool) (bool, int) {
+	switch fields[index] {
+	case "", "0", "22":
+		return false, 0
+	case "2":
+		return true, 0
+	case "38", "48", "58":
+		if index+1 >= len(fields) {
+			return dim, 0
+		}
+		switch fields[index+1] {
+		case "5":
+			return dim, 2
+		case "2":
+			return dim, 4
+		}
+	}
+	return dim, 0
 }
 
 func stripAnsiTrackDim(s string) ([]rune, []bool) {
 	var plain []rune
 	var dim []bool
 	curDim := false
-	for i := 0; i < len(s); {
+	sLength := len(s)
+	for i := 0; i < sLength; {
 		if s[i] == 0x1b {
 			if i+1 < len(s) && s[i+1] == '[' {
-				j := i + 2
-				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
-					j++
-				}
-				if j >= len(s) {
+				next, nextDim, complete := consumeCSISequence(s, i, curDim)
+				if !complete {
 					break
 				}
-				if s[j] == 'm' {
-					curDim = applySGR(s[i+2:j], curDim)
-				}
-				i = j + 1
+				i = next
+				curDim = nextDim
 				continue
 			}
-			if i+1 < len(s) && s[i+1] == ']' {
-				j := i + 2
-				for j < len(s) && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\') {
-					j++
-				}
-				if j >= len(s) {
+			if i+1 < sLength && s[i+1] == ']' {
+				next, nextDim, complete := consumeOSCSequence(s, i, curDim)
+				if !complete {
 					break
 				}
-				if s[j] == 0x1b {
-					j++
-				}
-				i = j + 1
+				i = next
+				curDim = nextDim
 				continue
 			}
 			i += 2
@@ -132,11 +129,43 @@ func stripAnsiTrackDim(s string) ([]rune, []bool) {
 	return plain, dim
 }
 
+func consumeCSISequence(s string, start int, dim bool) (int, bool, bool) {
+	sLength := len(s)
+	j := start + 2
+	for j < sLength && (s[j] < 0x40 || s[j] > 0x7e) {
+		j++
+	}
+	if j >= sLength {
+		return 0, dim, false
+	}
+	if s[j] == 'm' {
+		dim = applySGR(s[start+2:j], dim)
+	}
+	return j + 1, dim, true
+}
+
+func consumeOSCSequence(s string, start int, dim bool) (int, bool, bool) {
+	sLength := len(s)
+	j := start + 2
+	for j < sLength && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < sLength && s[j+1] == '\\') {
+		j++
+	}
+	if j >= sLength {
+		return 0, dim, false
+	}
+	if s[j] == 0x1b {
+		j++
+	}
+	return j + 1, dim, true
+}
+
 func runeIndex(haystack, needle []rune) int {
-	if len(needle) == 0 || len(needle) > len(haystack) {
+	needleCount := len(needle)
+	haystackCount := len(haystack)
+	if needleCount == 0 || needleCount > haystackCount {
 		return -1
 	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
+	for i := 0; i+needleCount <= haystackCount; i++ {
 		match := true
 		for j := range needle {
 			if haystack[i+j] != needle[j] {
@@ -167,8 +196,9 @@ func splitRunesAndDim(plain []rune, dim []bool) ([][]rune, [][]bool) {
 	var lines [][]rune
 	var lineDims [][]bool
 	start := 0
-	for i := 0; i <= len(plain); i++ {
-		if i == len(plain) || plain[i] == '\n' {
+	plainCount := len(plain)
+	for i := 0; i <= plainCount; i++ {
+		if i == plainCount || plain[i] == '\n' {
 			lines = append(lines, plain[start:i])
 			lineDims = append(lineDims, dim[start:i])
 			start = i + 1
@@ -179,11 +209,17 @@ func splitRunesAndDim(plain []rune, dim []bool) ([][]rune, [][]bool) {
 
 func trimRunesAndDim(runes []rune, dim []bool) ([]rune, []bool) {
 	isSpace := func(r rune) bool { return r == ' ' || r == '\t' || r == '\u00a0' }
-	for len(runes) > 0 && isSpace(runes[0]) {
+	for {
+		if len(runes) == 0 || !isSpace(runes[0]) {
+			break
+		}
 		runes = runes[1:]
 		dim = dim[1:]
 	}
-	for len(runes) > 0 && isSpace(runes[len(runes)-1]) {
+	for {
+		if len(runes) == 0 || !isSpace(runes[len(runes)-1]) {
+			break
+		}
 		runes = runes[:len(runes)-1]
 		dim = dim[:len(dim)-1]
 	}
@@ -283,7 +319,7 @@ func (t *Tmux) pollSubmission(target, needle, promptPrefix string, attempts int)
 }
 
 func (t *Tmux) submitComposer(target, message, promptPrefix string) error {
-	enterErr := t.sendEnterVerified(target)
+	enterErr := t.SendEnterVerified(target)
 	needle := submitNeedle(message)
 	if needle == "" {
 		return enterErr
@@ -317,7 +353,7 @@ func (t *Tmux) recoverStrandedComposer(target, message, needle, promptPrefix str
 			return fmt.Errorf("%w (retype failed: %v)", ErrSubmitNotVerified, err)
 		}
 		time.Sleep(adaptiveTextDelay(len(message)))
-		_ = t.sendEnterVerified(target)
+		_ = t.SendEnterVerified(target)
 	case probeStranded, probeComposerDirty, probeUnknown:
 		return fmt.Errorf("%w (composer state after C-j: %s)", ErrSubmitNotVerified, probe)
 	}

@@ -159,27 +159,35 @@ func getConvoyInfoForIssue(issueID string) *ConvoyInfo {
 		return &ConvoyInfo{ID: convoyID}
 	}
 
-	var convoys []struct {
-		Labels      []string `json:"labels"`
-		Description string   `json:"description"`
-	}
-	if err := json.Unmarshal(stdout, &convoys); err != nil || len(convoys) == 0 {
+	convoys, err := decodeConvoyInfo(stdout)
+	if err != nil || len(convoys) == 0 {
 		return &ConvoyInfo{ID: convoyID}
 	}
+	return convoyInfoFromRecord(convoyID, convoys[0])
+}
 
+type convoyInfoRecord struct {
+	Labels      []string `json:"labels"`
+	Description string   `json:"description"`
+}
+
+func decodeConvoyInfo(stdout []byte) ([]convoyInfoRecord, error) {
+	var convoys []convoyInfoRecord
+	if err := json.Unmarshal(stdout, &convoys); err != nil {
+		return nil, err
+	}
+	return convoys, nil
+}
+
+func convoyInfoFromRecord(convoyID string, record convoyInfoRecord) *ConvoyInfo {
 	info := &ConvoyInfo{ID: convoyID}
-
-	// Check for gt:owned label
-	for _, label := range convoys[0].Labels {
+	for _, label := range record.Labels {
 		if label == "gt:owned" {
 			info.Owned = true
 			break
 		}
 	}
-
-	// Parse merge strategy from description using typed accessor
-	info.MergeStrategy = convoyMergeFromFields(convoys[0].Description)
-
+	info.MergeStrategy = convoyMergeFromFields(record.Description)
 	return info
 }
 
@@ -224,8 +232,13 @@ func printConvoyConflict(beadID, convoyID string) {
 		return
 	}
 	townBeads := filepath.Join(townRoot, ".beads")
+	convoyTitle := loadConvoyTitle(townRoot, townBeads, convoyID)
+	printConvoyConflictHeader(beadID, convoyID, convoyTitle)
+	printTrackedConvoyBeads(townBeads, beadID, convoyID)
+	printConvoyConflictOptions(beadID, convoyID)
+}
 
-	var convoyTitle string
+func loadConvoyTitle(townRoot, townBeads, convoyID string) string {
 	showOut, err := BdCmd("show", convoyID, "--json").
 		AllowStale().
 		Dir(townRoot).
@@ -237,46 +250,63 @@ func printConvoyConflict(beadID, convoyID string) {
 			Title string `json:"title"`
 		}
 		if json.Unmarshal(showOut, &items) == nil && len(items) > 0 {
-			convoyTitle = items[0].Title
+			return items[0].Title
 		}
 	}
+	return ""
+}
 
+func printConvoyConflictHeader(beadID, convoyID, convoyTitle string) {
 	fmt.Printf("\n  Conflict: %s is already tracked by convoy %s", beadID, convoyID)
 	if convoyTitle != "" {
 		fmt.Printf(" (%s)", convoyTitle)
 	}
 	fmt.Println()
+}
 
-	// Get all beads in the conflicting convoy
-	tracked, err := getTrackedIssues(townBeads, convoyID)
-	if err == nil && len(tracked) > 0 {
-		fmt.Printf("\n  Beads in convoy %s:\n", convoyID)
-		for _, t := range tracked {
-			marker := " "
-			if t.ID == beadID {
-				marker = "→"
-			}
-			statusIcon := "○"
-			switch t.Status {
-			case "open":
-				statusIcon = "●"
-			case "closed":
-				statusIcon = "✓"
-			case "hooked", "pinned":
-				statusIcon = "◆"
-			}
-			title := t.Title
-			if title == "" {
-				title = "(no title)"
-			}
-			suffix := ""
-			if t.ID == beadID {
-				suffix = "  ← conflict"
-			}
-			fmt.Printf("    %s %s %s  %s [%s]%s\n", marker, statusIcon, t.ID, title, t.Status, suffix)
-		}
+func printTrackedConvoyBeads(beadsDir, beadID, convoyID string) {
+	// Get all beads in the conflicting convoy.
+	tracked, err := getTrackedIssues(beadsDir, convoyID)
+	if err != nil || len(tracked) == 0 {
+		return
 	}
 
+	fmt.Printf("\n  Beads in convoy %s:\n", convoyID)
+	for _, issue := range tracked {
+		printTrackedConvoyBead(beadID, issue)
+	}
+}
+
+func printTrackedConvoyBead(beadID string, issue trackedIssueInfo) {
+	marker := " "
+	if issue.ID == beadID {
+		marker = "→"
+	}
+	title := issue.Title
+	if title == "" {
+		title = "(no title)"
+	}
+	suffix := ""
+	if issue.ID == beadID {
+		suffix = "  ← conflict"
+	}
+	fmt.Printf("    %s %s %s  %s [%s]%s\n", marker, convoyStatusIcon(issue.Status), issue.ID, title, issue.Status, suffix)
+}
+
+func convoyStatusIcon(status string) string {
+	switch status {
+	case "open":
+		return "●"
+	case "closed":
+		return "✓"
+	case "hooked", "pinned":
+		return "◆"
+	default:
+		return "○"
+	}
+}
+
+func printConvoyConflictOptions(beadID, convoyID string) {
 	fmt.Printf("\n  Options:\n")
 	fmt.Printf("    1. Remove the bead from this batch:\n")
 	fmt.Printf("         gt sling <other-beads...> <rig>   (without %s)\n", beadID)

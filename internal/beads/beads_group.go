@@ -136,45 +136,46 @@ func FormatGroupDescription(title string, fields *GroupFields) string {
 // ParseGroupFields extracts group fields from an issue's description.
 func ParseGroupFields(description string) *GroupFields {
 	fields := &GroupFields{}
-
 	for _, line := range strings.Split(description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "null" || value == "" {
-			value = ""
-		}
-
-		switch strings.ToLower(key) {
-		case "name":
-			fields.Name = value
-		case "members":
-			if value != "" {
-				// Parse comma-separated members
-				for _, m := range strings.Split(value, ",") {
-					m = strings.TrimSpace(m)
-					if m != "" {
-						fields.Members = append(fields.Members, m)
-					}
-				}
-			}
-		case "created_by":
-			fields.CreatedBy = value
-		case "created_at":
-			fields.CreatedAt = value
-		}
+		setGroupField(fields, line)
 	}
-
 	return fields
+}
+
+func setGroupField(fields *GroupFields, line string) {
+	key, value, ok := groupFieldLine(line)
+	if !ok {
+		return
+	}
+	if key == "members" {
+		fields.Members = splitCommaSeparatedValues(value)
+		return
+	}
+	if destination, ok := groupStringFields(fields)[key]; ok {
+		*destination = value
+	}
+}
+
+func groupFieldLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	colonIdx := strings.Index(line, ":")
+	if line == "" || colonIdx == -1 {
+		return "", "", false
+	}
+	key := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
+	value := strings.TrimSpace(line[colonIdx+1:])
+	if value == "null" {
+		value = ""
+	}
+	return key, value, true
+}
+
+func groupStringFields(fields *GroupFields) map[string]*string {
+	return map[string]*string{
+		"name":       &fields.Name,
+		"created_by": &fields.CreatedBy,
+		"created_at": &fields.CreatedAt,
+	}
 }
 
 // GroupBeadIDWithPrefix generates a group bead ID using the specified prefix.
@@ -316,25 +317,12 @@ func (b *Beads) UpdateGroupMembers(name string, members []string) (*Issue, error
 
 // AddGroupMember adds a member to a group if not already present.
 func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
-	if err := ValidateGroupName(name); err != nil {
-		return nil, err
-	}
-	if err := ValidateGroupStorage(name, []string{member}); err != nil {
-		return nil, err
-	}
-	issue, fields, err := b.GetGroupByName(name)
+	issue, fields, err := b.groupForMemberChange(name, member)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, fmt.Errorf("group %q not found", name)
-		}
 		return nil, err
 	}
-
-	// Check if already a member
-	for _, m := range fields.Members {
-		if m == member {
-			return issue, nil // Already a member
-		}
+	if groupHasMember(fields.Members, member) {
+		return issue, nil
 	}
 
 	fields.Members = append(fields.Members, member)
@@ -352,6 +340,29 @@ func (b *Beads) AddGroupMember(name string, member string) (*Issue, error) {
 		return nil, fmt.Errorf("fetching updated group: %w", err)
 	}
 	return updated, nil
+}
+
+func (b *Beads) groupForMemberChange(name, member string) (*Issue, *GroupFields, error) {
+	if err := ValidateGroupName(name); err != nil {
+		return nil, nil, err
+	}
+	if err := ValidateGroupStorage(name, []string{member}); err != nil {
+		return nil, nil, err
+	}
+	issue, fields, err := b.GetGroupByName(name)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil, fmt.Errorf("group %q not found", name)
+	}
+	return issue, fields, err
+}
+
+func groupHasMember(members []string, member string) bool {
+	for _, existing := range members {
+		if existing == member {
+			return true
+		}
+	}
+	return false
 }
 
 // RemoveGroupMember removes a member from a group.
@@ -395,7 +406,7 @@ func (b *Beads) RemoveGroupMember(name string, member string) (*Issue, error) {
 // DeleteGroupBead permanently deletes a group bead.
 func (b *Beads) DeleteGroupBead(name string) error {
 	id := GroupBeadID(name)
-	return b.deleteBead(id)
+	return b.DeleteBead(id)
 }
 
 // ListGroupBeads returns all group beads.

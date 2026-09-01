@@ -21,28 +21,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Dog command flags
-var (
-	dogListJSON   bool
-	dogStatusJSON bool
-	dogForce      bool
-	dogRemoveAll  bool
-	dogCallAll    bool
-
-	// Dispatch flags
-	dogDispatchPlugin string
-	dogDispatchRig    string
-	dogDispatchCreate bool
-	dogDispatchDog    string
-	dogDispatchJSON   bool
-	dogDispatchDryRun bool
-
-	// Health-check flags
-	dogHealthJSON          bool
-	dogHealthAutoClear     bool
-	dogHealthMaxInactivity time.Duration
-)
-
 var dogCmd = &cobra.Command{
 	Use:     "dog",
 	Aliases: []string{"dogs"},
@@ -96,7 +74,7 @@ Examples:
   gt dog remove --all
   gt dog remove alpha --force`,
 	Args: func(cmd *cobra.Command, args []string) error {
-		if dogRemoveAll {
+		if commandBoolFlag(cmd, "all") {
 			return nil
 		}
 		if len(args) < 1 {
@@ -141,10 +119,11 @@ Examples:
 	RunE: runDogCall,
 }
 
-var dogDoneCmd = &cobra.Command{
-	Use:   "done [name]",
-	Short: "Mark dog as done and return to idle",
-	Long: `Mark a dog as done with its current work and return to idle state.
+func newDogDoneCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "done [name]",
+		Short: "Mark dog as done and return to idle",
+		Long: `Mark a dog as done with its current work and return to idle state.
 
 Dogs should call this when they complete their work assignment.
 Plugin work is cleared from dog state only. Source-backed bead or formula
@@ -158,8 +137,9 @@ directory (must be run from within a dog's worktree).
 Examples:
   gt dog done         # Auto-detect from cwd
   gt dog done alpha   # Explicit name`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runDogDone,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runDogDone,
+	}
 }
 
 var dogClearCmd = &cobra.Command{
@@ -263,34 +243,34 @@ Examples:
 
 func init() {
 	// List flags
-	dogListCmd.Flags().BoolVar(&dogListJSON, "json", false, "Output as JSON")
+	dogListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Remove flags
-	dogRemoveCmd.Flags().BoolVarP(&dogForce, "force", "f", false, "Force removal even if working")
-	dogRemoveCmd.Flags().BoolVar(&dogRemoveAll, "all", false, "Remove all dogs")
+	dogRemoveCmd.Flags().BoolP("force", "f", false, "Force removal even if working")
+	dogRemoveCmd.Flags().Bool("all", false, "Remove all dogs")
 
 	// Call flags
-	dogCallCmd.Flags().BoolVar(&dogCallAll, "all", false, "Wake all idle dogs")
+	dogCallCmd.Flags().Bool("all", false, "Wake all idle dogs")
 
-	// Clear flags (reuses dogForce from remove)
-	dogClearCmd.Flags().BoolVarP(&dogForce, "force", "f", false, "Force clear even if session exists")
+	// Clear flags
+	dogClearCmd.Flags().BoolP("force", "f", false, "Force clear even if session exists")
 
 	// Status flags
-	dogStatusCmd.Flags().BoolVar(&dogStatusJSON, "json", false, "Output as JSON")
+	dogStatusCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Dispatch flags
-	dogDispatchCmd.Flags().StringVar(&dogDispatchPlugin, "plugin", "", "Plugin name to dispatch (required)")
-	dogDispatchCmd.Flags().StringVar(&dogDispatchRig, "rig", "", "Limit plugin search to specific rig")
-	dogDispatchCmd.Flags().StringVar(&dogDispatchDog, "dog", "", "Dispatch to specific dog (default: any idle)")
-	dogDispatchCmd.Flags().BoolVar(&dogDispatchCreate, "create", false, "Create a dog if none idle")
-	dogDispatchCmd.Flags().BoolVar(&dogDispatchJSON, "json", false, "Output as JSON")
-	dogDispatchCmd.Flags().BoolVarP(&dogDispatchDryRun, "dry-run", "n", false, "Show what would be done without doing it")
+	dogDispatchCmd.Flags().String("plugin", "", "Plugin name to dispatch (required)")
+	dogDispatchCmd.Flags().String("rig", "", "Limit plugin search to specific rig")
+	dogDispatchCmd.Flags().String("dog", "", "Dispatch to specific dog (default: any idle)")
+	dogDispatchCmd.Flags().Bool("create", false, "Create a dog if none idle")
+	dogDispatchCmd.Flags().Bool("json", false, "Output as JSON")
+	dogDispatchCmd.Flags().BoolP("dry-run", "n", false, "Show what would be done without doing it")
 	_ = dogDispatchCmd.MarkFlagRequired("plugin")
 
 	// Health-check flags
-	dogHealthCheckCmd.Flags().BoolVar(&dogHealthJSON, "json", false, "Output as JSON")
-	dogHealthCheckCmd.Flags().BoolVar(&dogHealthAutoClear, "auto-clear", false, "Auto-clear zombie dogs")
-	dogHealthCheckCmd.Flags().DurationVar(&dogHealthMaxInactivity, "max-inactivity", 10*time.Minute, "Max inactivity before considering hung")
+	dogHealthCheckCmd.Flags().Bool("json", false, "Output as JSON")
+	dogHealthCheckCmd.Flags().Bool("auto-clear", false, "Auto-clear zombie dogs")
+	dogHealthCheckCmd.Flags().Duration("max-inactivity", 10*time.Minute, "Max inactivity before considering hung")
 
 	// Add subcommands
 	dogCmd.AddCommand(dogAddCmd)
@@ -298,7 +278,7 @@ func init() {
 	dogCmd.AddCommand(dogListCmd)
 	dogCmd.AddCommand(dogCallCmd)
 	dogCmd.AddCommand(dogClearCmd)
-	dogCmd.AddCommand(dogDoneCmd)
+	dogCmd.AddCommand(newDogDoneCmd())
 	dogCmd.AddCommand(dogStatusCmd)
 	dogCmd.AddCommand(dogDispatchCmd)
 	dogCmd.AddCommand(dogHealthCheckCmd)
@@ -328,7 +308,7 @@ func getDogManager() (*dog.Manager, error) {
 	return dog.NewManager(townRoot, rigsConfig), nil
 }
 
-func runDogAdd(cmd *cobra.Command, args []string) error {
+func runDogAdd(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	// Validate name
@@ -372,78 +352,100 @@ func runDogAdd(cmd *cobra.Command, args []string) error {
 }
 
 func runDogRemove(cmd *cobra.Command, args []string) error {
+	removeAll := commandBoolFlag(cmd, "all")
+	force := commandBoolFlag(cmd, "force")
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
 	}
 
-	var names []string
-	if dogRemoveAll {
-		dogs, err := mgr.List()
-		if err != nil {
-			return fmt.Errorf("listing dogs: %w", err)
-		}
-		for _, d := range dogs {
-			names = append(names, d.Name)
-		}
-		if len(names) == 0 {
-			fmt.Println("No dogs in kennel")
-			return nil
-		}
-	} else {
-		names = args
+	names, err := dogRemovalNames(mgr, removeAll, args)
+	if err != nil {
+		return err
+	}
+	if removeAll && len(names) == 0 {
+		fmt.Println("No dogs in kennel")
+		return nil
 	}
 
-	// Get beads client for cleanup
-	townRoot, _ := workspace.FindFromCwd()
-	var b *beads.Beads
-	if townRoot != "" {
-		b = beads.New(townRoot)
-	}
+	b := dogRemovalBeads()
 
 	var removeErrors []string
 	removed := 0
 
 	for _, name := range names {
-		d, err := mgr.Get(name)
-		if err != nil {
-			style.PrintWarning("dog %s not found, skipping", name)
-			continue
-		}
-
-		// Source-backed ownership must be recovered before removal even with
-		// --force; deleting the dog would strand its authoritative hook.
-		if d.State == dog.StateWorking && !dog.CanClearStateOnly(d.Work, d.WorkKind) {
-			removeErrors = append(removeErrors, fmt.Sprintf("%s: has source-backed work %s; recover or complete it before removal", name, d.Work))
-			continue
-		}
-		if d.State == dog.StateWorking && !dogForce {
-			removeErrors = append(removeErrors, fmt.Sprintf("%s: is working (use --force to remove anyway)", name))
-			continue
-		}
-
-		removedMatch, err := mgr.RemoveIfSnapshotMatchesAfter(name, d.Work, d.WorkStartedAt, d.LastActive, nil)
+		removedOne, err := removeDog(mgr, b, name, force)
 		if err != nil {
 			removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
-		if !removedMatch {
-			removeErrors = append(removeErrors, fmt.Sprintf("%s: assignment changed during removal; retry", name))
-			continue
-		}
-
-		fmt.Printf("✓ Removed dog %s\n", name)
-		removed++
-
-		// Reset agent bead for the dog (preserves persistent identity)
-		if b != nil {
-			if err := b.ResetDogAgentBead(name); err != nil {
-				// Non-fatal: warn but don't fail dog removal
-				fmt.Printf("  Warning: could not reset agent bead: %v\n", err)
-			}
+		if removedOne {
+			removed++
 		}
 	}
 
+	return reportDogRemoval(removed, removeErrors)
+}
+
+func dogRemovalNames(mgr *dog.Manager, removeAll bool, args []string) ([]string, error) {
+	if !removeAll {
+		return args, nil
+	}
+	dogs, err := mgr.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing dogs: %w", err)
+	}
+	names := make([]string, 0, len(dogs))
+	for _, d := range dogs {
+		names = append(names, d.Name)
+	}
+	return names, nil
+}
+
+func dogRemovalBeads() *beads.Beads {
+	townRoot, _ := workspace.FindFromCwd()
+	if townRoot == "" {
+		return nil
+	}
+	return beads.New(townRoot)
+}
+
+func removeDog(mgr *dog.Manager, b *beads.Beads, name string, force bool) (bool, error) {
+	d, err := mgr.Get(name)
+	if err != nil {
+		style.PrintWarning("dog %s not found, skipping", name)
+		return false, nil
+	}
+	if err := validateDogRemoval(d, force); err != nil {
+		return false, err
+	}
+	removed, err := mgr.RemoveIfSnapshotMatchesAfter(name, d.Work, d.WorkStartedAt, d.LastActive, nil)
+	if err != nil {
+		return false, err
+	}
+	if !removed {
+		return false, fmt.Errorf("assignment changed during removal; retry")
+	}
+	fmt.Printf("✓ Removed dog %s\n", name)
+	if b != nil {
+		if err := b.ResetDogAgentBead(name); err != nil {
+			fmt.Printf("  Warning: could not reset agent bead: %v\n", err)
+		}
+	}
+	return true, nil
+}
+
+func validateDogRemoval(d *dog.Dog, force bool) error {
+	if d.State == dog.StateWorking && !dog.CanClearStateOnly(d.Work, d.WorkKind) {
+		return fmt.Errorf("has source-backed work %s; recover or complete it before removal", d.Work)
+	}
+	if d.State == dog.StateWorking && !force {
+		return fmt.Errorf("is working (use --force to remove anyway)")
+	}
+	return nil
+}
+
+func reportDogRemoval(removed int, removeErrors []string) error {
 	if len(removeErrors) > 0 {
 		fmt.Printf("\nSome removals failed:\n")
 		for _, e := range removeErrors {
@@ -462,7 +464,8 @@ func runDogRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDogList(cmd *cobra.Command, args []string) error {
+func runDogList(cmd *cobra.Command, _ []string) error {
+	listJSON := commandBoolFlag(cmd, "json")
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -474,52 +477,64 @@ func runDogList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(dogs) == 0 {
-		if dogListJSON {
-			fmt.Println("[]")
-		} else {
-			fmt.Println("No dogs in kennel")
-		}
+		printEmptyDogList(listJSON)
 		return nil
 	}
 
-	if dogListJSON {
-		type DogListItem struct {
-			Name          string            `json:"name"`
-			State         dog.State         `json:"state"`
-			Work          string            `json:"work,omitempty"`
-			WorkStartedAt *time.Time        `json:"work_started_at,omitempty"`
-			LastActive    time.Time         `json:"last_active"`
-			Worktrees     map[string]string `json:"worktrees,omitempty"`
-		}
-
-		var items []DogListItem
-		for _, d := range dogs {
-			item := DogListItem{
-				Name:       d.Name,
-				State:      d.State,
-				Work:       d.Work,
-				LastActive: d.LastActive,
-				Worktrees:  d.Worktrees,
-			}
-			if !d.WorkStartedAt.IsZero() {
-				t := d.WorkStartedAt
-				item.WorkStartedAt = &t
-			}
-			items = append(items, item)
-		}
-
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(items)
+	if listJSON {
+		return printDogListJSON(dogs)
 	}
 
-	// Pretty print
+	printDogListHuman(dogs)
+
+	return nil
+}
+
+func printEmptyDogList(listJSON bool) {
+	if listJSON {
+		fmt.Println("[]")
+		return
+	}
+	fmt.Println("No dogs in kennel")
+}
+
+func printDogListJSON(dogs []*dog.Dog) error {
+	type dogListItem struct {
+		Name          string            `json:"name"`
+		State         dog.State         `json:"state"`
+		Work          string            `json:"work,omitempty"`
+		WorkStartedAt *time.Time        `json:"work_started_at,omitempty"`
+		LastActive    time.Time         `json:"last_active"`
+		Worktrees     map[string]string `json:"worktrees,omitempty"`
+	}
+
+	var items []dogListItem
+	for _, d := range dogs {
+		item := dogListItem{
+			Name:       d.Name,
+			State:      d.State,
+			Work:       d.Work,
+			LastActive: d.LastActive,
+			Worktrees:  d.Worktrees,
+		}
+		if !d.WorkStartedAt.IsZero() {
+			t := d.WorkStartedAt
+			item.WorkStartedAt = &t
+		}
+		items = append(items, item)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(items)
+}
+
+func printDogListHuman(dogs []*dog.Dog) {
 	fmt.Println(style.Bold.Render("The Pack"))
 	fmt.Println()
 
 	idleCount := 0
 	workingCount := 0
-
 	for _, d := range dogs {
 		stateIcon := "○"
 		stateStyle := style.Dim
@@ -530,7 +545,6 @@ func runDogList(cmd *cobra.Command, args []string) error {
 		} else {
 			idleCount++
 		}
-
 		line := fmt.Sprintf("  %s %s", stateIcon, stateStyle.Render(d.Name))
 		if d.Work != "" {
 			line += fmt.Sprintf(" → %s", style.Dim.Render(d.Work))
@@ -540,84 +554,87 @@ func runDogList(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 	fmt.Printf("  %d idle, %d working\n", idleCount, workingCount)
-
-	return nil
 }
 
 func runDogCall(cmd *cobra.Command, args []string) error {
+	callAll := commandBoolFlag(cmd, "all")
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
 	}
 
-	if dogCallAll {
-		// Wake all idle dogs
-		dogs, err := mgr.List()
-		if err != nil {
-			return fmt.Errorf("listing dogs: %w", err)
-		}
-
-		woken := 0
-		for _, d := range dogs {
-			if d.State == dog.StateIdle {
-				if err := mgr.SetState(d.Name, dog.StateIdle); err != nil {
-					style.PrintWarning("failed to wake %s: %v", d.Name, err)
-					continue
-				}
-				woken++
-				fmt.Printf("✓ Called %s\n", d.Name)
-			}
-		}
-
-		if woken == 0 {
-			fmt.Println("No idle dogs to call")
-		} else {
-			fmt.Printf("\n%d dog(s) ready\n", woken)
-		}
-		return nil
+	if callAll {
+		return callAllDogs(mgr)
 	}
 
 	if len(args) > 0 {
-		// Wake specific dog
-		name := args[0]
-		d, err := mgr.Get(name)
-		if err != nil {
-			return fmt.Errorf("getting dog %s: %w", name, err)
-		}
-
-		if d.State == dog.StateWorking {
-			fmt.Printf("Dog %s is already working (use 'gt dog done %s' when complete)\n", name, name)
-			return nil
-		}
-
-		if err := mgr.SetState(name, dog.StateIdle); err != nil {
-			return fmt.Errorf("waking dog %s: %w", name, err)
-		}
-
-		fmt.Printf("✓ Called %s - ready for work\n", name)
-		return nil
+		return callNamedDog(mgr, args[0])
 	}
 
-	// Wake one idle dog
+	return callAnyDog(mgr)
+}
+
+func callAllDogs(mgr *dog.Manager) error {
+	dogs, err := mgr.List()
+	if err != nil {
+		return fmt.Errorf("listing dogs: %w", err)
+	}
+
+	woken := 0
+	for _, d := range dogs {
+		if d.State != dog.StateIdle {
+			continue
+		}
+		if err := mgr.SetState(d.Name, dog.StateIdle); err != nil {
+			style.PrintWarning("failed to wake %s: %v", d.Name, err)
+			continue
+		}
+		woken++
+		fmt.Printf("✓ Called %s\n", d.Name)
+	}
+
+	if woken == 0 {
+		fmt.Println("No idle dogs to call")
+		return nil
+	}
+	fmt.Printf("\n%d dog(s) ready\n", woken)
+	return nil
+}
+
+func callNamedDog(mgr *dog.Manager, name string) error {
+	d, err := mgr.Get(name)
+	if err != nil {
+		return fmt.Errorf("getting dog %s: %w", name, err)
+	}
+	if d.State == dog.StateWorking {
+		fmt.Printf("Dog %s is already working (use 'gt dog done %s' when complete)\n", name, name)
+		return nil
+	}
+	if err := mgr.SetState(name, dog.StateIdle); err != nil {
+		return fmt.Errorf("waking dog %s: %w", name, err)
+	}
+	fmt.Printf("✓ Called %s - ready for work\n", name)
+	return nil
+}
+
+func callAnyDog(mgr *dog.Manager) error {
 	d, err := mgr.GetIdleDog()
 	if err != nil {
 		return fmt.Errorf("getting idle dog: %w", err)
 	}
-
 	if d == nil {
 		fmt.Println("No idle dogs available")
 		return nil
 	}
-
 	if err := mgr.SetState(d.Name, dog.StateIdle); err != nil {
 		return fmt.Errorf("waking dog %s: %w", d.Name, err)
 	}
-
 	fmt.Printf("✓ Called %s - ready for work\n", d.Name)
 	return nil
 }
 
 func runDogClear(cmd *cobra.Command, args []string) error {
+	force := commandBoolFlag(cmd, "force")
 	name := args[0]
 
 	mgr, err := getDogManager()
@@ -630,34 +647,17 @@ func runDogClear(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting dog %s: %w", name, err)
 	}
 
-	// Check if already idle
 	if d.State == dog.StateIdle && d.Work == "" {
 		fmt.Printf("Dog %s is already idle\n", name)
 		return nil
 	}
 
-	// Check for live tmux session
-	if !dogForce {
-		sessionName := fmt.Sprintf("hq-dog-%s", name)
-		tm := tmux.NewTmux()
-		if has, _ := tm.HasSession(sessionName); has {
-			return fmt.Errorf("dog %s has an active session (%s)\nUse --force to clear anyway", name, sessionName)
-		}
+	if err := validateDogClear(name, d, force); err != nil {
+		return err
 	}
 
-	// Source-backed work cannot be cleared independently: doing so would return
-	// the dog to the pool while its bead remains assigned to it.
-	if !dog.CanClearStateOnly(d.Work, d.WorkKind) {
-		return fmt.Errorf("dog %s has source-backed work %s; recover or re-sling the source before clearing the dog", name, d.Work)
-	}
-
-	// Clear only the state-only assignment observed above.
-	cleared, err := mgr.ClearWorkIfMatches(name, d.Work, d.WorkStartedAt)
-	if err != nil {
-		return fmt.Errorf("clearing work for dog %s: %w", name, err)
-	}
-	if !cleared {
-		return fmt.Errorf("dog %s assignment changed during clear; state preserved", name)
+	if err := clearDogWork(mgr, name, d); err != nil {
+		return err
 	}
 
 	fmt.Printf("✓ Cleared dog %s (now idle)\n", name)
@@ -667,35 +667,40 @@ func runDogClear(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDogDone(cmd *cobra.Command, args []string) error {
+func validateDogClear(name string, d *dog.Dog, force bool) error {
+	if !force {
+		sessionName := fmt.Sprintf("hq-dog-%s", name)
+		tm := tmux.NewTmux()
+		if has, _ := tm.HasSession(sessionName); has {
+			return fmt.Errorf("dog %s has an active session (%s)\nUse --force to clear anyway", name, sessionName)
+		}
+	}
+	if dog.CanClearStateOnly(d.Work, d.WorkKind) {
+		return nil
+	}
+	return fmt.Errorf("dog %s has source-backed work %s; recover or re-sling the source before clearing the dog", name, d.Work)
+}
+
+func clearDogWork(mgr *dog.Manager, name string, d *dog.Dog) error {
+	cleared, err := mgr.ClearWorkIfMatches(name, d.Work, d.WorkStartedAt)
+	if err != nil {
+		return fmt.Errorf("clearing work for dog %s: %w", name, err)
+	}
+	if !cleared {
+		return fmt.Errorf("dog %s assignment changed during clear; state preserved", name)
+	}
+	return nil
+}
+
+func runDogDone(_ *cobra.Command, args []string) error {
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
 	}
 
-	var name string
-	if len(args) > 0 {
-		name = args[0]
-	} else {
-		// Auto-detect dog from cwd
-		// Dog worktrees are at ~/gt/deacon/dogs/<name>/<rig>/
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting cwd: %w", err)
-		}
-
-		// Look for /deacon/dogs/<name>/ in path
-		parts := splitPathComponents(cwd)
-		for i := 0; i < len(parts)-1; i++ {
-			if parts[i] == "dogs" && i > 0 && parts[i-1] == "deacon" {
-				name = parts[i+1]
-				break
-			}
-		}
-
-		if name == "" {
-			return fmt.Errorf("could not detect dog name from cwd: %s\nRun from a dog worktree or specify name: gt dog done <name>", cwd)
-		}
+	name, err := resolveDogDoneName(args)
+	if err != nil {
+		return err
 	}
 
 	d, err := mgr.Get(name)
@@ -713,15 +718,7 @@ func runDogDone(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if dog.CanClearStateOnly(d.Work, d.WorkKind) {
-		cleared, err := mgr.ClearWorkIfMatches(name, d.Work, d.WorkStartedAt)
-		if err != nil {
-			return fmt.Errorf("clearing work for dog %s: %w", name, err)
-		}
-		if !cleared {
-			return fmt.Errorf("dog %s assignment changed during completion; state preserved", name)
-		}
-	} else if err := completeSourceBackedDogWork(mgr, name, d); err != nil {
+	if err := completeDogWork(mgr, name, d); err != nil {
 		return err
 	}
 
@@ -736,6 +733,52 @@ func runDogDone(cmd *cobra.Command, args []string) error {
 	// We disable remain-on-exit first — otherwise kill-session leaves a
 	// dead pane that the deacon's health-check reports as an orphan.
 	scheduleCompletedDogSessionKill(mgr, name)
+	return nil
+}
+
+func resolveDogDoneName(args []string) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting cwd: %w", err)
+	}
+	name := dogNameFromWorktreePath(cwd)
+	if name == "" {
+		return "", fmt.Errorf("could not detect dog name from cwd: %s\nRun from a dog worktree or specify name: gt dog done <name>", cwd)
+	}
+	return name, nil
+}
+
+func dogNameFromWorktreePath(path string) string {
+	parts := splitPathComponents(path)
+	if len(parts) < 2 {
+		return ""
+	}
+	for i := range parts[:len(parts)-1] {
+		if parts[i] == "dogs" && i > 0 && parts[i-1] == "deacon" {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+func completeDogWork(mgr *dog.Manager, name string, d *dog.Dog) error {
+	if dog.CanClearStateOnly(d.Work, d.WorkKind) {
+		return clearCompletedDogWork(mgr, name, d)
+	}
+	return completeSourceBackedDogWork(mgr, name, d)
+}
+
+func clearCompletedDogWork(mgr *dog.Manager, name string, d *dog.Dog) error {
+	cleared, err := mgr.ClearWorkIfMatches(name, d.Work, d.WorkStartedAt)
+	if err != nil {
+		return fmt.Errorf("clearing work for dog %s: %w", name, err)
+	}
+	if !cleared {
+		return fmt.Errorf("dog %s assignment changed during completion; state preserved", name)
+	}
 	return nil
 }
 
@@ -827,14 +870,7 @@ func closePluginMails(dogName string) {
 		// the dispatch mail to execute the plugin, so skipping read mail left
 		// every executed dispatch bead open forever. Keep this scoped to Deacon
 		// dispatches so CC or human messages with a similar subject are preserved.
-		if !strings.HasPrefix(msg.Subject, "Plugin: ") {
-			continue
-		}
-		if mail.AddressToIdentity(msg.To) != mail.AddressToIdentity(dogAddress) {
-			continue
-		}
-		sender := mail.AddressToIdentity(msg.From)
-		if sender != "deacon/" && sender != "daemon" {
+		if !isPluginDispatchMail(msg, dogAddress) {
 			continue
 		}
 		if archErr := mailbox.Archive(msg.ID); archErr == nil {
@@ -847,7 +883,19 @@ func closePluginMails(dogName string) {
 	}
 }
 
+func isPluginDispatchMail(msg *mail.Message, dogAddress string) bool {
+	if !strings.HasPrefix(msg.Subject, "Plugin: ") {
+		return false
+	}
+	if mail.AddressToIdentity(msg.To) != mail.AddressToIdentity(dogAddress) {
+		return false
+	}
+	sender := mail.AddressToIdentity(msg.From)
+	return sender == "deacon/" || sender == "daemon"
+}
+
 func runDogStatus(cmd *cobra.Command, args []string) error {
+	statusJSON := commandBoolFlag(cmd, "json")
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -856,20 +904,20 @@ func runDogStatus(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		// Show specific dog status
 		name := args[0]
-		return showDogStatus(mgr, name)
+		return showDogStatus(mgr, name, statusJSON)
 	}
 
 	// Show pack summary
-	return showPackStatus(mgr)
+	return showPackStatus(mgr, statusJSON)
 }
 
-func showDogStatus(mgr *dog.Manager, name string) error {
+func showDogStatus(mgr *dog.Manager, name string, statusJSON bool) error {
 	d, err := mgr.Get(name)
 	if err != nil {
 		return fmt.Errorf("getting dog %s: %w", name, err)
 	}
 
-	if dogStatusJSON {
+	if statusJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(d)
@@ -908,13 +956,13 @@ func showDogStatus(mgr *dog.Manager, name string) error {
 	return nil
 }
 
-func showPackStatus(mgr *dog.Manager) error {
+func showPackStatus(mgr *dog.Manager, statusJSON bool) error {
 	dogs, err := mgr.List()
 	if err != nil {
 		return fmt.Errorf("listing dogs: %w", err)
 	}
 
-	if dogStatusJSON {
+	if statusJSON {
 		type PackStatus struct {
 			Total     int    `json:"total"`
 			Idle      int    `json:"idle"`
@@ -1004,6 +1052,9 @@ func dogFormatTimeAgo(t time.Time) string {
 }
 
 func runDogHealthCheck(cmd *cobra.Command, args []string) error {
+	healthJSON := commandBoolFlag(cmd, "json")
+	autoClear := commandBoolFlag(cmd, "auto-clear")
+	maxInactivity, _ := cmd.Flags().GetDuration("max-inactivity")
 	mgr, err := getDogManager()
 	if err != nil {
 		return err
@@ -1012,326 +1063,422 @@ func runDogHealthCheck(cmd *cobra.Command, args []string) error {
 	tm := tmux.NewTmux()
 	hc := dog.NewHealthChecker(mgr, tm)
 
-	var results []dog.DogHealthResult
-
-	if len(args) > 0 {
-		// Single dog
-		d, err := mgr.Get(args[0])
-		if err != nil {
-			return fmt.Errorf("getting dog %s: %w", args[0], err)
-		}
-		r := hc.Check(d, dogHealthMaxInactivity, dogHealthAutoClear)
-		results = []dog.DogHealthResult{r}
-	} else {
-		// All dogs
-		results, err = hc.CheckAll(dogHealthMaxInactivity, dogHealthAutoClear)
-		if err != nil {
-			return err
-		}
+	results, err := collectDogHealthResults(mgr, hc, args, maxInactivity, autoClear)
+	if err != nil {
+		return err
 	}
 
 	attention := dog.NeedsAttentionCount(results)
 
-	if dogHealthJSON {
-		type HealthReport struct {
-			Dogs           []dog.DogHealthResult `json:"dogs"`
-			NeedsAttention int                   `json:"needs_attention"`
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(HealthReport{Dogs: results, NeedsAttention: attention}); err != nil {
+	if healthJSON {
+		if err := printDogHealthJSON(results, attention); err != nil {
 			return err
 		}
 	} else {
-		if len(results) == 0 {
-			fmt.Println("No dogs in kennel")
-			return nil
-		}
-
-		fmt.Println(style.Bold.Render("Dog Health Check"))
-		fmt.Println()
-
-		for _, r := range results {
-			icon := "✓"
-			if r.NeedsAttention {
-				icon = "✗"
-			}
-			line := fmt.Sprintf("  %s %s [%s] session=%s", icon, r.Name, r.State, r.SessionStatus)
-			if r.WorkDuration > 0 {
-				line += fmt.Sprintf(" duration=%s", r.WorkDuration.Truncate(time.Second))
-			}
-			if r.AutoCleared {
-				line += " (auto-cleared)"
-			}
-			fmt.Println(line)
-			if r.Recommendation != "" && r.NeedsAttention {
-				fmt.Printf("    → %s\n", r.Recommendation)
-			}
-		}
-
-		fmt.Println()
-		if attention > 0 {
-			fmt.Printf("  %d dog(s) need attention\n", attention)
-		} else {
-			fmt.Println("  All dogs healthy")
-		}
+		printDogHealthHuman(results, attention)
 	}
 
-	// Exit code 2 for needs-attention
 	if attention > 0 {
-		os.Exit(2)
+		exitWithCode(2, os.Exit)
 	}
 
 	return nil
 }
 
+func collectDogHealthResults(
+	mgr *dog.Manager,
+	hc *dog.HealthChecker,
+	args []string,
+	maxInactivity time.Duration,
+	autoClear bool,
+) ([]dog.DogHealthResult, error) {
+	if len(args) > 0 {
+		d, err := mgr.Get(args[0])
+		if err != nil {
+			return nil, fmt.Errorf("getting dog %s: %w", args[0], err)
+		}
+		return []dog.DogHealthResult{hc.Check(d, maxInactivity, autoClear)}, nil
+	}
+	return hc.CheckAll(maxInactivity, autoClear)
+}
+
+func printDogHealthJSON(results []dog.DogHealthResult, attention int) error {
+	type healthReport struct {
+		Dogs           []dog.DogHealthResult `json:"dogs"`
+		NeedsAttention int                   `json:"needs_attention"`
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(healthReport{Dogs: results, NeedsAttention: attention})
+}
+
+func printDogHealthHuman(results []dog.DogHealthResult, attention int) {
+	if len(results) == 0 {
+		fmt.Println("No dogs in kennel")
+		return
+	}
+	fmt.Println(style.Bold.Render("Dog Health Check"))
+	fmt.Println()
+	for _, result := range results {
+		fmt.Println(formatDogHealthLine(result))
+	}
+	fmt.Println()
+	printDogHealthSummary(attention)
+}
+
+func formatDogHealthLine(result dog.DogHealthResult) string {
+	icon := "✓"
+	if result.NeedsAttention {
+		icon = "✗"
+	}
+	line := fmt.Sprintf("  %s %s [%s] session=%s", icon, result.Name, result.State, result.SessionStatus)
+	if result.WorkDuration > 0 {
+		line += fmt.Sprintf(" duration=%s", result.WorkDuration.Truncate(time.Second))
+	}
+	if result.AutoCleared {
+		line += " (auto-cleared)"
+	}
+	if result.Recommendation != "" && result.NeedsAttention {
+		line += fmt.Sprintf("\n    → %s", result.Recommendation)
+	}
+	return line
+}
+
+func printDogHealthSummary(attention int) {
+	if attention > 0 {
+		fmt.Printf("  %d dog(s) need attention\n", attention)
+		return
+	}
+	fmt.Println("  All dogs healthy")
+}
+
+func exitWithCode(code int, exit func(int)) {
+	exit(code)
+}
+
+type dogDispatchOptions struct {
+	plugin string
+	rig    string
+	dog    string
+	create bool
+	json   bool
+	dryRun bool
+}
+
+func dogDispatchOptionsFromCommand(cmd *cobra.Command) dogDispatchOptions {
+	return dogDispatchOptions{
+		plugin: commandStringFlag(cmd, "plugin"),
+		rig:    commandStringFlag(cmd, "rig"),
+		dog:    commandStringFlag(cmd, "dog"),
+		create: commandBoolFlag(cmd, "create"),
+		json:   commandBoolFlag(cmd, "json"),
+		dryRun: commandBoolFlag(cmd, "dry-run"),
+	}
+}
+
 // runDogDispatch dispatches plugin execution to a dog worker.
-func runDogDispatch(cmd *cobra.Command, args []string) error {
-	townRoot, err := workspace.FindFromCwd()
+func runDogDispatch(cmd *cobra.Command, _ []string) error {
+	opts := dogDispatchOptionsFromCommand(cmd)
+	ctx, err := loadDogDispatchContext(opts)
 	if err != nil {
-		return fmt.Errorf("finding town root: %w", err)
+		return err
 	}
-
-	// Get rig names for plugin scanner
-	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	targetDog, dogCreated, err := findDogForDispatch(ctx.manager, ctx.townRoot, opts)
 	if err != nil {
-		return fmt.Errorf("loading rigs config: %w", err)
+		return err
 	}
 
-	var rigNames []string
-	for rigName := range rigsConfig.Rigs {
-		rigNames = append(rigNames, rigName)
-	}
-
-	// If --rig specified, search only that rig
-	if dogDispatchRig != "" {
-		rigNames = []string{dogDispatchRig}
-	}
-
-	// Find the plugin using scanner
-	scanner := plugin.NewScanner(townRoot, rigNames)
-	p, err := scanner.GetPlugin(dogDispatchPlugin)
-	if err != nil {
-		return fmt.Errorf("finding plugin: %w", err)
-	}
-
-	// Get dog manager (reuse rigsConfig from above)
-	mgr := dog.NewManager(townRoot, rigsConfig)
-
-	// Find target dog
-	var targetDog *dog.Dog
-	var dogCreated bool
-	if dogDispatchDog != "" {
-		// Specific dog requested
-		targetDog, err = mgr.Get(dogDispatchDog)
-		if err != nil {
-			return fmt.Errorf("getting dog %s: %w", dogDispatchDog, err)
-		}
-		if targetDog.State == dog.StateWorking {
-			return fmt.Errorf("dog %s is already working", dogDispatchDog)
-		}
-	} else {
-		// Find idle dog from pool
-		targetDog, err = mgr.GetIdleDog()
-		if err != nil {
-			return fmt.Errorf("finding idle dog: %w", err)
-		}
-
-		if targetDog == nil {
-			if dogDispatchCreate {
-				// Create a new dog (reuse generateDogName from sling_dog.go)
-				newName := generateDogName(mgr)
-				if dogDispatchDryRun {
-					targetDog = &dog.Dog{Name: newName, State: dog.StateIdle}
-					dogCreated = true
-				} else {
-					targetDog, err = mgr.Add(newName)
-					if err != nil {
-						return fmt.Errorf("creating dog %s: %w", newName, err)
-					}
-					dogCreated = true
-
-					// Create agent bead for the dog
-					b := beads.New(townRoot)
-					location := filepath.Join("deacon", "dogs", newName)
-					if _, beadErr := b.CreateDogAgentBead(newName, location); beadErr != nil {
-						// Non-fatal warning
-						if !dogDispatchJSON {
-							fmt.Printf("  Warning: could not create agent bead: %v\n", beadErr)
-						}
-					}
-				}
-			} else {
-				return fmt.Errorf("no idle dogs available (use --create to add one)")
-			}
-		}
-	}
-
-	// Prepare dispatch result for JSON output
-	workDesc := fmt.Sprintf("plugin:%s", p.Name)
-	result := dogDispatchResult{
-		Plugin:     p.Name,
-		PluginPath: p.Path,
-		Dog:        targetDog.Name,
-		DogCreated: dogCreated,
-		Work:       workDesc,
-		DryRun:     dogDispatchDryRun,
-	}
-	if p.RigName != "" {
-		result.PluginRig = p.RigName
-	}
-
-	// Dry-run mode: show what would happen and exit
-	if dogDispatchDryRun {
-		if dogDispatchJSON {
-			return json.NewEncoder(os.Stdout).Encode(result)
-		}
-		fmt.Printf("Dry run - would dispatch:\n")
-		fmt.Printf("  Plugin: %s\n", p.Name)
-		if p.RigName != "" {
-			fmt.Printf("  Location: %s/plugins/%s\n", p.RigName, p.Name)
-		} else {
-			fmt.Printf("  Location: plugins/%s (town-level)\n", p.Name)
-		}
-		fmt.Printf("  Dog: %s%s\n", targetDog.Name, ifStr(dogCreated, " (would create)", ""))
-		fmt.Printf("  Work: %s\n", workDesc)
-		return nil
+	workDesc := fmt.Sprintf("plugin:%s", ctx.pluginInfo.Name)
+	result := newDogDispatchResult(ctx.pluginInfo, targetDog, dogCreated, opts.dryRun, workDesc)
+	if opts.dryRun {
+		return printDogDispatchDryRun(result, ctx.pluginInfo, targetDog, workDesc, opts)
 	}
 
 	// Ensure dog has an agent bead before sending mail.
 	// Dogs created before agent beads were added, or whose bead creation
 	// failed silently, won't have one. The mail router requires agent beads
 	// to validate recipients.
-	b := beads.New(townRoot)
-	if existing, _ := b.FindDogAgentBead(targetDog.Name); existing == nil {
-		location := filepath.Join("deacon", "dogs", targetDog.Name)
-		if _, beadErr := b.CreateDogAgentBead(targetDog.Name, location); beadErr != nil {
-			if !dogDispatchJSON {
-				fmt.Printf("  Warning: could not create agent bead: %v\n", beadErr)
-			}
-		}
-	}
+	ensureDogAgentBead(beads.New(ctx.townRoot), targetDog.Name, opts.json)
 
-	// Assign work FIRST (before sending mail) to prevent race condition
-	// If this fails, we haven't sent any mail yet
-	assignedState, err := mgr.AssignWorkIfIdleWithKind(targetDog.Name, workDesc, dog.WorkKindPlugin)
+	assignedState, clearAssignment, err := assignDogPluginWork(ctx.manager, targetDog.Name, workDesc)
 	if err != nil {
-		return fmt.Errorf("assigning work to dog: %w", err)
-	}
-	clearPluginAssignment := func() error {
-		_, err := mgr.ClearWorkIfMatches(targetDog.Name, workDesc, assignedState.WorkStartedAt)
 		return err
 	}
+	router, err := sendDogPluginMail(ctx.townRoot, targetDog, ctx.pluginInfo, clearAssignment, opts.json)
+	if err != nil {
+		return err
+	}
+	defer mail.WaitPendingNotifications(router)
 
-	// Create and send mail message with plugin instructions
+	execution := dogDispatchExecution{
+		townRoot:   ctx.townRoot,
+		manager:    ctx.manager,
+		dogName:    targetDog.Name,
+		pluginName: ctx.pluginInfo.Name,
+		workDesc:   workDesc,
+		clearWork:  clearAssignment,
+		jsonOutput: opts.json,
+	}
+	result.SessionStarted, result.Warnings = ensureDogPluginSession(execution)
+	result.WorkConfirmed, result.Warnings = verifyDogPluginAssignment(execution, assignedState, result.Warnings)
+	return printDogDispatchResult(result, ctx.pluginInfo, targetDog, workDesc, opts)
+}
+
+type dogDispatchContext struct {
+	townRoot   string
+	rigsConfig *config.RigsConfig
+	pluginInfo *plugin.Plugin
+	manager    *dog.Manager
+}
+
+func loadDogDispatchContext(opts dogDispatchOptions) (dogDispatchContext, error) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return dogDispatchContext{}, fmt.Errorf("finding town root: %w", err)
+	}
+	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	if err != nil {
+		return dogDispatchContext{}, fmt.Errorf("loading rigs config: %w", err)
+	}
+	rigNames := dogDispatchRigNames(rigsConfig, opts.rig)
+	scanner := plugin.NewScanner(townRoot, rigNames)
+	pluginInfo, err := scanner.GetPlugin(opts.plugin)
+	if err != nil {
+		return dogDispatchContext{}, fmt.Errorf("finding plugin: %w", err)
+	}
+	return dogDispatchContext{
+		townRoot:   townRoot,
+		rigsConfig: rigsConfig,
+		pluginInfo: pluginInfo,
+		manager:    dog.NewManager(townRoot, rigsConfig),
+	}, nil
+}
+
+func dogDispatchRigNames(rigsConfig *config.RigsConfig, rig string) []string {
+	if rig != "" {
+		return []string{rig}
+	}
+	var rigNames []string
+	for rigName := range rigsConfig.Rigs {
+		rigNames = append(rigNames, rigName)
+	}
+	return rigNames
+}
+
+func findDogForDispatch(mgr *dog.Manager, townRoot string, opts dogDispatchOptions) (*dog.Dog, bool, error) {
+	if opts.dog != "" {
+		targetDog, err := mgr.Get(opts.dog)
+		if err != nil {
+			return nil, false, fmt.Errorf("getting dog %s: %w", opts.dog, err)
+		}
+		if targetDog.State == dog.StateWorking {
+			return nil, false, fmt.Errorf("dog %s is already working", opts.dog)
+		}
+		return targetDog, false, nil
+	}
+
+	targetDog, err := mgr.GetIdleDog()
+	if err != nil {
+		return nil, false, fmt.Errorf("finding idle dog: %w", err)
+	}
+	if targetDog != nil {
+		return targetDog, false, nil
+	}
+	if !opts.create {
+		return nil, false, fmt.Errorf("no idle dogs available (use --create to add one)")
+	}
+	return createDogForDispatch(mgr, townRoot, opts)
+}
+
+func createDogForDispatch(mgr *dog.Manager, townRoot string, opts dogDispatchOptions) (*dog.Dog, bool, error) {
+	newName := generateDogName(mgr)
+	if opts.dryRun {
+		return &dog.Dog{Name: newName, State: dog.StateIdle}, true, nil
+	}
+	targetDog, err := mgr.Add(newName)
+	if err != nil {
+		return nil, false, fmt.Errorf("creating dog %s: %w", newName, err)
+	}
+	ensureDogAgentBead(beads.New(townRoot), newName, opts.json)
+	return targetDog, true, nil
+}
+
+func newDogDispatchResult(p *plugin.Plugin, targetDog *dog.Dog, dogCreated bool, dryRun bool, workDesc string) dogDispatchResult {
+	result := dogDispatchResult{
+		Plugin:     p.Name,
+		PluginPath: p.Path,
+		Dog:        targetDog.Name,
+		DogCreated: dogCreated,
+		Work:       workDesc,
+		DryRun:     dryRun,
+	}
+	if p.RigName != "" {
+		result.PluginRig = p.RigName
+	}
+	return result
+}
+
+func printDogDispatchDryRun(result dogDispatchResult, p *plugin.Plugin, targetDog *dog.Dog, workDesc string, opts dogDispatchOptions) error {
+	if opts.json {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+	fmt.Printf("Dry run - would dispatch:\n")
+	fmt.Printf("  Plugin: %s\n", p.Name)
+	if p.RigName != "" {
+		fmt.Printf("  Location: %s/plugins/%s\n", p.RigName, p.Name)
+	} else {
+		fmt.Printf("  Location: plugins/%s (town-level)\n", p.Name)
+	}
+	fmt.Printf("  Dog: %s%s\n", targetDog.Name, ifStr(result.DogCreated, " (would create)", ""))
+	fmt.Printf("  Work: %s\n", workDesc)
+	return nil
+}
+
+func ensureDogAgentBead(b *beads.Beads, dogName string, jsonOutput bool) {
+	if existing, _ := b.FindDogAgentBead(dogName); existing == nil {
+		location := filepath.Join("deacon", "dogs", dogName)
+		if _, beadErr := b.CreateDogAgentBead(dogName, location); beadErr != nil && !jsonOutput {
+			fmt.Printf("  Warning: could not create agent bead: %v\n", beadErr)
+		}
+	}
+}
+
+func assignDogPluginWork(mgr *dog.Manager, dogName, workDesc string) (*dog.DogState, func() error, error) {
+	assignedState, err := mgr.AssignWorkIfIdleWithKind(dogName, workDesc, dog.WorkKindPlugin)
+	if err != nil {
+		return nil, nil, fmt.Errorf("assigning work to dog: %w", err)
+	}
+	clearAssignment := func() error {
+		_, err := mgr.ClearWorkIfMatches(dogName, workDesc, assignedState.WorkStartedAt)
+		return err
+	}
+	return assignedState, clearAssignment, nil
+}
+
+func sendDogPluginMail(townRoot string, targetDog *dog.Dog, p *plugin.Plugin, clearAssignment func() error, jsonOutput bool) (*mail.Router, error) {
 	dogAddress := fmt.Sprintf("deacon/dogs/%s", targetDog.Name)
-	subject := fmt.Sprintf("Plugin: %s", p.Name)
-	body := p.FormatMailBody()
-
 	router := mail.NewRouterWithTownRoot(townRoot, townRoot)
-	defer router.WaitPendingNotifications()
 	msg := &mail.Message{
 		From:      "deacon/",
 		To:        dogAddress,
-		Subject:   subject,
-		Body:      body,
+		Subject:   fmt.Sprintf("Plugin: %s", p.Name),
+		Body:      p.FormatMailBody(),
 		Timestamp: time.Now(),
 	}
-
 	if err := router.Send(msg); err != nil {
-		// Roll back only the assignment this dispatch created.
-		if clearErr := clearPluginAssignment(); clearErr != nil {
-			// Log rollback failure but return original error
-			if !dogDispatchJSON {
-				fmt.Printf("  Warning: rollback failed: %v\n", clearErr)
-			}
+		if clearErr := clearAssignment(); clearErr != nil && !jsonOutput {
+			fmt.Printf("  Warning: rollback failed: %v\n", clearErr)
 		}
-		return fmt.Errorf("sending plugin mail to dog: %w", err)
+		mail.WaitPendingNotifications(router)
+		return nil, fmt.Errorf("sending plugin mail to dog: %w", err)
 	}
+	return router, nil
+}
 
-	// Ensure dog session is running so it can read the mail.
-	// Without this, dispatched work sits in mail with no session to read it.
+type dogDispatchExecution struct {
+	townRoot   string
+	manager    *dog.Manager
+	dogName    string
+	pluginName string
+	workDesc   string
+	clearWork  func() error
+	jsonOutput bool
+}
+
+func ensureDogPluginSession(execution dogDispatchExecution) (bool, []string) {
 	t := tmux.NewTmux()
-	sessMgr := dog.NewSessionManager(t, townRoot, mgr)
-	sessOpts := dog.SessionStartOptions{
-		WorkDesc: workDesc,
-	}
-	result.SessionStarted = true
-	if _, sessErr := sessMgr.EnsureRunning(targetDog.Name, sessOpts); sessErr != nil {
-		result.SessionStarted = false
-		// Roll back the work assignment: without a running session the dog
-		// cannot read its mail, leaving it stuck in StateWorking (zombie).
-		// Clearing work returns it to idle so it can be re-dispatched.
-		// See: github.com/steveyegge/gastown/issues/2748
-		if clearErr := clearPluginAssignment(); clearErr != nil {
-			warn := fmt.Sprintf("session start failed AND rollback failed for dog %s — dog stuck in StateWorking, run: gt dog health-check --auto-clear: %v", targetDog.Name, clearErr)
-			result.Warnings = append(result.Warnings, warn)
-			if !dogDispatchJSON {
-				style.PrintWarning("%s", warn)
-			}
-		}
-		warn := fmt.Sprintf("dog dispatch: session start failed for %s (work rolled back, re-dispatch with: gt dog dispatch --plugin %s): %v", targetDog.Name, p.Name, sessErr)
-		result.Warnings = append(result.Warnings, warn)
-		if !dogDispatchJSON {
-			style.PrintWarning("%s", warn)
-		}
-		if escErr := dogEscalateBestEffort(warn); escErr != nil {
-			if !dogDispatchJSON {
-				style.PrintWarning("escalation also failed (%v) — escalate manually: gt escalate --severity medium %q", escErr, warn)
-			}
-		}
-	}
-
-	// Verify the work state write is readable. A read-back failure here
-	// indicates state corruption, not a timing race.
-	// See: github.com/steveyegge/gastown/issues/2748
-	result.WorkConfirmed = false
-	if d, getErr := mgr.Get(targetDog.Name); getErr != nil {
-		warn := fmt.Sprintf("dog dispatch: could not verify work assignment for %s: %v", targetDog.Name, getErr)
-		result.Warnings = append(result.Warnings, warn)
-		if !dogDispatchJSON {
-			style.PrintWarning("%s", warn)
-		}
-		_ = dogEscalateBestEffort(warn)
-	} else if d.Work == workDesc && d.WorkKind == dog.WorkKindPlugin && d.WorkStartedAt.Equal(assignedState.WorkStartedAt) {
-		result.WorkConfirmed = true
+	sessMgr := dog.NewSessionManager(t, execution.townRoot, execution.manager)
+	sessOpts := dog.SessionStartOptions{WorkDesc: execution.workDesc}
+	if _, err := sessMgr.EnsureRunning(execution.dogName, sessOpts); err == nil {
+		return true, nil
 	} else {
-		warn := fmt.Sprintf("dog dispatch: work assignment cleared for %s between dispatch and verify — re-dispatch required", targetDog.Name)
-		result.Warnings = append(result.Warnings, warn)
-		if !dogDispatchJSON {
-			style.PrintWarning("%s", warn)
-		}
-		_ = dogEscalateBestEffort(warn)
+		return reportDogPluginSessionFailure(execution, err)
 	}
+}
 
-	// Success - output result
-	if dogDispatchJSON {
+func reportDogPluginSessionFailure(execution dogDispatchExecution, sessionErr error) (bool, []string) {
+	warnings := []string{}
+	if clearErr := execution.clearWork(); clearErr != nil {
+		warn := fmt.Sprintf("session start failed AND rollback failed for dog %s — dog stuck in StateWorking, run: gt dog health-check --auto-clear: %v", execution.dogName, clearErr)
+		warnings = recordDogDispatchWarning(warnings, execution.jsonOutput, warn)
+	}
+	warn := fmt.Sprintf("dog dispatch: session start failed for %s (work rolled back, re-dispatch with: gt dog dispatch --plugin %s): %v", execution.dogName, execution.pluginName, sessionErr)
+	warnings = recordDogDispatchWarning(warnings, execution.jsonOutput, warn)
+	if escErr := dogEscalateBestEffort(warn); escErr != nil && !execution.jsonOutput {
+		style.PrintWarning("escalation also failed (%v) — escalate manually: gt escalate --severity medium %q", escErr, warn)
+	}
+	return false, warnings
+}
+
+func verifyDogPluginAssignment(execution dogDispatchExecution, assignedState *dog.DogState, warnings []string) (bool, []string) {
+	d, err := execution.manager.Get(execution.dogName)
+	if err != nil {
+		warn := fmt.Sprintf("dog dispatch: could not verify work assignment for %s: %v", execution.dogName, err)
+		warnings = recordDogDispatchWarning(warnings, execution.jsonOutput, warn)
+		_ = dogEscalateBestEffort(warn)
+		return false, warnings
+	}
+	if d.Work == execution.workDesc && d.WorkKind == dog.WorkKindPlugin && d.WorkStartedAt.Equal(assignedState.WorkStartedAt) {
+		return true, warnings
+	}
+	warn := fmt.Sprintf("dog dispatch: work assignment cleared for %s between dispatch and verify — re-dispatch required", execution.dogName)
+	warnings = recordDogDispatchWarning(warnings, execution.jsonOutput, warn)
+	_ = dogEscalateBestEffort(warn)
+	return false, warnings
+}
+
+func recordDogDispatchWarning(warnings []string, jsonOutput bool, warn string) []string {
+	if !jsonOutput {
+		style.PrintWarning("%s", warn)
+	}
+	return append(warnings, warn)
+}
+
+func printDogDispatchResult(result dogDispatchResult, p *plugin.Plugin, targetDog *dog.Dog, workDesc string, opts dogDispatchOptions) error {
+	if opts.json {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
-
 	fmt.Printf("%s Found plugin: %s\n", style.Bold.Render("✓"), p.Name)
 	if p.RigName != "" {
 		fmt.Printf("  Location: %s/plugins/%s\n", p.RigName, p.Name)
 	} else {
 		fmt.Printf("  Location: plugins/%s (town-level)\n", p.Name)
 	}
-	if dogCreated {
+	if result.DogCreated {
 		fmt.Printf("%s Created dog %s (pool was empty)\n", style.Bold.Render("✓"), targetDog.Name)
 	}
 	fmt.Printf("%s Dispatching to dog: %s\n", style.Bold.Render("🐕"), targetDog.Name)
 	fmt.Printf("%s Plugin dispatched (non-blocking)\n", style.Bold.Render("✓"))
 	fmt.Printf("  Dog: %s\n", targetDog.Name)
 	fmt.Printf("  Work: %s\n", workDesc)
-
 	return nil
 }
 
 func resolveDogAuthoritativeSource(townRoot string, d *dog.Dog) (*beads.Issue, string, error) {
 	agentID := fmt.Sprintf("deacon/dogs/%s", d.Name)
-	rigsConfig, err := config.LoadRigsConfig(filepath.Join(townRoot, "mayor", "rigs.json"))
+	roots, err := dogAuthoritativeSourceRoots(townRoot)
 	if err != nil {
 		return nil, "", fmt.Errorf("loading rigs for dog completion: %w", err)
+	}
+	for _, root := range roots {
+		work, err := listAssignedActiveWorkAcrossStatuses(beads.New(root), agentID)
+		if err != nil {
+			return nil, "", fmt.Errorf("querying dog source in %s: %w", root, err)
+		}
+		for _, issue := range work {
+			if dogAuthoritativeIssueMatches(d, issue) {
+				return issue, root, nil
+			}
+		}
+	}
+	return nil, "", fmt.Errorf("authoritative source for dog %s is missing or no longer assigned", d.Name)
+}
+
+func dogAuthoritativeSourceRoots(townRoot string) ([]string, error) {
+	rigsConfig, err := config.LoadRigsConfig(filepath.Join(townRoot, "mayor", "rigs.json"))
+	if err != nil {
+		return nil, err
 	}
 	roots := []string{filepath.Join(townRoot, ".beads")}
 	for rigName := range rigsConfig.Rigs {
@@ -1341,33 +1488,46 @@ func resolveDogAuthoritativeSource(townRoot string, d *dog.Dog) (*beads.Issue, s
 		}
 		roots = append(roots, rigDir)
 	}
-	for _, root := range roots {
-		work, err := listAssignedActiveWorkAcrossStatuses(beads.New(root), agentID)
-		if err != nil {
-			return nil, "", fmt.Errorf("querying dog source in %s: %w", root, err)
-		}
-		for _, issue := range work {
-			fields := beads.ParseAttachmentFields(issue)
-			formulaMatches := fields != nil && fields.AttachedFormula == d.Work && dogWorksOnHook(d, d.Work, issue)
-			if issue.ID == d.Work || formulaMatches {
-				return issue, root, nil
-			}
-		}
+	return roots, nil
+}
+
+func dogAuthoritativeIssueMatches(d *dog.Dog, issue *beads.Issue) bool {
+	if issue.ID == d.Work {
+		return true
 	}
-	return nil, "", fmt.Errorf("authoritative source for dog %s is missing or no longer assigned", d.Name)
+	fields := beads.ParseAttachmentFields(issue)
+	return fields != nil && fields.AttachedFormula == d.Work && dogWorksOnHook(d, d.Work, issue)
 }
 
 func closeDogAuthoritativeSource(sourceDir string, d *dog.Dog, issueID string) error {
 	agentID := fmt.Sprintf("deacon/dogs/%s", d.Name)
 	bd := beads.New(sourceDir)
+	issue, err := loadDogAuthoritativeIssue(bd, issueID, agentID)
+	if err != nil {
+		return err
+	}
+	if err := closeDogAttachedWork(bd, d, issue); err != nil {
+		return err
+	}
+	if err := bd.ForceCloseWithReason("dog done", issue.ID); err != nil && !errors.Is(err, beads.ErrNotFound) {
+		return fmt.Errorf("closing authoritative source %s: %w", issue.ID, err)
+	}
+	return nil
+}
+
+func loadDogAuthoritativeIssue(bd *beads.Beads, issueID, agentID string) (*beads.Issue, error) {
 	issue, err := bd.Show(issueID)
 	if err != nil {
-		return fmt.Errorf("reading authoritative source %s: %w", issueID, err)
+		return nil, fmt.Errorf("reading authoritative source %s: %w", issueID, err)
 	}
 	if issue == nil || issue.Assignee != agentID ||
 		(issue.Status != beads.StatusHooked && issue.Status != string(beads.StatusInProgress)) {
-		return fmt.Errorf("authoritative source %s changed before dog completion", issueID)
+		return nil, fmt.Errorf("authoritative source %s changed before dog completion", issueID)
 	}
+	return issue, nil
+}
+
+func closeDogAttachedWork(bd *beads.Beads, d *dog.Dog, issue *beads.Issue) error {
 	fields := beads.ParseAttachmentFields(issue)
 	if fields != nil && fields.AttachedMolecule != "" {
 		if _, err := forceCloseDescendants(bd, fields.AttachedMolecule); err != nil {
@@ -1376,13 +1536,12 @@ func closeDogAuthoritativeSource(sourceDir string, d *dog.Dog, issueID string) e
 		if err := bd.ForceCloseWithReason("dog done", fields.AttachedMolecule); err != nil && !errors.Is(err, beads.ErrNotFound) {
 			return fmt.Errorf("closing attached molecule %s: %w", fields.AttachedMolecule, err)
 		}
-	} else if d.WorkKind == dog.WorkKindFormula {
+		return nil
+	}
+	if d.WorkKind == dog.WorkKindFormula {
 		if _, err := forceCloseDescendants(bd, issue.ID); err != nil {
 			return fmt.Errorf("closing formula steps for %s: %w", issue.ID, err)
 		}
-	}
-	if err := bd.ForceCloseWithReason("dog done", issue.ID); err != nil && !errors.Is(err, beads.ErrNotFound) {
-		return fmt.Errorf("closing authoritative source %s: %w", issue.ID, err)
 	}
 	return nil
 }

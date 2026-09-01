@@ -324,9 +324,9 @@ func TestMailboxLegacyListByThread(t *testing.T) {
 	m := NewMailbox(tmpDir)
 
 	msgs := []*Message{
-		{ID: "msg-001", ThreadID: "thread-A", Timestamp: time.Now().Add(-2 * time.Hour)},
-		{ID: "msg-002", ThreadID: "thread-B", Timestamp: time.Now().Add(-1 * time.Hour)},
-		{ID: "msg-003", ThreadID: "thread-A", Timestamp: time.Now()},
+		{ID: "msg-001", MessageConversation: MessageConversation{ThreadID: "thread-A"}, Timestamp: time.Now().Add(-2 * time.Hour)},
+		{ID: "msg-002", MessageConversation: MessageConversation{ThreadID: "thread-B"}, Timestamp: time.Now().Add(-1 * time.Hour)},
+		{ID: "msg-003", MessageConversation: MessageConversation{ThreadID: "thread-A"}, Timestamp: time.Now()},
 	}
 	for _, msg := range msgs {
 		if err := m.Append(msg); err != nil {

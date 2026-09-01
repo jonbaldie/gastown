@@ -17,14 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Synthesis command flags
-var (
-	synthesisRig      string
-	synthesisDryRun   bool
-	synthesisForce    bool
-	synthesisReviewID string
-)
-
 var synthesisCmd = &cobra.Command{
 	Use:     "synthesis",
 	Aliases: []string{"synth"},
@@ -93,10 +85,10 @@ This marks the convoy as complete and triggers any configured notifications.`,
 
 func init() {
 	// Start flags
-	synthesisStartCmd.Flags().StringVar(&synthesisRig, "rig", "", "Target rig for synthesis polecat")
-	synthesisStartCmd.Flags().BoolVar(&synthesisDryRun, "dry-run", false, "Preview execution")
-	synthesisStartCmd.Flags().BoolVar(&synthesisForce, "force", false, "Start even if legs incomplete")
-	synthesisStartCmd.Flags().StringVar(&synthesisReviewID, "review-id", "", "Override review ID")
+	synthesisStartCmd.Flags().String("rig", "", "Target rig for synthesis polecat")
+	synthesisStartCmd.Flags().Bool("dry-run", false, "Preview execution")
+	synthesisStartCmd.Flags().Bool("force", false, "Start even if legs incomplete")
+	synthesisStartCmd.Flags().String("review-id", "", "Override review ID")
 
 	// Add subcommands
 	synthesisCmd.AddCommand(synthesisStartCmd)
@@ -129,6 +121,10 @@ type ConvoyMeta struct {
 
 // runSynthesisStart implements gt synthesis start.
 func runSynthesisStart(cmd *cobra.Command, args []string) error {
+	targetRig := commandStringFlag(cmd, "rig")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	force := commandBoolFlag(cmd, "force")
+	reviewID := commandStringFlag(cmd, "review-id")
 	convoyID := args[0]
 
 	// Get convoy metadata
@@ -138,23 +134,9 @@ func runSynthesisStart(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("%s Checking synthesis readiness for %s...\n", style.Bold.Render("🔬"), convoyID)
-
-	// Load formula if specified
-	var f *formula.Formula
-	if meta.FormulaPath != "" {
-		f, err = formula.ParseFile(meta.FormulaPath)
-		if err != nil {
-			return fmt.Errorf("loading formula: %w", err)
-		}
-	} else if meta.Formula != "" {
-		// Try to find formula by name
-		formulaPath, findErr := findFormula(meta.Formula)
-		if findErr == nil {
-			f, err = formula.ParseFile(formulaPath)
-			if err != nil {
-				return fmt.Errorf("loading formula: %w", err)
-			}
-		}
+	f, err := loadSynthesisFormula(meta)
+	if err != nil {
+		return fmt.Errorf("loading formula: %w", err)
 	}
 
 	// Check leg completion status
@@ -163,65 +145,95 @@ func runSynthesisStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("collecting leg outputs: %w", err)
 	}
 
-	// Report status
+	printSynthesisReadiness(legOutputs)
+	if !allComplete && !force {
+		printIncompleteSynthesisLegs(legOutputs)
+		return nil
+	}
+
+	reviewID = resolveSynthesisReviewID(reviewID, meta, convoyID)
+	targetRig = resolveSynthesisTargetRig(targetRig)
+
+	if dryRun {
+		printSynthesisDryRun(convoyID, reviewID, targetRig, legOutputs, f)
+		return nil
+	}
+	return executeSynthesisStart(convoyID, reviewID, targetRig, meta, f, legOutputs)
+}
+
+func loadSynthesisFormula(meta *ConvoyMeta) (*formula.Formula, error) {
+	if meta.FormulaPath != "" {
+		return formula.ParseFile(meta.FormulaPath)
+	}
+	if meta.Formula == "" {
+		return nil, nil
+	}
+	formulaPath, err := findFormula(meta.Formula)
+	if err != nil {
+		return nil, nil
+	}
+	return formula.ParseFile(formulaPath)
+}
+
+func printSynthesisReadiness(legOutputs []LegOutput) {
+	fmt.Printf("  Legs: %d/%d complete\n", countCompletedLegs(legOutputs), len(legOutputs))
+}
+
+func countCompletedLegs(legOutputs []LegOutput) int {
 	completedCount := 0
 	for _, leg := range legOutputs {
 		if leg.Status == "closed" {
 			completedCount++
 		}
 	}
-	fmt.Printf("  Legs: %d/%d complete\n", completedCount, len(legOutputs))
+	return completedCount
+}
 
-	if !allComplete && !synthesisForce {
-		fmt.Printf("\n%s Not all legs complete. Use --force to proceed anyway.\n",
-			style.Warning.Render("⚠"))
-		fmt.Printf("\nIncomplete legs:\n")
-		for _, leg := range legOutputs {
-			if leg.Status != "closed" {
-				fmt.Printf("  ○ %s: %s [%s]\n", leg.LegID, leg.Title, leg.Status)
-			}
-		}
-		return nil
-	}
-
-	// Determine review ID
-	reviewID := synthesisReviewID
-	if reviewID == "" {
-		reviewID = meta.ReviewID
-	}
-	if reviewID == "" {
-		// Extract from convoy ID
-		reviewID = strings.TrimPrefix(convoyID, "hq-cv-")
-	}
-
-	// Determine target rig
-	targetRig := synthesisRig
-	if targetRig == "" {
-		townRoot, err := workspace.FindFromCwdOrError()
-		if err == nil {
-			rigName, _, rigErr := findCurrentRig(townRoot)
-			if rigErr == nil && rigName != "" {
-				targetRig = rigName
-			}
-		}
-		if targetRig == "" {
-			targetRig = "gastown"
+func printIncompleteSynthesisLegs(legOutputs []LegOutput) {
+	fmt.Printf("\n%s Not all legs complete. Use --force to proceed anyway.\n", style.Warning.Render("⚠"))
+	fmt.Printf("\nIncomplete legs:\n")
+	for _, leg := range legOutputs {
+		if leg.Status != "closed" {
+			fmt.Printf("  ○ %s: %s [%s]\n", leg.LegID, leg.Title, leg.Status)
 		}
 	}
+}
 
-	if synthesisDryRun {
-		fmt.Printf("\n%s Would start synthesis:\n", style.Dim.Render("[dry-run]"))
-		fmt.Printf("  Convoy:    %s\n", convoyID)
-		fmt.Printf("  Review ID: %s\n", reviewID)
-		fmt.Printf("  Target:    %s\n", targetRig)
-		fmt.Printf("  Legs:      %d outputs collected\n", len(legOutputs))
-		if f != nil && f.Synthesis != nil {
-			fmt.Printf("  Synthesis: %s\n", f.Synthesis.Title)
-		}
-		return nil
+func resolveSynthesisReviewID(reviewID string, meta *ConvoyMeta, convoyID string) string {
+	if reviewID != "" {
+		return reviewID
 	}
+	if meta.ReviewID != "" {
+		return meta.ReviewID
+	}
+	return strings.TrimPrefix(convoyID, "hq-cv-")
+}
 
-	// Create synthesis bead
+func resolveSynthesisTargetRig(targetRig string) string {
+	if targetRig != "" {
+		return targetRig
+	}
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err == nil {
+		if rigName, _, rigErr := findCurrentRig(townRoot); rigErr == nil && rigName != "" {
+			return rigName
+		}
+	}
+	return "gastown"
+}
+
+func printSynthesisDryRun(convoyID, reviewID, targetRig string, legOutputs []LegOutput, f *formula.Formula) {
+	fmt.Printf("\n%s Would start synthesis:\n", style.Dim.Render("[dry-run]"))
+	fmt.Printf("  Convoy:    %s\n", convoyID)
+	fmt.Printf("  Review ID: %s\n", reviewID)
+	fmt.Printf("  Target:    %s\n", targetRig)
+	fmt.Printf("  Legs:      %d outputs collected\n", len(legOutputs))
+	if f != nil && f.Synthesis != nil {
+		fmt.Printf("  Synthesis: %s\n", f.Synthesis.Title)
+	}
+}
+
+func executeSynthesisStart(convoyID, reviewID, targetRig string, meta *ConvoyMeta, f *formula.Formula, legOutputs []LegOutput) error {
 	synthesisID, err := createSynthesisBead(convoyID, meta, f, legOutputs, reviewID)
 	if err != nil {
 		return fmt.Errorf("creating synthesis bead: %w", err)
@@ -241,7 +253,7 @@ func runSynthesisStart(cmd *cobra.Command, args []string) error {
 }
 
 // runSynthesisStatus implements gt synthesis status.
-func runSynthesisStatus(cmd *cobra.Command, args []string) error {
+func runSynthesisStatus(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	meta, err := getConvoyMeta(convoyID)
@@ -249,15 +261,7 @@ func runSynthesisStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting convoy metadata: %w", err)
 	}
 
-	// Load formula if available
-	var f *formula.Formula
-	if meta.FormulaPath != "" {
-		f, _ = formula.ParseFile(meta.FormulaPath)
-	} else if meta.Formula != "" {
-		if path, err := findFormula(meta.Formula); err == nil {
-			f, _ = formula.ParseFile(path)
-		}
-	}
+	f, _ := loadSynthesisFormula(meta)
 
 	// Collect leg outputs
 	legOutputs, allComplete, err := collectLegOutputs(meta, f)
@@ -265,14 +269,22 @@ func runSynthesisStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("collecting leg outputs: %w", err)
 	}
 
-	// Display status
+	printSynthesisStatus(convoyID, meta, legOutputs, allComplete, f)
+	return nil
+}
+
+func printSynthesisStatus(convoyID string, meta *ConvoyMeta, legOutputs []LegOutput, allComplete bool, f *formula.Formula) {
 	fmt.Printf("🚚 %s %s\n\n", style.Bold.Render(convoyID+":"), meta.Title)
 	fmt.Printf("  Status: %s\n", formatConvoyStatus(meta.Status))
-
 	if meta.Formula != "" {
 		fmt.Printf("  Formula: %s\n", meta.Formula)
 	}
+	printSynthesisLegStatus(legOutputs)
+	printSynthesisReadinessStatus(convoyID, legOutputs, allComplete)
+	printSynthesisConfig(f)
+}
 
+func printSynthesisLegStatus(legOutputs []LegOutput) {
 	fmt.Printf("\n  %s\n", style.Bold.Render("Legs:"))
 	for _, leg := range legOutputs {
 		status := "○"
@@ -285,36 +297,32 @@ func runSynthesisStatus(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("    %s %s: %s [%s]%s\n", status, leg.LegID, leg.Title, leg.Status, fileStatus)
 	}
+}
 
-	// Synthesis readiness
+func printSynthesisReadinessStatus(convoyID string, legOutputs []LegOutput, allComplete bool) {
 	fmt.Printf("\n  %s\n", style.Bold.Render("Synthesis:"))
 	if allComplete {
 		fmt.Printf("    %s Ready - all legs complete\n", style.Success.Render("✓"))
 		fmt.Printf("    Run: gt synthesis start %s\n", convoyID)
-	} else {
-		completedCount := 0
-		for _, leg := range legOutputs {
-			if leg.Status == "closed" {
-				completedCount++
-			}
-		}
-		fmt.Printf("    %s Waiting - %d/%d legs complete\n",
-			style.Warning.Render("○"), completedCount, len(legOutputs))
+		return
 	}
+	completedCount := countCompletedLegs(legOutputs)
+	fmt.Printf("    %s Waiting - %d/%d legs complete\n", style.Warning.Render("○"), completedCount, len(legOutputs))
+}
 
-	if f != nil && f.Synthesis != nil {
-		fmt.Printf("\n  %s\n", style.Bold.Render("Synthesis Config:"))
-		fmt.Printf("    Title: %s\n", f.Synthesis.Title)
-		if f.Output != nil && f.Output.Synthesis != "" {
-			fmt.Printf("    Output: %s\n", f.Output.Synthesis)
-		}
+func printSynthesisConfig(f *formula.Formula) {
+	if f == nil || f.Synthesis == nil {
+		return
 	}
-
-	return nil
+	fmt.Printf("\n  %s\n", style.Bold.Render("Synthesis Config:"))
+	fmt.Printf("    Title: %s\n", f.Synthesis.Title)
+	if f.Output != nil && f.Output.Synthesis != "" {
+		fmt.Printf("    Output: %s\n", f.Output.Synthesis)
+	}
 }
 
 // runSynthesisClose implements gt synthesis close.
-func runSynthesisClose(cmd *cobra.Command, args []string) error {
+func runSynthesisClose(_ *cobra.Command, args []string) error {
 	convoyID := args[0]
 
 	townBeads, err := getTownBeadsDir()
@@ -370,135 +378,161 @@ func runSynthesisClose(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+type convoyShowRecord struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Status      string   `json:"status"`
+	Description string   `json:"description"`
+	Type        string   `json:"issue_type"`
+	Labels      []string `json:"labels"`
+}
+
 // getConvoyMeta retrieves convoy metadata from beads.
 func getConvoyMeta(convoyID string) (*ConvoyMeta, error) {
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return nil, err
 	}
+	convoy, err := showConvoyRecord(townBeads, convoyID)
+	if err != nil {
+		return nil, err
+	}
+	if !isConvoyIssue(convoy.Type, convoy.Labels) {
+		return nil, fmt.Errorf("'%s' is not a convoy", convoyID)
+	}
+	meta := convoyMetaFromRecord(convoy)
+	if err := attachConvoyLegIssues(townBeads, convoyID, meta); err != nil {
+		return nil, err
+	}
+	return meta, nil
+}
 
+func showConvoyRecord(townBeads, convoyID string) (*convoyShowRecord, error) {
 	showCmd := beads.Spawn("show", convoyID, "--json")
 	showCmd.Dir = townBeads
 	var stdout bytes.Buffer
 	showCmd.Stdout = &stdout
-
 	if err := showCmd.Run(); err != nil {
 		return nil, fmt.Errorf("convoy '%s' not found", convoyID)
 	}
-
-	var convoys []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Status      string   `json:"status"`
-		Description string   `json:"description"`
-		Type        string   `json:"issue_type"`
-		Labels      []string `json:"labels"`
-	}
+	var convoys []convoyShowRecord
 	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
 		return nil, fmt.Errorf("parsing convoy data: %w", err)
 	}
-
-	if len(convoys) == 0 || !isConvoyIssue(convoys[0].Type, convoys[0].Labels) {
+	if len(convoys) == 0 {
 		return nil, fmt.Errorf("'%s' is not a convoy", convoyID)
 	}
+	return &convoys[0], nil
+}
 
-	convoy := convoys[0]
-
-	// Parse formula and review ID from description
+func convoyMetaFromRecord(convoy *convoyShowRecord) *ConvoyMeta {
 	meta := &ConvoyMeta{
 		ID:     convoy.ID,
 		Title:  convoy.Title,
 		Status: convoy.Status,
 	}
+	applyConvoyDescriptionFields(meta, convoy.Description)
+	return meta
+}
 
-	// Look for structured fields in description
-	for _, line := range strings.Split(convoy.Description, "\n") {
-		line = strings.TrimSpace(line)
-		if colonIdx := strings.Index(line, ":"); colonIdx != -1 {
-			key := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
-			value := strings.TrimSpace(line[colonIdx+1:])
-			switch key {
-			case "formula":
-				meta.Formula = value
-			case "formula_path", "formula-path":
-				meta.FormulaPath = value
-			case "review_id", "review-id":
-				meta.ReviewID = value
-			}
-		}
+func applyConvoyDescriptionFields(meta *ConvoyMeta, description string) {
+	for _, line := range strings.Split(description, "\n") {
+		applyConvoyDescriptionLine(meta, strings.TrimSpace(line))
 	}
+}
 
-	// Get tracked leg issues
+func applyConvoyDescriptionLine(meta *ConvoyMeta, line string) {
+	colonIdx := strings.Index(line, ":")
+	if colonIdx == -1 {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(line[:colonIdx]))
+	value := strings.TrimSpace(line[colonIdx+1:])
+	switch key {
+	case "formula":
+		meta.Formula = value
+	case "formula_path", "formula-path":
+		meta.FormulaPath = value
+	case "review_id", "review-id":
+		meta.ReviewID = value
+	}
+}
+
+func attachConvoyLegIssues(townBeads, convoyID string, meta *ConvoyMeta) error {
 	tracked, err := getTrackedIssues(townBeads, convoyID)
 	if err != nil {
-		return nil, fmt.Errorf("getting tracked issues for convoy %s: %w", convoyID, err)
+		return fmt.Errorf("getting tracked issues for convoy %s: %w", convoyID, err)
 	}
 	for _, t := range tracked {
 		meta.LegIssues = append(meta.LegIssues, t.ID)
 	}
-
-	return meta, nil
+	return nil
 }
 
 // collectLegOutputs gathers outputs from all convoy legs.
 func collectLegOutputs(meta *ConvoyMeta, f *formula.Formula) ([]LegOutput, bool, error) { //nolint:unparam // error return kept for future use
+	outputs, allComplete := collectTrackedLegOutputs(meta)
+	if f != nil && f.Output != nil && meta.ReviewID != "" {
+		outputs = attachFormulaLegFiles(outputs, f, meta.ReviewID)
+	}
+	return outputs, allComplete, nil
+}
+
+func collectTrackedLegOutputs(meta *ConvoyMeta) ([]LegOutput, bool) {
 	var outputs []LegOutput
 	allComplete := true
+	for _, issueID := range meta.LegIssues {
+		output := trackedLegOutput(issueID)
+		if output.Status != "closed" {
+			allComplete = false
+		}
+		outputs = append(outputs, output)
+	}
+	return outputs, allComplete
+}
 
-	// If we have tracked issues, use those as legs
-	if len(meta.LegIssues) > 0 {
-		for _, issueID := range meta.LegIssues {
-			details := getIssueDetails(issueID)
-			output := LegOutput{
-				LegID: issueID,
-				Title: "(unknown)",
-			}
-			if details != nil {
-				output.Title = details.Title
-				output.Status = details.Status
-			}
-			if output.Status != "closed" {
-				allComplete = false
-			}
-			outputs = append(outputs, output)
+func trackedLegOutput(issueID string) LegOutput {
+	output := LegOutput{
+		LegID: issueID,
+		Title: "(unknown)",
+	}
+	details := getIssueDetails(issueID)
+	if details != nil {
+		output.Title = details.Title
+		output.Status = details.Status
+	}
+	return output
+}
+
+func attachFormulaLegFiles(outputs []LegOutput, f *formula.Formula, reviewID string) []LegOutput {
+	for _, leg := range f.Legs {
+		outputPath := expandOutputPath(f.Output.Directory, f.Output.LegPattern, reviewID, leg.ID)
+		content, err := os.ReadFile(outputPath)
+		if err != nil {
+			continue
+		}
+		outputs = attachOrAppendLegFile(outputs, leg, outputPath, string(content))
+	}
+	return outputs
+}
+
+func attachOrAppendLegFile(outputs []LegOutput, leg formula.Leg, outputPath, content string) []LegOutput {
+	for i := range outputs {
+		if outputs[i].LegID == leg.ID {
+			outputs[i].FilePath = outputPath
+			outputs[i].Content = content
+			outputs[i].HasFile = true
+			return outputs
 		}
 	}
-
-	// If we have a formula, also try to find output files
-	if f != nil && f.Output != nil && meta.ReviewID != "" {
-		for _, leg := range f.Legs {
-			// Expand output path template
-			outputPath := expandOutputPath(f.Output.Directory, f.Output.LegPattern,
-				meta.ReviewID, leg.ID)
-
-			// Check if file exists and read content
-			if content, err := os.ReadFile(outputPath); err == nil {
-				// Find or create leg output entry
-				found := false
-				for i := range outputs {
-					if outputs[i].LegID == leg.ID {
-						outputs[i].FilePath = outputPath
-						outputs[i].Content = string(content)
-						outputs[i].HasFile = true
-						found = true
-						break
-					}
-				}
-				if !found {
-					outputs = append(outputs, LegOutput{
-						LegID:    leg.ID,
-						Title:    leg.Title,
-						Status:   "closed", // If file exists, assume complete
-						FilePath: outputPath,
-						Content:  string(content),
-						HasFile:  true,
-					})
-				}
-			}
-		}
-	}
-
-	return outputs, allComplete, nil
+	return append(outputs, LegOutput{
+		LegID:    leg.ID,
+		Title:    leg.Title,
+		Status:   "closed", // If file exists, assume complete
+		FilePath: outputPath,
+		Content:  content,
+		HasFile:  true,
+	})
 }
 
 // expandOutputPath expands template variables in output paths.
@@ -527,107 +561,125 @@ func expandOutputTemplate(tmplText, reviewID, legID string) string {
 // createSynthesisBead creates a bead for the synthesis step.
 func createSynthesisBead(convoyID string, meta *ConvoyMeta, f *formula.Formula,
 	legOutputs []LegOutput, reviewID string) (string, error) {
-
-	// Build synthesis title
-	title := "Synthesis: " + meta.Title
-	if f != nil && f.Synthesis != nil && f.Synthesis.Title != "" {
-		title = f.Synthesis.Title + ": " + meta.Title
-	}
-
-	// Build synthesis description with leg outputs
-	var desc strings.Builder
-	desc.WriteString(fmt.Sprintf("convoy: %s\n", convoyID))
-	desc.WriteString(fmt.Sprintf("review_id: %s\n", reviewID))
-	desc.WriteString("\n")
-
-	var outputDir, outputSynthesis string
-	if f != nil && f.Output != nil {
-		outputDir = expandOutputTemplate(f.Output.Directory, reviewID, "")
-		outputSynthesis = f.Output.Synthesis
-	}
-
-	// Add synthesis instructions from formula
-	if f != nil && f.Synthesis != nil && f.Synthesis.Description != "" {
-		formulaName := meta.Formula
-		if formulaName == "" {
-			formulaName = f.Name
-		}
-		synCtx := formulaTemplateContext(formulaName, meta.Title, reviewID, 0, "", nil, nil, nil)
-		synCtx["problem"] = meta.Title
-		addOutputTemplateContext(synCtx, outputDir, outputSynthesis)
-		synDesc := renderTemplateOrDefault(f.Synthesis.Description, synCtx, f.Synthesis.Description)
-
-		desc.WriteString("## Instructions\n\n")
-		desc.WriteString(synDesc)
-		desc.WriteString("\n\n")
-	}
-
-	// Add collected leg outputs
-	desc.WriteString("## Leg Outputs\n\n")
-	for _, leg := range legOutputs {
-		desc.WriteString(fmt.Sprintf("### %s: %s\n\n", leg.LegID, leg.Title))
-		if leg.Content != "" {
-			desc.WriteString(leg.Content)
-			desc.WriteString("\n\n")
-		} else if leg.FilePath != "" {
-			desc.WriteString(fmt.Sprintf("Output file: %s\n\n", leg.FilePath))
-		} else {
-			desc.WriteString("(no output available)\n\n")
-		}
-	}
-
-	// Add output path if configured
-	if f != nil && f.Output != nil && f.Output.Synthesis != "" {
-		outputPath := filepath.Join(outputDir, f.Output.Synthesis)
-		desc.WriteString(fmt.Sprintf("\n## Output\n\nWrite synthesis to: %s\n", outputPath))
-	}
-
-	// Guard against flag-like synthesis titles (gt-e0kx5)
+	title := synthesisBeadTitle(meta, f)
 	if beads.IsFlagLikeTitle(title) {
 		return "", fmt.Errorf("refusing to create synthesis bead: title %q looks like a CLI flag", title)
 	}
-
-	// Create the bead
-	createArgs := []string{
-		"create",
-		"--type=task",
-		"--title=" + title,
-		"--description=" + desc.String(),
-		"--json",
-	}
-
 	townBeads, err := getTownBeadsDir()
 	if err != nil {
 		return "", err
 	}
+	beadID, err := createTownTaskBead(townBeads, title, synthesisBeadDescription(convoyID, meta, f, legOutputs, reviewID))
+	if err != nil {
+		return "", err
+	}
+	_ = addTrackingRelationFn(townBeads, convoyID, beadID) // Non-fatal if this fails
+	return beadID, nil
+}
 
-	createCmd := beads.Spawn(createArgs...)
+func synthesisBeadTitle(meta *ConvoyMeta, f *formula.Formula) string {
+	if f != nil && f.Synthesis != nil && f.Synthesis.Title != "" {
+		return f.Synthesis.Title + ": " + meta.Title
+	}
+	return "Synthesis: " + meta.Title
+}
+
+func synthesisBeadDescription(convoyID string, meta *ConvoyMeta, f *formula.Formula, legOutputs []LegOutput, reviewID string) string {
+	var desc strings.Builder
+	desc.WriteString(fmt.Sprintf("convoy: %s\n", convoyID))
+	desc.WriteString(fmt.Sprintf("review_id: %s\n", reviewID))
+	desc.WriteString("\n")
+	outputDir, outputSynthesis := synthesisOutputPaths(f, reviewID)
+	appendSynthesisInstructions(&desc, meta, f, reviewID, outputDir, outputSynthesis)
+	appendSynthesisLegOutputs(&desc, legOutputs)
+	appendSynthesisOutputPath(&desc, f, outputDir)
+	return desc.String()
+}
+
+func synthesisOutputPaths(f *formula.Formula, reviewID string) (string, string) {
+	if f == nil || f.Output == nil {
+		return "", ""
+	}
+	return expandOutputTemplate(f.Output.Directory, reviewID, ""), f.Output.Synthesis
+}
+
+func appendSynthesisInstructions(desc *strings.Builder, meta *ConvoyMeta, f *formula.Formula, reviewID, outputDir, outputSynthesis string) {
+	if f == nil || f.Synthesis == nil || f.Synthesis.Description == "" {
+		return
+	}
+	formulaName := meta.Formula
+	if formulaName == "" {
+		formulaName = f.Name
+	}
+	synCtx := formulaTemplateContext(formulaName, meta.Title, reviewID, 0, "", nil, nil, nil)
+	synCtx["problem"] = meta.Title
+	addOutputTemplateContext(synCtx, outputDir, outputSynthesis)
+	synDesc := renderTemplateOrDefault(f.Synthesis.Description, synCtx, f.Synthesis.Description)
+	desc.WriteString("## Instructions\n\n")
+	desc.WriteString(synDesc)
+	desc.WriteString("\n\n")
+}
+
+func appendSynthesisLegOutputs(desc *strings.Builder, legOutputs []LegOutput) {
+	desc.WriteString("## Leg Outputs\n\n")
+	for _, leg := range legOutputs {
+		appendOneSynthesisLegOutput(desc, leg)
+	}
+}
+
+func appendOneSynthesisLegOutput(desc *strings.Builder, leg LegOutput) {
+	desc.WriteString(fmt.Sprintf("### %s: %s\n\n", leg.LegID, leg.Title))
+	if leg.Content != "" {
+		desc.WriteString(leg.Content)
+		desc.WriteString("\n\n")
+		return
+	}
+	if leg.FilePath != "" {
+		desc.WriteString(fmt.Sprintf("Output file: %s\n\n", leg.FilePath))
+		return
+	}
+	desc.WriteString("(no output available)\n\n")
+}
+
+func appendSynthesisOutputPath(desc *strings.Builder, f *formula.Formula, outputDir string) {
+	if f == nil || f.Output == nil || f.Output.Synthesis == "" {
+		return
+	}
+	outputPath := filepath.Join(outputDir, f.Output.Synthesis)
+	desc.WriteString(fmt.Sprintf("\n## Output\n\nWrite synthesis to: %s\n", outputPath))
+}
+
+func createTownTaskBead(townBeads, title, desc string) (string, error) {
+	createCmd := beads.Spawn(
+		"create",
+		"--type=task",
+		"--title="+title,
+		"--description="+desc,
+		"--json",
+	)
 	createCmd.Dir = townBeads
 	var stdout bytes.Buffer
 	createCmd.Stdout = &stdout
 	createCmd.Stderr = os.Stderr
-
 	if err := createCmd.Run(); err != nil {
 		return "", fmt.Errorf("creating synthesis bead: %w", err)
 	}
+	return parseCreatedBeadID(stdout.Bytes())
+}
 
-	// Parse created bead ID
+func parseCreatedBeadID(raw []byte) (string, error) {
 	var result struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		// Try to extract ID from non-JSON output (bead IDs have format: prefix-id)
-		out := strings.TrimSpace(stdout.String())
-		if looksLikeIssueID(out) {
-			return out, nil
-		}
-		return "", fmt.Errorf("parsing created bead: %w", err)
+	err := json.Unmarshal(raw, &result)
+	if err == nil {
+		return result.ID, nil
 	}
-
-	// Add tracking relation: convoy tracks synthesis.
-	_ = addTrackingRelationFn(townBeads, convoyID, result.ID) // Non-fatal if this fails
-
-	return result.ID, nil
+	out := strings.TrimSpace(string(raw))
+	if looksLikeIssueID(out) {
+		return out, nil
+	}
+	return "", fmt.Errorf("parsing created bead: %w", err)
 }
 
 // slingSynthesis slings the synthesis bead to a rig.
@@ -694,43 +746,27 @@ func TriggerSynthesisIfReady(convoyID, targetRig string) error {
 	if err != nil {
 		return err
 	}
-
 	if !ready {
 		return nil // Not ready yet
 	}
-
-	// Synthesis is ready - start it
 	fmt.Printf("%s All legs complete, starting synthesis...\n", style.Bold.Render("🔬"))
+	return startReadySynthesis(convoyID, targetRig)
+}
 
+func startReadySynthesis(convoyID, targetRig string) error {
 	meta, err := getConvoyMeta(convoyID)
 	if err != nil {
 		return err
 	}
-
-	// Load formula if available
-	var f *formula.Formula
-	if meta.FormulaPath != "" {
-		f, _ = formula.ParseFile(meta.FormulaPath)
-	} else if meta.Formula != "" {
-		if path, err := findFormula(meta.Formula); err == nil {
-			f, _ = formula.ParseFile(path)
-		}
-	}
-
+	f, _ := loadSynthesisFormula(meta)
 	legOutputs, _, _ := collectLegOutputs(meta, f)
-	reviewID := meta.ReviewID
-	if reviewID == "" {
-		reviewID = strings.TrimPrefix(convoyID, "hq-cv-")
-	}
-
+	reviewID := resolveSynthesisReviewID("", meta, convoyID)
 	synthesisID, err := createSynthesisBead(convoyID, meta, f, legOutputs, reviewID)
 	if err != nil {
 		return fmt.Errorf("creating synthesis bead: %w", err)
 	}
-
 	if err := slingSynthesis(synthesisID, targetRig); err != nil {
 		return fmt.Errorf("slinging synthesis: %w", err)
 	}
-
 	return nil
 }

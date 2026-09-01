@@ -123,67 +123,91 @@ func (c *RigRoutesJSONLCheck) Fix(ctx *CheckContext) error {
 func (c *RigRoutesJSONLCheck) findRigDirectories(townRoot string) []string {
 	var rigDirs []string
 	seen := make(map[string]bool)
+	rigDirs = appendRegistryRigDirs(rigDirs, seen, townRoot)
+	rigDirs = appendRouteRigDirs(rigDirs, seen, townRoot)
+	rigDirs = appendDiscoveredRigDirs(rigDirs, seen, townRoot)
+	return rigDirs
+}
 
-	// Source 1: rigs.json registry
+func appendRegistryRigDirs(rigDirs []string, seen map[string]bool, townRoot string) []string {
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
-	if rigsConfig, err := config.LoadRigsConfig(rigsPath); err == nil {
-		for rigName := range rigsConfig.Rigs {
-			rigPath := filepath.Join(townRoot, rigName)
-			if _, err := os.Stat(rigPath); err == nil && !seen[rigPath] {
-				rigDirs = append(rigDirs, rigPath)
-				seen[rigPath] = true
-			}
-		}
+	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	if err != nil {
+		return rigDirs
 	}
+	for rigName := range rigsConfig.Rigs {
+		rigPath := filepath.Join(townRoot, rigName)
+		rigDirs = appendExistingRigDir(rigDirs, seen, rigPath)
+	}
+	return rigDirs
+}
 
-	// Source 2: routes.jsonl (for rigs that may not be in registry)
+func appendRouteRigDirs(rigDirs []string, seen map[string]bool, townRoot string) []string {
+	townBeadsDir := filepath.Join(townRoot, ".beads")
+	routes, err := beads.LoadRoutes(townBeadsDir)
+	if err != nil {
+		return rigDirs
+	}
+	for _, route := range routes {
+		rigPath, ok := routeRigPath(townRoot, route.Path)
+		if !ok {
+			continue
+		}
+		rigDirs = appendExistingRigDir(rigDirs, seen, rigPath)
+	}
+	return rigDirs
+}
+
+func routeRigPath(townRoot, routePath string) (string, bool) {
+	if routePath == "." || routePath == "" {
+		return "", false
+	}
+	parts := strings.Split(routePath, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return "", false
+	}
+	return filepath.Join(townRoot, parts[0]), true
+}
+
+func appendDiscoveredRigDirs(rigDirs []string, seen map[string]bool, townRoot string) []string {
 	townBeadsDir := filepath.Join(townRoot, ".beads")
 	townBeadsInfo, townBeadsErr := os.Stat(townBeadsDir)
-	if routes, err := beads.LoadRoutes(townBeadsDir); err == nil {
-		for _, route := range routes {
-			if route.Path == "." || route.Path == "" {
-				continue // Skip town root
-			}
-			// Extract rig name (first path component)
-			parts := strings.Split(route.Path, "/")
-			if len(parts) > 0 && parts[0] != "" {
-				rigPath := filepath.Join(townRoot, parts[0])
-				if _, err := os.Stat(rigPath); err == nil && !seen[rigPath] {
-					rigDirs = append(rigDirs, rigPath)
-					seen[rigPath] = true
-				}
-			}
-		}
-	}
-
-	// Source 3: Look for directories with .beads subdirs (for unregistered rigs)
 	entries, err := os.ReadDir(townRoot)
-	if err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			// Skip known non-rig directories
-			if entry.Name() == "mayor" || entry.Name() == ".beads" || entry.Name() == ".git" {
-				continue
-			}
-			rigPath := filepath.Join(townRoot, entry.Name())
-			beadsDir := filepath.Join(rigPath, ".beads")
-			beadsDirInfo, err := os.Stat(beadsDir)
-			if err != nil {
-				continue // .beads doesn't exist
-			}
-			// Skip if this dir's .beads resolves to the town root .beads
-			// (e.g. deacon uses a symlinked .beads dir pointing to town beads)
-			if townBeadsErr == nil && os.SameFile(townBeadsInfo, beadsDirInfo) {
-				continue
-			}
-			if !seen[rigPath] {
-				rigDirs = append(rigDirs, rigPath)
-				seen[rigPath] = true
-			}
-		}
+	if err != nil {
+		return rigDirs
 	}
-
+	for _, entry := range entries {
+		rigPath, ok := discoveredRigPath(townRoot, entry)
+		if !ok {
+			continue
+		}
+		beadsDirInfo, err := os.Stat(filepath.Join(rigPath, ".beads"))
+		if err != nil {
+			continue
+		}
+		if townBeadsErr == nil && os.SameFile(townBeadsInfo, beadsDirInfo) {
+			continue
+		}
+		rigDirs = appendExistingRigDir(rigDirs, seen, rigPath)
+	}
 	return rigDirs
+}
+
+func discoveredRigPath(townRoot string, entry os.DirEntry) (string, bool) {
+	if !entry.IsDir() {
+		return "", false
+	}
+	switch entry.Name() {
+	case "mayor", ".beads", ".git":
+		return "", false
+	}
+	return filepath.Join(townRoot, entry.Name()), true
+}
+
+func appendExistingRigDir(rigDirs []string, seen map[string]bool, rigPath string) []string {
+	if _, err := os.Stat(rigPath); err != nil || seen[rigPath] {
+		return rigDirs
+	}
+	seen[rigPath] = true
+	return append(rigDirs, rigPath)
 }

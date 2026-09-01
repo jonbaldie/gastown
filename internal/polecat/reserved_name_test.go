@@ -11,7 +11,7 @@ func TestAddWithOptionsRejectsReservedNameBeforeCreatingFiles(t *testing.T) {
 	mgr := &Manager{rig: &rig.Rig{Path: t.TempDir()}}
 	for _, name := range []string{"mayor", "WITNESS", "crew", "dog"} {
 		t.Run(name, func(t *testing.T) {
-			_, err := mgr.AddWithOptions(name, AddOptions{})
+			_, err := AddWithOptions(mgr, name, AddOptions{})
 			if err == nil {
 				t.Fatalf("AddWithOptions(%q) succeeded, want reserved-name error", name)
 			}

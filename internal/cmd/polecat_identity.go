@@ -21,13 +21,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Polecat identity command flags
-var (
-	polecatIdentityListJSON    bool
-	polecatIdentityShowJSON    bool
-	polecatIdentityRemoveForce bool
-)
-
 var polecatIdentityCmd = &cobra.Command{
 	Use:     "identity",
 	Aliases: []string{"id"},
@@ -140,13 +133,13 @@ Example:
 
 func init() {
 	// List flags
-	polecatIdentityListCmd.Flags().BoolVar(&polecatIdentityListJSON, "json", false, "Output as JSON")
+	polecatIdentityListCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Show flags
-	polecatIdentityShowCmd.Flags().BoolVar(&polecatIdentityShowJSON, "json", false, "Output as JSON")
+	polecatIdentityShowCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// Remove flags
-	polecatIdentityRemoveCmd.Flags().BoolVarP(&polecatIdentityRemoveForce, "force", "f", false, "Force removal, bypassing safety checks")
+	polecatIdentityRemoveCmd.Flags().BoolP("force", "f", false, "Force removal, bypassing safety checks")
 
 	// Add subcommands to identity
 	polecatIdentityCmd.AddCommand(polecatIdentityAddCmd)
@@ -205,7 +198,7 @@ type RecentWorkItem struct {
 	Ago       string `json:"ago"`
 }
 
-func runPolecatIdentityAdd(cmd *cobra.Command, args []string) error {
+func runPolecatIdentityAdd(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	var polecatName string
 
@@ -227,7 +220,7 @@ func runPolecatIdentityAdd(cmd *cobra.Command, args []string) error {
 		polecatGit := git.NewGit(r.Path)
 		t := tmux.NewTmux()
 		mgr := polecat.NewManager(r, polecatGit, t)
-		polecatName, err = mgr.AllocateName()
+		polecatName, err = polecat.AllocateName(mgr)
 		if err != nil {
 			return fmt.Errorf("generating polecat name: %w", err)
 		}
@@ -263,340 +256,337 @@ func runPolecatIdentityAdd(cmd *cobra.Command, args []string) error {
 }
 
 func runPolecatIdentityList(cmd *cobra.Command, args []string) error {
-	rigName := args[0]
-
-	// Get rig
-	_, r, err := getRig(rigName)
+	identities, err := collectPolecatIdentities(args[0])
 	if err != nil {
 		return err
 	}
+	return printPolecatIdentityList(args[0], identities, commandBoolFlag(cmd, "json"))
+}
 
-	// Get all agent beads
-	bd := beads.New(r.Path)
-	agentBeads, err := bd.ListAgentBeads()
+func collectPolecatIdentities(rigName string) ([]IdentityInfo, error) {
+	_, r, err := getRig(rigName)
 	if err != nil {
-		return fmt.Errorf("listing agent beads: %w", err)
+		return nil, err
 	}
-
-	// Filter for polecat beads in this rig
-	identities := []IdentityInfo{} // Initialize to empty slice (not nil) for JSON
+	agentBeads, err := beads.New(r.Path).ListAgentBeads()
+	if err != nil {
+		return nil, fmt.Errorf("listing agent beads: %w", err)
+	}
 	t := tmux.NewTmux()
 	polecatMgr := polecat.NewSessionManager(t, r)
-
+	mgr := polecat.NewManager(r, nil, t)
+	identities := []IdentityInfo{}
 	for id, issue := range agentBeads {
-		// Parse the bead ID to check if it's a polecat for this rig
-		beadRig, role, name, ok := beads.ParseAgentBeadID(id)
-		if !ok || role != constants.RolePolecat || beadRig != rigName {
-			continue
+		info, ok := polecatIdentityFromAgentBead(rigName, id, issue, mgr, polecatMgr)
+		if ok {
+			identities = append(identities, info)
 		}
-
-		// Skip closed beads
-		if issue.Status == "closed" {
-			continue
-		}
-
-		fields := beads.ParseAgentFields(issue.Description)
-
-		// Check if worktree exists
-		worktreeExists := false
-		mgr := polecat.NewManager(r, nil, t)
-		if p, err := mgr.Get(name); err == nil && p != nil {
-			worktreeExists = true
-		}
-
-		// Check if session is running
-		sessionRunning, _ := polecatMgr.IsRunning(name)
-
-		info := IdentityInfo{
-			Rig:            rigName,
-			Name:           name,
-			BeadID:         id,
-			AgentState:     fields.AgentState,
-			HookBead:       issue.HookBead,
-			CleanupStatus:  fields.CleanupStatus,
-			WorktreeExists: worktreeExists,
-			SessionRunning: sessionRunning,
-		}
-		if info.HookBead == "" {
-			info.HookBead = fields.HookBead
-		}
-		identities = append(identities, info)
 	}
+	return identities, nil
+}
 
-	// JSON output
-	if polecatIdentityListJSON {
+func polecatIdentityFromAgentBead(rigName, id string, issue *beads.Issue, mgr *polecat.Manager, polecatMgr *polecat.SessionManager) (IdentityInfo, bool) {
+	beadRig, role, name, ok := beads.ParseAgentBeadID(id)
+	if !ok || role != constants.RolePolecat || beadRig != rigName || issue.Status == "closed" {
+		return IdentityInfo{}, false
+	}
+	fields := beads.ParseAgentFields(issue.Description)
+	worktreeExists := false
+	if p, err := polecat.Get(mgr, name); err == nil && p != nil {
+		worktreeExists = true
+	}
+	sessionRunning, _ := polecatMgr.IsRunning(name)
+	info := IdentityInfo{
+		Rig:            rigName,
+		Name:           name,
+		BeadID:         id,
+		AgentState:     fields.AgentState,
+		HookBead:       issue.HookBead,
+		CleanupStatus:  fields.CleanupStatus,
+		WorktreeExists: worktreeExists,
+		SessionRunning: sessionRunning,
+	}
+	if info.HookBead == "" {
+		info.HookBead = fields.HookBead
+	}
+	return info, true
+}
+
+func printPolecatIdentityList(rigName string, identities []IdentityInfo, jsonOutput bool) error {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(identities)
 	}
-
-	// Human-readable output
 	if len(identities) == 0 {
 		fmt.Printf("No polecat identities found in %s.\n", rigName)
 		return nil
 	}
-
 	fmt.Printf("%s\n\n", style.Bold.Render(fmt.Sprintf("Polecat Identities in %s", rigName)))
-
 	for _, info := range identities {
-		// Status indicators
-		sessionIcon := style.Dim.Render("○")
-		if info.SessionRunning {
-			sessionIcon = style.Success.Render("●")
-		}
-
-		worktreeIcon := ""
-		if info.WorktreeExists {
-			worktreeIcon = " " + style.Dim.Render("[worktree]")
-		}
-
-		// Agent state with color
-		stateStr := info.AgentState
-		if stateStr == "" {
-			stateStr = "unknown"
-		}
-		switch stateStr {
-		case "working":
-			stateStr = style.Info.Render(stateStr)
-		case "done":
-			stateStr = style.Success.Render(stateStr)
-		case "stuck":
-			stateStr = style.Warning.Render(stateStr)
-		default:
-			stateStr = style.Dim.Render(stateStr)
-		}
-
-		fmt.Printf("  %s %s  %s%s\n", sessionIcon, style.Bold.Render(info.Name), stateStr, worktreeIcon)
-
-		if info.HookBead != "" {
-			fmt.Printf("    Hook: %s\n", style.Dim.Render(info.HookBead))
-		}
+		printPolecatIdentityListRow(info)
 	}
-
 	fmt.Printf("\n%d identity bead(s)\n", len(identities))
 	return nil
 }
 
-func runPolecatIdentityShow(cmd *cobra.Command, args []string) error {
-	rigName := args[0]
-	polecatName := args[1]
-
-	// Get rig
-	_, r, err := getRig(rigName)
-	if err != nil {
-		return err
+func printPolecatIdentityListRow(info IdentityInfo) {
+	sessionIcon := style.Dim.Render("○")
+	if info.SessionRunning {
+		sessionIcon = style.Success.Render("●")
 	}
-
-	// Get identity bead
-	bd := beads.New(r.Path)
-	beadID := polecatBeadIDForRig(r, rigName, polecatName)
-	issue, fields, err := bd.GetAgentBead(beadID)
-	if err != nil {
-		return fmt.Errorf("getting identity bead: %w", err)
+	worktreeIcon := ""
+	if info.WorktreeExists {
+		worktreeIcon = " " + style.Dim.Render("[worktree]")
 	}
-	if issue == nil {
-		return fmt.Errorf("identity bead %s not found", beadID)
+	fmt.Printf("  %s %s  %s%s\n", sessionIcon, style.Bold.Render(info.Name), polecatIdentityStateStyle(info.AgentState), worktreeIcon)
+	if info.HookBead != "" {
+		fmt.Printf("    Hook: %s\n", style.Dim.Render(info.HookBead))
 	}
+}
 
-	// Check worktree and session
-	t := tmux.NewTmux()
-	polecatMgr := polecat.NewSessionManager(t, r)
-	mgr := polecat.NewManager(r, nil, t)
-
-	worktreeExists := false
-	var clonePath string
-	if p, err := mgr.Get(polecatName); err == nil && p != nil {
-		worktreeExists = true
-		clonePath = p.ClonePath
-	}
-	sessionRunning, _ := polecatMgr.IsRunning(polecatName)
-
-	// Build CV summary with enhanced analytics
-	cv := buildCVSummary(r.Path, rigName, polecatName, beadID, clonePath)
-
-	// JSON output - include both identity details and CV
-	if polecatIdentityShowJSON {
-		output := struct {
-			IdentityInfo
-			Title     string     `json:"title"`
-			CreatedAt string     `json:"created_at,omitempty"`
-			UpdatedAt string     `json:"updated_at,omitempty"`
-			CV        *CVSummary `json:"cv,omitempty"`
-		}{
-			IdentityInfo: IdentityInfo{
-				Rig:            rigName,
-				Name:           polecatName,
-				BeadID:         beadID,
-				AgentState:     fields.AgentState,
-				HookBead:       issue.HookBead,
-				CleanupStatus:  fields.CleanupStatus,
-				WorktreeExists: worktreeExists,
-				SessionRunning: sessionRunning,
-			},
-			Title:     issue.Title,
-			CreatedAt: issue.CreatedAt,
-			UpdatedAt: issue.UpdatedAt,
-			CV:        cv,
-		}
-		if output.HookBead == "" {
-			output.HookBead = fields.HookBead
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(output)
-	}
-
-	// Human-readable output
-	fmt.Printf("\n%s %s/%s\n", style.Bold.Render("Identity:"), rigName, polecatName)
-	fmt.Printf("  Bead ID:       %s\n", beadID)
-	fmt.Printf("  Title:         %s\n", issue.Title)
-
-	// Status
-	sessionStr := style.Dim.Render("stopped")
-	if sessionRunning {
-		sessionStr = style.Success.Render("running")
-	}
-	fmt.Printf("  Session:       %s\n", sessionStr)
-
-	worktreeStr := style.Dim.Render("no")
-	if worktreeExists {
-		worktreeStr = style.Success.Render("yes")
-	}
-	fmt.Printf("  Worktree:      %s\n", worktreeStr)
-
-	// Agent state
-	stateStr := fields.AgentState
+func polecatIdentityStateStyle(stateStr string) string {
 	if stateStr == "" {
 		stateStr = "unknown"
 	}
 	switch stateStr {
 	case "working":
-		stateStr = style.Info.Render(stateStr)
+		return style.Info.Render(stateStr)
 	case "done":
-		stateStr = style.Success.Render(stateStr)
+		return style.Success.Render(stateStr)
 	case "stuck":
-		stateStr = style.Warning.Render(stateStr)
+		return style.Warning.Render(stateStr)
 	default:
-		stateStr = style.Dim.Render(stateStr)
+		return style.Dim.Render(stateStr)
 	}
-	fmt.Printf("  Agent State:   %s\n", stateStr)
+}
 
-	// Hook
-	hookBead := issue.HookBead
+func runPolecatIdentityShow(cmd *cobra.Command, args []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	details, err := loadPolecatIdentityShow(args[0], args[1])
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return printPolecatIdentityShowJSON(details)
+	}
+	printPolecatIdentityShowHuman(details)
+	return nil
+}
+
+type polecatIdentityShow struct {
+	rigName        string
+	polecatName    string
+	beadID         string
+	issue          *beads.Issue
+	fields         *beads.AgentFields
+	worktreeExists bool
+	clonePath      string
+	sessionRunning bool
+	cv             *CVSummary
+}
+
+func loadPolecatIdentityShow(rigName, polecatName string) (*polecatIdentityShow, error) {
+	_, r, err := getRig(rigName)
+	if err != nil {
+		return nil, err
+	}
+	beadID := polecatBeadIDForRig(r, rigName, polecatName)
+	issue, fields, err := beads.New(r.Path).GetAgentBead(beadID)
+	if err != nil {
+		return nil, fmt.Errorf("getting identity bead: %w", err)
+	}
+	if issue == nil {
+		return nil, fmt.Errorf("identity bead %s not found", beadID)
+	}
+	t := tmux.NewTmux()
+	details := &polecatIdentityShow{
+		rigName:     rigName,
+		polecatName: polecatName,
+		beadID:      beadID,
+		issue:       issue,
+		fields:      fields,
+	}
+	if p, err := polecat.Get(polecat.NewManager(r, nil, t), polecatName); err == nil && p != nil {
+		details.worktreeExists = true
+		details.clonePath = p.ClonePath
+	}
+	details.sessionRunning, _ = polecat.NewSessionManager(t, r).IsRunning(polecatName)
+	details.cv = buildCVSummary(r.Path, rigName, polecatName, beadID, details.clonePath)
+	return details, nil
+}
+
+func printPolecatIdentityShowJSON(d *polecatIdentityShow) error {
+	output := struct {
+		IdentityInfo
+		Title     string     `json:"title"`
+		CreatedAt string     `json:"created_at,omitempty"`
+		UpdatedAt string     `json:"updated_at,omitempty"`
+		CV        *CVSummary `json:"cv,omitempty"`
+	}{
+		IdentityInfo: IdentityInfo{
+			Rig:            d.rigName,
+			Name:           d.polecatName,
+			BeadID:         d.beadID,
+			AgentState:     d.fields.AgentState,
+			HookBead:       d.issue.HookBead,
+			CleanupStatus:  d.fields.CleanupStatus,
+			WorktreeExists: d.worktreeExists,
+			SessionRunning: d.sessionRunning,
+		},
+		Title:     d.issue.Title,
+		CreatedAt: d.issue.CreatedAt,
+		UpdatedAt: d.issue.UpdatedAt,
+		CV:        d.cv,
+	}
+	if output.HookBead == "" {
+		output.HookBead = d.fields.HookBead
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(output)
+}
+
+func printPolecatIdentityShowHuman(d *polecatIdentityShow) {
+	fmt.Printf("\n%s %s/%s\n", style.Bold.Render("Identity:"), d.rigName, d.polecatName)
+	fmt.Printf("  Bead ID:       %s\n", d.beadID)
+	fmt.Printf("  Title:         %s\n", d.issue.Title)
+	sessionStr := style.Dim.Render("stopped")
+	if d.sessionRunning {
+		sessionStr = style.Success.Render("running")
+	}
+	fmt.Printf("  Session:       %s\n", sessionStr)
+	worktreeStr := style.Dim.Render("no")
+	if d.worktreeExists {
+		worktreeStr = style.Success.Render("yes")
+	}
+	fmt.Printf("  Worktree:      %s\n", worktreeStr)
+	fmt.Printf("  Agent State:   %s\n", polecatIdentityStateStyle(d.fields.AgentState))
+	hookBead := d.issue.HookBead
 	if hookBead == "" {
-		hookBead = fields.HookBead
+		hookBead = d.fields.HookBead
 	}
 	if hookBead != "" {
 		fmt.Printf("  Hook:          %s\n", hookBead)
 	} else {
 		fmt.Printf("  Hook:          %s\n", style.Dim.Render("(empty)"))
 	}
-
-	// Cleanup status
-	if fields.CleanupStatus != "" {
-		fmt.Printf("  Cleanup:       %s\n", fields.CleanupStatus)
+	if d.fields.CleanupStatus != "" {
+		fmt.Printf("  Cleanup:       %s\n", d.fields.CleanupStatus)
 	}
-
-	// Timestamps
-	if issue.CreatedAt != "" {
-		fmt.Printf("  Created:       %s\n", style.Dim.Render(issue.CreatedAt))
+	if d.issue.CreatedAt != "" {
+		fmt.Printf("  Created:       %s\n", style.Dim.Render(d.issue.CreatedAt))
 	}
-	if issue.UpdatedAt != "" {
-		fmt.Printf("  Updated:       %s\n", style.Dim.Render(issue.UpdatedAt))
+	if d.issue.UpdatedAt != "" {
+		fmt.Printf("  Updated:       %s\n", style.Dim.Render(d.issue.UpdatedAt))
 	}
+	printPolecatIdentityCV(d.cv)
+}
 
-	// CV Summary section with enhanced analytics
+func printPolecatIdentityCV(cv *CVSummary) {
 	fmt.Printf("\n%s\n", style.Bold.Render("CV Summary:"))
 	fmt.Printf("  Sessions:         %d\n", cv.Sessions)
 	fmt.Printf("  Issues completed: %s\n", style.Success.Render(fmt.Sprintf("%d", cv.IssuesCompleted)))
 	fmt.Printf("  Issues failed:    %s\n", formatCountStyled(cv.IssuesFailed, style.Error))
 	fmt.Printf("  Issues abandoned: %s\n", formatCountStyled(cv.IssuesAbandoned, style.Warning))
-
-	// Language stats
 	if len(cv.Languages) > 0 {
 		fmt.Printf("\n  %s %s\n", style.Bold.Render("Languages:"), formatLanguageStats(cv.Languages))
 	}
-
-	// Work type stats
 	if len(cv.WorkTypes) > 0 {
 		fmt.Printf("  %s     %s\n", style.Bold.Render("Types:"), formatWorkTypeStats(cv.WorkTypes))
 	}
-
-	// Performance metrics
 	if cv.AvgCompletionMin > 0 {
 		fmt.Printf("\n  Avg completion time: %d minutes\n", cv.AvgCompletionMin)
 	}
 	if cv.FirstPassRate > 0 {
 		fmt.Printf("  First-pass success:  %.0f%%\n", cv.FirstPassRate*100)
 	}
-
-	// Recent work
-	if len(cv.RecentWork) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("Recent work:"))
-		for _, work := range cv.RecentWork {
-			typeStr := ""
-			if work.Type != "" {
-				typeStr = work.Type + ": "
-			}
-			title := work.Title
-			if len(title) > 40 {
-				title = title[:37] + "..."
-			}
-			fmt.Printf("  %-10s %s%s  %s\n", work.ID, typeStr, title, style.Dim.Render(work.Ago))
-		}
-	}
-
+	printPolecatIdentityRecentWork(cv.RecentWork)
 	fmt.Println()
-	return nil
 }
 
-func runPolecatIdentityRename(cmd *cobra.Command, args []string) error {
-	rigName := args[0]
-	oldName := args[1]
-	newName := args[2]
-
-	// Validate names
-	if oldName == newName {
-		return fmt.Errorf("old and new names are the same")
+func printPolecatIdentityRecentWork(recent []RecentWorkItem) {
+	if len(recent) == 0 {
+		return
 	}
-	if err := polecat.ValidateNewPolecatName(newName); err != nil {
+	fmt.Printf("\n%s\n", style.Bold.Render("Recent work:"))
+	for _, work := range recent {
+		typeStr := ""
+		if work.Type != "" {
+			typeStr = work.Type + ": "
+		}
+		title := work.Title
+		if len(title) > 40 {
+			title = title[:37] + "..."
+		}
+		fmt.Printf("  %-10s %s%s  %s\n", work.ID, typeStr, title, style.Dim.Render(work.Ago))
+	}
+}
+
+func runPolecatIdentityRename(_ *cobra.Command, args []string) error {
+	rigName, oldName, newName := args[0], args[1], args[2]
+	if err := validatePolecatIdentityRename(oldName, newName); err != nil {
 		return err
 	}
-
-	// Get rig
 	_, r, err := getRig(rigName)
 	if err != nil {
 		return err
 	}
-
 	bd := beads.New(r.Path)
 	oldBeadID := polecatBeadIDForRig(r, rigName, oldName)
 	newBeadID := polecatBeadIDForRig(r, rigName, newName)
+	_, oldFields, err := loadRenameSourceBead(bd, oldBeadID)
+	if err != nil {
+		return err
+	}
+	if err := rejectRenameDestinationBead(bd, newBeadID); err != nil {
+		return err
+	}
+	if err := rejectRunningPolecatSession(polecat.NewSessionManager(tmux.NewTmux(), r), oldName); err != nil {
+		return err
+	}
+	if err := applyPolecatIdentityRename(bd, rigName, oldBeadID, newBeadID, newName, oldFields); err != nil {
+		return err
+	}
+	printPolecatIdentityRename(oldBeadID, newBeadID, oldName)
+	return nil
+}
 
-	// Check old identity exists
+func validatePolecatIdentityRename(oldName, newName string) error {
+	if oldName == newName {
+		return fmt.Errorf("old and new names are the same")
+	}
+	return polecat.ValidateNewPolecatName(newName)
+}
+
+func loadRenameSourceBead(bd *beads.Beads, oldBeadID string) (*beads.Issue, *beads.AgentFields, error) {
 	oldIssue, oldFields, err := bd.GetAgentBead(oldBeadID)
 	if err != nil {
-		return fmt.Errorf("getting old identity bead: %w", err)
+		return nil, nil, fmt.Errorf("getting old identity bead: %w", err)
 	}
 	if oldIssue == nil || oldIssue.Status == "closed" {
-		return fmt.Errorf("identity bead %s not found or already closed", oldBeadID)
+		return nil, nil, fmt.Errorf("identity bead %s not found or already closed", oldBeadID)
 	}
+	return oldIssue, oldFields, nil
+}
 
-	// Check new identity doesn't exist
+func rejectRenameDestinationBead(bd *beads.Beads, newBeadID string) error {
 	newIssue, _, _ := bd.GetAgentBead(newBeadID)
 	if newIssue != nil && newIssue.Status != "closed" {
 		return fmt.Errorf("identity bead %s already exists", newBeadID)
 	}
+	return nil
+}
 
-	// Safety check: no active session
-	t := tmux.NewTmux()
-	polecatMgr := polecat.NewSessionManager(t, r)
-	running, _ := polecatMgr.IsRunning(oldName)
+func rejectRunningPolecatSession(polecatMgr *polecat.SessionManager, name string) error {
+	running, _ := polecatMgr.IsRunning(name)
 	if running {
-		return fmt.Errorf("cannot rename: polecat session %s is running", oldName)
+		return fmt.Errorf("cannot rename: polecat session %s is running", name)
 	}
+	return nil
+}
 
-	// Create new identity bead with inherited fields
+func applyPolecatIdentityRename(bd *beads.Beads, rigName, oldBeadID, newBeadID, newName string, oldFields *beads.AgentFields) error {
 	newFields := &beads.AgentFields{
 		RoleType:          "polecat",
 		Rig:               rigName,
@@ -606,44 +596,34 @@ func runPolecatIdentityRename(cmd *cobra.Command, args []string) error {
 		ActiveMR:          oldFields.ActiveMR,
 		NotificationLevel: oldFields.NotificationLevel,
 	}
-
 	newTitle := fmt.Sprintf("Polecat %s in %s", newName, rigName)
-	_, err = bd.CreateOrReopenAgentBead(newBeadID, newTitle, newFields)
-	if err != nil {
+	if _, err := bd.CreateOrReopenAgentBead(newBeadID, newTitle, newFields); err != nil {
 		return fmt.Errorf("creating new identity bead: %w", err)
 	}
-
-	// Close old bead with reference to new one
-	closeReason := fmt.Sprintf("renamed to %s", newBeadID)
-	if err := bd.CloseWithReason(closeReason, oldBeadID); err != nil {
-		// Try to clean up new bead
+	if err := bd.CloseWithReason(fmt.Sprintf("renamed to %s", newBeadID), oldBeadID); err != nil {
 		_ = bd.CloseWithReason("rename failed", newBeadID)
 		return fmt.Errorf("closing old identity bead: %w", err)
 	}
+	return nil
+}
 
+func printPolecatIdentityRename(oldBeadID, newBeadID, oldName string) {
 	fmt.Printf("%s Renamed identity:\n", style.SuccessPrefix)
 	fmt.Printf("  Old: %s\n", oldBeadID)
 	fmt.Printf("  New: %s\n", newBeadID)
 	fmt.Printf("\n%s Note: If a worktree exists for %s, you'll need to recreate it with the new name.\n",
 		style.Warning.Render("⚠"), oldName)
-
-	return nil
 }
 
 func runPolecatIdentityRemove(cmd *cobra.Command, args []string) error {
-	rigName := args[0]
-	polecatName := args[1]
-
-	// Get rig
+	force := commandBoolFlag(cmd, "force")
+	rigName, polecatName := args[0], args[1]
 	_, r, err := getRig(rigName)
 	if err != nil {
 		return err
 	}
-
 	bd := beads.New(r.Path)
 	beadID := polecatBeadIDForRig(r, rigName, polecatName)
-
-	// Check identity exists
 	issue, fields, err := bd.GetAgentBead(beadID)
 	if err != nil {
 		return fmt.Errorf("getting identity bead: %w", err)
@@ -654,67 +634,66 @@ func runPolecatIdentityRemove(cmd *cobra.Command, args []string) error {
 	if issue.Status == "closed" {
 		return fmt.Errorf("identity bead %s is already closed", beadID)
 	}
-
-	// Safety checks (unless --force)
-	if !polecatIdentityRemoveForce {
-		var reasons []string
-
-		// Check for active session
-		t := tmux.NewTmux()
-		polecatMgr := polecat.NewSessionManager(t, r)
-		running, _ := polecatMgr.IsRunning(polecatName)
-		if running {
-			reasons = append(reasons, "session is running")
-		}
-
-		// Check for work on hook
-		hookBead := issue.HookBead
-		if hookBead == "" && fields != nil {
-			hookBead = fields.HookBead
-		}
-		if hookBead != "" {
-			// Check if hooked bead is still open
-			hookedIssue, _ := bd.Show(hookBead)
-			if hookedIssue != nil && hookedIssue.Status != "closed" {
-				reasons = append(reasons, fmt.Sprintf("has work on hook (%s)", hookBead))
-			}
-		}
-
-		if len(reasons) > 0 {
-			fmt.Printf("%s Cannot remove identity %s:\n", style.Error.Render("Error:"), beadID)
-			for _, r := range reasons {
-				fmt.Printf("  - %s\n", r)
-			}
-			fmt.Println("\nUse --force to bypass safety checks.")
-			return fmt.Errorf("safety checks failed")
-		}
-
-		// Warn if CV exists
-		assignee := fmt.Sprintf("%s/%s", rigName, polecatName)
-		cvBeads, _ := bd.ListByAssignee(assignee)
-		cvCount := 0
-		for _, cv := range cvBeads {
-			if cv.ID != beadID && cv.Status == "closed" {
-				cvCount++
-			}
-		}
-		if cvCount > 0 {
-			fmt.Printf("%s Warning: This polecat has %d completed work item(s) in CV.\n",
-				style.Warning.Render("⚠"), cvCount)
+	if !force {
+		sessionMgr := polecat.NewSessionManager(tmux.NewTmux(), r)
+		if err := guardPolecatIdentityRemove(bd, sessionMgr, issue, fields, rigName, polecatName, beadID); err != nil {
+			return err
 		}
 	}
-
-	// Close the identity bead
 	if err := bd.CloseWithReason("removed via gt polecat identity remove", beadID); err != nil {
 		return fmt.Errorf("closing identity bead: %w", err)
 	}
-
 	fmt.Printf("%s Removed identity bead: %s\n", style.SuccessPrefix, beadID)
 	return nil
 }
 
-// buildCVSummary constructs the CV summary for a polecat.
-// Returns a partial CV on errors rather than failing - CV data is best-effort.
+func guardPolecatIdentityRemove(bd *beads.Beads, sessionMgr *polecat.SessionManager, issue *beads.Issue, fields *beads.AgentFields, rigName, polecatName, beadID string) error {
+	running, _ := sessionMgr.IsRunning(polecatName)
+	reasons := polecatIdentityRemoveReasons(bd, issue, fields, running)
+	if len(reasons) > 0 {
+		fmt.Printf("%s Cannot remove identity %s:\n", style.Error.Render("Error:"), beadID)
+		for _, reason := range reasons {
+			fmt.Printf("  - %s\n", reason)
+		}
+		fmt.Println("\nUse --force to bypass safety checks.")
+		return fmt.Errorf("safety checks failed")
+	}
+	warnPolecatIdentityCV(bd, rigName, polecatName, beadID)
+	return nil
+}
+
+func polecatIdentityRemoveReasons(bd *beads.Beads, issue *beads.Issue, fields *beads.AgentFields, running bool) []string {
+	var reasons []string
+	if running {
+		reasons = append(reasons, "session is running")
+	}
+	hookBead := issue.HookBead
+	if hookBead == "" && fields != nil {
+		hookBead = fields.HookBead
+	}
+	if hookBead != "" {
+		hookedIssue, _ := bd.Show(hookBead)
+		if hookedIssue != nil && hookedIssue.Status != "closed" {
+			reasons = append(reasons, fmt.Sprintf("has work on hook (%s)", hookBead))
+		}
+	}
+	return reasons
+}
+
+func warnPolecatIdentityCV(bd *beads.Beads, rigName, polecatName, beadID string) {
+	cvBeads, _ := bd.ListByAssignee(fmt.Sprintf("%s/%s", rigName, polecatName))
+	cvCount := 0
+	for _, cv := range cvBeads {
+		if cv.ID != beadID && cv.Status == "closed" {
+			cvCount++
+		}
+	}
+	if cvCount > 0 {
+		fmt.Printf("%s Warning: This polecat has %d completed work item(s) in CV.\n",
+			style.Warning.Render("⚠"), cvCount)
+	}
+}
+
 func buildCVSummary(rigPath, rigName, polecatName, identityBeadID, clonePath string) *CVSummary {
 	cv := &CVSummary{
 		Identity:   identityBeadID,
@@ -722,80 +701,159 @@ func buildCVSummary(rigPath, rigName, polecatName, identityBeadID, clonePath str
 		WorkTypes:  make(map[string]int),
 		RecentWork: []RecentWorkItem{},
 	}
-
-	// Use clonePath for beads queries (has proper redirect setup)
-	// Fall back to rigPath if clonePath is empty
 	beadsQueryPath := clonePath
 	if beadsQueryPath == "" {
 		beadsQueryPath = rigPath
 	}
-
-	// Get agent bead info for creation date
-	bd := beads.New(beadsQueryPath)
-	agentBead, _, err := bd.GetAgentBead(identityBeadID)
-	if err == nil && agentBead != nil {
-		if agentBead.CreatedAt != "" && len(agentBead.CreatedAt) >= 10 {
-			cv.Created = agentBead.CreatedAt[:10] // Just the date part
-		}
-	}
-
-	// Count sessions from checkpoint files (session history)
+	fillCVCreated(cv, beadsQueryPath, identityBeadID)
 	cv.Sessions = countPolecatSessions(rigPath, polecatName)
-
-	// Query completed issues assigned to this polecat
 	assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-	completedIssues, err := queryAssignedIssues(beadsQueryPath, assignee, "closed")
-	if err == nil {
-		cv.IssuesCompleted = len(completedIssues)
-
-		// Extract work types from issue titles/types
-		for _, issue := range completedIssues {
-			workType := extractWorkType(issue.Title, issue.Type)
-			if workType != "" {
-				cv.WorkTypes[workType]++
-			}
-
-			// Add to recent work (limit to 5)
-			if len(cv.RecentWork) < 5 {
-				ago := formatRelativeTimeCV(issue.Updated)
-				cv.RecentWork = append(cv.RecentWork, RecentWorkItem{
-					ID:        issue.ID,
-					Title:     issue.Title,
-					Type:      workType,
-					Completed: issue.Updated,
-					Ago:       ago,
-				})
-			}
-		}
-	}
-
-	// Query failed/escalated issues
-	escalatedIssues, err := queryAssignedIssues(beadsQueryPath, assignee, "escalated")
-	if err == nil {
-		cv.IssuesFailed = len(escalatedIssues)
-	}
-
-	// Query abandoned issues (deferred)
-	deferredIssues, err := queryAssignedIssues(beadsQueryPath, assignee, "deferred")
-	if err == nil {
-		cv.IssuesAbandoned = len(deferredIssues)
-	}
-
-	// Get language stats from git commits
-	if clonePath != "" {
-		langStats := getLanguageStats(clonePath)
-		if len(langStats) > 0 {
-			cv.Languages = langStats
-		}
-	}
-
-	// Calculate first-pass success rate
+	fillCVCompletedWork(cv, beadsQueryPath, assignee)
+	fillCVFailedWork(cv, beadsQueryPath, assignee)
+	fillCVLanguages(cv, clonePath)
 	total := cv.IssuesCompleted + cv.IssuesFailed + cv.IssuesAbandoned
 	if total > 0 {
 		cv.FirstPassRate = float64(cv.IssuesCompleted) / float64(total)
 	}
-
 	return cv
+}
+
+func fillCVCreated(cv *CVSummary, beadsQueryPath, identityBeadID string) {
+	agentBead, _, err := beads.New(beadsQueryPath).GetAgentBead(identityBeadID)
+	if err != nil || agentBead == nil || agentBead.CreatedAt == "" || len(agentBead.CreatedAt) < 10 {
+		return
+	}
+	cv.Created = agentBead.CreatedAt[:10]
+}
+
+func fillCVCompletedWork(cv *CVSummary, beadsQueryPath, assignee string) {
+	completedIssues, err := queryAssignedIssues(beadsQueryPath, assignee, "closed")
+	if err != nil {
+		return
+	}
+	cv.IssuesCompleted = len(completedIssues)
+	for _, issue := range completedIssues {
+		workType := extractWorkType(issue.Title, issue.Type)
+		if workType != "" {
+			cv.WorkTypes[workType]++
+		}
+		if len(cv.RecentWork) < 5 {
+			cv.RecentWork = append(cv.RecentWork, RecentWorkItem{
+				ID:        issue.ID,
+				Title:     issue.Title,
+				Type:      workType,
+				Completed: issue.Updated,
+				Ago:       formatRelativeTimeCV(issue.Updated),
+			})
+		}
+	}
+}
+
+func fillCVFailedWork(cv *CVSummary, beadsQueryPath, assignee string) {
+	if escalatedIssues, err := queryAssignedIssues(beadsQueryPath, assignee, "escalated"); err == nil {
+		cv.IssuesFailed = len(escalatedIssues)
+	}
+	if deferredIssues, err := queryAssignedIssues(beadsQueryPath, assignee, "deferred"); err == nil {
+		cv.IssuesAbandoned = len(deferredIssues)
+	}
+}
+
+func fillCVLanguages(cv *CVSummary, clonePath string) {
+	if clonePath == "" {
+		return
+	}
+	langStats := getLanguageStats(clonePath)
+	if len(langStats) > 0 {
+		cv.Languages = langStats
+	}
+}
+
+func extractWorkType(title, issueType string) string {
+	if workType := workTypeFromIssueType(issueType); workType != "" {
+		return workType
+	}
+	title = strings.ToLower(title)
+	if workType := workTypeFromTitlePrefix(title); workType != "" {
+		return workType
+	}
+	return workTypeFromTitleKeywords(title)
+}
+
+func workTypeFromIssueType(issueType string) string {
+	switch issueType {
+	case "bug":
+		return "fix"
+	case "task", "feature":
+		return "feat"
+	case "epic":
+		return "epic"
+	default:
+		return ""
+	}
+}
+
+func workTypeFromTitlePrefix(title string) string {
+	prefixes := []string{"feat:", "fix:", "refactor:", "docs:", "test:", "chore:", "style:", "perf:"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(title, prefix) {
+			return strings.TrimSuffix(prefix, ":")
+		}
+	}
+	return ""
+}
+
+func workTypeFromTitleKeywords(title string) string {
+	if strings.Contains(title, "fix") || strings.Contains(title, "bug") {
+		return "fix"
+	}
+	if strings.Contains(title, "add") || strings.Contains(title, "implement") || strings.Contains(title, "create") {
+		return "feat"
+	}
+	if strings.Contains(title, "refactor") || strings.Contains(title, "cleanup") {
+		return "refactor"
+	}
+	return ""
+}
+
+func formatRelativeTimeCV(timestamp string) string {
+	t, ok := parseCVTimestamp(timestamp)
+	if !ok {
+		return ""
+	}
+	return formatCVDuration(time.Since(t))
+}
+
+func parseCVTimestamp(timestamp string) (time.Time, bool) {
+	layouts := []string{time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"}
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, timestamp)
+		if err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func formatCVDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return formatCVUnit(int(d.Minutes()), "m")
+	case d < 24*time.Hour:
+		return formatCVUnit(int(d.Hours()), "h")
+	case d < 7*24*time.Hour:
+		return formatCVUnit(int(d.Hours()/24), "d")
+	default:
+		return formatCVUnit(int(d.Hours()/24/7), "w")
+	}
+}
+
+func formatCVUnit(n int, unit string) string {
+	if n == 1 {
+		return "1" + unit + " ago"
+	}
+	return fmt.Sprintf("%d%s ago", n, unit)
 }
 
 // IssueInfo holds basic issue information for CV queries.
@@ -807,87 +865,38 @@ type IssueInfo struct {
 	Updated string `json:"updated_at"`
 }
 
-// queryAssignedIssues queries beads for issues assigned to a specific agent.
 func queryAssignedIssues(rigPath, assignee, status string) ([]IssueInfo, error) {
-	// Use bd list with filters
 	args := []string{"list", "--assignee=" + assignee, "--json"}
 	if status != "" {
 		args = append(args, "--status="+status)
 	}
-
 	cmd := beads.Spawn(args...)
 	cmd.Dir = rigPath
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
-
 	if len(out) == 0 {
 		return []IssueInfo{}, nil
 	}
-
 	var issues []IssueInfo
 	if err := json.Unmarshal(out, &issues); err != nil {
 		return nil, err
 	}
-
-	// Sort by updated date (most recent first)
 	sort.Slice(issues, func(i, j int) bool {
 		return issues[i].Updated > issues[j].Updated
 	})
-
 	return issues, nil
 }
 
-// extractWorkType extracts the work type from issue title or type.
-func extractWorkType(title, issueType string) string {
-	// Check explicit issue type first
-	switch issueType {
-	case "bug":
-		return "fix"
-	case "task", "feature":
-		return "feat"
-	case "epic":
-		return "epic"
-	}
-
-	// Try to extract from conventional commit-style title
-	title = strings.ToLower(title)
-	prefixes := []string{"feat:", "fix:", "refactor:", "docs:", "test:", "chore:", "style:", "perf:"}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(title, prefix) {
-			return strings.TrimSuffix(prefix, ":")
-		}
-	}
-
-	// Try to infer from keywords
-	if strings.Contains(title, "fix") || strings.Contains(title, "bug") {
-		return "fix"
-	}
-	if strings.Contains(title, "add") || strings.Contains(title, "implement") || strings.Contains(title, "create") {
-		return "feat"
-	}
-	if strings.Contains(title, "refactor") || strings.Contains(title, "cleanup") {
-		return "refactor"
-	}
-
-	return ""
-}
-
-// getLanguageStats analyzes git history to determine language distribution.
 func getLanguageStats(clonePath string) map[string]int {
 	stats := make(map[string]int)
-
-	// Get list of files changed in commits by this author
-	// We use git log with --name-only to get file names
 	cmd := exec.Command("git", "log", "--name-only", "--pretty=format:", "--diff-filter=ACMR", "-100")
 	cmd.Dir = clonePath
 	out, err := cmd.Output()
 	if err != nil {
 		return stats
 	}
-
-	// Count file extensions
 	extCount := make(map[string]int)
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
@@ -899,8 +908,15 @@ func getLanguageStats(clonePath string) map[string]int {
 			extCount[ext]++
 		}
 	}
+	for ext, count := range extCount {
+		if lang, ok := languageFromExt(ext); ok {
+			stats[lang] += count
+		}
+	}
+	return stats
+}
 
-	// Map extensions to languages
+func languageFromExt(ext string) (string, bool) {
 	extToLang := map[string]string{
 		".go":    "Go",
 		".ts":    "TypeScript",
@@ -933,69 +949,8 @@ func getLanguageStats(clonePath string) map[string]int {
 		".css":   "CSS",
 		".scss":  "SCSS",
 	}
-
-	for ext, count := range extCount {
-		if lang, ok := extToLang[ext]; ok {
-			stats[lang] += count
-		}
-	}
-
-	return stats
-}
-
-// formatRelativeTimeCV returns a human-readable relative time string for CV display.
-func formatRelativeTimeCV(timestamp string) string {
-	// Try RFC3339 format with timezone (ISO 8601)
-	t, err := time.Parse(time.RFC3339, timestamp)
-	if err != nil {
-		// Try RFC3339Nano
-		t, err = time.Parse(time.RFC3339Nano, timestamp)
-		if err != nil {
-			// Try without timezone
-			t, err = time.Parse("2006-01-02T15:04:05", timestamp)
-			if err != nil {
-				// Try alternative format
-				t, err = time.Parse("2006-01-02 15:04:05", timestamp)
-				if err != nil {
-					// Try date only
-					t, err = time.Parse("2006-01-02", timestamp)
-					if err != nil {
-						return ""
-					}
-				}
-			}
-		}
-	}
-
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		mins := int(d.Minutes())
-		if mins == 1 {
-			return "1m ago"
-		}
-		return fmt.Sprintf("%dm ago", mins)
-	case d < 24*time.Hour:
-		hours := int(d.Hours())
-		if hours == 1 {
-			return "1h ago"
-		}
-		return fmt.Sprintf("%dh ago", hours)
-	case d < 7*24*time.Hour:
-		days := int(d.Hours() / 24)
-		if days == 1 {
-			return "1d ago"
-		}
-		return fmt.Sprintf("%dd ago", days)
-	default:
-		weeks := int(d.Hours() / 24 / 7)
-		if weeks == 1 {
-			return "1w ago"
-		}
-		return fmt.Sprintf("%dw ago", weeks)
-	}
+	lang, ok := extToLang[ext]
+	return lang, ok
 }
 
 // formatCountStyled formats a count with appropriate styling using lipgloss.Style.

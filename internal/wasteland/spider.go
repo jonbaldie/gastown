@@ -353,7 +353,8 @@ func runDoltQuery(doltPath, forkDir, query string) ([][]string, error) {
 func extractRigs(row []string) []string {
 	var rigs []string
 	// First two columns are typically rig handles in our fraud queries.
-	for i := 0; i < 2 && i < len(row); i++ {
+	rowLength := len(row)
+	for i := 0; i < 2 && i < rowLength; i++ {
 		val := strings.TrimSpace(row[i])
 		if val != "" {
 			rigs = append(rigs, val)

@@ -38,37 +38,9 @@ func stopTownDoltServer(townRoot string) error {
 		}
 	}
 
-	if _, err := os.Stat(cfg.DataDir); err == nil {
-		running, pid, err := doltserver.IsRunning(townRoot)
-		if err != nil {
-			fmt.Printf("  %s Dolt status check failed: %v\n",
-				style.Bold.Render("⚠"), err)
-			errs = append(errs, fmt.Errorf("checking Dolt status: %w", err))
-		} else if running {
-			if err := doltserver.Stop(townRoot); err != nil {
-				fmt.Printf("  %s Failed to stop Dolt (PID %d): %v\n",
-					style.Bold.Render("✗"), pid, err)
-				errs = append(errs, fmt.Errorf("stopping Dolt PID %d: %w", pid, err))
-			} else {
-				fmt.Printf("  %s Dolt stopped (was PID %d)\n",
-					style.Bold.Render("✓"), pid)
-			}
-		} else {
-			fmt.Printf("  %s Dolt not running\n", style.Dim.Render("○"))
-		}
-	}
+	errs = append(errs, stopDoltDataDir(cfg, townRoot)...)
 
-	if err := doltserver.KillImposters(townRoot); err != nil {
-		fmt.Printf("  %s Dolt imposter cleanup failed: %v\n",
-			style.Bold.Render("⚠"), err)
-		errs = append(errs, fmt.Errorf("cleaning Dolt imposters: %w", err))
-	}
-	if pids := findOrphanDoltServers(townRoot); len(pids) > 0 {
-		if stopped := stopOrphanDoltServers(pids); stopped > 0 {
-			fmt.Printf("  %s Stopped %d orphan Dolt server(s)\n",
-				style.Bold.Render("✓"), stopped)
-		}
-	}
+	errs = append(errs, cleanupDoltProcesses(townRoot)...)
 
 	running, pid, err := doltserver.IsRunning(townRoot)
 	if err != nil {
@@ -82,6 +54,47 @@ func stopTownDoltServer(townRoot string) error {
 		errs = append(errs, fmt.Errorf("Dolt still running after stop (PID %d)", pid))
 	}
 	return errors.Join(errs...)
+}
+
+func stopDoltDataDir(cfg *doltserver.Config, townRoot string) []error {
+	if _, err := os.Stat(cfg.DataDir); err != nil {
+		return nil
+	}
+
+	running, pid, err := doltserver.IsRunning(townRoot)
+	if err != nil {
+		fmt.Printf("  %s Dolt status check failed: %v\n",
+			style.Bold.Render("⚠"), err)
+		return []error{fmt.Errorf("checking Dolt status: %w", err)}
+	}
+	if !running {
+		fmt.Printf("  %s Dolt not running\n", style.Dim.Render("○"))
+		return nil
+	}
+	if err := doltserver.Stop(townRoot); err != nil {
+		fmt.Printf("  %s Failed to stop Dolt (PID %d): %v\n",
+			style.Bold.Render("✗"), pid, err)
+		return []error{fmt.Errorf("stopping Dolt PID %d: %w", pid, err)}
+	}
+	fmt.Printf("  %s Dolt stopped (was PID %d)\n",
+		style.Bold.Render("✓"), pid)
+	return nil
+}
+
+func cleanupDoltProcesses(townRoot string) []error {
+	var errs []error
+	if err := doltserver.KillImposters(townRoot); err != nil {
+		fmt.Printf("  %s Dolt imposter cleanup failed: %v\n",
+			style.Bold.Render("⚠"), err)
+		errs = append(errs, fmt.Errorf("cleaning Dolt imposters: %w", err))
+	}
+	if pids := findOrphanDoltServers(townRoot); len(pids) > 0 {
+		if stopped := stopOrphanDoltServers(pids); stopped > 0 {
+			fmt.Printf("  %s Stopped %d orphan Dolt server(s)\n",
+				style.Bold.Render("✓"), stopped)
+		}
+	}
+	return errs
 }
 
 func stopTownWorkerServe(townRoot string) error {

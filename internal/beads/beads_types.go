@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jonbaldie/gastown/internal/config"
@@ -25,13 +24,6 @@ const typesSentinel = ".gt-types-configured"
 // statusesSentinel is a marker file indicating custom statuses have been configured.
 const statusesSentinel = ".gt-statuses-configured"
 
-// ensuredDirs tracks which beads directories have been ensured this session.
-// This provides fast in-memory caching for multiple creates in the same CLI run.
-var (
-	ensuredDirs = make(map[string]bool)
-	ensuredMu   sync.Mutex
-)
-
 // FindTownRoot walks up from startDir to find the Gas Town root directory.
 // Delegates to townroot.Find so every caller shares the outermost-town.json rule.
 func FindTownRoot(startDir string) string {
@@ -44,9 +36,9 @@ func FindTownRoot(startDir string) string {
 //
 // If townRoot is empty or prefix is not found, falls back to the provided fallbackDir.
 func ResolveRoutingTarget(townRoot, beadID, fallbackDir string) string {
-	auth := NewAuthority(townRoot).withFallback(fallbackDir)
+	auth := NewAuthority(townRoot).WithFallback(fallbackDir)
 	s := auth.ForBead(beadID)
-	if s.Routed() {
+	if s.routed {
 		return s.BeadsDir()
 	}
 	if townRoot != "" {
@@ -58,16 +50,26 @@ func ResolveRoutingTarget(townRoot, beadID, fallbackDir string) string {
 	return fallbackDir
 }
 
+func (a *Authority) withFallback(dir string) *Authority {
+	if a == nil {
+		return &Authority{fallbackDir: dir}
+	}
+	cp := *a
+	if dir != "" {
+		cp.fallbackDir = dir
+	}
+	return &cp
+}
+
 // EnsureCustomTypes ensures the target beads directory has custom types configured.
-// Uses a two-level caching strategy:
-//   - In-memory cache for multiple creates in the same CLI invocation
-//   - Sentinel file on disk for persistence across CLI invocations
+// Uses a sentinel file on disk to avoid redundant bd config calls across CLI
+// invocations without retaining process-global mutable state.
 //
 // The sentinel file stores the configured custom and infra type lists. When
 // either list changes, the sentinel is detected as stale and types are
 // re-configured automatically (gt-zmy, gt-26f).
 //
-// This function is thread-safe and idempotent.
+// This function is idempotent.
 //
 // If the beads database does not exist (e.g., after a fresh rig add), this function
 // will attempt to initialize it automatically using bd init --server.
@@ -80,65 +82,49 @@ func EnsureCustomTypes(beadsDir string) error {
 	infraTypes := strings.Join(constants.BeadsInfraTypesList(), ",")
 	sentinelValue := TypeConfigSentinelValue()
 
-	ensuredMu.Lock()
-	defer ensuredMu.Unlock()
-
-	// Fast path: in-memory cache (same CLI invocation)
-	if ensuredDirs[beadsDir] {
+	if customTypesCached(beadsDir, sentinelValue) {
 		return nil
 	}
-
-	// Fast path: sentinel file matches current types list (previous CLI invocation).
-	// The sentinel stores the type configuration that was applied. If types have
-	// changed, the sentinel won't match and we'll re-configure. Legacy "v1\n" and
-	// custom-types-only sentinels also won't match.
-	sentinelPath := filepath.Join(beadsDir, typesSentinel)
-	if data, err := os.ReadFile(sentinelPath); err == nil {
-		if strings.TrimSpace(string(data)) == sentinelValue {
-			ensuredDirs[beadsDir] = true
-			return nil
-		}
-		// Sentinel exists but is stale — fall through to re-configure
+	if err := validateBeadsDirectory(beadsDir); err != nil {
+		return err
 	}
-
-	// Verify beads directory exists
-	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		return fmt.Errorf("beads directory does not exist: %s", beadsDir)
-	}
-
-	// Check if database exists and initialize if needed
 	if err := ensureDatabaseInitialized(beadsDir); err != nil {
 		return fmt.Errorf("ensure database initialized: %w", err)
 	}
-
-	// Configure custom and infra types via bd CLI. Rig is a durable custom type,
-	// not an infra/wisp type.
-	bdEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-	if err := setBDConfig(beadsDir, bdEnv, "types.custom", customTypes); err != nil {
+	if err := configureCustomTypes(beadsDir, customTypes, infraTypes); err != nil {
 		return err
 	}
-	if err := setBDConfig(beadsDir, bdEnv, "types.infra", infraTypes); err != nil {
-		return err
-	}
-
-	// Verify the config was actually persisted in the database (GH#2637).
-	// bd config set can exit 0 but fail to write if it targets the wrong
-	// database (redirect mismatch, stale metadata, server not running).
-	// Without this check, the sentinel file below would cache a lie,
-	// causing all future EnsureCustomTypes calls to skip re-configuration.
-	if err := verifyBDConfig(beadsDir, bdEnv, "types.custom", customTypes); err != nil {
-		return err
-	}
-	if err := verifyBDConfig(beadsDir, bdEnv, "types.infra", infraTypes); err != nil {
-		return err
-	}
-
-	// Write sentinel file with the type config for staleness detection. On next
-	// invocation, if types have changed, the sentinel won't match and we'll
-	// re-configure automatically.
+	sentinelPath := filepath.Join(beadsDir, typesSentinel)
 	_ = os.WriteFile(sentinelPath, []byte(sentinelValue+"\n"), 0644)
+	return nil
+}
 
-	ensuredDirs[beadsDir] = true
+func customTypesCached(beadsDir, sentinelValue string) bool {
+	data, err := os.ReadFile(filepath.Join(beadsDir, typesSentinel))
+	return err == nil && strings.TrimSpace(string(data)) == sentinelValue
+}
+
+func validateBeadsDirectory(beadsDir string) error {
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		return fmt.Errorf("beads directory does not exist: %s", beadsDir)
+	}
+	return nil
+}
+
+func configureCustomTypes(beadsDir, customTypes, infraTypes string) error {
+	configs := []struct{ key, value string }{
+		{key: "types.custom", value: customTypes},
+		{key: "types.infra", value: infraTypes},
+	}
+	bdEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	for _, config := range configs {
+		if err := setBDConfig(beadsDir, bdEnv, config.key, config.value); err != nil {
+			return err
+		}
+		if err := verifyBDConfig(beadsDir, bdEnv, config.key, config.value); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -201,11 +187,9 @@ func EnsureCustomTypesConfigYAML(beadsDir string) error {
 }
 
 // EnsureCustomStatuses ensures the target beads directory has custom statuses configured.
-// Uses the same two-level caching strategy as EnsureCustomTypes:
-//   - In-memory cache for multiple operations in the same CLI invocation
-//   - Sentinel file on disk for persistence across CLI invocations
+// Uses the same durable sentinel caching strategy as EnsureCustomTypes.
 //
-// This function is thread-safe and idempotent.
+// This function is idempotent.
 func EnsureCustomStatuses(beadsDir string) error {
 	if beadsDir == "" {
 		return fmt.Errorf("empty beads directory")
@@ -213,47 +197,42 @@ func EnsureCustomStatuses(beadsDir string) error {
 
 	statusesList := strings.Join(constants.BeadsCustomStatusesList(), ",")
 
-	ensuredMu.Lock()
-	defer ensuredMu.Unlock()
-
-	cacheKey := beadsDir + ":statuses"
-
-	// Fast path: in-memory cache (same CLI invocation)
-	if ensuredDirs[cacheKey] {
+	if customStatusesCached(beadsDir, statusesList) {
 		return nil
 	}
-
-	// Fast path: sentinel file matches current statuses list
-	sentinelPath := filepath.Join(beadsDir, statusesSentinel)
-	if data, err := os.ReadFile(sentinelPath); err == nil {
-		if strings.TrimSpace(string(data)) == statusesList {
-			ensuredDirs[cacheKey] = true
-			return nil
-		}
-		// Sentinel exists but is stale — fall through to re-configure
+	if err := validateBeadsDirectory(beadsDir); err != nil {
+		return err
 	}
-
-	// Verify beads directory exists
-	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		return fmt.Errorf("beads directory does not exist: %s", beadsDir)
-	}
-
-	// Check if database exists and initialize if needed
 	if err := ensureDatabaseInitialized(beadsDir); err != nil {
 		return fmt.Errorf("ensure database initialized: %w", err)
 	}
+	mergedStatuses := mergedCustomStatuses(beadsDir)
+	if err := setCustomStatuses(beadsDir, mergedStatuses); err != nil {
+		return err
+	}
+	sentinelPath := filepath.Join(beadsDir, statusesSentinel)
+	_ = os.WriteFile(sentinelPath, []byte(statusesList+"\n"), 0644)
+	return nil
+}
 
-	// Read current custom statuses and merge with required ones
+func customStatusesCached(beadsDir, statusesList string) bool {
+	data, err := os.ReadFile(filepath.Join(beadsDir, statusesSentinel))
+	return err == nil && strings.TrimSpace(string(data)) == statusesList
+}
+
+func mergedCustomStatuses(beadsDir string) string {
 	getCmd := Spawn("config", "get", "status.custom")
 	getCmd.Dir = beadsDir
 	util.SetDetachedProcessGroup(getCmd)
 	getEnv := BuildReadOnlyPinnedBDEnv(os.Environ(), beadsDir)
 	getCmd.Env = getEnv
 	existingOutput, _ := getCmd.Output()
+	return mergeCustomStatuses(ParseConfigOutput(existingOutput))
+}
 
-	// Build merged set: existing + required
+func mergeCustomStatuses(existing string) string {
 	statusSet := make(map[string]bool)
-	if existing := ParseConfigOutput(existingOutput); existing != "" {
+	if existing != "" {
 		for _, s := range strings.Split(existing, ",") {
 			s = strings.TrimSpace(s)
 			if s != "" {
@@ -264,17 +243,16 @@ func EnsureCustomStatuses(beadsDir string) error {
 	for _, s := range constants.BeadsCustomStatusesList() {
 		statusSet[s] = true
 	}
-
-	// Build merged list (sorted for deterministic output)
 	var merged []string
 	for s := range statusSet {
 		merged = append(merged, s)
 	}
 	sort.Strings(merged)
-	mergedStr := strings.Join(merged, ",")
+	return strings.Join(merged, ",")
+}
 
-	// Configure custom statuses via bd CLI
-	cmd := Spawn("config", "set", "status.custom", mergedStr)
+func setCustomStatuses(beadsDir, statuses string) error {
+	cmd := Spawn("config", "set", "status.custom", statuses)
 	cmd.Dir = beadsDir
 	util.SetDetachedProcessGroup(cmd)
 	setEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
@@ -283,11 +261,6 @@ func EnsureCustomStatuses(beadsDir string) error {
 		return fmt.Errorf("configure custom statuses in %s: %s: %w",
 			beadsDir, strings.TrimSpace(string(output)), err)
 	}
-
-	// Write sentinel file
-	_ = os.WriteFile(sentinelPath, []byte(statusesList+"\n"), 0644)
-
-	ensuredDirs[cacheKey] = true
 	return nil
 }
 
@@ -304,111 +277,100 @@ var prefixRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]{0,19}$`)
 // Uses --server mode to match all production bd init callers (gastown uses a
 // centralized Dolt sql-server). JSONL auto-import is handled by bd init itself.
 func ensureDatabaseInitialized(beadsDir string) error {
-	// If this beads dir has a redirect, the database lives elsewhere.
-	// Never create a new database for a redirected location (polecats, crew, refinery).
-	redirectFile := filepath.Join(beadsDir, "redirect")
-	if _, err := os.Stat(redirectFile); err == nil {
+	if databaseAlreadyInitialized(beadsDir) {
 		return nil
 	}
+	return initializeBeadsDatabase(beadsDir)
+}
 
-	// Check for Dolt database directory (embedded mode)
-	doltDir := filepath.Join(beadsDir, "dolt")
-	if _, err := os.Stat(doltDir); err == nil {
-		return nil
+func databaseAlreadyInitialized(beadsDir string) bool {
+	return beadsRedirectExists(beadsDir) || beadsDoltDirectoryExists(beadsDir) || serverBeadsDatabaseExists(beadsDir)
+}
+
+func beadsRedirectExists(beadsDir string) bool {
+	_, err := os.Stat(filepath.Join(beadsDir, "redirect"))
+	return err == nil
+}
+
+func beadsDoltDirectoryExists(beadsDir string) bool {
+	_, err := os.Stat(filepath.Join(beadsDir, "dolt"))
+	return err == nil
+}
+
+func serverBeadsDatabaseExists(beadsDir string) bool {
+	data, err := os.ReadFile(filepath.Join(beadsDir, "metadata.json"))
+	if err != nil {
+		return false
 	}
-
-	// Check for metadata.json (server mode — gastown's exclusive mode).
-	// In server mode, .beads/ may contain only metadata.json with no local dolt/ dir.
-	// This mirrors the deep check in bdDatabaseExists (internal/rig/manager.go):
-	// parse metadata.json and verify the referenced database exists in .dolt-data/.
-	// metadata.json can be git-tracked from another workspace where the Dolt server
-	// had this database, but this may be a fresh server without it.
-	metadataFile := filepath.Join(beadsDir, "metadata.json")
-	if data, err := os.ReadFile(metadataFile); err == nil {
-		var meta struct {
-			DoltMode     string `json:"dolt_mode"`
-			DoltDatabase string `json:"dolt_database"`
-		}
-		if err := json.Unmarshal(data, &meta); err != nil {
-			return nil // Can't parse — assume initialized (backward compat)
-		}
-		if meta.DoltMode == "server" && meta.DoltDatabase != "" {
-			townRoot := FindTownRoot(filepath.Dir(beadsDir))
-			if townRoot == "" {
-				return nil // Can't find town root — assume initialized
-			}
-			dbDir := filepath.Join(townRoot, ".dolt-data", meta.DoltDatabase)
-			if _, err := os.Stat(dbDir); !os.IsNotExist(err) {
-				return nil // Database exists (or stat error — assume initialized)
-			}
-			// metadata.json exists but database doesn't — fall through to init
-		} else {
-			return nil // Non-server mode or no database ref — assume initialized
-		}
+	var metadata struct {
+		DoltMode     string `json:"dolt_mode"`
+		DoltDatabase string `json:"dolt_database"`
 	}
+	if json.Unmarshal(data, &metadata) != nil || metadata.DoltMode != "server" || metadata.DoltDatabase == "" {
+		return true
+	}
+	townRoot := FindTownRoot(filepath.Dir(beadsDir))
+	if townRoot == "" {
+		return true
+	}
+	_, err = os.Stat(filepath.Join(townRoot, ".dolt-data", metadata.DoltDatabase))
+	return !os.IsNotExist(err)
+}
 
-	// No database found — need to initialize.
+func initializeBeadsDatabase(beadsDir string) error {
 	prefix := detectPrefix(beadsDir)
-
-	// bd init must run from the parent directory (not inside .beads/).
-	// Use --server to match all production callers (rig/manager.go, doctor/rig_check.go, cmd/install.go).
 	parentDir := filepath.Dir(beadsDir)
-	initArgs := []string{"init"}
-	if prefix != "" {
-		initArgs = append(initArgs, "--prefix", prefix)
+	if err := runBeadsDatabaseInit(beadsDir, parentDir, prefix); err != nil {
+		return err
 	}
-	initArgs = append(initArgs, "--server")
-	cmd := Spawn(initArgs...)
-	cmd.Dir = parentDir
-	util.SetDetachedProcessGroup(cmd)
-	initEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-	cmd.Env = initEnv
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Handle "already initialized" gracefully, matching install.go behavior.
-		// This can happen due to race conditions or if detection heuristics miss
-		// a valid database state.
-		outputStr := string(output)
-		if strings.Contains(outputStr, "already initialized") {
-			return nil
-		}
-		return fmt.Errorf("bd init: %s: %w", strings.TrimSpace(outputStr), err)
-	}
-
-	// Explicitly set issue_prefix — bd init --prefix may not persist it
-	// in newer versions (see rig/manager.go InitBeads).
-	if prefix != "" {
-		pfxCmd := Spawn("config", "set", "issue_prefix", prefix)
-		pfxCmd.Dir = parentDir
-		util.SetDetachedProcessGroup(pfxCmd)
-		pfxEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-		pfxCmd.Env = pfxEnv
-		_, _ = pfxCmd.CombinedOutput() // Best effort — crash prevention guard
-	}
-
-	// Run bd migrate to ensure the wisps table and auxiliary tables exist.
-	// Without this, bd create --ephemeral crashes with a Dolt nil pointer
-	// dereference when the wisps table is missing (GH#1769).
-	//
-	// After bd init --server, the Dolt SQL server may need time to register
-	// the new database in its catalog. Retry once after a short delay if the
-	// first migrate attempt fails (GH#1769).
-	migrateEnv := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
-	migrateCmd := Spawn("migrate", "--yes")
-	migrateCmd.Dir = parentDir
-	migrateCmd.Env = migrateEnv
-	util.SetDetachedProcessGroup(migrateCmd)
-	if _, err := migrateCmd.CombinedOutput(); err != nil {
-		// First attempt failed — server may not have registered the database yet.
-		// Wait briefly and retry once.
-		time.Sleep(500 * time.Millisecond)
-		retryCmd := Spawn("migrate", "--yes")
-		retryCmd.Dir = parentDir
-		retryCmd.Env = migrateEnv
-		util.SetDetachedProcessGroup(retryCmd)
-		_, _ = retryCmd.CombinedOutput() // Best effort on retry — CreateAgentBead fallback handles failure
-	}
-
+	persistBeadsIssuePrefix(beadsDir, parentDir, prefix)
+	migrateBeadsDatabase(beadsDir, parentDir)
 	return nil
+}
+
+func runBeadsDatabaseInit(beadsDir, parentDir, prefix string) error {
+	args := []string{"init"}
+	if prefix != "" {
+		args = append(args, "--prefix", prefix)
+	}
+	cmd := Spawn(append(args, "--server")...)
+	cmd.Dir = parentDir
+	cmd.Env = BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	util.SetDetachedProcessGroup(cmd)
+	output, err := cmd.CombinedOutput()
+	if err == nil || strings.Contains(string(output), "already initialized") {
+		return nil
+	}
+	return fmt.Errorf("bd init: %s: %w", strings.TrimSpace(string(output)), err)
+}
+
+func persistBeadsIssuePrefix(beadsDir, parentDir, prefix string) {
+	if prefix == "" {
+		return
+	}
+	cmd := Spawn("config", "set", "issue_prefix", prefix)
+	cmd.Dir = parentDir
+	cmd.Env = BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	util.SetDetachedProcessGroup(cmd)
+	_, _ = cmd.CombinedOutput()
+}
+
+func migrateBeadsDatabase(beadsDir, parentDir string) {
+	env := BuildMutationPinnedBDEnv(os.Environ(), beadsDir)
+	if runBeadsMigration(parentDir, env) == nil {
+		return
+	}
+	time.Sleep(500 * time.Millisecond)
+	_ = runBeadsMigration(parentDir, env)
+}
+
+func runBeadsMigration(parentDir string, env []string) error {
+	cmd := Spawn("migrate", "--yes")
+	cmd.Dir = parentDir
+	cmd.Env = env
+	util.SetDetachedProcessGroup(cmd)
+	_, err := cmd.CombinedOutput()
+	return err
 }
 
 // detectPrefix determines the beads prefix for a directory.
@@ -428,43 +390,61 @@ func ensureDatabaseInitialized(beadsDir string) error {
 // directory tree to resolve the actual rig name, which is out of scope for
 // this crash-prevention guard.
 func detectPrefix(beadsDir string) string {
-	// 1. Try authoritative source: rigs.json via town root
 	rigDir := filepath.Dir(beadsDir)
-	if townRoot := FindTownRoot(rigDir); townRoot != "" {
-		rigName := filepath.Base(rigDir)
-		if prefix := config.GetRigPrefix(townRoot, rigName); prefix != "" && prefixRe.MatchString(prefix) {
+	if prefix := townPrefix(rigDir); prefix != "" {
+		return prefix
+	}
+	if prefix := configPrefix(beadsDir); prefix != "" {
+		return prefix
+	}
+	return "gt"
+}
+
+func townPrefix(rigDir string) string {
+	townRoot := FindTownRoot(rigDir)
+	if townRoot == "" {
+		return ""
+	}
+	prefix := config.GetRigPrefix(townRoot, filepath.Base(rigDir))
+	if prefixRe.MatchString(prefix) {
+		return prefix
+	}
+	return ""
+}
+
+func configPrefix(beadsDir string) string {
+	data, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if prefix := configPrefixFromLine(line); prefix != "" {
 			return prefix
 		}
 	}
+	return ""
+}
 
-	// 2. Fallback: read from config.yaml.
-	// NOTE: Inside towns, this is typically unreachable because GetRigPrefix
-	// always returns at least "gt" (the default) when a rig isn't found in
-	// rigs.json. This fallback is primarily for standalone rigs outside towns.
-	configPath := filepath.Join(beadsDir, "config.yaml")
-	if data, err := os.ReadFile(configPath); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			for _, key := range []string{"issue-prefix:", "prefix:"} {
-				if strings.HasPrefix(line, key) {
-					parts := strings.SplitN(line, ":", 2)
-					if len(parts) == 2 {
-						candidate := strings.TrimSpace(parts[1])
-						// Strip quotes first, then trailing dash — matches
-						// detectBeadsPrefixFromConfig in rig/manager.go.
-						candidate = stripYAMLQuotes(candidate)
-						candidate = strings.TrimSuffix(candidate, "-")
-						if candidate != "" && prefixRe.MatchString(candidate) {
-							return candidate
-						}
-					}
-				}
-			}
+func configPrefixFromLine(line string) string {
+	line = strings.TrimSpace(line)
+	for _, key := range []string{"issue-prefix:", "prefix:"} {
+		if strings.HasPrefix(line, key) {
+			return validConfigPrefix(line)
 		}
 	}
+	return ""
+}
 
-	// 3. Default
-	return "gt"
+func validConfigPrefix(line string) string {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	candidate := strings.TrimSuffix(stripYAMLQuotes(strings.TrimSpace(parts[1])), "-")
+	if candidate != "" && prefixRe.MatchString(candidate) {
+		return candidate
+	}
+	return ""
 }
 
 // stripYAMLQuotes removes surrounding single or double quotes from a string.
@@ -479,12 +459,10 @@ func stripYAMLQuotes(s string) string {
 	return s
 }
 
-// ResetEnsuredDirs clears the in-memory cache of ensured directories.
-// This is primarily useful for testing.
+// ResetEnsuredDirs is retained for compatibility with callers that previously
+// cleared the session cache. Configuration is now cached only by durable
+// sentinel files, so there is no process-local state to reset.
 func ResetEnsuredDirs() {
-	ensuredMu.Lock()
-	defer ensuredMu.Unlock()
-	ensuredDirs = make(map[string]bool)
 }
 
 // ParseConfigOutput extracts the config value from `bd config get <key>` output,

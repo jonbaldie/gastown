@@ -30,7 +30,7 @@ func cyclePolecatSession(direction int, sessionOverride string) error {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
 
-	return cycleInGroup(direction, currentSession, sessions)
+	return cycleInGroup(direction, currentSession, sessions, "")
 }
 
 // parsePolecatSessionName extracts rig and polecat name from a tmux session name.

@@ -8,6 +8,6 @@ import (
 )
 
 // signalDaemonReload is a no-op on Windows since SIGUSR2 is not available.
-func signalDaemonReload(process *os.Process) error {
+func signalDaemonReload(_ *os.Process) error {
 	return fmt.Errorf("daemon reload signal not supported on Windows")
 }

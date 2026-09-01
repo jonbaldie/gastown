@@ -15,13 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	patrolScanJSON    bool
-	patrolScanNotify  bool
-	patrolScanRig     string
-	patrolScanVerbose bool
-)
-
 var patrolScanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Scan polecats for zombies, stalls, and completions",
@@ -54,10 +47,10 @@ Examples:
 }
 
 func init() {
-	patrolScanCmd.Flags().BoolVar(&patrolScanJSON, "json", false, "Output as JSON")
-	patrolScanCmd.Flags().BoolVar(&patrolScanNotify, "notify", false, "Send mail to witness/mayor when active-work zombies are detected")
-	patrolScanCmd.Flags().StringVar(&patrolScanRig, "rig", "", "Rig to scan (default: infer from cwd or GT_RIG)")
-	patrolScanCmd.Flags().BoolVarP(&patrolScanVerbose, "verbose", "v", false, "Verbose output")
+	patrolScanCmd.Flags().Bool("json", false, "Output as JSON")
+	patrolScanCmd.Flags().Bool("notify", false, "Send mail to witness/mayor when active-work zombies are detected")
+	patrolScanCmd.Flags().String("rig", "", "Rig to scan (default: infer from cwd or GT_RIG)")
+	patrolScanCmd.Flags().BoolP("verbose", "v", false, "Verbose output")
 
 	patrolCmd.AddCommand(patrolScanCmd)
 }
@@ -128,14 +121,16 @@ type PatrolScanCompleteItem struct {
 	CompletionTime string `json:"completion_time,omitempty"`
 }
 
-func runPatrolScan(cmd *cobra.Command, args []string) error {
+func runPatrolScan(cmd *cobra.Command, _ []string) error {
+	jsonOutput := commandBoolFlag(cmd, "json")
+	verbose := commandBoolFlag(cmd, "verbose")
+	rigName := commandStringFlag(cmd, "rig")
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Determine rig name
-	rigName := patrolScanRig
 	if rigName == "" {
 		// Try GT_RIG env, then infer from cwd
 		rigName = os.Getenv("GT_RIG")
@@ -182,11 +177,11 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if patrolScanJSON {
+	if jsonOutput {
 		return outputPatrolScanJSON(rigName, timestamp, zombieResult, stallResult, completionResult, receipts)
 	}
 
-	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, receipts)
+	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, receipts, verbose)
 }
 
 func runPatrolScanPhase[T any](diagnostics io.Writer, name string, fn func() T) T {
@@ -287,78 +282,12 @@ func sendZombieNotification(router *mail.Router, rigName string, result *witness
 
 func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, receipts []witness.PatrolReceipt) error {
 	output := PatrolScanOutput{
-		Rig:       rigName,
-		Timestamp: timestamp,
-		Receipts:  receipts,
-	}
-
-	// Zombies
-	if zombieResult != nil {
-		zo := &PatrolScanZombieOutput{
-			Checked: zombieResult.Checked,
-			Found:   len(zombieResult.Zombies),
-		}
-		for _, z := range zombieResult.Zombies {
-			item := PatrolScanZombieItem{
-				Polecat:        z.PolecatName,
-				Classification: string(z.Classification),
-				AgentState:     z.AgentState,
-				HookBead:       z.HookBead,
-				CleanupStatus:  z.CleanupStatus,
-				Action:         z.Action,
-				WasActive:      z.WasActive,
-			}
-			if z.Error != nil {
-				item.Error = z.Error.Error()
-			}
-			zo.Zombies = append(zo.Zombies, item)
-		}
-		for _, e := range zombieResult.Errors {
-			zo.Errors = append(zo.Errors, e.Error())
-		}
-		output.Zombies = zo
-	}
-
-	// Stalls
-	if stallResult != nil {
-		so := &PatrolScanStallOutput{
-			Checked: stallResult.Checked,
-			Found:   len(stallResult.Stalled),
-		}
-		for _, s := range stallResult.Stalled {
-			item := PatrolScanStallItem{
-				Polecat:   s.PolecatName,
-				StallType: s.StallType,
-				Action:    s.Action,
-			}
-			if s.Error != nil {
-				item.Error = s.Error.Error()
-			}
-			so.Stalls = append(so.Stalls, item)
-		}
-		output.Stalls = so
-	}
-
-	// Completions
-	if completionResult != nil {
-		co := &PatrolScanCompleteOutput{
-			Checked: completionResult.Checked,
-			Found:   len(completionResult.Discovered),
-		}
-		for _, d := range completionResult.Discovered {
-			item := PatrolScanCompleteItem{
-				Polecat:        d.PolecatName,
-				ExitType:       d.ExitType,
-				IssueID:        d.IssueID,
-				MRID:           d.MRID,
-				Branch:         d.Branch,
-				Action:         d.Action,
-				WispCreated:    d.WispCreated,
-				CompletionTime: d.CompletionTime,
-			}
-			co.Completed = append(co.Completed, item)
-		}
-		output.Completions = co
+		Rig:         rigName,
+		Timestamp:   timestamp,
+		Zombies:     patrolScanZombieJSON(zombieResult),
+		Stalls:      patrolScanStallJSON(stallResult),
+		Completions: patrolScanCompletionJSON(completionResult),
+		Receipts:    receipts,
 	}
 
 	enc := json.NewEncoder(os.Stdout)
@@ -366,108 +295,167 @@ func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.Detec
 	return enc.Encode(output)
 }
 
-func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, _ []witness.PatrolReceipt) error {
+func patrolScanZombieJSON(result *witness.DetectZombiePolecatsResult) *PatrolScanZombieOutput {
+	if result == nil {
+		return nil
+	}
+	output := &PatrolScanZombieOutput{Checked: result.Checked, Found: len(result.Zombies)}
+	for _, z := range result.Zombies {
+		item := PatrolScanZombieItem{
+			Polecat:        z.PolecatName,
+			Classification: string(z.Classification),
+			AgentState:     z.AgentState,
+			HookBead:       z.HookBead,
+			CleanupStatus:  z.CleanupStatus,
+			Action:         z.Action,
+			WasActive:      z.WasActive,
+		}
+		if z.Error != nil {
+			item.Error = z.Error.Error()
+		}
+		output.Zombies = append(output.Zombies, item)
+	}
+	for _, e := range result.Errors {
+		output.Errors = append(output.Errors, e.Error())
+	}
+	return output
+}
+
+func patrolScanStallJSON(result *witness.DetectStalledPolecatsResult) *PatrolScanStallOutput {
+	if result == nil {
+		return nil
+	}
+	output := &PatrolScanStallOutput{Checked: result.Checked, Found: len(result.Stalled)}
+	for _, s := range result.Stalled {
+		item := PatrolScanStallItem{
+			Polecat:   s.PolecatName,
+			StallType: s.StallType,
+			Action:    s.Action,
+		}
+		if s.Error != nil {
+			item.Error = s.Error.Error()
+		}
+		output.Stalls = append(output.Stalls, item)
+	}
+	return output
+}
+
+func patrolScanCompletionJSON(result *witness.DiscoverCompletionsResult) *PatrolScanCompleteOutput {
+	if result == nil {
+		return nil
+	}
+	output := &PatrolScanCompleteOutput{Checked: result.Checked, Found: len(result.Discovered)}
+	for _, d := range result.Discovered {
+		output.Completed = append(output.Completed, PatrolScanCompleteItem{
+			Polecat:        d.PolecatName,
+			ExitType:       d.ExitType,
+			IssueID:        d.IssueID,
+			MRID:           d.MRID,
+			Branch:         d.Branch,
+			Action:         d.Action,
+			WispCreated:    d.WispCreated,
+			CompletionTime: d.CompletionTime,
+		})
+	}
+	return output
+}
+
+func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, _ []witness.PatrolReceipt, verbose bool) error {
 	fmt.Printf("%s Patrol scan: %s\n\n", style.Bold.Render("🔍"), rigName)
+	printPatrolScanZombies(zombieResult, verbose)
+	printPatrolScanStalls(stallResult, verbose)
+	printPatrolScanCompletions(completionResult, verbose)
+	printPatrolScanSummary(zombieResult, stallResult, completionResult)
+	return nil
+}
 
-	// Zombies
-	if zombieResult != nil {
-		fmt.Printf("%s Zombie Detection: checked %d polecat(s)\n",
-			style.Bold.Render("👻"), zombieResult.Checked)
+func printPatrolScanZombies(result *witness.DetectZombiePolecatsResult, verbose bool) {
+	if result == nil {
+		return
+	}
+	fmt.Printf("%s Zombie Detection: checked %d polecat(s)\n", style.Bold.Render("👻"), result.Checked)
+	if len(result.Zombies) == 0 {
+		fmt.Printf("  %s\n", style.Dim.Render("No zombies detected"))
+	} else {
+		for _, z := range result.Zombies {
+			printPatrolScanZombie(z)
+		}
+	}
+	if len(result.Errors) > 0 && verbose {
+		fmt.Printf("  Errors: %d\n", len(result.Errors))
+		for _, e := range result.Errors {
+			fmt.Printf("    - %v\n", e)
+		}
+	}
+	if len(result.ConvoyFailures) > 0 {
+		fmt.Printf("  Convoy failures: %d\n", len(result.ConvoyFailures))
+	}
+	fmt.Println()
+}
 
-		if len(zombieResult.Zombies) == 0 {
-			fmt.Printf("  %s\n", style.Dim.Render("No zombies detected"))
-		} else {
-			for _, z := range zombieResult.Zombies {
-				icon := "⚠"
-				if z.WasActive {
-					icon = "🚨"
-				}
-				fmt.Printf("  %s %s: %s\n", icon, z.PolecatName, z.Classification)
-				fmt.Printf("    State: %s", z.AgentState)
-				if z.HookBead != "" {
-					fmt.Printf("  Hook: %s", z.HookBead)
-				}
-				if z.CleanupStatus != "" {
-					fmt.Printf("  Cleanup: %s", z.CleanupStatus)
-				}
-				fmt.Println()
-				fmt.Printf("    Action: %s\n", z.Action)
-				if z.Error != nil {
-					fmt.Printf("    %s\n", style.Dim.Render(fmt.Sprintf("Error: %v", z.Error)))
-				}
+func printPatrolScanZombie(z witness.ZombieResult) {
+	icon := "⚠"
+	if z.WasActive {
+		icon = "🚨"
+	}
+	fmt.Printf("  %s %s: %s\n", icon, z.PolecatName, z.Classification)
+	fmt.Printf("    State: %s", z.AgentState)
+	if z.HookBead != "" {
+		fmt.Printf("  Hook: %s", z.HookBead)
+	}
+	if z.CleanupStatus != "" {
+		fmt.Printf("  Cleanup: %s", z.CleanupStatus)
+	}
+	fmt.Println()
+	fmt.Printf("    Action: %s\n", z.Action)
+	if z.Error != nil {
+		fmt.Printf("    %s\n", style.Dim.Render(fmt.Sprintf("Error: %v", z.Error)))
+	}
+}
+
+func printPatrolScanStalls(result *witness.DetectStalledPolecatsResult, verbose bool) {
+	if result == nil || (len(result.Stalled) == 0 && !verbose) {
+		return
+	}
+	fmt.Printf("%s Stall Detection: checked %d polecat(s)\n", style.Bold.Render("⏳"), result.Checked)
+	if len(result.Stalled) == 0 {
+		fmt.Printf("  %s\n", style.Dim.Render("No stalls detected"))
+	} else {
+		for _, s := range result.Stalled {
+			fmt.Printf("  ⚠ %s: %s → %s\n", s.PolecatName, s.StallType, s.Action)
+			if s.Error != nil {
+				fmt.Printf("    %s\n", style.Dim.Render(fmt.Sprintf("Error: %v", s.Error)))
 			}
 		}
+	}
+	fmt.Println()
+}
 
-		if len(zombieResult.Errors) > 0 && patrolScanVerbose {
-			fmt.Printf("  Errors: %d\n", len(zombieResult.Errors))
-			for _, e := range zombieResult.Errors {
-				fmt.Printf("    - %v\n", e)
+func printPatrolScanCompletions(result *witness.DiscoverCompletionsResult, verbose bool) {
+	if result == nil || (len(result.Discovered) == 0 && !verbose) {
+		return
+	}
+	fmt.Printf("%s Completion Discovery: checked %d polecat(s)\n", style.Bold.Render("✅"), result.Checked)
+	if len(result.Discovered) == 0 {
+		fmt.Printf("  %s\n", style.Dim.Render("No completions discovered"))
+	} else {
+		for _, d := range result.Discovered {
+			fmt.Printf("  ● %s: exit=%s", d.PolecatName, d.ExitType)
+			if d.IssueID != "" {
+				fmt.Printf("  issue=%s", d.IssueID)
 			}
-		}
-
-		if len(zombieResult.ConvoyFailures) > 0 {
-			fmt.Printf("  Convoy failures: %d\n", len(zombieResult.ConvoyFailures))
-		}
-		fmt.Println()
-	}
-
-	// Stalls
-	if stallResult != nil && (len(stallResult.Stalled) > 0 || patrolScanVerbose) {
-		fmt.Printf("%s Stall Detection: checked %d polecat(s)\n",
-			style.Bold.Render("⏳"), stallResult.Checked)
-
-		if len(stallResult.Stalled) == 0 {
-			fmt.Printf("  %s\n", style.Dim.Render("No stalls detected"))
-		} else {
-			for _, s := range stallResult.Stalled {
-				fmt.Printf("  ⚠ %s: %s → %s\n", s.PolecatName, s.StallType, s.Action)
-				if s.Error != nil {
-					fmt.Printf("    %s\n", style.Dim.Render(fmt.Sprintf("Error: %v", s.Error)))
-				}
+			if d.MRID != "" {
+				fmt.Printf("  mr=%s", d.MRID)
 			}
+			fmt.Println()
+			fmt.Printf("    Action: %s\n", d.Action)
 		}
-		fmt.Println()
 	}
+	fmt.Println()
+}
 
-	// Completions
-	if completionResult != nil && (len(completionResult.Discovered) > 0 || patrolScanVerbose) {
-		fmt.Printf("%s Completion Discovery: checked %d polecat(s)\n",
-			style.Bold.Render("✅"), completionResult.Checked)
-
-		if len(completionResult.Discovered) == 0 {
-			fmt.Printf("  %s\n", style.Dim.Render("No completions discovered"))
-		} else {
-			for _, d := range completionResult.Discovered {
-				fmt.Printf("  ● %s: exit=%s", d.PolecatName, d.ExitType)
-				if d.IssueID != "" {
-					fmt.Printf("  issue=%s", d.IssueID)
-				}
-				if d.MRID != "" {
-					fmt.Printf("  mr=%s", d.MRID)
-				}
-				fmt.Println()
-				fmt.Printf("    Action: %s\n", d.Action)
-			}
-		}
-		fmt.Println()
-	}
-
-	// Summary
-	zombieCount := 0
-	activeCount := 0
-	if zombieResult != nil {
-		zombieCount = len(zombieResult.Zombies)
-		activeCount = countActiveWorkZombies(zombieResult)
-	}
-	stallCount := 0
-	if stallResult != nil {
-		stallCount = len(stallResult.Stalled)
-	}
-	completionCount := 0
-	if completionResult != nil {
-		completionCount = len(completionResult.Discovered)
-	}
-
+func printPatrolScanSummary(zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult) {
+	zombieCount, activeCount, stallCount, completionCount := patrolScanIssueCounts(zombieResult, stallResult, completionResult)
 	if zombieCount == 0 && stallCount == 0 && completionCount == 0 {
 		fmt.Printf("%s All clear — no issues detected\n", style.Success.Render("✓"))
 	} else {
@@ -475,5 +463,19 @@ func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePol
 			zombieCount, activeCount, stallCount, completionCount)
 	}
 
-	return nil
+}
+
+func patrolScanIssueCounts(zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult) (int, int, int, int) {
+	var zombieCount, activeCount, stallCount, completionCount int
+	if zombieResult != nil {
+		zombieCount = len(zombieResult.Zombies)
+		activeCount = countActiveWorkZombies(zombieResult)
+	}
+	if stallResult != nil {
+		stallCount = len(stallResult.Stalled)
+	}
+	if completionResult != nil {
+		completionCount = len(completionResult.Discovered)
+	}
+	return zombieCount, activeCount, stallCount, completionCount
 }

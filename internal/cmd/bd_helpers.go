@@ -203,6 +203,10 @@ func resolveBdCmdTimeout() time.Duration {
 }
 
 func (b *bdCmd) buildContextCommand(ctx context.Context) *exec.Cmd {
+	return buildBdContextCommand(b, ctx)
+}
+
+func buildBdContextCommand(b *bdCmd, ctx context.Context) *exec.Cmd {
 	args := b.resolvedArgs()
 	beadsDir := b.beadsDir
 	if beadsDir == "" && b.dir != "" && !b.routing {

@@ -43,7 +43,7 @@ type hookInput struct {
 //	SessionStart: "export GT_SESSION_ID=$(uuidgen) GT_HOOK_SOURCE=startup && gt prime --hook"
 //	PreCompress:  "export GT_HOOK_SOURCE=compact && gt prime --hook"
 func readHookSessionID() (sessionID, source string) {
-	primeStructuredSessionStartOutput = false
+	primeState().structuredSessionStartOutput = false
 	// Source can come from env (any runtime) or stdin JSON (Claude only).
 	// Check env first so it's available even when stdin provides the session ID.
 	source = os.Getenv("GT_HOOK_SOURCE")
@@ -59,7 +59,7 @@ func readHookSessionID() (sessionID, source string) {
 	//    Checked before persisted file so a fresh Claude session always wins
 	//    over a potentially stale .runtime/session_id from a previous session.
 	if input := readStdinJSON(); input != nil {
-		primeStructuredSessionStartOutput = input.HookEventName == "SessionStart"
+		primeState().structuredSessionStartOutput = input.HookEventName == "SessionStart"
 		if input.SessionID != "" {
 			// Stdin source overrides env source when both are present
 			if input.Source != "" {
@@ -263,7 +263,7 @@ func outputSessionMetadata(ctx RoleContext) {
 // SessionStart hooks because Codex will see '[' and try to parse the line as
 // JSON instead of treating it as plain text session metadata.
 func formatSessionMetadataLine(actor, sessionID string) string {
-	if primeStructuredSessionStartOutput {
+	if primeState().structuredSessionStartOutput {
 		return fmt.Sprintf("GAS TOWN role:%s pid:%d session:%s", actor, os.Getpid(), sessionID)
 	}
 	return fmt.Sprintf("[GAS TOWN] role:%s pid:%d session:%s", actor, os.Getpid(), sessionID)
@@ -282,82 +282,124 @@ type SessionState struct {
 
 // detectSessionState returns the current session state without side effects.
 func detectSessionState(ctx RoleContext) SessionState {
-	state := SessionState{
-		State: "normal",
-		Role:  ctx.Role,
-	}
-
-	// Check for handoff marker (post-handoff state)
-	markerPath := filepath.Join(ctx.WorkDir, constants.DirRuntime, constants.FileHandoffMarker)
-	if data, err := os.ReadFile(markerPath); err == nil {
-		state.State = "post-handoff"
-		state.PrevSession = strings.TrimSpace(string(data))
+	if state, ok := postHandoffSessionState(ctx); ok {
 		return state
 	}
-
-	// Check for checkpoint (crash-recovery state) - only for polecat/crew
-	if ctx.Role == RolePolecat || ctx.Role == RoleCrew {
-		if cp, err := checkpoint.Read(ctx.WorkDir); err == nil && cp != nil && !cp.IsStale(24*time.Hour) {
-			state.State = "crash-recovery"
-			state.CheckpointAge = cp.Age().Round(time.Minute).String()
-			return state
-		}
+	if state, ok := crashRecoverySessionState(ctx); ok {
+		return state
 	}
+	if state, ok := autonomousSessionState(ctx); ok {
+		return state
+	}
+	return SessionState{State: "normal", Role: ctx.Role}
+}
 
-	// Check for hooked work (autonomous state).
-	// Primary: read hook_bead from the agent bead's DB column (same strategy as gt hook).
-	// Fallback: query hooked/in_progress beads by assignee.
+func postHandoffSessionState(ctx RoleContext) (SessionState, bool) {
+	markerPath := filepath.Join(ctx.WorkDir, constants.DirRuntime, constants.FileHandoffMarker)
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		return SessionState{}, false
+	}
+	return SessionState{
+		State:       "post-handoff",
+		Role:        ctx.Role,
+		PrevSession: strings.TrimSpace(string(data)),
+	}, true
+}
+
+func crashRecoverySessionState(ctx RoleContext) (SessionState, bool) {
+	if !isWorkerRole(ctx.Role) {
+		return SessionState{}, false
+	}
+	cp, err := checkpoint.Read(ctx.WorkDir)
+	if err != nil || cp == nil {
+		return SessionState{}, false
+	}
+	if checkpoint.IsStale(cp, 24*time.Hour) {
+		return SessionState{}, false
+	}
+	return SessionState{
+		State:         "crash-recovery",
+		Role:          ctx.Role,
+		CheckpointAge: checkpoint.Age(cp).Round(time.Minute).String(),
+	}, true
+}
+
+func isWorkerRole(role Role) bool {
+	return role == RolePolecat || role == RoleCrew
+}
+
+func autonomousSessionState(ctx RoleContext) (SessionState, bool) {
 	agentID := getAgentIdentity(ctx)
-	if agentID != "" {
-		// Use rig beads directory, not polecat worktree. Polecats don't have their
-		// own .beads — the rig's beads dir is the authoritative source. (GH#2503)
-		beadsDir := ctx.WorkDir
-		if ctx.Rig != "" && ctx.TownRoot != "" {
-			rigDir := filepath.Join(ctx.TownRoot, ctx.Rig)
-			if _, err := os.Stat(filepath.Join(rigDir, ".beads")); err == nil {
-				beadsDir = rigDir
-			}
-		}
-		b := beads.New(beadsDir)
-		// Primary: agent bead's hook_bead field (authoritative, set by bd slot set during sling)
-		agentBeadID := buildAgentBeadID(agentID, ctx.Role, ctx.TownRoot)
-		if agentBeadID != "" {
-			agentBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBeadID, ctx.WorkDir)
-			ab := beads.New(agentBeadDir)
-			if agentBead, err := ab.Show(agentBeadID); err == nil && agentBead != nil && agentBead.HookBead != "" {
-				// Resolve and verify the target bead exists with active status
-				// (mirrors molecule_status.go and signal_stop.go patterns)
-				hookBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBead.HookBead, ctx.WorkDir)
-				hb := beads.New(hookBeadDir)
-				if hookBead, err := hb.Show(agentBead.HookBead); err == nil && hookBead != nil &&
-					(hookBead.Status == beads.StatusHooked || hookBead.Status == "in_progress") {
-					state.State = "autonomous"
-					state.HookedBead = agentBead.HookBead
-					return state
-				}
-			}
-		}
-
-		// Fallback: query active assigned work across durable issues and wisps.
-		hookedBeads, err := listAssignedActiveWork(b, agentID)
-		if err == nil && len(hookedBeads) > 0 {
-			state.State = "autonomous"
-			state.HookedBead = hookedBeads[0].ID
-			return state
-		}
-		// Town-level fallback: rig-level agents may have hooked HQ beads
-		// stored in townRoot/.beads. Matches prime.go and molecule_status.go. (gt-dtq7)
-		if !isTownLevelRole(agentID) && ctx.TownRoot != "" {
-			townB := beads.New(filepath.Join(ctx.TownRoot, ".beads"))
-			if townWork, err := listAssignedActiveWork(townB, agentID); err == nil && len(townWork) > 0 {
-				state.State = "autonomous"
-				state.HookedBead = townWork[0].ID
-				return state
-			}
-		}
+	if agentID == "" {
+		return SessionState{}, false
 	}
 
-	return state
+	beadsDir := sessionBeadsDir(ctx)
+	b := beads.New(beadsDir)
+	if hookBead, ok := resolveSessionAgentHookBead(ctx, agentID); ok {
+		return autonomousState(ctx.Role, hookBead), true
+	}
+	if hookBead, ok := assignedHookBead(b, agentID); ok {
+		return autonomousState(ctx.Role, hookBead), true
+	}
+	if hookBead, ok := townHookBead(ctx, agentID); ok {
+		return autonomousState(ctx.Role, hookBead), true
+	}
+	return SessionState{}, false
+}
+
+func sessionBeadsDir(ctx RoleContext) string {
+	if ctx.Rig == "" || ctx.TownRoot == "" {
+		return ctx.WorkDir
+	}
+	rigDir := filepath.Join(ctx.TownRoot, ctx.Rig)
+	if _, err := os.Stat(filepath.Join(rigDir, ".beads")); err == nil {
+		return rigDir
+	}
+	return ctx.WorkDir
+}
+
+func resolveSessionAgentHookBead(ctx RoleContext, agentID string) (string, bool) {
+	agentBeadID := buildAgentBeadID(agentID, ctx.Role, ctx.TownRoot)
+	if agentBeadID == "" {
+		return "", false
+	}
+	agentBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBeadID, ctx.WorkDir)
+	agentBead, err := beads.New(agentBeadDir).Show(agentBeadID)
+	if err != nil || agentBead == nil || agentBead.HookBead == "" {
+		return "", false
+	}
+	hookBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBead.HookBead, ctx.WorkDir)
+	hookBead, err := beads.New(hookBeadDir).Show(agentBead.HookBead)
+	if err != nil || hookBead == nil || !isActiveHookStatus(hookBead.Status) {
+		return "", false
+	}
+	return agentBead.HookBead, true
+}
+
+func isActiveHookStatus(status string) bool {
+	return status == beads.StatusHooked || status == "in_progress"
+}
+
+func assignedHookBead(b *beads.Beads, agentID string) (string, bool) {
+	hookedBeads, err := listAssignedActiveWork(b, agentID)
+	if err != nil || len(hookedBeads) == 0 {
+		return "", false
+	}
+	return hookedBeads[0].ID, true
+}
+
+func townHookBead(ctx RoleContext, agentID string) (string, bool) {
+	if isTownLevelRole(agentID) || ctx.TownRoot == "" {
+		return "", false
+	}
+	townB := beads.New(filepath.Join(ctx.TownRoot, ".beads"))
+	return assignedHookBead(townB, agentID)
+}
+
+func autonomousState(role Role, hookBead string) SessionState {
+	return SessionState{State: "autonomous", Role: role, HookedBead: hookBead}
 }
 
 // checkHandoffMarker checks for a handoff marker file and outputs a warning if found.
@@ -381,7 +423,7 @@ func checkHandoffMarker(workDir string) {
 	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
 	prevSession := strings.TrimSpace(lines[0])
 	if len(lines) > 1 {
-		primeHandoffReason = strings.TrimSpace(lines[1])
+		primeState().handoffReason = strings.TrimSpace(lines[1])
 	}
 
 	// Remove the marker FIRST so we don't warn twice
@@ -405,10 +447,10 @@ func checkHandoffMarkerDryRun(workDir string) {
 	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
 	prevSession := strings.TrimSpace(lines[0])
 	if len(lines) > 1 {
-		primeHandoffReason = strings.TrimSpace(lines[1])
+		primeState().handoffReason = strings.TrimSpace(lines[1])
 	}
 
-	explain(true, fmt.Sprintf("Post-handoff: marker found (predecessor: %s, reason: %s), marker NOT removed in dry-run", prevSession, primeHandoffReason))
+	explain(true, fmt.Sprintf("Post-handoff: marker found (predecessor: %s, reason: %s), marker NOT removed in dry-run", prevSession, primeState().handoffReason))
 
 	// Output the warning but don't remove marker
 	outputHandoffWarning(prevSession)

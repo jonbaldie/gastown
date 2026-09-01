@@ -14,15 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	wlBrowseProject  string
-	wlBrowseStatus   string
-	wlBrowseType     string
-	wlBrowsePriority int
-	wlBrowseLimit    int
-	wlBrowseJSON     bool
-)
-
 var wlBrowseCmd = &cobra.Command{
 	Use:   "browse",
 	Short: "Browse wanted items on the commons board",
@@ -44,84 +35,82 @@ EXAMPLES:
 }
 
 func init() {
-	wlBrowseCmd.Flags().StringVar(&wlBrowseProject, "project", "", "Filter by project (e.g., gastown, beads, hop)")
-	wlBrowseCmd.Flags().StringVar(&wlBrowseStatus, "status", "open", "Filter by status (open, claimed, in_review, completed, withdrawn)")
-	wlBrowseCmd.Flags().StringVar(&wlBrowseType, "type", "", "Filter by type (feature, bug, design, rfc, docs)")
-	wlBrowseCmd.Flags().IntVar(&wlBrowsePriority, "priority", -1, "Filter by priority (0=critical, 2=medium, 4=backlog)")
-	wlBrowseCmd.Flags().IntVar(&wlBrowseLimit, "limit", 50, "Maximum items to display")
-	wlBrowseCmd.Flags().BoolVar(&wlBrowseJSON, "json", false, "Output as JSON")
+	wlBrowseCmd.Flags().String("project", "", "Filter by project (e.g., gastown, beads, hop)")
+	wlBrowseCmd.Flags().String("status", "open", "Filter by status (open, claimed, in_review, completed, withdrawn)")
+	wlBrowseCmd.Flags().String("type", "", "Filter by type (feature, bug, design, rfc, docs)")
+	wlBrowseCmd.Flags().Int("priority", -1, "Filter by priority (0=critical, 2=medium, 4=backlog)")
+	wlBrowseCmd.Flags().Int("limit", 50, "Maximum items to display")
+	wlBrowseCmd.Flags().Bool("json", false, "Output as JSON")
 
 	wlCmd.AddCommand(wlBrowseCmd)
 }
 
-func runWLBrowse(cmd *cobra.Command, args []string) error {
+type wlBrowseOptions struct {
+	filter BrowseFilter
+	json   bool
+}
+
+func wlBrowseOptionsFromCommand(cmd *cobra.Command) wlBrowseOptions {
+	project, _ := cmd.Flags().GetString("project")
+	status, _ := cmd.Flags().GetString("status")
+	browseType, _ := cmd.Flags().GetString("type")
+	priority, _ := cmd.Flags().GetInt("priority")
+	limit, _ := cmd.Flags().GetInt("limit")
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	return wlBrowseOptions{
+		filter: BrowseFilter{
+			Status:   status,
+			Project:  project,
+			Type:     browseType,
+			Priority: priority,
+			Limit:    limit,
+		},
+		json: jsonOutput,
+	}
+}
+
+func runWLBrowse(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
+	opts := wlBrowseOptionsFromCommand(cmd)
 
 	// Fast path: query through the Dolt server if the database is registered.
 	dbName := wasteland.ResolveDBName(townRoot)
 	if doltserver.DatabaseExists(townRoot, dbName) {
-		query := buildBrowseQuery(BrowseFilter{
-			Status:   wlBrowseStatus,
-			Project:  wlBrowseProject,
-			Type:     wlBrowseType,
-			Priority: wlBrowsePriority,
-			Limit:    wlBrowseLimit,
-		})
-		serverQuery := fmt.Sprintf("USE %s; %s", dbName, query)
-
-		if wlBrowseJSON {
-			output, err := doltserver.QueryJSON(townRoot, serverQuery)
-			if err != nil {
-				return err
-			}
-			fmt.Print(output)
-			return nil
-		}
-
-		output, err := doltserver.QueryCSV(townRoot, serverQuery)
-		if err != nil {
-			return err
-		}
-		rows := wlParseCSV(output)
-		if len(rows) <= 1 {
-			fmt.Println("No wanted items found matching your filters.")
-			return nil
-		}
-
-		tbl := style.NewTable(
-			style.Column{Name: "ID", Width: 12},
-			style.Column{Name: "TITLE", Width: 40},
-			style.Column{Name: "PROJECT", Width: 12},
-			style.Column{Name: "TYPE", Width: 10},
-			style.Column{Name: "PRI", Width: 4, Align: style.AlignRight},
-			style.Column{Name: "POSTED BY", Width: 16},
-			style.Column{Name: "STATUS", Width: 10},
-			style.Column{Name: "EFFORT", Width: 8},
-		)
-
-		for _, row := range rows[1:] {
-			if len(row) < 8 {
-				continue
-			}
-			pri := wlFormatPriority(row[4])
-			tbl.AddRow(row[0], row[1], row[2], row[3], pri, row[5], row[6], row[7])
-		}
-
-		fmt.Printf("Wanted items (%d):\n\n", len(rows)-1)
-		fmt.Print(tbl.Render())
-		return nil
+		return runWLBrowseServer(townRoot, dbName, opts)
 	}
 
 	// Fallback: read from local filesystem clone.
+	return runWLBrowseClone(townRoot, opts)
+}
+
+func runWLBrowseServer(townRoot, dbName string, opts wlBrowseOptions) error {
+	query := buildBrowseQuery(opts.filter)
+	serverQuery := fmt.Sprintf("USE %s; %s", dbName, query)
+	if opts.json {
+		output, err := doltserver.QueryJSON(townRoot, serverQuery)
+		if err != nil {
+			return err
+		}
+		fmt.Print(output)
+		return nil
+	}
+	output, err := doltserver.QueryCSV(townRoot, serverQuery)
+	if err != nil {
+		return err
+	}
+	return renderWLBrowseCSV(output)
+}
+
+func runWLBrowseClone(townRoot string, opts wlBrowseOptions) error {
 	doltPath, err := exec.LookPath("dolt")
 	if err != nil {
 		return fmt.Errorf("dolt not found in PATH — install from https://docs.dolthub.com/introduction/installation")
 	}
 
-	cloneDir, tmpDir, err := resolveWLCommonsBrowse(townRoot, doltPath)
+	cloneDir, tmpDir, err := resolveWLCommonsBrowse(townRoot, doltPath, opts.json)
 	if err != nil {
 		return err
 	}
@@ -129,15 +118,9 @@ func runWLBrowse(cmd *cobra.Command, args []string) error {
 		defer os.RemoveAll(tmpDir)
 	}
 
-	query := buildBrowseQuery(BrowseFilter{
-		Status:   wlBrowseStatus,
-		Project:  wlBrowseProject,
-		Type:     wlBrowseType,
-		Priority: wlBrowsePriority,
-		Limit:    wlBrowseLimit,
-	})
+	query := buildBrowseQuery(opts.filter)
 
-	if wlBrowseJSON {
+	if opts.json {
 		sqlCmd := exec.Command(doltPath, "sql", "-q", query, "-r", "json")
 		sqlCmd.Dir = cloneDir
 		sqlCmd.Stdout = os.Stdout
@@ -151,27 +134,59 @@ func runWLBrowse(cmd *cobra.Command, args []string) error {
 // resolveWLCommonsBrowse finds the local wl-commons clone directory for browsing.
 // Returns (cloneDir, tmpDir, err). If tmpDir is non-empty, caller must
 // defer os.RemoveAll(tmpDir) — a temporary clone was created.
-func resolveWLCommonsBrowse(townRoot, doltPath string) (cloneDir, tmpDir string, err error) {
+func resolveWLCommonsBrowse(townRoot, doltPath string, jsonOutput bool) (cloneDir, tmpDir string, err error) {
+	if cloneDir := findExistingWLCommonsBrowse(townRoot); cloneDir != "" {
+		return cloneDir, "", nil
+	}
+
+	commonsOrg, commonsDB := resolveWLCommonsRemote(townRoot)
+	tmpDir, err = os.MkdirTemp("", "wl-browse-*")
+	if err != nil {
+		return "", "", fmt.Errorf("creating temp directory: %w", err)
+	}
+
+	cloneDir = filepath.Join(tmpDir, commonsDB)
+	remote := fmt.Sprintf("%s/%s", commonsOrg, commonsDB)
+	if !jsonOutput {
+		fmt.Printf("Cloning %s...\n", style.Bold.Render(remote))
+	}
+
+	cloneCmd := exec.Command(doltPath, "clone", remote, cloneDir)
+	if !jsonOutput {
+		cloneCmd.Stderr = os.Stderr
+	}
+	if cloneErr := cloneCmd.Run(); cloneErr != nil {
+		os.RemoveAll(tmpDir)
+		return "", "", fmt.Errorf("cloning %s: %w\nEnsure the database exists on DoltHub: https://www.dolthub.com/%s", remote, cloneErr, remote)
+	}
+	if !jsonOutput {
+		fmt.Printf("%s Cloned successfully\n\n", style.Bold.Render("✓"))
+	}
+	return cloneDir, tmpDir, nil
+}
+
+func findExistingWLCommonsBrowse(townRoot string) string {
 	// Try wasteland config (set by gt wl join).
 	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.LocalDir != "" {
 		if _, statErr := os.Stat(filepath.Join(cfg.LocalDir, ".dolt")); statErr == nil {
-			return cfg.LocalDir, "", nil
+			return cfg.LocalDir
 		}
 	}
 
 	// Try standard location: .wasteland/hop/wl-commons.
 	stdPath := wasteland.LocalCloneDir(townRoot, "hop", "wl-commons")
 	if _, statErr := os.Stat(filepath.Join(stdPath, ".dolt")); statErr == nil {
-		return stdPath, "", nil
+		return stdPath
 	}
 
 	// Try common fallback locations.
 	if forkDir := findWLCommonsFork(townRoot); forkDir != "" {
-		return forkDir, "", nil
+		return forkDir
 	}
+	return ""
+}
 
-	// No local clone — do a one-time clone-then-discard.
-	// Read upstream from config, or default to hop/wl-commons.
+func resolveWLCommonsRemote(townRoot string) (string, string) {
 	commonsOrg := "hop"
 	commonsDB := "wl-commons"
 	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.Upstream != "" {
@@ -180,30 +195,7 @@ func resolveWLCommonsBrowse(townRoot, doltPath string) (cloneDir, tmpDir string,
 			commonsDB = d
 		}
 	}
-
-	tmpDir, err = os.MkdirTemp("", "wl-browse-*")
-	if err != nil {
-		return "", "", fmt.Errorf("creating temp directory: %w", err)
-	}
-
-	cloneDir = filepath.Join(tmpDir, commonsDB)
-	remote := fmt.Sprintf("%s/%s", commonsOrg, commonsDB)
-	if !wlBrowseJSON {
-		fmt.Printf("Cloning %s...\n", style.Bold.Render(remote))
-	}
-
-	cloneCmd := exec.Command(doltPath, "clone", remote, cloneDir)
-	if !wlBrowseJSON {
-		cloneCmd.Stderr = os.Stderr
-	}
-	if cloneErr := cloneCmd.Run(); cloneErr != nil {
-		os.RemoveAll(tmpDir)
-		return "", "", fmt.Errorf("cloning %s: %w\nEnsure the database exists on DoltHub: https://www.dolthub.com/%s", remote, cloneErr, remote)
-	}
-	if !wlBrowseJSON {
-		fmt.Printf("%s Cloned successfully\n\n", style.Bold.Render("✓"))
-	}
-	return cloneDir, tmpDir, nil
+	return commonsOrg, commonsDB
 }
 
 // BrowseFilter holds filter parameters for building a browse query.
@@ -252,7 +244,11 @@ func renderWLBrowseTable(doltPath, cloneDir, query string) error {
 		return fmt.Errorf("running query: %w", err)
 	}
 
-	rows := wlParseCSV(string(output))
+	return renderWLBrowseCSV(string(output))
+}
+
+func renderWLBrowseCSV(output string) error {
+	rows := wlParseCSV(output)
 	if len(rows) <= 1 {
 		fmt.Println("No wanted items found matching your filters.")
 		return nil
@@ -299,27 +295,38 @@ func wlParseCSVLine(line string) []string {
 	var field strings.Builder
 	inQuote := false
 
-	for i := 0; i < len(line); i++ {
+	lineLength := len(line)
+	for i := 0; i < lineLength; i++ {
 		ch := line[i]
-		switch {
-		case ch == '"' && !inQuote:
-			inQuote = true
-		case ch == '"' && inQuote:
-			if i+1 < len(line) && line[i+1] == '"' {
-				field.WriteByte('"')
-				i++
-			} else {
-				inQuote = false
-			}
-		case ch == ',' && !inQuote:
+		if next, handled := parseWlCSVQuote(line, i, &field, &inQuote); handled {
+			i = next
+			continue
+		}
+		if ch == ',' && !inQuote {
 			fields = append(fields, field.String())
 			field.Reset()
-		default:
-			field.WriteByte(ch)
+			continue
 		}
+		field.WriteByte(ch)
 	}
 	fields = append(fields, field.String())
 	return fields
+}
+
+func parseWlCSVQuote(line string, index int, field *strings.Builder, inQuote *bool) (int, bool) {
+	if line[index] != '"' {
+		return index, false
+	}
+	if !*inQuote {
+		*inQuote = true
+		return index, true
+	}
+	if index+1 < len(line) && line[index+1] == '"' {
+		field.WriteByte('"')
+		return index + 1, true
+	}
+	*inQuote = false
+	return index, true
 }
 
 func wlFormatPriority(pri string) string {

@@ -36,14 +36,13 @@ Examples:
 	RunE: runHeartbeat,
 }
 
-var heartbeatState string
-
 func init() {
 	rootCmd.AddCommand(heartbeatCmd)
-	heartbeatCmd.Flags().StringVar(&heartbeatState, "state", "working", "Agent state (working, idle, exiting, stuck)")
+	heartbeatCmd.Flags().String("state", "working", "Agent state (working, idle, exiting, stuck)")
 }
 
 func runHeartbeat(cmd *cobra.Command, args []string) error {
+	heartbeatState, _ := cmd.Flags().GetString("state")
 	sessionName := os.Getenv("GT_SESSION")
 	if sessionName == "" {
 		return fmt.Errorf("GT_SESSION not set (not running in a Gas Town session)")

@@ -14,8 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var fromDryRun bool
-
 var fromCmd = &cobra.Command{
 	Use:     "from <parent> [town]",
 	GroupID: GroupWorkspace,
@@ -45,7 +43,7 @@ run gt up, or enable Gas Town on the machine.`,
 }
 
 func init() {
-	fromCmd.Flags().BoolVar(&fromDryRun, "dry-run", false, "Print the planned Town and Rigs without writing")
+	fromCmd.Flags().Bool("dry-run", false, "Print the planned Town and Rigs without writing")
 	rootCmd.AddCommand(fromCmd)
 }
 
@@ -57,9 +55,10 @@ type fromRequest struct {
 }
 
 func runFrom(cmd *cobra.Command, args []string) error {
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	req := fromRequest{
 		Parent: args[0],
-		DryRun: fromDryRun,
+		DryRun: dryRun,
 		Stdout: cmd.OutOrStdout(),
 	}
 	if len(args) > 1 {
@@ -122,8 +121,16 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 		}
 	}
 
-	var added, skipped []string
-	var addErrs []error
+	added, skipped, addErrs := applyFromRigs(plan)
+	failures := fromFailureStrings(addErrs)
+	printFromReport(w, plan, created, added, skipped, failures)
+	if len(addErrs) > 0 {
+		return fmt.Errorf("failed to add %d Rig(s): %w", len(addErrs), errors.Join(addErrs...))
+	}
+	return nil
+}
+
+func applyFromRigs(plan *from.Plan) (added, skipped []string, addErrs []error) {
 	for _, r := range plan.Rigs {
 		if r.Action == from.ActionSkip {
 			skipped = append(skipped, r.Name)
@@ -140,16 +147,15 @@ func applyFromPlan(w io.Writer, plan *from.Plan) error {
 		}
 		added = append(added, r.Name)
 	}
+	return added, skipped, addErrs
+}
 
+func fromFailureStrings(addErrs []error) []string {
 	failures := make([]string, len(addErrs))
 	for i, err := range addErrs {
 		failures[i] = err.Error()
 	}
-	printFromReport(w, plan, created, added, skipped, failures)
-	if len(addErrs) > 0 {
-		return fmt.Errorf("failed to add %d Rig(s): %w", len(addErrs), errors.Join(addErrs...))
-	}
-	return nil
+	return failures
 }
 
 func fromPlanAddsRigs(plan *from.Plan) bool {

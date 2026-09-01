@@ -2,6 +2,7 @@ package bitbucket
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // newTestClient creates a Client pointing at a test HTTP server.
 func newTestClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
@@ -269,4 +276,93 @@ func TestAPIError(t *testing.T) {
 	var apiErr *APIError
 	assert.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, 404, apiErr.StatusCode)
+}
+
+func TestRequestPropagatesConstructionAndTransportErrors(t *testing.T) {
+	t.Run("marshal request body", func(t *testing.T) {
+		client, err := NewClient(WithToken("test-token"))
+		require.NoError(t, err)
+		err = client.Request(t.Context(), http.MethodPost, "/path", make(chan int), nil)
+		require.ErrorContains(t, err, "marshal request")
+	})
+
+	t.Run("create request", func(t *testing.T) {
+		client, err := NewClient(WithToken("test-token"), WithRESTBase(":"))
+		require.NoError(t, err)
+		err = client.Request(t.Context(), http.MethodGet, "/path", nil, nil)
+		require.ErrorContains(t, err, "create request")
+	})
+
+	t.Run("HTTP transport", func(t *testing.T) {
+		transportErr := errors.New("transport failed")
+		httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, transportErr
+		})}
+		client, err := NewClient(WithToken("test-token"), WithHTTPClient(httpClient))
+		require.NoError(t, err)
+		err = client.Request(t.Context(), http.MethodGet, "/path", nil, nil)
+		require.ErrorIs(t, err, transportErr)
+		require.ErrorContains(t, err, "GET /path")
+	})
+}
+
+func TestRequestBodyNil(t *testing.T) {
+	body, err := requestBody(nil)
+	require.NoError(t, err)
+	assert.Nil(t, body)
+}
+
+func TestPROperationsWrapAPIErrors(t *testing.T) {
+	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "failed", http.StatusInternalServerError)
+	}))
+	tests := []struct {
+		name       string
+		wantPrefix string
+		run        func() error
+	}{
+		{
+			name:       "create draft",
+			wantPrefix: "create draft PR",
+			run: func() error {
+				_, err := client.CreateDraftPR(t.Context(), "ws", "repo", "source", "main", "title", "description")
+				return err
+			},
+		},
+		{
+			name:       "update description",
+			wantPrefix: "update PR description",
+			run: func() error {
+				return client.UpdatePRDescription(t.Context(), "ws", "repo", 1, "description")
+			},
+		},
+		{
+			name:       "get comments",
+			wantPrefix: "get PR comments",
+			run: func() error {
+				_, err := client.GetPRComments(t.Context(), "ws", "repo", 1)
+				return err
+			},
+		},
+		{
+			name:       "reply to comment",
+			wantPrefix: "reply to PR comment",
+			run: func() error {
+				return client.ReplyToPRComment(t.Context(), "ws", "repo", 1, 2, "reply")
+			},
+		},
+		{
+			name:       "merge",
+			wantPrefix: "merge PR",
+			run: func() error {
+				return client.MergePR(t.Context(), "ws", "repo", 1, "squash")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.ErrorContains(t, tt.run(), tt.wantPrefix)
+		})
+	}
 }

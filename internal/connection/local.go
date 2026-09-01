@@ -11,13 +11,25 @@ import (
 
 // LocalConnection implements Connection for local file and command operations.
 type LocalConnection struct {
+	localFileOperations
+	localCommandOperations
+	localTmuxOperations
+}
+
+type localFileOperations struct{}
+
+type localCommandOperations struct{}
+
+type localTmuxOperations struct {
 	tmux *tmux.Tmux
 }
 
 // NewLocalConnection creates a new local connection.
 func NewLocalConnection() *LocalConnection {
 	return &LocalConnection{
-		tmux: tmux.NewTmux(),
+		localFileOperations:    localFileOperations{},
+		localCommandOperations: localCommandOperations{},
+		localTmuxOperations:    localTmuxOperations{tmux: tmux.NewTmux()},
 	}
 }
 
@@ -32,7 +44,7 @@ func (c *LocalConnection) IsLocal() bool {
 }
 
 // ReadFile reads the named file.
-func (c *LocalConnection) ReadFile(path string) ([]byte, error) {
+func (c *localFileOperations) ReadFile(path string) ([]byte, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path is from Connection interface, validated by caller
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -47,7 +59,7 @@ func (c *LocalConnection) ReadFile(path string) ([]byte, error) {
 }
 
 // WriteFile writes data to the named file.
-func (c *LocalConnection) WriteFile(path string, data []byte, perm fs.FileMode) error {
+func (c *localFileOperations) WriteFile(path string, data []byte, perm fs.FileMode) error {
 	err := os.WriteFile(path, data, perm)
 	if err != nil {
 		if os.IsPermission(err) {
@@ -59,7 +71,7 @@ func (c *LocalConnection) WriteFile(path string, data []byte, perm fs.FileMode) 
 }
 
 // MkdirAll creates a directory and all parent directories.
-func (c *LocalConnection) MkdirAll(path string, perm fs.FileMode) error {
+func (c *localFileOperations) MkdirAll(path string, perm fs.FileMode) error {
 	err := os.MkdirAll(path, perm)
 	if err != nil {
 		if os.IsPermission(err) {
@@ -71,7 +83,7 @@ func (c *LocalConnection) MkdirAll(path string, perm fs.FileMode) error {
 }
 
 // Remove removes the named file or empty directory.
-func (c *LocalConnection) Remove(path string) error {
+func (c *localFileOperations) Remove(path string) error {
 	err := os.Remove(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -86,7 +98,7 @@ func (c *LocalConnection) Remove(path string) error {
 }
 
 // RemoveAll removes the named file or directory and any children.
-func (c *LocalConnection) RemoveAll(path string) error {
+func (c *localFileOperations) RemoveAll(path string) error {
 	err := os.RemoveAll(path)
 	if err != nil {
 		if os.IsPermission(err) {
@@ -98,7 +110,7 @@ func (c *LocalConnection) RemoveAll(path string) error {
 }
 
 // Stat returns file info for the named file.
-func (c *LocalConnection) Stat(path string) (FileInfo, error) {
+func (c *localFileOperations) Stat(path string) (FileInfo, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -113,7 +125,7 @@ func (c *LocalConnection) Stat(path string) (FileInfo, error) {
 }
 
 // Glob returns the names of all files matching the pattern.
-func (c *LocalConnection) Glob(pattern string) ([]string, error) {
+func (c *localFileOperations) Glob(pattern string) ([]string, error) {
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, err
@@ -122,7 +134,7 @@ func (c *LocalConnection) Glob(pattern string) ([]string, error) {
 }
 
 // Exists returns true if the path exists.
-func (c *LocalConnection) Exists(path string) (bool, error) {
+func (c *localFileOperations) Exists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -134,19 +146,19 @@ func (c *LocalConnection) Exists(path string) (bool, error) {
 }
 
 // Exec runs a command and returns its combined output.
-func (c *LocalConnection) Exec(cmd string, args ...string) ([]byte, error) {
+func (c *localCommandOperations) Exec(cmd string, args ...string) ([]byte, error) {
 	return exec.Command(cmd, args...).CombinedOutput()
 }
 
 // ExecDir runs a command in the specified directory.
-func (c *LocalConnection) ExecDir(dir, cmd string, args ...string) ([]byte, error) {
+func (c *localCommandOperations) ExecDir(dir, cmd string, args ...string) ([]byte, error) {
 	command := exec.Command(cmd, args...)
 	command.Dir = dir
 	return command.CombinedOutput()
 }
 
 // ExecEnv runs a command with additional environment variables.
-func (c *LocalConnection) ExecEnv(env map[string]string, cmd string, args ...string) ([]byte, error) {
+func (c *localCommandOperations) ExecEnv(env map[string]string, cmd string, args ...string) ([]byte, error) {
 	command := exec.Command(cmd, args...)
 	command.Env = os.Environ()
 	for k, v := range env {
@@ -156,33 +168,33 @@ func (c *LocalConnection) ExecEnv(env map[string]string, cmd string, args ...str
 }
 
 // TmuxNewSession creates a new tmux session.
-func (c *LocalConnection) TmuxNewSession(name, dir string) error {
+func (c *localTmuxOperations) TmuxNewSession(name, dir string) error {
 	return c.tmux.NewSession(name, dir)
 }
 
 // TmuxKillSession terminates a tmux session.
 // Uses KillSessionWithProcesses to ensure all descendant processes are killed.
-func (c *LocalConnection) TmuxKillSession(name string) error {
+func (c *localTmuxOperations) TmuxKillSession(name string) error {
 	return c.tmux.KillSessionWithProcesses(name)
 }
 
 // TmuxSendKeys sends keys to a tmux session.
-func (c *LocalConnection) TmuxSendKeys(session, keys string) error {
+func (c *localTmuxOperations) TmuxSendKeys(session, keys string) error {
 	return c.tmux.SendKeys(session, keys)
 }
 
 // TmuxCapturePane captures the last N lines from a tmux pane.
-func (c *LocalConnection) TmuxCapturePane(session string, lines int) (string, error) {
+func (c *localTmuxOperations) TmuxCapturePane(session string, lines int) (string, error) {
 	return c.tmux.CapturePane(session, lines)
 }
 
 // TmuxHasSession returns true if the session exists.
-func (c *LocalConnection) TmuxHasSession(name string) (bool, error) {
+func (c *localTmuxOperations) TmuxHasSession(name string) (bool, error) {
 	return c.tmux.HasSession(name)
 }
 
 // TmuxListSessions returns all tmux session names.
-func (c *LocalConnection) TmuxListSessions() ([]string, error) {
+func (c *localTmuxOperations) TmuxListSessions() ([]string, error) {
 	return c.tmux.ListSessions()
 }
 

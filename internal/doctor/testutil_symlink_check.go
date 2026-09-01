@@ -43,56 +43,74 @@ func canonicalTestutilPath(rigPath string) string {
 func (c *TestutilSymlinkCheck) Run(ctx *CheckContext) *CheckResult {
 	rigPath := ctx.RigPath()
 	if rigPath == "" {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: "No rig specified",
-		}
+		return testutilNoRigResult(c)
 	}
 
-	// Verify canonical copy exists
 	canonical := canonicalTestutilPath(rigPath)
 	if _, err := os.Stat(canonical); os.IsNotExist(err) {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: "No mayor/rig/internal/testutil/ found (canonical source missing)",
-			FixHint: "Ensure mayor/rig clone is set up with internal/testutil/",
-		}
+		return testutilCanonicalMissingResult(c)
 	}
 
 	canonicalResolved, err := filepath.EvalSymlinks(canonical)
 	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusError,
-			Message: fmt.Sprintf("Cannot resolve canonical testutil path: %v", err),
-		}
+		return testutilCanonicalErrorResult(c, err)
 	}
 
 	c.issues = nil
-	var checked int
+	checked := c.checkTestutilClones(rigPath, canonicalResolved)
+	return c.testutilResult(checked)
+}
 
-	// Check crew workers: crew/<name>/internal/testutil
-	crewDir := filepath.Join(rigPath, "crew")
-	if entries, err := os.ReadDir(crewDir); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-			testutilPath := filepath.Join(crewDir, entry.Name(), "internal", "testutil")
-			c.checkSymlink(testutilPath, canonicalResolved, fmt.Sprintf("crew/%s", entry.Name()))
-			checked++
-		}
+func testutilNoRigResult(c *TestutilSymlinkCheck) *CheckResult {
+	return &CheckResult{Name: c.Name(), Status: StatusError, Message: "No rig specified"}
+}
+
+func testutilCanonicalMissingResult(c *TestutilSymlinkCheck) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusWarning,
+		Message: "No mayor/rig/internal/testutil/ found (canonical source missing)",
+		FixHint: "Ensure mayor/rig clone is set up with internal/testutil/",
 	}
+}
 
-	// Check refinery/rig/internal/testutil
-	refineryTestutil := filepath.Join(rigPath, "refinery", "rig", "internal", "testutil")
-	if _, err := os.Stat(filepath.Join(rigPath, "refinery", "rig")); err == nil {
-		c.checkSymlink(refineryTestutil, canonicalResolved, "refinery/rig")
+func testutilCanonicalErrorResult(c *TestutilSymlinkCheck, err error) *CheckResult {
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusError,
+		Message: fmt.Sprintf("Cannot resolve canonical testutil path: %v", err),
+	}
+}
+
+func (c *TestutilSymlinkCheck) checkTestutilClones(rigPath, canonicalResolved string) int {
+	checked := c.checkCrewTestutil(rigPath, canonicalResolved)
+	refineryRig := filepath.Join(rigPath, "refinery", "rig")
+	if _, err := os.Stat(refineryRig); err != nil {
+		return checked
+	}
+	c.checkSymlink(filepath.Join(refineryRig, "internal", "testutil"), canonicalResolved, "refinery/rig")
+	return checked + 1
+}
+
+func (c *TestutilSymlinkCheck) checkCrewTestutil(rigPath, canonicalResolved string) int {
+	crewDir := filepath.Join(rigPath, "crew")
+	entries, err := os.ReadDir(crewDir)
+	if err != nil {
+		return 0
+	}
+	checked := 0
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		testutilPath := filepath.Join(crewDir, entry.Name(), "internal", "testutil")
+		c.checkSymlink(testutilPath, canonicalResolved, fmt.Sprintf("crew/%s", entry.Name()))
 		checked++
 	}
+	return checked
+}
 
+func (c *TestutilSymlinkCheck) testutilResult(checked int) *CheckResult {
 	if checked == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -102,15 +120,11 @@ func (c *TestutilSymlinkCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	if len(c.issues) > 0 {
-		details := make([]string, len(c.issues))
-		for i, issue := range c.issues {
-			details[i] = fmt.Sprintf("%s: %s", issue.dir, issue.problem)
-		}
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusWarning,
 			Message: fmt.Sprintf("%d testutil dir(s) not symlinked to canonical copy", len(c.issues)),
-			Details: details,
+			Details: testutilIssueDetails(c.issues),
 			FixHint: "Run 'gt doctor --fix --rig <rig>' to replace with symlinks",
 		}
 	}
@@ -120,6 +134,14 @@ func (c *TestutilSymlinkCheck) Run(ctx *CheckContext) *CheckResult {
 		Status:  StatusOK,
 		Message: fmt.Sprintf("%d testutil symlink(s) verified", checked),
 	}
+}
+
+func testutilIssueDetails(issues []symlinkIssue) []string {
+	details := make([]string, len(issues))
+	for i, issue := range issues {
+		details[i] = fmt.Sprintf("%s: %s", issue.dir, issue.problem)
+	}
+	return details
 }
 
 // checkSymlink verifies a single testutil path is a proper symlink to the canonical copy.

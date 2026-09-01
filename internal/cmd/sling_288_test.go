@@ -271,17 +271,17 @@ exit /b 0
 // TestSlingHookRawBeadFlag verifies --hook-raw-bead flag exists.
 func TestSlingHookRawBeadFlag(t *testing.T) {
 	// Verify the flag variable exists and works
-	prevValue := slingHookRawBead
-	t.Cleanup(func() { slingHookRawBead = prevValue })
+	prevValue := slingState().hookRawBead
+	t.Cleanup(func() { slingState().hookRawBead = prevValue })
 
-	slingHookRawBead = true
-	if !slingHookRawBead {
-		t.Error("slingHookRawBead flag should be true")
+	slingState().hookRawBead = true
+	if !slingState().hookRawBead {
+		t.Error("slingState().hookRawBead flag should be true")
 	}
 
-	slingHookRawBead = false
-	if slingHookRawBead {
-		t.Error("slingHookRawBead flag should be false")
+	slingState().hookRawBead = false
+	if slingState().hookRawBead {
+		t.Error("slingState().hookRawBead flag should be false")
 	}
 }
 

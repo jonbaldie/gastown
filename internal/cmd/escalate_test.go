@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -530,22 +531,22 @@ func TestWriteEscalationLog(t *testing.T) {
 }
 
 func TestRunEscalateValidation(t *testing.T) {
-	// Save and restore package-level flags
-	origSeverity := escalateSeverity
-	origReason := escalateReason
-	origStdin := escalateStdin
-	origDryRun := escalateDryRun
+	// Save and restore command flags
+	origSeverity := commandStringFlag(escalateCmd, "severity")
+	origReason := commandStringFlag(escalateCmd, "reason")
+	origStdin := commandBoolFlag(escalateCmd, "stdin")
+	origDryRun := commandBoolFlag(escalateCmd, "dry-run")
 	defer func() {
-		escalateSeverity = origSeverity
-		escalateReason = origReason
-		escalateStdin = origStdin
-		escalateDryRun = origDryRun
+		_ = escalateCmd.Flags().Set("severity", origSeverity)
+		_ = escalateCmd.Flags().Set("reason", origReason)
+		_ = escalateCmd.Flags().Set("stdin", fmt.Sprint(origStdin))
+		_ = escalateCmd.Flags().Set("dry-run", fmt.Sprint(origDryRun))
 	}()
 
 	t.Run("stdin and reason conflict", func(t *testing.T) {
-		escalateStdin = true
-		escalateReason = "some reason"
-		escalateSeverity = "medium"
+		_ = escalateCmd.Flags().Set("stdin", "true")
+		_ = escalateCmd.Flags().Set("reason", "some reason")
+		_ = escalateCmd.Flags().Set("severity", "medium")
 
 		err := runEscalate(escalateCmd, []string{"test"})
 		if err == nil {
@@ -557,9 +558,9 @@ func TestRunEscalateValidation(t *testing.T) {
 	})
 
 	t.Run("no args shows help", func(t *testing.T) {
-		escalateStdin = false
-		escalateReason = ""
-		escalateSeverity = "medium"
+		_ = escalateCmd.Flags().Set("stdin", "false")
+		_ = escalateCmd.Flags().Set("reason", "")
+		_ = escalateCmd.Flags().Set("severity", "medium")
 
 		// No args should return nil (shows help)
 		err := runEscalate(escalateCmd, []string{})
@@ -569,9 +570,9 @@ func TestRunEscalateValidation(t *testing.T) {
 	})
 
 	t.Run("invalid severity", func(t *testing.T) {
-		escalateStdin = false
-		escalateReason = ""
-		escalateSeverity = "emergency"
+		_ = escalateCmd.Flags().Set("stdin", "false")
+		_ = escalateCmd.Flags().Set("reason", "")
+		_ = escalateCmd.Flags().Set("severity", "emergency")
 
 		err := runEscalate(escalateCmd, []string{"test escalation"})
 		if err == nil {

@@ -111,7 +111,7 @@ func TestAgentHealthState_RecordPing(t *testing.T) {
 	agent := &AgentHealthState{}
 
 	before := time.Now()
-	agent.RecordPing()
+	RecordPing(agent)
 	after := time.Now()
 
 	if agent.LastPingTime.Before(before) || agent.LastPingTime.After(after) {

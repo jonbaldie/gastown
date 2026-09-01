@@ -4,37 +4,50 @@ import "github.com/charmbracelet/bubbles/key"
 
 // KeyMap defines the key bindings for the feed TUI.
 type KeyMap struct {
-	// Navigation
+	navigationKeys
+	panelKeys
+	actionKeys
+	problemKeys
+	searchKeys
+	generalKeys
+}
+
+type navigationKeys struct {
 	Up       key.Binding
 	Down     key.Binding
 	PageUp   key.Binding
 	PageDown key.Binding
 	Top      key.Binding
 	Bottom   key.Binding
+}
 
-	// Panel switching
+type panelKeys struct {
 	Tab         key.Binding
 	ShiftTab    key.Binding
 	FocusTree   key.Binding
 	FocusConvoy key.Binding
 	FocusFeed   key.Binding
+}
 
-	// Actions
+type actionKeys struct {
 	Enter   key.Binding
 	Expand  key.Binding
 	Refresh key.Binding
+}
 
-	// Problems view
+type problemKeys struct {
 	ToggleProblems key.Binding
 	Nudge          key.Binding
 	Handoff        key.Binding
+}
 
-	// Search/Filter
+type searchKeys struct {
 	Search      key.Binding
 	Filter      key.Binding
 	ClearFilter key.Binding
+}
 
-	// General
+type generalKeys struct {
 	Help key.Binding
 	Quit key.Binding
 }
@@ -42,95 +55,48 @@ type KeyMap struct {
 // DefaultKeyMap returns the default key bindings.
 func DefaultKeyMap() KeyMap {
 	return KeyMap{
-		Up: key.NewBinding(
-			key.WithKeys("up", "k"),
-			key.WithHelp("↑/k", "up"),
-		),
-		Down: key.NewBinding(
-			key.WithKeys("down", "j"),
-			key.WithHelp("↓/j", "down"),
-		),
-		PageUp: key.NewBinding(
-			key.WithKeys("pgup", "ctrl+u"),
-			key.WithHelp("pgup", "page up"),
-		),
-		PageDown: key.NewBinding(
-			key.WithKeys("pgdown", "ctrl+d"),
-			key.WithHelp("pgdn", "page down"),
-		),
-		Top: key.NewBinding(
-			key.WithKeys("home", "g"),
-			key.WithHelp("g", "top"),
-		),
-		Bottom: key.NewBinding(
-			key.WithKeys("end", "G"),
-			key.WithHelp("G", "bottom"),
-		),
-		Tab: key.NewBinding(
-			key.WithKeys("tab"),
-			key.WithHelp("tab", "switch panel"),
-		),
-		ShiftTab: key.NewBinding(
-			key.WithKeys("shift+tab"),
-			key.WithHelp("S-tab", "prev panel"),
-		),
-		FocusTree: key.NewBinding(
-			key.WithKeys("1"),
-			key.WithHelp("1", "agent tree"),
-		),
-		FocusConvoy: key.NewBinding(
-			key.WithKeys("2"),
-			key.WithHelp("2", "convoys"),
-		),
-		FocusFeed: key.NewBinding(
-			key.WithKeys("3"),
-			key.WithHelp("3", "event feed"),
-		),
-		Enter: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("enter", "expand/details"),
-		),
-		Expand: key.NewBinding(
-			key.WithKeys("o", "l"),
-			key.WithHelp("o", "toggle expand"),
-		),
-		Refresh: key.NewBinding(
-			key.WithKeys("R"),
-			key.WithHelp("R", "refresh"),
-		),
-		ToggleProblems: key.NewBinding(
-			key.WithKeys("p"),
-			key.WithHelp("p", "toggle problems view"),
-		),
-		Nudge: key.NewBinding(
-			key.WithKeys("n"),
-			key.WithHelp("n", "nudge agent"),
-		),
-		Handoff: key.NewBinding(
-			key.WithKeys("h"),
-			key.WithHelp("h", "handoff agent"),
-		),
-		Search: key.NewBinding(
-			key.WithKeys("/"),
-			key.WithHelp("/", "search"),
-		),
-		Filter: key.NewBinding(
-			key.WithKeys("f"),
-			key.WithHelp("f", "filter"),
-		),
-		ClearFilter: key.NewBinding(
-			key.WithKeys("esc"),
-			key.WithHelp("esc", "clear"),
-		),
-		Help: key.NewBinding(
-			key.WithKeys("?"),
-			key.WithHelp("?", "help"),
-		),
-		Quit: key.NewBinding(
-			key.WithKeys("q", "ctrl+c"),
-			key.WithHelp("q", "quit"),
-		),
+		navigationKeys: navigationKeys{
+			Up:       newKeyBinding([]string{"up", "k"}, "↑/k", "up"),
+			Down:     newKeyBinding([]string{"down", "j"}, "↓/j", "down"),
+			PageUp:   newKeyBinding([]string{"pgup", "ctrl+u"}, "pgup", "page up"),
+			PageDown: newKeyBinding([]string{"pgdown", "ctrl+d"}, "pgdn", "page down"),
+			Top:      newKeyBinding([]string{"home", "g"}, "g", "top"),
+			Bottom:   newKeyBinding([]string{"end", "G"}, "G", "bottom"),
+		},
+		panelKeys: panelKeys{
+			Tab:         newKeyBinding([]string{"tab"}, "tab", "switch panel"),
+			ShiftTab:    newKeyBinding([]string{"shift+tab"}, "S-tab", "prev panel"),
+			FocusTree:   newKeyBinding([]string{"1"}, "1", "agent tree"),
+			FocusConvoy: newKeyBinding([]string{"2"}, "2", "convoys"),
+			FocusFeed:   newKeyBinding([]string{"3"}, "3", "event feed"),
+		},
+		actionKeys: actionKeys{
+			Enter:   newKeyBinding([]string{"enter"}, "enter", "expand/details"),
+			Expand:  newKeyBinding([]string{"o", "l"}, "o", "toggle expand"),
+			Refresh: newKeyBinding([]string{"R"}, "R", "refresh"),
+		},
+		problemKeys: problemKeys{
+			ToggleProblems: newKeyBinding([]string{"p"}, "p", "toggle problems view"),
+			Nudge:          newKeyBinding([]string{"n"}, "n", "nudge agent"),
+			Handoff:        newKeyBinding([]string{"h"}, "h", "handoff agent"),
+		},
+		searchKeys: searchKeys{
+			Search:      newKeyBinding([]string{"/"}, "/", "search"),
+			Filter:      newKeyBinding([]string{"f"}, "f", "filter"),
+			ClearFilter: newKeyBinding([]string{"esc"}, "esc", "clear"),
+		},
+		generalKeys: generalKeys{
+			Help: newKeyBinding([]string{"?"}, "?", "help"),
+			Quit: newKeyBinding([]string{"q", "ctrl+c"}, "q", "quit"),
+		},
 	}
+}
+
+func newKeyBinding(keys []string, keyHelp, description string) key.Binding {
+	return key.NewBinding(
+		key.WithKeys(keys...),
+		key.WithHelp(keyHelp, description),
+	)
 }
 
 // ShortHelp returns key bindings for the short help view.

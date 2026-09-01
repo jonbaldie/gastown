@@ -103,43 +103,43 @@ func ApplyOverlays(f *Formula, overlay *FormulaOverlay) []string {
 
 	var warnings []string
 
-	for _, so := range overlay.StepOverrides {
-		idx := -1
-		for i := range f.Steps {
-			if f.Steps[i].ID == so.StepID {
-				idx = i
-				break
-			}
-		}
-
+	for _, override := range overlay.StepOverrides {
+		idx := formulaStepIndex(f, override.StepID)
 		if idx == -1 {
-			warnings = append(warnings, fmt.Sprintf("overlay references unknown step %q (stale override)", so.StepID))
+			warnings = append(warnings, fmt.Sprintf("overlay references unknown step %q (stale override)", override.StepID))
 			continue
 		}
+		applyStepOverride(f, idx, override)
+	}
+	return warnings
+}
 
-		switch so.Mode {
-		case ModeReplace:
-			f.Steps[idx].Description = so.Description
-		case ModeAppend:
-			f.Steps[idx].Description += "\n" + so.Description
-		case ModeSkip:
-			// Remove the step. Update needs of subsequent steps that depended on it.
-			removedID := f.Steps[idx].ID
-			removedNeeds := f.Steps[idx].Needs
-
-			// Remove from slice.
-			f.Steps = append(f.Steps[:idx], f.Steps[idx+1:]...)
-
-			// Steps that depended on the skipped step inherit the skipped step's needs.
-			// Replace every occurrence. A single replacement leaves dangling IDs when
-			// a step lists the skipped ID more than once (diamonds, duplicate needs).
-			for i := range f.Steps {
-				f.Steps[i].Needs = rewriteSkippedNeeds(f.Steps[i].Needs, removedID, removedNeeds)
-			}
+func formulaStepIndex(f *Formula, stepID string) int {
+	for i := range f.Steps {
+		if f.Steps[i].ID == stepID {
+			return i
 		}
 	}
+	return -1
+}
 
-	return warnings
+func applyStepOverride(f *Formula, index int, override StepOverride) {
+	switch override.Mode {
+	case ModeReplace:
+		f.Steps[index].Description = override.Description
+	case ModeAppend:
+		f.Steps[index].Description += "\n" + override.Description
+	case ModeSkip:
+		skipFormulaStep(f, index)
+	}
+}
+
+func skipFormulaStep(f *Formula, index int) {
+	removedID, removedNeeds := f.Steps[index].ID, f.Steps[index].Needs
+	f.Steps = append(f.Steps[:index], f.Steps[index+1:]...)
+	for i := range f.Steps {
+		f.Steps[i].Needs = rewriteSkippedNeeds(f.Steps[i].Needs, removedID, removedNeeds)
+	}
 }
 
 // rewriteSkippedNeeds replaces every occurrence of removedID with replacement.

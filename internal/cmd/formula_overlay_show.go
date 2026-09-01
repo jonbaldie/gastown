@@ -25,26 +25,24 @@ Examples:
 	RunE: runFormulaOverlayShow,
 }
 
-var formulaOverlayShowRig string
-
 func init() {
 	formulaOverlayCmd.AddCommand(formulaOverlayShowCmd)
-	formulaOverlayShowCmd.Flags().StringVar(&formulaOverlayShowRig, "rig", "", "Rig name (default: auto-detect from cwd)")
+	formulaOverlayShowCmd.Flags().String("rig", "", "Rig name (default: auto-detect from cwd)")
 }
 
 func runFormulaOverlayShow(cmd *cobra.Command, args []string) error {
 	formulaName := args[0]
 
-	townRoot, rigName, err := resolveOverlayContext(formulaOverlayShowRig)
+	explicitRig := ""
+	if flag := cmd.Flags().Lookup("rig"); flag != nil {
+		explicitRig = flag.Value.String()
+	}
+	townRoot, rigName, err := resolveOverlayContext(explicitRig)
 	if err != nil {
 		return err
 	}
 
-	townPath := filepath.Join(townRoot, "formula-overlays", formulaName+".toml")
-	rigPath := ""
-	if rigName != "" {
-		rigPath = filepath.Join(townRoot, rigName, "formula-overlays", formulaName+".toml")
-	}
+	paths := overlayPaths(townRoot, rigName, formulaName)
 
 	// Load and validate overlay
 	overlay, err := formula.LoadFormulaOverlay(formulaName, townRoot, rigName)
@@ -53,37 +51,63 @@ func runFormulaOverlayShow(cmd *cobra.Command, args []string) error {
 	}
 
 	if overlay == nil {
-		fmt.Printf("No overlay found for formula %q\n", formulaName)
-		fmt.Printf("  Checked: %s\n", townPath)
-		if rigPath != "" {
-			fmt.Printf("  Checked: %s\n", rigPath)
-		}
-		fmt.Println("\nUse 'gt formula overlay edit' to create one.")
+		printMissingOverlay(formulaName, paths)
 		return nil
 	}
 
-	// Determine which file was used (rig takes precedence)
-	source := townPath
-	sourceLabel := "town"
-	if rigPath != "" {
-		if _, err := os.Stat(rigPath); err == nil {
-			source = rigPath
-			sourceLabel = "rig:" + rigName
+	source, sourceLabel := resolveOverlaySource(paths, rigName)
+	printOverlayHeader(formulaName, source, sourceLabel, len(overlay.StepOverrides))
+	return printOverlayFile(source)
+}
+
+type overlayFilePaths struct {
+	town string
+	rig  string
+}
+
+func overlayPaths(townRoot, rigName, formulaName string) overlayFilePaths {
+	paths := overlayFilePaths{
+		town: filepath.Join(townRoot, "formula-overlays", formulaName+".toml"),
+	}
+	if rigName != "" {
+		paths.rig = filepath.Join(townRoot, rigName, "formula-overlays", formulaName+".toml")
+	}
+	return paths
+}
+
+func printMissingOverlay(formulaName string, paths overlayFilePaths) {
+	fmt.Printf("No overlay found for formula %q\n", formulaName)
+	fmt.Printf("  Checked: %s\n", paths.town)
+	if paths.rig != "" {
+		fmt.Printf("  Checked: %s\n", paths.rig)
+	}
+	fmt.Println("\nUse 'gt formula overlay edit' to create one.")
+}
+
+func resolveOverlaySource(paths overlayFilePaths, rigName string) (string, string) {
+	if paths.rig != "" {
+		if _, err := os.Stat(paths.rig); err == nil {
+			return paths.rig, "rig:" + rigName
 		}
 	}
+	return paths.town, "town"
+}
 
+func printOverlayHeader(formulaName, source, sourceLabel string, stepOverrides int) {
 	fmt.Printf("# Overlay: %s (%s)\n", formulaName, sourceLabel)
 	fmt.Printf("# Source: %s\n", source)
-	fmt.Printf("# Step overrides: %d\n", len(overlay.StepOverrides))
+	fmt.Printf("# Step overrides: %d\n", stepOverrides)
 	fmt.Println()
+}
 
-	// Print the raw TOML file content
+func printOverlayFile(source string) error {
 	data, err := os.ReadFile(source) //nolint:gosec // G304: path from trusted overlay directory
 	if err != nil {
 		return fmt.Errorf("reading overlay file: %w", err)
 	}
-	fmt.Print(string(data))
-	if !strings.HasSuffix(string(data), "\n") {
+	content := string(data)
+	fmt.Print(content)
+	if !strings.HasSuffix(content, "\n") {
 		fmt.Println()
 	}
 

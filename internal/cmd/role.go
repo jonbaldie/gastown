@@ -129,12 +129,6 @@ Examples:
 	RunE: runRoleDef,
 }
 
-// Flags for role home command
-var (
-	roleRig     string
-	rolePolecat string
-)
-
 func init() {
 	rootCmd.AddCommand(roleCmd)
 	roleCmd.AddCommand(roleShowCmd)
@@ -145,8 +139,8 @@ func init() {
 	roleCmd.AddCommand(roleDefCmd)
 
 	// Add --rig and --polecat flags to home command for overrides
-	roleHomeCmd.Flags().StringVar(&roleRig, "rig", "", "Rig name (required for rig-specific roles)")
-	roleHomeCmd.Flags().StringVar(&rolePolecat, "polecat", "", "Polecat/crew member name")
+	roleHomeCmd.Flags().String("rig", "", "Rig name (required for rig-specific roles)")
+	roleHomeCmd.Flags().String("polecat", "", "Polecat/crew member name")
 }
 
 // GetRole returns the current role, checking GT_ROLE first then falling back to cwd.
@@ -183,60 +177,81 @@ func GetRoleWithContext(cwd, townRoot string) (RoleInfo, error) {
 	cwdCtx := detectRole(cwd, townRoot)
 	info.CwdRole = cwdCtx.Role
 
-	// Determine authoritative role
 	if envRole != "" {
-		// Parse env role - it might be simple ("mayor") or compound ("gastown/witness")
-		parsedRole, rig, polecat := parseRoleString(envRole)
-		info.Role = parsedRole
-		info.Rig = rig
-		info.Polecat = polecat
-		info.Source = "env"
-
-		// For simple role strings like "crew" or "polecat", also check
-		// GT_RIG and GT_CREW/GT_POLECAT env vars for the full identity
-		if info.Rig == "" {
-			if envRig := os.Getenv("GT_RIG"); envRig != "" {
-				info.Rig = envRig
-			}
-		}
-		if info.Polecat == "" {
-			if envCrew := os.Getenv("GT_CREW"); envCrew != "" {
-				info.Polecat = envCrew
-			} else if envPolecat := os.Getenv("GT_POLECAT"); envPolecat != "" {
-				info.Polecat = envPolecat
-			}
-		}
-
-		// If env is incomplete (missing rig/polecat for roles that need them),
-		// fill gaps from cwd detection and mark as incomplete
-		needsRig := parsedRole == RoleWitness || parsedRole == RoleRefinery || parsedRole == RolePolecat || parsedRole == RoleCrew
-		needsPolecat := parsedRole == RolePolecat || parsedRole == RoleCrew || parsedRole == RoleDog
-
-		if needsRig && info.Rig == "" && cwdCtx.Rig != "" {
-			info.Rig = cwdCtx.Rig
-			info.EnvIncomplete = true
-		}
-		if needsPolecat && info.Polecat == "" && cwdCtx.Polecat != "" {
-			info.Polecat = cwdCtx.Polecat
-			info.EnvIncomplete = true
-		}
-
-		// Check for mismatch with cwd detection
-		if cwdCtx.Role != RoleUnknown && cwdCtx.Role != parsedRole {
-			info.Mismatch = true
-		}
+		applyEnvRole(&info, envRole, cwdCtx)
 	} else {
-		// Fall back to cwd detection - copy all fields from cwdCtx
-		info.Role = cwdCtx.Role
-		info.Rig = cwdCtx.Rig
-		info.Polecat = cwdCtx.Polecat
-		info.Source = "cwd"
+		applyCwdRole(&info, cwdCtx)
 	}
 
 	// Determine home directory
 	info.Home = getRoleHome(info.Role, info.Rig, info.Polecat, townRoot)
 
 	return info, nil
+}
+
+func applyEnvRole(info *RoleInfo, envRole string, cwdCtx RoleInfo) {
+	parsedRole, rig, polecat := parseRoleString(envRole)
+	info.Role = parsedRole
+	info.Rig = rig
+	info.Polecat = polecat
+	info.Source = "env"
+	fillRoleFromEnvironment(info)
+	fillRoleGapsFromCwd(info, parsedRole, cwdCtx)
+	info.Mismatch = cwdCtx.Role != RoleUnknown && cwdCtx.Role != parsedRole
+}
+
+func fillRoleFromEnvironment(info *RoleInfo) {
+	if info.Rig == "" {
+		info.Rig = os.Getenv("GT_RIG")
+	}
+	if info.Polecat == "" {
+		info.Polecat = firstNonEmptyEnv("GT_CREW", "GT_POLECAT")
+	}
+}
+
+func firstNonEmptyEnv(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func fillRoleGapsFromCwd(info *RoleInfo, role Role, cwdCtx RoleInfo) {
+	if roleNeedsRig(role) && info.Rig == "" && cwdCtx.Rig != "" {
+		info.Rig = cwdCtx.Rig
+		info.EnvIncomplete = true
+	}
+	if roleNeedsPolecat(role) && info.Polecat == "" && cwdCtx.Polecat != "" {
+		info.Polecat = cwdCtx.Polecat
+		info.EnvIncomplete = true
+	}
+}
+
+func roleNeedsRig(role Role) bool {
+	switch role {
+	case RoleWitness, RoleRefinery, RolePolecat, RoleCrew:
+		return true
+	default:
+		return false
+	}
+}
+
+func roleNeedsPolecat(role Role) bool {
+	switch role {
+	case RolePolecat, RoleCrew, RoleDog:
+		return true
+	default:
+		return false
+	}
+}
+
+func applyCwdRole(info *RoleInfo, cwdCtx RoleInfo) {
+	info.Role = cwdCtx.Role
+	info.Rig = cwdCtx.Rig
+	info.Polecat = cwdCtx.Polecat
+	info.Source = "cwd"
 }
 
 // detectRole detects the agent role from the current working directory path.
@@ -265,74 +280,70 @@ func detectRole(cwd, townRoot string) RoleInfo {
 		return ctx
 	}
 
-	// Check for mayor role: mayor/ or mayor/rig/
-	if len(parts) >= 1 && parts[0] == "mayor" {
-		ctx.Role = RoleMayor
+	if detectTownRole(&ctx, parts) {
 		return ctx
 	}
-
-	// Check for boot role: deacon/dogs/boot/
-	// Must check before deacon since boot is under deacon directory
-	if len(parts) >= 3 && parts[0] == "deacon" && parts[1] == "dogs" && parts[2] == "boot" {
-		ctx.Role = RoleBoot
+	if len(parts) == 0 {
 		return ctx
 	}
-
-	// Check for dog role: deacon/dogs/<name>/
-	// Must check before deacon since dogs are under deacon directory
-	if len(parts) >= 3 && parts[0] == "deacon" && parts[1] == "dogs" {
-		ctx.Role = RoleDog
-		ctx.Polecat = parts[2] // dog name stored in Polecat field
-		return ctx
-	}
-
-	// Check for deacon role: deacon/
-	if len(parts) >= 1 && parts[0] == "deacon" {
-		ctx.Role = RoleDeacon
-		return ctx
-	}
-
-	// At this point, first part should be a rig name
-	if len(parts) < 1 {
-		return ctx
-	}
-	rigName := parts[0]
-	ctx.Rig = rigName
-
-	// Check for mayor: <rig>/mayor/ or <rig>/mayor/rig/
-	if len(parts) >= 2 && parts[1] == "mayor" {
-		ctx.Role = RoleMayor
-		return ctx
-	}
-
-	// Check for witness: <rig>/witness/rig/
-	if len(parts) >= 2 && parts[1] == "witness" {
-		ctx.Role = RoleWitness
-		return ctx
-	}
-
-	// Check for refinery: <rig>/refinery/rig/
-	if len(parts) >= 2 && parts[1] == "refinery" {
-		ctx.Role = RoleRefinery
-		return ctx
-	}
-
-	// Check for polecat: <rig>/polecats/<name>/
-	if len(parts) >= 3 && parts[1] == "polecats" {
-		ctx.Role = RolePolecat
-		ctx.Polecat = parts[2]
-		return ctx
-	}
-
-	// Check for crew: <rig>/crew/<name>/
-	if len(parts) >= 3 && parts[1] == "crew" {
-		ctx.Role = RoleCrew
-		ctx.Polecat = parts[2] // Use Polecat field for crew member name
-		return ctx
-	}
-
-	// Default: could be rig root - treat as unknown
+	ctx.Rig = parts[0]
+	detectRigRole(&ctx, parts)
 	return ctx
+}
+
+func detectTownRole(ctx *RoleInfo, parts []string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	switch parts[0] {
+	case "mayor":
+		ctx.Role = RoleMayor
+	case "deacon":
+		return detectDeaconRole(ctx, parts)
+	default:
+		return false
+	}
+	return true
+}
+
+func detectDeaconRole(ctx *RoleInfo, parts []string) bool {
+	if len(parts) >= 3 && parts[1] == "dogs" {
+		if parts[2] == "boot" {
+			ctx.Role = RoleBoot
+		} else {
+			ctx.Role = RoleDog
+			ctx.Polecat = parts[2]
+		}
+		return true
+	}
+	ctx.Role = RoleDeacon
+	return true
+}
+
+func detectRigRole(ctx *RoleInfo, parts []string) {
+	if len(parts) < 2 {
+		return
+	}
+	switch parts[1] {
+	case "mayor":
+		ctx.Role = RoleMayor
+	case "witness":
+		ctx.Role = RoleWitness
+	case "refinery":
+		ctx.Role = RoleRefinery
+	case "polecats":
+		setWorkerRole(ctx, RolePolecat, parts)
+	case "crew":
+		setWorkerRole(ctx, RoleCrew, parts)
+	}
+}
+
+func setWorkerRole(ctx *RoleInfo, role Role, parts []string) {
+	if len(parts) < 3 {
+		return
+	}
+	ctx.Role = role
+	ctx.Polecat = parts[2]
 }
 
 // parseRoleString parses a role string like "mayor", "gastown/witness", or "gastown/polecats/alpha".
@@ -345,52 +356,61 @@ func parseRoleString(s string) (Role, string, string) {
 	}
 	s = strings.TrimSuffix(s, "/")
 
-	// Simple roles
-	switch s {
-	case constants.RoleMayor:
-		return RoleMayor, "", ""
-	case constants.RoleDeacon:
-		return RoleDeacon, "", ""
-	case "boot":
-		return RoleBoot, "", ""
-	case "dog":
-		return RoleDog, "", ""
+	if role, ok := simpleRole(s); ok {
+		return role, "", ""
 	}
 
 	// Compound roles: rig/role or rig/polecats/name or rig/crew/name
 	parts := strings.Split(s, "/")
 	if len(parts) < 2 {
-		// Unknown format, try to match as simple role
 		return Role(s), "", ""
 	}
 
 	rig := parts[0]
+	return compoundRole(s, rig, parts)
+}
 
+func simpleRole(s string) (Role, bool) {
+	switch s {
+	case constants.RoleMayor:
+		return RoleMayor, true
+	case constants.RoleDeacon:
+		return RoleDeacon, true
+	case "boot":
+		return RoleBoot, true
+	case "dog":
+		return RoleDog, true
+	default:
+		return RoleUnknown, false
+	}
+}
+
+func compoundRole(original, rig string, parts []string) (Role, string, string) {
 	switch parts[1] {
 	case "boot":
-		// Handle compound "deacon/boot" format from GT_ROLE env var
 		if rig == "deacon" && len(parts) == 2 {
 			return RoleBoot, "", ""
 		}
-		return Role(s), "", ""
+		return Role(original), "", ""
 	case constants.RoleWitness:
 		return RoleWitness, rig, ""
 	case constants.RoleRefinery:
 		return RoleRefinery, rig, ""
 	case "polecats":
-		if len(parts) >= 3 {
-			return RolePolecat, rig, parts[2]
-		}
-		return RolePolecat, rig, ""
+		return workerRole(RolePolecat, rig, parts)
 	case constants.RoleCrew:
-		if len(parts) >= 3 {
-			return RoleCrew, rig, parts[2]
-		}
-		return RoleCrew, rig, ""
+		return workerRole(RoleCrew, rig, parts)
 	default:
-		// Might be rig/polecatName format
 		return RolePolecat, rig, parts[1]
 	}
+}
+
+func workerRole(role Role, rig string, parts []string) (Role, string, string) {
+	name := ""
+	if len(parts) >= 3 {
+		name = parts[2]
+	}
+	return role, rig, name
 }
 
 // ActorString returns the actor identity string for beads attribution.
@@ -405,31 +425,31 @@ func (info RoleInfo) ActorString() string {
 		return "mayor"
 	case RoleDeacon:
 		return "deacon"
-	case RoleWitness:
-		if info.Rig != "" {
-			return fmt.Sprintf("%s/witness", info.Rig)
-		}
-		return "witness"
-	case RoleRefinery:
-		if info.Rig != "" {
-			return fmt.Sprintf("%s/refinery", info.Rig)
-		}
-		return "refinery"
-	case RolePolecat:
-		if info.Rig != "" && info.Polecat != "" {
-			return fmt.Sprintf("%s/polecats/%s", info.Rig, info.Polecat)
-		}
-		return "polecat"
-	case RoleCrew:
-		if info.Rig != "" && info.Polecat != "" {
-			return fmt.Sprintf("%s/crew/%s", info.Rig, info.Polecat)
-		}
-		return "crew"
 	case RoleBoot:
 		return "deacon-boot"
+	case RoleWitness, RoleRefinery:
+		return roleActorString(info, string(info.Role))
+	case RolePolecat:
+		return workerActorString(info, "polecat", "polecats")
+	case RoleCrew:
+		return workerActorString(info, "crew", "crew")
 	default:
 		return string(info.Role)
 	}
+}
+
+func roleActorString(info RoleInfo, role string) string {
+	if info.Rig != "" {
+		return fmt.Sprintf("%s/%s", info.Rig, role)
+	}
+	return role
+}
+
+func workerActorString(info RoleInfo, fallback, path string) string {
+	if info.Rig != "" && info.Polecat != "" {
+		return fmt.Sprintf("%s/%s/%s", info.Rig, path, info.Polecat)
+	}
+	return fallback
 }
 
 // getRoleHome returns the canonical home directory for a role.
@@ -439,39 +459,45 @@ func getRoleHome(role Role, rig, polecat, townRoot string) string {
 		return filepath.Join(townRoot, "mayor")
 	case RoleDeacon:
 		return filepath.Join(townRoot, "deacon")
-	case RoleWitness:
-		if rig == "" {
-			return ""
-		}
-		return filepath.Join(townRoot, rig, "witness")
-	case RoleRefinery:
-		if rig == "" {
-			return ""
-		}
-		return filepath.Join(townRoot, rig, "refinery", "rig")
-	case RolePolecat:
-		if rig == "" || polecat == "" {
-			return ""
-		}
-		return filepath.Join(townRoot, rig, "polecats", polecat)
-	case RoleCrew:
-		if rig == "" || polecat == "" {
-			return ""
-		}
-		return filepath.Join(townRoot, rig, "crew", polecat)
 	case RoleBoot:
 		return filepath.Join(townRoot, "deacon", "dogs", "boot")
+	case RoleWitness:
+		return rigHome(townRoot, rig, "witness")
+	case RoleRefinery:
+		return rigHome(townRoot, rig, "refinery", "rig")
+	case RolePolecat:
+		return workerHome(townRoot, rig, polecat, "polecats")
+	case RoleCrew:
+		return workerHome(townRoot, rig, polecat, "crew")
 	case RoleDog:
-		if polecat == "" {
-			return ""
-		}
-		return filepath.Join(townRoot, "deacon", "dogs", polecat)
+		return dogHome(townRoot, polecat)
 	default:
 		return ""
 	}
 }
 
-func runRoleShow(cmd *cobra.Command, args []string) error {
+func rigHome(townRoot, rig string, parts ...string) string {
+	if rig == "" {
+		return ""
+	}
+	return filepath.Join(append([]string{townRoot, rig}, parts...)...)
+}
+
+func workerHome(townRoot, rig, worker, directory string) string {
+	if rig == "" || worker == "" {
+		return ""
+	}
+	return filepath.Join(townRoot, rig, directory, worker)
+}
+
+func dogHome(townRoot, dog string) string {
+	if dog == "" {
+		return ""
+	}
+	return filepath.Join(townRoot, "deacon", "dogs", dog)
+}
+
+func runRoleShow(_ *cobra.Command, _ []string) error {
 	info, err := GetRole()
 	if err != nil {
 		return err
@@ -508,22 +534,14 @@ func runRoleShow(cmd *cobra.Command, args []string) error {
 }
 
 func runRoleHome(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	rigOverride := commandStringFlag(cmd, "rig")
+	polecatOverride := commandStringFlag(cmd, "polecat")
+	cwd, townRoot, err := roleCommandContext()
 	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
+		return err
 	}
-
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil {
-		return fmt.Errorf("finding workspace: %w", err)
-	}
-	if townRoot == "" {
-		return fmt.Errorf("not in a Gas Town workspace")
-	}
-
-	// Validate flag combinations: --polecat requires --rig to prevent strange merges
-	if rolePolecat != "" && roleRig == "" {
-		return fmt.Errorf("--polecat requires --rig to be specified")
+	if err := validateRoleHomeOverrides(rigOverride, polecatOverride); err != nil {
+		return err
 	}
 
 	// Start with current role detection (from env vars or cwd)
@@ -535,32 +553,61 @@ func runRoleHome(cmd *cobra.Command, args []string) error {
 	rig := info.Rig
 	polecat := info.Polecat
 
-	// Apply overrides from arguments/flags
-	if len(args) > 0 {
-		role, _, _ = parseRoleString(args[0])
-	}
-	if roleRig != "" {
-		rig = roleRig
-	}
-	if rolePolecat != "" {
-		polecat = rolePolecat
-	}
+	role, rig, polecat = applyRoleHomeOverrides(role, rig, polecat, args, rigOverride, polecatOverride)
 
 	home := getRoleHome(role, rig, polecat, townRoot)
 	if home == "" {
 		return fmt.Errorf("cannot determine home for role %s (rig=%q, polecat=%q)", role, rig, polecat)
 	}
 
-	// Warn if computed home doesn't match cwd
-	if home != cwd && !strings.HasPrefix(cwd, home) {
-		fmt.Fprintf(os.Stderr, "⚠️  Warning: cwd (%s) is not within role home (%s)\n", cwd, home)
-	}
+	warnOutsideRoleHome(cwd, home)
 
 	fmt.Println(home)
 	return nil
 }
 
-func runRoleDetect(cmd *cobra.Command, args []string) error {
+func roleCommandContext() (cwd, townRoot string, err error) {
+	cwd, err = os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("getting current directory: %w", err)
+	}
+	townRoot, err = workspace.FindFromCwd()
+	if err != nil {
+		return "", "", fmt.Errorf("finding workspace: %w", err)
+	}
+	if townRoot == "" {
+		return "", "", fmt.Errorf("not in a Gas Town workspace")
+	}
+	return cwd, townRoot, nil
+}
+
+func validateRoleHomeOverrides(rigOverride, polecatOverride string) error {
+	if polecatOverride != "" && rigOverride == "" {
+		return fmt.Errorf("--polecat requires --rig to be specified")
+	}
+	return nil
+}
+
+func applyRoleHomeOverrides(role Role, rig, polecat string, args []string, rigOverride, polecatOverride string) (Role, string, string) {
+	if len(args) > 0 {
+		role, _, _ = parseRoleString(args[0])
+	}
+	if rigOverride != "" {
+		rig = rigOverride
+	}
+	if polecatOverride != "" {
+		polecat = polecatOverride
+	}
+	return role, rig, polecat
+}
+
+func warnOutsideRoleHome(cwd, home string) {
+	if home != cwd && !strings.HasPrefix(cwd, home) {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: cwd (%s) is not within role home (%s)\n", cwd, home)
+	}
+}
+
+func runRoleDetect(_ *cobra.Command, _ []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -601,7 +648,7 @@ func runRoleDetect(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRoleList(cmd *cobra.Command, args []string) error {
+func runRoleList(_ *cobra.Command, _ []string) error {
 	roles := []struct {
 		name Role
 		desc string
@@ -622,18 +669,10 @@ func runRoleList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRoleEnv(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+func runRoleEnv(_ *cobra.Command, _ []string) error {
+	cwd, townRoot, err := roleCommandContext()
 	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
-	}
-
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil {
-		return fmt.Errorf("finding workspace: %w", err)
-	}
-	if townRoot == "" {
-		return fmt.Errorf("not in a Gas Town workspace")
+		return err
 	}
 
 	// Get current role (read-only - from env vars or cwd)
@@ -647,15 +686,7 @@ func runRoleEnv(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot determine home for role %s (rig=%q, polecat=%q)", info.Role, info.Rig, info.Polecat)
 	}
 
-	// Warn if env was incomplete and we filled from cwd
-	if info.EnvIncomplete {
-		fmt.Fprintf(os.Stderr, "⚠️  Warning: env vars incomplete, filled from cwd\n")
-	}
-
-	// Warn if computed home doesn't match cwd
-	if home != cwd && !strings.HasPrefix(cwd, home) {
-		fmt.Fprintf(os.Stderr, "⚠️  Warning: cwd (%s) is not within role home (%s)\n", cwd, home)
-	}
+	warnRoleEnv(info.EnvIncomplete, cwd, home)
 
 	// Get canonical env vars from shared source of truth
 	envVars := config.AgentEnv(config.AgentEnvConfig{
@@ -666,61 +697,83 @@ func runRoleEnv(cmd *cobra.Command, args []string) error {
 	})
 	envVars[EnvGTRoleHome] = home
 
-	// Output in sorted order for consistent output
+	printRoleEnv(envVars)
+	return nil
+}
+
+func warnRoleEnv(incomplete bool, cwd, home string) {
+	if incomplete {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: env vars incomplete, filled from cwd\n")
+	}
+	warnOutsideRoleHome(cwd, home)
+}
+
+func printRoleEnv(envVars map[string]string) {
 	keys := make([]string, 0, len(envVars))
 	for k := range envVars {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if runtime.GOOS == "windows" {
-			fmt.Printf("$env:%s=%s\n", k, envVars[k])
-		} else {
-			fmt.Printf("export %s=%s\n", k, envVars[k])
-		}
+		printRoleEnvEntry(k, envVars[k])
 	}
-
-	return nil
 }
 
-func runRoleDef(cmd *cobra.Command, args []string) error {
+func printRoleEnvEntry(key, value string) {
+	if runtime.GOOS == "windows" {
+		fmt.Printf("$env:%s=%s\n", key, value)
+		return
+	}
+	fmt.Printf("export %s=%s\n", key, value)
+}
+
+func runRoleDef(_ *cobra.Command, args []string) error {
 	roleName := args[0]
-
-	// Validate role name
-	validRoles := config.AllRoles()
-	isValid := false
-	for _, r := range validRoles {
-		if r == roleName {
-			isValid = true
-			break
-		}
-	}
-	if !isValid {
-		return fmt.Errorf("unknown role %q - valid roles: %s", roleName, strings.Join(validRoles, ", "))
+	if err := validateRoleName(roleName); err != nil {
+		return err
 	}
 
-	// Determine town root and rig path
-	townRoot, _ := workspace.FindFromCwd()
-	rigPath := ""
-	if townRoot != "" {
-		// Try to get rig path if we're in a rig directory
-		if rigInfo, err := GetRole(); err == nil && rigInfo.Rig != "" {
-			rigPath = filepath.Join(townRoot, rigInfo.Rig)
-		}
-	}
+	townRoot, rigPath := roleDefinitionPaths()
 
-	// Load role definition with overrides
 	def, err := config.LoadRoleDefinition(townRoot, rigPath, roleName)
 	if err != nil {
 		return fmt.Errorf("loading role definition: %w", err)
 	}
+	printRoleDefinition(def)
+	return nil
+}
 
-	// Display role info
+func validateRoleName(roleName string) error {
+	for _, role := range config.AllRoles() {
+		if role == roleName {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown role %q - valid roles: %s", roleName, strings.Join(config.AllRoles(), ", "))
+}
+
+func roleDefinitionPaths() (townRoot, rigPath string) {
+	townRoot, _ = workspace.FindFromCwd()
+	if townRoot == "" {
+		return townRoot, ""
+	}
+	if rigInfo, err := GetRole(); err == nil && rigInfo.Rig != "" {
+		rigPath = filepath.Join(townRoot, rigInfo.Rig)
+	}
+	return townRoot, rigPath
+}
+
+func printRoleDefinition(def *config.RoleDefinition) {
 	fmt.Printf("%s %s\n", style.Bold.Render("Role:"), def.Role)
 	fmt.Printf("%s %s\n", style.Bold.Render("Scope:"), def.Scope)
 	fmt.Println()
+	printRoleSessionConfig(def)
+	printRoleEnvironment(def.Env)
+	printRoleHealthConfig(def)
+	printRolePrompts(def)
+}
 
-	// Session config
+func printRoleSessionConfig(def *config.RoleDefinition) {
 	fmt.Println(style.Bold.Render("[session]"))
 	fmt.Printf("  pattern        = %q\n", def.Session.Pattern)
 	fmt.Printf("  work_dir       = %q\n", def.Session.WorkDir)
@@ -729,22 +782,25 @@ func runRoleDef(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  start_command  = %q\n", def.Session.StartCommand)
 	}
 	fmt.Println()
+}
 
-	// Environment variables
-	if len(def.Env) > 0 {
-		fmt.Println(style.Bold.Render("[env]"))
-		envKeys := make([]string, 0, len(def.Env))
-		for k := range def.Env {
-			envKeys = append(envKeys, k)
-		}
-		sort.Strings(envKeys)
-		for _, k := range envKeys {
-			fmt.Printf("  %s = %q\n", k, def.Env[k])
-		}
-		fmt.Println()
+func printRoleEnvironment(env map[string]string) {
+	if len(env) == 0 {
+		return
 	}
+	fmt.Println(style.Bold.Render("[env]"))
+	envKeys := make([]string, 0, len(env))
+	for k := range env {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	for _, k := range envKeys {
+		fmt.Printf("  %s = %q\n", k, env[k])
+	}
+	fmt.Println()
+}
 
-	// Health config
+func printRoleHealthConfig(def *config.RoleDefinition) {
 	fmt.Println(style.Bold.Render("[health]"))
 	fmt.Printf("  ping_timeout         = %q\n", def.Health.PingTimeout.String())
 	fmt.Printf("  consecutive_failures = %d\n", def.Health.ConsecutiveFailures)
@@ -754,14 +810,13 @@ func runRoleDef(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  hung_session_threshold = %q\n", def.Health.HungSessionThreshold.String())
 	}
 	fmt.Println()
+}
 
-	// Prompts
+func printRolePrompts(def *config.RoleDefinition) {
 	if def.Nudge != "" {
 		fmt.Printf("%s %s\n", style.Bold.Render("Nudge:"), def.Nudge)
 	}
 	if def.PromptTemplate != "" {
 		fmt.Printf("%s %s\n", style.Bold.Render("Template:"), def.PromptTemplate)
 	}
-
-	return nil
 }

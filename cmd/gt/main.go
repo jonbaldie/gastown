@@ -8,5 +8,8 @@ import (
 )
 
 func main() {
-	os.Exit(cmd.Execute())
+	// Keep process termination at the executable boundary while allowing the
+	// command result to be exercised without invoking the process exit primitive.
+	exit := os.Exit
+	exit(cmd.Execute())
 }

@@ -16,17 +16,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	agentStateSet  []string
-	agentStateIncr string
-	agentStateDel  []string
-	agentStateJSON bool
-)
+type agentStateOptions struct {
+	set  []string
+	incr string
+	del  []string
+	json bool
+}
 
-var agentStateCmd = &cobra.Command{
-	Use:   "state <agent-bead>",
-	Short: "Get or set operational state on agent beads",
-	Long: `Get or set label-based operational state on agent beads.
+const agentStateLongDescription = `Get or set label-based operational state on agent beads.
 
 Agent beads store operational state (like idle cycle counts) as labels.
 This command provides a convenient interface for reading and modifying
@@ -66,23 +63,32 @@ EXAMPLES:
   gt agents state gt-gastown-witness --incr idle
 
   # Get state as JSON
-  gt agents state gt-gastown-witness --json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runAgentState,
+  gt agents state gt-gastown-witness --json`
+
+func newAgentStateCommand() *cobra.Command {
+	opts := &agentStateOptions{}
+	cmd := &cobra.Command{
+		Use:   "state <agent-bead>",
+		Short: "Get or set operational state on agent beads",
+		Long:  agentStateLongDescription,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runAgentState(opts, args)
+		},
+	}
+	cmd.Flags().StringArrayVar(&opts.set, "set", nil,
+		"Set label value (format: key=value, repeatable)")
+	cmd.Flags().StringVar(&opts.incr, "incr", "",
+		"Increment numeric label (creates with value 1 if missing)")
+	cmd.Flags().StringArrayVar(&opts.del, "del", nil,
+		"Delete label (repeatable)")
+	cmd.Flags().BoolVar(&opts.json, "json", false,
+		"Output as JSON")
+	return cmd
 }
 
 func init() {
-	agentStateCmd.Flags().StringArrayVar(&agentStateSet, "set", nil,
-		"Set label value (format: key=value, repeatable)")
-	agentStateCmd.Flags().StringVar(&agentStateIncr, "incr", "",
-		"Increment numeric label (creates with value 1 if missing)")
-	agentStateCmd.Flags().StringArrayVar(&agentStateDel, "del", nil,
-		"Delete label (repeatable)")
-	agentStateCmd.Flags().BoolVar(&agentStateJSON, "json", false,
-		"Output as JSON")
-
-	// Add as subcommand of agents
-	agentsCmd.AddCommand(agentStateCmd)
+	agentsCmd.AddCommand(newAgentStateCommand())
 }
 
 // agentStateResult holds the state query result.
@@ -91,7 +97,7 @@ type agentStateResult struct {
 	Labels    map[string]string `json:"labels"`
 }
 
-func runAgentState(cmd *cobra.Command, args []string) error {
+func runAgentState(opts *agentStateOptions, args []string) error {
 	agentBead := args[0]
 
 	beadsDir, err := resolveAgentTrackingBeadsDir()
@@ -100,21 +106,21 @@ func runAgentState(cmd *cobra.Command, args []string) error {
 	}
 
 	// Determine operation mode
-	hasSet := len(agentStateSet) > 0
-	hasIncr := agentStateIncr != ""
-	hasDel := len(agentStateDel) > 0
+	hasSet := len(opts.set) > 0
+	hasIncr := opts.incr != ""
+	hasDel := len(opts.del) > 0
 
 	if hasSet || hasIncr || hasDel {
 		// Modification mode
-		return modifyAgentState(agentBead, beadsDir, hasIncr)
+		return modifyAgentState(agentBead, beadsDir, opts)
 	}
 
 	// Query mode
-	return queryAgentState(agentBead, beadsDir)
+	return queryAgentState(agentBead, beadsDir, opts.json)
 }
 
 // queryAgentState retrieves and displays labels from an agent bead.
-func queryAgentState(agentBead, beadsDir string) error {
+func queryAgentState(agentBead, beadsDir string, outputJSON bool) error {
 	labels, err := getAgentLabels(agentBead, beadsDir)
 	if err != nil {
 		return err
@@ -125,7 +131,7 @@ func queryAgentState(agentBead, beadsDir string) error {
 		Labels:    labels,
 	}
 
-	if agentStateJSON {
+	if outputJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
@@ -148,7 +154,7 @@ func queryAgentState(agentBead, beadsDir string) error {
 
 // modifyAgentState modifies labels on an agent bead.
 // Uses read-modify-write pattern: read current labels, apply changes, write back all.
-func modifyAgentState(agentBead, beadsDir string, hasIncr bool) error {
+func modifyAgentState(agentBead, beadsDir string, opts *agentStateOptions) error {
 	// Read current labels
 	labels, err := getAgentLabels(agentBead, beadsDir)
 	if err != nil {
@@ -161,76 +167,96 @@ func modifyAgentState(agentBead, beadsDir string, hasIncr bool) error {
 		return err
 	}
 
-	// Apply increment operation
-	if hasIncr {
-		currentValue := 0
-		if valStr, ok := labels[agentStateIncr]; ok {
-			if v, err := strconv.Atoi(valStr); err == nil {
-				currentValue = v
-			}
-		}
-		labels[agentStateIncr] = strconv.Itoa(currentValue + 1)
+	if err := applyAgentStateOperations(labels, opts); err != nil {
+		return err
 	}
 
-	// Apply set operations
-	for _, setOp := range agentStateSet {
-		parts := strings.SplitN(setOp, "=", 2)
+	finalLabels := buildAgentStateLabels(allLabels, labels)
+	if err := updateAgentStateLabels(agentBead, beadsDir, finalLabels); err != nil {
+		return err
+	}
+	fmt.Printf("%s Updated agent state for %s\n", style.Bold.Render("✓"), agentBead)
+
+	return nil
+}
+
+func applyAgentStateOperations(labels map[string]string, opts *agentStateOptions) error {
+	if opts.incr != "" {
+		incrementAgentStateLabel(labels, opts.incr)
+	}
+	if err := setAgentStateLabels(labels, opts.set); err != nil {
+		return err
+	}
+	deleteAgentStateLabels(labels, opts.del)
+	return nil
+}
+
+func incrementAgentStateLabel(labels map[string]string, key string) {
+	currentValue := 0
+	if valStr, ok := labels[key]; ok {
+		if value, err := strconv.Atoi(valStr); err == nil {
+			currentValue = value
+		}
+	}
+	labels[key] = strconv.Itoa(currentValue + 1)
+}
+
+func setAgentStateLabels(labels map[string]string, operations []string) error {
+	for _, operation := range operations {
+		parts := strings.SplitN(operation, "=", 2)
 		if len(parts) != 2 {
-			return fmt.Errorf("invalid set format: %s (expected key=value)", setOp)
+			return fmt.Errorf("invalid set format: %s (expected key=value)", operation)
 		}
 		labels[parts[0]] = parts[1]
 	}
+	return nil
+}
 
-	// Apply delete operations
-	for _, delKey := range agentStateDel {
-		delete(labels, delKey)
+func deleteAgentStateLabels(labels map[string]string, keys []string) {
+	for _, key := range keys {
+		delete(labels, key)
 	}
+}
 
-	// Build final label list: non-state labels + state labels (key:value format)
-	var finalLabels []string
-
-	// First, keep non-state labels (those without : separator)
+func buildAgentStateLabels(allLabels []string, labels map[string]string) []string {
+	finalLabels := make([]string, 0, len(allLabels)+len(labels))
 	for _, label := range allLabels {
 		if !strings.Contains(label, ":") {
 			finalLabels = append(finalLabels, label)
 		}
 	}
-
-	// Add state labels from modified map
 	for key, value := range labels {
 		finalLabels = append(finalLabels, key+":"+value)
 	}
+	return finalLabels
+}
 
-	// Build update command with --set-labels to replace all
+func updateAgentStateLabels(agentBead, beadsDir string, labels []string) error {
 	args := []string{"update", agentBead}
-	for _, label := range finalLabels {
+	for _, label := range labels {
 		args = append(args, "--set-labels="+label)
 	}
-
-	// If no labels, clear all
-	if len(finalLabels) == 0 {
+	if len(labels) == 0 {
 		args = append(args, "--set-labels=")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), bdCallTimeout)
 	defer cancel()
-
 	cmd := beads.CommandContext(ctx, filepath.Dir(beadsDir), beadsDir, beads.MutationPinned, args...)
-
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-
 	if err := cmd.Run(); err != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return fmt.Errorf("%s", errMsg)
-		}
-		return fmt.Errorf("updating agent state: %w", err)
+		return formatAgentStateUpdateError(err, stderr.String())
 	}
-
-	fmt.Printf("%s Updated agent state for %s\n", style.Bold.Render("✓"), agentBead)
-
 	return nil
+}
+
+func formatAgentStateUpdateError(err error, stderr string) error {
+	errMsg := strings.TrimSpace(stderr)
+	if errMsg != "" {
+		return fmt.Errorf("%s", errMsg)
+	}
+	return fmt.Errorf("updating agent state: %w", err)
 }
 
 // getAgentLabels retrieves state labels from an agent bead.

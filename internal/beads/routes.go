@@ -364,62 +364,64 @@ func ResolveRepoAliasBeadsDir(townRoot, repo string) (string, bool) {
 // Unresolved, path-like, duplicate, or positional --repo values are preserved so
 // bd keeps its native --repo behavior outside Gas Town aliases.
 func RewriteBDCreateRepoAlias(townRoot string, argv []string) ([]string, string) {
-	cmdIndex, ok := BDSubcommandIndex(argv)
-	if !ok || argv[cmdIndex] != "create" {
+	commandIndex, ok := BDSubcommandIndex(argv)
+	if !canRewriteBDCreateRepoAlias(argv, commandIndex, ok) {
 		return argv, ""
 	}
-	if countBDRepoFlags(argv, cmdIndex+1) != 1 {
+	flagIndex, value, flagLength, ok := findBDRepoFlag(argv, commandIndex+1)
+	if !ok {
 		return argv, ""
 	}
+	beadsDir, ok := ResolveRepoAliasBeadsDir(townRoot, value)
+	if !ok {
+		return argv, ""
+	}
+	return removeBDRepoFlag(argv, flagIndex, flagLength), beadsDir
+}
 
-	rewritten := make([]string, 0, len(argv))
-	for i := 0; i < len(argv); i++ {
-		arg := argv[i]
+func canRewriteBDCreateRepoAlias(argv []string, commandIndex int, commandFound bool) bool {
+	return commandFound && argv[commandIndex] == "create" && countBDRepoFlags(argv, commandIndex+1) == 1
+}
+
+func findBDRepoFlag(argv []string, start int) (int, string, int, bool) {
+	for index, arg := range argv[start:] {
+		index += start
 		if arg == "--" {
-			rewritten = append(rewritten, argv[i:]...)
-			break
+			return 0, "", 0, false
 		}
-
 		if arg == "--repo" {
-			if i+1 >= len(argv) {
-				rewritten = append(rewritten, arg)
-				continue
+			if index+1 == len(argv) {
+				return 0, "", 0, false
 			}
-			value := argv[i+1]
-			if beadsDir, ok := ResolveRepoAliasBeadsDir(townRoot, value); ok {
-				i++
-				return append(rewritten, argv[i+1:]...), beadsDir
-			}
-			rewritten = append(rewritten, arg, value)
-			i++
-			continue
+			return index, argv[index+1], 2, true
 		}
-
 		if strings.HasPrefix(arg, "--repo=") {
-			value := strings.TrimPrefix(arg, "--repo=")
-			if beadsDir, ok := ResolveRepoAliasBeadsDir(townRoot, value); ok {
-				return append(rewritten, argv[i+1:]...), beadsDir
-			}
+			return index, strings.TrimPrefix(arg, "--repo="), 1, true
 		}
-
-		rewritten = append(rewritten, arg)
 	}
+	return 0, "", 0, false
+}
 
-	return rewritten, ""
+func removeBDRepoFlag(argv []string, index, length int) []string {
+	rewritten := make([]string, 0, len(argv)-length)
+	rewritten = append(rewritten, argv[:index]...)
+	return append(rewritten, argv[index+length:]...)
 }
 
 func countBDRepoFlags(argv []string, start int) int {
 	count := 0
-	for i := start; i < len(argv); i++ {
-		arg := argv[i]
+	skipValue := false
+	for _, arg := range argv[start:] {
+		if skipValue {
+			skipValue = false
+			continue
+		}
 		if arg == "--" {
 			break
 		}
 		if arg == "--repo" {
 			count++
-			if i+1 < len(argv) {
-				i++
-			}
+			skipValue = true
 			continue
 		}
 		if strings.HasPrefix(arg, "--repo=") {
@@ -430,18 +432,22 @@ func countBDRepoFlags(argv []string, start int) int {
 }
 
 func isRepoPathLike(value string) bool {
-	if value == "" || filepath.IsAbs(value) {
-		return true
-	}
-	if strings.HasPrefix(value, ".") || strings.HasPrefix(value, "~") {
-		return true
-	}
-	if strings.ContainsAny(value, `/\\`) || strings.Contains(value, "://") {
-		return true
-	}
-	if len(value) >= 2 && value[1] == ':' {
-		return true
-	}
+	return isLocalRepoPath(value) || hasRepoPathSyntax(value) || isWindowsRepoPath(value) || isSSHRepoPath(value)
+}
+
+func isLocalRepoPath(value string) bool {
+	return value == "" || filepath.IsAbs(value) || strings.HasPrefix(value, ".") || strings.HasPrefix(value, "~")
+}
+
+func hasRepoPathSyntax(value string) bool {
+	return strings.ContainsAny(value, `/\\`) || strings.Contains(value, "://")
+}
+
+func isWindowsRepoPath(value string) bool {
+	return len(value) >= 2 && value[1] == ':'
+}
+
+func isSSHRepoPath(value string) bool {
 	return strings.Contains(value, "@") && strings.Contains(value, ":")
 }
 
@@ -578,7 +584,7 @@ func ValidateRigPrefix(townRoot, rigName, beadID string) error {
 // a fallback if prefix resolution fails.
 func ResolveHookDir(townRoot, beadID, hookWorkDir string) string {
 	s := NewAuthority(townRoot).ForBead(beadID)
-	if s.Routed() && s.WorkDir() != "" {
+	if s.routed && s.WorkDir() != "" {
 		return s.WorkDir()
 	}
 	if hookWorkDir != "" {

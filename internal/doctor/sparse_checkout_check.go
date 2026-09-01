@@ -100,17 +100,10 @@ func (c *SparseCheckoutCheck) discoverRigPaths(townRoot string) []string {
 
 	var rigPaths []string
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		rigPath, ok := sparseRigPath(townRoot, entry)
+		if !ok {
 			continue
 		}
-		name := entry.Name()
-		// Skip known non-rig directories
-		if name == "mayor" || name == "deacon" || name == "daemon" ||
-			name == ".git" || name == "docs" || name[0] == '.' {
-			continue
-		}
-		// A rig directory has a config.json
-		rigPath := filepath.Join(townRoot, name)
 		if _, err := os.Stat(filepath.Join(rigPath, "config.json")); err == nil {
 			rigPaths = append(rigPaths, rigPath)
 		}
@@ -118,57 +111,81 @@ func (c *SparseCheckoutCheck) discoverRigPaths(townRoot string) []string {
 	return rigPaths
 }
 
+func sparseRigPath(townRoot string, entry os.DirEntry) (string, bool) {
+	if !entry.IsDir() || sparseRigNameExcluded(entry.Name()) {
+		return "", false
+	}
+	return filepath.Join(townRoot, entry.Name()), true
+}
+
+func sparseRigNameExcluded(name string) bool {
+	switch name {
+	case "mayor", "deacon", "daemon", ".git", "docs":
+		return true
+	default:
+		return len(name) > 0 && name[0] == '.'
+	}
+}
+
 // checkRig checks all worktree repos within a single rig for legacy sparse checkout.
 func (c *SparseCheckoutCheck) checkRig(rigPath string) {
-	repoPaths := []string{
-		filepath.Join(rigPath, "mayor", "rig"),
-		filepath.Join(rigPath, "refinery", "rig"),
-	}
-
-	// Add crew clones
-	crewDir := filepath.Join(rigPath, "crew")
-	if entries, err := os.ReadDir(crewDir); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() && entry.Name() != "README.md" {
-				repoPaths = append(repoPaths, filepath.Join(crewDir, entry.Name()))
-			}
-		}
-	}
-
-	// Add polecat worktrees (nested structure: polecats/<name>/<rigname>/)
-	polecatDir := filepath.Join(rigPath, "polecats")
-	if entries, err := os.ReadDir(polecatDir); err == nil {
-		rigName := filepath.Base(rigPath)
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			// The actual worktree is at polecats/<name>/<rigname>/
-			worktreePath := filepath.Join(polecatDir, entry.Name(), rigName)
-			if _, err := os.Stat(worktreePath); err == nil {
-				repoPaths = append(repoPaths, worktreePath)
-			} else {
-				// Fallback: legacy flat layout polecats/<name>/
-				repoPaths = append(repoPaths, filepath.Join(polecatDir, entry.Name()))
-			}
-		}
-	}
-
+	repoPaths := sparseRigRepos(rigPath)
 	for _, repoPath := range repoPaths {
-		// Skip if not a git repo
-		if _, err := os.Stat(filepath.Join(repoPath, ".git")); os.IsNotExist(err) {
-			continue
-		}
-
-		// Check if sparse checkout is configured (legacy configuration to remove)
-		if git.IsSparseCheckoutConfigured(repoPath) {
+		if sparseCheckoutNeedsCheck(repoPath) && git.IsSparseCheckoutConfigured(repoPath) {
 			c.affectedRepos = append(c.affectedRepos, repoPath)
 		}
 	}
 }
 
+func sparseRigRepos(rigPath string) []string {
+	repoPaths := []string{
+		filepath.Join(rigPath, "mayor", "rig"),
+		filepath.Join(rigPath, "refinery", "rig"),
+	}
+	repoPaths = appendSparseCrewRepos(repoPaths, filepath.Join(rigPath, "crew"))
+	return appendSparsePolecatRepos(repoPaths, filepath.Join(rigPath, "polecats"), filepath.Base(rigPath))
+}
+
+func appendSparseCrewRepos(repoPaths []string, crewDir string) []string {
+	entries, err := os.ReadDir(crewDir)
+	if err != nil {
+		return repoPaths
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() != "README.md" {
+			repoPaths = append(repoPaths, filepath.Join(crewDir, entry.Name()))
+		}
+	}
+	return repoPaths
+}
+
+func appendSparsePolecatRepos(repoPaths []string, polecatDir, rigName string) []string {
+	entries, err := os.ReadDir(polecatDir)
+	if err != nil {
+		return repoPaths
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		entryPath := filepath.Join(polecatDir, entry.Name())
+		worktreePath := filepath.Join(entryPath, rigName)
+		if _, err := os.Stat(worktreePath); err == nil {
+			repoPaths = append(repoPaths, worktreePath)
+		} else {
+			repoPaths = append(repoPaths, entryPath)
+		}
+	}
+	return repoPaths
+}
+
+func sparseCheckoutNeedsCheck(repoPath string) bool {
+	_, err := os.Stat(filepath.Join(repoPath, ".git"))
+	return !os.IsNotExist(err)
+}
+
 // Fix removes sparse checkout configuration from affected repos.
-func (c *SparseCheckoutCheck) Fix(ctx *CheckContext) error {
+func (c *SparseCheckoutCheck) Fix(_ *CheckContext) error {
 	for _, repoPath := range c.affectedRepos {
 		if err := git.RemoveSparseCheckout(repoPath); err != nil {
 			relPath, _ := filepath.Rel(c.townRoot, repoPath)

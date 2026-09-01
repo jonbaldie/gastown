@@ -13,13 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	installRole    string
-	installAllRigs bool
-	installDryRun  bool
-	hooksInstForce bool
-)
-
 var hooksInstallCmd = &cobra.Command{
 	Use:   "install <hook-name>",
 	Short: "Install a hook from the registry",
@@ -39,13 +32,17 @@ Examples:
 
 func init() {
 	hooksCmd.AddCommand(hooksInstallCmd)
-	hooksInstallCmd.Flags().StringVar(&installRole, "role", "", "Install to all worktrees of this role (crew, polecat, witness, refinery)")
-	hooksInstallCmd.Flags().BoolVar(&installAllRigs, "all-rigs", false, "Install across all rigs (requires --role)")
-	hooksInstallCmd.Flags().BoolVar(&installDryRun, "dry-run", false, "Preview changes without writing files")
-	hooksInstallCmd.Flags().BoolVar(&hooksInstForce, "force", false, "Install even if hook is disabled in registry")
+	hooksInstallCmd.Flags().String("role", "", "Install to all worktrees of this role (crew, polecat, witness, refinery)")
+	hooksInstallCmd.Flags().Bool("all-rigs", false, "Install across all rigs (requires --role)")
+	hooksInstallCmd.Flags().Bool("dry-run", false, "Preview changes without writing files")
+	hooksInstallCmd.Flags().Bool("force", false, "Install even if hook is disabled in registry")
 }
 
 func runHooksInstall(cmd *cobra.Command, args []string) error {
+	role := commandStringFlag(cmd, "role")
+	allRigs := commandBoolFlag(cmd, "all-rigs")
+	dryRun := commandBoolFlag(cmd, "dry-run")
+	force := commandBoolFlag(cmd, "force")
 	hookName := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -53,88 +50,107 @@ func runHooksInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Load registry
 	registry, err := LoadRegistry(townRoot)
 	if err != nil {
 		return err
 	}
-
-	// Find the hook
-	hookDef, ok := registry.Hooks[hookName]
-	if !ok {
-		return fmt.Errorf("hook %q not found in registry", hookName)
-	}
-
-	if !hookDef.Enabled {
-		if !hooksInstForce {
-			return fmt.Errorf("hook %q is disabled in registry; use --force to install anyway", hookName)
-		}
-		fmt.Printf("%s Hook %q is disabled in registry, installing with --force.\n",
-			style.Warning.Render("Warning:"), hookName)
-	}
-
-	// Determine target worktrees
-	targets, err := determineTargets(townRoot, installRole, installAllRigs, hookDef.Roles)
+	hookDef, err := findHookToInstall(registry, hookName, force)
 	if err != nil {
 		return err
 	}
 
+	targets, err := determineTargets(townRoot, role, allRigs, hookDef.Roles)
+	if err != nil {
+		return err
+	}
 	if len(targets) == 0 {
-		if installRole != "" {
-			return fmt.Errorf("no targets found for role %q in workspace", installRole)
-		}
-		// No role specified — resolve CWD to the correct settings directory.
-		// For shared-parent roles (crew, polecats, witness, refinery), the
-		// settings live in the role parent dir, not the individual worktree.
-		cwd, err := os.Getwd()
+		targets, err = currentHooksInstallTarget(townRoot, role)
 		if err != nil {
 			return err
 		}
-		targets = []string{resolveSettingsTarget(townRoot, cwd)}
 	}
 
-	// Install to each target
-	installed := 0
-	errors := 0
-	integrityErrors := 0
-	var failedTargets []string
+	summary := installHooksToTargets(targets, hookDef, dryRun)
+	printHooksInstallSummary(hookName, summary, dryRun)
+	return hooksInstallSummaryError(summary)
+}
+
+func findHookToInstall(registry *HookRegistry, hookName string, force bool) (HookDefinition, error) {
+	hookDef, ok := registry.Hooks[hookName]
+	if !ok {
+		return HookDefinition{}, fmt.Errorf("hook %q not found in registry", hookName)
+	}
+	if hookDef.Enabled || force {
+		if !hookDef.Enabled {
+			fmt.Printf("%s Hook %q is disabled in registry, installing with --force.\n",
+				style.Warning.Render("Warning:"), hookName)
+		}
+		return hookDef, nil
+	}
+	return HookDefinition{}, fmt.Errorf("hook %q is disabled in registry; use --force to install anyway", hookName)
+}
+
+func currentHooksInstallTarget(townRoot, role string) ([]string, error) {
+	if role != "" {
+		return nil, fmt.Errorf("no targets found for role %q in workspace", role)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	return []string{resolveSettingsTarget(townRoot, cwd)}, nil
+}
+
+type hooksInstallSummary struct {
+	installed       int
+	errors          int
+	integrityErrors int
+	failedTargets   []string
+}
+
+func installHooksToTargets(targets []string, hookDef HookDefinition, dryRun bool) hooksInstallSummary {
+	var summary hooksInstallSummary
 	for _, target := range targets {
-		if err := installHookTo(target, hookDef, installDryRun); err != nil {
+		if err := installHookTo(target, hookDef, dryRun); err != nil {
 			label := "install error"
 			if hooks.IsSettingsIntegrityError(err) {
 				label = "integrity violation"
-				integrityErrors++
+				summary.integrityErrors++
 			}
 			fmt.Printf("%s Failed to install to %s (%s): %v\n", style.Error.Render("Error:"), target, label, err)
-			errors++
-			failedTargets = append(failedTargets, target)
+			summary.errors++
+			summary.failedTargets = append(summary.failedTargets, target)
 			continue
 		}
-		installed++
+		summary.installed++
 	}
+	return summary
+}
 
-	if installDryRun {
-		fmt.Printf("\n%s Would install %q to %d worktree(s)\n", style.Dim.Render("Dry run:"), hookName, installed)
-	} else {
-		fmt.Printf("\n%s Installed %q to %d worktree(s)\n", style.Success.Render("Done:"), hookName, installed)
+func printHooksInstallSummary(hookName string, summary hooksInstallSummary, dryRun bool) {
+	verb := "Installed"
+	label := "Done:"
+	if dryRun {
+		verb = "Would install"
+		label = "Dry run:"
 	}
-
-	if errors > 0 {
-		if integrityErrors > 0 {
-			return fmt.Errorf(
-				"hook install failed closed: %d integrity violation(s) (%s)",
-				integrityErrors,
-				strings.Join(failedTargets, ", "),
-			)
-		}
-		return fmt.Errorf(
-			"hook install failed: %d target(s) failed (%s)",
-			errors,
-			strings.Join(failedTargets, ", "),
-		)
+	styleRender := style.Success.Render
+	if dryRun {
+		styleRender = style.Dim.Render
 	}
+	fmt.Printf("\n%s %s %q to %d worktree(s)\n", styleRender(label), verb, hookName, summary.installed)
+}
 
-	return nil
+func hooksInstallSummaryError(summary hooksInstallSummary) error {
+	if summary.errors == 0 {
+		return nil
+	}
+	if summary.integrityErrors > 0 {
+		return fmt.Errorf("hook install failed closed: %d integrity violation(s) (%s)",
+			summary.integrityErrors, strings.Join(summary.failedTargets, ", "))
+	}
+	return fmt.Errorf("hook install failed: %d target(s) failed (%s)",
+		summary.errors, strings.Join(summary.failedTargets, ", "))
 }
 
 // determineTargets finds all worktree paths matching the role criteria.
@@ -143,79 +159,82 @@ func determineTargets(townRoot, role string, allRigs bool, allowedRoles []string
 		return nil, nil // Will use current directory
 	}
 
-	// Check if role is allowed for this hook
-	roleAllowed := false
-	for _, r := range allowedRoles {
-		if r == role {
-			roleAllowed = true
-			break
-		}
-	}
-	if !roleAllowed {
+	if !roleIsAllowed(role, allowedRoles) {
 		return nil, fmt.Errorf("hook is not applicable to role %q (allowed: %s)", role, strings.Join(allowedRoles, ", "))
 	}
 
-	var targets []string
+	rigs, err := hooksInstallRigs(townRoot, allRigs)
+	if err != nil {
+		return nil, err
+	}
 
-	// Find rigs to scan
-	var rigs []string
+	var targets []string
+	for _, rig := range rigs {
+		if target := hooksInstallRoleTarget(townRoot, rig, role); target != "" {
+			targets = append(targets, target)
+		}
+	}
+
+	return targets, nil
+}
+
+func roleIsAllowed(role string, allowedRoles []string) bool {
+	for _, allowed := range allowedRoles {
+		if allowed == role {
+			return true
+		}
+	}
+	return false
+}
+
+func hooksInstallRigs(townRoot string, allRigs bool) ([]string, error) {
 	if allRigs {
 		entries, err := os.ReadDir(townRoot)
 		if err != nil {
 			return nil, err
 		}
-		for _, e := range entries {
-			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") && e.Name() != "mayor" && e.Name() != "deacon" && e.Name() != "hooks" {
-				rigs = append(rigs, e.Name())
+		var rigs []string
+		for _, entry := range entries {
+			if isHooksInstallRig(entry.Name(), entry.IsDir()) {
+				rigs = append(rigs, entry.Name())
 			}
 		}
-	} else {
-		// Find current rig from cwd
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, err
-		}
-		relPath, err := filepath.Rel(townRoot, cwd)
-		if err != nil {
-			return nil, err
-		}
-		parts := strings.Split(relPath, string(filepath.Separator))
-		if len(parts) > 0 {
-			rigs = []string{parts[0]}
-		}
+		return rigs, nil
 	}
-
-	// Find settings directories for the role in each rig.
-	// Settings are installed in shared parent directories (not per-worktree),
-	// matching the model used by DiscoverTargets and EnsureSettingsForRole.
-	for _, rig := range rigs {
-		rigPath := filepath.Join(townRoot, rig)
-
-		switch role {
-		case constants.RoleCrew:
-			crewDir := filepath.Join(rigPath, "crew")
-			if info, err := os.Stat(crewDir); err == nil && info.IsDir() {
-				targets = append(targets, crewDir)
-			}
-		case constants.RolePolecat:
-			polecatsDir := filepath.Join(rigPath, "polecats")
-			if info, err := os.Stat(polecatsDir); err == nil && info.IsDir() {
-				targets = append(targets, polecatsDir)
-			}
-		case constants.RoleWitness:
-			witnessDir := filepath.Join(rigPath, "witness")
-			if info, err := os.Stat(witnessDir); err == nil && info.IsDir() {
-				targets = append(targets, witnessDir)
-			}
-		case constants.RoleRefinery:
-			refineryDir := filepath.Join(rigPath, "refinery")
-			if info, err := os.Stat(refineryDir); err == nil && info.IsDir() {
-				targets = append(targets, refineryDir)
-			}
-		}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
 	}
+	relPath, err := filepath.Rel(townRoot, cwd)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(relPath, string(filepath.Separator))
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	return []string{parts[0]}, nil
+}
 
-	return targets, nil
+func isHooksInstallRig(name string, isDir bool) bool {
+	return isDir && !strings.HasPrefix(name, ".") && name != "mayor" && name != "deacon" && name != "hooks"
+}
+
+func hooksInstallRoleTarget(townRoot, rig, role string) string {
+	roleDir := map[string]string{
+		constants.RoleCrew:     "crew",
+		constants.RolePolecat:  "polecats",
+		constants.RoleWitness:  "witness",
+		constants.RoleRefinery: "refinery",
+	}[role]
+	if roleDir == "" {
+		return ""
+	}
+	target := filepath.Join(townRoot, rig, roleDir)
+	if info, err := os.Stat(target); err == nil && info.IsDir() {
+		return target
+	}
+	return ""
 }
 
 // resolveSettingsTarget resolves a working directory to the appropriate settings
@@ -251,45 +270,45 @@ func installHookTo(worktreePath string, hookDef HookDefinition, dryRun bool) err
 		return fmt.Errorf("loading existing settings: %w", err)
 	}
 
-	// Initialize enabledPlugins if needed
 	if settings.EnabledPlugins == nil {
 		settings.EnabledPlugins = make(map[string]bool)
 	}
 
-	// Build and add hook entries for each matcher
-	for _, matcher := range hookDef.Matchers {
-		entry := hooks.HookEntry{
-			Matcher: matcher,
-			Hooks: []hooks.Hook{
-				{Type: "command", Command: hookDef.Command},
-			},
-		}
-		settings.Hooks.AddEntry(hookDef.Event, entry)
-	}
-
-	// Ensure beads plugin is disabled (standard for Gas Town)
+	addHookEntries(&settings.Hooks, hookDef)
 	settings.EnabledPlugins["beads@beads-marketplace"] = false
 
-	// Pretty print relative path
-	relPath := worktreePath
-	if home, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(home, worktreePath); err == nil && !strings.HasPrefix(rel, "..") {
-			relPath = "~/" + rel
-		}
-	}
+	relPath := hookInstallDisplayPath(worktreePath)
 
 	if dryRun {
 		fmt.Printf("  %s %s\n", style.Dim.Render("Would install to:"), relPath)
 		return nil
 	}
+	return writeInstalledHook(settings, settingsPath, relPath)
+}
 
-	// Create directory if needed
+func addHookEntries(config *hooks.HooksConfig, hookDef HookDefinition) {
+	for _, matcher := range hookDef.Matchers {
+		config.AddEntry(hookDef.Event, hooks.HookEntry{
+			Matcher: matcher,
+			Hooks:   []hooks.Hook{{Type: "command", Command: hookDef.Command}},
+		})
+	}
+}
+
+func hookInstallDisplayPath(worktreePath string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, worktreePath); err == nil && !strings.HasPrefix(rel, "..") {
+			return "~/" + rel
+		}
+	}
+	return worktreePath
+}
+
+func writeInstalledHook(settings *hooks.SettingsJSON, settingsPath, relPath string) error {
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
 		return fmt.Errorf("creating .claude directory: %w", err)
 	}
 
-	// Write settings using MarshalSettings to preserve custom field handling
-	// (SettingsJSON uses json:"-" tags, so encoding/json would produce {})
 	data, err := hooks.MarshalSettings(settings)
 	if err != nil {
 		return fmt.Errorf("marshaling settings: %w", err)

@@ -165,7 +165,25 @@ func Requeue(townRoot, session string, nudges []QueuedNudge) error {
 // Orphaned .claimed files from crashed drainers are swept if older than 5 minutes.
 func Drain(townRoot, session string) ([]QueuedNudge, error) {
 	dir := queueDir(townRoot, session)
+	entries, err := readQueueEntries(dir)
+	if err != nil {
+		return nil, err
+	}
+	requeueOrphanedClaims(dir, entries, townRoot)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+	now := time.Now()
+	var nudges []QueuedNudge
+	for _, entry := range entries {
+		if n, ok := drainQueueEntry(dir, entry, now); ok {
+			nudges = append(nudges, n)
+		}
+	}
+	return nudges, nil
+}
 
+func readQueueEntries(dir string) ([]os.DirEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -173,7 +191,10 @@ func Drain(townRoot, session string) ([]QueuedNudge, error) {
 		}
 		return nil, fmt.Errorf("reading nudge queue: %w", err)
 	}
+	return entries, nil
+}
 
+func requeueOrphanedClaims(dir string, entries []os.DirEntry, townRoot string) {
 	// Requeue orphaned .claimed files from crashed drainers.
 	// A .claimed file older than staleClaimThreshold is certainly orphaned —
 	// normal processing completes in milliseconds. We rename it back to .json
@@ -182,102 +203,99 @@ func Drain(townRoot, session string) ([]QueuedNudge, error) {
 	staleThreshold := nudgeConfig(townRoot).StaleClaimThresholdD()
 	now := time.Now()
 	for _, entry := range entries {
-		if !strings.Contains(entry.Name(), ".claimed") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if now.Sub(info.ModTime()) > staleThreshold {
-			orphanPath := filepath.Join(dir, entry.Name())
-			// Strip everything from ".claimed" onward to restore original .json filename
-			name := entry.Name()
-			claimedIdx := strings.Index(name, ".claimed")
-			restoredPath := filepath.Join(dir, name[:claimedIdx])
-			if err := os.Rename(orphanPath, restoredPath); err != nil {
-				// Rename failed — remove as last resort to prevent infinite accumulation
-				fmt.Fprintf(os.Stderr, "Warning: failed to requeue orphaned claim %s: %v\n", entry.Name(), err)
-				_ = os.Remove(orphanPath)
-			}
-		}
+		requeueOrphanedClaim(dir, entry, now, staleThreshold)
 	}
+}
 
-	// Sort by name (timestamp-based) for FIFO ordering
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
+func requeueOrphanedClaim(dir string, entry os.DirEntry, now time.Time, staleThreshold time.Duration) {
+	if !strings.Contains(entry.Name(), ".claimed") {
+		return
+	}
+	info, err := entry.Info()
+	if err != nil || now.Sub(info.ModTime()) <= staleThreshold {
+		return
+	}
+	orphanPath := filepath.Join(dir, entry.Name())
+	name := entry.Name()
+	claimedIdx := strings.Index(name, ".claimed")
+	restoredPath := filepath.Join(dir, name[:claimedIdx])
+	if err := os.Rename(orphanPath, restoredPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to requeue orphaned claim %s: %v\n", entry.Name(), err)
+		_ = os.Remove(orphanPath)
+	}
+}
 
-	var nudges []QueuedNudge
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
+func drainQueueEntry(dir string, entry os.DirEntry, now time.Time) (QueuedNudge, bool) {
+	if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		return QueuedNudge{}, false
+	}
+	path := filepath.Join(dir, entry.Name())
+	claimPath, ok := claimQueueFile(path)
+	if !ok {
+		return QueuedNudge{}, false
+	}
+	n, ok := readClaimedNudge(path, claimPath, entry.Name())
+	if !ok {
+		return QueuedNudge{}, false
+	}
+	if dropClaimedNudge(n, path, claimPath, entry.Name(), now) {
+		return QueuedNudge{}, false
+	}
+	if rmErr := os.Remove(claimPath); rmErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove processed claim %s: %v\n", entry.Name(), rmErr)
+	}
+	return n, true
+}
 
-		path := filepath.Join(dir, entry.Name())
+func claimQueueFile(path string) (string, bool) {
+	// Atomically claim the file by renaming it. If another Drain call
+	// is racing us, only one rename will succeed — the loser gets
+	// ENOENT and moves on. This prevents double-delivery.
+	//
+	// Each drainer uses a unique claim suffix to avoid destination
+	// collisions. On Windows, os.Rename to a shared destination is
+	// not atomic — two goroutines can both "succeed" via
+	// MOVEFILE_REPLACE_EXISTING, causing data loss. Unique suffixes
+	// ensure each rename has a distinct target.
+	claimPath := path + ".claimed." + randomSuffix()
+	if err := os.Rename(path, claimPath); err != nil {
+		return "", false
+	}
+	return claimPath, true
+}
 
-		// Atomically claim the file by renaming it. If another Drain call
-		// is racing us, only one rename will succeed — the loser gets
-		// ENOENT and moves on. This prevents double-delivery.
-		//
-		// Each drainer uses a unique claim suffix to avoid destination
-		// collisions. On Windows, os.Rename to a shared destination is
-		// not atomic — two goroutines can both "succeed" via
-		// MOVEFILE_REPLACE_EXISTING, causing data loss. Unique suffixes
-		// ensure each rename has a distinct target.
-		claimPath := path + ".claimed." + randomSuffix()
-		if err := os.Rename(path, claimPath); err != nil {
-			// Another Drain got it first, or file was already removed
-			continue
-		}
-
-		data, err := os.ReadFile(claimPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// File vanished between rename and read — treat as lost race
-				continue
-			}
-			// Transient read error (e.g., Windows AV/indexer holding a share
-			// lock) — unclaim so the nudge can be retried on a future Drain
-			// call rather than permanently lost.
+func readClaimedNudge(path, claimPath, name string) (QueuedNudge, bool) {
+	data, err := os.ReadFile(claimPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
 			_ = os.Rename(claimPath, path) // best-effort unclaim; orphan sweep catches failures
-			continue
 		}
-
-		var n QueuedNudge
-		if err := json.Unmarshal(data, &n); err != nil {
-			// Malformed — clean up
-			if rmErr := os.Remove(claimPath); rmErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to remove malformed claim %s: %v\n", entry.Name(), rmErr)
-			}
-			continue
-		}
-
-		// Skip expired nudges — stale messages create noise, not value.
-		if !n.ExpiresAt.IsZero() && now.After(n.ExpiresAt) {
-			if rmErr := os.Remove(claimPath); rmErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to remove expired nudge %s: %v\n", entry.Name(), rmErr)
-			}
-			continue
-		}
-
-		// Deferred nudge: not ready yet — unclaim and leave in queue.
-		if !n.DeliverAfter.IsZero() && now.Before(n.DeliverAfter) {
-			if renameErr := os.Rename(claimPath, path); renameErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to unclaim deferred nudge %s: %v\n", entry.Name(), renameErr)
-			}
-			continue
-		}
-
-		nudges = append(nudges, n)
-
-		// Remove the claimed file after successful processing
-		if rmErr := os.Remove(claimPath); rmErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove processed claim %s: %v\n", entry.Name(), rmErr)
-		}
+		return QueuedNudge{}, false
 	}
+	var n QueuedNudge
+	if err := json.Unmarshal(data, &n); err != nil {
+		if rmErr := os.Remove(claimPath); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove malformed claim %s: %v\n", name, rmErr)
+		}
+		return QueuedNudge{}, false
+	}
+	return n, true
+}
 
-	return nudges, nil
+func dropClaimedNudge(n QueuedNudge, path, claimPath, name string, now time.Time) bool {
+	if !n.ExpiresAt.IsZero() && now.After(n.ExpiresAt) {
+		if rmErr := os.Remove(claimPath); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove expired nudge %s: %v\n", name, rmErr)
+		}
+		return true
+	}
+	if !n.DeliverAfter.IsZero() && now.Before(n.DeliverAfter) {
+		if renameErr := os.Rename(claimPath, path); renameErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to unclaim deferred nudge %s: %v\n", name, renameErr)
+		}
+		return true
+	}
+	return false
 }
 
 // Pending returns the count of queued nudges for a session without draining.
@@ -322,49 +340,64 @@ func RemoveKindByThread(townRoot, session, kind, threadID string) (int, error) {
 	if kind == "" || threadID == "" {
 		return 0, nil
 	}
-
 	dir := queueDir(townRoot, session)
-	entries, err := os.ReadDir(dir)
+	entries, err := readQueueEntries(dir)
 	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		n, err := removeQueuedNudgeIfMatch(dir, entry, kind, threadID)
+		if err != nil {
+			return removed, err
+		}
+		removed += n
+	}
+	return removed, nil
+}
+
+func removeQueuedNudgeIfMatch(dir string, entry os.DirEntry, kind, threadID string) (int, error) {
+	if !isQueuedJSON(entry) {
+		return 0, nil
+	}
+	path := filepath.Join(dir, entry.Name())
+	n, ok, err := readQueuedNudge(path, entry.Name())
+	if err != nil || !ok {
+		return 0, err
+	}
+	if n.Kind != kind || n.ThreadID != threadID {
+		return 0, nil
+	}
+	return removeQueuedFile(path, entry.Name())
+}
+
+func isQueuedJSON(entry os.DirEntry) bool {
+	return !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json")
+}
+
+func readQueuedNudge(path, name string) (QueuedNudge, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return QueuedNudge{}, false, nil
+		}
+		return QueuedNudge{}, false, fmt.Errorf("reading queued nudge %s: %w", name, err)
+	}
+	var n QueuedNudge
+	if err := json.Unmarshal(data, &n); err != nil {
+		return QueuedNudge{}, false, nil
+	}
+	return n, true, nil
+}
+
+func removeQueuedFile(path, name string) (int, error) {
+	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("reading nudge queue: %w", err)
+		return 0, fmt.Errorf("removing queued nudge %s: %w", name, err)
 	}
-
-	removed := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-
-		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return removed, fmt.Errorf("reading queued nudge %s: %w", entry.Name(), err)
-		}
-
-		var n QueuedNudge
-		if err := json.Unmarshal(data, &n); err != nil {
-			continue
-		}
-		if n.Kind != kind || n.ThreadID != threadID {
-			continue
-		}
-
-		if err := os.Remove(path); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return removed, fmt.Errorf("removing queued nudge %s: %w", entry.Name(), err)
-		}
-		removed++
-	}
-
-	return removed, nil
+	return 1, nil
 }
 
 // FormatForInjection formats queued nudges as a system-reminder block

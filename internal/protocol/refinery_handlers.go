@@ -12,6 +12,8 @@ import (
 // It receives MERGE_READY messages from the Witness and acknowledges verified work.
 // Note: The Refinery now queries beads directly for merge requests (via ReadyWithType).
 type DefaultRefineryHandler struct {
+	refineryOutput
+
 	// Rig is the name of the rig this refinery processes.
 	Rig string
 
@@ -20,7 +22,12 @@ type DefaultRefineryHandler struct {
 
 	// Router is used to send mail messages.
 	Router *mail.Router
+}
 
+// refineryOutput handles the status output associated with MERGE_READY
+// messages. Keeping it separate from the routing state keeps the default
+// handler focused on one cohesive responsibility.
+type refineryOutput struct {
 	// Output is where to write status messages.
 	Output io.Writer
 }
@@ -28,16 +35,16 @@ type DefaultRefineryHandler struct {
 // NewRefineryHandler creates a new DefaultRefineryHandler.
 func NewRefineryHandler(rig, workDir string) *DefaultRefineryHandler {
 	return &DefaultRefineryHandler{
-		Rig:     rig,
-		WorkDir: workDir,
-		Router:  mail.NewRouter(workDir),
-		Output:  os.Stdout,
+		refineryOutput: refineryOutput{Output: os.Stdout},
+		Rig:            rig,
+		WorkDir:        workDir,
+		Router:         mail.NewRouter(workDir),
 	}
 }
 
 // SetOutput sets the output writer for status messages.
-func (h *DefaultRefineryHandler) SetOutput(w io.Writer) {
-	h.Output = w
+func (o *refineryOutput) SetOutput(w io.Writer) {
+	o.Output = w
 }
 
 // HandleMergeReady handles a MERGE_READY message from Witness.
@@ -49,23 +56,23 @@ func (h *DefaultRefineryHandler) SetOutput(w io.Writer) {
 //
 // NOTE: The merge-request bead is created by `gt done`, so we no longer need
 // to add to the mrqueue here. The Refinery queries beads directly for ready MRs.
-func (h *DefaultRefineryHandler) HandleMergeReady(payload *MergeReadyPayload) error {
-	_, _ = fmt.Fprintf(h.Output, "[Refinery] MERGE_READY received for polecat %s\n", payload.Polecat)
-	_, _ = fmt.Fprintf(h.Output, "  Branch: %s\n", payload.Branch)
-	_, _ = fmt.Fprintf(h.Output, "  Issue: %s\n", payload.Issue)
-	_, _ = fmt.Fprintf(h.Output, "  Verified: %s\n", payload.Verified)
+func (o *refineryOutput) HandleMergeReady(payload *MergeReadyPayload) error {
+	_, _ = fmt.Fprintf(o.Output, "[Refinery] MERGE_READY received for polecat %s\n", payload.Polecat)
+	_, _ = fmt.Fprintf(o.Output, "  Branch: %s\n", payload.Branch)
+	_, _ = fmt.Fprintf(o.Output, "  Issue: %s\n", payload.Issue)
+	_, _ = fmt.Fprintf(o.Output, "  Verified: %s\n", payload.Verified)
 
 	// Belt-and-suspenders: check if this is from an owned+direct convoy.
 	// The Verified field may contain "owned+direct" marker from witness.
 	if payload.Verified == "owned+direct: skip merge" {
-		_, _ = fmt.Fprintf(h.Output, "[Refinery] ⚠ Owned+direct convoy — skipping merge (belt-and-suspenders)\n")
+		_, _ = fmt.Fprintf(o.Output, "[Refinery] ⚠ Owned+direct convoy — skipping merge (belt-and-suspenders)\n")
 		return nil
 	}
 
 	// The merge-request bead is created by `gt done` with gt:merge-request label.
 	// The Refinery queries beads directly via ReadyWithType("merge-request").
 	// No need to add to mrqueue - that was a duplicate tracking file.
-	_, _ = fmt.Fprintf(h.Output, "[Refinery] ✓ Work verified - Refinery will pick up MR via beads query\n")
+	_, _ = fmt.Fprintf(o.Output, "[Refinery] ✓ Work verified - Refinery will pick up MR via beads query\n")
 
 	return nil
 }

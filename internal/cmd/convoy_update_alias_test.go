@@ -36,8 +36,6 @@ func TestConvoyAddAcceptsAddIssuesFlag(t *testing.T) {
 }
 
 func TestConvoyUpdateMayorArgvParses(t *testing.T) {
-	t.Cleanup(func() { convoyAddIssues = nil })
-
 	found, args, err := convoyCmd.Find([]string{"update", "hq-cv-ilwtm", "--add-issues", "ck-7vj", "ew-1of", "it-3nn"})
 	if err != nil {
 		t.Fatalf("Mayor argv should resolve: %v", err)
@@ -48,7 +46,11 @@ func TestConvoyUpdateMayorArgvParses(t *testing.T) {
 	if err := found.ParseFlags(args); err != nil {
 		t.Fatalf("Mayor argv should parse: %v", err)
 	}
-	convoyID, issues, err := collectConvoyAddIssues(found.Flags().Args())
+	addIssues, err := found.Flags().GetStringSlice("add-issues")
+	if err != nil {
+		t.Fatalf("get parsed add-issues: %v", err)
+	}
+	convoyID, issues, err := collectConvoyAddIssues(found.Flags().Args(), addIssues)
 	if err != nil {
 		t.Fatalf("collect after parse: %v", err)
 	}
@@ -62,12 +64,12 @@ func TestConvoyUpdateMayorArgvParses(t *testing.T) {
 }
 
 func TestCollectConvoyAddIssues_MayorInvocation(t *testing.T) {
-	t.Cleanup(func() { convoyAddIssues = nil })
-
 	// Cobra StringSlice consumes the first --add-issues token; leftover
 	// space-separated IDs remain positional. Merge both sources.
-	convoyAddIssues = []string{"ck-7vj"}
-	convoyID, issues, err := collectConvoyAddIssues([]string{"hq-cv-ilwtm", "ew-1of", "it-3nn"})
+	convoyID, issues, err := collectConvoyAddIssues(
+		[]string{"hq-cv-ilwtm", "ew-1of", "it-3nn"},
+		[]string{"ck-7vj"},
+	)
 	if err != nil {
 		t.Fatalf("collectConvoyAddIssues: %v", err)
 	}
@@ -82,10 +84,10 @@ func TestCollectConvoyAddIssues_MayorInvocation(t *testing.T) {
 }
 
 func TestCollectConvoyAddIssues_FlagOnly(t *testing.T) {
-	t.Cleanup(func() { convoyAddIssues = nil })
-
-	convoyAddIssues = []string{"ck-7vj", "ew-1of"}
-	convoyID, issues, err := collectConvoyAddIssues([]string{"hq-cv-ilwtm"})
+	convoyID, issues, err := collectConvoyAddIssues(
+		[]string{"hq-cv-ilwtm"},
+		[]string{"ck-7vj", "ew-1of"},
+	)
 	if err != nil {
 		t.Fatalf("flag-only issues should be accepted: %v", err)
 	}
@@ -98,12 +100,10 @@ func TestCollectConvoyAddIssues_FlagOnly(t *testing.T) {
 }
 
 func TestCollectConvoyAddIssues_RequiresIssues(t *testing.T) {
-	t.Cleanup(func() { convoyAddIssues = nil })
-
-	if _, _, err := collectConvoyAddIssues(nil); err == nil {
+	if _, _, err := collectConvoyAddIssues(nil, nil); err == nil {
 		t.Fatal("expected error with no convoy ID")
 	}
-	if _, _, err := collectConvoyAddIssues([]string{"hq-cv-ilwtm"}); err == nil {
+	if _, _, err := collectConvoyAddIssues([]string{"hq-cv-ilwtm"}, nil); err == nil {
 		t.Fatal("expected error with convoy ID but no issues")
 	}
 }

@@ -11,8 +11,8 @@ import (
 // tmuxRenamer is the minimal tmux interface needed by Fix().
 // Allows injecting a mock in tests without depending on a live tmux.
 type tmuxRenamer interface {
-	HasSession(name string) (bool, error)
-	RenameSession(from, to string) error
+	HasSession(_ string) (bool, error)
+	RenameSession(_, _ string) error
 }
 
 // MalformedSessionNameCheck detects Gas Town tmux sessions whose names use the
@@ -59,18 +59,8 @@ func NewMalformedSessionNameCheck() *MalformedSessionNameCheck {
 }
 
 // Run detects sessions whose names use the legacy {prefix}-{rig_name}-{role} format.
-func (c *MalformedSessionNameCheck) Run(ctx *CheckContext) *CheckResult {
-	lister := c.sessionListerForTest
-	if lister == nil {
-		lister = &realSessionLister{t: tmux.NewTmux()}
-	}
-
-	reg := c.registryForTest
-	if reg == nil {
-		reg = session.DefaultRegistry()
-	}
-
-	sessions, err := lister.ListSessions()
+func (c *MalformedSessionNameCheck) Run(_ *CheckContext) *CheckResult {
+	sessions, err := listSessionNames(c)
 	if err != nil {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -79,10 +69,8 @@ func (c *MalformedSessionNameCheck) Run(ctx *CheckContext) *CheckResult {
 			Details: []string{err.Error()},
 		}
 	}
-
-	malformed := detectLegacySessionNames(sessions, reg)
+	malformed := detectLegacySessionNames(sessions, sessionNameRegistry(c))
 	c.malformed = malformed
-
 	if len(malformed) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -90,17 +78,47 @@ func (c *MalformedSessionNameCheck) Run(ctx *CheckContext) *CheckResult {
 			Message: "All Gas Town sessions use current naming format",
 		}
 	}
+	return legacySessionWarning(c.Name(), malformed)
+}
 
-	// Separate auto-fixable from crew (manual-only).
-	var autoFixable, needsManual []sessionRename
+func listSessionNames(c *MalformedSessionNameCheck) ([]string, error) {
+	lister := c.sessionListerForTest
+	if lister == nil {
+		lister = &realSessionLister{t: tmux.NewTmux()}
+	}
+	return lister.ListSessions()
+}
+
+func sessionNameRegistry(c *MalformedSessionNameCheck) *session.PrefixRegistry {
+	if c.registryForTest != nil {
+		return c.registryForTest
+	}
+	return session.DefaultRegistry()
+}
+
+func legacySessionWarning(name string, malformed []sessionRename) *CheckResult {
+	autoFixable, needsManual := partitionSessionRenames(malformed)
+	return &CheckResult{
+		Name:    name,
+		Status:  StatusWarning,
+		Message: fmt.Sprintf("Found %d session(s) with outdated naming format", len(malformed)),
+		Details: sessionRenameDetails(autoFixable, needsManual),
+		FixHint: sessionRenameFixHint(autoFixable, needsManual),
+	}
+}
+
+func partitionSessionRenames(malformed []sessionRename) (autoFixable, needsManual []sessionRename) {
 	for _, r := range malformed {
 		if r.isCrew {
 			needsManual = append(needsManual, r)
-		} else {
-			autoFixable = append(autoFixable, r)
+			continue
 		}
+		autoFixable = append(autoFixable, r)
 	}
+	return autoFixable, needsManual
+}
 
+func sessionRenameDetails(autoFixable, needsManual []sessionRename) []string {
 	var details []string
 	for _, r := range autoFixable {
 		details = append(details, fmt.Sprintf("Outdated: %s → should be %s", r.oldName, r.newName))
@@ -108,72 +126,69 @@ func (c *MalformedSessionNameCheck) Run(ctx *CheckContext) *CheckResult {
 	for _, r := range needsManual {
 		details = append(details, fmt.Sprintf("Outdated: %s → should be %s (crew session — manual rename required)", r.oldName, r.newName))
 	}
+	return details
+}
 
-	fixHint := "Run 'gt doctor --fix' to rename sessions to current format"
+func sessionRenameFixHint(autoFixable, needsManual []sessionRename) string {
 	if len(autoFixable) == 0 && len(needsManual) > 0 {
-		fixHint = "Crew sessions must be renamed manually: tmux rename-session -t OLD NEW"
-	} else if len(needsManual) > 0 {
-		fixHint = "Run 'gt doctor --fix' for patrol sessions; crew sessions must be renamed manually"
+		return "Crew sessions must be renamed manually: tmux rename-session -t OLD NEW"
 	}
-
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusWarning,
-		Message: fmt.Sprintf("Found %d session(s) with outdated naming format", len(malformed)),
-		Details: details,
-		FixHint: fixHint,
+	if len(needsManual) > 0 {
+		return "Run 'gt doctor --fix' for patrol sessions; crew sessions must be renamed manually"
 	}
+	return "Run 'gt doctor --fix' to rename sessions to current format"
 }
 
 // Fix renames auto-fixable legacy sessions to their canonical names.
 // Crew sessions are silently skipped — Run already told the user they need
 // manual intervention, so Fix does not mislead them into thinking --fix works.
-func (c *MalformedSessionNameCheck) Fix(ctx *CheckContext) error {
+func (c *MalformedSessionNameCheck) Fix(_ *CheckContext) error {
 	if len(c.malformed) == 0 {
 		return nil
 	}
-
-	var t tmuxRenamer
-	if c.tmuxForTest != nil {
-		t = c.tmuxForTest
-	} else {
-		t = tmux.NewTmux()
-	}
+	t := sessionNameRenamer(c)
 	var lastErr error
-
 	for _, r := range c.malformed {
-		if r.isCrew {
-			// Crew sessions require manual rename; skip without error.
-			continue
-		}
-
-		// TOCTOU guard: a prior check (e.g., zombie-sessions) may have already
-		// killed the source session between Run() and Fix().
-		sourceExists, err := t.HasSession(r.oldName)
-		if err != nil {
-			lastErr = fmt.Errorf("check source session %s: %w", r.oldName, err)
-			continue
-		}
-		if !sourceExists {
-			continue
-		}
-
-		// Skip if target name is already in use (collision).
-		targetExists, err := t.HasSession(r.newName)
-		if err != nil {
-			lastErr = fmt.Errorf("check target session %s: %w", r.newName, err)
-			continue
-		}
-		if targetExists {
-			continue
-		}
-
-		if err := t.RenameSession(r.oldName, r.newName); err != nil {
-			lastErr = fmt.Errorf("rename %s → %s: %w", r.oldName, r.newName, err)
+		if err := renameLegacySession(t, r); err != nil {
+			lastErr = err
 		}
 	}
-
 	return lastErr
+}
+
+func sessionNameRenamer(c *MalformedSessionNameCheck) tmuxRenamer {
+	if c.tmuxForTest != nil {
+		return c.tmuxForTest
+	}
+	return tmux.NewTmux()
+}
+
+func renameLegacySession(t tmuxRenamer, r sessionRename) error {
+	if r.isCrew {
+		// Crew sessions require manual rename; skip without error.
+		return nil
+	}
+	// TOCTOU guard: a prior check (e.g., zombie-sessions) may have already
+	// killed the source session between Run() and Fix().
+	sourceExists, err := t.HasSession(r.oldName)
+	if err != nil {
+		return fmt.Errorf("check source session %s: %w", r.oldName, err)
+	}
+	if !sourceExists {
+		return nil
+	}
+	// Skip if target name is already in use (collision).
+	targetExists, err := t.HasSession(r.newName)
+	if err != nil {
+		return fmt.Errorf("check target session %s: %w", r.newName, err)
+	}
+	if targetExists {
+		return nil
+	}
+	if err := t.RenameSession(r.oldName, r.newName); err != nil {
+		return fmt.Errorf("rename %s → %s: %w", r.oldName, r.newName, err)
+	}
+	return nil
 }
 
 // knownRoleSuffixes are the simple role keywords that appear at the end of a

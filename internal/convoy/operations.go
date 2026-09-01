@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"sort"
 	"strings"
 
 	beadsdk "github.com/jonbaldie/beads"
@@ -36,56 +35,18 @@ import (
 //
 // Returns the convoy IDs that were checked (may be empty if issue isn't tracked).
 func CheckConvoysForIssue(ctx context.Context, store beadsdk.Storage, townRoot, issueID, caller string, logger func(format string, args ...interface{}), gtPath string, isRigParked func(string) bool, resolver ...*StoreResolver) []string {
-	if logger == nil {
-		logger = func(format string, args ...interface{}) {} // no-op
-	}
-	if isRigParked == nil {
-		isRigParked = func(string) bool { return false }
-	}
 	if store == nil {
 		return nil
 	}
-
-	// Extract optional resolver (variadic for backward compatibility)
-	var res *StoreResolver
-	if len(resolver) > 0 {
-		res = resolver[0]
-	}
-
-	// Find convoys tracking this issue
-	convoyIDs := getTrackingConvoys(ctx, store, issueID, logger)
+	c := newConvoyIssueCheck(ctx, store, townRoot, issueID, caller, logger, gtPath, isRigParked, resolver)
+	convoyIDs := getTrackingConvoys(ctx, store, issueID, c.logger)
 	if len(convoyIDs) == 0 {
 		return nil
 	}
-
-	logger("%s: %s tracked by %d convoy(s): %v", caller, issueID, len(convoyIDs), convoyIDs)
-
-	// Run convoy check for each tracking convoy
-	// Note: gt convoy check is idempotent and handles already-closed convoys
+	c.logger("%s: %s tracked by %d convoy(s): %v", caller, issueID, len(convoyIDs), convoyIDs)
 	for _, convoyID := range convoyIDs {
-		if isConvoyClosed(ctx, store, convoyID) {
-			logger("%s: convoy %s already closed, skipping", caller, convoyID)
-			continue
-		}
-
-		if isConvoyStaged(ctx, store, convoyID) {
-			logger("%s: convoy %s is staged (not yet launched), skipping", caller, convoyID)
-			continue
-		}
-
-		logger("%s: checking convoy %s", caller, convoyID)
-		if err := runConvoyCheck(ctx, townRoot, convoyID, gtPath); err != nil {
-			logger("%s: convoy %s check failed: %s", caller, convoyID, util.FirstLine(err.Error()))
-		}
-
-		// Continuation feed: if convoy is still open after the completion check,
-		// reactively dispatch the next ready issue. This makes convoy feeding
-		// event-driven instead of relying on polling-based patrol cycles.
-		if !isConvoyClosed(ctx, store, convoyID) {
-			feedNextReadyIssue(ctx, store, townRoot, convoyID, caller, logger, gtPath, isRigParked, res)
-		}
+		checkOneTrackingConvoy(c, convoyID)
 	}
-
 	return convoyIDs
 }
 
@@ -199,79 +160,15 @@ var blockingDepTypes = map[string]bool{
 // this falls back to the hq store's dependency metadata snapshot, which may
 // be stale for cross-rig issues (see GH #2624).
 func isIssueBlocked(ctx context.Context, store beadsdk.Storage, issueID string, resolver *StoreResolver) bool {
-	if store == nil {
-		return false // fail-open: no store means we can't check deps
+	deps := loadIssueDeps(ctx, store, issueID, resolver)
+	if deps == nil {
+		return false
 	}
-
-	// Try the resolver first for cross-database accuracy. The resolver looks up
-	// deps in the issue's home store (based on prefix routing), which returns
-	// current status. Fall back to hq store if resolver is nil or returns nothing.
-	var deps []*beadsdk.IssueWithDependencyMetadata
-	if resolver != nil {
-		deps = resolver.ResolveDepsWithMetadata(ctx, issueID)
+	staleIDs, staleTypes, blocked := scanBlockingDeps(deps, resolver != nil)
+	if blocked {
+		return true
 	}
-	if len(deps) == 0 {
-		var err error
-		deps, err = store.GetDependenciesWithMetadata(ctx, issueID)
-		if err != nil {
-			return false // On error, assume not blocked (fail-open)
-		}
-	}
-
-	// For cross-rig blocking deps, the metadata snapshot status may be stale.
-	// Collect blocker IDs whose status we need to verify via the resolver.
-	var staleCandidateIDs []string
-	var staleCandidateTypes []string
-
-	for _, d := range deps {
-		depType := string(d.DependencyType)
-		if !blockingDepTypes[depType] {
-			continue
-		}
-		status := string(d.Status)
-		if status == "tombstone" {
-			continue // always unblocked
-		}
-		if status == "closed" {
-			// For merge-blocks: "closed" alone is not enough — need merge confirmation
-			if depType == "merge-blocks" && !strings.HasPrefix(d.CloseReason, "Merged in ") {
-				return true // closed but not merged = still blocked
-			}
-			continue // closed = unblocked for non-merge-blocks
-		}
-		// Status is not closed/tombstone. If we have a resolver, the dep might
-		// actually be closed in its home store but stale in the snapshot.
-		if resolver != nil {
-			staleCandidateIDs = append(staleCandidateIDs, extractIssueID(d.ID))
-			staleCandidateTypes = append(staleCandidateTypes, depType)
-		} else {
-			return true // not closed = blocked (no resolver to verify)
-		}
-	}
-
-	// Verify stale candidates via cross-store resolution
-	if len(staleCandidateIDs) > 0 {
-		freshMap := resolver.ResolveIssues(ctx, staleCandidateIDs)
-		for i, id := range staleCandidateIDs {
-			fresh, ok := freshMap[id]
-			if !ok {
-				return true // can't resolve = assume blocked
-			}
-			freshStatus := string(fresh.Status)
-			if freshStatus == "tombstone" {
-				continue
-			}
-			if freshStatus != "closed" {
-				return true // confirmed not closed
-			}
-			// For merge-blocks: check close reason from fresh data
-			if staleCandidateTypes[i] == "merge-blocks" && !strings.HasPrefix(fresh.CloseReason, "Merged in ") {
-				return true
-			}
-		}
-	}
-
-	return false
+	return staleBlockersStillOpen(ctx, resolver, staleIDs, staleTypes)
 }
 
 // feedNextReadyIssue finds the next ready issue in a convoy and dispatches it
@@ -287,66 +184,15 @@ func feedNextReadyIssue(ctx context.Context, store beadsdk.Storage, townRoot, co
 	if len(tracked) == 0 {
 		return
 	}
-
-	// Extract base_branch from convoy description fields
-	var baseBranch string
-	if convoy, err := store.GetIssue(ctx, convoyID); err == nil && convoy != nil {
-		if cf := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description}); cf != nil {
-			baseBranch = cf.BaseBranch
-		}
+	sortTrackedIssues(tracked)
+	r := &convoyFeedRun{
+		ctx: ctx, store: store, townRoot: townRoot, convoyID: convoyID, caller: caller,
+		logger: logger, gtPath: gtPath, isRigParked: isRigParked, resolver: resolver,
+		baseBranch: convoyBaseBranch(ctx, store, convoyID),
 	}
-
-	// Sort by priority (lower = higher) then by ID for deterministic tie-breaking.
-	sort.Slice(tracked, func(i, j int) bool {
-		if tracked[i].Priority != tracked[j].Priority {
-			return tracked[i].Priority < tracked[j].Priority
-		}
-		return tracked[i].ID < tracked[j].ID
-	})
-
-	// Find the first ready issue (open, no assignee, not blocked).
-	for _, issue := range tracked {
-		if issue.Status != "open" || issue.Assignee != "" {
-			continue
-		}
-
-		// Filter non-slingable types: only leaf work items (task, bug,
-		// feature, chore) can be dispatched. Epics, convoys, and other
-		// container types are skipped.
-		if !IsSlingableType(issue.IssueType) {
-			logger("%s: convoy %s: %s has non-slingable type %q, skipping", caller, convoyID, issue.ID, issue.IssueType)
-			continue
-		}
-
-		// Check blocking dependencies: blocks and conditional-blocks with
-		// non-closed targets prevent dispatch. parent-child is NOT treated
-		// as blocking (consistent with molecule step behavior).
-		if isIssueBlocked(ctx, store, issue.ID, resolver) {
-			logger("%s: convoy %s: %s is blocked, skipping", caller, convoyID, issue.ID)
-			continue
-		}
-
-		// Determine target rig from issue prefix
-		rig := rigForIssue(townRoot, issue.ID)
-		if rig == "" {
-			logger("%s: convoy %s: cannot determine rig for issue %s, skipping", caller, convoyID, issue.ID)
-			continue
-		}
-
-		if isRigParked(rig) {
-			logger("%s: convoy %s: rig %s is parked, skipping %s", caller, convoyID, rig, issue.ID)
-			continue
-		}
-
-		logger("%s: convoy %s: feeding next ready issue %s to %s", caller, convoyID, issue.ID, rig)
-		if err := dispatchIssue(ctx, townRoot, issue.ID, rig, gtPath, baseBranch); err != nil {
-			logger("%s: convoy %s: dispatch %s failed: %s", caller, convoyID, issue.ID, util.FirstLine(err.Error()))
-			continue // Try next issue on dispatch failure
-		}
-		return // Successfully dispatched one issue
+	if !tryFeedReadyIssues(r, tracked) {
+		logger("%s: convoy %s: no ready issues to feed", caller, convoyID)
 	}
-
-	logger("%s: convoy %s: no ready issues to feed", caller, convoyID)
 }
 
 // getConvoyTrackedIssues returns issues tracked by a convoy with fresh status.
@@ -354,92 +200,15 @@ func feedNextReadyIssue(ctx context.Context, store beadsdk.Storage, townRoot, co
 // When a StoreResolver is provided, cross-rig beads are resolved via direct store queries.
 // Otherwise falls back to bd show subprocess via fetchCrossRigBeadStatus.
 func getConvoyTrackedIssues(ctx context.Context, store beadsdk.Storage, convoyID, townRoot string, resolver *StoreResolver) []trackedIssue {
-	deps, err := store.GetDependenciesWithMetadata(ctx, convoyID)
-	if err != nil || len(deps) == 0 {
-		return nil
-	}
-
-	// Filter by tracks type and collect IDs
-	var ids []string
-	type depMeta struct {
-		status    string
-		assignee  string
-		priority  int
-		issueType string
-	}
-	metaByID := make(map[string]depMeta)
-	for _, d := range deps {
-		if string(d.DependencyType) == "tracks" {
-			id := extractIssueID(d.ID)
-			ids = append(ids, id)
-			metaByID[id] = depMeta{
-				status:    string(d.Status),
-				assignee:  d.Assignee,
-				priority:  d.Priority,
-				issueType: string(d.IssueType),
-			}
-		}
-	}
+	ids, metaByID := collectTrackedIDs(ctx, store, convoyID)
 	if len(ids) == 0 {
 		return nil
 	}
-
-	// Refresh status via GetIssuesByIDs for cross-rig accuracy
-	freshIssues, err := store.GetIssuesByIDs(ctx, ids)
-	if err != nil {
-		freshIssues = nil
+	freshMap := refreshTrackedIssueMap(ctx, store, townRoot, ids, resolver)
+	result := trackedIssuesFromFreshOrMeta(ids, freshMap, metaByID)
+	for _, t := range result {
+		_, _, _, _, _ = t.ID, t.Status, t.Assignee, t.Priority, t.IssueType
 	}
-
-	freshMap := make(map[string]*beadsdk.Issue)
-	for _, iss := range freshIssues {
-		if iss != nil {
-			freshMap[iss.ID] = iss
-		}
-	}
-
-	// Cross-rig resolution: for beads not found in the local store (e.g., ds-*
-	// beads when convoys live in hq), resolve via the StoreResolver which
-	// queries the appropriate rig store directly. Falls back to bd show
-	// subprocess if no resolver is available. See GH #2624.
-	var missingIDs []string
-	for _, id := range ids {
-		if _, ok := freshMap[id]; !ok {
-			missingIDs = append(missingIDs, id)
-		}
-	}
-	if len(missingIDs) > 0 {
-		if resolver != nil {
-			// Direct store queries — faster, no subprocess, no bd dependency
-			crossRigFresh := resolver.ResolveIssues(ctx, missingIDs)
-			for id, fresh := range crossRigFresh {
-				freshMap[id] = fresh
-			}
-		} else if townRoot != "" {
-			// Legacy fallback: subprocess bd show per rig
-			crossRigFresh := fetchCrossRigBeadStatus(townRoot, missingIDs)
-			for id, fresh := range crossRigFresh {
-				freshMap[id] = fresh
-			}
-		}
-	}
-
-	result := make([]trackedIssue, 0, len(ids))
-	for _, id := range ids {
-		t := trackedIssue{ID: id}
-		if fresh := freshMap[id]; fresh != nil {
-			t.Status = string(fresh.Status)
-			t.Assignee = fresh.Assignee
-			t.Priority = fresh.Priority
-			t.IssueType = string(fresh.IssueType)
-		} else if meta, ok := metaByID[id]; ok {
-			t.Status = meta.status
-			t.Assignee = meta.assignee
-			t.Priority = meta.priority
-			t.IssueType = meta.issueType
-		}
-		result = append(result, t)
-	}
-
 	return result
 }
 
@@ -539,70 +308,19 @@ func FireCrossRigDepNotifications(ctx context.Context, closedIssueID, townRoot s
 	if len(stores) == 0 || closedIssueID == "" || townRoot == "" {
 		return
 	}
-
-	// Determine the home store of the closed issue so we can skip it.
 	closedPrefix := beads.ExtractPrefix(closedIssueID)
 	if closedPrefix == "" {
 		return
 	}
-	closedRig := beads.GetRigNameForPrefix(townRoot, closedPrefix)
-	closedStoreKey := closedRig
-	if closedStoreKey == "" {
-		closedStoreKey = "hq"
+	closedRig, closedStoreKey := closedIssueStoreKey(townRoot, closedPrefix)
+	n := &crossRigNotify{
+		ctx: ctx, townRoot: townRoot, closedIssueID: closedIssueID,
+		closedRig: closedRig, closedStoreKey: closedStoreKey,
+		externalID: fmt.Sprintf("external:%s:%s", strings.TrimSuffix(closedPrefix, "-"), closedIssueID),
+		logger:     logger, notifiedRigs: make(map[string]bool),
 	}
-
-	// Build the external-wrapped form used when storing cross-rig dep records:
-	// "external:<prefix-without-trailing-dash>:<id>"
-	externalID := fmt.Sprintf("external:%s:%s", strings.TrimSuffix(closedPrefix, "-"), closedIssueID)
-
-	// Track which rigs have already been notified to avoid duplicate nudges.
-	notifiedRigs := make(map[string]bool)
-
 	for storeName, store := range stores {
-		if storeName == closedStoreKey {
-			continue // skip the closed issue's own store
-		}
-
-		dependents, err := store.GetDependentsWithMetadata(ctx, externalID)
-		if err != nil || len(dependents) == 0 {
-			continue
-		}
-
-		for _, dep := range dependents {
-			if dep == nil {
-				continue
-			}
-			depType := string(dep.DependencyType)
-			if !blockingDepTypes[depType] {
-				continue
-			}
-
-			// Determine the rig for the dependent issue.
-			depID := extractIssueID(dep.ID)
-			depPrefix := beads.ExtractPrefix(depID)
-			if depPrefix == "" {
-				continue
-			}
-			depRig := beads.GetRigNameForPrefix(townRoot, depPrefix)
-			if depRig == "" || depRig == closedRig {
-				continue
-			}
-			if notifiedRigs[depRig] {
-				continue
-			}
-			notifiedRigs[depRig] = true
-
-			depTitle := dep.Title
-			logger("CrossRig: %s closed, unblocking %s (%s) — nudging %s/witness", closedIssueID, depID, depRig, depRig)
-
-			msg := fmt.Sprintf("Dependency resolved: %s — External dependency %s has closed. Unblocked: %s (%s). This issue may now proceed.",
-				closedIssueID, closedIssueID, depID, depTitle)
-			nudgeCmd := exec.Command("gt", "nudge", depRig+"/witness", "-m", msg)
-			nudgeCmd.Dir = townRoot
-			if err := nudgeCmd.Run(); err != nil {
-				logger("CrossRig: nudge %s/witness failed: %v", depRig, err)
-			}
-		}
+		notifyStoreCrossRigDeps(n, storeName, store)
 	}
 }
 

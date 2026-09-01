@@ -62,34 +62,49 @@ func NewClient(opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// restRequest makes an authenticated REST API request and decodes the JSON response.
-func (c *Client) restRequest(ctx context.Context, method, path string, body any, result any) error {
-	var reqBody io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("bitbucket: marshal request: %w", err)
-		}
-		reqBody = bytes.NewReader(b)
-	}
-
-	url := c.restBase + path
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+// Request makes an authenticated REST API request and decodes the JSON response.
+func (c *Client) Request(ctx context.Context, method, path string, body any, result any) error {
+	req, err := c.newRequest(ctx, method, path, body)
 	if err != nil {
-		return fmt.Errorf("bitbucket: create request: %w", err)
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("bitbucket: %s %s: %w", method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeResponse(resp, method, path, result)
+}
+
+func (c *Client) newRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
+	reqBody, err := requestBody(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.restBase+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("bitbucket: create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return req, nil
+}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("bitbucket: %s %s: %w", method, path, err)
+func requestBody(body any) (io.Reader, error) {
+	if body == nil {
+		return nil, nil
 	}
-	defer func() { _ = resp.Body.Close() }()
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("bitbucket: marshal request: %w", err)
+	}
+	return bytes.NewReader(b), nil
+}
 
+func decodeResponse(resp *http.Response, method, path string, result any) error {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("bitbucket: read response: %w", err)

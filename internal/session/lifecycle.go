@@ -102,218 +102,278 @@ type StartResult struct {
 func StartSession(t TmuxOps, role string, work Work) (_ *StartResult, retErr error) {
 	runID := uuid.New().String()
 	ctx := telemetry.WithRunID(context.Background(), runID)
-
 	defer func() { telemetry.RecordSessionStart(ctx, work.SessionID, role, retErr) }()
-	if work.SessionID == "" {
-		return nil, fmt.Errorf("SessionID is required")
-	}
-	if work.WorkDir == "" {
-		return nil, fmt.Errorf("WorkDir is required")
-	}
-	if role == "" {
-		return nil, fmt.Errorf("Role is required")
-	}
-
-	policy := policyFor(role, work)
-
-	runtimeConfig, err := resolveRuntimeConfig(role, work)
-	if err != nil {
+	start := sessionStart{tmux: t, role: role, work: work, runID: runID, ctx: ctx}
+	if err := start.run(); err != nil {
 		return nil, err
 	}
+	return &StartResult{RuntimeConfig: start.runtimeConfig, RunID: runID}, nil
+}
 
-	settingsDir := config.RoleSettingsDir(role, work.RigPath)
+type sessionStart struct {
+	tmux          TmuxOps
+	role          string
+	work          Work
+	policy        rolePolicy
+	runtimeConfig *config.RuntimeConfig
+	runID         string
+	ctx           context.Context
+	envVars       map[string]string
+}
+
+func (s *sessionStart) run() error {
+	if err := validateStart(s.role, s.work); err != nil {
+		return err
+	}
+	s.policy = policyFor(s.role, s.work)
+	if err := prepareSessionStart(s); err != nil {
+		return err
+	}
+	command, err := sessionStartCommand(s)
+	if err != nil {
+		return err
+	}
+	s.envVars = sessionStartEnvironment(s)
+	if err := startSessionCommand(s.tmux, s.work, command, s.envVars); err != nil {
+		return fmt.Errorf("creating session: %w", err)
+	}
+	if err := configureAndWaitForSession(s); err != nil {
+		return err
+	}
+	if err := recordAndWaitReady(s); err != nil {
+		return err
+	}
+	if err := verifyStartedSession(s); err != nil {
+		return err
+	}
+	finishSessionStart(s)
+	return nil
+}
+
+func validateStart(role string, work Work) error {
+	switch {
+	case work.SessionID == "":
+		return fmt.Errorf("SessionID is required")
+	case work.WorkDir == "":
+		return fmt.Errorf("WorkDir is required")
+	case role == "":
+		return fmt.Errorf("Role is required")
+	default:
+		return nil
+	}
+}
+
+func prepareSessionStart(s *sessionStart) error {
+	var err error
+	s.runtimeConfig, err = resolveRuntimeConfig(s.role, s.work)
+	if err != nil {
+		return err
+	}
+	settingsDir := config.RoleSettingsDir(s.role, s.work.RigPath)
 	if settingsDir == "" {
-		settingsDir = work.WorkDir
+		settingsDir = s.work.WorkDir
 	}
-	// SkipReady skips skill trees and slash commands (deferred by gt now) and
-	// the Cursor ready delay. Hooks still install: Pi exits if gastown-hooks.js
-	// is missing.
-	if work.SkipReady {
-		if err := runtime.EnsureHooksForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
-			return nil, fmt.Errorf("ensuring runtime hooks: %w", err)
-		}
-	} else if err := runtime.EnsureSettingsForRole(settingsDir, work.WorkDir, role, runtimeConfig); err != nil {
-		return nil, fmt.Errorf("ensuring runtime settings: %w", err)
+	if err := ensureStartRuntimeFiles(s, settingsDir); err != nil {
+		return err
 	}
-	if work.RuntimeConfigDir != "" && !work.SkipReady {
-		if err := skills.ProvisionUserDir(work.RuntimeConfigDir); err != nil {
-			return nil, fmt.Errorf("ensuring account skills: %w", err)
+	if s.work.RuntimeConfigDir != "" && !s.work.SkipReady {
+		if err := skills.ProvisionUserDir(s.work.RuntimeConfigDir); err != nil {
+			return fmt.Errorf("ensuring account skills: %w", err)
 		}
 	}
+	return nil
+}
 
-	command := work.Command
+func ensureStartRuntimeFiles(s *sessionStart, settingsDir string) error {
+	if s.work.SkipReady {
+		if err := runtime.EnsureHooksForRole(settingsDir, s.work.WorkDir, s.role, s.runtimeConfig); err != nil {
+			return fmt.Errorf("ensuring runtime hooks: %w", err)
+		}
+		return nil
+	}
+	if err := runtime.EnsureSettingsForRole(settingsDir, s.work.WorkDir, s.role, s.runtimeConfig); err != nil {
+		return fmt.Errorf("ensuring runtime settings: %w", err)
+	}
+	return nil
+}
+
+func sessionStartCommand(s *sessionStart) (string, error) {
+	command := s.work.Command
 	if command == "" {
-		prompt := buildPrompt(work)
 		var err error
-		command, err = buildCommand(role, work, prompt)
+		command, err = buildCommand(s.role, s.work, buildPrompt(s.work))
 		if err != nil {
-			return nil, fmt.Errorf("building startup command: %w", err)
+			return "", fmt.Errorf("building startup command: %w", err)
 		}
 	}
-
-	if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && work.RuntimeConfigDir != "" {
-		command = config.PrependEnv(command, map[string]string{
-			runtimeConfig.Session.ConfigDirEnv: work.RuntimeConfigDir,
-		})
+	if s.runtimeConfig.Session != nil && s.runtimeConfig.Session.ConfigDirEnv != "" && s.work.RuntimeConfigDir != "" {
+		command = config.PrependEnv(command, map[string]string{s.runtimeConfig.Session.ConfigDirEnv: s.work.RuntimeConfigDir})
 	}
+	return command, nil
+}
 
-	envVars := config.AgentEnv(config.AgentEnvConfig{
-		Role:             role,
-		Rig:              work.RigName,
-		AgentName:        work.AgentName,
-		TownRoot:         work.TownRoot,
-		RuntimeConfigDir: work.RuntimeConfigDir,
-		Agent:            work.AgentOverride,
-		SessionName:      work.SessionID,
-	})
-	envVars = MergeRuntimeLivenessEnv(envVars, runtimeConfig)
-	envVars["GT_RUN"] = runID
-	for k, v := range work.ExtraEnv {
-		envVars[k] = v
+func sessionStartEnvironment(s *sessionStart) map[string]string {
+	envVars := config.AgentEnv(config.AgentEnvConfig{Role: s.role, Rig: s.work.RigName, AgentName: s.work.AgentName, TownRoot: s.work.TownRoot, RuntimeConfigDir: s.work.RuntimeConfigDir, Agent: s.work.AgentOverride, SessionName: s.work.SessionID})
+	envVars = MergeRuntimeLivenessEnv(envVars, s.runtimeConfig)
+	envVars["GT_RUN"] = s.runID
+	for key, value := range s.work.ExtraEnv {
+		envVars[key] = value
 	}
+	return envVars
+}
 
-	if err := startSessionCommand(t, work, command, envVars); err != nil {
-		return nil, fmt.Errorf("creating session: %w", err)
+func configureAndWaitForSession(s *sessionStart) error {
+	if s.policy.RemainOnExit {
+		_ = s.tmux.SetRemainOnExit(s.work.SessionID, true)
 	}
-
-	if policy.RemainOnExit {
-		_ = t.SetRemainOnExit(work.SessionID, true)
+	if s.work.Theme != nil {
+		_ = s.tmux.ConfigureGasTownSession(s.work.SessionID, s.work.Theme, s.work.RigName, s.work.AgentName, s.role)
 	}
-
-	if work.Theme != nil {
-		_ = t.ConfigureGasTownSession(work.SessionID, work.Theme, work.RigName, work.AgentName, role)
+	if err := waitForSessionCommand(s); err != nil {
+		return err
 	}
-
-	if policy.WaitForAgent {
-		if err := t.WaitForCommand(work.SessionID, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-			if policy.WaitFatal {
-				_ = t.KillSessionWithProcesses(work.SessionID)
-				return nil, fmt.Errorf("waiting for %s to start: %w", role, err)
-			}
+	if s.policy.AutoRespawn {
+		if err := s.tmux.SetAutoRespawnHook(s.work.SessionID); err != nil {
+			fmt.Printf("warning: failed to set auto-respawn hook for %s: %v\n", s.role, err)
 		}
 	}
+	return acceptSessionStartupDialogs(s)
+}
 
-	if policy.AutoRespawn {
-		if err := t.SetAutoRespawnHook(work.SessionID); err != nil {
-			fmt.Printf("warning: failed to set auto-respawn hook for %s: %v\n", role, err)
-		}
+func waitForSessionCommand(s *sessionStart) error {
+	if !s.policy.WaitForAgent {
+		return nil
 	}
-
-	if policy.AcceptBypass {
-		_ = t.AcceptStartupDialogs(work.SessionID)
-		if err := t.CheckStartupBlocked(work.SessionID); err != nil {
-			_ = t.KillSessionWithProcesses(work.SessionID)
-			return nil, fmt.Errorf("startup blocked: %w", err)
-		}
+	err := s.tmux.WaitForCommand(s.work.SessionID, constants.SupportedShells, constants.ClaudeStartTimeout)
+	if err == nil || !s.policy.WaitFatal {
+		return nil
 	}
+	_ = s.tmux.KillSessionWithProcesses(s.work.SessionID)
+	return fmt.Errorf("waiting for %s to start: %w", s.role, err)
+}
 
-	if work.TownRoot != "" {
-		if w, werr := worker.Open(work.TownRoot); werr == nil {
-			agentType := runtimeConfig.ResolvedAgent
-			if _, err := w.StartRun(ctx, worker.StartSpec{
-				RunID:     runID,
-				SessionID: work.SessionID,
-				BeadID:    work.Beacon.MolID,
-				Role:      role,
-				Rig:       work.RigName,
-				AgentName: work.AgentName,
-				AgentType: agentType,
-			}); err != nil && !errors.Is(err, worker.ErrLiveRun) {
-				fmt.Fprintf(os.Stderr, "Warning: worker start run for %s: %v\n", work.SessionID, err)
-			} else {
-				_ = w.PushIdentity(ctx, worker.Identity{
-					RunID:     runID,
-					Role:      role,
-					Rig:       work.RigName,
-					AgentName: work.AgentName,
-					SessionID: work.SessionID,
-					Env:       envVars,
-				})
-				sections := []worker.ContextSection{{Type: worker.SectionRole, Content: role}}
-				if work.Beacon.MolID != "" {
-					sections = append(sections, worker.ContextSection{Type: worker.SectionWork, Content: work.Beacon.MolID})
-				}
-				if work.Instructions != "" {
-					sections = append(sections, worker.ContextSection{Type: worker.SectionDirective, Content: work.Instructions})
-				}
-				_ = w.PushContext(ctx, worker.ContextPush{
-					RunID:    runID,
-					Sections: sections,
-					Mode:     worker.ContextFull,
-				})
-			}
-			if policy.ReadyDelay || policy.ReadyFatal {
-				waitCtx, cancel := context.WithTimeout(ctx, constants.ClaudeStartTimeout)
-				err := w.WaitReady(waitCtx, runID)
-				cancel()
-				if err != nil {
-					if policy.ReadyFatal {
-						_ = t.KillSessionWithProcesses(work.SessionID)
-						return nil, fmt.Errorf("waiting for %s to become ready: %w", role, err)
-					}
-					fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", work.SessionID, err)
-				}
-			}
-		} else if policy.ReadyDelay || policy.ReadyFatal {
-			if err := t.WaitForRuntimeReady(work.SessionID, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
-				if policy.ReadyFatal {
-					_ = t.KillSessionWithProcesses(work.SessionID)
-					return nil, fmt.Errorf("waiting for %s to become ready: %w", role, err)
-				}
-				fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", work.SessionID, err)
-			}
-		}
-	} else if policy.ReadyDelay || policy.ReadyFatal {
-		if err := t.WaitForRuntimeReady(work.SessionID, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
-			if policy.ReadyFatal {
-				_ = t.KillSessionWithProcesses(work.SessionID)
-				return nil, fmt.Errorf("waiting for %s to become ready: %w", role, err)
-			}
-			fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", work.SessionID, err)
-		}
+func acceptSessionStartupDialogs(s *sessionStart) error {
+	if !s.policy.AcceptBypass {
+		return nil
 	}
-
-	if policy.VerifySurvived {
-		running, err := t.HasSession(work.SessionID)
-		if err != nil {
-			_ = t.KillSessionWithProcesses(work.SessionID)
-			return nil, fmt.Errorf("verifying session: %w", err)
-		}
-		if !running {
-			return nil, fmt.Errorf("session %s died during startup (agent command may have failed)", work.SessionID)
-		}
-		if err := t.CheckStartupBlocked(work.SessionID); err != nil {
-			_ = t.KillSessionWithProcesses(work.SessionID)
-			return nil, fmt.Errorf("startup blocked: %w", err)
-		}
-		if status := t.CheckSessionHealth(work.SessionID, 0); status != tmux.SessionHealthy {
-			_ = t.KillSessionWithProcesses(work.SessionID)
-			return nil, fmt.Errorf("session %s unhealthy during startup: %s", work.SessionID, status)
-		}
+	_ = s.tmux.AcceptStartupDialogs(s.work.SessionID)
+	if err := s.tmux.CheckStartupBlocked(s.work.SessionID); err != nil {
+		_ = s.tmux.KillSessionWithProcesses(s.work.SessionID)
+		return fmt.Errorf("startup blocked: %w", err)
 	}
+	return nil
+}
 
-	if paneID, err := t.GetPaneID(work.SessionID); err == nil {
-		_ = t.SetEnvironment(work.SessionID, "GT_PANE_ID", paneID)
+func recordAndWaitReady(s *sessionStart) error {
+	if s.work.TownRoot == "" {
+		return waitForSessionRuntime(s)
 	}
-
-	if policy.TrackPID && work.TownRoot != "" {
-		_ = TrackSessionPID(work.TownRoot, work.SessionID, t)
+	w, err := worker.Open(s.work.TownRoot)
+	if err != nil {
+		return waitForSessionRuntime(s)
 	}
-
-	if os.Getenv("GT_LOG_AGENT_OUTPUT") == "true" && os.Getenv("GT_OTEL_LOGS_URL") != "" {
-		if err := ActivateAgentLogging(work.SessionID, work.WorkDir, runID); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: agent log watcher setup failed for %s: %v\n", work.SessionID, err)
-		}
+	recordSessionWorker(s, w)
+	if !sessionNeedsReadyWait(s) {
+		return nil
 	}
+	waitCtx, cancel := context.WithTimeout(s.ctx, constants.ClaudeStartTimeout)
+	err = w.WaitReady(waitCtx, s.runID)
+	cancel()
+	return handleSessionReadyError(s, err)
+}
 
-	RecordAgentInstantiateFromDir(ctx, runID, runtimeConfig.ResolvedAgent,
-		role, work.AgentName, work.SessionID, work.RigName, work.TownRoot, work.Beacon.MolID, work.WorkDir)
+func recordSessionWorker(s *sessionStart, w *worker.Worker) {
+	_, err := w.StartRun(s.ctx, worker.StartSpec{RunID: s.runID, SessionID: s.work.SessionID, BeadID: s.work.Beacon.MolID, Role: s.role, Rig: s.work.RigName, AgentName: s.work.AgentName, AgentType: s.runtimeConfig.ResolvedAgent})
+	if err != nil && !errors.Is(err, worker.ErrLiveRun) {
+		fmt.Fprintf(os.Stderr, "Warning: worker start run for %s: %v\n", s.work.SessionID, err)
+		return
+	}
+	_ = w.PushIdentity(s.ctx, worker.Identity{RunID: s.runID, Role: s.role, Rig: s.work.RigName, AgentName: s.work.AgentName, SessionID: s.work.SessionID, Env: s.envVars})
+	_ = w.PushContext(s.ctx, worker.ContextPush{RunID: s.runID, Sections: sessionContextSections(s), Mode: worker.ContextFull})
+}
 
-	return &StartResult{RuntimeConfig: runtimeConfig, RunID: runID}, nil
+func sessionContextSections(s *sessionStart) []worker.ContextSection {
+	sections := []worker.ContextSection{{Type: worker.SectionRole, Content: s.role}}
+	if s.work.Beacon.MolID != "" {
+		sections = append(sections, worker.ContextSection{Type: worker.SectionWork, Content: s.work.Beacon.MolID})
+	}
+	if s.work.Instructions != "" {
+		sections = append(sections, worker.ContextSection{Type: worker.SectionDirective, Content: s.work.Instructions})
+	}
+	return sections
+}
+
+func sessionNeedsReadyWait(s *sessionStart) bool {
+	return s.policy.ReadyDelay || s.policy.ReadyFatal
+}
+
+func waitForSessionRuntime(s *sessionStart) error {
+	if !sessionNeedsReadyWait(s) {
+		return nil
+	}
+	err := s.tmux.WaitForRuntimeReady(s.work.SessionID, s.runtimeConfig, constants.ClaudeStartTimeout)
+	return handleSessionReadyError(s, err)
+}
+
+func handleSessionReadyError(s *sessionStart, err error) error {
+	if err == nil {
+		return nil
+	}
+	if s.policy.ReadyFatal {
+		_ = s.tmux.KillSessionWithProcesses(s.work.SessionID)
+		return fmt.Errorf("waiting for %s to become ready: %w", s.role, err)
+	}
+	fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", s.work.SessionID, err)
+	return nil
+}
+
+func verifyStartedSession(s *sessionStart) error {
+	if !s.policy.VerifySurvived {
+		return nil
+	}
+	running, err := s.tmux.HasSession(s.work.SessionID)
+	if err != nil {
+		return killStartedSessionWithError(s, fmt.Errorf("verifying session: %w", err))
+	}
+	if !running {
+		return fmt.Errorf("session %s died during startup (agent command may have failed)", s.work.SessionID)
+	}
+	if err := s.tmux.CheckStartupBlocked(s.work.SessionID); err != nil {
+		return killStartedSessionWithError(s, fmt.Errorf("startup blocked: %w", err))
+	}
+	if status := s.tmux.CheckSessionHealth(s.work.SessionID, 0); status != tmux.SessionHealthy {
+		return killStartedSessionWithError(s, fmt.Errorf("session %s unhealthy during startup: %s", s.work.SessionID, status))
+	}
+	return nil
+}
+
+func killStartedSessionWithError(s *sessionStart, err error) error {
+	_ = s.tmux.KillSessionWithProcesses(s.work.SessionID)
+	return err
+}
+
+func finishSessionStart(s *sessionStart) {
+	if paneID, err := s.tmux.GetPaneID(s.work.SessionID); err == nil {
+		_ = s.tmux.SetEnvironment(s.work.SessionID, "GT_PANE_ID", paneID)
+	}
+	if s.policy.TrackPID && s.work.TownRoot != "" {
+		_ = TrackSessionPID(s.work.TownRoot, s.work.SessionID, s.tmux)
+	}
+	activateSessionLogging(s)
+	RecordAgentInstantiateFromDir(s.ctx, telemetry.AgentInstantiateInfo{RunID: s.runID, AgentType: s.runtimeConfig.ResolvedAgent, Role: s.role, AgentName: s.work.AgentName, SessionID: s.work.SessionID, RigName: s.work.RigName, TownRoot: s.work.TownRoot, IssueID: s.work.Beacon.MolID}, s.work.WorkDir)
+}
+
+func activateSessionLogging(s *sessionStart) {
+	if os.Getenv("GT_LOG_AGENT_OUTPUT") != "true" || os.Getenv("GT_OTEL_LOGS_URL") == "" {
+		return
+	}
+	if err := ActivateAgentLogging(s.work.SessionID, s.work.WorkDir, s.runID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: agent log watcher setup failed for %s: %v\n", s.work.SessionID, err)
+	}
 }
 
 type sessionNoWait interface {
-	NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error
+	NewSessionWithCommandAndEnvNoWait(_, _, _ string, _ map[string]string) error
 }
 
 func startSessionCommand(tm TmuxOps, work Work, command string, envVars map[string]string) error {
@@ -326,35 +386,25 @@ func startSessionCommand(tm TmuxOps, work Work, command string, envVars map[stri
 }
 
 // RecordAgentInstantiateFromDir resolves the git branch/commit from workDir and
-// emits the agent.instantiate root telemetry event. resolvedAgent defaults to
+// emits the agent.instantiate root telemetry event. AgentType defaults to
 // "claudecode" when empty. Use this instead of calling telemetry.RecordAgentInstantiate
-// directly to avoid duplicating the agentType/git-lookup boilerplate.
-func RecordAgentInstantiateFromDir(ctx context.Context, runID, resolvedAgent, role, agentName, sessionID, rigName, townRoot, issueID, workDir string) {
-	agentType := resolvedAgent
-	if agentType == "" {
-		agentType = "claudecode"
+// directly to avoid duplicating the git-lookup boilerplate.
+func RecordAgentInstantiateFromDir(ctx context.Context, info telemetry.AgentInstantiateInfo, workDir string) {
+	if info.AgentType == "" {
+		info.AgentType = "claudecode"
 	}
 	branch, commit := "", ""
 	if g := git.NewGit(workDir); g != nil {
-		if b, err := g.CurrentBranch(); err == nil {
+		if b, err := git.CurrentBranch(g); err == nil {
 			branch = b
 		}
-		if c, err := g.Rev("HEAD"); err == nil {
+		if c, err := git.Rev(g, "HEAD"); err == nil {
 			commit = c
 		}
 	}
-	telemetry.RecordAgentInstantiate(ctx, telemetry.AgentInstantiateInfo{
-		RunID:     runID,
-		AgentType: agentType,
-		Role:      role,
-		AgentName: agentName,
-		SessionID: sessionID,
-		RigName:   rigName,
-		TownRoot:  townRoot,
-		IssueID:   issueID,
-		GitBranch: branch,
-		GitCommit: commit,
-	})
+	info.GitBranch = branch
+	info.GitCommit = commit
+	telemetry.RecordAgentInstantiate(ctx, info)
 }
 
 // ErrNotFound is returned by StopSession when the tmux session is already gone.
@@ -364,42 +414,52 @@ var ErrNotFound = errors.New("session not found")
 // marks the Worker run stopped, stops the agent-log watcher, and kills the
 // tmux session. Role managers call this instead of writing their own stop body.
 func StopSession(t TmuxOps, townRoot, sessionID string, graceful bool) error {
-	if townRoot != "" {
-		if pollerErr := nudge.StopPoller(townRoot, sessionID); pollerErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not stop nudge poller for %s: %v\n", sessionID, pollerErr)
-		}
-	}
-
+	stopSessionPoller(townRoot, sessionID)
 	running, err := t.HasSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
 	}
-
-	var stopErr error
-	if running {
-		if graceful {
-			_ = t.SendKeysRaw(sessionID, "C-c")
-			WaitForSessionExit(t, sessionID, constants.GracefulShutdownTimeout)
-		}
-
-		DeactivateAgentLogging(sessionID)
-
-		if err := t.KillSessionWithProcesses(sessionID); err != nil {
-			stopErr = fmt.Errorf("killing session: %w", err)
-		}
-	}
-
-	if townRoot != "" {
-		if err := worker.MarkSessionStopped(townRoot, sessionID); err != nil && stopErr == nil {
-			stopErr = fmt.Errorf("recording stopped worker run: %w", err)
-		}
-	}
-
+	stopErr := stopRunningSession(t, sessionID, running, graceful)
+	stopErr = recordStoppedSession(townRoot, sessionID, stopErr)
 	if stopErr != nil {
 		return stopErr
 	}
 	if !running {
 		return fmt.Errorf("%w: %s", ErrNotFound, sessionID)
+	}
+	return nil
+}
+
+func stopSessionPoller(townRoot, sessionID string) {
+	if townRoot == "" {
+		return
+	}
+	if err := nudge.StopPoller(townRoot, sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not stop nudge poller for %s: %v\n", sessionID, err)
+	}
+}
+
+func stopRunningSession(t TmuxOps, sessionID string, running, graceful bool) error {
+	if !running {
+		return nil
+	}
+	if graceful {
+		_ = t.SendKeysRaw(sessionID, "C-c")
+		WaitForSessionExit(t, sessionID, constants.GracefulShutdownTimeout)
+	}
+	DeactivateAgentLogging(sessionID)
+	if err := t.KillSessionWithProcesses(sessionID); err != nil {
+		return fmt.Errorf("killing session: %w", err)
+	}
+	return nil
+}
+
+func recordStoppedSession(townRoot, sessionID string, stopErr error) error {
+	if townRoot == "" || stopErr != nil {
+		return stopErr
+	}
+	if err := worker.MarkSessionStopped(townRoot, sessionID); err != nil {
+		return fmt.Errorf("recording stopped worker run: %w", err)
 	}
 	return nil
 }
@@ -434,28 +494,25 @@ func MergeRuntimeLivenessEnv(envVars map[string]string, runtimeConfig *config.Ru
 		envVars["GT_AGENT"] = runtimeConfig.ResolvedAgent
 	}
 
-	if _, hasProcessNames := envVars["GT_PROCESS_NAMES"]; !hasProcessNames {
-		agentForLookup := runtimeConfig.ResolvedAgent
-		commandForLookup := runtimeConfig.Command
-		argsForLookup := runtimeConfig.Args
-		if existing, ok := envVars["GT_AGENT"]; ok && existing != "" {
-			agentForLookup = existing
-			// When GT_AGENT was set by AgentOverride (differs from the
-			// workspace-resolved agent), the runtimeConfig.Command/Args
-			// belong to the workspace agent, not the override. Pass empty
-			// command so ResolveProcessNames uses the preset's own command.
-			if existing != runtimeConfig.ResolvedAgent {
-				commandForLookup = ""
-				argsForLookup = nil
-			}
-		}
-		processNames := config.ResolveProcessNames(agentForLookup, commandForLookup, argsForLookup...)
-		if len(processNames) > 0 {
-			envVars["GT_PROCESS_NAMES"] = strings.Join(processNames, ",")
-		}
+	if _, exists := envVars["GT_PROCESS_NAMES"]; !exists {
+		setRuntimeProcessNames(envVars, runtimeConfig)
 	}
-
 	return envVars
+}
+
+func setRuntimeProcessNames(envVars map[string]string, runtimeConfig *config.RuntimeConfig) {
+	agent, command, args := runtimeProcessLookup(envVars["GT_AGENT"], runtimeConfig)
+	processNames := config.ResolveProcessNames(agent, command, args...)
+	if len(processNames) > 0 {
+		envVars["GT_PROCESS_NAMES"] = strings.Join(processNames, ",")
+	}
+}
+
+func runtimeProcessLookup(existingAgent string, runtimeConfig *config.RuntimeConfig) (string, string, []string) {
+	if existingAgent == "" || existingAgent == runtimeConfig.ResolvedAgent {
+		return runtimeConfig.ResolvedAgent, runtimeConfig.Command, runtimeConfig.Args
+	}
+	return existingAgent, "", nil
 }
 
 // ErrSessionAlive is returned by KillExistingSession when checkAlive is true

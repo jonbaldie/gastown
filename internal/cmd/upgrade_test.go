@@ -32,10 +32,7 @@ func TestTownIdentity(t *testing.T) {
 func TestUpgradeAgentsMD_CreatesMissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	upgradeDryRun = false
-	upgradeVerbose = false
-
-	result := upgradeAgentsMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir, false)
 
 	if runtime.GOOS == "windows" {
 		if result.changed < 1 {
@@ -86,10 +83,7 @@ func TestUpgradeAgentsMD_UpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	upgradeDryRun = false
-	upgradeVerbose = false
-
-	result := upgradeAgentsMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir, false)
 
 	if result.changed != 0 {
 		t.Errorf("expected 0 changes for up-to-date pair, got %d", result.changed)
@@ -106,9 +100,7 @@ func TestUpgradeAgentsMD_FlipsOldSymlinkDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	upgradeDryRun = false
-	upgradeVerbose = false
-	result := upgradeAgentsMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir, false)
 	if result.changed == 0 {
 		t.Fatal("expected pair flip to report a change")
 	}
@@ -172,10 +164,7 @@ func TestCreateTownRootAgentMDs_WritesAgentsCanonical(t *testing.T) {
 func TestUpgradeAgentsMD_DryRun(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	upgradeDryRun = true
-	upgradeVerbose = false
-
-	result := upgradeAgentsMD(tmpDir)
+	result := upgradeAgentsMD(tmpDir, true)
 
 	if result.changed < 1 {
 		t.Errorf("expected at least 1 change in dry-run mode, got %d", result.changed)
@@ -188,7 +177,6 @@ func TestUpgradeAgentsMD_DryRun(t *testing.T) {
 	}
 
 	// Reset
-	upgradeDryRun = false
 }
 
 func TestUpgradeDaemonConfig_CreatesMissing(t *testing.T) {
@@ -200,10 +188,7 @@ func TestUpgradeDaemonConfig_CreatesMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	upgradeDryRun = false
-	upgradeVerbose = false
-
-	result := upgradeDaemonConfig(tmpDir)
+	result := upgradeDaemonConfig(tmpDir, false)
 
 	if result.changed != 1 {
 		t.Errorf("expected 1 change for new daemon.json, got %d", result.changed)
@@ -235,10 +220,7 @@ func TestUpgradeDaemonConfig_ExistingValid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	upgradeDryRun = false
-	upgradeVerbose = false
-
-	result := upgradeDaemonConfig(tmpDir)
+	result := upgradeDaemonConfig(tmpDir, false)
 
 	if result.changed != 0 {
 		t.Errorf("expected 0 changes for existing daemon.json, got %d", result.changed)

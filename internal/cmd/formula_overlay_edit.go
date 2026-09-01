@@ -28,34 +28,48 @@ Examples:
 	RunE: runFormulaOverlayEdit,
 }
 
-var (
-	formulaOverlayEditRig  string
-	formulaOverlayEditTown bool
-)
-
 func init() {
 	formulaOverlayCmd.AddCommand(formulaOverlayEditCmd)
-	formulaOverlayEditCmd.Flags().StringVar(&formulaOverlayEditRig, "rig", "", "Rig name (default: auto-detect from cwd)")
-	formulaOverlayEditCmd.Flags().BoolVar(&formulaOverlayEditTown, "town", false, "Edit town-level overlay instead of rig-level")
+	formulaOverlayEditCmd.Flags().String("rig", "", "Rig name (default: auto-detect from cwd)")
+	formulaOverlayEditCmd.Flags().Bool("town", false, "Edit town-level overlay instead of rig-level")
 }
 
 func runFormulaOverlayEdit(cmd *cobra.Command, args []string) error {
 	formulaName := args[0]
+	rigName := commandStringFlag(cmd, "rig")
+	townLevel := commandBoolFlag(cmd, "town")
 
-	townRoot, rigName, err := resolveOverlayContext(formulaOverlayEditRig)
+	townRoot, rigName, err := resolveOverlayContext(rigName)
 	if err != nil {
 		return err
 	}
 
-	// Determine which file to edit
-	var path string
-	if formulaOverlayEditTown || rigName == "" {
-		path = filepath.Join(townRoot, "formula-overlays", formulaName+".toml")
-	} else {
-		path = filepath.Join(townRoot, rigName, "formula-overlays", formulaName+".toml")
+	path := formulaOverlayEditPath(townRoot, rigName, formulaName, townLevel)
+	if err := ensureFormulaOverlayFile(path, formulaName); err != nil {
+		return err
+	}
+	if err := runFormulaOverlayEditor(path); err != nil {
+		return err
 	}
 
-	// Create directory and file if needed
+	// Validate after editing
+	if _, err := formula.LoadFormulaOverlay(formulaName, townRoot, rigName); err != nil {
+		return fmt.Errorf("warning: overlay has errors after editing: %w", err)
+	}
+
+	fmt.Printf("Overlay updated: %s\n", path)
+	fmt.Println("Changes take effect at next 'gt prime'.")
+	return nil
+}
+
+func formulaOverlayEditPath(townRoot, rigName, formulaName string, townLevel bool) string {
+	if townLevel || rigName == "" {
+		return filepath.Join(townRoot, "formula-overlays", formulaName+".toml")
+	}
+	return filepath.Join(townRoot, rigName, "formula-overlays", formulaName+".toml")
+}
+
+func ensureFormulaOverlayFile(path, formulaName string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating directory %s: %w", dir, err)
@@ -77,8 +91,10 @@ func runFormulaOverlayEdit(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("Created new overlay: %s\n", path)
 	}
+	return nil
+}
 
-	// Open in editor
+func runFormulaOverlayEditor(path string) error {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
@@ -91,13 +107,5 @@ func runFormulaOverlayEdit(cmd *cobra.Command, args []string) error {
 	if err := editorCmd.Run(); err != nil {
 		return fmt.Errorf("running editor: %w", err)
 	}
-
-	// Validate after editing
-	if _, err := formula.LoadFormulaOverlay(formulaName, townRoot, rigName); err != nil {
-		return fmt.Errorf("warning: overlay has errors after editing: %w", err)
-	}
-
-	fmt.Printf("Overlay updated: %s\n", path)
-	fmt.Println("Changes take effect at next 'gt prime'.")
 	return nil
 }

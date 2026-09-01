@@ -92,65 +92,51 @@ func NewAPIHandler(defaultRunTimeout, maxRunTimeout time.Duration, csrfToken str
 
 // ServeHTTP routes API requests to the appropriate handler.
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// No CORS headers — the dashboard is served from the same origin.
-	// Omitting Access-Control-Allow-Origin prevents cross-origin requests.
-
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	// Validate CSRF token on all POST requests.
-	if r.Method == http.MethodPost && h.csrfToken != "" {
-		if r.Header.Get("X-Dashboard-Token") != h.csrfToken {
-			h.sendError(w, "Invalid or missing dashboard token", http.StatusForbidden)
-			return
-		}
+	if !validAPICSRF(h, r) {
+		h.sendError(w, "Invalid or missing dashboard token", http.StatusForbidden)
+		return
 	}
+	routeAPI(h, w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
 
-	path := strings.TrimPrefix(r.URL.Path, "/api")
-	switch {
-	case path == "/run" && r.Method == http.MethodPost:
-		h.handleRun(w, r)
-	case path == "/commands" && r.Method == http.MethodGet:
-		h.handleCommands(w, r)
-	case path == "/options" && r.Method == http.MethodGet:
-		h.handleOptions(w, r)
-	case path == "/mail/inbox" && r.Method == http.MethodGet:
-		h.handleMailInbox(w, r)
-	case path == "/mail/threads" && r.Method == http.MethodGet:
-		h.handleMailThreads(w, r)
-	case path == "/mail/read" && r.Method == http.MethodGet:
-		h.handleMailRead(w, r)
-	case path == "/mail/send" && r.Method == http.MethodPost:
-		h.handleMailSend(w, r)
-	case path == "/issues/show" && r.Method == http.MethodGet:
-		h.handleIssueShow(w, r)
-	case path == "/issues/create" && r.Method == http.MethodPost:
-		h.handleIssueCreate(w, r)
-	case path == "/issues/close" && r.Method == http.MethodPost:
-		h.handleIssueClose(w, r)
-	case path == "/issues/update" && r.Method == http.MethodPost:
-		h.handleIssueUpdate(w, r)
-	case path == "/pr/show" && r.Method == http.MethodGet:
-		h.handlePRShow(w, r)
-	case path == "/rig/add" && r.Method == http.MethodPost:
-		h.handleRigAdd(w, r)
-	case path == "/crew" && r.Method == http.MethodGet:
-		h.handleCrew(w, r)
-	case path == "/ready" && r.Method == http.MethodGet:
-		h.handleReady(w, r)
-	case path == "/events" && r.Method == http.MethodGet:
-		h.handleSSE(w, r)
-	case path == "/session/preview" && r.Method == http.MethodGet:
-		h.handleSessionPreview(w, r)
-	default:
+func validAPICSRF(h *APIHandler, r *http.Request) bool {
+	return r.Method != http.MethodPost || h.csrfToken == "" || r.Header.Get("X-Dashboard-Token") == h.csrfToken
+}
+
+func routeAPI(h *APIHandler, w http.ResponseWriter, r *http.Request, path string) {
+	routes := map[string]func(*APIHandler, http.ResponseWriter, *http.Request){
+		http.MethodPost + " /run":            handleRun,
+		http.MethodGet + " /commands":        handleCommands,
+		http.MethodGet + " /options":         handleOptions,
+		http.MethodGet + " /mail/inbox":      handleMailInbox,
+		http.MethodGet + " /mail/threads":    handleMailThreads,
+		http.MethodGet + " /mail/read":       handleMailRead,
+		http.MethodPost + " /mail/send":      handleMailSend,
+		http.MethodGet + " /issues/show":     handleIssueShow,
+		http.MethodPost + " /issues/create":  handleIssueCreate,
+		http.MethodPost + " /issues/close":   handleIssueClose,
+		http.MethodPost + " /issues/update":  handleIssueUpdate,
+		http.MethodGet + " /pr/show":         handlePRShow,
+		http.MethodPost + " /rig/add":        handleRigAdd,
+		http.MethodGet + " /crew":            handleCrew,
+		http.MethodGet + " /ready":           handleReady,
+		http.MethodGet + " /events":          handleSSE,
+		http.MethodGet + " /session/preview": handleSessionPreview,
+	}
+	handle, ok := routes[r.Method+" "+path]
+	if !ok {
 		http.Error(w, "Not found", http.StatusNotFound)
+		return
 	}
+	handle(h, w, r)
 }
 
 // handleRun executes a gt command and returns the result.
-func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
+func handleRun(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req CommandRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -170,14 +156,7 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine timeout
-	timeout := h.defaultRunTimeout
-	if req.Timeout > 0 {
-		timeout = time.Duration(req.Timeout) * time.Second
-		if timeout > h.maxRunTimeout {
-			timeout = h.maxRunTimeout
-		}
-	}
+	timeout := runCommandTimeout(h, req.Timeout)
 
 	// Parse command into args
 	args := parseCommandArgs(req.Command)
@@ -189,24 +168,7 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	// Sanitize args
 	args = SanitizeArgs(args)
 
-	// Execute command
-	start := time.Now()
-	output, err := h.runGtCommand(r.Context(), timeout, args)
-	duration := time.Since(start)
-
-	resp := CommandResponse{
-		Command:    req.Command,
-		DurationMs: duration.Milliseconds(),
-	}
-
-	if err != nil {
-		resp.Success = false
-		resp.Error = err.Error()
-		resp.Output = output // Include partial output on error
-	} else {
-		resp.Success = true
-		resp.Output = output
-	}
+	resp := executeCommand(h, r.Context(), req.Command, args, timeout)
 
 	// Log command execution (but not for safe read-only commands to reduce noise)
 	if !meta.Safe || !resp.Success {
@@ -218,8 +180,34 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+func runCommandTimeout(h *APIHandler, requestedSeconds int) time.Duration {
+	if requestedSeconds <= 0 {
+		return h.defaultRunTimeout
+	}
+	timeout := time.Duration(requestedSeconds) * time.Second
+	if timeout > h.maxRunTimeout {
+		return h.maxRunTimeout
+	}
+	return timeout
+}
+
+func executeCommand(h *APIHandler, ctx context.Context, command string, args []string, timeout time.Duration) CommandResponse {
+	start := time.Now()
+	output, err := runGtCommand(h, ctx, timeout, args)
+	resp := CommandResponse{
+		Command:    command,
+		DurationMs: time.Since(start).Milliseconds(),
+		Output:     output,
+		Success:    err == nil,
+	}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+	return resp
+}
+
 // handleCommands returns the list of available commands for the palette.
-func (h *APIHandler) handleCommands(w http.ResponseWriter, _ *http.Request) {
+func handleCommands(_ *APIHandler, w http.ResponseWriter, _ *http.Request) {
 	resp := CommandListResponse{
 		Commands: GetCommandList(),
 	}
@@ -228,7 +216,7 @@ func (h *APIHandler) handleCommands(w http.ResponseWriter, _ *http.Request) {
 }
 
 // runGtCommand executes a gt command with the given args.
-func (h *APIHandler) runGtCommand(ctx context.Context, timeout time.Duration, args []string) (string, error) {
+func runGtCommand(h *APIHandler, ctx context.Context, timeout time.Duration, args []string) (string, error) {
 	// Apply timeout first so it bounds both semaphore wait and command execution.
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -323,11 +311,11 @@ type MailThreadsResponse struct {
 }
 
 // handleMailInbox returns the user's inbox.
-func (h *APIHandler) handleMailInbox(w http.ResponseWriter, r *http.Request) {
-	output, err := h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
+func handleMailInbox(h *APIHandler, w http.ResponseWriter, r *http.Request) {
+	output, err := runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
 	if err != nil {
 		// Try without --json flag
-		output, err = h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox"})
+		output, err = runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox"})
 		if err != nil {
 			h.sendError(w, "Failed to fetch inbox: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -372,11 +360,11 @@ func (h *APIHandler) handleMailInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMailThreads returns the inbox grouped by conversation threads.
-func (h *APIHandler) handleMailThreads(w http.ResponseWriter, r *http.Request) {
-	output, err := h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
+func handleMailThreads(h *APIHandler, w http.ResponseWriter, r *http.Request) {
+	output, err := runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox", "--json"})
 	if err != nil {
 		// Fall back to text parsing
-		output, err = h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "inbox"})
+		output, err = runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "inbox"})
 		if err != nil {
 			h.sendError(w, "Failed to fetch inbox: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -429,23 +417,7 @@ func groupIntoThreads(messages []MailMessage) []MailThread {
 	threadSeen := make(map[string]bool)
 
 	for _, msg := range messages {
-		var threadKey string
-
-		// Priority 1: Use ThreadID if present
-		if msg.ThreadID != "" {
-			threadKey = "thread:" + msg.ThreadID
-		} else if msg.ReplyTo != "" {
-			// Priority 2: Follow reply-to chain
-			if parentKey, ok := msgToThread[msg.ReplyTo]; ok {
-				threadKey = parentKey
-			} else {
-				// Start a new thread anchored to the reply-to ID
-				threadKey = "reply:" + msg.ReplyTo
-			}
-		} else {
-			// Priority 3: Standalone message (its own thread)
-			threadKey = "msg:" + msg.ID
-		}
+		threadKey := threadKeyForMessage(msg, msgToThread)
 
 		threadMap[threadKey] = append(threadMap[threadKey], msg)
 		msgToThread[msg.ID] = threadKey
@@ -459,46 +431,59 @@ func groupIntoThreads(messages []MailMessage) []MailThread {
 	// Build thread structs, ordered by most recent message
 	var threads []MailThread
 	for _, key := range threadOrder {
-		msgs := threadMap[key]
-		if len(msgs) == 0 {
-			continue
+		if thread, ok := mailThreadFromMessages(key, threadMap[key]); ok {
+			threads = append(threads, thread)
 		}
-
-		// Last message is the most recent (messages come in chronological order)
-		last := msgs[len(msgs)-1]
-
-		// Use the first message's subject as the thread subject (strip Re: prefixes)
-		subject := msgs[0].Subject
-		subject = strings.TrimPrefix(subject, "Re: ")
-		subject = strings.TrimPrefix(subject, "RE: ")
-
-		unread := 0
-		for _, m := range msgs {
-			if !m.Read {
-				unread++
-			}
-		}
-
-		threadID := key
-		if last.ThreadID != "" {
-			threadID = last.ThreadID
-		}
-
-		threads = append(threads, MailThread{
-			ThreadID:    threadID,
-			Subject:     subject,
-			LastMessage: last,
-			Messages:    msgs,
-			Count:       len(msgs),
-			UnreadCount: unread,
-		})
 	}
 
 	return threads
 }
 
+func threadKeyForMessage(msg MailMessage, msgToThread map[string]string) string {
+	if msg.ThreadID != "" {
+		return "thread:" + msg.ThreadID
+	}
+	if msg.ReplyTo != "" {
+		if parentKey, ok := msgToThread[msg.ReplyTo]; ok {
+			return parentKey
+		}
+		return "reply:" + msg.ReplyTo
+	}
+	return "msg:" + msg.ID
+}
+
+func mailThreadFromMessages(key string, msgs []MailMessage) (MailThread, bool) {
+	if len(msgs) == 0 {
+		return MailThread{}, false
+	}
+
+	last := msgs[len(msgs)-1]
+	subject := strings.TrimPrefix(msgs[0].Subject, "Re: ")
+	subject = strings.TrimPrefix(subject, "RE: ")
+
+	unread := 0
+	for _, msg := range msgs {
+		if !msg.Read {
+			unread++
+		}
+	}
+
+	threadID := key
+	if last.ThreadID != "" {
+		threadID = last.ThreadID
+	}
+	return MailThread{
+		ThreadID:    threadID,
+		Subject:     subject,
+		LastMessage: last,
+		Messages:    msgs,
+		Count:       len(msgs),
+		UnreadCount: unread,
+	}, true
+}
+
 // handleMailRead reads a specific message by ID.
-func (h *APIHandler) handleMailRead(w http.ResponseWriter, r *http.Request) {
+func handleMailRead(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	msgID := r.URL.Query().Get("id")
 	if msgID == "" {
 		h.sendError(w, "Missing message ID", http.StatusBadRequest)
@@ -509,7 +494,7 @@ func (h *APIHandler) handleMailRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := h.runGtCommand(r.Context(), 10*time.Second, []string{"mail", "read", msgID})
+	output, err := runGtCommand(h, r.Context(), 10*time.Second, []string{"mail", "read", msgID})
 	if err != nil {
 		h.sendError(w, "Failed to read message: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -531,55 +516,21 @@ type MailSendRequest struct {
 }
 
 // handleMailSend sends a new message.
-func (h *APIHandler) handleMailSend(w http.ResponseWriter, r *http.Request) {
+func handleMailSend(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req MailSendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.To == "" || req.Subject == "" {
-		h.sendError(w, "Missing required fields (to, subject)", http.StatusBadRequest)
-		return
-	}
-	if !isValidMailAddress(req.To) {
-		h.sendError(w, "Invalid recipient format", http.StatusBadRequest)
-		return
-	}
-	if req.ReplyTo != "" && !isValidID(req.ReplyTo) {
-		h.sendError(w, "Invalid reply-to ID format", http.StatusBadRequest)
+	if errMessage := validateMailSendRequest(req); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
-	// Enforce length limits (consistent with handleIssueCreate)
-	const maxSubjectLen = 500
-	const maxBodyLen = 100_000
-	if len(req.Subject) > maxSubjectLen {
-		h.sendError(w, fmt.Sprintf("Subject too long (max %d bytes)", maxSubjectLen), http.StatusBadRequest)
-		return
-	}
-	if len(req.Body) > maxBodyLen {
-		h.sendError(w, fmt.Sprintf("Body too long (max %d bytes)", maxBodyLen), http.StatusBadRequest)
-		return
-	}
-	if strings.Contains(req.Subject, "\x00") || strings.Contains(req.Body, "\x00") {
-		h.sendError(w, "Subject and body cannot contain null bytes", http.StatusBadRequest)
-		return
-	}
+	args := mailSendArgs(req)
 
-	// Build mail send command. Flags go first, then -- to end flag parsing,
-	// then the positional recipient (consistent with handleIssueCreate/handleInstall).
-	args := []string{"mail", "send"}
-	args = append(args, "-s", req.Subject)
-	if req.Body != "" {
-		args = append(args, "-m", req.Body)
-	}
-	if req.ReplyTo != "" {
-		args = append(args, "--reply-to", req.ReplyTo)
-	}
-	args = append(args, "--", req.To)
-
-	output, err := h.runGtCommand(r.Context(), 30*time.Second, args)
+	output, err := runGtCommand(h, r.Context(), 30*time.Second, args)
 	if err != nil {
 		h.sendError(w, "Failed to send message: "+err.Error()+"\n"+output, http.StatusInternalServerError)
 		return
@@ -593,54 +544,125 @@ func (h *APIHandler) handleMailSend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func validateMailSendRequest(req MailSendRequest) string {
+	if errMessage := validateMailRecipients(req); errMessage != "" {
+		return errMessage
+	}
+	return validateMailContent(req)
+}
+
+func validateMailRecipients(req MailSendRequest) string {
+	if req.To == "" || req.Subject == "" {
+		return "Missing required fields (to, subject)"
+	}
+	if !isValidMailAddress(req.To) {
+		return "Invalid recipient format"
+	}
+	if req.ReplyTo != "" && !isValidID(req.ReplyTo) {
+		return "Invalid reply-to ID format"
+	}
+	return ""
+}
+
+func validateMailContent(req MailSendRequest) string {
+	// Enforce length limits (consistent with handleIssueCreate).
+	const maxSubjectLen = 500
+	const maxBodyLen = 100_000
+	if len(req.Subject) > maxSubjectLen {
+		return fmt.Sprintf("Subject too long (max %d bytes)", maxSubjectLen)
+	}
+	if len(req.Body) > maxBodyLen {
+		return fmt.Sprintf("Body too long (max %d bytes)", maxBodyLen)
+	}
+	if strings.Contains(req.Subject, "\x00") || strings.Contains(req.Body, "\x00") {
+		return "Subject and body cannot contain null bytes"
+	}
+	return ""
+}
+
+func mailSendArgs(req MailSendRequest) []string {
+	// Flags go first, then -- to end flag parsing, then the positional
+	// recipient (consistent with handleIssueCreate/handleInstall).
+	args := []string{"mail", "send", "-s", req.Subject}
+	if req.Body != "" {
+		args = append(args, "-m", req.Body)
+	}
+	if req.ReplyTo != "" {
+		args = append(args, "--reply-to", req.ReplyTo)
+	}
+	return append(args, "--", req.To)
+}
+
 // parseMailInboxText parses text output from "gt mail inbox".
 func parseMailInboxText(output string) []MailMessage {
-	var messages []MailMessage
-	lines := strings.Split(output, "\n")
-
-	// Format: "  1. ● subject" or "  1. subject" (● = unread)
-	// followed by "      id from sender"
-	// followed by "      timestamp"
-	var current *MailMessage
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "📬") || strings.HasPrefix(trimmed, "(no messages)") {
-			continue
-		}
-
-		// Check for numbered message line
-		if len(trimmed) > 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && trimmed[1] == '.' {
-			// Save previous message
-			if current != nil {
-				messages = append(messages, *current)
-			}
-			current = &MailMessage{}
-			// Parse "1. ● subject" or "1. subject"
-			rest := strings.TrimSpace(trimmed[2:])
-			if strings.HasPrefix(rest, "●") {
-				current.Read = false
-				current.Subject = strings.TrimSpace(strings.TrimPrefix(rest, "●"))
-			} else {
-				current.Read = true
-				current.Subject = rest
-			}
-		} else if current != nil && current.ID == "" && strings.Contains(trimmed, " from ") {
-			// Parse "id from sender"
-			parts := strings.SplitN(trimmed, " from ", 2)
-			if len(parts) == 2 {
-				current.ID = strings.TrimSpace(parts[0])
-				current.From = strings.TrimSpace(parts[1])
-			}
-		} else if current != nil && current.Timestamp == "" && (strings.Contains(trimmed, "-") || strings.Contains(trimmed, ":")) {
-			current.Timestamp = trimmed
-		}
+	parser := mailInboxParser{}
+	for _, line := range strings.Split(output, "\n") {
+		parser.addLine(line)
 	}
-	// Don't forget the last one
-	if current != nil && current.ID != "" {
-		messages = append(messages, *current)
-	}
+	return parser.finish()
+}
 
-	return messages
+type mailInboxParser struct {
+	messages []MailMessage
+	current  *MailMessage
+}
+
+func (p *mailInboxParser) addLine(line string) {
+	trimmed := strings.TrimSpace(line)
+	if isMailInboxNoise(trimmed) {
+		return
+	}
+	if p.startMessage(trimmed) {
+		return
+	}
+	p.addMetadata(trimmed)
+}
+
+func isMailInboxNoise(line string) bool {
+	return line == "" || strings.HasPrefix(line, "📬") || strings.HasPrefix(line, "(no messages)")
+}
+
+func (p *mailInboxParser) startMessage(line string) bool {
+	if len(line) <= 2 || line[0] < '1' || line[0] > '9' || line[1] != '.' {
+		return false
+	}
+	if p.current != nil {
+		p.messages = append(p.messages, *p.current)
+	}
+	p.current = &MailMessage{}
+	rest := strings.TrimSpace(line[2:])
+	if strings.HasPrefix(rest, "●") {
+		p.current.Read = false
+		p.current.Subject = strings.TrimSpace(strings.TrimPrefix(rest, "●"))
+	} else {
+		p.current.Read = true
+		p.current.Subject = rest
+	}
+	return true
+}
+
+func (p *mailInboxParser) addMetadata(line string) {
+	if p.current == nil {
+		return
+	}
+	if p.current.ID == "" && strings.Contains(line, " from ") {
+		parts := strings.SplitN(line, " from ", 2)
+		if len(parts) == 2 {
+			p.current.ID = strings.TrimSpace(parts[0])
+			p.current.From = strings.TrimSpace(parts[1])
+		}
+		return
+	}
+	if p.current.Timestamp == "" && (strings.Contains(line, "-") || strings.Contains(line, ":")) {
+		p.current.Timestamp = line
+	}
+}
+
+func (p *mailInboxParser) finish() []MailMessage {
+	if p.current != nil && p.current.ID != "" {
+		p.messages = append(p.messages, *p.current)
+	}
+	return p.messages
 }
 
 // parseMailReadOutput parses the output from "gt mail read <id>".
@@ -652,20 +674,10 @@ func parseMailReadOutput(output string, msgID string) MailMessage {
 	var bodyLines []string
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "📬 ") || strings.HasPrefix(line, "Subject: ") {
-			msg.Subject = strings.TrimPrefix(strings.TrimPrefix(line, "📬 "), "Subject: ")
-			msg.Subject = strings.TrimSpace(msg.Subject)
-		} else if strings.HasPrefix(line, "From: ") {
-			msg.From = strings.TrimPrefix(line, "From: ")
-		} else if strings.HasPrefix(line, "To: ") {
-			msg.To = strings.TrimPrefix(line, "To: ")
-		} else if strings.HasPrefix(line, "ID: ") {
-			msg.ID = strings.TrimPrefix(line, "ID: ")
-		} else if strings.HasPrefix(line, "Thread: ") {
-			msg.ThreadID = strings.TrimSpace(strings.TrimPrefix(line, "Thread: "))
-		} else if strings.HasPrefix(line, "Reply-To: ") {
-			msg.ReplyTo = strings.TrimSpace(strings.TrimPrefix(line, "Reply-To: "))
-		} else if line == "" && msg.From != "" && !inBody {
+		if applyMailReadHeader(line, &msg) {
+			continue
+		}
+		if line == "" && msg.From != "" && !inBody {
 			inBody = true
 		} else if inBody {
 			bodyLines = append(bodyLines, line)
@@ -674,6 +686,27 @@ func parseMailReadOutput(output string, msgID string) MailMessage {
 
 	msg.Body = strings.TrimSpace(strings.Join(bodyLines, "\n"))
 	return msg
+}
+
+func applyMailReadHeader(line string, msg *MailMessage) bool {
+	switch {
+	case strings.HasPrefix(line, "📬 ") || strings.HasPrefix(line, "Subject: "):
+		msg.Subject = strings.TrimPrefix(strings.TrimPrefix(line, "📬 "), "Subject: ")
+		msg.Subject = strings.TrimSpace(msg.Subject)
+	case strings.HasPrefix(line, "From: "):
+		msg.From = strings.TrimPrefix(line, "From: ")
+	case strings.HasPrefix(line, "To: "):
+		msg.To = strings.TrimPrefix(line, "To: ")
+	case strings.HasPrefix(line, "ID: "):
+		msg.ID = strings.TrimPrefix(line, "ID: ")
+	case strings.HasPrefix(line, "Thread: "):
+		msg.ThreadID = strings.TrimSpace(strings.TrimPrefix(line, "Thread: "))
+	case strings.HasPrefix(line, "Reply-To: "):
+		msg.ReplyTo = strings.TrimSpace(strings.TrimPrefix(line, "Reply-To: "))
+	default:
+		return false
+	}
+	return true
 }
 
 // OptionItem represents an option with name and status.
@@ -697,20 +730,34 @@ type OptionsResponse struct {
 
 // handleOptions returns dynamic options for command arguments.
 // Results are cached for 30 seconds to avoid slow repeated fetches.
-func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
+func handleOptions(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	optionType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
 
 	if optionType == "rigs" {
 		resp := &OptionsResponse{}
-		resp.Rigs = h.loadRigOptions(r.Context())
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		resp.Rigs = loadRigOptions(h, r.Context())
+		writeOptionsResponse(w, resp, "")
 		return
 	}
 
-	// Check cache first — serialize under RLock to a buffer so we don't
-	// hold the lock while writing to the ResponseWriter (which can block
-	// on slow clients).
+	if writeCachedOptions(h, w) {
+		return
+	}
+
+	resp := fetchOptions(h, r.Context())
+
+	// Update cache
+	h.optionsCacheMu.Lock()
+	h.optionsCache = resp
+	h.optionsCacheTime = time.Now()
+	h.optionsCacheMu.Unlock()
+
+	writeOptionsResponse(w, resp, "MISS")
+}
+
+func writeCachedOptions(h *APIHandler, w http.ResponseWriter) bool {
+	// Serialize under RLock to a buffer so we don't hold the lock while
+	// writing to the ResponseWriter (which can block on slow clients).
 	h.optionsCacheMu.RLock()
 	if h.optionsCache != nil && time.Since(h.optionsCacheTime) < optionsCacheTTL {
 		data, err := json.Marshal(h.optionsCache)
@@ -720,14 +767,16 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Cache", "HIT")
 			_, _ = w.Write(data)
 			_, _ = w.Write([]byte("\n"))
-			return
+			return true
 		}
 		// Marshal failure is unexpected; fall through to refetch.
 	} else {
 		h.optionsCacheMu.RUnlock()
 	}
+	return false
+}
 
-	// Cache miss - fetch fresh data
+func fetchOptions(h *APIHandler, ctx context.Context) *OptionsResponse {
 	resp := &OptionsResponse{}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -739,14 +788,14 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		mu.Lock()
-		resp.Rigs = h.loadRigOptions(r.Context())
+		resp.Rigs = loadRigOptions(h, ctx)
 		mu.Unlock()
 	}()
 
 	// Fetch polecats
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"polecat", "list", "--all", "--json"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"polecat", "list", "--all", "--json"}); err == nil {
 			mu.Lock()
 			resp.Polecats = parseJSONPaths(output)
 			mu.Unlock()
@@ -758,7 +807,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch convoys
 	go func() {
 		defer wg.Done()
-		if output, err := h.runBdCommand(r.Context(), 3*time.Second, []string{"list", "--json", "--limit=0"}); err == nil {
+		if output, err := runBdCommand(h, ctx, 3*time.Second, []string{"list", "--json", "--limit=0"}); err == nil {
 			mu.Lock()
 			resp.Convoys = parseConvoyListJSON(output)
 			mu.Unlock()
@@ -770,7 +819,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch hooks
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"hooks", "list"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
 			mu.Lock()
 			resp.Hooks = parseHooksListOutput(output)
 			mu.Unlock()
@@ -782,7 +831,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch mail messages
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"mail", "inbox"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
 			mu.Lock()
 			resp.Messages = parseMailInboxOutput(output)
 			mu.Unlock()
@@ -794,7 +843,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch crew members
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"crew", "list", "--all"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"crew", "list", "--all"}); err == nil {
 			mu.Lock()
 			resp.Crew = parseCrewListOutput(output)
 			mu.Unlock()
@@ -806,7 +855,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch agents - shorter timeout, skip if slow
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 5*time.Second, []string{"status", "--json"}); err == nil {
+		if output, err := runGtCommand(h, ctx, 5*time.Second, []string{"status", "--json"}); err == nil {
 			mu.Lock()
 			resp.Agents = parseAgentsFromStatus(output)
 			mu.Unlock()
@@ -816,30 +865,29 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	wg.Wait()
+	return resp
+}
 
-	// Update cache
-	h.optionsCacheMu.Lock()
-	h.optionsCache = resp
-	h.optionsCacheTime = time.Now()
-	h.optionsCacheMu.Unlock()
-
+func writeOptionsResponse(w http.ResponseWriter, resp *OptionsResponse, cacheStatus string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
+	if cacheStatus != "" {
+		w.Header().Set("X-Cache", cacheStatus)
+	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *APIHandler) loadRigOptions(ctx context.Context) []string {
-	if rigs, err := h.loadRigOptionsFromConfig(); err == nil {
+func loadRigOptions(h *APIHandler, ctx context.Context) []string {
+	if rigs, err := loadRigOptionsFromConfig(h); err == nil {
 		return rigs
 	}
 
-	if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"rig", "list", "--json"}); err == nil {
+	if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"rig", "list", "--json"}); err == nil {
 		return parseRigListJSON(output)
 	} else {
 		log.Printf("warning: handleOptions: rig list --json: %v", err)
 	}
 
-	if output, err := h.runGtCommand(ctx, 3*time.Second, []string{"rig", "list"}); err == nil {
+	if output, err := runGtCommand(h, ctx, 3*time.Second, []string{"rig", "list"}); err == nil {
 		return parseRigListOutput(output)
 	} else {
 		log.Printf("warning: handleOptions: rig list fallback: %v", err)
@@ -848,7 +896,7 @@ func (h *APIHandler) loadRigOptions(ctx context.Context) []string {
 	return nil
 }
 
-func (h *APIHandler) loadRigOptionsFromConfig() ([]string, error) {
+func loadRigOptionsFromConfig(h *APIHandler) ([]string, error) {
 	rigsPath, err := findRigsConfigPath(h.workDir)
 	if err != nil {
 		return nil, err
@@ -1108,7 +1156,7 @@ type IssueShowResponse struct {
 }
 
 // handleIssueShow returns details for a specific issue/bead.
-func (h *APIHandler) handleIssueShow(w http.ResponseWriter, r *http.Request) {
+func handleIssueShow(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	issueID := r.URL.Query().Get("id")
 	if issueID == "" {
 		h.sendError(w, "Missing issue ID", http.StatusBadRequest)
@@ -1127,7 +1175,7 @@ func (h *APIHandler) handleIssueShow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try structured JSON output first (preferred — no text parsing needed)
-	output, err := h.runBdCommand(r.Context(), 10*time.Second, []string{"show", showID, "--json"})
+	output, err := runBdCommand(h, r.Context(), 10*time.Second, []string{"show", showID, "--json"})
 	if err == nil {
 		if resp, ok := parseIssueShowJSON(output); ok {
 			// Preserve the original request ID in the response (may be external:prefix:id).
@@ -1140,7 +1188,7 @@ func (h *APIHandler) handleIssueShow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fall back to text parsing
-	output, err = h.runBdCommand(r.Context(), 10*time.Second, []string{"show", showID})
+	output, err = runBdCommand(h, r.Context(), 10*time.Second, []string{"show", showID})
 	if err != nil {
 		h.sendError(w, "Failed to fetch issue: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1170,90 +1218,93 @@ type IssueCreateResponse struct {
 }
 
 // handleIssueCreate creates a new issue via bd create.
-func (h *APIHandler) handleIssueCreate(w http.ResponseWriter, r *http.Request) {
+func handleIssueCreate(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req IssueCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.Title == "" {
-		h.sendError(w, "Title is required", http.StatusBadRequest)
+	if errMessage := validateIssueCreateRequest(req); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
-	// Enforce length limits to prevent oversized payloads
-	const maxTitleLen = 500
-	const maxDescriptionLen = 100_000 // 100KB
-	if len(req.Title) > maxTitleLen {
-		h.sendError(w, fmt.Sprintf("Title too long (max %d bytes)", maxTitleLen), http.StatusBadRequest)
-		return
-	}
-	if len(req.Description) > maxDescriptionLen {
-		h.sendError(w, fmt.Sprintf("Description too long (max %d bytes)", maxDescriptionLen), http.StatusBadRequest)
-		return
-	}
-
-	// Validate title doesn't contain control characters or newlines
-	if strings.ContainsAny(req.Title, "\n\r\x00") {
-		h.sendError(w, "Title cannot contain newlines or control characters", http.StatusBadRequest)
-		return
-	}
-
-	// Validate description if provided
-	if req.Description != "" && strings.Contains(req.Description, "\x00") {
-		h.sendError(w, "Description cannot contain null characters", http.StatusBadRequest)
-		return
-	}
-
-	// Build bd create command. Flags go first, then -- to end flag parsing,
-	// then the positional title (prevents titles like "--help" being parsed as flags).
-	// bd uses cobra/pflag which respects -- natively (verified: bd --help shows cobra format).
-	args := []string{"create"}
-
-	// Add priority if specified (default is P2)
-	if req.Priority >= 1 && req.Priority <= 4 {
-		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
-	}
-
-	// Add description if provided
-	if req.Description != "" {
-		args = append(args, "--body", req.Description)
-	}
-
-	args = append(args, "--", req.Title)
+	args := issueCreateArgs(req)
 
 	// Run bd create
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	output, err := h.runBdCommand(ctx, 12*time.Second, args)
-
-	resp := IssueCreateResponse{}
-	if err != nil {
-		resp.Success = false
-		resp.Error = "Failed to create issue: " + err.Error()
-		if output != "" {
-			resp.Message = output
-		}
-	} else {
-		resp.Success = true
-		resp.Message = output
-
-		// Try to extract issue ID from output (e.g., "Created issue: abc123")
-		if strings.Contains(output, "Created") {
-			parts := strings.Fields(output)
-			for i, p := range parts {
-				if strings.HasSuffix(p, ":") && i+1 < len(parts) {
-					resp.ID = strings.TrimSpace(parts[i+1])
-					break
-				}
-			}
-		}
-	}
+	output, err := runBdCommand(h, ctx, 12*time.Second, args)
+	resp := issueCreateResponse(output, err)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func validateIssueCreateRequest(req IssueCreateRequest) string {
+	if req.Title == "" {
+		return "Title is required"
+	}
+
+	const maxTitleLen = 500
+	const maxDescriptionLen = 100_000
+	if len(req.Title) > maxTitleLen {
+		return fmt.Sprintf("Title too long (max %d bytes)", maxTitleLen)
+	}
+	if len(req.Description) > maxDescriptionLen {
+		return fmt.Sprintf("Description too long (max %d bytes)", maxDescriptionLen)
+	}
+	if strings.ContainsAny(req.Title, "\n\r\x00") {
+		return "Title cannot contain newlines or control characters"
+	}
+	if req.Description != "" && strings.Contains(req.Description, "\x00") {
+		return "Description cannot contain null characters"
+	}
+	return ""
+}
+
+func issueCreateArgs(req IssueCreateRequest) []string {
+	// Flags go first, then -- to end flag parsing, then the positional title.
+	args := []string{"create"}
+	if req.Priority >= 1 && req.Priority <= 4 {
+		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
+	}
+	if req.Description != "" {
+		args = append(args, "--body", req.Description)
+	}
+	return append(args, "--", req.Title)
+}
+
+func issueCreateResponse(output string, err error) IssueCreateResponse {
+	if err != nil {
+		resp := IssueCreateResponse{
+			Error: "Failed to create issue: " + err.Error(),
+		}
+		if output != "" {
+			resp.Message = output
+		}
+		return resp
+	}
+	return IssueCreateResponse{
+		Success: true,
+		ID:      extractCreatedIssueID(output),
+		Message: output,
+	}
+}
+
+func extractCreatedIssueID(output string) string {
+	if !strings.Contains(output, "Created") {
+		return ""
+	}
+	parts := strings.Fields(output)
+	for i, part := range parts {
+		if strings.HasSuffix(part, ":") && i+1 < len(parts) {
+			return strings.TrimSpace(parts[i+1])
+		}
+	}
+	return ""
 }
 
 // IssueCloseRequest is the request body for closing an issue.
@@ -1262,7 +1313,7 @@ type IssueCloseRequest struct {
 }
 
 // handleIssueClose closes an issue via bd close.
-func (h *APIHandler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
+func handleIssueClose(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req IssueCloseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
@@ -1278,7 +1329,7 @@ func (h *APIHandler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := h.runBdCommand(r.Context(), 12*time.Second, []string{"close", req.ID})
+	output, err := runBdCommand(h, r.Context(), 12*time.Second, []string{"close", req.ID})
 
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -1305,58 +1356,20 @@ type IssueUpdateRequest struct {
 }
 
 // handleIssueUpdate updates issue fields via bd update.
-func (h *APIHandler) handleIssueUpdate(w http.ResponseWriter, r *http.Request) {
+func handleIssueUpdate(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	var req IssueUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.ID == "" {
-		h.sendError(w, "Issue ID is required", http.StatusBadRequest)
-		return
-	}
-	if !isValidID(req.ID) {
-		h.sendError(w, "Invalid issue ID format", http.StatusBadRequest)
+	args, errMessage := issueUpdateArgs(req)
+	if errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
-	// Build bd update args
-	args := []string{"update", req.ID}
-	hasUpdate := false
-
-	if req.Status != "" {
-		// Validate allowed status values
-		switch req.Status {
-		case "open", "in_progress":
-			args = append(args, "--status="+req.Status)
-			hasUpdate = true
-		default:
-			h.sendError(w, "Invalid status (allowed: open, in_progress)", http.StatusBadRequest)
-			return
-		}
-	}
-
-	if req.Priority >= 1 && req.Priority <= 4 {
-		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
-		hasUpdate = true
-	}
-
-	if req.Assignee != "" {
-		if !isValidID(req.Assignee) {
-			h.sendError(w, "Invalid assignee format", http.StatusBadRequest)
-			return
-		}
-		args = append(args, "--assignee="+req.Assignee)
-		hasUpdate = true
-	}
-
-	if !hasUpdate {
-		h.sendError(w, "No update fields provided", http.StatusBadRequest)
-		return
-	}
-
-	output, err := h.runBdCommand(r.Context(), 12*time.Second, args)
+	output, err := runBdCommand(h, r.Context(), 12*time.Second, args)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -1374,8 +1387,70 @@ func (h *APIHandler) handleIssueUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func issueUpdateArgs(req IssueUpdateRequest) ([]string, string) {
+	if req.ID == "" {
+		return nil, "Issue ID is required"
+	}
+	if !isValidID(req.ID) {
+		return nil, "Invalid issue ID format"
+	}
+
+	args := []string{"update", req.ID}
+	statusArg, errMessage := issueUpdateStatusArg(req.Status)
+	if errMessage != "" {
+		return nil, errMessage
+	}
+	args = appendIssueUpdateArg(args, statusArg)
+	args = appendIssueUpdateArg(args, issueUpdatePriorityArg(req.Priority))
+	assigneeArg, errMessage := issueUpdateAssigneeArg(req.Assignee)
+	if errMessage != "" {
+		return nil, errMessage
+	}
+	args = appendIssueUpdateArg(args, assigneeArg)
+	if len(args) == 2 {
+		return nil, "No update fields provided"
+	}
+	return args, ""
+}
+
+func appendIssueUpdateArg(args []string, arg string) []string {
+	if arg == "" {
+		return args
+	}
+	return append(args, arg)
+}
+
+func issueUpdateStatusArg(status string) (string, string) {
+	if status == "" {
+		return "", ""
+	}
+	switch status {
+	case "open", "in_progress":
+		return "--status=" + status, ""
+	default:
+		return "", "Invalid status (allowed: open, in_progress)"
+	}
+}
+
+func issueUpdatePriorityArg(priority int) string {
+	if priority < 1 || priority > 4 {
+		return ""
+	}
+	return fmt.Sprintf("--priority=%d", priority)
+}
+
+func issueUpdateAssigneeArg(assignee string) (string, string) {
+	if assignee == "" {
+		return "", ""
+	}
+	if !isValidID(assignee) {
+		return "", "Invalid assignee format"
+	}
+	return "--assignee=" + assignee, ""
+}
+
 // runBdCommand executes a bd command with the given args.
-func (h *APIHandler) runBdCommand(ctx context.Context, timeout time.Duration, args []string) (string, error) {
+func runBdCommand(h *APIHandler, ctx context.Context, timeout time.Duration, args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1463,183 +1538,184 @@ func parseIssueShowJSON(output string) (IssueShowResponse, bool) {
 // parseIssueShowOutput parses the text output from "bd show <id>".
 // This is the fallback path when --json is unavailable.
 func parseIssueShowOutput(output string, issueID string) IssueShowResponse {
-	resp := IssueShowResponse{
-		ID:        issueID,
-		RawOutput: output,
+	parser := issueShowTextParser{
+		response: IssueShowResponse{ID: issueID, RawOutput: output},
 	}
+	for _, line := range strings.Split(output, "\n") {
+		parser.addLine(line)
+	}
+	return parser.finish()
+}
 
-	lines := strings.Split(output, "\n")
-	inDescription := false
-	parsedFirstLine := false
-	var descLines []string
-	var dependsOn []string
-	var blocks []string
+type issueShowTextParser struct {
+	response         IssueShowResponse
+	parsedFirstLine  bool
+	inDescription    bool
+	descriptionLines []string
+	dependsOn        []string
+	blocks           []string
+}
 
-	for _, line := range lines {
-		// First non-empty line usually has the format: "○ id · title   [● P2 · OPEN]"
-		if !parsedFirstLine && (strings.HasPrefix(line, "○") || strings.HasPrefix(line, "●")) {
-			parsedFirstLine = true
-			// Parse the first line for title and status
-			// Format: "○ id · title   [● P2 · OPEN]"
-			// Find the bracket first to isolate the status
-			if bracketIdx := strings.Index(line, "["); bracketIdx > 0 {
-				beforeBracket := line[:bracketIdx]
-				statusPart := line[bracketIdx:]
+func (p *issueShowTextParser) addLine(line string) {
+	if p.parseHeader(line) {
+		return
+	}
+	if p.parseMetadata(line) {
+		return
+	}
+	p.parseBody(line)
+}
 
-				// Extract priority and status from [● P2 · OPEN]
-				statusPart = strings.Trim(statusPart, "[]●○ ")
-				statusParts := strings.Split(statusPart, "·")
-				if len(statusParts) >= 1 {
-					resp.Priority = strings.TrimSpace(statusParts[0])
-				}
-				if len(statusParts) >= 2 {
-					resp.Status = strings.TrimSpace(statusParts[1])
-				}
+func (p *issueShowTextParser) parseHeader(line string) bool {
+	if p.parsedFirstLine || (!strings.HasPrefix(line, "○") && !strings.HasPrefix(line, "●")) {
+		return false
+	}
+	p.parsedFirstLine = true
+	bracketIdx := strings.Index(line, "[")
+	if bracketIdx <= 0 {
+		return true
+	}
+	p.parseHeaderStatus(line[bracketIdx:])
+	p.response.Title = parseIssueTitle(line[:bracketIdx])
+	return true
+}
 
-				// Now parse the title from before the bracket
-				// Format: "○ id · title"
-				// Use strings.Cut for safe splitting on multi-byte "·" separator
-				if _, afterFirst, ok := strings.Cut(beforeBracket, "·"); ok {
-					if _, afterSecond, ok := strings.Cut(afterFirst, "·"); ok {
-						resp.Title = strings.TrimSpace(afterSecond)
-					} else {
-						// Only one dot - id is embedded in icon part
-						resp.Title = strings.TrimSpace(afterFirst)
-					}
-				}
-			}
-			continue
+func (p *issueShowTextParser) parseHeaderStatus(statusPart string) {
+	statusPart = strings.Trim(statusPart, "[]●○ ")
+	statusParts := strings.Split(statusPart, "·")
+	if len(statusParts) >= 1 {
+		p.response.Priority = strings.TrimSpace(statusParts[0])
+	}
+	if len(statusParts) >= 2 {
+		p.response.Status = strings.TrimSpace(statusParts[1])
+	}
+}
+
+func parseIssueTitle(beforeBracket string) string {
+	// Use strings.Cut for safe splitting on multi-byte "·" separators.
+	_, afterFirst, ok := strings.Cut(beforeBracket, "·")
+	if !ok {
+		return ""
+	}
+	if _, afterSecond, ok := strings.Cut(afterFirst, "·"); ok {
+		return strings.TrimSpace(afterSecond)
+	}
+	return strings.TrimSpace(afterFirst)
+}
+
+func (p *issueShowTextParser) parseMetadata(line string) bool {
+	switch {
+	case strings.HasPrefix(line, "Owner:"):
+		p.parseOwner(line)
+	case strings.HasPrefix(line, "Type:"):
+		p.response.Type = strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
+	case strings.HasPrefix(line, "Created:"):
+		p.parseCreated(line)
+	case line == "DESCRIPTION":
+		p.inDescription = true
+	case line == "DEPENDS ON" || line == "BLOCKS":
+		p.inDescription = false
+	default:
+		return false
+	}
+	return true
+}
+
+func (p *issueShowTextParser) parseOwner(line string) {
+	ownerLine := strings.TrimPrefix(line, "Owner:")
+	ownerParts := strings.Split(ownerLine, "·")
+	p.response.Owner = strings.TrimSpace(ownerParts[0])
+	if len(ownerParts) >= 2 {
+		typePart := strings.TrimSpace(ownerParts[1])
+		p.response.Type = strings.TrimSpace(strings.TrimPrefix(typePart, "Type:"))
+	}
+}
+
+func (p *issueShowTextParser) parseCreated(line string) {
+	parts := strings.Split(line, "·")
+	p.response.Created = strings.TrimSpace(strings.TrimPrefix(parts[0], "Created:"))
+	if len(parts) >= 2 {
+		p.response.Updated = strings.TrimSpace(strings.TrimPrefix(parts[1], "Updated:"))
+	}
+}
+
+func (p *issueShowTextParser) parseBody(line string) {
+	if p.inDescription && strings.TrimSpace(line) != "" {
+		p.descriptionLines = append(p.descriptionLines, line)
+		return
+	}
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "→") {
+		if id, ok := parseIssueDependencyID(trimmed, "→"); ok {
+			p.dependsOn = append(p.dependsOn, id)
 		}
-
-		if strings.HasPrefix(line, "Owner:") {
-			// Format: "Owner: mayor · Type: task"
-			ownerLine := strings.TrimPrefix(line, "Owner:")
-			ownerParts := strings.Split(ownerLine, "·")
-			resp.Owner = strings.TrimSpace(ownerParts[0])
-			if len(ownerParts) >= 2 {
-				typePart := strings.TrimSpace(ownerParts[1])
-				resp.Type = strings.TrimSpace(strings.TrimPrefix(typePart, "Type:"))
-			}
-		} else if strings.HasPrefix(line, "Type:") {
-			resp.Type = strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
-		} else if strings.HasPrefix(line, "Created:") {
-			// Split always returns >= 1 element; parts[0] is safe unconditionally
-			parts := strings.Split(line, "·")
-			resp.Created = strings.TrimSpace(strings.TrimPrefix(parts[0], "Created:"))
-			if len(parts) >= 2 {
-				resp.Updated = strings.TrimSpace(strings.TrimPrefix(parts[1], "Updated:"))
-			}
-		} else if line == "DESCRIPTION" {
-			inDescription = true
-		} else if line == "DEPENDS ON" || line == "BLOCKS" {
-			inDescription = false
-		} else if inDescription && strings.TrimSpace(line) != "" {
-			descLines = append(descLines, line)
-		} else if strings.HasPrefix(strings.TrimSpace(line), "→") {
-			// Dependency line
-			depLine := strings.TrimSpace(line)
-			depLine = strings.TrimPrefix(depLine, "→")
-			depLine = strings.TrimSpace(depLine)
-			// Extract just the bead ID
-			if colonIdx := strings.Index(depLine, ":"); colonIdx > 0 {
-				parts := strings.Fields(depLine[:colonIdx])
-				if len(parts) >= 2 {
-					dependsOn = append(dependsOn, parts[1])
-				}
-			}
-		} else if strings.HasPrefix(strings.TrimSpace(line), "←") {
-			// Blocks line
-			blockLine := strings.TrimSpace(line)
-			blockLine = strings.TrimPrefix(blockLine, "←")
-			blockLine = strings.TrimSpace(blockLine)
-			// Extract just the bead ID
-			if colonIdx := strings.Index(blockLine, ":"); colonIdx > 0 {
-				parts := strings.Fields(blockLine[:colonIdx])
-				if len(parts) >= 2 {
-					blocks = append(blocks, parts[1])
-				}
-			}
+	} else if strings.HasPrefix(trimmed, "←") {
+		if id, ok := parseIssueDependencyID(trimmed, "←"); ok {
+			p.blocks = append(p.blocks, id)
 		}
 	}
+}
 
-	resp.Description = strings.TrimSpace(strings.Join(descLines, "\n"))
-	resp.DependsOn = dependsOn
-	resp.Blocks = blocks
+func parseIssueDependencyID(line, marker string) (string, bool) {
+	depLine := strings.TrimSpace(strings.TrimPrefix(line, marker))
+	colonIdx := strings.Index(depLine, ":")
+	if colonIdx <= 0 {
+		return "", false
+	}
+	parts := strings.Fields(depLine[:colonIdx])
+	if len(parts) < 2 {
+		return "", false
+	}
+	return parts[1], true
+}
 
-	return resp
+func (p *issueShowTextParser) finish() IssueShowResponse {
+	p.response.Description = strings.TrimSpace(strings.Join(p.descriptionLines, "\n"))
+	p.response.DependsOn = p.dependsOn
+	p.response.Blocks = p.blocks
+	return p.response
 }
 
 // PRShowResponse is the response for /api/pr/show.
 type PRShowResponse struct {
-	Number       int      `json:"number"`
-	Title        string   `json:"title"`
-	State        string   `json:"state"`
-	Author       string   `json:"author"`
-	URL          string   `json:"url"`
-	Body         string   `json:"body"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
-	Additions    int      `json:"additions"`
-	Deletions    int      `json:"deletions"`
-	ChangedFiles int      `json:"changed_files"`
-	Mergeable    string   `json:"mergeable"`
-	BaseRef      string   `json:"base_ref"`
-	HeadRef      string   `json:"head_ref"`
-	Labels       []string `json:"labels,omitempty"`
-	Checks       []string `json:"checks,omitempty"`
-	RawOutput    string   `json:"raw_output,omitempty"`
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	Author string `json:"author"`
+	URL    string `json:"url"`
+	Body   string `json:"body"`
+	PRStats
+	Mergeable string   `json:"mergeable"`
+	BaseRef   string   `json:"base_ref"`
+	HeadRef   string   `json:"head_ref"`
+	Labels    []string `json:"labels,omitempty"`
+	Checks    []string `json:"checks,omitempty"`
+	RawOutput string   `json:"raw_output,omitempty"`
+}
+
+// PRStats contains timestamps and diff size metadata for a pull request.
+// It is embedded so the API response retains its flat JSON shape.
+type PRStats struct {
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
+	ChangedFiles int    `json:"changed_files"`
 }
 
 // handlePRShow returns details for a specific PR.
-func (h *APIHandler) handlePRShow(w http.ResponseWriter, r *http.Request) {
-	// Accept either repo/number or full URL
+func handlePRShow(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	repo := r.URL.Query().Get("repo")
 	number := r.URL.Query().Get("number")
 	prURL := r.URL.Query().Get("url")
 
-	if prURL == "" && (repo == "" || number == "") {
-		h.sendError(w, "Missing repo/number or url parameter", http.StatusBadRequest)
+	args, errMessage := prShowArgs(repo, number, prURL)
+	if errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
-	// Validate inputs to prevent argument injection.
-	// When url is provided, repo/number are ignored — only validate what's used.
-	if prURL != "" {
-		const maxURLLen = 2000
-		if len(prURL) > maxURLLen {
-			h.sendError(w, fmt.Sprintf("PR URL too long (max %d bytes)", maxURLLen), http.StatusBadRequest)
-			return
-		}
-		if strings.ContainsAny(prURL, "\x00\n\r") {
-			h.sendError(w, "PR URL cannot contain null bytes or newlines", http.StatusBadRequest)
-			return
-		}
-		// Allow any https:// URL, not just github.com — supports GitHub Enterprise.
-		// gh CLI validates against the configured host and rejects non-GitHub API responses,
-		// limiting SSRF risk. Localhost-only deployment further reduces exposure.
-		if !strings.HasPrefix(prURL, "https://") {
-			h.sendError(w, "PR URL must start with https://", http.StatusBadRequest)
-			return
-		}
-	} else {
-		if !isNumeric(number) {
-			h.sendError(w, "Invalid PR number format", http.StatusBadRequest)
-			return
-		}
-		if !isValidRepoRef(repo) {
-			h.sendError(w, "Invalid repo format (expected owner/repo)", http.StatusBadRequest)
-			return
-		}
-	}
-
-	var args []string
-	if prURL != "" {
-		args = []string{"pr", "view", prURL, "--json", "number,title,state,author,url,body,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,baseRefName,headRefName,labels,statusCheckRollup"}
-	} else {
-		args = []string{"pr", "view", number, "--repo", repo, "--json", "number,title,state,author,url,body,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,baseRefName,headRefName,labels,statusCheckRollup"}
-	}
-
-	output, err := h.runGhCommand(r.Context(), 15*time.Second, args)
+	output, err := runGhCommand(h, r.Context(), 15*time.Second, args)
 	if err != nil {
 		h.sendError(w, "Failed to fetch PR: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1652,8 +1728,47 @@ func (h *APIHandler) handlePRShow(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+const prShowJSONFields = "number,title,state,author,url,body,createdAt,updatedAt,additions,deletions,changedFiles,mergeable,baseRefName,headRefName,labels,statusCheckRollup"
+
+func prShowArgs(repo, number, prURL string) ([]string, string) {
+	if prURL == "" {
+		if repo == "" || number == "" {
+			return nil, "Missing repo/number or url parameter"
+		}
+		if !isNumeric(number) {
+			return nil, "Invalid PR number format"
+		}
+		if !isValidRepoRef(repo) {
+			return nil, "Invalid repo format (expected owner/repo)"
+		}
+		return []string{"pr", "view", number, "--repo", repo, "--json", prShowJSONFields}, ""
+	}
+
+	if errMessage := validatePRShowURL(prURL); errMessage != "" {
+		return nil, errMessage
+	}
+	return []string{"pr", "view", prURL, "--json", prShowJSONFields}, ""
+}
+
+func validatePRShowURL(prURL string) string {
+	const maxURLLen = 2000
+	if len(prURL) > maxURLLen {
+		return fmt.Sprintf("PR URL too long (max %d bytes)", maxURLLen)
+	}
+	if strings.ContainsAny(prURL, "\x00\n\r") {
+		return "PR URL cannot contain null bytes or newlines"
+	}
+	// Allow any https:// URL, not just github.com — supports GitHub Enterprise.
+	// gh CLI validates against the configured host and rejects non-GitHub API responses,
+	// limiting SSRF risk. Localhost-only deployment further reduces exposure.
+	if !strings.HasPrefix(prURL, "https://") {
+		return "PR URL must start with https://"
+	}
+	return ""
+}
+
 // runGhCommand executes a gh command with the given args.
-func (h *APIHandler) runGhCommand(ctx context.Context, timeout time.Duration, args []string) (string, error) {
+func runGhCommand(h *APIHandler, ctx context.Context, timeout time.Duration, args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1808,12 +1923,12 @@ type ReadyResponse struct {
 }
 
 // handleCrew returns crew status across all rigs with proper state detection.
-func (h *APIHandler) handleCrew(w http.ResponseWriter, r *http.Request) {
+func handleCrew(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	// Run gt crew list --all --json to get crew across all rigs
-	output, err := h.runGtCommand(ctx, 10*time.Second, []string{"crew", "list", "--all", "--json"})
+	output, err := runGtCommand(h, ctx, 10*time.Second, []string{"crew", "list", "--all", "--json"})
 
 	resp := CrewResponse{
 		Crew:  make([]CrewMember, 0),
@@ -1844,7 +1959,7 @@ func (h *APIHandler) handleCrew(w http.ResponseWriter, r *http.Request) {
 	// Convert to CrewMember format with state detection
 	for _, c := range crewData {
 		sessionName := session.CrewSessionName(session.PrefixFor(c.Rig), c.Name)
-		state, lastActive, sessionStatus := h.detectCrewState(ctx, sessionName, c.Hook)
+		state, lastActive, sessionStatus := detectCrewState(ctx, sessionName, c.Hook)
 
 		member := CrewMember{
 			Name:       c.Name,
@@ -1865,7 +1980,7 @@ func (h *APIHandler) handleCrew(w http.ResponseWriter, r *http.Request) {
 
 // detectCrewState determines crew member state from tmux session.
 // Returns: state (spinning/finished/questions/ready), lastActive string, session status
-func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook string) (string, string, string) {
+func detectCrewState(ctx context.Context, sessionName, hook string) (string, string, string) {
 	// Check if tmux session exists and get activity
 	cmd := tmux.BuildCommandContext(ctx, "list-sessions", "-F", "#{session_name}|#{window_activity}|#{session_attached}")
 	var stdout bytes.Buffer
@@ -1878,18 +1993,12 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 	// Find our session
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	for _, line := range lines {
-		parts := strings.Split(line, "|")
-		if len(parts) < 3 || parts[0] != sessionName {
+		activityUnix, attached, ok := crewSessionLine(line, sessionName)
+		if !ok {
 			continue
 		}
 
 		// Found session
-		var activityUnix int64
-		if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil {
-			continue
-		}
-		attached := parts[2] == "1"
-
 		sessionStatus := "detached"
 		if attached {
 			sessionStatus = "attached"
@@ -1900,14 +2009,14 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 		lastActive := formatTimestamp(time.Unix(activityUnix, 0))
 
 		// Check if Claude is running in the session
-		isClaudeRunning := h.isClaudeRunningInSession(ctx, sessionName)
+		isClaudeRunning := isClaudeRunningInSession(ctx, sessionName)
 
 		// Determine state based on activity and Claude status
 		state := determineCrewState(activityAge, isClaudeRunning, hook)
 
 		// Check for questions if state is potentially finished
-		if state == "finished" || (state == "ready" && hook != "") {
-			if h.hasQuestionInPane(ctx, sessionName) {
+		if crewStateNeedsQuestion(state, hook) {
+			if hasQuestionInPane(ctx, sessionName) {
 				state = "questions"
 			}
 		}
@@ -1919,8 +2028,23 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 	return "ready", "", "none"
 }
 
+func crewSessionLine(line, sessionName string) (activityUnix int64, attached, ok bool) {
+	parts := strings.Split(line, "|")
+	if len(parts) < 3 || parts[0] != sessionName {
+		return 0, false, false
+	}
+	if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil {
+		return 0, false, false
+	}
+	return activityUnix, parts[2] == "1", true
+}
+
+func crewStateNeedsQuestion(state, hook string) bool {
+	return state == "finished" || (state == "ready" && hook != "")
+}
+
 // isClaudeRunningInSession checks if Claude/agent is actively running.
-func (h *APIHandler) isClaudeRunningInSession(ctx context.Context, sessionName string) bool {
+func isClaudeRunningInSession(ctx context.Context, sessionName string) bool {
 	// Target pane 0 explicitly (:0.0) to avoid false positives from
 	// user-created split panes running shells or other commands.
 	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", sessionName+":0.0", "-p", "#{pane_current_command}")
@@ -1952,7 +2076,7 @@ func paneCurrentCommandIsAgent(output string) bool {
 }
 
 // hasQuestionInPane checks the last output for question indicators.
-func (h *APIHandler) hasQuestionInPane(ctx context.Context, sessionName string) bool {
+func hasQuestionInPane(ctx context.Context, sessionName string) bool {
 	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-J")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -2013,12 +2137,12 @@ func determineCrewState(activityAge time.Duration, isClaudeRunning bool, hook st
 }
 
 // handleReady returns ready work items across town.
-func (h *APIHandler) handleReady(w http.ResponseWriter, r *http.Request) {
+func handleReady(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	// Run gt ready --json to get ready work
-	output, err := h.runGtCommand(ctx, 12*time.Second, []string{"ready", "--json"})
+	output, err := runGtCommand(h, ctx, 12*time.Second, []string{"ready", "--json"})
 
 	resp := ReadyResponse{
 		Items:    make([]ReadyItem, 0),
@@ -2094,24 +2218,16 @@ type SessionPreviewResponse struct {
 }
 
 // handleSessionPreview returns the last N lines of tmux capture-pane output for a session.
-func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request) {
+func handleSessionPreview(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	sessionName := r.URL.Query().Get("session")
 	if sessionName == "" {
 		h.sendError(w, "Missing session parameter", http.StatusBadRequest)
 		return
 	}
 
-	// Validate session name: must start with a known prefix and contain only safe characters
-	hasValidPrefix := session.HasKnownPrefix(sessionName)
-	if !hasValidPrefix {
-		h.sendError(w, "Invalid session name: must start with a known rig prefix", http.StatusBadRequest)
+	if errMessage := validateSessionPreviewName(sessionName); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
-	}
-	for _, c := range sessionName {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
-			h.sendError(w, "Invalid session name: contains invalid characters", http.StatusBadRequest)
-			return
-		}
 	}
 
 	// Run tmux capture-pane to get the last 30 lines
@@ -2141,47 +2257,79 @@ func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// parseCommandArgs splits a command string into args, respecting quotes.
-func parseCommandArgs(command string) []string {
-	var args []string
-	var current strings.Builder
-	inQuote := false
-	quoteChar := rune(0)
-
-	for _, r := range command {
-		switch {
-		case r == '"' || r == '\'':
-			if inQuote && r == quoteChar {
-				inQuote = false
-				quoteChar = 0
-			} else if !inQuote {
-				inQuote = true
-				quoteChar = r
-			} else {
-				current.WriteRune(r)
-			}
-		case r == ' ' && !inQuote:
-			if current.Len() > 0 {
-				args = append(args, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteRune(r)
+func validateSessionPreviewName(sessionName string) string {
+	// Session names must start with a known prefix and contain only safe characters.
+	if !session.HasKnownPrefix(sessionName) {
+		return "Invalid session name: must start with a known rig prefix"
+	}
+	for _, c := range sessionName {
+		if !isSessionNameCharacter(c) {
+			return "Invalid session name: contains invalid characters"
 		}
 	}
+	return ""
+}
 
-	if current.Len() > 0 {
-		args = append(args, current.String())
+func isSessionNameCharacter(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '-' || c == '_'
+}
+
+// parseCommandArgs splits a command string into args, respecting quotes.
+func parseCommandArgs(command string) []string {
+	parser := commandArgParser{}
+	for _, r := range command {
+		parser.addRune(r)
 	}
+	parser.flush()
+	return parser.args
+}
 
-	return args
+type commandArgParser struct {
+	args      []string
+	current   strings.Builder
+	inQuote   bool
+	quoteChar rune
+}
+
+func (p *commandArgParser) addRune(r rune) {
+	switch {
+	case r == '"' || r == '\'':
+		p.handleQuote(r)
+	case r == ' ' && !p.inQuote:
+		p.flush()
+	default:
+		p.current.WriteRune(r)
+	}
+}
+
+func (p *commandArgParser) handleQuote(r rune) {
+	if p.inQuote && r == p.quoteChar {
+		p.inQuote = false
+		p.quoteChar = 0
+		return
+	}
+	if !p.inQuote {
+		p.inQuote = true
+		p.quoteChar = r
+		return
+	}
+	p.current.WriteRune(r)
+}
+
+func (p *commandArgParser) flush() {
+	if p.current.Len() == 0 {
+		return
+	}
+	p.args = append(p.args, p.current.String())
+	p.current.Reset()
 }
 
 // handleSSE streams Server-Sent Events to the dashboard client.
 // It polls key dashboard state every 2 seconds and sends an event when
 // changes are detected, allowing the client to trigger a re-render.
 // Falls through gracefully if the client disconnects.
-func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
+func handleSSE(h *APIHandler, w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "SSE not supported", http.StatusInternalServerError)
@@ -2215,7 +2363,7 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
 		case <-ticker.C:
-			hash := h.computeDashboardHash(ctx)
+			hash := computeDashboardHash(h, ctx)
 			if hash != "" && hash != lastHash {
 				lastHash = hash
 				fmt.Fprintf(w, "event: dashboard-update\ndata: %s\n\n", hash)
@@ -2227,7 +2375,7 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 // computeDashboardHash generates a lightweight hash of key dashboard state.
 // It runs quick commands in parallel and hashes their output to detect changes.
-func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
+func computeDashboardHash(h *APIHandler, ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -2240,7 +2388,7 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 	// Check worker/polecat state
 	go func() {
 		defer wg.Done()
-		if out, err := h.runGtCommand(ctx, 3*time.Second, []string{"status", "--json"}); err == nil {
+		if out, err := runGtCommand(h, ctx, 3*time.Second, []string{"status", "--json"}); err == nil {
 			mu.Lock()
 			parts = append(parts, "status:"+out)
 			mu.Unlock()
@@ -2250,7 +2398,7 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 	// Check hooks state
 	go func() {
 		defer wg.Done()
-		if out, err := h.runGtCommand(ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
+		if out, err := runGtCommand(h, ctx, 3*time.Second, []string{"hooks", "list"}); err == nil {
 			mu.Lock()
 			parts = append(parts, "hooks:"+out)
 			mu.Unlock()
@@ -2260,7 +2408,7 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 	// Check mail count
 	go func() {
 		defer wg.Done()
-		if out, err := h.runGtCommand(ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
+		if out, err := runGtCommand(h, ctx, 3*time.Second, []string{"mail", "inbox"}); err == nil {
 			mu.Lock()
 			parts = append(parts, "mail:"+out)
 			mu.Unlock()
@@ -2278,83 +2426,40 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 }
 
 // handleRigAdd creates a new rig, optionally with a local bare repo.
-func (h *APIHandler) handleRigAdd(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name    string `json:"name"`
-		RepoURL string `json:"repo_url,omitempty"`
-		Local   bool   `json:"local,omitempty"`
-	}
+type rigAddRequest struct {
+	Name    string `json:"name"`
+	RepoURL string `json:"repo_url,omitempty"`
+	Local   bool   `json:"local,omitempty"`
+}
+
+func handleRigAdd(h *APIHandler, w http.ResponseWriter, r *http.Request) {
+	var req rigAddRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Name == "" {
-		h.sendError(w, "Rig name is required", http.StatusBadRequest)
-		return
-	}
-	if !isValidRigName(req.Name) {
-		h.sendError(w, "Invalid rig name: must be alphanumeric/underscore only", http.StatusBadRequest)
+	if errMessage := validateRigAddRequest(req); errMessage != "" {
+		h.sendError(w, errMessage, http.StatusBadRequest)
 		return
 	}
 
 	repoURL := req.RepoURL
 	if req.Local || repoURL == "" {
-		// Create a local bare repo with an initial commit
-		localRepoPath := fmt.Sprintf("/tmp/gastown-repos/%s.git", req.Name)
-
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-
-		// Create bare repo
-		mkdirCmd := exec.CommandContext(ctx, "mkdir", "-p", localRepoPath)
-		if out, err := mkdirCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to create repo dir: %s %v", string(out), err), http.StatusInternalServerError)
+		var err error
+		repoURL, err = createLocalRigRepo(ctx, req.Name)
+		if err != nil {
+			h.sendError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
-		initCmd.Dir = localRepoPath
-		if out, err := initCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to init bare repo: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-
-		// Clone, create initial commit, push
-		tmpDir := fmt.Sprintf("/tmp/gastown-repos/.tmp-%s", req.Name)
-		cloneCmd := exec.CommandContext(ctx, "git", "clone", localRepoPath, tmpDir)
-		if out, err := cloneCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to clone: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-		defer func() {
-			_ = exec.CommandContext(context.Background(), "rm", "-rf", tmpDir).Run()
-		}()
-
-		commitCmd := exec.CommandContext(ctx, "git", "commit", "--allow-empty", "-m", "Initial commit")
-		commitCmd.Dir = tmpDir
-		if out, err := commitCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to create initial commit: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-
-		pushCmd := exec.CommandContext(ctx, "git", "push", "origin", "HEAD:main")
-		pushCmd.Dir = tmpDir
-		if out, err := pushCmd.CombinedOutput(); err != nil {
-			h.sendError(w, fmt.Sprintf("Failed to push: %s %v", string(out), err), http.StatusInternalServerError)
-			return
-		}
-
-		repoURL = localRepoPath
-	} else if !isValidGitURL(repoURL) {
-		h.sendError(w, "Invalid git URL", http.StatusBadRequest)
-		return
 	}
 
 	// Run gt rig add
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	output, err := h.runGtCommand(ctx, 55*time.Second, []string{"rig", "add", req.Name, repoURL})
+	output, err := runGtCommand(h, ctx, 55*time.Second, []string{"rig", "add", req.Name, repoURL})
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -2377,4 +2482,53 @@ func (h *APIHandler) handleRigAdd(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Rig '%s' created successfully", req.Name),
 		"output":  output,
 	})
+}
+
+func validateRigAddRequest(req rigAddRequest) string {
+	if req.Name == "" {
+		return "Rig name is required"
+	}
+	if !isValidRigName(req.Name) {
+		return "Invalid rig name: must be alphanumeric/underscore only"
+	}
+	if !req.Local && req.RepoURL != "" && !isValidGitURL(req.RepoURL) {
+		return "Invalid git URL"
+	}
+	return ""
+}
+
+func createLocalRigRepo(ctx context.Context, name string) (string, error) {
+	localRepoPath := fmt.Sprintf("/tmp/gastown-repos/%s.git", name)
+	mkdirCmd := exec.CommandContext(ctx, "mkdir", "-p", localRepoPath)
+	if out, err := mkdirCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to create repo dir: %s %v", string(out), err)
+	}
+
+	initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
+	initCmd.Dir = localRepoPath
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to init bare repo: %s %v", string(out), err)
+	}
+
+	tmpDir := fmt.Sprintf("/tmp/gastown-repos/.tmp-%s", name)
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", localRepoPath, tmpDir)
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to clone: %s %v", string(out), err)
+	}
+	defer func() {
+		_ = exec.CommandContext(context.Background(), "rm", "-rf", tmpDir).Run()
+	}()
+
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "--allow-empty", "-m", "Initial commit")
+	commitCmd.Dir = tmpDir
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to create initial commit: %s %v", string(out), err)
+	}
+
+	pushCmd := exec.CommandContext(ctx, "git", "push", "origin", "HEAD:main")
+	pushCmd.Dir = tmpDir
+	if out, err := pushCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Failed to push: %s %v", string(out), err)
+	}
+	return localRepoPath, nil
 }

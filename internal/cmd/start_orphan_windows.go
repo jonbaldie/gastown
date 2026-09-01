@@ -10,7 +10,7 @@ import (
 
 // cleanupOrphanedClaude is a Windows stub.
 // Orphan cleanup requires Unix-specific signals (SIGTERM/SIGKILL).
-func cleanupOrphanedClaude(graceSecs int) {
+func cleanupOrphanedClaude(_ int) {
 	fmt.Printf("  %s Orphan cleanup not supported on Windows\n",
 		style.Dim.Render("○"))
 }

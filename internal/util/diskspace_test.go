@@ -116,9 +116,15 @@ func TestClassifyDiskSpace_CriticalRequiresLowAbsoluteSpace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			level, _ := ClassifyDiskSpace(&DiskSpaceInfo{AvailableBytes: tt.available, UsedPercent: tt.used})
+			level, message := ClassifyDiskSpace(&DiskSpaceInfo{AvailableBytes: tt.available, UsedPercent: tt.used})
 			if level != tt.want {
 				t.Errorf("ClassifyDiskSpace() = %s, want %s", level, tt.want)
+			}
+			if tt.want == DiskSpaceOK && message != "" {
+				t.Errorf("ClassifyDiskSpace() message = %q, want empty", message)
+			}
+			if tt.want != DiskSpaceOK && message == "" {
+				t.Error("ClassifyDiskSpace() message is empty for non-OK result")
 			}
 		})
 	}
@@ -137,9 +143,15 @@ func TestCheckDiskSpace_CurrentDir(t *testing.T) {
 }
 
 func TestCheckDiskSpace_InvalidPath(t *testing.T) {
-	_, _, err := CheckDiskSpace("/nonexistent/path/that/should/not/exist")
+	level, message, err := CheckDiskSpace("/nonexistent/path/that/should/not/exist")
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
+	}
+	if level != DiskSpaceOK {
+		t.Errorf("level = %s, want %s when disk space cannot be measured", level, DiskSpaceOK)
+	}
+	if message != "" {
+		t.Errorf("message = %q, want empty when disk space cannot be measured", message)
 	}
 }
 

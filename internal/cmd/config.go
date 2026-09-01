@@ -46,11 +46,13 @@ Commands:
 
 // Agent subcommands
 
-var configAgentListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all agents",
-	Long:  "", // Set in init() — includes full built-in preset list from config.BuiltInAgentPresetSummary()
-	RunE:  runConfigAgentList,
+func newConfigAgentListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all agents",
+		Long:  "", // Set in init() — includes full built-in preset list from config.BuiltInAgentPresetSummary()
+		RunE:  runConfigAgentList,
+	}
 }
 
 var configAgentGetCmd = &cobra.Command{
@@ -100,12 +102,14 @@ Examples:
 	RunE: runConfigAgentSet,
 }
 
-var configAgentRemoveCmd = &cobra.Command{
-	Use:   "remove <name>",
-	Short: "Remove custom agent",
-	Long:  "", // Set in init() — includes full built-in preset list
-	Args:  cobra.ExactArgs(1),
-	RunE:  runConfigAgentRemove,
+func newConfigAgentRemoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove <name>",
+		Short: "Remove custom agent",
+		Long:  "", // Set in init() — includes full built-in preset list
+		Args:  cobra.ExactArgs(1),
+		RunE:  runConfigAgentRemove,
+	}
 }
 
 // Role subcommands provide a typed interface over role_agents and role_effort.
@@ -163,9 +167,6 @@ assignment (if any) in place.`,
 	RunE: runConfigRoleUnset,
 }
 
-// configRoleRig holds the --rig flag value shared by the role subcommands.
-var configRoleRig string
-
 // Cost-tier subcommand
 
 var configCostTierCmd = &cobra.Command{
@@ -189,7 +190,7 @@ Examples:
 	RunE: runConfigCostTier,
 }
 
-func runConfigCostTier(cmd *cobra.Command, args []string) error {
+func runConfigCostTier(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -202,22 +203,27 @@ func runConfigCostTier(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(args) == 0 {
-		// Show current tier and role assignments
-		current := config.GetCurrentTier(townSettings)
-		if current == "" {
-			fmt.Println("Cost tier: " + style.Bold.Render("custom") + " (manual role_agents configuration)")
-		} else {
-			tier := config.CostTier(current)
-			fmt.Printf("Cost tier: %s\n", style.Bold.Render(current))
-			fmt.Printf("  %s\n\n", config.TierDescription(tier))
-			fmt.Println("Role assignments:")
-			fmt.Println(config.FormatTierRoleTable(tier))
-		}
+		return showCostTier(townSettings)
+	}
+	return applyCostTier(settingsPath, townSettings, args[0])
+}
+
+func showCostTier(townSettings *config.TownSettings) error {
+	current := config.GetCurrentTier(townSettings)
+	if current == "" {
+		fmt.Println("Cost tier: " + style.Bold.Render("custom") + " (manual role_agents configuration)")
 		return nil
 	}
 
-	// Apply tier
-	tierName := args[0]
+	tier := config.CostTier(current)
+	fmt.Printf("Cost tier: %s\n", style.Bold.Render(current))
+	fmt.Printf("  %s\n\n", config.TierDescription(tier))
+	fmt.Println("Role assignments:")
+	fmt.Println(config.FormatTierRoleTable(tier))
+	return nil
+}
+
+func applyCostTier(settingsPath string, townSettings *config.TownSettings, tierName string) error {
 	if !config.IsValidTier(tierName) {
 		return fmt.Errorf("invalid cost tier %q (valid: %s)", tierName, strings.Join(config.ValidCostTiers(), ", "))
 	}
@@ -247,11 +253,13 @@ func runConfigCostTier(cmd *cobra.Command, args []string) error {
 
 // Default-agent subcommand
 
-var configDefaultAgentCmd = &cobra.Command{
-	Use:   "default-agent [name]",
-	Short: "Get or set default agent",
-	Long:  "", // Set in init() — includes full built-in preset list
-	RunE:  runConfigDefaultAgent,
+func newConfigDefaultAgentCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "default-agent [name]",
+		Short: "Get or set default agent",
+		Long:  "", // Set in init() — includes full built-in preset list
+		RunE:  runConfigDefaultAgent,
+	}
 }
 
 var configDefaultAgentListCmd = &cobra.Command{
@@ -267,9 +275,6 @@ Examples:
   gt config default-agent list --json    # JSON output`,
 	RunE: runConfigAgentList,
 }
-
-// Flags for default-agent list
-var configDefaultAgentListJSON bool
 
 var configAgentEmailDomainCmd = &cobra.Command{
 	Use:   "agent-email-domain [domain]",
@@ -292,12 +297,6 @@ Examples:
 	RunE: runConfigAgentEmailDomain,
 }
 
-// Flags
-var (
-	configAgentListJSON    bool
-	configAgentSetProvider string
-)
-
 // AgentListItem represents an agent in list output.
 type AgentListItem struct {
 	Name     string `json:"name"`
@@ -307,67 +306,69 @@ type AgentListItem struct {
 	IsCustom bool   `json:"is_custom"`
 }
 
-func runConfigAgentList(cmd *cobra.Command, args []string) error {
+func runConfigAgentList(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
+	townSettings, err := loadConfigAgentListSettings(townRoot)
+	if err != nil {
+		return err
+	}
+	items := buildConfigAgentListItems(townSettings)
+	return printConfigAgentList(cmd, townSettings, items)
+}
 
-	// Load town settings
+func loadConfigAgentListSettings(townRoot string) (*config.TownSettings, error) {
 	settingsPath := config.TownSettingsPath(townRoot)
 	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
 	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
+		return nil, fmt.Errorf("loading town settings: %w", err)
 	}
-
-	// Load agent registry
 	registryPath := config.DefaultAgentRegistryPath(townRoot)
 	if err := config.LoadAgentRegistry(registryPath); err != nil {
-		return fmt.Errorf("loading agent registry: %w", err)
+		return nil, fmt.Errorf("loading agent registry: %w", err)
 	}
+	return townSettings, nil
+}
 
-	// Collect all agents
-	builtInAgents := config.ListAgentPresets()
-	customAgents := make(map[string]*config.RuntimeConfig)
-	if townSettings.Agents != nil {
-		for name, runtime := range townSettings.Agents {
-			customAgents[name] = runtime
-		}
-	}
-
-	// Build list items
+func buildConfigAgentListItems(townSettings *config.TownSettings) []AgentListItem {
 	var items []AgentListItem
-	for _, name := range builtInAgents {
+	for _, name := range config.ListAgentPresets() {
 		preset := config.GetAgentPresetByName(name)
-		if preset != nil {
-			items = append(items, AgentListItem{
-				Name:     name,
-				Command:  preset.Command,
-				Args:     strings.Join(preset.Args, " "),
-				Type:     "built-in",
-				IsCustom: false,
-			})
-		}
-	}
-	for name, runtime := range customAgents {
-		argsStr := ""
-		if runtime.Args != nil {
-			argsStr = strings.Join(runtime.Args, " ")
+		if preset == nil {
+			continue
 		}
 		items = append(items, AgentListItem{
 			Name:     name,
-			Command:  runtime.Command,
-			Args:     argsStr,
-			Type:     "custom",
-			IsCustom: true,
+			Command:  preset.Command,
+			Args:     strings.Join(preset.Args, " "),
+			Type:     "built-in",
+			IsCustom: false,
 		})
 	}
-
-	// Sort by name
+	if townSettings.Agents != nil {
+		for name, runtime := range townSettings.Agents {
+			argsStr := ""
+			if runtime.Args != nil {
+				argsStr = strings.Join(runtime.Args, " ")
+			}
+			items = append(items, AgentListItem{
+				Name:     name,
+				Command:  runtime.Command,
+				Args:     argsStr,
+				Type:     "custom",
+				IsCustom: true,
+			})
+		}
+	}
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].Name < items[j].Name
 	})
+	return items
+}
 
+func printConfigAgentList(cmd *cobra.Command, townSettings *config.TownSettings, items []AgentListItem) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -375,7 +376,6 @@ func runConfigAgentList(cmd *cobra.Command, args []string) error {
 		return enc.Encode(items)
 	}
 
-	// Text output
 	fmt.Printf("%s\n\n", style.Bold.Render("Available Agents"))
 	for _, item := range items {
 		typeLabel := style.Dim.Render("[" + item.Type + "]")
@@ -386,7 +386,6 @@ func runConfigAgentList(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	// Show default
 	defaultAgent := townSettings.DefaultAgent
 	if defaultAgent == "" {
 		defaultAgent = "claude"
@@ -396,7 +395,7 @@ func runConfigAgentList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigAgentGet(cmd *cobra.Command, args []string) error {
+func runConfigAgentGet(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -473,41 +472,54 @@ func runConfigAgentSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	// Load town settings
 	settingsPath := config.TownSettingsPath(townRoot)
 	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
 	if err != nil {
 		return fmt.Errorf("loading town settings: %w", err)
 	}
 
-	// Parse command line into command and args
-	parts := strings.Fields(commandLine)
-	if len(parts) == 0 {
-		return fmt.Errorf("command cannot be empty")
+	parts, err := parseConfigAgentCommand(commandLine)
+	if err != nil {
+		return err
+	}
+	provider := configAgentProvider(cmd, parts[0])
+	updateConfigAgent(townSettings, name, provider, parts)
+
+	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
+		return fmt.Errorf("saving town settings: %w", err)
 	}
 
-	// Initialize agents map if needed
+	printConfigAgentSet(name, commandLine)
+	return nil
+}
+
+func parseConfigAgentCommand(commandLine string) ([]string, error) {
+	parts := strings.Fields(commandLine)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("command cannot be empty")
+	}
+	return parts, nil
+}
+
+func configAgentProvider(cmd *cobra.Command, command string) string {
+	provider := commandStringFlag(cmd, "provider")
+	if provider != "" {
+		return provider
+	}
+	cmdBase := command
+	if idx := strings.LastIndexByte(cmdBase, '/'); idx >= 0 {
+		cmdBase = cmdBase[idx+1:]
+	}
+	if config.IsKnownPreset(cmdBase) {
+		return cmdBase
+	}
+	return ""
+}
+
+func updateConfigAgent(townSettings *config.TownSettings, name, provider string, parts []string) {
 	if townSettings.Agents == nil {
 		townSettings.Agents = make(map[string]*config.RuntimeConfig)
 	}
-
-	// Determine the provider: use --provider flag if given, otherwise infer
-	// from the command binary name if it matches a known preset.
-	provider := configAgentSetProvider
-	if provider == "" {
-		cmdBase := parts[0]
-		if idx := strings.LastIndexByte(cmdBase, '/'); idx >= 0 {
-			cmdBase = cmdBase[idx+1:]
-		}
-		if config.IsKnownPreset(cmdBase) {
-			provider = cmdBase
-		}
-	}
-
-	// Create or update the agent. When an entry already exists, mutate it in
-	// place rather than replacing it wholesale — a wholesale replace would
-	// silently discard fields like Env/Session/Hooks/Tmux/Instructions that
-	// aren't set by this command.
 	agent := townSettings.Agents[name]
 	if agent == nil {
 		agent = &config.RuntimeConfig{}
@@ -516,27 +528,19 @@ func runConfigAgentSet(cmd *cobra.Command, args []string) error {
 	agent.Provider = provider
 	agent.Command = parts[0]
 	agent.Args = parts[1:]
+}
 
-	// Save settings
-	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
-		return fmt.Errorf("saving town settings: %w", err)
-	}
-
+func printConfigAgentSet(name, commandLine string) {
 	fmt.Printf("Agent '%s' set to: %s\n", style.Bold.Render(name), commandLine)
-
-	// Check if this overrides a built-in
-	builtInAgents := config.ListAgentPresets()
-	for _, builtin := range builtInAgents {
+	for _, builtin := range config.ListAgentPresets() {
 		if name == builtin {
 			fmt.Printf("\n%s\n", style.Dim.Render("(overriding built-in '"+builtin+"' preset)"))
 			break
 		}
 	}
-
-	return nil
 }
 
-func runConfigAgentRemove(cmd *cobra.Command, args []string) error {
+func runConfigAgentRemove(_ *cobra.Command, args []string) error {
 	name := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -576,61 +580,28 @@ func runConfigAgentRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigDefaultAgent(cmd *cobra.Command, args []string) error {
+func runConfigDefaultAgent(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
-
-	// Load town settings
-	settingsPath := config.TownSettingsPath(townRoot)
-	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
+	townSettings, err := loadConfigAgentListSettings(townRoot)
 	if err != nil {
-		return fmt.Errorf("loading town settings: %w", err)
-	}
-
-	// Load agent registry
-	registryPath := config.DefaultAgentRegistryPath(townRoot)
-	if err := config.LoadAgentRegistry(registryPath); err != nil {
-		return fmt.Errorf("loading agent registry: %w", err)
+		return err
 	}
 
 	if len(args) == 0 {
-		// Show current default
-		defaultAgent := townSettings.DefaultAgent
-		if defaultAgent == "" {
-			defaultAgent = "claude"
-		}
-		fmt.Printf("Default agent: %s\n", style.Bold.Render(defaultAgent))
+		printConfigDefaultAgent(townSettings.DefaultAgent)
 		return nil
 	}
 
-	// Set new default
 	name := args[0]
-
-	// Verify agent exists
-	isValid := false
-	builtInAgents := config.ListAgentPresets()
-	for _, builtin := range builtInAgents {
-		if name == builtin {
-			isValid = true
-			break
-		}
-	}
-	if !isValid && townSettings.Agents != nil {
-		if _, ok := townSettings.Agents[name]; ok {
-			isValid = true
-		}
-	}
-
-	if !isValid {
+	if !isConfigDefaultAgentValid(townSettings, name) {
 		return fmt.Errorf("agent '%s' not found (use 'gt config default-agent list' to see available agents)", name)
 	}
 
-	// Set default
 	townSettings.DefaultAgent = name
-
-	// Save settings
+	settingsPath := config.TownSettingsPath(townRoot)
 	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
 		return fmt.Errorf("saving town settings: %w", err)
 	}
@@ -639,14 +610,35 @@ func runConfigDefaultAgent(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigRoleList(_ *cobra.Command, _ []string) error {
+func printConfigDefaultAgent(defaultAgent string) {
+	if defaultAgent == "" {
+		defaultAgent = "claude"
+	}
+	fmt.Printf("Default agent: %s\n", style.Bold.Render(defaultAgent))
+}
+
+func isConfigDefaultAgentValid(townSettings *config.TownSettings, name string) bool {
+	for _, builtin := range config.ListAgentPresets() {
+		if name == builtin {
+			return true
+		}
+	}
+	if townSettings.Agents == nil {
+		return false
+	}
+	_, ok := townSettings.Agents[name]
+	return ok
+}
+
+func runConfigRoleList(cmd *cobra.Command, _ []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	if configRoleRig != "" {
-		return runConfigRoleListForRig(townRoot, configRoleRig)
+	rigName := commandStringFlag(cmd, "rig")
+	if rigName != "" {
+		return runConfigRoleListForRig(townRoot, rigName)
 	}
 
 	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
@@ -702,7 +694,7 @@ func runConfigRoleListForRig(townRoot, rigName string) error {
 	return nil
 }
 
-func runConfigRoleSet(_ *cobra.Command, args []string) error {
+func runConfigRoleSet(cmd *cobra.Command, args []string) error {
 	role, agent := args[0], args[1]
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
@@ -714,8 +706,9 @@ func runConfigRoleSet(_ *cobra.Command, args []string) error {
 		effort = args[2]
 	}
 
-	if configRoleRig != "" {
-		_, r, err := getRig(configRoleRig)
+	rigName := commandStringFlag(cmd, "rig")
+	if rigName != "" {
+		_, r, err := getRig(rigName)
 		if err != nil {
 			return err
 		}
@@ -734,15 +727,16 @@ func runConfigRoleSet(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigRoleUnset(_ *cobra.Command, args []string) error {
+func runConfigRoleUnset(cmd *cobra.Command, args []string) error {
 	role := args[0]
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
 
-	if configRoleRig != "" {
-		_, r, err := getRig(configRoleRig)
+	rigName := commandStringFlag(cmd, "rig")
+	if rigName != "" {
+		_, r, err := getRig(rigName)
 		if err != nil {
 			return err
 		}
@@ -757,7 +751,7 @@ func runConfigRoleUnset(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigAgentEmailDomain(cmd *cobra.Command, args []string) error {
+func runConfigAgentEmailDomain(_ *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
@@ -860,173 +854,212 @@ type townSettingsKeySpec struct {
 	set  func(*config.TownSettings, string) error
 }
 
-var townSettingsKeySpecs = []townSettingsKeySpec{
-	{
-		key:  "convoy.notify_on_complete",
-		help: "Push notification to Mayor session on convoy completion (true/false, default: false)",
-		get: func(s *config.TownSettings) string {
-			if s.Convoy != nil && s.Convoy.NotifyOnComplete {
-				return "true"
-			}
-			return "false"
-		},
-		set: func(s *config.TownSettings, value string) error {
-			b, err := parseBool(value)
-			if err != nil {
-				return fmt.Errorf("invalid value for convoy.notify_on_complete: %w (expected true/false)", err)
-			}
-			if s.Convoy == nil {
-				s.Convoy = &config.ConvoyConfig{}
-			}
-			s.Convoy.NotifyOnComplete = b
-			return nil
-		},
-	},
-	{
-		key:  "cli_theme",
-		help: `CLI color scheme ("dark", "light", "auto")`,
-		get: func(s *config.TownSettings) string {
-			if s.CLITheme == "" {
-				return "auto"
-			}
-			return s.CLITheme
-		},
-		set: func(s *config.TownSettings, value string) error {
-			switch value {
-			case "dark", "light", "auto":
-				s.CLITheme = value
+func townSettingsKeySpecs() []townSettingsKeySpec {
+	specs := townSettingsCoreKeySpecs()
+	specs = append(specs, townSettingsSchedulerKeySpecs()...)
+	specs = append(specs, townSettingsPolecatKeySpecs()...)
+	return specs
+}
+
+func townSettingsCoreKeySpecs() []townSettingsKeySpec {
+	specs := townSettingsCoreIdentityKeySpecs()
+	return append(specs, townSettingsCoreTokenKeySpecs()...)
+}
+
+func townSettingsCoreIdentityKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "convoy.notify_on_complete",
+			help: "Push notification to Mayor session on convoy completion (true/false, default: false)",
+			get: func(s *config.TownSettings) string {
+				if s.Convoy != nil && s.Convoy.NotifyOnComplete {
+					return "true"
+				}
+				return "false"
+			},
+			set: func(s *config.TownSettings, value string) error {
+				b, err := parseBool(value)
+				if err != nil {
+					return fmt.Errorf("invalid value for convoy.notify_on_complete: %w (expected true/false)", err)
+				}
+				if s.Convoy == nil {
+					s.Convoy = &config.ConvoyConfig{}
+				}
+				s.Convoy.NotifyOnComplete = b
 				return nil
-			default:
-				return fmt.Errorf("invalid cli_theme: %q (expected dark, light, or auto)", value)
-			}
+			},
 		},
-	},
-	{
-		key:  "default_agent",
-		help: "Default agent preset name",
-		get: func(s *config.TownSettings) string {
-			if s.DefaultAgent == "" {
-				return "claude"
-			}
-			return s.DefaultAgent
+		{
+			key:  "cli_theme",
+			help: `CLI color scheme ("dark", "light", "auto")`,
+			get: func(s *config.TownSettings) string {
+				if s.CLITheme == "" {
+					return "auto"
+				}
+				return s.CLITheme
+			},
+			set: func(s *config.TownSettings, value string) error {
+				switch value {
+				case "dark", "light", "auto":
+					s.CLITheme = value
+					return nil
+				default:
+					return fmt.Errorf("invalid cli_theme: %q (expected dark, light, or auto)", value)
+				}
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			s.DefaultAgent = value
-			return nil
+	}
+}
+
+func townSettingsCoreTokenKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "default_agent",
+			help: "Default agent preset name",
+			get: func(s *config.TownSettings) string {
+				if s.DefaultAgent == "" {
+					return "claude"
+				}
+				return s.DefaultAgent
+			},
+			set: func(s *config.TownSettings, value string) error {
+				s.DefaultAgent = value
+				return nil
+			},
 		},
-	},
-	{
-		key: "auto_compact_window",
-		help: "Auto-compaction cap in tokens (default: 150000 / 150k). " +
-			"Applied to every agent type as min(cap, model window).",
-		get: func(s *config.TownSettings) string {
-			if s.AutoCompactWindow > 0 {
-				return strconv.Itoa(s.AutoCompactWindow)
-			}
-			return strconv.Itoa(config.DefaultAutoCompactWindowTokens)
+		{
+			key: "auto_compact_window",
+			help: "Auto-compaction cap in tokens (default: 150000 / 150k). " +
+				"Applied to every agent type as min(cap, model window).",
+			get: func(s *config.TownSettings) string {
+				if s.AutoCompactWindow > 0 {
+					return strconv.Itoa(s.AutoCompactWindow)
+				}
+				return strconv.Itoa(config.DefaultAutoCompactWindowTokens)
+			},
+			set: func(s *config.TownSettings, value string) error {
+				n, ok := config.ParseTokenCount(value)
+				if !ok {
+					return fmt.Errorf("invalid value for auto_compact_window: expected a positive token count such as 150000 or 150k")
+				}
+				s.AutoCompactWindow = n
+				return nil
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			n, ok := config.ParseTokenCount(value)
-			if !ok {
-				return fmt.Errorf("invalid value for auto_compact_window: expected a positive token count such as 150000 or 150k")
-			}
-			s.AutoCompactWindow = n
-			return nil
+	}
+}
+
+func townSettingsSchedulerKeySpecs() []townSettingsKeySpec {
+	specs := townSettingsSchedulerCapacityKeySpecs()
+	return append(specs, townSettingsSchedulerDelayKeySpecs()...)
+}
+
+func townSettingsSchedulerCapacityKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "scheduler.max_polecats",
+			help: "Dispatch mode: -1 = direct (default), N > 0 = deferred",
+			get: func(s *config.TownSettings) string {
+				scfg := s.Scheduler
+				if scfg == nil {
+					scfg = capacity.DefaultSchedulerConfig()
+				}
+				return strconv.Itoa(scfg.GetMaxPolecats())
+			},
+			set: func(s *config.TownSettings, value string) error {
+				n, err := strconv.Atoi(value)
+				if err != nil {
+					return fmt.Errorf("invalid value for scheduler.max_polecats: %w (expected integer)", err)
+				}
+				if n < -1 {
+					return fmt.Errorf("invalid value for scheduler.max_polecats: must be >= -1 (-1 = direct dispatch, 0 = direct dispatch, N > 0 = deferred)")
+				}
+				if s.Scheduler == nil {
+					s.Scheduler = capacity.DefaultSchedulerConfig()
+				}
+				s.Scheduler.MaxPolecats = &n
+				return nil
+			},
 		},
-	},
-	{
-		key:  "scheduler.max_polecats",
-		help: "Dispatch mode: -1 = direct (default), N > 0 = deferred",
-		get: func(s *config.TownSettings) string {
-			scfg := s.Scheduler
-			if scfg == nil {
-				scfg = capacity.DefaultSchedulerConfig()
-			}
-			return strconv.Itoa(scfg.GetMaxPolecats())
+		{
+			key:  "scheduler.batch_size",
+			help: "Beads per heartbeat (default: 1)",
+			get: func(s *config.TownSettings) string {
+				scfg := s.Scheduler
+				if scfg == nil {
+					scfg = capacity.DefaultSchedulerConfig()
+				}
+				return strconv.Itoa(capacity.GetBatchSize(scfg))
+			},
+			set: func(s *config.TownSettings, value string) error {
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 {
+					return fmt.Errorf("invalid value for scheduler.batch_size: expected positive integer")
+				}
+				if s.Scheduler == nil {
+					s.Scheduler = capacity.DefaultSchedulerConfig()
+				}
+				s.Scheduler.BatchSize = &n
+				return nil
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			n, err := strconv.Atoi(value)
-			if err != nil {
-				return fmt.Errorf("invalid value for scheduler.max_polecats: %w (expected integer)", err)
-			}
-			if n < -1 {
-				return fmt.Errorf("invalid value for scheduler.max_polecats: must be >= -1 (-1 = direct dispatch, 0 = direct dispatch, N > 0 = deferred)")
-			}
-			if s.Scheduler == nil {
-				s.Scheduler = capacity.DefaultSchedulerConfig()
-			}
-			s.Scheduler.MaxPolecats = &n
-			return nil
+	}
+}
+
+func townSettingsSchedulerDelayKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key:  "scheduler.spawn_delay",
+			help: "Delay between spawns (default: 0s)",
+			get: func(s *config.TownSettings) string {
+				scfg := s.Scheduler
+				if scfg == nil {
+					scfg = capacity.DefaultSchedulerConfig()
+				}
+				return capacity.GetSpawnDelay(scfg).String()
+			},
+			set: func(s *config.TownSettings, value string) error {
+				if _, err := time.ParseDuration(value); err != nil {
+					return fmt.Errorf("invalid value for scheduler.spawn_delay: %w (expected Go duration, e.g. 2s, 500ms)", err)
+				}
+				if s.Scheduler == nil {
+					s.Scheduler = capacity.DefaultSchedulerConfig()
+				}
+				s.Scheduler.SpawnDelay = value
+				return nil
+			},
 		},
-	},
-	{
-		key:  "scheduler.batch_size",
-		help: "Beads per heartbeat (default: 1)",
-		get: func(s *config.TownSettings) string {
-			scfg := s.Scheduler
-			if scfg == nil {
-				scfg = capacity.DefaultSchedulerConfig()
-			}
-			return strconv.Itoa(scfg.GetBatchSize())
+	}
+}
+
+func townSettingsPolecatKeySpecs() []townSettingsKeySpec {
+	return []townSettingsKeySpec{
+		{
+			key: "polecat.target_clean_policy",
+			help: `When to delete <polecat>/target/ on reuse ("per_bead", "every_n_beads:<N>", ` +
+				`"never"; default: per_bead)`,
+			get: func(s *config.TownSettings) string {
+				if s.Polecat != nil && s.Polecat.TargetCleanPolicy != "" {
+					return s.Polecat.TargetCleanPolicy
+				}
+				return polecat.DefaultTargetCleanPolicy().String()
+			},
+			set: func(s *config.TownSettings, value string) error {
+				// Validate the policy string parses cleanly. Storage form is the raw
+				// input normalized via parsed.String(), so e.g. "  per_bead  " becomes
+				// "per_bead".
+				parsed, err := polecat.ParseTargetCleanPolicy(value)
+				if err != nil {
+					return fmt.Errorf("invalid value for polecat.target_clean_policy: %w", err)
+				}
+				if s.Polecat == nil {
+					s.Polecat = &config.PolecatConfig{}
+				}
+				s.Polecat.TargetCleanPolicy = parsed.String()
+				return nil
+			},
 		},
-		set: func(s *config.TownSettings, value string) error {
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 1 {
-				return fmt.Errorf("invalid value for scheduler.batch_size: expected positive integer")
-			}
-			if s.Scheduler == nil {
-				s.Scheduler = capacity.DefaultSchedulerConfig()
-			}
-			s.Scheduler.BatchSize = &n
-			return nil
-		},
-	},
-	{
-		key:  "scheduler.spawn_delay",
-		help: "Delay between spawns (default: 0s)",
-		get: func(s *config.TownSettings) string {
-			scfg := s.Scheduler
-			if scfg == nil {
-				scfg = capacity.DefaultSchedulerConfig()
-			}
-			return scfg.GetSpawnDelay().String()
-		},
-		set: func(s *config.TownSettings, value string) error {
-			if _, err := time.ParseDuration(value); err != nil {
-				return fmt.Errorf("invalid value for scheduler.spawn_delay: %w (expected Go duration, e.g. 2s, 500ms)", err)
-			}
-			if s.Scheduler == nil {
-				s.Scheduler = capacity.DefaultSchedulerConfig()
-			}
-			s.Scheduler.SpawnDelay = value
-			return nil
-		},
-	},
-	{
-		key: "polecat.target_clean_policy",
-		help: `When to delete <polecat>/target/ on reuse ("per_bead", "every_n_beads:<N>", ` +
-			`"never"; default: per_bead)`,
-		get: func(s *config.TownSettings) string {
-			if s.Polecat != nil && s.Polecat.TargetCleanPolicy != "" {
-				return s.Polecat.TargetCleanPolicy
-			}
-			return polecat.DefaultTargetCleanPolicy().String()
-		},
-		set: func(s *config.TownSettings, value string) error {
-			// Validate the policy string parses cleanly. Storage form is the raw
-			// input normalized via parsed.String(), so e.g. "  per_bead  " becomes
-			// "per_bead".
-			parsed, err := polecat.ParseTargetCleanPolicy(value)
-			if err != nil {
-				return fmt.Errorf("invalid value for polecat.target_clean_policy: %w", err)
-			}
-			if s.Polecat == nil {
-				s.Polecat = &config.PolecatConfig{}
-			}
-			s.Polecat.TargetCleanPolicy = parsed.String()
-			return nil
-		},
-	},
+	}
 }
 
 // buildConfigKeyHelp renders the "Supported keys" section shared by
@@ -1035,7 +1068,7 @@ var townSettingsKeySpecs = []townSettingsKeySpec{
 func buildConfigKeyHelp(verb string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s a town configuration value using dot-notation keys.\n\nSupported keys:\n", verb)
-	for _, spec := range townSettingsKeySpecs {
+	for _, spec := range townSettingsKeySpecs() {
 		fmt.Fprintf(&b, "  %-28s %s\n", spec.key, spec.help)
 	}
 	b.WriteString(daemonBackedConfigKeyHelp)
@@ -1043,9 +1076,9 @@ func buildConfigKeyHelp(verb string) string {
 }
 
 func findTownSettingsKeySpec(key string) *townSettingsKeySpec {
-	for i := range townSettingsKeySpecs {
-		if townSettingsKeySpecs[i].key == key {
-			return &townSettingsKeySpecs[i]
+	for _, spec := range townSettingsKeySpecs() {
+		if spec.key == key {
+			return &spec
 		}
 	}
 	return nil
@@ -1079,14 +1112,14 @@ const daemonBackedConfigKeyHelp = `  dolt.port                   Dolt SQL server
 func unknownConfigKeyError(key string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "unknown config key: %q\n\nSupported keys:\n", key)
-	for _, spec := range townSettingsKeySpecs {
+	for _, spec := range townSettingsKeySpecs() {
 		fmt.Fprintf(&b, "  %-28s %s\n", spec.key, spec.help)
 	}
 	b.WriteString(daemonBackedConfigKeyHelp)
 	return errors.New(b.String())
 }
 
-func runConfigSet(cmd *cobra.Command, args []string) error {
+func runConfigSet(_ *cobra.Command, args []string) error {
 	key := args[0]
 	value := args[1]
 
@@ -1094,47 +1127,34 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
-
 	if spec := findTownSettingsKeySpec(key); spec != nil {
-		settingsPath := config.TownSettingsPath(townRoot)
-		townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
-		if err != nil {
-			return fmt.Errorf("loading town settings: %w", err)
-		}
-		if err := spec.set(townSettings, value); err != nil {
-			return err
-		}
-		if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
-			return fmt.Errorf("saving town settings: %w", err)
-		}
-		fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
-		return nil
+		return setTownSettingsConfig(townRoot, key, value, spec)
 	}
+	return setDaemonBackedConfig(townRoot, key, value)
+}
 
+func setTownSettingsConfig(townRoot, key, value string, spec *townSettingsKeySpec) error {
+	settingsPath := config.TownSettingsPath(townRoot)
+	townSettings, err := config.LoadOrCreateTownSettings(settingsPath)
+	if err != nil {
+		return fmt.Errorf("loading town settings: %w", err)
+	}
+	if err := spec.set(townSettings, value); err != nil {
+		return err
+	}
+	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
+		return fmt.Errorf("saving town settings: %w", err)
+	}
+	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
+	return nil
+}
+
+func setDaemonBackedConfig(townRoot, key, value string) error {
 	switch key {
 	case "maintenance.window", "maintenance.interval", "maintenance.threshold":
 		return setMaintenanceConfig(townRoot, key, value)
-
 	case "dolt.port":
-		port, err := strconv.Atoi(value)
-		if err != nil || port < 1024 || port > 65535 {
-			return fmt.Errorf("invalid value for %s: expected port number 1024-65535", key)
-		}
-		patrolCfg := daemon.LoadPatrolConfig(townRoot)
-		if patrolCfg == nil {
-			patrolCfg = &daemon.DaemonPatrolConfig{Type: "daemon-patrol-config", Version: 1}
-		}
-		if patrolCfg.Env == nil {
-			patrolCfg.Env = make(map[string]string)
-		}
-		patrolCfg.Env["GT_DOLT_PORT"] = value
-		if err := daemon.SavePatrolConfig(townRoot, patrolCfg); err != nil {
-			return fmt.Errorf("saving daemon.json: %w", err)
-		}
-		fmt.Printf("Set GT_DOLT_PORT = %s in mayor/daemon.json\n", style.Bold.Render(value))
-		fmt.Printf("  %s\n", style.Dim.Render("Restart the daemon for the change to take effect: gt daemon restart"))
-		return nil
-
+		return setDoltPortConfig(townRoot, key, value)
 	default:
 		if strings.HasPrefix(key, "lifecycle.") {
 			return setLifecycleConfig(townRoot, key, value)
@@ -1143,7 +1163,28 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func runConfigGet(cmd *cobra.Command, args []string) error {
+func setDoltPortConfig(townRoot, key, value string) error {
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1024 || port > 65535 {
+		return fmt.Errorf("invalid value for %s: expected port number 1024-65535", key)
+	}
+	patrolCfg := daemon.LoadPatrolConfig(townRoot)
+	if patrolCfg == nil {
+		patrolCfg = &daemon.DaemonPatrolConfig{Type: "daemon-patrol-config", Version: 1}
+	}
+	if patrolCfg.Env == nil {
+		patrolCfg.Env = make(map[string]string)
+	}
+	patrolCfg.Env["GT_DOLT_PORT"] = value
+	if err := daemon.SavePatrolConfig(townRoot, patrolCfg); err != nil {
+		return fmt.Errorf("saving daemon.json: %w", err)
+	}
+	fmt.Printf("Set GT_DOLT_PORT = %s in mayor/daemon.json\n", style.Bold.Render(value))
+	fmt.Printf("  %s\n", style.Dim.Render("Restart the daemon for the change to take effect: gt daemon restart"))
+	return nil
+}
+
+func runConfigGet(_ *cobra.Command, args []string) error {
 	key := args[0]
 
 	townRoot, err := workspace.FindFromCwd()
@@ -1186,12 +1227,23 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 
 // setMaintenanceConfig sets a maintenance.* key in daemon.json (patrol config).
 func setMaintenanceConfig(townRoot, key, value string) error {
+	patrolConfig := ensureMaintenancePatrolConfig(townRoot)
+	if err := applyMaintenanceValue(patrolConfig.Patrols.ScheduledMaintenance, key, value); err != nil {
+		return err
+	}
+	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
+		return fmt.Errorf("saving daemon config: %w", err)
+	}
+
+	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
+	printMaintenanceSetDetails(key, patrolConfig.Patrols.ScheduledMaintenance)
+	return nil
+}
+
+func ensureMaintenancePatrolConfig(townRoot string) *daemon.DaemonPatrolConfig {
 	patrolConfig := daemon.LoadPatrolConfig(townRoot)
 	if patrolConfig == nil {
-		patrolConfig = &daemon.DaemonPatrolConfig{
-			Type:    "daemon-patrol-config",
-			Version: 1,
-		}
+		patrolConfig = &daemon.DaemonPatrolConfig{Type: "daemon-patrol-config", Version: 1}
 	}
 	if patrolConfig.Patrols == nil {
 		patrolConfig.Patrols = &daemon.PatrolsConfig{}
@@ -1199,45 +1251,126 @@ func setMaintenanceConfig(townRoot, key, value string) error {
 	if patrolConfig.Patrols.ScheduledMaintenance == nil {
 		patrolConfig.Patrols.ScheduledMaintenance = &daemon.ScheduledMaintenanceConfig{}
 	}
-	mc := patrolConfig.Patrols.ScheduledMaintenance
+	return patrolConfig
+}
 
+func applyMaintenanceValue(mc *daemon.ScheduledMaintenanceConfig, key, value string) error {
 	switch key {
 	case "maintenance.window":
-		// Validate HH:MM format
-		parts := strings.SplitN(value, ":", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid window format %q: expected HH:MM (e.g., 03:00)", value)
-		}
-		hour, err := strconv.Atoi(parts[0])
-		if err != nil || hour < 0 || hour > 23 {
-			return fmt.Errorf("invalid hour in %q: expected 0-23", value)
-		}
-		minute, err := strconv.Atoi(parts[1])
-		if err != nil || minute < 0 || minute > 59 {
-			return fmt.Errorf("invalid minute in %q: expected 0-59", value)
-		}
-		mc.Window = fmt.Sprintf("%02d:%02d", hour, minute)
-		mc.Enabled = true // Setting window enables the patrol
-
+		return setMaintenanceWindow(mc, value)
 	case "maintenance.interval":
-		switch value {
-		case "daily", "weekly", "monthly":
-			mc.Interval = value
-		default:
-			// Try parsing as Go duration
-			_, err := time.ParseDuration(value)
-			if err != nil {
-				return fmt.Errorf("invalid interval %q: expected daily, weekly, monthly, or Go duration (e.g., 48h)", value)
-			}
-			mc.Interval = value
-		}
-
+		return setMaintenanceInterval(mc, value)
 	case "maintenance.threshold":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid threshold %q: expected positive integer", value)
+		return setMaintenanceThreshold(mc, value)
+	default:
+		return nil
+	}
+}
+
+func setMaintenanceWindow(mc *daemon.ScheduledMaintenanceConfig, value string) error {
+	parts := strings.SplitN(value, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid window format %q: expected HH:MM (e.g., 03:00)", value)
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return fmt.Errorf("invalid hour in %q: expected 0-23", value)
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil || minute < 0 || minute > 59 {
+		return fmt.Errorf("invalid minute in %q: expected 0-59", value)
+	}
+	mc.Window = fmt.Sprintf("%02d:%02d", hour, minute)
+	mc.Enabled = true
+	return nil
+}
+
+func setMaintenanceInterval(mc *daemon.ScheduledMaintenanceConfig, value string) error {
+	switch value {
+	case "daily", "weekly", "monthly":
+		mc.Interval = value
+		return nil
+	default:
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("invalid interval %q: expected daily, weekly, monthly, or Go duration (e.g., 48h)", value)
 		}
-		mc.Threshold = &n
+		mc.Interval = value
+		return nil
+	}
+}
+
+func setMaintenanceThreshold(mc *daemon.ScheduledMaintenanceConfig, value string) error {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		return fmt.Errorf("invalid threshold %q: expected positive integer", value)
+	}
+	mc.Threshold = &n
+	return nil
+}
+
+func printMaintenanceSetDetails(key string, mc *daemon.ScheduledMaintenanceConfig) {
+	if key != "maintenance.window" {
+		return
+	}
+	fmt.Printf("Scheduled maintenance enabled (window: %s, interval: %s)\n", mc.Window, mc.Interval)
+	if mc.Interval == "" {
+		fmt.Println("Hint: set interval with: gt config set maintenance.interval daily")
+	}
+}
+
+// getMaintenanceConfig gets a maintenance.* key from daemon.json (patrol config).
+func getMaintenanceConfig(townRoot, key string) error {
+	mc := scheduledMaintenanceConfig(daemon.LoadPatrolConfig(townRoot))
+	fmt.Println(maintenanceValue(mc, key))
+	return nil
+}
+
+func scheduledMaintenanceConfig(patrolConfig *daemon.DaemonPatrolConfig) *daemon.ScheduledMaintenanceConfig {
+	if patrolConfig == nil || patrolConfig.Patrols == nil {
+		return nil
+	}
+	return patrolConfig.Patrols.ScheduledMaintenance
+}
+
+func maintenanceValue(mc *daemon.ScheduledMaintenanceConfig, key string) string {
+	switch key {
+	case "maintenance.window":
+		return maintenanceWindowValue(mc)
+	case "maintenance.interval":
+		return maintenanceIntervalValue(mc)
+	case "maintenance.threshold":
+		return maintenanceThresholdValue(mc)
+	default:
+		return ""
+	}
+}
+
+func maintenanceWindowValue(mc *daemon.ScheduledMaintenanceConfig) string {
+	if mc != nil && mc.Window != "" {
+		return mc.Window
+	}
+	return "(not set)"
+}
+
+func maintenanceIntervalValue(mc *daemon.ScheduledMaintenanceConfig) string {
+	if mc != nil && mc.Interval != "" {
+		return mc.Interval
+	}
+	return "daily"
+}
+
+func maintenanceThresholdValue(mc *daemon.ScheduledMaintenanceConfig) string {
+	if mc != nil && mc.Threshold != nil {
+		return strconv.Itoa(*mc.Threshold)
+	}
+	return "1000"
+}
+
+// setLifecycleConfig sets a lifecycle.* key in daemon.json.
+func setLifecycleConfig(townRoot, key, value string) error {
+	patrolConfig := ensureLifecyclePatrolConfig(townRoot)
+	if err := applyLifecycleValue(patrolConfig.Patrols, key, value); err != nil {
+		return err
 	}
 
 	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
@@ -1245,54 +1378,10 @@ func setMaintenanceConfig(townRoot, key, value string) error {
 	}
 
 	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
-	if key == "maintenance.window" {
-		fmt.Printf("Scheduled maintenance enabled (window: %s, interval: %s)\n",
-			mc.Window, mc.Interval)
-		if mc.Interval == "" {
-			fmt.Println("Hint: set interval with: gt config set maintenance.interval daily")
-		}
-	}
 	return nil
 }
 
-// getMaintenanceConfig gets a maintenance.* key from daemon.json (patrol config).
-func getMaintenanceConfig(townRoot, key string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-
-	var value string
-	switch key {
-	case "maintenance.window":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			value = patrolConfig.Patrols.ScheduledMaintenance.Window
-		}
-		if value == "" {
-			value = "(not set)"
-		}
-
-	case "maintenance.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			value = patrolConfig.Patrols.ScheduledMaintenance.Interval
-		}
-		if value == "" {
-			value = "daily"
-		}
-
-	case "maintenance.threshold":
-		threshold := 1000 // default
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			if patrolConfig.Patrols.ScheduledMaintenance.Threshold != nil {
-				threshold = *patrolConfig.Patrols.ScheduledMaintenance.Threshold
-			}
-		}
-		value = strconv.Itoa(threshold)
-	}
-
-	fmt.Println(value)
-	return nil
-}
-
-// setLifecycleConfig sets a lifecycle.* key in daemon.json.
-func setLifecycleConfig(townRoot, key, value string) error {
+func ensureLifecyclePatrolConfig(townRoot string) *daemon.DaemonPatrolConfig {
 	patrolConfig := daemon.LoadPatrolConfig(townRoot)
 	if patrolConfig == nil {
 		patrolConfig = daemon.DefaultLifecycleConfig()
@@ -1300,215 +1389,323 @@ func setLifecycleConfig(townRoot, key, value string) error {
 	if patrolConfig.Patrols == nil {
 		patrolConfig.Patrols = &daemon.PatrolsConfig{}
 	}
+	return patrolConfig
+}
 
-	switch key {
-	// Reaper
-	case "lifecycle.reaper.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{}
-		}
-		patrolConfig.Patrols.WispReaper.Enabled = b
-
-	case "lifecycle.reaper.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.WispReaper.IntervalStr = value
-
-	case "lifecycle.reaper.delete_age":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.WispReaper.DeleteAgeStr = value
-
-	// Compactor
-	case "lifecycle.compactor.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{}
-		}
-		patrolConfig.Patrols.CompactorDog.Enabled = b
-
-	case "lifecycle.compactor.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.CompactorDog.IntervalStr = value
-
-	case "lifecycle.compactor.threshold":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid threshold for %s: expected positive integer", key)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.CompactorDog.Threshold = n
-
-	// Doctor
-	case "lifecycle.doctor.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.DoctorDog == nil {
-			patrolConfig.Patrols.DoctorDog = &daemon.DoctorDogConfig{}
-		}
-		patrolConfig.Patrols.DoctorDog.Enabled = b
-
-	case "lifecycle.doctor.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.DoctorDog == nil {
-			patrolConfig.Patrols.DoctorDog = &daemon.DoctorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.DoctorDog.IntervalStr = value
-
-	// Backup (controls both JSONL and Dolt backup)
-	case "lifecycle.backup.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.JsonlGitBackup == nil {
-			patrolConfig.Patrols.JsonlGitBackup = &daemon.JsonlGitBackupConfig{}
-		}
-		patrolConfig.Patrols.JsonlGitBackup.Enabled = b
-		if patrolConfig.Patrols.DoltBackup == nil {
-			patrolConfig.Patrols.DoltBackup = &daemon.DoltBackupConfig{}
-		}
-		patrolConfig.Patrols.DoltBackup.Enabled = b
-
-	case "lifecycle.backup.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.JsonlGitBackup == nil {
-			patrolConfig.Patrols.JsonlGitBackup = &daemon.JsonlGitBackupConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.JsonlGitBackup.IntervalStr = value
-		if patrolConfig.Patrols.DoltBackup == nil {
-			patrolConfig.Patrols.DoltBackup = &daemon.DoltBackupConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.DoltBackup.IntervalStr = value
-
-	default:
-		return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
+func applyLifecycleValue(p *daemon.PatrolsConfig, key, value string) error {
+	setters := map[string]func(*daemon.PatrolsConfig, string) error{
+		"lifecycle.reaper.enabled":      setLifecycleReaperEnabled,
+		"lifecycle.reaper.interval":     setLifecycleReaperInterval,
+		"lifecycle.reaper.delete_age":   setLifecycleReaperDeleteAge,
+		"lifecycle.compactor.enabled":   setLifecycleCompactorEnabled,
+		"lifecycle.compactor.interval":  setLifecycleCompactorInterval,
+		"lifecycle.compactor.threshold": setLifecycleCompactorThreshold,
+		"lifecycle.doctor.enabled":      setLifecycleDoctorEnabled,
+		"lifecycle.doctor.interval":     setLifecycleDoctorInterval,
+		"lifecycle.backup.enabled":      setLifecycleBackupEnabled,
+		"lifecycle.backup.interval":     setLifecycleBackupInterval,
 	}
-
-	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
-		return fmt.Errorf("saving daemon config: %w", err)
+	setter, ok := setters[key]
+	if !ok {
+		return unknownLifecycleKeyError(key)
 	}
+	return setter(p, value)
+}
 
-	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
+func parseLifecycleBool(key, value string) (bool, error) {
+	b, err := parseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
+	}
+	return b, nil
+}
+
+func validateLifecycleDuration(key, value string) error {
+	if _, err := time.ParseDuration(value); err != nil {
+		return fmt.Errorf("invalid duration for %s: %w", key, err)
+	}
+	return nil
+}
+
+func ensureLifecycleReaper(p *daemon.PatrolsConfig, enabled bool) *daemon.WispReaperConfig {
+	if p.WispReaper == nil {
+		p.WispReaper = &daemon.WispReaperConfig{Enabled: enabled}
+	}
+	return p.WispReaper
+}
+
+func ensureLifecycleCompactor(p *daemon.PatrolsConfig, enabled bool) *daemon.CompactorDogConfig {
+	if p.CompactorDog == nil {
+		p.CompactorDog = &daemon.CompactorDogConfig{Enabled: enabled}
+	}
+	return p.CompactorDog
+}
+
+func ensureLifecycleDoctor(p *daemon.PatrolsConfig, enabled bool) *daemon.DoctorDogConfig {
+	if p.DoctorDog == nil {
+		p.DoctorDog = &daemon.DoctorDogConfig{Enabled: enabled}
+	}
+	return p.DoctorDog
+}
+
+func ensureLifecycleJSONLBackup(p *daemon.PatrolsConfig, enabled bool) *daemon.JsonlGitBackupConfig {
+	if p.JsonlGitBackup == nil {
+		p.JsonlGitBackup = &daemon.JsonlGitBackupConfig{Enabled: enabled}
+	}
+	return p.JsonlGitBackup
+}
+
+func ensureLifecycleDoltBackup(p *daemon.PatrolsConfig, enabled bool) *daemon.DoltBackupConfig {
+	if p.DoltBackup == nil {
+		p.DoltBackup = &daemon.DoltBackupConfig{Enabled: enabled}
+	}
+	return p.DoltBackup
+}
+
+func setLifecycleReaperEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.reaper.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleReaper(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleReaperInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.reaper.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleReaper(p, true).IntervalStr = value
+	return nil
+}
+
+func setLifecycleReaperDeleteAge(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.reaper.delete_age", value); err != nil {
+		return err
+	}
+	ensureLifecycleReaper(p, true).DeleteAgeStr = value
+	return nil
+}
+
+func setLifecycleCompactorEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.compactor.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleCompactor(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleCompactorInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.compactor.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleCompactor(p, true).IntervalStr = value
+	return nil
+}
+
+func setLifecycleCompactorThreshold(p *daemon.PatrolsConfig, value string) error {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		return fmt.Errorf("invalid threshold for lifecycle.compactor.threshold: expected positive integer")
+	}
+	ensureLifecycleCompactor(p, true).Threshold = n
+	return nil
+}
+
+func setLifecycleDoctorEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.doctor.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleDoctor(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleDoctorInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.doctor.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleDoctor(p, true).IntervalStr = value
+	return nil
+}
+
+func setLifecycleBackupEnabled(p *daemon.PatrolsConfig, value string) error {
+	b, err := parseLifecycleBool("lifecycle.backup.enabled", value)
+	if err != nil {
+		return err
+	}
+	ensureLifecycleJSONLBackup(p, false).Enabled = b
+	ensureLifecycleDoltBackup(p, false).Enabled = b
+	return nil
+}
+
+func setLifecycleBackupInterval(p *daemon.PatrolsConfig, value string) error {
+	if err := validateLifecycleDuration("lifecycle.backup.interval", value); err != nil {
+		return err
+	}
+	ensureLifecycleJSONLBackup(p, true).IntervalStr = value
+	ensureLifecycleDoltBackup(p, true).IntervalStr = value
 	return nil
 }
 
 // getLifecycleConfig gets a lifecycle.* key from daemon.json.
 func getLifecycleConfig(townRoot, key string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-
-	var value string
-	switch key {
-	// Reaper
-	case "lifecycle.reaper.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.WispReaper.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.reaper.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil && patrolConfig.Patrols.WispReaper.IntervalStr != "" {
-			value = patrolConfig.Patrols.WispReaper.IntervalStr
-		} else {
-			value = "30m (default)"
-		}
-
-	case "lifecycle.reaper.delete_age":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil && patrolConfig.Patrols.WispReaper.DeleteAgeStr != "" {
-			value = patrolConfig.Patrols.WispReaper.DeleteAgeStr
-		} else {
-			value = "168h (default, 7 days)"
-		}
-
-	// Compactor
-	case "lifecycle.compactor.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.CompactorDog.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.compactor.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil && patrolConfig.Patrols.CompactorDog.IntervalStr != "" {
-			value = patrolConfig.Patrols.CompactorDog.IntervalStr
-		} else {
-			value = "24h (default)"
-		}
-
-	case "lifecycle.compactor.threshold":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil && patrolConfig.Patrols.CompactorDog.Threshold > 0 {
-			value = strconv.Itoa(patrolConfig.Patrols.CompactorDog.Threshold)
-		} else {
-			value = "500 (default)"
-		}
-
-	// Doctor
-	case "lifecycle.doctor.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoctorDog != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.DoctorDog.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.doctor.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoctorDog != nil && patrolConfig.Patrols.DoctorDog.IntervalStr != "" {
-			value = patrolConfig.Patrols.DoctorDog.IntervalStr
-		} else {
-			value = "5m (default)"
-		}
-
-	// Backup
-	case "lifecycle.backup.enabled":
-		jsonlEnabled := patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.JsonlGitBackup != nil && patrolConfig.Patrols.JsonlGitBackup.Enabled
-		doltEnabled := patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoltBackup != nil && patrolConfig.Patrols.DoltBackup.Enabled
-		if jsonlEnabled || doltEnabled {
-			value = fmt.Sprintf("jsonl=%v dolt=%v", jsonlEnabled, doltEnabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.backup.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.JsonlGitBackup != nil && patrolConfig.Patrols.JsonlGitBackup.IntervalStr != "" {
-			value = patrolConfig.Patrols.JsonlGitBackup.IntervalStr
-		} else {
-			value = "15m (default)"
-		}
-
-	default:
-		return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
+	value, ok := lifecycleConfigValue(daemon.LoadPatrolConfig(townRoot), key)
+	if !ok {
+		return unknownLifecycleKeyError(key)
 	}
-
 	fmt.Println(value)
 	return nil
+}
+
+func lifecycleConfigValue(config *daemon.DaemonPatrolConfig, key string) (string, bool) {
+	getters := map[string]func(*daemon.PatrolsConfig) string{
+		"lifecycle.reaper.enabled":      lifecycleReaperEnabledValue,
+		"lifecycle.reaper.interval":     lifecycleReaperIntervalValue,
+		"lifecycle.reaper.delete_age":   lifecycleReaperDeleteAgeValue,
+		"lifecycle.compactor.enabled":   lifecycleCompactorEnabledValue,
+		"lifecycle.compactor.interval":  lifecycleCompactorIntervalValue,
+		"lifecycle.compactor.threshold": lifecycleCompactorThresholdValue,
+		"lifecycle.doctor.enabled":      lifecycleDoctorEnabledValue,
+		"lifecycle.doctor.interval":     lifecycleDoctorIntervalValue,
+		"lifecycle.backup.enabled":      lifecycleBackupEnabledValue,
+		"lifecycle.backup.interval":     lifecycleBackupIntervalValue,
+	}
+	getter, ok := getters[key]
+	if !ok {
+		return "", false
+	}
+	return getter(lifecyclePatrols(config)), true
+}
+
+func lifecyclePatrols(config *daemon.DaemonPatrolConfig) *daemon.PatrolsConfig {
+	if config == nil {
+		return nil
+	}
+	return config.Patrols
+}
+
+func lifecycleReaper(p *daemon.PatrolsConfig) *daemon.WispReaperConfig {
+	if p == nil {
+		return nil
+	}
+	return p.WispReaper
+}
+
+func lifecycleCompactor(p *daemon.PatrolsConfig) *daemon.CompactorDogConfig {
+	if p == nil {
+		return nil
+	}
+	return p.CompactorDog
+}
+
+func lifecycleDoctor(p *daemon.PatrolsConfig) *daemon.DoctorDogConfig {
+	if p == nil {
+		return nil
+	}
+	return p.DoctorDog
+}
+
+func lifecycleJSONLBackup(p *daemon.PatrolsConfig) *daemon.JsonlGitBackupConfig {
+	if p == nil {
+		return nil
+	}
+	return p.JsonlGitBackup
+}
+
+func lifecycleDoltBackup(p *daemon.PatrolsConfig) *daemon.DoltBackupConfig {
+	if p == nil {
+		return nil
+	}
+	return p.DoltBackup
+}
+
+func lifecycleReaperEnabledValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleReaper(p)
+	if config == nil {
+		return "false (not configured)"
+	}
+	return strconv.FormatBool(config.Enabled)
+}
+
+func lifecycleReaperIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleReaper(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "30m (default)"
+}
+
+func lifecycleReaperDeleteAgeValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleReaper(p)
+	if config != nil && config.DeleteAgeStr != "" {
+		return config.DeleteAgeStr
+	}
+	return "168h (default, 7 days)"
+}
+
+func lifecycleCompactorEnabledValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleCompactor(p)
+	if config == nil {
+		return "false (not configured)"
+	}
+	return strconv.FormatBool(config.Enabled)
+}
+
+func lifecycleCompactorIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleCompactor(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "24h (default)"
+}
+
+func lifecycleCompactorThresholdValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleCompactor(p)
+	if config != nil && config.Threshold > 0 {
+		return strconv.Itoa(config.Threshold)
+	}
+	return "500 (default)"
+}
+
+func lifecycleDoctorEnabledValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleDoctor(p)
+	if config == nil {
+		return "false (not configured)"
+	}
+	return strconv.FormatBool(config.Enabled)
+}
+
+func lifecycleDoctorIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleDoctor(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "5m (default)"
+}
+
+func lifecycleBackupEnabledValue(p *daemon.PatrolsConfig) string {
+	jsonl := lifecycleJSONLBackup(p)
+	dolt := lifecycleDoltBackup(p)
+	jsonlEnabled := jsonl != nil && jsonl.Enabled
+	doltEnabled := dolt != nil && dolt.Enabled
+	if !jsonlEnabled && !doltEnabled {
+		return "false (not configured)"
+	}
+	return fmt.Sprintf("jsonl=%v dolt=%v", jsonlEnabled, doltEnabled)
+}
+
+func lifecycleBackupIntervalValue(p *daemon.PatrolsConfig) string {
+	config := lifecycleJSONLBackup(p)
+	if config != nil && config.IntervalStr != "" {
+		return config.IntervalStr
+	}
+	return "15m (default)"
+}
+
+func unknownLifecycleKeyError(key string) error {
+	return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
 }
 
 // parseBool parses a boolean string (true/false, yes/no, 1/0).
@@ -1525,6 +1722,9 @@ func parseBool(s string) (bool, error) {
 
 func init() {
 	presets := config.BuiltInAgentPresetSummary()
+	configAgentListCmd := newConfigAgentListCmd()
+	configAgentRemoveCmd := newConfigAgentRemoveCmd()
+	configDefaultAgentCmd := newConfigDefaultAgentCmd()
 
 	configAgentListCmd.Long = fmt.Sprintf(`List all available agents (built-in and custom).
 
@@ -1562,10 +1762,10 @@ Examples:
   gt config default-agent my-custom # Set to custom agent`, presets)
 
 	// Add flags
-	configAgentListCmd.Flags().BoolVar(&configAgentListJSON, "json", false, "Output as JSON")
-	configDefaultAgentListCmd.Flags().BoolVar(&configDefaultAgentListJSON, "json", false, "Output as JSON")
-	configMixCmd.Flags().BoolVar(&configMixJSON, "json", false, "Output the effective mix as JSON")
-	configAgentSetCmd.Flags().StringVar(&configAgentSetProvider, "provider", "", fmt.Sprintf("Agent provider preset (e.g. %s); inferred from command name if not set", presets))
+	configAgentListCmd.Flags().Bool("json", false, "Output as JSON")
+	configDefaultAgentListCmd.Flags().Bool("json", false, "Output as JSON")
+	configMixCmd.Flags().Bool("json", false, "Output the effective mix as JSON")
+	configAgentSetCmd.Flags().String("provider", "", fmt.Sprintf("Agent provider preset (e.g. %s); inferred from command name if not set", presets))
 
 	// Add agent subcommands
 	configAgentCmd := &cobra.Command{
@@ -1584,9 +1784,9 @@ config values such as the default AI model or provider.`,
 	configRoleCmd.AddCommand(configRoleListCmd)
 	configRoleCmd.AddCommand(configRoleSetCmd)
 	configRoleCmd.AddCommand(configRoleUnsetCmd)
-	configRoleListCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
-	configRoleSetCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
-	configRoleUnsetCmd.Flags().StringVar(&configRoleRig, "rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleListCmd.Flags().String("rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleSetCmd.Flags().String("rig", "", "Scope to a specific rig instead of the whole town")
+	configRoleUnsetCmd.Flags().String("rig", "", "Scope to a specific rig instead of the whole town")
 
 	// Add default-agent subcommands
 	configDefaultAgentCmd.AddCommand(configDefaultAgentListCmd)

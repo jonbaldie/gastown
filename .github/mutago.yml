@@ -1,0 +1,4 @@
+# The local whole-tree baseline and the PR regression gate use this operator set.
+enable_mutators:
+  - expression/errorf-wrap
+  - statement/return

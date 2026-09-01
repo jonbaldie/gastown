@@ -14,21 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Log command flags
-var (
-	logTail   int
-	logType   string
-	logAgent  string
-	logSince  string
-	logFollow bool
-	logAcp    bool
-
-	// log crash flags
-	crashAgent    string
-	crashSession  string
-	crashExitCode int
-)
-
 var logCmd = &cobra.Command{
 	Use:     "log",
 	GroupID: GroupDiag,
@@ -72,42 +57,61 @@ Examples:
 }
 
 func init() {
-	logCmd.Flags().IntVarP(&logTail, "tail", "n", 20, "Number of events to show")
-	logCmd.Flags().StringVarP(&logType, "type", "t", "", "Filter by event type (spawn,wake,nudge,handoff,done,crash,kill)")
-	logCmd.Flags().StringVarP(&logAgent, "agent", "a", "", "Filter by agent prefix (e.g., gastown/, greenplace/crew/max)")
-	logCmd.Flags().StringVar(&logSince, "since", "", "Show events since duration (e.g., 1h, 30m, 24h)")
-	logCmd.Flags().BoolVarP(&logFollow, "follow", "f", false, "Follow log output (like tail -f)")
-	logCmd.Flags().BoolVar(&logAcp, "acp", false, "View ACP debug logs (requires GT_ACP_DEBUG=1)")
+	logCmd.Flags().IntP("tail", "n", 20, "Number of events to show")
+	logCmd.Flags().StringP("type", "t", "", "Filter by event type (spawn,wake,nudge,handoff,done,crash,kill)")
+	logCmd.Flags().StringP("agent", "a", "", "Filter by agent prefix (e.g., gastown/, greenplace/crew/max)")
+	logCmd.Flags().String("since", "", "Show events since duration (e.g., 1h, 30m, 24h)")
+	logCmd.Flags().BoolP("follow", "f", false, "Follow log output (like tail -f)")
+	logCmd.Flags().Bool("acp", false, "View ACP debug logs (requires GT_ACP_DEBUG=1)")
 
 	// crash subcommand flags
-	logCrashCmd.Flags().StringVar(&crashAgent, "agent", "", "Agent ID (e.g., greenplace/Toast)")
-	logCrashCmd.Flags().StringVar(&crashSession, "session", "", "Tmux session name")
-	logCrashCmd.Flags().IntVar(&crashExitCode, "exit-code", -1, "Exit code from pane")
+	logCrashCmd.Flags().String("agent", "", "Agent ID (e.g., greenplace/Toast)")
+	logCrashCmd.Flags().String("session", "", "Tmux session name")
+	logCrashCmd.Flags().Int("exit-code", -1, "Exit code from pane")
 	_ = logCrashCmd.MarkFlagRequired("agent")
 
 	logCmd.AddCommand(logCrashCmd)
 	rootCmd.AddCommand(logCmd)
 }
 
-func runLog(cmd *cobra.Command, args []string) error {
+type logOptions struct {
+	tail     int
+	typeName string
+	agent    string
+	since    string
+	follow   bool
+	acp      bool
+}
+
+func runLog(cmd *cobra.Command, _ []string) error {
+	opts := logOptions{
+		tail:     commandIntFlag(cmd, "tail"),
+		typeName: commandStringFlag(cmd, "type"),
+		agent:    commandStringFlag(cmd, "agent"),
+		since:    commandStringFlag(cmd, "since"),
+		follow:   commandBoolFlag(cmd, "follow"),
+		acp:      commandBoolFlag(cmd, "acp"),
+	}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	// Handle --acp flag to view ACP debug logs
-	if logAcp {
-		return viewACPLogs(townRoot)
+	if opts.acp {
+		return viewACPLogs(townRoot, opts.tail, opts.follow)
 	}
 
 	logPath := fmt.Sprintf("%s/logs/town.log", townRoot)
 
 	// If following, use tail -f
-	if logFollow {
+	if opts.follow {
 		return followLog(logPath)
 	}
+	return printLogEvents(townRoot, logPath, opts)
+}
 
-	// Check if log file exists
+func printLogEvents(townRoot, logPath string, opts logOptions) error {
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
 		fmt.Printf("%s No log file yet (no events recorded)\n", style.Dim.Render("○"))
 		return nil
@@ -124,31 +128,9 @@ func runLog(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Build filter
-	filter := townlog.Filter{}
-
-	if logType != "" {
-		filter.Type = townlog.EventType(logType)
-	}
-
-	if logAgent != "" {
-		filter.Agent = logAgent
-	}
-
-	if logSince != "" {
-		duration, err := time.ParseDuration(logSince)
-		if err != nil {
-			return fmt.Errorf("invalid --since duration: %w", err)
-		}
-		filter.Since = time.Now().Add(-duration)
-	}
-
-	// Apply filter
-	events = townlog.FilterEvents(events, filter)
-
-	// Apply tail limit
-	if logTail > 0 && len(events) > logTail {
-		events = events[len(events)-logTail:]
+	events, err = filterLogEvents(events, opts)
+	if err != nil {
+		return err
 	}
 
 	if len(events) == 0 {
@@ -162,6 +144,22 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func filterLogEvents(events []townlog.Event, opts logOptions) ([]townlog.Event, error) {
+	filter := townlog.Filter{Type: townlog.EventType(opts.typeName), Agent: opts.agent}
+	if opts.since != "" {
+		duration, err := time.ParseDuration(opts.since)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --since duration: %w", err)
+		}
+		filter.Since = time.Now().Add(-duration)
+	}
+	events = townlog.FilterEvents(events, filter)
+	if opts.tail > 0 && len(events) > opts.tail {
+		events = events[len(events)-opts.tail:]
+	}
+	return events, nil
 }
 
 // followLog uses tail -f to follow the log file.
@@ -187,11 +185,11 @@ func followLog(logPath string) error {
 }
 
 // viewACPLogs displays the ACP debug log file.
-func viewACPLogs(townRoot string) error {
+func viewACPLogs(townRoot string, tail int, follow bool) error {
 	logPath := fmt.Sprintf("%s/logs/acp.log", townRoot)
 
 	// If following, use tail -f
-	if logFollow {
+	if follow {
 		return followLog(logPath)
 	}
 
@@ -210,8 +208,8 @@ func viewACPLogs(townRoot string) error {
 	lines := strings.Split(string(content), "\n")
 
 	// Apply tail limit
-	if logTail > 0 && len(lines) > logTail {
-		lines = lines[len(lines)-logTail:]
+	if tail > 0 && len(lines) > tail {
+		lines = lines[len(lines)-tail:]
 	}
 
 	// Print lines
@@ -227,125 +225,68 @@ func viewACPLogs(townRoot string) error {
 // printEvent prints a single event with styling.
 func printEvent(e townlog.Event) {
 	ts := e.Timestamp.Format("2006-01-02 15:04:05")
+	fmt.Printf("%s %s %s %s\n", style.Dim.Render(ts), eventTypeLabel(e.Type), e.Agent, formatEventDetail(e))
+}
 
-	// Color-code event types
-	var typeStr string
-	switch e.Type {
-	case townlog.EventSpawn:
-		typeStr = style.Success.Render("[spawn]")
-	case townlog.EventWake:
-		typeStr = style.Bold.Render("[wake]")
-	case townlog.EventNudge:
-		typeStr = style.Dim.Render("[nudge]")
-	case townlog.EventHandoff:
-		typeStr = style.Bold.Render("[handoff]")
-	case townlog.EventHandoffNoPersist:
-		typeStr = style.Error.Render("[handoff-NOPERSIST]")
-	case townlog.EventDone:
-		typeStr = style.Success.Render("[done]")
-	case townlog.EventCrash:
-		typeStr = style.Error.Render("[crash]")
-	case townlog.EventKill:
-		typeStr = style.Warning.Render("[kill]")
-	case townlog.EventCallback:
-		typeStr = style.Bold.Render("[callback]")
-	case townlog.EventPatrolStarted:
-		typeStr = style.Bold.Render("[patrol_started]")
-	case townlog.EventPolecatChecked:
-		typeStr = style.Dim.Render("[polecat_checked]")
-	case townlog.EventPolecatNudged:
-		typeStr = style.Warning.Render("[polecat_nudged]")
-	case townlog.EventEscalationSent:
-		typeStr = style.Error.Render("[escalation_sent]")
-	case townlog.EventPatrolComplete:
-		typeStr = style.Success.Render("[patrol_complete]")
-	default:
-		typeStr = fmt.Sprintf("[%s]", e.Type)
+func eventTypeLabel(eventType townlog.EventType) string {
+	labels := map[townlog.EventType]string{
+		townlog.EventSpawn:            style.Success.Render("[spawn]"),
+		townlog.EventWake:             style.Bold.Render("[wake]"),
+		townlog.EventNudge:            style.Dim.Render("[nudge]"),
+		townlog.EventHandoff:          style.Bold.Render("[handoff]"),
+		townlog.EventHandoffNoPersist: style.Error.Render("[handoff-NOPERSIST]"),
+		townlog.EventDone:             style.Success.Render("[done]"),
+		townlog.EventCrash:            style.Error.Render("[crash]"),
+		townlog.EventKill:             style.Warning.Render("[kill]"),
+		townlog.EventCallback:         style.Bold.Render("[callback]"),
+		townlog.EventPatrolStarted:    style.Bold.Render("[patrol_started]"),
+		townlog.EventPolecatChecked:   style.Dim.Render("[polecat_checked]"),
+		townlog.EventPolecatNudged:    style.Warning.Render("[polecat_nudged]"),
+		townlog.EventEscalationSent:   style.Error.Render("[escalation_sent]"),
+		townlog.EventPatrolComplete:   style.Success.Render("[patrol_complete]"),
 	}
-
-	detail := formatEventDetail(e)
-	fmt.Printf("%s %s %s %s\n", style.Dim.Render(ts), typeStr, e.Agent, detail)
+	if label, ok := labels[eventType]; ok {
+		return label
+	}
+	return fmt.Sprintf("[%s]", eventType)
 }
 
 // formatEventDetail returns a human-readable detail string for an event.
 func formatEventDetail(e townlog.Event) string {
-	switch e.Type {
-	case townlog.EventSpawn:
-		if e.Context != "" {
-			return fmt.Sprintf("spawned for %s", e.Context)
-		}
-		return "spawned"
-	case townlog.EventWake:
-		if e.Context != "" {
-			return fmt.Sprintf("resumed (%s)", e.Context)
-		}
-		return "resumed"
-	case townlog.EventNudge:
-		if e.Context != "" {
-			return fmt.Sprintf("nudged with %q", truncateStr(e.Context, 40))
-		}
-		return "nudged"
-	case townlog.EventHandoff:
-		if e.Context != "" {
-			return fmt.Sprintf("handed off (%s)", e.Context)
-		}
-		return "handed off"
-	case townlog.EventHandoffNoPersist:
-		if e.Context != "" {
-			return fmt.Sprintf("handoff FAILED (%s)", e.Context)
-		}
-		return "handoff FAILED (no persist)"
-	case townlog.EventDone:
-		if e.Context != "" {
-			return fmt.Sprintf("completed %s", e.Context)
-		}
-		return "completed work"
-	case townlog.EventCrash:
-		if e.Context != "" {
-			return fmt.Sprintf("exited unexpectedly (%s)", e.Context)
-		}
-		return "exited unexpectedly"
-	case townlog.EventKill:
-		if e.Context != "" {
-			return fmt.Sprintf("killed (%s)", e.Context)
-		}
-		return "killed"
-	case townlog.EventCallback:
-		if e.Context != "" {
-			return fmt.Sprintf("callback: %s", e.Context)
-		}
-		return "callback processed"
-	case townlog.EventPatrolStarted:
-		if e.Context != "" {
-			return fmt.Sprintf("started patrol (%s)", e.Context)
-		}
-		return "started patrol"
-	case townlog.EventPolecatChecked:
-		if e.Context != "" {
-			return fmt.Sprintf("checked %s", e.Context)
-		}
-		return "checked polecat"
-	case townlog.EventPolecatNudged:
-		if e.Context != "" {
-			return fmt.Sprintf("nudged (%s)", e.Context)
-		}
-		return "nudged polecat"
-	case townlog.EventEscalationSent:
-		if e.Context != "" {
-			return fmt.Sprintf("escalated (%s)", e.Context)
-		}
-		return "escalated"
-	case townlog.EventPatrolComplete:
-		if e.Context != "" {
-			return fmt.Sprintf("patrol complete (%s)", e.Context)
-		}
-		return "patrol complete"
-	default:
-		if e.Context != "" {
-			return fmt.Sprintf("%s (%s)", e.Type, e.Context)
-		}
-		return string(e.Type)
+	formats := map[townlog.EventType]struct {
+		format string
+		empty  string
+	}{
+		townlog.EventSpawn:            {"spawned for %s", "spawned"},
+		townlog.EventWake:             {"resumed (%s)", "resumed"},
+		townlog.EventNudge:            {"nudged with %q", "nudged"},
+		townlog.EventHandoff:          {"handed off (%s)", "handed off"},
+		townlog.EventHandoffNoPersist: {"handoff FAILED (%s)", "handoff FAILED (no persist)"},
+		townlog.EventDone:             {"completed %s", "completed work"},
+		townlog.EventCrash:            {"exited unexpectedly (%s)", "exited unexpectedly"},
+		townlog.EventKill:             {"killed (%s)", "killed"},
+		townlog.EventCallback:         {"callback: %s", "callback processed"},
+		townlog.EventPatrolStarted:    {"started patrol (%s)", "started patrol"},
+		townlog.EventPolecatChecked:   {"checked %s", "checked polecat"},
+		townlog.EventPolecatNudged:    {"nudged (%s)", "nudged polecat"},
+		townlog.EventEscalationSent:   {"escalated (%s)", "escalated"},
+		townlog.EventPatrolComplete:   {"patrol complete (%s)", "patrol complete"},
 	}
+	spec, ok := formats[e.Type]
+	if !ok {
+		if e.Context == "" {
+			return string(e.Type)
+		}
+		return fmt.Sprintf("%s (%s)", e.Type, e.Context)
+	}
+	if e.Context == "" {
+		return spec.empty
+	}
+	context := e.Context
+	if e.Type == townlog.EventNudge {
+		context = truncateStr(context, 40)
+	}
+	return fmt.Sprintf(spec.format, context)
 }
 
 func truncateStr(s string, maxLen int) string {
@@ -356,55 +297,55 @@ func truncateStr(s string, maxLen int) string {
 }
 
 // runLogCrash handles the "gt log crash" command from tmux pane-died hooks.
-func runLogCrash(cmd *cobra.Command, args []string) error {
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil || townRoot == "" {
-		// Try to find town root from conventional location
-		// This is called from tmux hook which may not have proper cwd
-		home := os.Getenv("HOME")
-		defaultRoot := home + "/gt"
-		if _, statErr := os.Stat(defaultRoot + "/mayor"); statErr == nil {
-			townRoot = defaultRoot
-		}
-		if townRoot == "" {
-			return fmt.Errorf("cannot find town root (tried cwd and ~/gt)")
-		}
+func runLogCrash(cmd *cobra.Command, _ []string) error {
+	agent := commandStringFlag(cmd, "agent")
+	session := commandStringFlag(cmd, "session")
+	exitCode := commandIntFlag(cmd, "exit-code")
+	townRoot, err := crashTownRoot()
+	if err != nil {
+		return err
 	}
 
-	// Determine event type based on exit code
-	var eventType townlog.EventType
-	var context string
+	eventType, eventContext := crashEvent(exitCode, session)
 
-	if crashExitCode == 0 {
-		// Exit code 0 = normal exit
-		// Could be handoff, done, or user quit - we log as "done" if no prior done event
-		// The Witness can analyze further if needed
-		eventType = townlog.EventDone
-		context = "exited normally"
-	} else if crashExitCode == 130 {
-		// Exit code 130 = Ctrl+C (SIGINT)
-		// This is typically intentional user interrupt
-		eventType = townlog.EventKill
-		context = fmt.Sprintf("interrupted (exit %d)", crashExitCode)
-	} else {
-		// Non-zero exit = crash
-		eventType = townlog.EventCrash
-		context = fmt.Sprintf("exit code %d", crashExitCode)
-		if crashSession != "" {
-			context += fmt.Sprintf(" (session: %s)", crashSession)
-		}
-	}
-
-	// Log the event
 	logger := townlog.NewLogger(townRoot)
-	if err := logger.Log(eventType, crashAgent, context); err != nil {
+	if err := logger.Log(eventType, agent, eventContext); err != nil {
 		return fmt.Errorf("logging event: %w", err)
 	}
 	if eventType == townlog.EventCrash {
-		logCrashFeedEvent(townRoot, crashAgent, crashSession, crashExitCode)
+		logCrashFeedEvent(townRoot, agent, session, exitCode)
 	}
 
 	return nil
+}
+
+func crashTownRoot() (string, error) {
+	townRoot, err := workspace.FindFromCwd()
+	if err == nil && townRoot != "" {
+		return townRoot, nil
+	}
+	defaultRoot := os.Getenv("HOME") + "/gt"
+	if _, statErr := os.Stat(defaultRoot + "/mayor"); statErr == nil {
+		return defaultRoot, nil
+	}
+	if townRoot == "" {
+		return "", fmt.Errorf("cannot find town root (tried cwd and ~/gt)")
+	}
+	return townRoot, nil
+}
+
+func crashEvent(exitCode int, session string) (townlog.EventType, string) {
+	if exitCode == 0 {
+		return townlog.EventDone, "exited normally"
+	}
+	if exitCode == 130 {
+		return townlog.EventKill, fmt.Sprintf("interrupted (exit %d)", exitCode)
+	}
+	context := fmt.Sprintf("exit code %d", exitCode)
+	if session != "" {
+		context += fmt.Sprintf(" (session: %s)", session)
+	}
+	return townlog.EventCrash, context
 }
 
 func logCrashFeedEvent(townRoot, agent, session string, exitCode int) {

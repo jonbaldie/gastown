@@ -115,13 +115,8 @@ type PatrolConfig struct {
 
 // PatrolsConfig holds configuration for all patrols.
 type PatrolsConfig struct {
-	Refinery             *PatrolConfig               `json:"refinery,omitempty"`
-	Witness              *PatrolConfig               `json:"witness,omitempty"`
-	Deacon               *PatrolConfig               `json:"deacon,omitempty"`
-	Handler              *PatrolConfig               `json:"handler,omitempty"`
-	DoltServer           *DoltServerConfig           `json:"dolt_server,omitempty"`
-	DoltRemotes          *DoltRemotesConfig          `json:"dolt_remotes,omitempty"`
-	DoltBackup           *DoltBackupConfig           `json:"dolt_backup,omitempty"`
+	CorePatrols
+	DoltPatrols
 	JsonlGitBackup       *JsonlGitBackupConfig       `json:"jsonl_git_backup,omitempty"`
 	WispReaper           *WispReaperConfig           `json:"wisp_reaper,omitempty"`
 	DoctorDog            *DoctorDogConfig            `json:"doctor_dog,omitempty"`
@@ -131,6 +126,25 @@ type PatrolsConfig struct {
 	MainBranchTest       *MainBranchTestConfig       `json:"main_branch_test,omitempty"`
 	QuotaDog             *QuotaDogConfig             `json:"quota_dog,omitempty"`
 	RestartTracker       *RestartTrackerConfig       `json:"restart_tracker,omitempty"`
+}
+
+// CorePatrols contains the long-running agent patrols that make up the town's
+// normal heartbeat. It is embedded to preserve the patrol configuration's
+// existing selectors and JSON object shape.
+type CorePatrols struct {
+	Refinery *PatrolConfig `json:"refinery,omitempty"`
+	Witness  *PatrolConfig `json:"witness,omitempty"`
+	Deacon   *PatrolConfig `json:"deacon,omitempty"`
+	Handler  *PatrolConfig `json:"handler,omitempty"`
+}
+
+// DoltPatrols contains patrols that maintain the town's Dolt databases.
+// It is embedded to preserve the patrol configuration's existing selectors
+// and JSON object shape.
+type DoltPatrols struct {
+	DoltServer  *DoltServerConfig  `json:"dolt_server,omitempty"`
+	DoltRemotes *DoltRemotesConfig `json:"dolt_remotes,omitempty"`
+	DoltBackup  *DoltBackupConfig  `json:"dolt_backup,omitempty"`
 }
 
 // DoltRemotesConfig holds configuration for the dolt_remotes patrol.
@@ -244,94 +258,42 @@ func SavePatrolConfig(townRoot string, config *DaemonPatrolConfig) error {
 // IsPatrolEnabled checks if a patrol is enabled in the config.
 // Returns true if the config doesn't exist (default enabled for backwards compatibility).
 // Exception: opt-in patrols (dolt_remotes) default to disabled.
+type patrolToggle func(*PatrolsConfig) bool
+type patrolConfigSelector func(*PatrolsConfig) *PatrolConfig
+
+var optInPatrols = map[string]patrolToggle{
+	"dolt_remotes":          func(p *PatrolsConfig) bool { return p.DoltRemotes != nil && p.DoltRemotes.Enabled },
+	"dolt_backup":           func(p *PatrolsConfig) bool { return p.DoltBackup != nil && p.DoltBackup.Enabled },
+	"jsonl_git_backup":      func(p *PatrolsConfig) bool { return p.JsonlGitBackup != nil && p.JsonlGitBackup.Enabled },
+	"wisp_reaper":           func(p *PatrolsConfig) bool { return p.WispReaper != nil && p.WispReaper.Enabled },
+	"doctor_dog":            func(p *PatrolsConfig) bool { return p.DoctorDog != nil && p.DoctorDog.Enabled },
+	"compactor_dog":         func(p *PatrolsConfig) bool { return p.CompactorDog != nil && p.CompactorDog.Enabled },
+	"checkpoint_dog":        func(p *PatrolsConfig) bool { return p.CheckpointDog != nil && p.CheckpointDog.Enabled },
+	"scheduled_maintenance": func(p *PatrolsConfig) bool { return p.ScheduledMaintenance != nil && p.ScheduledMaintenance.Enabled },
+	"main_branch_test":      func(p *PatrolsConfig) bool { return p.MainBranchTest != nil && p.MainBranchTest.Enabled },
+	"quota_dog":             func(p *PatrolsConfig) bool { return p.QuotaDog != nil && p.QuotaDog.Enabled },
+}
+
+var configuredPatrols = map[string]patrolConfigSelector{
+	constants.RoleRefinery: func(p *PatrolsConfig) *PatrolConfig { return p.Refinery },
+	constants.RoleWitness:  func(p *PatrolsConfig) *PatrolConfig { return p.Witness },
+	constants.RoleDeacon:   func(p *PatrolsConfig) *PatrolConfig { return p.Deacon },
+	"handler":              func(p *PatrolsConfig) *PatrolConfig { return p.Handler },
+}
+
 func IsPatrolEnabled(config *DaemonPatrolConfig, patrol string) bool {
-	// Opt-in patrols: disabled unless explicitly enabled in config.
-	// Must check before the nil-config fallback, otherwise nil config
-	// returns true for patrols that should default to disabled.
-	if patrol == "dolt_remotes" {
-		if config == nil || config.Patrols == nil || config.Patrols.DoltRemotes == nil {
-			return false
-		}
-		return config.Patrols.DoltRemotes.Enabled
+	if toggle, ok := optInPatrols[patrol]; ok {
+		return config != nil && config.Patrols != nil && toggle(config.Patrols)
 	}
-	if patrol == "dolt_backup" {
-		if config == nil || config.Patrols == nil || config.Patrols.DoltBackup == nil {
-			return false
-		}
-		return config.Patrols.DoltBackup.Enabled
-	}
-	if patrol == "jsonl_git_backup" {
-		if config == nil || config.Patrols == nil || config.Patrols.JsonlGitBackup == nil {
-			return false
-		}
-		return config.Patrols.JsonlGitBackup.Enabled
-	}
-	if patrol == "wisp_reaper" {
-		if config == nil || config.Patrols == nil || config.Patrols.WispReaper == nil {
-			return false
-		}
-		return config.Patrols.WispReaper.Enabled
-	}
-	if patrol == "doctor_dog" {
-		if config == nil || config.Patrols == nil || config.Patrols.DoctorDog == nil {
-			return false
-		}
-		return config.Patrols.DoctorDog.Enabled
-	}
-	if patrol == "compactor_dog" {
-		if config == nil || config.Patrols == nil || config.Patrols.CompactorDog == nil {
-			return false
-		}
-		return config.Patrols.CompactorDog.Enabled
-	}
-	if patrol == "checkpoint_dog" {
-		if config == nil || config.Patrols == nil || config.Patrols.CheckpointDog == nil {
-			return false
-		}
-		return config.Patrols.CheckpointDog.Enabled
-	}
-	if patrol == "scheduled_maintenance" {
-		if config == nil || config.Patrols == nil || config.Patrols.ScheduledMaintenance == nil {
-			return false
-		}
-		return config.Patrols.ScheduledMaintenance.Enabled
-	}
-	if patrol == "main_branch_test" {
-		if config == nil || config.Patrols == nil || config.Patrols.MainBranchTest == nil {
-			return false
-		}
-		return config.Patrols.MainBranchTest.Enabled
-	}
-	if patrol == "quota_dog" {
-		if config == nil || config.Patrols == nil || config.Patrols.QuotaDog == nil {
-			return false
-		}
-		return config.Patrols.QuotaDog.Enabled
-	}
-
 	if config == nil || config.Patrols == nil {
-		return true // Default: enabled
+		return true
 	}
-
-	switch patrol {
-	case constants.RoleRefinery:
-		if config.Patrols.Refinery != nil {
-			return config.Patrols.Refinery.Enabled
-		}
-	case constants.RoleWitness:
-		if config.Patrols.Witness != nil {
-			return config.Patrols.Witness.Enabled
-		}
-	case constants.RoleDeacon:
-		if config.Patrols.Deacon != nil {
-			return config.Patrols.Deacon.Enabled
-		}
-	case "handler":
-		if config.Patrols.Handler != nil {
-			return config.Patrols.Handler.Enabled
+	if selector, ok := configuredPatrols[patrol]; ok {
+		if setting := selector(config.Patrols); setting != nil {
+			return setting.Enabled
 		}
 	}
-	return true // Default: enabled
+	return true
 }
 
 // GetPatrolRigs returns the list of rigs for a patrol, or nil if all rigs should be patrolled.

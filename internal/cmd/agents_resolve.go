@@ -12,13 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	agentsResolveRole  string
-	agentsResolveRig   string
-	agentsResolveJSON  bool
-	agentsResolveQuiet bool
-)
-
 var agentsResolveCmd = &cobra.Command{
 	Use:   "resolve",
 	Short: "Resolve the active agent bead for a role",
@@ -31,10 +24,10 @@ record, then rig issue, town wisp, and town issue. Closed beads are ignored.`,
 }
 
 func init() {
-	agentsResolveCmd.Flags().StringVar(&agentsResolveRole, "role", "", "Agent role to resolve (witness, refinery, crew, polecat, mayor, deacon)")
-	agentsResolveCmd.Flags().StringVar(&agentsResolveRig, "rig", "", "Rig name for rig-scoped roles")
-	agentsResolveCmd.Flags().BoolVar(&agentsResolveJSON, "json", false, "Output match provenance as JSON")
-	agentsResolveCmd.Flags().BoolVar(&agentsResolveQuiet, "quiet", false, "Suppress no-match diagnostics")
+	agentsResolveCmd.Flags().String("role", "", "Agent role to resolve (witness, refinery, crew, polecat, mayor, deacon)")
+	agentsResolveCmd.Flags().String("rig", "", "Rig name for rig-scoped roles")
+	agentsResolveCmd.Flags().Bool("json", false, "Output match provenance as JSON")
+	agentsResolveCmd.Flags().Bool("quiet", false, "Suppress no-match diagnostics")
 	agentsCmd.AddCommand(agentsResolveCmd)
 }
 
@@ -62,10 +55,16 @@ type agentsResolveResult struct {
 	Status   string `json:"status"`
 }
 
+type agentsResolveOptions struct {
+	role  string
+	rig   string
+	json  bool
+	quiet bool
+}
+
 func runAgentsResolve(cmd *cobra.Command, _ []string) error {
-	role := strings.TrimSpace(agentsResolveRole)
-	rig := strings.TrimSpace(agentsResolveRig)
-	if role == "" {
+	opts := agentsResolveOptionsFromCommand(cmd)
+	if opts.role == "" {
 		return fmt.Errorf("--role is required")
 	}
 
@@ -83,36 +82,57 @@ func runAgentsResolve(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	matches := matchingAgentBeads(candidates, opts.role, opts.rig)
+
+	match, err := pickBestAgentBead(matches)
+	if err != nil {
+		return err
+	}
+	return renderAgentsResolveResult(cmd, opts, match)
+}
+
+func agentsResolveOptionsFromCommand(cmd *cobra.Command) agentsResolveOptions {
+	role, _ := cmd.Flags().GetString("role")
+	rig, _ := cmd.Flags().GetString("rig")
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	quiet, _ := cmd.Flags().GetBool("quiet")
+	return agentsResolveOptions{
+		role:  strings.TrimSpace(role),
+		rig:   strings.TrimSpace(rig),
+		json:  jsonOutput,
+		quiet: quiet,
+	}
+}
+
+func matchingAgentBeads(candidates []agentBeadCandidate, role, rig string) []agentBeadCandidate {
 	var matches []agentBeadCandidate
 	for _, candidate := range candidates {
 		if agentBeadMatches(candidate.Issue, role, rig) {
 			matches = append(matches, candidate)
 		}
 	}
+	return matches
+}
 
-	match, err := pickBestAgentBead(matches)
-	if err != nil {
-		return err
-	}
+func renderAgentsResolveResult(cmd *cobra.Command, opts agentsResolveOptions, match *agentBeadCandidate) error {
 	if match == nil {
-		message := fmt.Sprintf("no agent bead found for role %q", role)
-		if rig != "" {
-			message += fmt.Sprintf(" in rig %q", rig)
+		message := fmt.Sprintf("no agent bead found for role %q", opts.role)
+		if opts.rig != "" {
+			message += fmt.Sprintf(" in rig %q", opts.rig)
 		}
-		if agentsResolveJSON {
+		if opts.json {
 			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{"error": message})
 			return NewSilentExit(1)
 		}
-		if agentsResolveQuiet {
+		if opts.quiet {
 			return NewSilentExit(1)
 		}
 		return fmt.Errorf("%s", message)
 	}
-	if rig != "" && agentBeadSourceIsTown(match.Source) && !agentsResolveJSON {
+	if opts.rig != "" && agentBeadSourceIsTown(match.Source) && !opts.json {
 		return fmt.Errorf("agent bead %s was found only in %s; patrol await/state commands require a rig-local agent bead", match.ID, match.Source)
 	}
-
-	if agentsResolveJSON {
+	if opts.json {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(agentsResolveResult{
 			ID:       match.ID,
 			Source:   string(match.Source),
@@ -120,7 +140,6 @@ func runAgentsResolve(cmd *cobra.Command, _ []string) error {
 			Status:   match.Status,
 		})
 	}
-
 	fmt.Fprintln(cmd.OutOrStdout(), match.ID)
 	return nil
 }

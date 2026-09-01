@@ -54,6 +54,11 @@ type PlanOpts struct {
 	IncludeNearLimit bool
 }
 
+type rotationConfigDirInfo struct {
+	configDir     string
+	accountHandle string
+}
+
 // PlanRotation scans for limited sessions and plans account assignments.
 // The opts parameter controls targeting behavior:
 //   - opts.FromAccount: targets all sessions using that account regardless of limit status
@@ -61,13 +66,11 @@ type PlanOpts struct {
 //
 // Returns a plan that can be reviewed before execution.
 func PlanRotation(scanner *Scanner, mgr *Manager, acctCfg *config.AccountsConfig, opts PlanOpts) (*RotatePlan, error) {
-	// Scan for rate-limited and near-limit sessions
 	results, err := scanner.ScanAll()
 	if err != nil {
 		return nil, fmt.Errorf("scanning sessions: %w", err)
 	}
 
-	// Load quota state
 	state, err := mgr.Load()
 	if err != nil {
 		return nil, fmt.Errorf("loading quota state: %w", err)
@@ -78,30 +81,8 @@ func PlanRotation(scanner *Scanner, mgr *Manager, acctCfg *config.AccountsConfig
 	// become available for rotation.
 	mgr.ClearExpired(state)
 
-	// Find target sessions based on opts.
-	var limitedSessions []ScanResult
-	var nearLimitSessions []ScanResult
-	for _, r := range results {
-		if opts.FromAccount != "" {
-			// Preemptive: target all sessions using the specified account
-			if r.AccountHandle == opts.FromAccount {
-				limitedSessions = append(limitedSessions, r)
-			}
-		} else {
-			// Reactive: target rate-limited sessions
-			if r.RateLimited {
-				limitedSessions = append(limitedSessions, r)
-			} else if r.NearLimit {
-				nearLimitSessions = append(nearLimitSessions, r)
-			}
-		}
-	}
-
-	// Combine limited + near-limit sessions for assignment planning
-	targetSessions := limitedSessions
-	if opts.IncludeNearLimit {
-		targetSessions = append(targetSessions, nearLimitSessions...)
-	}
+	limitedSessions, nearLimitSessions := selectRotationTargets(results, opts)
+	targetSessions := combineRotationTargets(limitedSessions, nearLimitSessions, opts.IncludeNearLimit)
 
 	// Available accounts come from persisted state only — NOT from scan
 	// detections. Stale sessions (e.g., parked rigs with old rate-limit
@@ -110,99 +91,10 @@ func PlanRotation(scanner *Scanner, mgr *Manager, acctCfg *config.AccountsConfig
 	// sessions that actually need it.
 	//
 	// The caller persists confirmed rate-limit state after execution.
-	available := mgr.AvailableAccounts(state)
-
-	// Validate tokens for available accounts — skip accounts with expired or
-	// revoked tokens. This prevents swapping a bad token into the target's
-	// keychain entry, which would leave the session non-functional.
-	skipped := make(map[string]string)
-	var validAvailable []string
-	for _, handle := range available {
-		if handle == opts.FromAccount {
-			continue // rotating away from this account, not a candidate
-		}
-		acct, ok := acctCfg.Accounts[handle]
-		if !ok {
-			continue
-		}
-		configDir := util.ExpandHome(acct.ConfigDir)
-		if err := ValidateKeychainToken(configDir); err != nil {
-			skipped[handle] = err.Error()
-			continue
-		}
-		validAvailable = append(validAvailable, handle)
-	}
-	available = validAvailable
-
-	// Collect unique config dirs from target sessions.
-	// Multiple sessions can share the same config dir (via the same account).
-	// We only need one keychain swap per config dir.
-	// Sessions with unknown accounts are included if they have a CLAUDE_CONFIG_DIR.
-	type configDirInfo struct {
-		configDir     string // resolved config dir path
-		accountHandle string // the limited account using this config dir (may be empty)
-	}
-	uniqueConfigDirs := make(map[string]*configDirInfo) // configDir -> info
-	for _, r := range targetSessions {
-		var configDir string
-		if r.AccountHandle != "" {
-			acct, ok := acctCfg.Accounts[r.AccountHandle]
-			if !ok {
-				continue
-			}
-			configDir = util.ExpandHome(acct.ConfigDir)
-		} else if r.ConfigDir != "" {
-			// Unknown account but we have the config dir from tmux
-			configDir = r.ConfigDir
-		} else {
-			continue // No account and no config dir — can't rotate
-		}
-		if _, exists := uniqueConfigDirs[configDir]; !exists {
-			uniqueConfigDirs[configDir] = &configDirInfo{
-				configDir:     configDir,
-				accountHandle: r.AccountHandle,
-			}
-		}
-	}
-
-	// Assign available accounts to unique config dirs (round-robin, skip same-account).
-	configDirSwaps := make(map[string]string) // configDir -> new account handle
-	availIdx := 0
-	for configDir, info := range uniqueConfigDirs {
-		if availIdx >= len(available) {
-			break
-		}
-		candidate := available[availIdx]
-		if candidate == info.accountHandle {
-			availIdx++
-			if availIdx >= len(available) {
-				break
-			}
-			candidate = available[availIdx] // re-read after skip
-		}
-		configDirSwaps[configDir] = candidate
-		availIdx++
-	}
-
-	// Expand config dir assignments to session-level assignments.
-	assignments := make(map[string]string)
-	for _, r := range targetSessions {
-		var configDir string
-		if r.AccountHandle != "" {
-			acct, ok := acctCfg.Accounts[r.AccountHandle]
-			if !ok {
-				continue
-			}
-			configDir = util.ExpandHome(acct.ConfigDir)
-		} else if r.ConfigDir != "" {
-			configDir = r.ConfigDir
-		} else {
-			continue
-		}
-		if newAccount, ok := configDirSwaps[configDir]; ok {
-			assignments[r.Session] = newAccount
-		}
-	}
+	available, skipped := validRotationAccounts(mgr.AvailableAccounts(state), opts.FromAccount, acctCfg)
+	uniqueConfigDirs := collectRotationConfigDirs(targetSessions, acctCfg)
+	configDirSwaps := assignRotationConfigDirs(uniqueConfigDirs, available)
+	assignments := expandRotationAssignments(targetSessions, acctCfg, configDirSwaps)
 
 	return &RotatePlan{
 		LimitedSessions:   limitedSessions,
@@ -212,4 +104,116 @@ func PlanRotation(scanner *Scanner, mgr *Manager, acctCfg *config.AccountsConfig
 		ConfigDirSwaps:    configDirSwaps,
 		SkippedAccounts:   skipped,
 	}, nil
+}
+
+func selectRotationTargets(results []ScanResult, opts PlanOpts) ([]ScanResult, []ScanResult) {
+	var limitedSessions []ScanResult
+	var nearLimitSessions []ScanResult
+	for _, result := range results {
+		if opts.FromAccount != "" {
+			if result.AccountHandle == opts.FromAccount {
+				limitedSessions = append(limitedSessions, result)
+			}
+			continue
+		}
+		if result.RateLimited {
+			limitedSessions = append(limitedSessions, result)
+		} else if result.NearLimit {
+			nearLimitSessions = append(nearLimitSessions, result)
+		}
+	}
+	return limitedSessions, nearLimitSessions
+}
+
+func combineRotationTargets(limited, nearLimit []ScanResult, includeNearLimit bool) []ScanResult {
+	if !includeNearLimit {
+		return limited
+	}
+	return append(limited, nearLimit...)
+}
+
+func validRotationAccounts(available []string, fromAccount string, acctCfg *config.AccountsConfig) ([]string, map[string]string) {
+	skipped := make(map[string]string)
+	var valid []string
+	for _, handle := range available {
+		if handle == fromAccount {
+			continue
+		}
+		acct, ok := acctCfg.Accounts[handle]
+		if !ok {
+			continue
+		}
+		if err := ValidateKeychainToken(util.ExpandHome(acct.ConfigDir)); err != nil {
+			skipped[handle] = err.Error()
+			continue
+		}
+		valid = append(valid, handle)
+	}
+	return valid, skipped
+}
+
+func collectRotationConfigDirs(targetSessions []ScanResult, acctCfg *config.AccountsConfig) map[string]*rotationConfigDirInfo {
+	unique := make(map[string]*rotationConfigDirInfo)
+	for _, result := range targetSessions {
+		configDir, ok := rotationConfigDir(result, acctCfg)
+		if !ok {
+			continue
+		}
+		if _, exists := unique[configDir]; !exists {
+			unique[configDir] = &rotationConfigDirInfo{
+				configDir:     configDir,
+				accountHandle: result.AccountHandle,
+			}
+		}
+	}
+	return unique
+}
+
+func rotationConfigDir(result ScanResult, acctCfg *config.AccountsConfig) (string, bool) {
+	if result.AccountHandle != "" {
+		acct, ok := acctCfg.Accounts[result.AccountHandle]
+		if !ok {
+			return "", false
+		}
+		return util.ExpandHome(acct.ConfigDir), true
+	}
+	if result.ConfigDir == "" {
+		return "", false
+	}
+	return result.ConfigDir, true
+}
+
+func assignRotationConfigDirs(unique map[string]*rotationConfigDirInfo, available []string) map[string]string {
+	swaps := make(map[string]string)
+	availIdx := 0
+	for configDir, info := range unique {
+		if availIdx >= len(available) {
+			break
+		}
+		candidate := available[availIdx]
+		if candidate == info.accountHandle {
+			availIdx++
+			if availIdx >= len(available) {
+				break
+			}
+			candidate = available[availIdx]
+		}
+		swaps[configDir] = candidate
+		availIdx++
+	}
+	return swaps
+}
+
+func expandRotationAssignments(targetSessions []ScanResult, acctCfg *config.AccountsConfig, swaps map[string]string) map[string]string {
+	assignments := make(map[string]string)
+	for _, result := range targetSessions {
+		configDir, ok := rotationConfigDir(result, acctCfg)
+		if !ok {
+			continue
+		}
+		if newAccount, ok := swaps[configDir]; ok {
+			assignments[result.Session] = newAccount
+		}
+	}
+	return assignments
 }

@@ -5,18 +5,16 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jonbaldie/gastown/internal/polecat"
 	"github.com/jonbaldie/gastown/internal/session"
 	"github.com/jonbaldie/gastown/internal/tmux"
 	"github.com/jonbaldie/gastown/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
-// Peek command flags
-var peekLines int
-
 func init() {
 	rootCmd.AddCommand(peekCmd)
-	peekCmd.Flags().IntVarP(&peekLines, "lines", "n", 100, "Number of lines to capture")
+	peekCmd.Flags().IntP("lines", "n", 100, "Number of lines to capture")
 }
 
 var peekCmd = &cobra.Command{
@@ -102,59 +100,74 @@ func peekSessionName(address string) (string, error) {
 func runPeek(cmd *cobra.Command, args []string) error {
 	address := args[0]
 
-	// Handle optional positional count argument
-	lines := peekLines
-	if len(args) > 1 {
-		n, err := strconv.Atoi(args[1])
-		if err != nil {
-			return fmt.Errorf("invalid line count: %s", args[1])
-		}
-		lines = n
+	lines, err := peekLineCount(cmd, args)
+	if err != nil {
+		return err
 	}
 
 	sessionName, err := peekSessionName(address)
 	if err != nil {
-		if !strings.Contains(address, "/") {
-			return fmt.Errorf("not in a rig directory. Use full address format: gt peek <rig>/<polecat>")
-		}
-		return err
+		return peekAddressError(address, err)
 	}
 
 	if _, ok := peekTownAgentSessions[address]; ok {
-		_, err := workspace.FindFromCwdOrError()
-		if err != nil {
-			return fmt.Errorf("not in a Gas Town workspace: %w", err)
-		}
-		t := tmux.NewTmux()
-		output, err := t.CapturePane(sessionName, lines)
-		if err != nil {
-			return fmt.Errorf("capturing %s: %w", address, err)
-		}
-		fmt.Print(output)
-		return nil
+		return captureTownPeek(address, sessionName, lines)
 	}
 
-	rigName, _, err := parseAddress(address)
+	rigName, err := peekRigName(address)
 	if err != nil {
-		if !strings.Contains(address, "/") {
-			return fmt.Errorf("not in a rig directory. Use full address format: gt peek <rig>/<polecat>")
-		}
-		return err
+		return peekAddressError(address, err)
 	}
 
 	mgr, _, err := getSessionManager(rigName)
 	if err != nil {
-		if !strings.Contains(address, "/") {
-			return fmt.Errorf("not in a rig directory. Use full address format: gt peek <rig>/<polecat>")
-		}
-		return err
+		return peekAddressError(address, err)
 	}
 
-	output, err := mgr.CaptureSession(sessionName, lines)
+	output, err := polecat.CaptureSession(mgr, sessionName, lines)
 	if err != nil {
 		return fmt.Errorf("capturing output: %w", err)
 	}
 
 	fmt.Print(output)
 	return nil
+}
+
+func peekLineCount(cmd *cobra.Command, args []string) (int, error) {
+	lines, err := cmd.Flags().GetInt("lines")
+	if err != nil {
+		return 0, err
+	}
+	if len(args) < 2 {
+		return lines, nil
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid line count: %s", args[1])
+	}
+	return n, nil
+}
+
+func peekAddressError(address string, err error) error {
+	if !strings.Contains(address, "/") {
+		return fmt.Errorf("not in a rig directory. Use full address format: gt peek <rig>/<polecat>")
+	}
+	return err
+}
+
+func captureTownPeek(address, sessionName string, lines int) error {
+	if _, err := workspace.FindFromCwdOrError(); err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	output, err := tmux.NewTmux().CapturePane(sessionName, lines)
+	if err != nil {
+		return fmt.Errorf("capturing %s: %w", address, err)
+	}
+	fmt.Print(output)
+	return nil
+}
+
+func peekRigName(address string) (string, error) {
+	rigName, _, err := parseAddress(address)
+	return rigName, err
 }

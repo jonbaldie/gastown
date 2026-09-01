@@ -14,7 +14,7 @@ func TestPruneRemotePolecatBranchesDryRunIncludesPatchEquivalentBranch(t *testin
 	repoGit := git.NewGit(localDir)
 	branch := "polecat/prune-patch-equivalent"
 	createPatchEquivalentRemoteBranch(t, repoGit, localDir, mainBranch, branch)
-	if err := repoGit.FetchPrune("origin"); err != nil {
+	if err := git.FetchPrune(repoGit, "origin"); err != nil {
 		t.Fatalf("FetchPrune: %v", err)
 	}
 
@@ -38,12 +38,12 @@ func TestRunPolecatPruneRemoteDryRunIncludesPatchEquivalentBranch(t *testing.T) 
 	branch := "polecat/prune-command-patch-equivalent"
 	createPatchEquivalentRemoteBranch(t, repoGit, localDir, mainBranch, branch)
 
-	oldRemote, oldDryRun := polecatPruneRemote, polecatPruneDryRun
-	polecatPruneRemote = true
-	polecatPruneDryRun = true
+	oldRemote, oldDryRun := polecatState().pruneRemote, polecatState().pruneDryRun
+	polecatState().pruneRemote = true
+	polecatState().pruneDryRun = true
 	t.Cleanup(func() {
-		polecatPruneRemote = oldRemote
-		polecatPruneDryRun = oldDryRun
+		polecatState().pruneRemote = oldRemote
+		polecatState().pruneDryRun = oldDryRun
 	})
 
 	out := captureStdout(t, func() {
@@ -63,7 +63,7 @@ func TestPruneRemotePolecatBranchesUsesUpstreamBaseForOriginFork(t *testing.T) {
 	writePolecatPruneTestFile(t, filepath.Join(localDir, "fork-only.txt"), "fork only\n")
 	runGit(t, localDir, "add", "fork-only.txt")
 	runGit(t, localDir, "commit", "-m", "fork-only branch work")
-	branchSHA, err := repoGit.Rev("HEAD")
+	branchSHA, err := git.Rev(repoGit, "HEAD")
 	if err != nil {
 		t.Fatalf("Rev branch: %v", err)
 	}
@@ -76,13 +76,13 @@ func TestPruneRemotePolecatBranchesUsesUpstreamBaseForOriginFork(t *testing.T) {
 	runGit(t, localDir, "commit", "-m", "advance fork target")
 	runGit(t, localDir, "cherry-pick", strings.TrimSpace(branchSHA))
 	runGit(t, localDir, "push", "origin", mainBranch)
-	if err := repoGit.FetchPrune("origin"); err != nil {
+	if err := git.FetchPrune(repoGit, "origin"); err != nil {
 		t.Fatalf("FetchPrune origin: %v", err)
 	}
-	if err := repoGit.FetchPrune("upstream"); err != nil {
+	if err := git.FetchPrune(repoGit, "upstream"); err != nil {
 		t.Fatalf("FetchPrune upstream: %v", err)
 	}
-	if got := repoGit.CleanDefaultBranchBaseRef("origin", mainBranch); got != "upstream/"+mainBranch {
+	if got := git.CleanDefaultBranchBaseRef(repoGit, "origin", mainBranch); got != "upstream/"+mainBranch {
 		t.Fatalf("CleanDefaultBranchBaseRef = %q, want upstream/%s", got, mainBranch)
 	}
 
@@ -98,7 +98,7 @@ func TestPruneRemotePolecatBranchesUsesUpstreamBaseForOriginFork(t *testing.T) {
 	if strings.Contains(out, branch) {
 		t.Fatalf("dry-run output %q should not include fork-only branch %s", out, branch)
 	}
-	exists, err := repoGit.RemoteBranchExists("origin", branch)
+	exists, err := git.RemoteBranchExists(repoGit, "origin", branch)
 	if err != nil {
 		t.Fatalf("RemoteBranchExists: %v", err)
 	}
@@ -113,7 +113,7 @@ func createPatchEquivalentRemoteBranch(t *testing.T, repoGit *git.Git, localDir,
 	writePolecatPruneTestFile(t, filepath.Join(localDir, "feature.txt"), "feature\n")
 	runGit(t, localDir, "add", "feature.txt")
 	runGit(t, localDir, "commit", "-m", "feature work")
-	branchSHA, err := repoGit.Rev("HEAD")
+	branchSHA, err := git.Rev(repoGit, "HEAD")
 	if err != nil {
 		t.Fatalf("Rev branch: %v", err)
 	}
@@ -132,7 +132,7 @@ func assertRemotePruneDryRunKeptBranch(t *testing.T, repoGit *git.Git, out, bran
 	if !strings.Contains(out, "Would delete remote") || !strings.Contains(out, branch) {
 		t.Fatalf("dry-run output %q, want branch %s", out, branch)
 	}
-	exists, err := repoGit.RemoteBranchExists("origin", branch)
+	exists, err := git.RemoteBranchExists(repoGit, "origin", branch)
 	if err != nil {
 		t.Fatalf("RemoteBranchExists: %v", err)
 	}

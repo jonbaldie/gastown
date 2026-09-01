@@ -88,52 +88,52 @@ func detectSender() string {
 func detectSenderFromRole(role string) string {
 	rig := os.Getenv("GT_RIG")
 
-	// Check if role is already a full address (contains /)
 	if strings.Contains(role, "/") {
-		// GT_ROLE is already a full address, use it directly
 		return role
 	}
+	return detectSenderRoleAddress(role, rig)
+}
 
-	// GT_ROLE is a simple role name, build the full address
+func detectSenderRoleAddress(role, rig string) string {
 	switch role {
 	case constants.RoleMayor:
 		return "mayor/"
 	case constants.RoleDeacon:
 		return "deacon/"
 	case constants.RolePolecat:
-		polecat := os.Getenv("GT_POLECAT")
-		if rig != "" && polecat != "" {
-			return fmt.Sprintf("%s/%s", rig, polecat)
-		}
-		// Fallback to cwd detection for polecats
-		return detectSenderFromCwd()
+		return detectSenderNamedRole(rig, os.Getenv("GT_POLECAT"), "%s/%s")
 	case constants.RoleCrew:
-		crew := os.Getenv("GT_CREW")
-		if rig != "" && crew != "" {
-			return fmt.Sprintf("%s/crew/%s", rig, crew)
-		}
-		// Fallback to cwd detection for crew
-		return detectSenderFromCwd()
+		return detectSenderNamedRole(rig, os.Getenv("GT_CREW"), "%s/crew/%s")
 	case constants.RoleWitness:
-		if rig != "" {
-			return fmt.Sprintf("%s/witness", rig)
-		}
-		return detectSenderFromCwd()
+		return detectSenderRigRole(rig, "%s/witness")
 	case constants.RoleRefinery:
-		if rig != "" {
-			return fmt.Sprintf("%s/refinery", rig)
-		}
-		return detectSenderFromCwd()
+		return detectSenderRigRole(rig, "%s/refinery")
 	case "dog":
-		dogName := os.Getenv("GT_DOG_NAME")
-		if dogName != "" {
-			return fmt.Sprintf("deacon/dogs/%s", dogName)
-		}
-		return detectSenderFromCwd()
+		return detectSenderDogRole(os.Getenv("GT_DOG_NAME"))
 	default:
-		// Unknown role, try cwd detection
 		return detectSenderFromCwd()
 	}
+}
+
+func detectSenderNamedRole(rig, name, format string) string {
+	if rig != "" && name != "" {
+		return fmt.Sprintf(format, rig, name)
+	}
+	return detectSenderFromCwd()
+}
+
+func detectSenderRigRole(rig, format string) string {
+	if rig != "" {
+		return fmt.Sprintf(format, rig)
+	}
+	return detectSenderFromCwd()
+}
+
+func detectSenderDogRole(name string) string {
+	if name != "" {
+		return fmt.Sprintf("deacon/dogs/%s", name)
+	}
+	return detectSenderFromCwd()
 }
 
 // detectSenderFromCwd is the legacy cwd-based detection for edge cases.
@@ -148,8 +148,35 @@ func detectSenderFromCwd() string {
 	if fromFile := detectSenderFromAgentFile(cwd); fromFile != "" {
 		return fromFile
 	}
+	if fromPath := detectSenderFromPath(cwd); fromPath != "" {
+		return fromPath
+	}
+	return "overseer"
+}
 
-	// If in a rig's polecats directory, extract address (format: rig/polecats/name)
+func detectSenderFromPath(cwd string) string {
+	if address := detectSenderFromPolecatPath(cwd); address != "" {
+		return address
+	}
+	if address := detectSenderFromDogPath(cwd); address != "" {
+		return address
+	}
+	if address := detectSenderFromCrewPath(cwd); address != "" {
+		return address
+	}
+	if address := detectSenderFromRefineryPath(cwd); address != "" {
+		return address
+	}
+	if address := detectSenderFromWitnessPath(cwd); address != "" {
+		return address
+	}
+	if strings.Contains(cwd, "/mayor") {
+		return "mayor"
+	}
+	return ""
+}
+
+func detectSenderFromPolecatPath(cwd string) string {
 	if strings.Contains(cwd, "/polecats/") {
 		parts := strings.Split(cwd, "/polecats/")
 		if len(parts) >= 2 {
@@ -159,8 +186,10 @@ func detectSenderFromCwd() string {
 			return fmt.Sprintf("%s/polecats/%s", rigName, polecatPath)
 		}
 	}
+	return ""
+}
 
-	// If in deacon's dogs directory, extract address (format: deacon/dogs/name)
+func detectSenderFromDogPath(cwd string) string {
 	if strings.Contains(cwd, "/deacon/dogs/") {
 		parts := strings.Split(cwd, "/deacon/dogs/")
 		if len(parts) >= 2 {
@@ -168,8 +197,10 @@ func detectSenderFromCwd() string {
 			return fmt.Sprintf("deacon/dogs/%s", dogName)
 		}
 	}
+	return ""
+}
 
-	// If in a rig's crew directory, extract address (format: rig/crew/name)
+func detectSenderFromCrewPath(cwd string) string {
 	if strings.Contains(cwd, "/crew/") {
 		parts := strings.Split(cwd, "/crew/")
 		if len(parts) >= 2 {
@@ -179,8 +210,10 @@ func detectSenderFromCwd() string {
 			return fmt.Sprintf("%s/crew/%s", rigName, crewName)
 		}
 	}
+	return ""
+}
 
-	// If in a rig's refinery directory, extract address (format: rig/refinery)
+func detectSenderFromRefineryPath(cwd string) string {
 	if strings.Contains(cwd, "/refinery") {
 		parts := strings.Split(cwd, "/refinery")
 		if len(parts) >= 1 {
@@ -188,8 +221,10 @@ func detectSenderFromCwd() string {
 			return fmt.Sprintf("%s/refinery", rigName)
 		}
 	}
+	return ""
+}
 
-	// If in a rig's witness directory, extract address (format: rig/witness)
+func detectSenderFromWitnessPath(cwd string) string {
 	if strings.Contains(cwd, "/witness") {
 		parts := strings.Split(cwd, "/witness")
 		if len(parts) >= 1 {
@@ -197,14 +232,7 @@ func detectSenderFromCwd() string {
 			return fmt.Sprintf("%s/witness", rigName)
 		}
 	}
-
-	// If in the town's mayor directory
-	if strings.Contains(cwd, "/mayor") {
-		return "mayor"
-	}
-
-	// Default to overseer (human)
-	return "overseer"
+	return ""
 }
 
 type agentIdentityFile struct {
@@ -240,32 +268,47 @@ func identityFromAgentFile(parsed agentIdentityFile) string {
 	rig := strings.TrimSpace(parsed.Rig)
 	name := strings.TrimSpace(parsed.Name)
 
+	return identityForAgentRole(role, rig, name)
+}
+
+func identityForAgentRole(role, rig, name string) string {
 	switch role {
 	case constants.RoleMayor:
 		return "mayor/"
 	case constants.RoleDeacon:
 		return "deacon/"
 	case constants.RoleWitness:
-		if rig != "" {
-			return fmt.Sprintf("%s/witness", rig)
-		}
+		return identityForRigRole(rig, "%s/witness")
 	case constants.RoleRefinery:
-		if rig != "" {
-			return fmt.Sprintf("%s/refinery", rig)
-		}
+		return identityForRigRole(rig, "%s/refinery")
 	case constants.RoleCrew:
-		if rig != "" && name != "" {
-			return fmt.Sprintf("%s/crew/%s", rig, name)
-		}
+		return identityForNamedRole(rig, name, "%s/crew/%s")
 	case constants.RolePolecat:
-		if rig != "" && name != "" {
-			return fmt.Sprintf("%s/polecats/%s", rig, name)
-		}
+		return identityForNamedRole(rig, name, "%s/polecats/%s")
 	case "dog":
-		if name != "" {
-			return fmt.Sprintf("deacon/dogs/%s", name)
-		}
+		return identityForDogRole(name)
 	}
 
+	return ""
+}
+
+func identityForRigRole(rig, format string) string {
+	if rig != "" {
+		return fmt.Sprintf(format, rig)
+	}
+	return ""
+}
+
+func identityForNamedRole(rig, name, format string) string {
+	if rig != "" && name != "" {
+		return fmt.Sprintf(format, rig, name)
+	}
+	return ""
+}
+
+func identityForDogRole(name string) string {
+	if name != "" {
+		return fmt.Sprintf("deacon/dogs/%s", name)
+	}
 	return ""
 }

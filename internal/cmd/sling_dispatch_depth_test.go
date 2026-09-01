@@ -44,9 +44,9 @@ exit 0
 	}
 
 	_, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:   "gt-flaglike",
-		RigName:  "gastown",
-		TownRoot: townRoot,
+		BeadID:                 "gt-flaglike",
+		RigName:                "gastown",
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot},
 	})
 	if err == nil {
 		t.Fatal("expected flag-like title to be refused")
@@ -96,11 +96,10 @@ exit 0
 	}
 
 	result, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:   "gt-abc",
-		RigName:  "gastown",
-		Formula:  "mol-polecat-work",
-		TownRoot: townRoot,
-		NoBoot:   true,
+		BeadID:                 "gt-abc",
+		RigName:                "gastown",
+		Formula:                "mol-polecat-work",
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot, NoBoot: true},
 	})
 	if err != nil {
 		t.Fatalf("expected no-op success, got %v", err)
@@ -142,11 +141,10 @@ exit 0
 	isHookedAgentDeadFn = func(string) bool { return false }
 
 	_, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:   "gt-abc",
-		RigName:  "gastown",
-		Formula:  "mol-review",
-		TownRoot: townRoot,
-		NoBoot:   true,
+		BeadID:                 "gt-abc",
+		RigName:                "gastown",
+		Formula:                "mol-review",
+		IntentExecutionOptions: sling.IntentExecutionOptions{TownRoot: townRoot, NoBoot: true},
 	})
 	if err == nil {
 		t.Fatal("expected already-hooked error when applying a new formula without --force")

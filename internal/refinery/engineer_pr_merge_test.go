@@ -169,7 +169,7 @@ func addDistinctUpstreamRemote(t *testing.T, workDir string, g *gitpkg.Git) {
 	t.Helper()
 	upstream := filepath.Join(t.TempDir(), "upstream.git")
 	run(t, filepath.Dir(upstream), "git", "init", "--bare", "--initial-branch=main", upstream)
-	if _, err := g.AddRemote("upstream", upstream); err != nil {
+	if _, err := gitpkg.AddRemote(g, "upstream", upstream); err != nil {
 		t.Fatalf("AddRemote upstream: %v", err)
 	}
 }
@@ -217,7 +217,7 @@ func TestDoMergePR_UsesMergeCommitAndPreservesSubmittedHead(t *testing.T) {
 	if provider.mergeMethod != "merge" {
 		t.Fatalf("MergePR method = %q, want merge", provider.mergeMethod)
 	}
-	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", "main", commit); err != nil {
+	if err := gitpkg.VerifyPushedCommitReachableFromPushTarget(g, "origin", "main", commit); err != nil {
 		t.Fatalf("submitted head not reachable after PR merge: %v", err)
 	}
 }
@@ -313,7 +313,7 @@ func TestDoMergePR_RequireReview_NoApproval(t *testing.T) {
 	// When require_review is true and the PR is not approved,
 	// doMergePR should return NeedsApproval=true.
 	// This test is tricky since it requires gh CLI — skip if not available.
-	if _, err := gitpkg.NewGit(t.TempDir()).FindPRNumber("nonexistent"); err != nil {
+	if _, err := gitpkg.FindPRNumber(gitpkg.NewGit(t.TempDir()), "nonexistent"); err != nil {
 		// gh CLI not available or not authenticated — test the config path only
 		t.Skip("gh CLI not available for PR approval testing")
 	}

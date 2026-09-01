@@ -16,7 +16,7 @@ func newGitHubPRProvider(g *git.Git) PRProvider {
 }
 
 func (p *githubPRProvider) FindPullRequest(branch, prURL string, prNumber int, headSHA string) (*git.PullRequestInfo, error) {
-	pr, err := p.git.LookupPullRequest(git.PullRequestRef{URL: prURL, Number: prNumber, Branch: branch, HeadSHA: headSHA})
+	pr, err := git.LookupPullRequest(p.git, git.PullRequestRef{URL: prURL, Number: prNumber, Branch: branch, HeadSHA: headSHA})
 	if err != nil {
 		if errors.Is(err, git.ErrPullRequestNotFound) {
 			return nil, nil
@@ -30,9 +30,9 @@ func (p *githubPRProvider) FindPullRequest(branch, prURL string, prNumber int, h
 }
 
 func (p *githubPRProvider) IsPRApproved(pr *git.PullRequestInfo) (bool, error) {
-	return p.git.IsPullRequestApproved(pr)
+	return git.IsPullRequestApproved(p.git, pr)
 }
 
 func (p *githubPRProvider) MergePR(pr *git.PullRequestInfo, method string) (string, error) {
-	return p.git.GhPrMergePullRequest(pr, method)
+	return git.GhPrMergePullRequest(p.git, pr, method)
 }

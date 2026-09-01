@@ -83,13 +83,15 @@ exit 0
 	t.Setenv("DOG_ROLLBACK_STATE", statePath)
 
 	dispatch := &DogDispatchInfo{
-		DogName:       "alpha",
-		AgentID:       "deacon/dogs/alpha",
-		townRoot:      townRoot,
-		workDesc:      "gt-new",
-		workStartedAt: startedAt,
-		ownsWork:      true,
-		rigsConfig:    rigs,
+		DogName: "alpha",
+		AgentID: "deacon/dogs/alpha",
+		state: dogDispatchState{
+			townRoot:      townRoot,
+			workDesc:      "gt-new",
+			workStartedAt: startedAt,
+			ownsWork:      true,
+			rigsConfig:    rigs,
+		},
 	}
 	rollbackFailedDogDispatch(dispatch, townRoot, "gt-new", townRoot, "", "open", "", "", &beadInfo{Status: "open"})
 

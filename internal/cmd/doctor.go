@@ -10,15 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	doctorFix             bool
-	doctorVerbose         bool
-	doctorRig             string
-	doctorRestartSessions bool
-	doctorNoStart         bool
-	doctorSlow            string
-)
-
 var doctorCmd = &cobra.Command{
 	Use:     "doctor",
 	GroupID: GroupDiag,
@@ -124,18 +115,25 @@ Use --slow to highlight slow checks (default threshold: 1s, e.g. --slow=500ms).`
 }
 
 func init() {
-	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false, "Attempt to automatically fix issues")
-	doctorCmd.Flags().BoolVarP(&doctorVerbose, "verbose", "v", false, "Show detailed output")
-	doctorCmd.Flags().StringVar(&doctorRig, "rig", "", "Check specific rig only")
-	doctorCmd.Flags().BoolVar(&doctorRestartSessions, "restart-sessions", false, "Restart patrol sessions when fixing stale settings (use with --fix)")
-	doctorCmd.Flags().BoolVar(&doctorNoStart, "no-start", false, "Suppress starting daemon/agents during --fix")
-	doctorCmd.Flags().StringVar(&doctorSlow, "slow", "", "Highlight slow checks (optional threshold, default 1s)")
+	doctorCmd.Flags().Bool("fix", false, "Attempt to automatically fix issues")
+	doctorCmd.Flags().BoolP("verbose", "v", false, "Show detailed output")
+	doctorCmd.Flags().String("rig", "", "Check specific rig only")
+	doctorCmd.Flags().Bool("restart-sessions", false, "Restart patrol sessions when fixing stale settings (use with --fix)")
+	doctorCmd.Flags().Bool("no-start", false, "Suppress starting daemon/agents during --fix")
+	doctorCmd.Flags().String("slow", "", "Highlight slow checks (optional threshold, default 1s)")
 	// Allow --slow without a value (uses default 1s)
 	doctorCmd.Flags().Lookup("slow").NoOptDefVal = "1s"
 	rootCmd.AddCommand(doctorCmd)
 }
 
-func runDoctor(cmd *cobra.Command, args []string) error {
+func runDoctor(cmd *cobra.Command, _ []string) error {
+	fix := commandBoolFlag(cmd, "fix")
+	verbose := commandBoolFlag(cmd, "verbose")
+	rig := commandStringFlag(cmd, "rig")
+	restartSessions := commandBoolFlag(cmd, "restart-sessions")
+	noStart := commandBoolFlag(cmd, "no-start")
+	slow := commandStringFlag(cmd, "slow")
+
 	// Find town root
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -145,35 +143,35 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	// Create check context
 	ctx := &doctor.CheckContext{
 		TownRoot:        townRoot,
-		RigName:         doctorRig,
-		Verbose:         doctorVerbose,
-		RestartSessions: doctorRestartSessions,
-		NoStart:         doctorNoStart,
+		RigName:         rig,
+		Verbose:         verbose,
+		RestartSessions: restartSessions,
+		NoStart:         noStart,
 	}
 
-	d := newDoctorForCommand(doctorRig)
+	d := newDoctorForCommand(rig)
 
 	// Parse slow threshold (0 = disabled)
 	var slowThreshold time.Duration
-	if doctorSlow != "" {
+	if slow != "" {
 		var err error
-		slowThreshold, err = time.ParseDuration(doctorSlow)
+		slowThreshold, err = time.ParseDuration(slow)
 		if err != nil {
-			return fmt.Errorf("invalid --slow duration %q: %w", doctorSlow, err)
+			return fmt.Errorf("invalid --slow duration %q: %w", slow, err)
 		}
 	}
 
 	// Run checks with streaming output
 	fmt.Println() // Initial blank line
 	var report *doctor.Report
-	if doctorFix {
+	if fix {
 		report = d.FixStreaming(ctx, os.Stdout, slowThreshold)
 	} else {
 		report = d.RunStreaming(ctx, os.Stdout, slowThreshold)
 	}
 
 	// Print summary (checks were already printed during streaming)
-	report.PrintSummaryOnly(os.Stdout, doctorVerbose, slowThreshold)
+	report.PrintSummaryOnly(os.Stdout, verbose, slowThreshold)
 
 	// Exit with error code if there are errors
 	if report.HasErrors() {
@@ -185,7 +183,21 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 func newDoctorForCommand(rig string) *doctor.Doctor {
 	d := doctor.NewDoctor()
+	registerDoctorFoundationChecks(d)
+	registerDoctorInfrastructureChecks(d)
+	registerDoctorTownChecks(d)
+	registerDoctorPatrolChecks(d)
+	registerDoctorConfigChecks(d)
+	registerDoctorWorkspaceChecks(d)
+	registerDoctorLifecycleChecks(d)
+	registerDoctorDataChecks(d)
+	if rig != "" {
+		d.RegisterAll(doctor.RigChecks()...)
+	}
+	return d
+}
 
+func registerDoctorFoundationChecks(d *doctor.Doctor) {
 	// Register workspace-level checks first (fundamental)
 	d.RegisterAll(doctor.WorkspaceChecks()...)
 
@@ -202,14 +214,17 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 	// 2. bd binary exists
 	// 3. dolt binary exists
 	// 4. Dolt server is reachable (everything downstream depends on this)
-	d.Register(doctor.NewStaleBinaryCheck())
+	d.Register(doctor.NewStaleBinaryCheck(resolveCommitHash()))
 	d.Register(doctor.NewBeadsBinaryCheck())
 	d.Register(doctor.NewDoltBinaryCheck())
 	d.Register(doctor.NewClaudeBinaryCheck())
 	d.Register(doctor.NewMayorBinaryCheck())
 	d.Register(doctor.NewGroqCompoundCheck())
 	d.Register(doctor.NewDoltServerReachableCheck())
+}
 
+func registerDoctorInfrastructureChecks(d *doctor.Doctor) {
+	// Keep git and daemon prerequisites together so failures remain easy to scan.
 	d.Register(doctor.NewTownGitCheck())
 	d.Register(doctor.NewTownRootBranchCheck())
 	d.Register(doctor.NewForeignRemoteCheck())
@@ -230,12 +245,15 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 	d.Register(doctor.NewOverlayHealthCheck())
 	d.Register(doctor.NewPrefixConflictCheck())
 	d.Register(doctor.NewRigNameMismatchCheck())
-	d.Register(doctor.NewRigConfigSyncCheck())      // Check all registered rigs have config.json
-	d.Register(doctor.NewStaleDoltPortCheck())      // Check for stale Dolt port files
-	d.Register(doctor.NewStaleSQLServerInfoCheck()) // Check for stale sql-server.info files (GH#2770)
+	d.Register(doctor.NewRigConfigSyncCheck())
+	d.Register(doctor.NewStaleDoltPortCheck())
+	d.Register(doctor.NewStaleSQLServerInfoCheck())
+}
+
+func registerDoctorTownChecks(d *doctor.Doctor) {
 	d.Register(doctor.NewPrefixMismatchCheck())
 	d.Register(doctor.NewDatabasePrefixCheck())
-	d.Register(doctor.NewIdleTimeoutCheck()) // Verify dolt.idle-timeout: "0" for all rigs
+	d.Register(doctor.NewIdleTimeoutCheck())
 	d.Register(doctor.NewRoutesCheck())
 	d.Register(doctor.NewRigRoutesJSONLCheck())
 	d.Register(doctor.NewRoutingModeCheck())
@@ -260,7 +278,9 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 	d.Register(doctor.NewThemeCheck())
 	d.Register(doctor.NewCrashReportCheck())
 	d.Register(doctor.NewEnvVarsCheck())
+}
 
+func registerDoctorPatrolChecks(d *doctor.Doctor) {
 	// Patrol system checks
 	d.Register(doctor.NewPatrolMoleculesExistCheck())
 	d.Register(doctor.NewPatrolHooksWiredCheck())
@@ -271,20 +291,21 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 	d.Register(doctor.NewStaleAgentBeadsCheck())
 	d.Register(doctor.NewRigBeadsCheck())
 	d.Register(doctor.NewRoleBeadsCheck())
+	// Stale attachment detection belongs in the Deacon molecule.
+}
 
-	// NOTE: StaleAttachmentsCheck removed - staleness detection belongs in Deacon molecule
-
+func registerDoctorConfigChecks(d *doctor.Doctor) {
 	// Config architecture checks
 	d.Register(doctor.NewSettingsCheck())
 	d.Register(doctor.NewSessionHookCheck())
 	d.Register(doctor.NewRuntimeGitignoreCheck())
 	d.Register(doctor.NewLegacyGastownCheck())
-	// NOTE: ClaudeSettingsCheck moved before DaemonCheck (gt-99u race fix)
+	// ClaudeSettingsCheck is registered before DaemonCheck above.
 	d.Register(doctor.NewDeprecatedMergeQueueKeysCheck())
 	d.Register(doctor.NewLandWorktreeGitignoreCheck())
 	d.Register(doctor.NewHooksPathAllRigsCheck())
 
-	// Sparse checkout migration (runs across all rigs, not just --rig mode)
+	// Sparse checkout migration runs across all rigs, not just --rig mode.
 	d.Register(doctor.NewSparseCheckoutCheck())
 
 	// Priming subsystem check
@@ -292,16 +313,14 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 
 	// Town-root CLAUDE.md version check (migration check for behavioral norms)
 	d.Register(doctor.NewTownAgentsMDCheck())
+}
 
+func registerDoctorWorkspaceChecks(d *doctor.Doctor) {
 	// Crew workspace checks
 	d.Register(doctor.NewCrewStateCheck())
 	d.Register(doctor.NewCrewWorktreeCheck())
 	d.Register(doctor.NewCommandsCheck())
 	d.Register(doctor.NewSkillsCheck())
-
-	// Lifecycle hygiene checks
-	d.Register(doctor.NewLifecycleHygieneCheck())
-	d.Register(doctor.NewLifecycleDefaultsCheck())
 
 	// Hook attachment checks
 	d.Register(doctor.NewHookAttachmentValidCheck())
@@ -313,19 +332,20 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 	d.Register(doctor.NewHooksSyncCheck())
 	d.Register(doctor.NewHooksBaseCheck())
 
-	// Dolt data health checks (binary + server reachability moved to top as prerequisites)
+	// Worktree gitdir validity runs across all rigs, or a selected rig.
+	d.Register(doctor.NewWorktreeGitdirCheck())
+}
+
+func registerDoctorLifecycleChecks(d *doctor.Doctor) {
+	// Lifecycle hygiene checks
+	d.Register(doctor.NewLifecycleHygieneCheck())
+	d.Register(doctor.NewLifecycleDefaultsCheck())
+}
+
+func registerDoctorDataChecks(d *doctor.Doctor) {
+	// Dolt data health checks. Binary and server checks run above as prerequisites.
 	d.Register(doctor.NewDoltMetadataCheck())
 	d.Register(doctor.NewDoltOrphanedDatabaseCheck())
 	d.Register(doctor.NewUnregisteredBeadsDirsCheck())
 	d.Register(doctor.NewNullAssigneeCheck())
-
-	// Worktree gitdir validity (runs across all rigs, or specific rig with --rig)
-	d.Register(doctor.NewWorktreeGitdirCheck())
-
-	// Rig-specific checks (only when --rig is specified)
-	if rig != "" {
-		d.RegisterAll(doctor.RigChecks()...)
-	}
-
-	return d
 }

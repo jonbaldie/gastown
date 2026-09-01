@@ -35,14 +35,16 @@ func stubSlingSpawnAndHook(t *testing.T, townRoot string) {
 func executeRawSling(t *testing.T, townRoot, rigPath string, merge string) *SlingResult {
 	t.Helper()
 	result, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		RigName:     "gastown",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
-		HookRawBead: true,
-		Merge:       merge,
-		NoConvoy:    true,
-		NoBoot:      true,
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		Merge:   merge,
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+			HookRawBead: true,
+			NoConvoy:    true,
+			NoBoot:      true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("executeSling: %v", err)
@@ -103,12 +105,14 @@ func TestExecuteSlingAppliesStoredLocalMergeToNewConvoy(t *testing.T) {
 	}
 
 	result, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		RigName:     "gastown",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
-		HookRawBead: true,
-		NoBoot:      true,
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+			HookRawBead: true,
+			NoBoot:      true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("executeSling: %v", err)
@@ -132,13 +136,15 @@ func TestExecuteSlingFailsClosedWhenLocalMergePersistFails(t *testing.T) {
 	t.Setenv("BD_FAIL_DESCRIPTION_UPDATE", "1")
 
 	result, err := runTownSling(context.Background(), sling.Intent{
-		BeadID:      "gt-rawrollback",
-		RigName:     "gastown",
-		TownRoot:    townRoot,
-		BeadsDir:    filepath.Join(rigPath, ".beads"),
-		HookRawBead: true,
-		NoConvoy:    true,
-		NoBoot:      true,
+		BeadID:  "gt-rawrollback",
+		RigName: "gastown",
+		IntentExecutionOptions: sling.IntentExecutionOptions{
+			TownRoot:    townRoot,
+			BeadsDir:    filepath.Join(rigPath, ".beads"),
+			HookRawBead: true,
+			NoConvoy:    true,
+			NoBoot:      true,
+		},
 	})
 	if err == nil {
 		t.Fatal("expected persist failure from executeSling")

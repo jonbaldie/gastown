@@ -71,11 +71,13 @@ func TestCleanupDelayedDogFormulaFailurePreservesWorkAfterWispCleanupError(t *te
 	})
 	dispatch := &DogDispatchInfo{
 		DogName:       "alpha",
-		townRoot:      townRoot,
-		workDesc:      "mol-dog-reaper",
-		workStartedAt: startedAt,
-		ownsWork:      true,
-		rigsConfig:    rigsConfig,
+		state: dogDispatchState{
+			townRoot:      townRoot,
+			workDesc:      "mol-dog-reaper",
+			workStartedAt: startedAt,
+			ownsWork:      true,
+			rigsConfig:    rigsConfig,
+		},
 	}
 
 	err := cleanupDelayedDogFormulaFailure(errors.New("start failed"), dispatch, "gt-wisp", townRoot)
@@ -105,7 +107,7 @@ func TestRunSlingFormulaSerializesWholeDogPool(t *testing.T) {
 func TestRunSlingFormulaExistingHookedDogStartsDelayedSession(t *testing.T) {
 	body := runSlingFormulaSourceForTest(t)
 
-	existingIdx := strings.Index(body, "shouldReuseExistingFormula(existing, delayedDogInfo, slingForce)")
+	existingIdx := strings.Index(body, "shouldReuseExistingFormula(existing, delayedDogInfo, slingState().force)")
 	if existingIdx == -1 {
 		t.Fatal("existing hooked formula no-op block not found")
 	}
@@ -115,7 +117,7 @@ func TestRunSlingFormulaExistingHookedDogStartsDelayedSession(t *testing.T) {
 		t.Fatal("could not isolate existing hooked formula block")
 	}
 	existingBlock = existingBlock[:stepIdx]
-	startIdx := strings.Index(existingBlock, "delayedDogInfo.completeFormulaStartup(existing.ID)")
+	startIdx := strings.Index(existingBlock, "delayedDogInfo.CompleteFormulaStartup(existing.ID)")
 	completeIdx := strings.Index(existingBlock, "delayedDogComplete = true")
 	nudgeIdx := strings.Index(existingBlock, "nudgeFormulaDog(delayedDogInfo, formulaSlingPrompt(formulaName))")
 	returnIdx := strings.LastIndex(existingBlock, "return nil")
@@ -135,7 +137,7 @@ func TestRunSlingFormulaExistingHookedDogStartsDelayedSession(t *testing.T) {
 
 func TestRunSlingFormulaNonOwnedDogReuseCannotCreateFreshWisp(t *testing.T) {
 	body := runSlingFormulaSourceForTest(t)
-	reuseIdx := strings.Index(body, "shouldReuseExistingFormula(existing, delayedDogInfo, slingForce)")
+	reuseIdx := strings.Index(body, "shouldReuseExistingFormula(existing, delayedDogInfo, slingState().force)")
 	guardIdx := strings.Index(body, "delayedDogInfo != nil && !delayedDogInfo.ownsWork")
 	stepIdx := strings.Index(body, "// Step 1: Cook the formula")
 	if reuseIdx == -1 || guardIdx == -1 || stepIdx == -1 {

@@ -651,7 +651,7 @@ func TestBareRepoExistsCheck_FixPreservesLegacyPushURL(t *testing.T) {
 
 	// Verify the push URL is preserved (not cleared)
 	bareGit := git.NewGitWithDir(bareRepo, "")
-	actualPush, err := bareGit.GetPushURL("origin")
+	actualPush, err := git.GetPushURL(bareGit, "origin")
 	if err != nil {
 		t.Fatalf("GetPushURL failed: %v", err)
 	}

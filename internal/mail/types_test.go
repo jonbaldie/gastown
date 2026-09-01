@@ -203,11 +203,11 @@ func TestNewMessage(t *testing.T) {
 
 func TestNewReplyMessage(t *testing.T) {
 	original := &Message{
-		ID:       "orig-001",
-		ThreadID: "thread-001",
-		From:     "gastown/Toast",
-		To:       "mayor/",
-		Subject:  "Original Subject",
+		ID:                  "orig-001",
+		From:                "gastown/Toast",
+		To:                  "mayor/",
+		Subject:             "Original Subject",
+		MessageConversation: MessageConversation{ThreadID: "thread-001"},
 	}
 
 	reply := NewReplyMessage("mayor/", "gastown/Toast", "Re: Original Subject", "Reply body", original)
@@ -589,11 +589,11 @@ func TestMessageValidate(t *testing.T) {
 		{
 			name: "claimed_by on non-queue message",
 			msg: &Message{
-				ID:        "msg-001",
-				From:      "mayor/",
-				To:        "gastown/Toast",
-				Subject:   "Test",
-				ClaimedBy: "gastown/nux",
+				ID:              "msg-001",
+				From:            "mayor/",
+				To:              "gastown/Toast",
+				Subject:         "Test",
+				MessageDelivery: MessageDelivery{ClaimedBy: "gastown/nux"},
 			},
 			wantErr: true,
 			errMsg:  "claimed_by is only valid for queue messages",
@@ -601,11 +601,11 @@ func TestMessageValidate(t *testing.T) {
 		{
 			name: "claimed_by on queue message is valid",
 			msg: &Message{
-				ID:        "msg-001",
-				From:      "mayor/",
-				Queue:     "work-requests",
-				Subject:   "Test",
-				ClaimedBy: "gastown/nux",
+				ID:              "msg-001",
+				From:            "mayor/",
+				Queue:           "work-requests",
+				Subject:         "Test",
+				MessageDelivery: MessageDelivery{ClaimedBy: "gastown/nux"},
 			},
 			wantErr: false,
 		},
@@ -914,6 +914,68 @@ func TestSuppressNotifyNotSerialized(t *testing.T) {
 	}
 	if decoded.SuppressNotify {
 		t.Error("SuppressNotify should be false after roundtrip (not deserialized)")
+	}
+}
+
+func TestMessageJSONFlattensEmbeddedFields(t *testing.T) {
+	claimedAt := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	ackedAt := claimedAt.Add(time.Minute)
+	msg := &Message{
+		ID:        "msg-flat",
+		From:      "mayor/",
+		To:        "gastown/Toast",
+		Subject:   "Flat fields",
+		Body:      "body",
+		Timestamp: claimedAt,
+		Read:      true,
+		Priority:  PriorityHigh,
+		Type:      TypeReply,
+		MessageDelivery: MessageDelivery{
+			Delivery:        DeliveryInterrupt,
+			ClaimedBy:       "gastown/Toast",
+			ClaimedAt:       &claimedAt,
+			DeliveryState:   DeliveryStateAcked,
+			DeliveryAckedBy: "gastown/Toast",
+			DeliveryAckedAt: &ackedAt,
+		},
+		MessageConversation: MessageConversation{
+			ThreadID: "thread-flat",
+			ReplyTo:  "msg-original",
+			CC:       []string{"gastown/nux"},
+		},
+		MessageFlags: MessageFlags{
+			Pinned: true,
+			Wisp:   true,
+		},
+		Queue:   "",
+		Channel: "",
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("Unmarshal map failed: %v", err)
+	}
+	for _, key := range []string{"delivery", "claimed_by", "claimed_at", "delivery_state", "delivery_acked_by", "delivery_acked_at", "thread_id", "reply_to", "cc", "pinned", "wisp"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("JSON missing flattened field %q: %s", key, data)
+		}
+	}
+	for _, key := range []string{"MessageDelivery", "MessageConversation", "MessageFlags"} {
+		if _, ok := fields[key]; ok {
+			t.Errorf("JSON unexpectedly nested embedded field %q: %s", key, data)
+		}
+	}
+
+	var decoded Message
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Roundtrip unmarshal failed: %v", err)
+	}
+	if decoded.Delivery != msg.Delivery || decoded.ThreadID != msg.ThreadID || decoded.ReplyTo != msg.ReplyTo || !decoded.Pinned || !decoded.Wisp {
+		t.Fatalf("roundtrip lost embedded fields: %#v", decoded)
 	}
 }
 

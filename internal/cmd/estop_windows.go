@@ -16,6 +16,6 @@ var (
 
 // signalSessionGroup is a no-op on Windows since SIGTSTP/SIGCONT and
 // process-group signaling are not available.
-func signalSessionGroup(t *tmux.Tmux, sessionName string, sig syscall.Signal) error {
+func signalSessionGroup(_ *tmux.Tmux, _ string, _ syscall.Signal) error {
 	return fmt.Errorf("process-group signaling not supported on Windows")
 }

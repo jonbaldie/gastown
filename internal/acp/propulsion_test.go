@@ -157,7 +157,7 @@ func TestNotifyWithMetaInjectsEscalationMetadataToUI(t *testing.T) {
 		t.Fatalf("failed to create pipe: %v", err)
 	}
 	defer r.Close()
-	p.setStreams(nil, w)
+	setProxyStreams(p, nil, w)
 	p.sessionMux.Lock()
 	p.sessionID = "test-session"
 	p.sessionMux.Unlock()
@@ -209,7 +209,7 @@ func TestACPAttachedMayorEscalationPath_MetadataAndUrgencyEndToEnd(t *testing.T)
 		t.Fatalf("Pipe: %v", err)
 	}
 	defer r.Close()
-	p.setStreams(nil, w)
+	setProxyStreams(p, nil, w)
 	p.sessionMux.Lock()
 	p.sessionID = "attached-session"
 	p.sessionMux.Unlock()

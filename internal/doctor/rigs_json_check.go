@@ -44,7 +44,7 @@ func (c *RigsJSONCheck) CanFix() bool {
 }
 
 // Fix copies rigs.json from fallback to canonical location using atomic write.
-func (c *RigsJSONCheck) Fix(ctx *CheckContext) error {
+func (c *RigsJSONCheck) Fix(_ *CheckContext) error {
 	data, err := os.ReadFile(c.fallbackPath)
 	if err != nil {
 		return fmt.Errorf("reading fallback rigs.json: %w", err)

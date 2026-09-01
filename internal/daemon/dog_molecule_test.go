@@ -201,9 +201,9 @@ func TestDogMolGracefulDegradation(t *testing.T) {
 	}
 
 	// These should not panic or error — graceful degradation.
-	dm.closeStep("scan")
-	dm.failStep("scan", "test failure")
-	dm.close()
+	dm.CloseStep("scan")
+	dm.FailStep("scan", "test failure")
+	dm.Close()
 }
 
 func TestPourDogMolecule_GuardianDeniedDoesNotPour(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -195,33 +196,13 @@ func ProvisionFormulas(beadsPath string) (int, error) {
 
 	count := 0
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		destPath := filepath.Join(formulasDir, entry.Name())
-
-		// Skip if formula already exists (don't overwrite user customizations)
-		if _, err := os.Stat(destPath); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return count, fmt.Errorf("checking %s: %w", entry.Name(), err)
-		}
-
-		content, err := formulasFS.ReadFile("formulas/" + entry.Name())
+		installedOne, err := provisionMissingFormula(entry, formulasDir, embedded, installed)
 		if err != nil {
-			return count, fmt.Errorf("reading %s: %w", entry.Name(), err)
+			return count, err
 		}
-
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
-			return count, fmt.Errorf("writing %s: %w", entry.Name(), err)
+		if installedOne {
+			count++
 		}
-
-		// Record the hash we installed
-		if hash, ok := embedded[entry.Name()]; ok {
-			installed.Formulas[entry.Name()] = hash
-		}
-		count++
 	}
 
 	// Save updated installed record
@@ -249,56 +230,13 @@ func CheckFormulaHealth(beadsPath string) (*HealthReport, error) {
 	report := &HealthReport{}
 
 	for filename, embeddedHash := range embedded {
-		status := FormulaStatus{
-			Name:         filename,
-			EmbeddedHash: embeddedHash,
-		}
-
 		installedHash, wasInstalled := installed.Formulas[filename]
-		status.InstalledHash = installedHash
-
-		destPath := filepath.Join(formulasDir, filename)
-		currentHash, err := computeFileHash(destPath)
-
-		if os.IsNotExist(err) {
-			// File doesn't exist
-			if wasInstalled {
-				// We installed it before, user deleted it
-				status.Status = "missing"
-				report.Missing++
-			} else {
-				// New formula, never installed
-				status.Status = "new"
-				report.New++
-			}
-		} else if err != nil {
-			// Some other error reading file (e.g. permission denied)
-			status.Status = "error"
-			report.Error++
-		} else {
-			status.CurrentHash = currentHash
-
-			if currentHash == embeddedHash {
-				// File matches embedded - all good
-				status.Status = "ok"
-				report.OK++
-			} else if wasInstalled && currentHash == installedHash {
-				// File matches what we installed, but embedded has changed
-				// User hasn't modified, safe to update
-				status.Status = "outdated"
-				report.Outdated++
-			} else if wasInstalled {
-				// File was tracked and user modified it - don't overwrite
-				status.Status = "modified"
-				report.Modified++
-			} else {
-				// File exists but not tracked (e.g., from older gt version)
-				// Safe to update since we have no record of user modification
-				status.Status = "untracked"
-				report.Untracked++
-			}
+		status := FormulaStatus{
+			Name:          filename,
+			EmbeddedHash:  embeddedHash,
+			InstalledHash: installedHash,
 		}
-
+		classifyFormulaFile(&status, report, filepath.Join(formulasDir, filename), wasInstalled, installedHash, embeddedHash)
 		report.Formulas = append(report.Formulas, status)
 	}
 
@@ -324,68 +262,141 @@ func UpdateFormulas(beadsPath string) (updated, skipped, reinstalled int, err er
 		return 0, 0, 0, err
 	}
 
-	for filename, embeddedHash := range embedded {
-		installedHash, wasInstalled := installed.Formulas[filename]
-		destPath := filepath.Join(formulasDir, filename)
-		currentHash, fileErr := computeFileHash(destPath)
-
-		shouldInstall := false
-		isMissing := false
-		isModified := false
-
-		if os.IsNotExist(fileErr) {
-			// File doesn't exist - install it
-			shouldInstall = true
-			if wasInstalled {
-				isMissing = true
-			}
-		} else if fileErr != nil {
-			// Error reading file, skip
-			continue
-		} else if currentHash == embeddedHash {
-			// Already up to date
-			continue
-		} else if wasInstalled && currentHash == installedHash {
-			// User hasn't modified, safe to update
-			shouldInstall = true
-		} else if wasInstalled {
-			// Tracked file was modified by user - skip
-			isModified = true
-		} else {
-			// Untracked file (e.g., from older gt version) - safe to update
-			shouldInstall = true
-		}
-
-		if isModified {
-			skipped++
-			continue
-		}
-
-		if shouldInstall {
-			content, err := formulasFS.ReadFile("formulas/" + filename)
-			if err != nil {
-				return updated, skipped, reinstalled, fmt.Errorf("reading %s: %w", filename, err)
-			}
-
-			if err := os.WriteFile(destPath, content, 0644); err != nil {
-				return updated, skipped, reinstalled, fmt.Errorf("writing %s: %w", filename, err)
-			}
-
-			// Update installed record
-			installed.Formulas[filename] = embeddedHash
-
-			if isMissing {
-				reinstalled++
-			} else {
-				updated++
-			}
-		}
+	updated, skipped, reinstalled, err = applyFormulaUpdates(embedded, formulasDir, installed)
+	if err != nil {
+		return updated, skipped, reinstalled, err
 	}
-
-	// Save updated installed record
 	if err := saveInstalledRecord(formulasDir, installed); err != nil {
 		return updated, skipped, reinstalled, fmt.Errorf("saving installed record: %w", err)
 	}
-
 	return updated, skipped, reinstalled, nil
+}
+
+func applyFormulaUpdates(embedded map[string]string, formulasDir string, installed *InstalledRecord) (updated, skipped, reinstalled int, err error) {
+	for filename, embeddedHash := range embedded {
+		u, s, r, err := applyOneFormulaUpdate(filename, embeddedHash, formulasDir, installed)
+		if err != nil {
+			return updated, skipped, reinstalled, err
+		}
+		updated += u
+		skipped += s
+		reinstalled += r
+	}
+	return updated, skipped, reinstalled, nil
+}
+
+func applyOneFormulaUpdate(filename, embeddedHash, formulasDir string, installed *InstalledRecord) (updated, skipped, reinstalled int, err error) {
+	installedHash, wasInstalled := installed.Formulas[filename]
+	destPath := filepath.Join(formulasDir, filename)
+	currentHash, fileErr := computeFileHash(destPath)
+	decision := decideFormulaUpdate(fileErr, wasInstalled, currentHash, embeddedHash, installedHash)
+	if decision.isModified {
+		return 0, 1, 0, nil
+	}
+	if !decision.shouldInstall {
+		return 0, 0, 0, nil
+	}
+	if err := writeFormulaFile(filename, destPath, embeddedHash, installed); err != nil {
+		return 0, 0, 0, err
+	}
+	if decision.isMissing {
+		return 0, 0, 1, nil
+	}
+	return 1, 0, 0, nil
+}
+
+func provisionMissingFormula(entry fs.DirEntry, formulasDir string, embedded map[string]string, installed *InstalledRecord) (bool, error) {
+	if entry.IsDir() {
+		return false, nil
+	}
+	destPath := filepath.Join(formulasDir, entry.Name())
+	if _, err := os.Stat(destPath); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("checking %s: %w", entry.Name(), err)
+	}
+	content, err := formulasFS.ReadFile("formulas/" + entry.Name())
+	if err != nil {
+		return false, fmt.Errorf("reading %s: %w", entry.Name(), err)
+	}
+	if err := os.WriteFile(destPath, content, 0644); err != nil {
+		return false, fmt.Errorf("writing %s: %w", entry.Name(), err)
+	}
+	if hash, ok := embedded[entry.Name()]; ok {
+		installed.Formulas[entry.Name()] = hash
+	}
+	return true, nil
+}
+
+func classifyFormulaFile(status *FormulaStatus, report *HealthReport, destPath string, wasInstalled bool, installedHash, embeddedHash string) {
+	currentHash, err := computeFileHash(destPath)
+	if os.IsNotExist(err) {
+		classifyMissingFormula(status, report, wasInstalled)
+		return
+	}
+	if err != nil {
+		status.Status = "error"
+		report.Error++
+		return
+	}
+	status.CurrentHash = currentHash
+	classifyExistingFormula(status, report, wasInstalled, currentHash, installedHash, embeddedHash)
+}
+
+func classifyMissingFormula(status *FormulaStatus, report *HealthReport, wasInstalled bool) {
+	if wasInstalled {
+		status.Status = "missing"
+		report.Missing++
+		return
+	}
+	status.Status = "new"
+	report.New++
+}
+
+func classifyExistingFormula(status *FormulaStatus, report *HealthReport, wasInstalled bool, currentHash, installedHash, embeddedHash string) {
+	switch {
+	case currentHash == embeddedHash:
+		status.Status = "ok"
+		report.OK++
+	case wasInstalled && currentHash == installedHash:
+		status.Status = "outdated"
+		report.Outdated++
+	case wasInstalled:
+		status.Status = "modified"
+		report.Modified++
+	default:
+		status.Status = "untracked"
+		report.Untracked++
+	}
+}
+
+type formulaUpdateDecision struct {
+	shouldInstall bool
+	isMissing     bool
+	isModified    bool
+}
+
+func decideFormulaUpdate(fileErr error, wasInstalled bool, currentHash, embeddedHash, installedHash string) formulaUpdateDecision {
+	if os.IsNotExist(fileErr) {
+		return formulaUpdateDecision{shouldInstall: true, isMissing: wasInstalled}
+	}
+	if fileErr != nil || currentHash == embeddedHash {
+		return formulaUpdateDecision{}
+	}
+	if wasInstalled && currentHash != installedHash {
+		return formulaUpdateDecision{isModified: true}
+	}
+	return formulaUpdateDecision{shouldInstall: true}
+}
+
+func writeFormulaFile(filename, destPath, embeddedHash string, installed *InstalledRecord) error {
+	content, err := formulasFS.ReadFile("formulas/" + filename)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", filename, err)
+	}
+	if err := os.WriteFile(destPath, content, 0644); err != nil {
+		return fmt.Errorf("writing %s: %w", filename, err)
+	}
+	installed.Formulas[filename] = embeddedHash
+	return nil
 }

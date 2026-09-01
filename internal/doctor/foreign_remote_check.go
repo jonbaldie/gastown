@@ -60,48 +60,57 @@ func (c *ForeignRemoteCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// For each non-origin remote, check if it shares history with origin
+	c.foreignRemotes = findForeignRemotes(ctx.TownRoot, remotes)
+	return foreignRemoteResult(c.Name(), c.foreignRemotes)
+}
+
+func findForeignRemotes(townRoot string, remotes []string) []foreignRemote {
+	var foreign []foreignRemote
 	for _, remote := range remotes {
 		if remote == "origin" {
 			continue
 		}
-
-		// Get remote URL for reporting
-		urlCmd := exec.Command("git", "remote", "get-url", remote)
-		urlCmd.Dir = ctx.TownRoot
-		urlOut, _ := urlCmd.Output()
-		url := strings.TrimSpace(string(urlOut))
-
-		// Check if remote has a main/master branch we can compare
-		refName := remote + "/main"
-		refCmd := exec.Command("git", "rev-parse", "--verify", refName)
-		refCmd.Dir = ctx.TownRoot
-		if err := refCmd.Run(); err != nil {
-			// Try master
-			refName = remote + "/master"
-			refCmd = exec.Command("git", "rev-parse", "--verify", refName)
-			refCmd.Dir = ctx.TownRoot
-			if err := refCmd.Run(); err != nil {
-				// No main or master branch — can't verify, skip
-				continue
-			}
+		refName, ok := remoteBranchRef(townRoot, remote)
+		if !ok || sharesOriginHistory(townRoot, refName) {
+			continue
 		}
+		foreign = append(foreign, foreignRemote{
+			name: remote,
+			url:  remoteURL(townRoot, remote),
+		})
+	}
+	return foreign
+}
 
-		// Check for shared ancestry with origin/main
-		mergeBaseCmd := exec.Command("git", "merge-base", "origin/main", refName)
-		mergeBaseCmd.Dir = ctx.TownRoot
-		if err := mergeBaseCmd.Run(); err != nil {
-			// No common ancestor — this is a foreign remote
-			c.foreignRemotes = append(c.foreignRemotes, foreignRemote{
-				name: remote,
-				url:  url,
-			})
+func remoteURL(townRoot, remote string) string {
+	cmd := exec.Command("git", "remote", "get-url", remote)
+	cmd.Dir = townRoot
+	output, _ := cmd.Output()
+	return strings.TrimSpace(string(output))
+}
+
+func remoteBranchRef(townRoot, remote string) (string, bool) {
+	for _, branch := range []string{"main", "master"} {
+		refName := remote + "/" + branch
+		cmd := exec.Command("git", "rev-parse", "--verify", refName)
+		cmd.Dir = townRoot
+		if err := cmd.Run(); err == nil {
+			return refName, true
 		}
 	}
+	return "", false
+}
 
-	if len(c.foreignRemotes) == 0 {
+func sharesOriginHistory(townRoot, refName string) bool {
+	cmd := exec.Command("git", "merge-base", "origin/main", refName)
+	cmd.Dir = townRoot
+	return cmd.Run() == nil
+}
+
+func foreignRemoteResult(name string, foreignRemotes []foreignRemote) *CheckResult {
+	if len(foreignRemotes) == 0 {
 		return &CheckResult{
-			Name:    c.Name(),
+			Name:    name,
 			Status:  StatusOK,
 			Message: "All remotes share history with origin",
 		}
@@ -112,19 +121,19 @@ func (c *ForeignRemoteCheck) Run(ctx *CheckContext) *CheckResult {
 		"These pollute the ref space and cause phantom divergence in git status.",
 		"Rig remotes belong in their own clones (mayor/rig, crew worktrees), not here.",
 	}
-	for _, fr := range c.foreignRemotes {
+	for _, fr := range foreignRemotes {
 		details = append(details, fmt.Sprintf("  %s → %s", fr.name, fr.url))
 	}
 
-	names := make([]string, len(c.foreignRemotes))
-	for i, fr := range c.foreignRemotes {
+	names := make([]string, len(foreignRemotes))
+	for i, fr := range foreignRemotes {
 		names[i] = fr.name
 	}
 
 	return &CheckResult{
-		Name:    c.Name(),
+		Name:    name,
 		Status:  StatusWarning,
-		Message: fmt.Sprintf("Found %d foreign remote(s): %s", len(c.foreignRemotes), strings.Join(names, ", ")),
+		Message: fmt.Sprintf("Found %d foreign remote(s): %s", len(foreignRemotes), strings.Join(names, ", ")),
 		Details: details,
 		FixHint: "Run 'gt doctor --fix' to remove foreign remotes",
 	}

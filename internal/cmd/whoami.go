@@ -33,48 +33,64 @@ func init() {
 	rootCmd.AddCommand(whoamiCmd)
 }
 
-func runWhoami(cmd *cobra.Command, args []string) error {
+func runWhoami(_ *cobra.Command, _ []string) error {
 	// Get current identity using same logic as mail commands
 	identity := detectSender()
 
 	fmt.Printf("%s %s\n", style.Bold.Render("Identity:"), identity)
+	showWhoamiSource(identity)
 
+	return nil
+}
+
+func showWhoamiSource(identity string) {
 	// Show how it was determined
 	gtRole := os.Getenv("GT_ROLE")
 	if gtRole != "" {
 		fmt.Printf("%s GT_ROLE=%s\n", style.Dim.Render("Source:"), gtRole)
-
-		// Show additional env vars if present
-		if rig := os.Getenv("GT_RIG"); rig != "" {
-			fmt.Printf("%s GT_RIG=%s\n", style.Dim.Render("       "), rig)
-		}
-		if polecat := os.Getenv("GT_POLECAT"); polecat != "" {
-			fmt.Printf("%s GT_POLECAT=%s\n", style.Dim.Render("       "), polecat)
-		}
-		if crew := os.Getenv("GT_CREW"); crew != "" {
-			fmt.Printf("%s GT_CREW=%s\n", style.Dim.Render("       "), crew)
-		}
-	} else {
-		fmt.Printf("%s no GT_ROLE set (human at terminal)\n", style.Dim.Render("Source:"))
-
-		// If overseer, show their configured identity
-		if identity == "overseer" {
-			townRoot, err := workspace.FindFromCwd()
-			if err == nil && townRoot != "" {
-				if overseerConfig, err := config.LoadOverseerConfig(config.OverseerConfigPath(townRoot)); err == nil {
-					fmt.Printf("\n%s\n", style.Bold.Render("Overseer Identity:"))
-					fmt.Printf("  Name:  %s\n", overseerConfig.Name)
-					if overseerConfig.Email != "" {
-						fmt.Printf("  Email: %s\n", overseerConfig.Email)
-					}
-					if overseerConfig.Username != "" {
-						fmt.Printf("  User:  %s\n", overseerConfig.Username)
-					}
-					fmt.Printf("  %s %s\n", style.Dim.Render("(detected via"), style.Dim.Render(overseerConfig.Source+")"))
-				}
-			}
-		}
+		showWhoamiAgentEnvironment()
+		return
 	}
 
-	return nil
+	fmt.Printf("%s no GT_ROLE set (human at terminal)\n", style.Dim.Render("Source:"))
+	showOverseerIdentity(identity)
+}
+
+func showWhoamiAgentEnvironment() {
+	// Show additional env vars if present
+	if rig := os.Getenv("GT_RIG"); rig != "" {
+		fmt.Printf("%s GT_RIG=%s\n", style.Dim.Render("       "), rig)
+	}
+	if polecat := os.Getenv("GT_POLECAT"); polecat != "" {
+		fmt.Printf("%s GT_POLECAT=%s\n", style.Dim.Render("       "), polecat)
+	}
+	if crew := os.Getenv("GT_CREW"); crew != "" {
+		fmt.Printf("%s GT_CREW=%s\n", style.Dim.Render("       "), crew)
+	}
+}
+
+func showOverseerIdentity(identity string) {
+	// If overseer, show their configured identity
+	if identity != "overseer" {
+		return
+	}
+
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil || townRoot == "" {
+		return
+	}
+	overseerConfig, err := config.LoadOverseerConfig(config.OverseerConfigPath(townRoot))
+	if err != nil {
+		return
+	}
+
+	fmt.Printf("\n%s\n", style.Bold.Render("Overseer Identity:"))
+	fmt.Printf("  Name:  %s\n", overseerConfig.Name)
+	if overseerConfig.Email != "" {
+		fmt.Printf("  Email: %s\n", overseerConfig.Email)
+	}
+	if overseerConfig.Username != "" {
+		fmt.Printf("  User:  %s\n", overseerConfig.Username)
+	}
+	fmt.Printf("  %s %s\n", style.Dim.Render("(detected via"), style.Dim.Render(overseerConfig.Source+")"))
 }

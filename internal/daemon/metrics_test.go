@@ -20,9 +20,9 @@ func TestDaemonMetrics_NilReceiver(t *testing.T) {
 	ctx := context.Background()
 
 	// All methods must be nil-safe — no panic expected.
-	dm.recordHeartbeat(ctx)
-	dm.recordRestart(ctx, "deacon")
-	dm.updateDoltHealth(5, 100, 2.5, 1024, true)
+	dm.RecordHeartbeat(ctx)
+	dm.RecordRestart(ctx, "deacon")
+	dm.UpdateDoltHealth(5, 100, 2.5, 1024, true)
 }
 
 func TestDaemonMetrics_RecordHeartbeat(t *testing.T) {
@@ -32,8 +32,8 @@ func TestDaemonMetrics_RecordHeartbeat(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dm.recordHeartbeat(ctx)
-	dm.recordHeartbeat(ctx)
+	dm.RecordHeartbeat(ctx)
+	dm.RecordHeartbeat(ctx)
 }
 
 func TestDaemonMetrics_RecordRestart(t *testing.T) {
@@ -44,7 +44,7 @@ func TestDaemonMetrics_RecordRestart(t *testing.T) {
 	ctx := context.Background()
 
 	for _, agentType := range []string{"deacon", "witness", "refinery", "polecat"} {
-		dm.recordRestart(ctx, agentType)
+		dm.RecordRestart(ctx, agentType)
 	}
 }
 
@@ -54,7 +54,7 @@ func TestDaemonMetrics_UpdateDoltHealth_Healthy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dm.updateDoltHealth(5, 100, 2.5, 1048576, true)
+	dm.UpdateDoltHealth(5, 100, 2.5, 1048576, true)
 
 	dm.doltMu.RLock()
 	defer dm.doltMu.RUnlock()
@@ -82,7 +82,7 @@ func TestDaemonMetrics_UpdateDoltHealth_Unhealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dm.updateDoltHealth(0, 0, 0, 0, false)
+	dm.UpdateDoltHealth(0, 0, 0, 0, false)
 
 	dm.doltMu.RLock()
 	defer dm.doltMu.RUnlock()
@@ -98,8 +98,8 @@ func TestDaemonMetrics_UpdateDoltHealth_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dm.updateDoltHealth(10, 200, 5.0, 2048, true)
-	dm.updateDoltHealth(3, 200, 1.0, 2048, false)
+	dm.UpdateDoltHealth(10, 200, 5.0, 2048, true)
+	dm.UpdateDoltHealth(3, 200, 1.0, 2048, false)
 
 	dm.doltMu.RLock()
 	defer dm.doltMu.RUnlock()

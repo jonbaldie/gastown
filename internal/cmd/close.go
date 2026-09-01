@@ -17,11 +17,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var closeCmd = &cobra.Command{
-	Use:     "close [bead-id...]",
-	GroupID: GroupWork,
-	Short:   "Close one or more beads",
-	Long: `Close one or more beads (wrapper for 'bd close').
+func newCloseCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     "close [bead-id...]",
+		GroupID: GroupWork,
+		Short:   "Close one or more beads",
+		Long: `Close one or more beads (wrapper for 'bd close').
 
 This is a convenience command that passes through to 'bd close' with
 all arguments and flags preserved.
@@ -36,13 +37,14 @@ Examples:
   gt close --reason "Done"     # Close with reason
   gt close --comment "Done"    # Same as --reason (alias)
   gt close --force             # Force close pinned beads
-  gt close gt-abc --cascade    # Close gt-abc and all its children`,
-	DisableFlagParsing: true, // Pass all flags through to bd close
-	RunE:               runClose,
+	  gt close gt-abc --cascade    # Close gt-abc and all its children`,
+		DisableFlagParsing: true, // Pass all flags through to bd close
+		RunE:               runClose,
+	}
 }
 
 func init() {
-	rootCmd.AddCommand(closeCmd)
+	rootCmd.AddCommand(newCloseCommand())
 }
 
 func runClose(cmd *cobra.Command, args []string) error {
@@ -54,46 +56,16 @@ func runClose(cmd *cobra.Command, args []string) error {
 	// Extract --cascade flag before passing to bd (gt-only flag)
 	cascade, filteredArgs := extractCascadeFlag(args)
 
-	// Convert --comment to --reason (alias support)
-	convertedArgs := make([]string, len(filteredArgs))
-	for i, arg := range filteredArgs {
-		if arg == "--comment" {
-			convertedArgs[i] = "--reason"
-		} else if strings.HasPrefix(arg, "--comment=") {
-			convertedArgs[i] = "--reason=" + strings.TrimPrefix(arg, "--comment=")
-		} else {
-			convertedArgs[i] = arg
-		}
-	}
+	convertedArgs := convertCommentArgs(filteredArgs)
 
 	// If cascade, close children first (depth-first)
 	if cascade {
-		beadIDs := extractBeadIDs(filteredArgs)
-		visited := make(map[string]bool)
-		for _, id := range beadIDs {
-			if err := closeChildren(id, visited, 0); err != nil {
-				return fmt.Errorf("cascade close failed for children of %s: %w", id, err)
-			}
+		if err := cascadeCloseBeads(extractBeadIDs(filteredArgs)); err != nil {
+			return err
 		}
 	}
 
-	// Build bd close command with all args passed through.
-	// Route to the correct rig database via prefix resolution — bd no longer
-	// does cross-rig routing internally (removed in beads v0.62). We resolve
-	// the bead's prefix to the owning rig's directory and strip BEADS_DIR so
-	// bd discovers the database from the working directory.
-	bdArgs := append([]string{"close"}, convertedArgs...)
-	bdCmd := beads.Spawn(bdArgs...)
-	bdCmd.Stdin = os.Stdin
-	bdCmd.Stdout = os.Stdout
-	bdCmd.Stderr = os.Stderr
-	if beadIDs := extractBeadIDs(convertedArgs); len(beadIDs) > 0 {
-		if dir := resolveBeadDir(beadIDs[0]); dir != "" && dir != "." {
-			bdCmd.Dir = dir
-			bdCmd.Env = filterEnvKey(os.Environ(), "BEADS_DIR")
-		}
-	}
-	if err := bdCmd.Run(); err != nil {
+	if err := runBdClose(convertedArgs); err != nil {
 		return err
 	}
 
@@ -106,6 +78,47 @@ func runClose(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func convertCommentArgs(args []string) []string {
+	converted := make([]string, len(args))
+	for i, arg := range args {
+		switch {
+		case arg == "--comment":
+			converted[i] = "--reason"
+		case strings.HasPrefix(arg, "--comment="):
+			converted[i] = "--reason=" + strings.TrimPrefix(arg, "--comment=")
+		default:
+			converted[i] = arg
+		}
+	}
+	return converted
+}
+
+func cascadeCloseBeads(beadIDs []string) error {
+	visited := make(map[string]bool)
+	for _, id := range beadIDs {
+		if err := closeChildren(id, visited, 0); err != nil {
+			return fmt.Errorf("cascade close failed for children of %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func runBdClose(args []string) error {
+	// Route to the correct rig database via prefix resolution. bd discovers
+	// the database from the resolved working directory.
+	bdCmd := beads.Spawn(append([]string{"close"}, args...)...)
+	bdCmd.Stdin = os.Stdin
+	bdCmd.Stdout = os.Stdout
+	bdCmd.Stderr = os.Stderr
+	if beadIDs := extractBeadIDs(args); len(beadIDs) > 0 {
+		if dir := resolveBeadDir(beadIDs[0]); dir != "" && dir != "." {
+			bdCmd.Dir = dir
+			bdCmd.Env = filterEnvKey(os.Environ(), "BEADS_DIR")
+		}
+	}
+	return bdCmd.Run()
 }
 
 // extractCascadeFlag removes --cascade from args and returns whether it was present.
@@ -144,8 +157,19 @@ func closeChildren(parentID string, visited map[string]bool, depth int) error {
 	}
 	visited[parentID] = true
 
-	// Query children via bd children --json.
-	// Route to the correct rig database via prefix resolution.
+	children := fetchChildBeads(parentID)
+	childIDs, err := collectCascadeChildIDs(children, visited, depth)
+	if err != nil {
+		return err
+	}
+
+	if len(childIDs) == 0 {
+		return nil
+	}
+	return closeCascadeChildren(parentID, childIDs)
+}
+
+func fetchChildBeads(parentID string) []childBead {
 	childCmd := beads.Spawn("children", parentID, "--json")
 	if dir := resolveBeadDir(parentID); dir != "" && dir != "." {
 		childCmd.Dir = dir
@@ -158,32 +182,29 @@ func closeChildren(parentID string, visited map[string]bool, depth int) error {
 		}
 		return nil
 	}
-
 	var children []childBead
 	if err := json.Unmarshal(out, &children); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to parse children of %s: %v\n", parentID, err)
 		return nil
 	}
+	return children
+}
 
-	if len(children) == 0 {
-		return nil
-	}
-
-	// Collect open children and recursively close their children first (depth-first)
+func collectCascadeChildIDs(children []childBead, visited map[string]bool, depth int) ([]string, error) {
 	var childIDs []string
 	for _, child := range children {
 		if child.Status == "closed" {
 			continue
 		}
 		if err := closeChildren(child.ID, visited, depth+1); err != nil {
-			return err
+			return nil, err
 		}
 		childIDs = append(childIDs, child.ID)
 	}
+	return childIDs, nil
+}
 
-	if len(childIDs) == 0 {
-		return nil
-	}
+func closeCascadeChildren(parentID string, childIDs []string) error {
 
 	reason := fmt.Sprintf("Parent %s closed (cascade)", parentID)
 

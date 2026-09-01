@@ -14,15 +14,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	nudgePollerIntervalFlag string
-	nudgePollerIdleFlag     string
-)
+type nudgePollerConfig struct {
+	townRoot           string
+	sessionName        string
+	pollInterval       time.Duration
+	idleTimeout        time.Duration
+	tmux               *tmux.Tmux
+	nudgeOpts          tmux.NudgeOpts
+	hasPromptDetection bool
+}
 
 func init() {
 	rootCmd.AddCommand(nudgePollerCmd)
-	nudgePollerCmd.Flags().StringVar(&nudgePollerIntervalFlag, "interval", nudge.DefaultPollInterval, "Poll interval (e.g., 10s, 30s)")
-	nudgePollerCmd.Flags().StringVar(&nudgePollerIdleFlag, "idle-timeout", nudge.DefaultIdleTimeout, "How long to wait for agent idle before skipping")
+	nudgePollerCmd.Flags().String("interval", nudge.DefaultPollInterval, "Poll interval (e.g., 10s, 30s)")
+	nudgePollerCmd.Flags().String("idle-timeout", nudge.DefaultIdleTimeout, "How long to wait for agent idle before skipping")
 }
 
 var nudgePollerCmd = &cobra.Command{
@@ -47,50 +52,62 @@ Not intended for direct user invocation.`,
 
 func runNudgePoller(cmd *cobra.Command, args []string) error {
 	sessionName := args[0]
+	intervalFlag := commandStringFlag(cmd, "interval")
+	idleTimeoutFlag := commandStringFlag(cmd, "idle-timeout")
+	cfg, err := loadNudgePollerConfig(sessionName, intervalFlag, idleTimeoutFlag)
+	if err != nil {
+		return err
+	}
+	return runNudgePollerLoop(cfg)
+}
 
+func loadNudgePollerConfig(sessionName, intervalFlag, idleTimeoutFlag string) (nudgePollerConfig, error) {
+	cfg := nudgePollerConfig{sessionName: sessionName}
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("cannot find town root: %w", err)
+		return nudgePollerConfig{}, fmt.Errorf("cannot find town root: %w", err)
 	}
+	cfg.townRoot = townRoot
 
-	pollInterval, err := time.ParseDuration(nudgePollerIntervalFlag)
+	pollInterval, err := time.ParseDuration(intervalFlag)
 	if err != nil {
-		return fmt.Errorf("invalid --interval: %w", err)
+		return nudgePollerConfig{}, fmt.Errorf("invalid --interval: %w", err)
 	}
+	cfg.pollInterval = pollInterval
 
-	idleTimeout, err := time.ParseDuration(nudgePollerIdleFlag)
+	idleTimeout, err := time.ParseDuration(idleTimeoutFlag)
 	if err != nil {
-		return fmt.Errorf("invalid --idle-timeout: %w", err)
+		return nudgePollerConfig{}, fmt.Errorf("invalid --idle-timeout: %w", err)
 	}
+	cfg.idleTimeout = idleTimeout
 
-	t := tmux.NewTmux()
+	cfg.tmux = tmux.NewTmux()
 
 	// Verify session exists before starting the loop.
-	if exists, _ := t.HasSession(sessionName); !exists {
-		return fmt.Errorf("session %q not found", sessionName)
+	if exists, _ := cfg.tmux.HasSession(sessionName); !exists {
+		return nudgePollerConfig{}, fmt.Errorf("session %q not found", sessionName)
 	}
 
 	// Resolve nudge options once at startup: if the target agent uses Escape
 	// as cancel (e.g., Gemini CLI), skip the Escape keystroke during delivery
 	// to avoid canceling in-flight generation. (GH#gt-wasn)
-	nudgeOpts := tmux.NudgeOpts{}
-	agentName := ""
-	hasPromptDetection := false
-	if name, err := t.GetEnvironment(sessionName, "GT_AGENT"); err == nil && name != "" {
-		agentName = name
-		if preset := config.GetAgentPresetByName(agentName); preset != nil {
-			hasPromptDetection = preset.ReadyPromptPrefix != ""
+	if name, err := cfg.tmux.GetEnvironment(sessionName, "GT_AGENT"); err == nil && name != "" {
+		if preset := config.GetAgentPresetByName(name); preset != nil {
+			cfg.hasPromptDetection = preset.ReadyPromptPrefix != ""
 			if preset.EscapeCancelsRequest {
-				nudgeOpts.SkipEscape = true
+				cfg.nudgeOpts.SkipEscape = true
 			}
 		}
 	}
+	return cfg, nil
+}
 
+func runNudgePollerLoop(cfg nudgePollerConfig) error {
 	// Set up signal handling for graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	ticker := time.NewTicker(pollInterval)
+	ticker := time.NewTicker(cfg.pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -99,41 +116,45 @@ func runNudgePoller(cmd *cobra.Command, args []string) error {
 			return nil // graceful shutdown
 
 		case <-ticker.C:
-			// Check if session still exists.
-			if exists, _ := t.HasSession(sessionName); !exists {
+			if !pollNudgeQueue(cfg) {
 				return nil // session gone, exit
-			}
-
-			// Check if there are queued nudges.
-			if n, _ := nudge.Pending(townRoot, sessionName); n == 0 {
-				continue
-			}
-
-			// For runtimes with prompt detection, defer delivery until the session
-			// is actually idle. Runtimes without prompt detection preserve the old
-			// best-effort behavior and drain on the poll interval.
-			waitErr := t.WaitForIdle(sessionName, idleTimeout)
-			if shouldSkipDrainUntilIdle(hasPromptDetection, waitErr) {
-				continue
-			}
-
-			// Drain and inject.
-			drained, err := nudge.Drain(townRoot, sessionName)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "nudge-poller: drain error for %s: %v\n", sessionName, err)
-				continue
-			}
-			if len(drained) == 0 {
-				continue // someone else drained it
-			}
-
-			formatted := nudge.FormatForInjection(drained)
-			if err := t.NudgeSessionWithOpts(sessionName, formatted, nudgeOpts); err != nil {
-				fmt.Fprintf(os.Stderr, "nudge-poller: injection error for %s: %v\n", sessionName, err)
-				requeueDrainedNudges(townRoot, sessionName, "nudge-poller", drained)
 			}
 		}
 	}
+}
+
+func pollNudgeQueue(cfg nudgePollerConfig) bool {
+	if exists, _ := cfg.tmux.HasSession(cfg.sessionName); !exists {
+		return false
+	}
+
+	if n, _ := nudge.Pending(cfg.townRoot, cfg.sessionName); n == 0 {
+		return true
+	}
+
+	// For runtimes with prompt detection, defer delivery until the session
+	// is actually idle. Runtimes without prompt detection preserve the old
+	// best-effort behavior and drain on the poll interval.
+	waitErr := cfg.tmux.WaitForIdle(cfg.sessionName, cfg.idleTimeout)
+	if shouldSkipDrainUntilIdle(cfg.hasPromptDetection, waitErr) {
+		return true
+	}
+
+	drained, err := nudge.Drain(cfg.townRoot, cfg.sessionName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nudge-poller: drain error for %s: %v\n", cfg.sessionName, err)
+		return true
+	}
+	if len(drained) == 0 {
+		return true // someone else drained it
+	}
+
+	formatted := nudge.FormatForInjection(drained)
+	if err := cfg.tmux.NudgeSessionWithOpts(cfg.sessionName, formatted, cfg.nudgeOpts); err != nil {
+		fmt.Fprintf(os.Stderr, "nudge-poller: injection error for %s: %v\n", cfg.sessionName, err)
+		requeueDrainedNudges(cfg.townRoot, cfg.sessionName, "nudge-poller", drained)
+	}
+	return true
 }
 
 func shouldSkipDrainUntilIdle(hasPromptDetection bool, waitErr error) bool {

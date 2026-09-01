@@ -130,12 +130,15 @@ func safeAgentPathSegment(value string) bool {
 		return false
 	}
 	for _, r := range value {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
-			continue
+		if !safeAgentPathRune(r) {
+			return false
 		}
-		return false
 	}
 	return true
+}
+
+func safeAgentPathRune(value rune) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '-' || value == '_'
 }
 
 func mergeBeadLists(primary, secondary []*beads.Issue) []*beads.Issue {

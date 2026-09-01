@@ -24,24 +24,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	costsJSON    bool
-	costsToday   bool
-	costsWeek    bool
-	costsByRole  bool
-	costsByRig   bool
-	costsVerbose bool
-
-	// Record subcommand flags
-	recordSession  string
-	recordWorkItem string
-
-	// Digest subcommand flags
-	digestYesterday bool
-	digestDate      string
-	digestDryRun    bool
-)
-
 var costsCmd = &cobra.Command{
 	Use:     "costs",
 	GroupID: GroupDiag,
@@ -109,24 +91,53 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(costsCmd)
-	costsCmd.Flags().BoolVar(&costsJSON, "json", false, "Output as JSON")
-	costsCmd.Flags().BoolVar(&costsToday, "today", false, "Show today's total from session events")
-	costsCmd.Flags().BoolVar(&costsWeek, "week", false, "Show this week's total from session events")
-	costsCmd.Flags().BoolVar(&costsByRole, "by-role", false, "Show breakdown by role")
-	costsCmd.Flags().BoolVar(&costsByRig, "by-rig", false, "Show breakdown by rig")
-	costsCmd.Flags().BoolVarP(&costsVerbose, "verbose", "v", false, "Show debug output for failures")
+	costsCmd.Flags().Bool("json", false, "Output as JSON")
+	costsCmd.Flags().Bool("today", false, "Show today's total from session events")
+	costsCmd.Flags().Bool("week", false, "Show this week's total from session events")
+	costsCmd.Flags().Bool("by-role", false, "Show breakdown by role")
+	costsCmd.Flags().Bool("by-rig", false, "Show breakdown by rig")
+	costsCmd.Flags().BoolP("verbose", "v", false, "Show debug output for failures")
 
 	// Add record subcommand
 	costsCmd.AddCommand(costsRecordCmd)
-	costsRecordCmd.Flags().StringVar(&recordSession, "session", "", "Tmux session name to record")
-	costsRecordCmd.Flags().StringVar(&recordWorkItem, "work-item", "", "Work item ID (bead) for attribution")
+	costsRecordCmd.Flags().String("session", "", "Tmux session name to record")
+	costsRecordCmd.Flags().String("work-item", "", "Work item ID (bead) for attribution")
 
 	// Add digest subcommand
 	costsCmd.AddCommand(costsDigestCmd)
-	costsDigestCmd.Flags().BoolVar(&digestYesterday, "yesterday", false, "Digest yesterday's costs (default for patrol)")
-	costsDigestCmd.Flags().StringVar(&digestDate, "date", "", "Digest a specific date (YYYY-MM-DD)")
-	costsDigestCmd.Flags().BoolVar(&digestDryRun, "dry-run", false, "Preview what would be done without making changes")
+	costsDigestCmd.Flags().Bool("yesterday", false, "Digest yesterday's costs (default for patrol)")
+	costsDigestCmd.Flags().String("date", "", "Digest a specific date (YYYY-MM-DD)")
+	costsDigestCmd.Flags().Bool("dry-run", false, "Preview what would be done without making changes")
 
+}
+
+type costsOptions struct {
+	json    bool
+	today   bool
+	week    bool
+	byRole  bool
+	byRig   bool
+	verbose bool
+}
+
+func costsOptionsFromCommand(cmd *cobra.Command) costsOptions {
+	return costsOptions{
+		json:    commandBoolFlag(cmd, "json"),
+		today:   commandBoolFlag(cmd, "today"),
+		week:    commandBoolFlag(cmd, "week"),
+		byRole:  commandBoolFlag(cmd, "by-role"),
+		byRig:   commandBoolFlag(cmd, "by-rig"),
+		verbose: commandBoolFlag(cmd, "verbose"),
+	}
+}
+
+func costsVerboseFromCommand(cmd *cobra.Command) bool {
+	for current := cmd; current != nil; current = current.Parent() {
+		if current.Flags().Lookup("verbose") != nil {
+			return commandBoolFlag(current, "verbose")
+		}
+	}
+	return false
 }
 
 // SessionCost represents cost info for a single session.
@@ -217,17 +228,18 @@ var modelPricing = map[string]struct {
 	"default": {3.0, 15.0, 0.3, 3.75},
 }
 
-func runCosts(cmd *cobra.Command, args []string) error {
+func runCosts(cmd *cobra.Command, _ []string) error {
+	opts := costsOptionsFromCommand(cmd)
 	// If querying ledger, use ledger functions
-	if costsToday || costsWeek || costsByRole || costsByRig {
-		return runCostsFromLedger()
+	if opts.today || opts.week || opts.byRole || opts.byRig {
+		return runCostsFromLedger(opts)
 	}
 
 	// Default: show live costs from running sessions
-	return runLiveCosts()
+	return runLiveCosts(opts)
 }
 
-func runLiveCosts() error {
+func runLiveCosts(opts costsOptions) error {
 	t := tmux.NewTmux()
 
 	// Get all tmux sessions
@@ -251,7 +263,7 @@ func runLiveCosts() error {
 		// Get working directory of the session
 		workDir, err := getTmuxSessionWorkDir(sess)
 		if err != nil {
-			if costsVerbose {
+			if opts.verbose {
 				fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", sess, err)
 			}
 			continue
@@ -260,7 +272,7 @@ func runLiveCosts() error {
 		// Extract cost from Claude transcript
 		cost, err := extractCostFromWorkDir(workDir)
 		if err != nil {
-			if costsVerbose {
+			if opts.verbose {
 				fmt.Fprintf(os.Stderr, "[costs] could not extract cost for %s: %v\n", sess, err)
 			}
 			// Still include the session with zero cost
@@ -286,7 +298,7 @@ func runLiveCosts() error {
 		return costs[i].Session < costs[j].Session
 	})
 
-	if costsJSON {
+	if opts.json {
 		return outputCostsJSON(CostsOutput{
 			Sessions: costs,
 			Total:    total,
@@ -296,40 +308,10 @@ func runLiveCosts() error {
 	return outputCostsHuman(costs, total)
 }
 
-func runCostsFromLedger() error {
-	now := time.Now()
-	var entries []CostEntry
-	var err error
-
-	if costsToday {
-		// For today: query ephemeral wisps (not yet digested)
-		// This gives real-time view of today's costs
-		entries, err = querySessionCostEntries(now)
-		if err != nil {
-			return fmt.Errorf("querying session cost wisps: %w", err)
-		}
-	} else if costsWeek {
-		// For week: query digest beads (costs.digest events)
-		// These are the aggregated daily reports
-		entries, err = queryDigestBeads(7)
-		if err != nil {
-			return fmt.Errorf("querying digest beads: %w", err)
-		}
-
-		// Also include today's wisps (not yet digested)
-		todayEntries, _ := querySessionCostEntries(now)
-		entries = append(entries, todayEntries...)
-	} else if costsByRole || costsByRig {
-		// When using --by-role or --by-rig without time filter, default to today
-		// (querying all historical events would be expensive and likely empty)
-		entries, err = querySessionCostEntries(now)
-		if err != nil {
-			return fmt.Errorf("querying session cost entries: %w", err)
-		}
-	} else {
-		// No time filter and no breakdown flags: query both digests and legacy session.ended events
-		// (for backwards compatibility during migration)
-		entries = querySessionEvents()
+func runCostsFromLedger(opts costsOptions) error {
+	entries, err := loadLedgerEntries(opts, time.Now())
+	if err != nil {
+		return err
 	}
 
 	if len(entries) == 0 {
@@ -337,51 +319,85 @@ func runCostsFromLedger() error {
 		return nil
 	}
 
-	// Calculate totals
-	var total float64
-	byRole := make(map[string]float64)
-	byRig := make(map[string]float64)
-	byAgent := make(map[string]float64)
+	output := buildLedgerOutput(opts, entries, aggregateLedgerCosts(entries))
 
-	for _, entry := range entries {
-		total += entry.CostUSD
-		byRole[entry.Role] += entry.CostUSD
-		if entry.Rig != "" {
-			byRig[entry.Rig] += entry.CostUSD
-		}
-		if entry.AgentType != "" {
-			byAgent[entry.AgentType] += entry.CostUSD
-		}
-	}
-
-	// Build output
-	output := CostsOutput{
-		Total: total,
-	}
-
-	if costsByRole {
-		output.ByRole = byRole
-		output.Entries = entries
-		if len(byAgent) > 0 {
-			output.ByAgentType = byAgent
-		}
-	}
-	if costsByRig {
-		output.ByRig = byRig
-	}
-
-	// Set period label
-	if costsToday {
-		output.Period = "today"
-	} else if costsWeek {
-		output.Period = "this week"
-	}
-
-	if costsJSON {
+	if opts.json {
 		return outputCostsJSON(output)
 	}
 
 	return outputLedgerHuman(output, entries)
+}
+
+func loadLedgerEntries(opts costsOptions, now time.Time) ([]CostEntry, error) {
+	switch {
+	case opts.today:
+		entries, err := querySessionCostEntries(now, opts.verbose)
+		if err != nil {
+			return nil, fmt.Errorf("querying session cost wisps: %w", err)
+		}
+		return entries, nil
+	case opts.week:
+		entries, err := queryDigestBeads(7)
+		if err != nil {
+			return nil, fmt.Errorf("querying digest beads: %w", err)
+		}
+		todayEntries, _ := querySessionCostEntries(now, opts.verbose)
+		return append(entries, todayEntries...), nil
+	case opts.byRole || opts.byRig:
+		entries, err := querySessionCostEntries(now, opts.verbose)
+		if err != nil {
+			return nil, fmt.Errorf("querying session cost entries: %w", err)
+		}
+		return entries, nil
+	default:
+		return querySessionEvents(opts.verbose), nil
+	}
+}
+
+type ledgerCostTotals struct {
+	total   float64
+	byRole  map[string]float64
+	byRig   map[string]float64
+	byAgent map[string]float64
+}
+
+func aggregateLedgerCosts(entries []CostEntry) ledgerCostTotals {
+	totals := ledgerCostTotals{
+		byRole:  make(map[string]float64),
+		byRig:   make(map[string]float64),
+		byAgent: make(map[string]float64),
+	}
+	for _, entry := range entries {
+		totals.total += entry.CostUSD
+		totals.byRole[entry.Role] += entry.CostUSD
+		if entry.Rig != "" {
+			totals.byRig[entry.Rig] += entry.CostUSD
+		}
+		if entry.AgentType != "" {
+			totals.byAgent[entry.AgentType] += entry.CostUSD
+		}
+	}
+	return totals
+}
+
+func buildLedgerOutput(opts costsOptions, entries []CostEntry, totals ledgerCostTotals) CostsOutput {
+	output := CostsOutput{Total: totals.total}
+	if opts.byRole {
+		output.ByRole = totals.byRole
+		output.Entries = entries
+		if len(totals.byAgent) > 0 {
+			output.ByAgentType = totals.byAgent
+		}
+	}
+	if opts.byRig {
+		output.ByRig = totals.byRig
+	}
+	if opts.today {
+		output.Period = "today"
+	} else if opts.week {
+		output.Period = "this week"
+	}
+	return output
 }
 
 // SessionEvent represents a session.ended event from beads.
@@ -414,7 +430,7 @@ type EventListItem struct {
 // querySessionEvents queries beads for session.ended events and converts them to CostEntry.
 // It queries both town-level beads and all rig-level beads to find all session events.
 // Errors from individual locations are logged (if verbose) but don't fail the query.
-func querySessionEvents() []CostEntry {
+func querySessionEvents(verbose bool) []CostEntry {
 	// Discover town root for cwd-based bd discovery
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -422,32 +438,38 @@ func querySessionEvents() []CostEntry {
 		return nil
 	}
 
-	// Collect all beads locations to query
-	beadsLocations := []string{townRoot}
+	return mergeSessionEventEntries(discoverSessionEventLocations(townRoot), verbose)
+}
 
-	// Load rigs to find all rig beads locations
+func discoverSessionEventLocations(townRoot string) []string {
+	locations := []string{townRoot}
 	rigsConfigPath := filepath.Join(townRoot, constants.DirMayor, constants.FileRigsJSON)
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
-	if err == nil && rigsConfig != nil {
-		for rigName := range rigsConfig.Rigs {
-			rigPath := filepath.Join(townRoot, rigName)
-			// Verify rig has a beads database
-			rigBeadsPath := filepath.Join(rigPath, constants.DirBeads)
-			if _, statErr := os.Stat(rigBeadsPath); statErr == nil {
-				beadsLocations = append(beadsLocations, rigPath)
-			}
+	if err != nil || rigsConfig == nil {
+		return locations
+	}
+
+	for rigName := range rigsConfig.Rigs {
+		rigPath := filepath.Join(townRoot, rigName)
+		// Verify rig has a beads database
+		rigBeadsPath := filepath.Join(rigPath, constants.DirBeads)
+		if _, statErr := os.Stat(rigBeadsPath); statErr == nil {
+			locations = append(locations, rigPath)
 		}
 	}
 
-	// Query each beads location and merge results
+	return locations
+}
+
+func mergeSessionEventEntries(locations []string, verbose bool) []CostEntry {
 	var allEntries []CostEntry
 	seenIDs := make(map[string]bool)
 
-	for _, location := range beadsLocations {
+	for _, location := range locations {
 		entries, err := querySessionEventsFromLocation(location)
 		if err != nil {
 			// Log but continue with other locations
-			if costsVerbose {
+			if verbose {
 				fmt.Fprintf(os.Stderr, "[costs] query from %s failed: %v\n", location, err)
 			}
 			continue
@@ -513,6 +535,10 @@ func querySessionEventsFromLocation(location string) ([]CostEntry, error) {
 		return nil, fmt.Errorf("parsing event details: %w", err)
 	}
 
+	return sessionCostEntriesFromEvents(events), nil
+}
+
+func sessionCostEntriesFromEvents(events []SessionEvent) []CostEntry {
 	var entries []CostEntry
 	for _, event := range events {
 		// Filter for session.ended events only
@@ -547,7 +573,7 @@ func querySessionEventsFromLocation(location string) ([]CostEntry, error) {
 		})
 	}
 
-	return entries, nil
+	return entries
 }
 
 // queryDigestBeads queries costs.digest events from the past N days and extracts session entries.
@@ -597,47 +623,53 @@ func queryDigestBeads(days int) ([]CostEntry, error) {
 	now := time.Now()
 	cutoff := now.AddDate(0, 0, -days)
 
+	return digestCostEntriesFromEvents(events, cutoff), nil
+}
+
+func digestCostEntriesFromEvents(events []SessionEvent, cutoff time.Time) []CostEntry {
 	var entries []CostEntry
 	for _, event := range events {
-		// Filter for costs.digest events only
-		if event.EventKind != "costs.digest" {
-			continue
-		}
+		entries = append(entries, digestCostEntriesFromEvent(event, cutoff)...)
+	}
+	return entries
+}
 
-		// Parse the digest payload
-		var digest CostDigest
-		if event.Payload != "" {
-			if err := json.Unmarshal([]byte(event.Payload), &digest); err != nil {
-				continue
-			}
-		}
+func digestCostEntriesFromEvent(event SessionEvent, cutoff time.Time) []CostEntry {
+	// Filter for costs.digest events only
+	if event.EventKind != "costs.digest" {
+		return nil
+	}
 
-		// Check date is within range
-		digestDate, err := time.Parse("2006-01-02", digest.Date)
-		if err != nil {
-			continue
-		}
-		if digestDate.Before(cutoff) {
-			continue
-		}
-
-		// If the digest has per-session data (old format), use it directly.
-		// Otherwise, synthesize entries from the aggregate ByRole data.
-		if len(digest.Sessions) > 0 {
-			entries = append(entries, digest.Sessions...)
-		} else {
-			for role, cost := range digest.ByRole {
-				entries = append(entries, CostEntry{
-					SessionID: fmt.Sprintf("digest-%s-%s", digest.Date, role),
-					Role:      role,
-					CostUSD:   cost,
-					EndedAt:   digestDate,
-				})
-			}
+	// Parse the digest payload
+	var digest CostDigest
+	if event.Payload != "" {
+		if err := json.Unmarshal([]byte(event.Payload), &digest); err != nil {
+			return nil
 		}
 	}
 
-	return entries, nil
+	// Check date is within range
+	digestDate, err := time.Parse("2006-01-02", digest.Date)
+	if err != nil || digestDate.Before(cutoff) {
+		return nil
+	}
+
+	// If the digest has per-session data (old format), use it directly.
+	// Otherwise, synthesize entries from the aggregate ByRole data.
+	if len(digest.Sessions) > 0 {
+		return digest.Sessions
+	}
+
+	entries := make([]CostEntry, 0, len(digest.ByRole))
+	for role, cost := range digest.ByRole {
+		entries = append(entries, CostEntry{
+			SessionID: fmt.Sprintf("digest-%s-%s", digest.Date, role),
+			Role:      role,
+			CostUSD:   cost,
+			EndedAt:   digestDate,
+		})
+	}
+	return entries
 }
 
 // parseSessionName extracts role, rig, and worker from a session name.
@@ -715,23 +747,7 @@ func findLatestTranscript(projectDir string) (string, error) {
 	var latestTime time.Time
 
 	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && path != projectDir {
-			return fs.SkipDir // Don't recurse into subdirectories
-		}
-		if !d.IsDir() && strings.HasSuffix(path, ".jsonl") {
-			info, err := d.Info()
-			if err != nil {
-				return nil // Skip files we can't stat
-			}
-			if info.ModTime().After(latestTime) {
-				latestTime = info.ModTime()
-				latestPath = path
-			}
-		}
-		return nil
+		return inspectTranscriptEntry(path, d, err, projectDir, &latestPath, &latestTime)
 	})
 
 	if err != nil {
@@ -741,6 +757,27 @@ func findLatestTranscript(projectDir string) (string, error) {
 		return "", fmt.Errorf("no transcript files found in %s", projectDir)
 	}
 	return latestPath, nil
+}
+
+func inspectTranscriptEntry(path string, d fs.DirEntry, walkErr error, projectDir string, latestPath *string, latestTime *time.Time) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if d.IsDir() && path != projectDir {
+		return fs.SkipDir // Don't recurse into subdirectories
+	}
+	if d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+		return nil
+	}
+	info, err := d.Info()
+	if err != nil {
+		return nil // Skip files we can't stat
+	}
+	if info.ModTime().After(*latestTime) {
+		*latestTime = info.ModTime()
+		*latestPath = path
+	}
+	return nil
 }
 
 // parseTranscriptUsage reads a transcript file and sums token usage from assistant messages.
@@ -758,32 +795,7 @@ func parseTranscriptUsage(transcriptPath string) (*TokenUsage, error) {
 	scanner.Buffer(buf, 1024*1024)
 
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var msg TranscriptMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			continue // Skip malformed lines
-		}
-
-		// Only process assistant messages with usage info
-		if msg.Type != "assistant" || msg.Message == nil || msg.Message.Usage == nil {
-			continue
-		}
-
-		// Capture the model (use first one found, they should all be the same)
-		if usage.Model == "" && msg.Message.Model != "" {
-			usage.Model = msg.Message.Model
-		}
-
-		// Sum token usage
-		u := msg.Message.Usage
-		usage.InputTokens += u.InputTokens
-		usage.CacheCreationInputTokens += u.CacheCreationInputTokens
-		usage.CacheReadInputTokens += u.CacheReadInputTokens
-		usage.OutputTokens += u.OutputTokens
+		addTranscriptUsageLine(usage, scanner.Bytes())
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -791,6 +803,34 @@ func parseTranscriptUsage(transcriptPath string) (*TokenUsage, error) {
 	}
 
 	return usage, nil
+}
+
+func addTranscriptUsageLine(usage *TokenUsage, line []byte) {
+	if len(line) == 0 {
+		return
+	}
+
+	var msg TranscriptMessage
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return // Skip malformed lines
+	}
+
+	// Only process assistant messages with usage info
+	if msg.Type != "assistant" || msg.Message == nil || msg.Message.Usage == nil {
+		return
+	}
+
+	// Capture the model (use first one found, they should all be the same)
+	if usage.Model == "" && msg.Message.Model != "" {
+		usage.Model = msg.Message.Model
+	}
+
+	// Sum token usage
+	u := msg.Message.Usage
+	usage.InputTokens += u.InputTokens
+	usage.CacheCreationInputTokens += u.CacheCreationInputTokens
+	usage.CacheReadInputTokens += u.CacheReadInputTokens
+	usage.OutputTokens += u.OutputTokens
 }
 
 // calculateCost converts token usage to USD cost based on model pricing.
@@ -906,49 +946,64 @@ func outputLedgerHuman(output CostsOutput, entries []CostEntry) error {
 	// Total
 	fmt.Printf("%s $%.2f\n", style.Bold.Render("Total:"), output.Total)
 
-	// By role breakdown
-	if output.ByRole != nil && len(output.ByRole) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("By Role:"))
-		for role, cost := range output.ByRole {
-			icon := constants.RoleEmoji(role)
-			fmt.Printf("  %s %-12s $%.2f\n", icon, role, cost)
-		}
-	}
-
-	// By rig breakdown
-	if output.ByRig != nil && len(output.ByRig) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("By Rig:"))
-		for rig, cost := range output.ByRig {
-			fmt.Printf("  %-15s $%.2f\n", rig, cost)
-		}
-	}
-
-	if output.ByAgentType != nil && len(output.ByAgentType) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("By Agent Type:"))
-		for agent, cost := range output.ByAgentType {
-			fmt.Printf("  %-15s $%.2f\n", agent, cost)
-		}
-	}
-
-	if len(entries) > 0 {
-		fmt.Printf("\n%s\n", style.Bold.Render("Runs:"))
-		for _, e := range entries {
-			bead := e.WorkItem
-			if bead == "" {
-				bead = "-"
-			}
-			agent := e.AgentType
-			if agent == "" {
-				agent = "-"
-			}
-			fmt.Printf("  bead=%s role=%s agent=%s $%.2f\n", bead, e.Role, agent, e.CostUSD)
-		}
-	}
+	printLedgerRoleBreakdown(output.ByRole)
+	printLedgerRigBreakdown(output.ByRig)
+	printLedgerAgentBreakdown(output.ByAgentType)
+	printLedgerRuns(entries)
 
 	// Session count
 	fmt.Printf("\n%s %d sessions\n", style.Dim.Render("Entries:"), len(entries))
 
 	return nil
+}
+
+func printLedgerRoleBreakdown(byRole map[string]float64) {
+	if len(byRole) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("By Role:"))
+	for role, cost := range byRole {
+		icon := constants.RoleEmoji(role)
+		fmt.Printf("  %s %-12s $%.2f\n", icon, role, cost)
+	}
+}
+
+func printLedgerRigBreakdown(byRig map[string]float64) {
+	if len(byRig) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("By Rig:"))
+	for rig, cost := range byRig {
+		fmt.Printf("  %-15s $%.2f\n", rig, cost)
+	}
+}
+
+func printLedgerAgentBreakdown(byAgentType map[string]float64) {
+	if len(byAgentType) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("By Agent Type:"))
+	for agent, cost := range byAgentType {
+		fmt.Printf("  %-15s $%.2f\n", agent, cost)
+	}
+}
+
+func printLedgerRuns(entries []CostEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	fmt.Printf("\n%s\n", style.Bold.Render("Runs:"))
+	for _, e := range entries {
+		bead := e.WorkItem
+		if bead == "" {
+			bead = "-"
+		}
+		agent := e.AgentType
+		if agent == "" {
+			agent = "-"
+		}
+		fmt.Printf("  bead=%s role=%s agent=%s $%.2f\n", bead, e.Role, agent, e.CostUSD)
+	}
 }
 
 // CostLogEntry represents a single entry in the costs.jsonl log file.
@@ -971,54 +1026,17 @@ func getCostsLogPath() string {
 // runCostsRecord captures the final cost from a session and appends it to a local log file.
 // This is called by the Claude Code Stop hook. It's designed to never fail due to
 // database availability - it's a simple file append operation.
-func runCostsRecord(cmd *cobra.Command, args []string) error {
-	// Get session from flag or try to detect from environment
-	session := recordSession
+func runCostsRecord(cmd *cobra.Command, _ []string) error {
+	recordSession := commandStringFlag(cmd, "session")
+	recordWorkItem := commandStringFlag(cmd, "work-item")
+	costsVerbose := costsVerboseFromCommand(cmd)
+	session := resolveCostsRecordSession(recordSession, costsVerbose)
 	if session == "" {
-		session = os.Getenv("GT_SESSION")
-	}
-	if session == "" {
-		// Derive session name from GT_* environment variables
-		session = deriveSessionName()
-	}
-	if session == "" {
-		// Try to detect current tmux session (works when running inside tmux)
-		session = detectCurrentTmuxSession()
-	}
-	if session == "" {
-		// Not a Gas Town session (e.g., Claude Code launched outside gt agent system).
-		// Exit silently — no costs to record.
-		if costsVerbose {
-			fmt.Fprintf(os.Stderr, "[costs] no session context found, skipping costs record\n")
-		}
 		return nil
 	}
 
-	// Get working directory from environment or tmux session
-	workDir := os.Getenv("GT_CWD")
-	if workDir == "" {
-		// Try to get from tmux session
-		var err error
-		workDir, err = getTmuxSessionWorkDir(session)
-		if err != nil {
-			if costsVerbose {
-				fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", session, err)
-			}
-		}
-	}
-
-	// Extract cost from Claude transcript
-	var cost float64
-	if workDir != "" {
-		var err error
-		cost, err = extractCostFromWorkDir(workDir)
-		if err != nil {
-			if costsVerbose {
-				fmt.Fprintf(os.Stderr, "[costs] could not extract cost from transcript: %v\n", err)
-			}
-			cost = 0.0
-		}
-	}
+	workDir := resolveCostsRecordWorkDir(session, costsVerbose)
+	cost := extractCostsRecordCost(workDir, costsVerbose)
 
 	// Parse session name
 	role, rig, worker := parseSessionName(session)
@@ -1034,22 +1052,70 @@ func runCostsRecord(cmd *cobra.Command, args []string) error {
 		WorkItem:  recordWorkItem,
 	}
 
-	// Marshal to JSON
+	if err := appendCostLogEntry(entry); err != nil {
+		return err
+	}
+
+	printCostsRecordConfirmation(cost, recordWorkItem, session)
+
+	return nil
+}
+
+func resolveCostsRecordSession(recordSession string, verbose bool) string {
+	if recordSession != "" {
+		return recordSession
+	}
+	if session := os.Getenv("GT_SESSION"); session != "" {
+		return session
+	}
+	if session := deriveSessionName(); session != "" {
+		return session
+	}
+	if session := detectCurrentTmuxSession(); session != "" {
+		return session
+	}
+	if verbose {
+		fmt.Fprintf(os.Stderr, "[costs] no session context found, skipping costs record\n")
+	}
+	return ""
+}
+
+func resolveCostsRecordWorkDir(session string, verbose bool) string {
+	if workDir := os.Getenv("GT_CWD"); workDir != "" {
+		return workDir
+	}
+	workDir, err := getTmuxSessionWorkDir(session)
+	if err != nil && verbose {
+		fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", session, err)
+	}
+	return workDir
+}
+
+func extractCostsRecordCost(workDir string, verbose bool) float64 {
+	if workDir == "" {
+		return 0
+	}
+	cost, err := extractCostFromWorkDir(workDir)
+	if err != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[costs] could not extract cost from transcript: %v\n", err)
+		}
+		return 0
+	}
+	return cost
+}
+
+func appendCostLogEntry(entry CostLogEntry) error {
 	entryJSON, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("marshaling cost entry: %w", err)
 	}
 
-	// Append to log file
 	logPath := getCostsLogPath()
-
-	// Ensure directory exists
-	logDir := filepath.Dir(logPath)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
-	// Open file for append (create if doesn't exist).
 	// O_APPEND writes are atomic on POSIX for writes < PIPE_BUF (~4KB).
 	// A JSON log entry is ~200 bytes, so concurrent appends are safe.
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -1058,21 +1124,21 @@ func runCostsRecord(cmd *cobra.Command, args []string) error {
 	}
 	defer f.Close()
 
-	// Write entry with newline
 	if _, err := f.Write(append(entryJSON, '\n')); err != nil {
 		return fmt.Errorf("writing to costs log: %w", err)
 	}
-
-	// Output confirmation (silent if cost is zero and no work item)
-	if cost > 0 || recordWorkItem != "" {
-		fmt.Printf("%s Recorded $%.2f for %s", style.Success.Render("✓"), cost, session)
-		if recordWorkItem != "" {
-			fmt.Printf(" (work: %s)", recordWorkItem)
-		}
-		fmt.Println()
-	}
-
 	return nil
+}
+
+func printCostsRecordConfirmation(cost float64, workItem, session string) {
+	if cost <= 0 && workItem == "" {
+		return
+	}
+	fmt.Printf("%s Recorded $%.2f for %s", style.Success.Render("✓"), cost, session)
+	if workItem != "" {
+		fmt.Printf(" (work: %s)", workItem)
+	}
+	fmt.Println()
 }
 
 // deriveSessionName derives the tmux session name from GT_* environment variables.
@@ -1087,42 +1153,71 @@ func deriveSessionName() string {
 	// Parse GT_ROLE once to handle both bare and compound forms.
 	parsedRole, _, parsedName := parseRoleString(role)
 
+	if name := derivePolecatSession(role, parsedRole, rig, polecat); name != "" {
+		return name
+	}
+
+	if name := deriveCrewSession(parsedRole, parsedName, rig, crew); name != "" {
+		return name
+	}
+
+	if name := deriveTownSession(parsedRole); name != "" {
+		return name
+	}
+
+	return deriveRigSession(parsedRole, rig)
+}
+
+func derivePolecatSession(role string, parsedRole Role, rig, polecat string) string {
 	// Polecat: {prefix}-{polecat}
 	// Gate on GT_ROLE: coordinators may have stale GT_POLECAT from spawning polecats.
-	if polecat != "" && rig != "" {
-		if role == "" || parsedRole == RolePolecat {
-			return session.PolecatSessionName(session.PrefixFor(rig), polecat)
-		}
+	if polecat == "" || rig == "" || (role != "" && parsedRole != RolePolecat) {
+		return ""
 	}
+	return session.PolecatSessionName(session.PrefixFor(rig), polecat)
+}
 
+func deriveCrewSession(parsedRole Role, parsedName, rig, crew string) string {
 	// Crew: {prefix}-crew-{crew} (from GT_CREW or parsed compound role)
-	if parsedRole == RoleCrew && parsedName != "" && rig != "" {
+	if rig == "" {
+		return ""
+	}
+	if parsedRole == RoleCrew && parsedName != "" {
 		return session.CrewSessionName(session.PrefixFor(rig), parsedName)
 	}
-	if crew != "" && rig != "" {
+	if crew != "" {
 		return session.CrewSessionName(session.PrefixFor(rig), crew)
 	}
-
-	// Town-level roles (mayor, deacon)
-	if parsedRole == RoleMayor {
-		return session.MayorSessionName()
-	}
-	if parsedRole == RoleDeacon {
-		return session.DeaconSessionName()
-	}
-
-	// Rig-based roles (witness, refinery): {prefix}-{role}
-	if rig != "" {
-		prefix := session.PrefixFor(rig)
-		switch parsedRole {
-		case RoleWitness:
-			return session.WitnessSessionName(prefix)
-		case RoleRefinery:
-			return session.RefinerySessionName(prefix)
-		}
-	}
-
 	return ""
+}
+
+func deriveTownSession(parsedRole Role) string {
+	// Town-level roles (mayor, deacon)
+	switch parsedRole {
+	case RoleMayor:
+		return session.MayorSessionName()
+	case RoleDeacon:
+		return session.DeaconSessionName()
+	default:
+		return ""
+	}
+}
+
+func deriveRigSession(parsedRole Role, rig string) string {
+	// Rig-based roles (witness, refinery): {prefix}-{role}
+	if rig == "" {
+		return ""
+	}
+	prefix := session.PrefixFor(rig)
+	switch parsedRole {
+	case RoleWitness:
+		return session.WitnessSessionName(prefix)
+	case RoleRefinery:
+		return session.RefinerySessionName(prefix)
+	default:
+		return ""
+	}
+
 }
 
 // detectCurrentTmuxSession returns the current tmux session name if running inside tmux.
@@ -1170,26 +1265,19 @@ type CostDigestPayload struct {
 }
 
 // runCostsDigest aggregates session cost entries into a daily digest bead.
-func runCostsDigest(cmd *cobra.Command, args []string) error {
-	// Determine target date
-	var targetDate time.Time
-
-	if digestDate != "" {
-		parsed, err := time.Parse("2006-01-02", digestDate)
-		if err != nil {
-			return fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
-		}
-		targetDate = parsed
-	} else if digestYesterday {
-		targetDate = time.Now().AddDate(0, 0, -1)
-	} else {
-		return fmt.Errorf("specify --yesterday or --date YYYY-MM-DD")
+func runCostsDigest(cmd *cobra.Command, _ []string) error {
+	targetDate, err := costDigestTargetDate(
+		commandStringFlag(cmd, "date"),
+		commandBoolFlag(cmd, "yesterday"),
+	)
+	if err != nil {
+		return err
 	}
-
+	digestDryRun := commandBoolFlag(cmd, "dry-run")
 	dateStr := targetDate.Format("2006-01-02")
 
 	// Query session cost entries for target date
-	costEntries, err := querySessionCostEntries(targetDate)
+	costEntries, err := querySessionCostEntries(targetDate, costsVerboseFromCommand(cmd))
 	if err != nil {
 		return fmt.Errorf("querying session cost entries: %w", err)
 	}
@@ -1199,37 +1287,10 @@ func runCostsDigest(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Build digest
-	digest := CostDigest{
-		Date:     dateStr,
-		Sessions: costEntries,
-		ByRole:   make(map[string]float64),
-		ByRig:    make(map[string]float64),
-	}
-
-	for _, e := range costEntries {
-		digest.TotalUSD += e.CostUSD
-		digest.SessionCount++
-		digest.ByRole[e.Role] += e.CostUSD
-		if e.Rig != "" {
-			digest.ByRig[e.Rig] += e.CostUSD
-		}
-	}
+	digest := buildCostDigest(dateStr, costEntries)
 
 	if digestDryRun {
-		fmt.Printf("%s [DRY RUN] Would create Cost Report %s:\n", style.Bold.Render("📊"), dateStr)
-		fmt.Printf("  Total: $%.2f\n", digest.TotalUSD)
-		fmt.Printf("  Sessions: %d\n", digest.SessionCount)
-		fmt.Printf("  By Role:\n")
-		for role, cost := range digest.ByRole {
-			fmt.Printf("    %s: $%.2f\n", role, cost)
-		}
-		if len(digest.ByRig) > 0 {
-			fmt.Printf("  By Rig:\n")
-			for rig, cost := range digest.ByRig {
-				fmt.Printf("    %s: $%.2f\n", rig, cost)
-			}
-		}
+		printCostDigestDryRun(dateStr, digest)
 		return nil
 	}
 
@@ -1254,20 +1315,72 @@ func runCostsDigest(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func costDigestTargetDate(dateStr string, yesterday bool) (time.Time, error) {
+	if dateStr != "" {
+		parsed, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
+		}
+		return parsed, nil
+	}
+	if yesterday {
+		return time.Now().AddDate(0, 0, -1), nil
+	}
+	return time.Time{}, fmt.Errorf("specify --yesterday or --date YYYY-MM-DD")
+}
+
+func buildCostDigest(dateStr string, costEntries []CostEntry) CostDigest {
+	digest := CostDigest{
+		Date:     dateStr,
+		Sessions: costEntries,
+		ByRole:   make(map[string]float64),
+		ByRig:    make(map[string]float64),
+	}
+	for _, entry := range costEntries {
+		digest.TotalUSD += entry.CostUSD
+		digest.SessionCount++
+		digest.ByRole[entry.Role] += entry.CostUSD
+		if entry.Rig != "" {
+			digest.ByRig[entry.Rig] += entry.CostUSD
+		}
+	}
+	return digest
+}
+
+func printCostDigestDryRun(dateStr string, digest CostDigest) {
+	fmt.Printf("%s [DRY RUN] Would create Cost Report %s:\n", style.Bold.Render("📊"), dateStr)
+	fmt.Printf("  Total: $%.2f\n", digest.TotalUSD)
+	fmt.Printf("  Sessions: %d\n", digest.SessionCount)
+	fmt.Printf("  By Role:\n")
+	for role, cost := range digest.ByRole {
+		fmt.Printf("    %s: $%.2f\n", role, cost)
+	}
+	if len(digest.ByRig) == 0 {
+		return
+	}
+	fmt.Printf("  By Rig:\n")
+	for rig, cost := range digest.ByRig {
+		fmt.Printf("    %s: $%.2f\n", rig, cost)
+	}
+}
+
 // querySessionCostEntries reads session cost entries from the local log file for a target date.
-func querySessionCostEntries(targetDate time.Time) ([]CostEntry, error) {
-	logPath := getCostsLogPath()
-
-	// Read log file
+func querySessionCostEntries(targetDate time.Time, verbose bool) ([]CostEntry, error) {
 	targetDay := targetDate.UTC().Format("2006-01-02")
-	var entries []CostEntry
+	entries, err := readCostLogEntries(getCostsLogPath(), targetDay, verbose)
+	if err != nil {
+		return nil, err
+	}
+	return append(entries, readWorkerCostEntries(targetDay)...), nil
+}
 
+func readCostLogEntries(logPath, targetDay string, verbose bool) ([]CostEntry, error) {
 	data, err := os.ReadFile(logPath)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading costs log: %w", err)
 	}
 
-	// Parse each line as a CostLogEntry
+	var entries []CostEntry
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -1277,7 +1390,7 @@ func querySessionCostEntries(targetDate time.Time) ([]CostEntry, error) {
 
 		var logEntry CostLogEntry
 		if err := json.Unmarshal([]byte(line), &logEntry); err != nil {
-			if costsVerbose {
+			if verbose {
 				fmt.Fprintf(os.Stderr, "[costs] failed to parse log entry: %v\n", err)
 			}
 			continue
@@ -1288,46 +1401,63 @@ func querySessionCostEntries(targetDate time.Time) ([]CostEntry, error) {
 			continue
 		}
 
+		entries = append(entries, costEntryFromLog(logEntry))
+	}
+	return entries, nil
+}
+
+func costEntryFromLog(logEntry CostLogEntry) CostEntry {
+	return CostEntry{
+		SessionID: logEntry.SessionID,
+		Role:      logEntry.Role,
+		Rig:       logEntry.Rig,
+		Worker:    logEntry.Worker,
+		CostUSD:   logEntry.CostUSD,
+		EndedAt:   logEntry.EndedAt,
+		WorkItem:  logEntry.WorkItem,
+	}
+}
+
+func readWorkerCostEntries(targetDay string) []CostEntry {
+	townRoot := costTownRoot()
+	if townRoot == "" {
+		return nil
+	}
+
+	recs, err := worker.ReadCosts(townRoot)
+	if err != nil {
+		return nil
+	}
+	return costEntriesFromWorkerRecords(recs, targetDay)
+}
+
+func costTownRoot() string {
+	townRoot, err := workspace.FindFromCwd()
+	if err == nil && townRoot != "" {
+		return townRoot
+	}
+	return os.Getenv("GT_TOWN_ROOT")
+}
+
+func costEntriesFromWorkerRecords(recs []worker.CostRecord, targetDay string) []CostEntry {
+	entries := make([]CostEntry, 0, len(recs))
+	for _, rec := range recs {
+		if !rec.Timestamp.IsZero() && rec.Timestamp.UTC().Format("2006-01-02") != targetDay {
+			continue
+		}
 		entries = append(entries, CostEntry{
-			SessionID: logEntry.SessionID,
-			Role:      logEntry.Role,
-			Rig:       logEntry.Rig,
-			Worker:    logEntry.Worker,
-			CostUSD:   logEntry.CostUSD,
-			EndedAt:   logEntry.EndedAt,
-			WorkItem:  logEntry.WorkItem,
+			SessionID: rec.SessionID,
+			Role:      rec.Role,
+			Rig:       rec.Rig,
+			Worker:    rec.AgentName,
+			AgentType: rec.AgentType,
+			RunID:     rec.RunID,
+			CostUSD:   rec.CostUSD,
+			EndedAt:   rec.Timestamp,
+			WorkItem:  rec.BeadID,
 		})
 	}
-
-	townRoot, townErr := workspace.FindFromCwd()
-	if townErr != nil || townRoot == "" {
-		if env := os.Getenv("GT_TOWN_ROOT"); env != "" {
-			townRoot = env
-			townErr = nil
-		}
-	}
-	if townErr == nil && townRoot != "" {
-		if recs, err := worker.ReadCosts(townRoot); err == nil {
-			for _, rec := range recs {
-				if !rec.Timestamp.IsZero() && rec.Timestamp.UTC().Format("2006-01-02") != targetDay {
-					continue
-				}
-				entries = append(entries, CostEntry{
-					SessionID: rec.SessionID,
-					Role:      rec.Role,
-					Rig:       rec.Rig,
-					Worker:    rec.AgentName,
-					AgentType: rec.AgentType,
-					RunID:     rec.RunID,
-					CostUSD:   rec.CostUSD,
-					EndedAt:   rec.Timestamp,
-					WorkItem:  rec.BeadID,
-				})
-			}
-		}
-	}
-
-	return entries, nil
+	return entries
 }
 
 // createCostDigestBead creates a permanent bead for the daily cost digest.
@@ -1420,6 +1550,26 @@ func deleteSessionCostEntries(targetDate time.Time) (int, error) {
 	}
 
 	targetDay := targetDate.Format("2006-01-02")
+	keepLines, deletedCount := filterSessionCostEntries(data, targetDay)
+
+	if deletedCount == 0 {
+		return 0, nil
+	}
+
+	// Rewrite file without deleted entries
+	newContent := strings.Join(keepLines, "\n")
+	if len(keepLines) > 0 {
+		newContent += "\n"
+	}
+
+	if err := os.WriteFile(logPath, []byte(newContent), 0644); err != nil {
+		return 0, fmt.Errorf("rewriting costs log: %w", err)
+	}
+
+	return deletedCount, nil
+}
+
+func filterSessionCostEntries(data []byte, targetDay string) ([]string, int) {
 	var keepLines []string
 	deletedCount := 0
 
@@ -1447,19 +1597,5 @@ func deleteSessionCostEntries(targetDate time.Time) (int, error) {
 		keepLines = append(keepLines, line)
 	}
 
-	if deletedCount == 0 {
-		return 0, nil
-	}
-
-	// Rewrite file without deleted entries
-	newContent := strings.Join(keepLines, "\n")
-	if len(keepLines) > 0 {
-		newContent += "\n"
-	}
-
-	if err := os.WriteFile(logPath, []byte(newContent), 0644); err != nil {
-		return 0, fmt.Errorf("rewriting costs log: %w", err)
-	}
-
-	return deletedCount, nil
+	return keepLines, deletedCount
 }

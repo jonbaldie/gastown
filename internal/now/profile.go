@@ -47,43 +47,55 @@ func ParseProfile(spec, defaultEffort string) (Profile, error) {
 		return Profile{Effort: defaultEffort}, nil
 	}
 
-	parts := strings.SplitN(spec, ":", 3)
-	runtime := strings.TrimSpace(parts[0])
-	if runtime == "" {
-		return Profile{}, fmt.Errorf("empty runtime in %q", spec)
+	profile, parts, err := newProfile(spec, defaultEffort)
+	if err != nil {
+		return Profile{}, err
 	}
-
-	profile := Profile{Runtime: runtime, Effort: defaultEffort}
 	switch len(parts) {
 	case 1:
 		return profile, nil
 	case 2:
-		token := strings.TrimSpace(parts[1])
-		if token == "" {
-			return Profile{}, fmt.Errorf("empty model or effort in %q", spec)
-		}
-		if config.IsValidEffortLevel(token) {
-			profile.Effort = token
-			return profile, nil
-		}
-		profile.Model = token
-		return profile, nil
+		return parseProfileToken(profile, spec, parts[1])
 	default:
-		model := strings.TrimSpace(parts[1])
-		effort := strings.TrimSpace(parts[2])
-		if model == "" {
-			return Profile{}, fmt.Errorf("empty model in %q", spec)
-		}
-		if effort == "" {
-			return Profile{}, fmt.Errorf("empty effort in %q", spec)
-		}
-		if strings.Contains(model, ":") {
-			return Profile{}, fmt.Errorf("model may not contain ':' (got %q)", spec)
-		}
-		profile.Model = model
-		profile.Effort = effort
-		return profile, nil
+		return parseProfileModelAndEffort(profile, spec, parts[1], parts[2])
 	}
+}
+
+func newProfile(spec, defaultEffort string) (Profile, []string, error) {
+	parts := strings.SplitN(spec, ":", 3)
+	runtime := strings.TrimSpace(parts[0])
+	if runtime == "" {
+		return Profile{}, nil, fmt.Errorf("empty runtime in %q", spec)
+	}
+	return Profile{Runtime: runtime, Effort: defaultEffort}, parts, nil
+}
+
+func parseProfileToken(profile Profile, spec, token string) (Profile, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return Profile{}, fmt.Errorf("empty model or effort in %q", spec)
+	}
+	if config.IsValidEffortLevel(token) {
+		profile.Effort = token
+	} else {
+		profile.Model = token
+	}
+	return profile, nil
+}
+
+func parseProfileModelAndEffort(profile Profile, spec, model, effort string) (Profile, error) {
+	model, effort = strings.TrimSpace(model), strings.TrimSpace(effort)
+	if model == "" {
+		return Profile{}, fmt.Errorf("empty model in %q", spec)
+	}
+	if effort == "" {
+		return Profile{}, fmt.Errorf("empty effort in %q", spec)
+	}
+	if strings.Contains(model, ":") {
+		return Profile{}, fmt.Errorf("model may not contain ':' (got %q)", spec)
+	}
+	profile.Model, profile.Effort = model, effort
+	return profile, nil
 }
 
 // SupportsEffort reports whether the named runtime accepts the effort token.

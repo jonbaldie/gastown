@@ -16,8 +16,317 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type mqScoredIssue struct {
+	issue           *beads.Issue
+	fields          *beads.MRFields
+	score           float64
+	branchMissing   bool
+	branchVerifyErr bool
+}
+
+type verifiedMQIssue struct {
+	*beads.Issue
+	BranchExists *bool `json:"branch_exists,omitempty"`
+	VerifyError  bool  `json:"verify_error,omitempty"`
+}
+
+type mqListOptions struct {
+	ready  bool
+	status string
+	worker string
+	epic   string
+	json   bool
+	verify bool
+}
+
+func buildMQListOptions(rigName string, options mqListOptions) beads.ListOptions {
+	opts := beads.ListOptions{
+		Label:    "gt:merge-request",
+		Priority: -1,
+		Rig:      rigName,
+	}
+	if options.status != "" {
+		opts.Status = options.status
+	} else if !options.ready {
+		opts.Status = "open"
+	}
+	return opts
+}
+
+func loadMQListIssues(b *beads.Beads, opts beads.ListOptions, options mqListOptions) ([]*beads.Issue, error) {
+	if options.ready {
+		opts.Status = "open"
+		allOpen, err := b.ListMergeRequests(opts)
+		if err != nil {
+			return nil, fmt.Errorf("querying ready MRs: %w", err)
+		}
+		var issues []*beads.Issue
+		for _, issue := range allOpen {
+			if !isMergeRequestReadyForSelection(issue) {
+				continue
+			}
+			issues = append(issues, issue)
+		}
+		return issues, nil
+	}
+	issues, err := b.ListMergeRequests(opts)
+	if err != nil {
+		return nil, fmt.Errorf("querying merge queue: %w", err)
+	}
+	return issues, nil
+}
+
+func mqListStatusMatches(issue *beads.Issue, options mqListOptions) bool {
+	switch {
+	case options.ready:
+		return issue.Status == "open"
+	case options.status != "" && !strings.EqualFold(options.status, "all"):
+		return strings.EqualFold(issue.Status, options.status)
+	case options.status == "":
+		return issue.Status == "open"
+	default:
+		return true
+	}
+}
+
+func mqListWorkerMatches(fields *beads.MRFields, options mqListOptions) bool {
+	if options.worker == "" {
+		return true
+	}
+	worker := ""
+	if fields != nil {
+		worker = fields.Worker
+	}
+	return strings.EqualFold(worker, options.worker)
+}
+
+func mqListEpicMatches(fields *beads.MRFields, b *beads.Beads, refineryPath string, options mqListOptions) bool {
+	if options.epic == "" {
+		return true
+	}
+	target := ""
+	if fields != nil {
+		target = fields.Target
+	}
+	expectedTarget := resolveIntegrationBranchName(b, refineryPath, options.epic)
+	return target == expectedTarget
+}
+
+func mqListIssueMatches(fields *beads.MRFields, rigName string, b *beads.Beads, refineryPath string, options mqListOptions) bool {
+	if fields != nil && fields.Rig != "" && !strings.EqualFold(fields.Rig, rigName) {
+		return false
+	}
+	if !mqListWorkerMatches(fields, options) {
+		return false
+	}
+	if !mqListEpicMatches(fields, b, refineryPath, options) {
+		return false
+	}
+	return true
+}
+
+func scoreMQListIssues(issues []*beads.Issue, rigName, refineryPath string, b *beads.Beads, gitClient branchVerifier, options mqListOptions) []mqScoredIssue {
+	now := time.Now()
+	var scored []mqScoredIssue
+	for _, issue := range issues {
+		if !mqListStatusMatches(issue, options) {
+			continue
+		}
+		fields := beads.ParseMRFields(issue)
+		if !mqListIssueMatches(fields, rigName, b, refineryPath, options) {
+			continue
+		}
+		branchMissing, branchVerifyErr := verifyBranch(options.verify, gitClient, fields)
+		score := calculateMRScore(issue, fields, now)
+		scored = append(scored, mqScoredIssue{
+			issue:           issue,
+			fields:          fields,
+			score:           score,
+			branchMissing:   branchMissing,
+			branchVerifyErr: branchVerifyErr,
+		})
+	}
+	return scored
+}
+
+func filteredMQListIssues(scored []mqScoredIssue) []*beads.Issue {
+	var filtered []*beads.Issue
+	for _, item := range scored {
+		filtered = append(filtered, item.issue)
+	}
+	return filtered
+}
+
+func verifiedMQListItem(item mqScoredIssue) verifiedMQIssue {
+	verified := verifiedMQIssue{Issue: item.issue}
+	if item.fields == nil || item.fields.Branch == "" {
+		return verified
+	}
+	if item.branchVerifyErr {
+		verified.VerifyError = true
+		return verified
+	}
+	exists := !item.branchMissing
+	verified.BranchExists = &exists
+	return verified
+}
+
+func renderMQListJSON(scored []mqScoredIssue, verify bool) error {
+	if !verify {
+		return outputJSON(filteredMQListIssues(scored))
+	}
+	var verified []verifiedMQIssue
+	for _, item := range scored {
+		verified = append(verified, verifiedMQListItem(item))
+	}
+	return outputJSON(verified)
+}
+
+func mqListStatusCell(issue *beads.Issue) string {
+	displayStatus := issue.Status
+	if issue.Status == "open" {
+		if beads.HasUnresolvedBlockers(issue) {
+			displayStatus = "blocked"
+		} else {
+			displayStatus = "ready"
+		}
+	}
+	switch displayStatus {
+	case "ready":
+		return style.Success.Render("ready")
+	case "in_progress":
+		return style.Warning.Render("active")
+	case "blocked":
+		return style.Dim.Render("blocked")
+	case "closed":
+		return style.Dim.Render("closed")
+	default:
+		return displayStatus
+	}
+}
+
+func mqListConvoyCell(fields *beads.MRFields) (branch, target, convoy string) {
+	if fields != nil {
+		branch = fields.Branch
+		target = fields.Target
+		convoy = fields.ConvoyID
+	}
+	if target == "" {
+		target = style.Dim.Render("(unset)")
+	}
+	if convoy == "" {
+		return branch, target, style.Dim.Render("(none)")
+	}
+	if len(convoy) > 12 {
+		convoy = convoy[:12]
+	}
+	return branch, target, convoy
+}
+
+func mqListPriorityCell(priority int) string {
+	value := fmt.Sprintf("P%d", priority)
+	if priority <= 1 {
+		return style.Error.Render(value)
+	}
+	if priority == 2 {
+		return style.Warning.Render(value)
+	}
+	return value
+}
+
+func mqListGitCell(item mqScoredIssue, verify bool) string {
+	if !verify {
+		return ""
+	}
+	if item.branchVerifyErr {
+		return style.Warning.Render("ERR")
+	}
+	if item.branchMissing {
+		return style.Error.Render("MISSING")
+	}
+	return style.Success.Render("OK")
+}
+
+func addMQListRow(table *style.Table, item mqScoredIssue, verify bool) {
+	branch, target, convoy := mqListConvoyCell(item.fields)
+	displayID := item.issue.ID
+	if len(displayID) > 12 {
+		displayID = displayID[:12]
+	}
+	row := []string{
+		displayID,
+		fmt.Sprintf("%.1f", item.score),
+		mqListPriorityCell(item.issue.Priority),
+		convoy,
+		branch,
+		target,
+		mqListStatusCell(item.issue),
+	}
+	if verify {
+		row = append(row, mqListGitCell(item, true))
+	}
+	row = append(row, style.Dim.Render(formatMRAge(item.issue.CreatedAt)))
+	table.AddRow(row...)
+}
+
+func renderMQListMissingBranchSummary(scored []mqScoredIssue, verify bool) {
+	if !verify {
+		return
+	}
+	missingCount := 0
+	for _, item := range scored {
+		if item.branchMissing {
+			missingCount++
+		}
+	}
+	if missingCount > 0 {
+		fmt.Printf("\n  %s %d MR(s) with missing branches\n",
+			style.Error.Render("⚠"), missingCount)
+	}
+}
+
+func renderMQListBlockers(scored []mqScoredIssue) {
+	for _, item := range scored {
+		issue := item.issue
+		displayStatus := issue.Status
+		if issue.Status == "open" && beads.HasUnresolvedBlockers(issue) {
+			displayStatus = "blocked"
+		}
+		blockerID := beads.FirstUnresolvedBlockerID(issue)
+		if displayStatus != "blocked" || blockerID == "" {
+			continue
+		}
+		displayID := issue.ID
+		if len(displayID) > 12 {
+			displayID = displayID[:12]
+		}
+		fmt.Printf("  %s %s\n", style.Dim.Render(displayID+":"),
+			style.Dim.Render(fmt.Sprintf("waiting on %s", blockerID)))
+	}
+}
+
+func renderMQListText(rigName string, scored []mqScoredIssue, verify bool) error {
+	fmt.Printf("%s Merge queue for '%s':\n\n", style.Bold.Render("📋"), rigName)
+	if len(scored) == 0 {
+		fmt.Printf("  %s\n", style.Dim.Render("(empty)"))
+		return nil
+	}
+	table := style.NewTable(buildMQListColumns(verify)...)
+	for _, item := range scored {
+		addMQListRow(table, item, verify)
+	}
+	fmt.Print(table.Render())
+	renderMQListMissingBranchSummary(scored, verify)
+	renderMQListBlockers(scored)
+	return nil
+}
+
 func runMQList(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
+	options, err := readMQListOptions(cmd)
+	if err != nil {
+		return err
+	}
 
 	_, r, _, err := getRefineryManager(rigName)
 	if err != nil {
@@ -26,300 +335,49 @@ func runMQList(cmd *cobra.Command, args []string) error {
 
 	// Create beads wrapper for the rig - use BeadsPath() to get the git-synced location
 	b := beads.New(r.BeadsPath())
+	opts := buildMQListOptions(rigName, options)
+	issues, err := loadMQListIssues(b, opts, options)
+	if err != nil {
+		return err
+	}
 
-	// Create git client for branch verification when --verify is set
-	var gitClient *git.Git
-	if mqListVerify {
-		// Use the refinery's rig worktree to check branches
+	var gitClient branchVerifier
+	if options.verify {
 		refineryRigPath := filepath.Join(r.Path, "refinery", "rig")
-		gitClient = git.NewGit(refineryRigPath)
+		gitClient = gitBranchVerifier{git.NewGit(refineryRigPath)}
 	}
-
-	// Build list options - query for merge-request label.
-	// Use ListMergeRequests to query both the issues table and wisps table,
-	// since MRs are created as ephemeral (wisps) by gt mq submit (GH#2446).
-	// Priority -1 means no priority filter (otherwise 0 would filter to P0 only).
-	opts := beads.ListOptions{
-		Label:    "gt:merge-request",
-		Priority: -1,
-		Rig:      rigName,
-	}
-
-	// Apply status filter if specified
-	if mqListStatus != "" {
-		opts.Status = mqListStatus
-	} else if !mqListReady {
-		// Default to open if not showing ready
-		opts.Status = "open"
-	}
-
-	var issues []*beads.Issue
-
-	if mqListReady {
-		// Query all open MRs and filter out blocked ones manually.
-		// Cannot use b.Ready() because it excludes ephemeral beads,
-		// and MRs are ephemeral by design (see gt-t5t6y).
-		opts.Status = "open"
-		allOpen, err := b.ListMergeRequests(opts)
-		if err != nil {
-			return fmt.Errorf("querying ready MRs: %w", err)
-		}
-		for _, issue := range allOpen {
-			if !isMergeRequestReadyForSelection(issue) {
-				continue
-			}
-			issues = append(issues, issue)
-		}
-	} else {
-		issues, err = b.ListMergeRequests(opts)
-		if err != nil {
-			return fmt.Errorf("querying merge queue: %w", err)
-		}
-	}
-
-	// Apply additional filters and calculate scores
-	now := time.Now()
-	type scoredIssue struct {
-		issue           *beads.Issue
-		fields          *beads.MRFields
-		score           float64
-		branchMissing   bool // true if branch doesn't exist in git (when --verify is set)
-		branchVerifyErr bool // true if git check errored (corrupt repo, permission, etc.)
-	}
-	var scored []scoredIssue
-
-	for _, issue := range issues {
-		// Manual status filtering as workaround for bd list not respecting --status filter
-		if mqListReady {
-			// Ready view should only show open MRs
-			if issue.Status != "open" {
-				continue
-			}
-		} else if mqListStatus != "" && !strings.EqualFold(mqListStatus, "all") {
-			// Explicit status filter should match exactly
-			if !strings.EqualFold(issue.Status, mqListStatus) {
-				continue
-			}
-		} else if mqListStatus == "" && issue.Status != "open" {
-			// Default case (no status specified) should only show open
-			continue
-		}
-
-		// Parse MR fields
-		fields := beads.ParseMRFields(issue)
-
-		// Filter by rig — wisps are shared across all rigs in the Dolt server,
-		// so we must filter to only show MRs belonging to this rig.
-		if fields != nil && fields.Rig != "" && !strings.EqualFold(fields.Rig, rigName) {
-			continue
-		}
-
-		// Filter by worker
-		if mqListWorker != "" {
-			worker := ""
-			if fields != nil {
-				worker = fields.Worker
-			}
-			if !strings.EqualFold(worker, mqListWorker) {
-				continue
-			}
-		}
-
-		// Filter by epic (target branch)
-		if mqListEpic != "" {
-			target := ""
-			if fields != nil {
-				target = fields.Target
-			}
-			expectedTarget := resolveIntegrationBranchName(b, r.Path, mqListEpic)
-			if target != expectedTarget {
-				continue
-			}
-		}
-
-		// Check branch existence if --verify is set (local + remote-tracking refs)
-		branchMissing, branchVerifyErr := verifyBranch(mqListVerify, gitClient, fields)
-
-		// Calculate priority score
-		score := calculateMRScore(issue, fields, now)
-		scored = append(scored, scoredIssue{issue: issue, fields: fields, score: score, branchMissing: branchMissing, branchVerifyErr: branchVerifyErr})
-	}
-
-	// Sort by score descending (highest priority first)
+	scored := scoreMQListIssues(issues, rigName, r.Path, b, gitClient, options)
 	sort.Slice(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
 	})
-
-	// Extract filtered issues for JSON output compatibility
-	var filtered []*beads.Issue
-	for _, s := range scored {
-		filtered = append(filtered, s.issue)
+	if options.json {
+		return renderMQListJSON(scored, options.verify)
 	}
+	return renderMQListText(rigName, scored, options.verify)
+}
 
-	// JSON output
-	if mqListJSON {
-		if mqListVerify {
-			// Extend JSON with verification results
-			type verifiedIssue struct {
-				*beads.Issue
-				BranchExists *bool `json:"branch_exists,omitempty"`
-				VerifyError  bool  `json:"verify_error,omitempty"`
-			}
-			var verified []verifiedIssue
-			for _, s := range scored {
-				vi := verifiedIssue{Issue: s.issue}
-				if s.fields != nil && s.fields.Branch != "" {
-					if s.branchVerifyErr {
-						vi.VerifyError = true
-					} else {
-						exists := !s.branchMissing
-						vi.BranchExists = &exists
-					}
-				}
-				verified = append(verified, vi)
-			}
-			return outputJSON(verified)
-		}
-		return outputJSON(filtered)
+func readMQListOptions(cmd *cobra.Command) (mqListOptions, error) {
+	options := mqListOptions{}
+	var err error
+	if options.ready, err = readMQBoolFlag(cmd, "ready"); err != nil {
+		return options, err
 	}
-
-	// Human-readable output
-	fmt.Printf("%s Merge queue for '%s':\n\n", style.Bold.Render("📋"), rigName)
-
-	if len(filtered) == 0 {
-		fmt.Printf("  %s\n", style.Dim.Render("(empty)"))
-		return nil
+	if options.status, err = readMQStringFlag(cmd, "status"); err != nil {
+		return options, err
 	}
-
-	// Create styled table - add GIT column when --verify is set
-	table := style.NewTable(buildMQListColumns(mqListVerify)...)
-
-	// Add rows using scored items (already sorted by score)
-	for _, item := range scored {
-		issue := item.issue
-		fields := item.fields
-
-		// Determine display status
-		displayStatus := issue.Status
-		if issue.Status == "open" {
-			if beads.HasUnresolvedBlockers(issue) {
-				displayStatus = "blocked"
-			} else {
-				displayStatus = "ready"
-			}
-		}
-
-		// Format status with styling
-		styledStatus := displayStatus
-		switch displayStatus {
-		case "ready":
-			styledStatus = style.Success.Render("ready")
-		case "in_progress":
-			styledStatus = style.Warning.Render("active")
-		case "blocked":
-			styledStatus = style.Dim.Render("blocked")
-		case "closed":
-			styledStatus = style.Dim.Render("closed")
-		}
-
-		// Get MR fields
-		branch := ""
-		target := ""
-		convoyID := ""
-		if fields != nil {
-			branch = fields.Branch
-			target = fields.Target
-			convoyID = fields.ConvoyID
-		}
-		if target == "" {
-			target = style.Dim.Render("(unset)")
-		}
-
-		// Format convoy column
-		convoyDisplay := style.Dim.Render("(none)")
-		if convoyID != "" {
-			// Truncate convoy ID for display
-			if len(convoyID) > 12 {
-				convoyID = convoyID[:12]
-			}
-			convoyDisplay = convoyID
-		}
-
-		// Format priority with color
-		priority := fmt.Sprintf("P%d", issue.Priority)
-		if issue.Priority <= 1 {
-			priority = style.Error.Render(priority)
-		} else if issue.Priority == 2 {
-			priority = style.Warning.Render(priority)
-		}
-
-		// Format score
-		scoreStr := fmt.Sprintf("%.1f", item.score)
-
-		// Format branch status when --verify is set
-		gitStatus := ""
-		if mqListVerify {
-			if item.branchVerifyErr {
-				gitStatus = style.Warning.Render("ERR")
-			} else if item.branchMissing {
-				gitStatus = style.Error.Render("MISSING")
-			} else {
-				gitStatus = style.Success.Render("OK")
-			}
-		}
-
-		// Calculate age
-		age := formatMRAge(issue.CreatedAt)
-
-		// Truncate ID if needed
-		displayID := issue.ID
-		if len(displayID) > 12 {
-			displayID = displayID[:12]
-		}
-
-		// Build row with conditional GIT column
-		if mqListVerify {
-			table.AddRow(displayID, scoreStr, priority, convoyDisplay, branch, target, styledStatus, gitStatus, style.Dim.Render(age))
-		} else {
-			table.AddRow(displayID, scoreStr, priority, convoyDisplay, branch, target, styledStatus, style.Dim.Render(age))
-		}
+	if options.worker, err = readMQStringFlag(cmd, "worker"); err != nil {
+		return options, err
 	}
-
-	fmt.Print(table.Render())
-
-	// Show summary of missing branches when --verify is set
-	if mqListVerify {
-		missingCount := 0
-		for _, item := range scored {
-			if item.branchMissing {
-				missingCount++
-			}
-		}
-		if missingCount > 0 {
-			fmt.Printf("\n  %s %d MR(s) with missing branches\n",
-				style.Error.Render("⚠"),
-				missingCount)
-		}
+	if options.epic, err = readMQStringFlag(cmd, "epic"); err != nil {
+		return options, err
 	}
-
-	// Show blocking details below table
-	for _, item := range scored {
-		issue := item.issue
-		displayStatus := issue.Status
-		if issue.Status == "open" && beads.HasUnresolvedBlockers(issue) {
-			displayStatus = "blocked"
-		}
-		if blockerID := beads.FirstUnresolvedBlockerID(issue); displayStatus == "blocked" && blockerID != "" {
-			displayID := issue.ID
-			if len(displayID) > 12 {
-				displayID = displayID[:12]
-			}
-			fmt.Printf("  %s %s\n", style.Dim.Render(displayID+":"),
-				style.Dim.Render(fmt.Sprintf("waiting on %s", blockerID)))
-		}
+	if options.json, err = readMQBoolFlag(cmd, "json"); err != nil {
+		return options, err
 	}
-
-	return nil
+	if options.verify, err = readMQBoolFlag(cmd, "verify"); err != nil {
+		return options, err
+	}
+	return options, nil
 }
 
 // formatMRAge formats the age of an MR from its created_at timestamp.
@@ -406,8 +464,8 @@ func calculateMRScore(issue *beads.Issue, fields *beads.MRFields, now time.Time)
 
 // branchVerifier abstracts git branch existence checks for testability.
 type branchVerifier interface {
-	BranchExists(branch string) (bool, error)
-	RemoteTrackingBranchExists(remote, branch string) (bool, error)
+	BranchExists(_ string) (bool, error)
+	RemoteTrackingBranchExists(_, _ string) (bool, error)
 }
 
 // verifyBranch checks if a branch exists locally or as a remote-tracking ref.

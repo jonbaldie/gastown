@@ -71,7 +71,7 @@ func TestCleanupLegacySocketSessionsRunsOnce(t *testing.T) {
 		config: DefaultConfig(townRoot),
 		logger: log.New(io.Discard, "", 0),
 	}
-	d.cleanupLegacySocketSessions()
+	cleanupLegacySocketSessions(d)
 	if calls != 1 {
 		t.Fatalf("cleanup calls after first invocation = %d, want 1", calls)
 	}
@@ -79,7 +79,7 @@ func TestCleanupLegacySocketSessionsRunsOnce(t *testing.T) {
 		t.Fatalf("cleanup townRoot = %q, want %q", gotRoot, townRoot)
 	}
 
-	d.cleanupLegacySocketSessions()
+	cleanupLegacySocketSessions(d)
 	if calls != 1 {
 		t.Fatalf("cleanup calls after second invocation = %d, want 1", calls)
 	}
@@ -176,7 +176,7 @@ func TestEnsureRefineryRunningSafetyStoppedDoesNotSpawn(t *testing.T) {
 		logger: log.New(io.Discard, "", 0),
 		tmux:   tmux.NewTmux(),
 	}
-	d.ensureRefineryRunning("testrig")
+	ensureRefineryRunning(d, "testrig")
 
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
@@ -207,7 +207,7 @@ func TestEnsureRefineryRunningForkRigDoesNotSpawn(t *testing.T) {
 		logger: log.New(&logBuf, "", 0),
 		tmux:   tmux.NewTmux(),
 	}
-	d.ensureRefineryRunning("testrig")
+	ensureRefineryRunning(d, "testrig")
 
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
@@ -614,7 +614,7 @@ func TestIsShutdownInProgress_NoLockFile(t *testing.T) {
 	}
 
 	// No lock file exists - should return false
-	if d.isShutdownInProgress() {
+	if isShutdownInProgress(d) {
 		t.Error("expected false when lock file doesn't exist")
 	}
 }
@@ -637,7 +637,7 @@ func TestIsShutdownInProgress_StaleLockFile(t *testing.T) {
 	}
 
 	// File exists but not locked - should return false
-	if d.isShutdownInProgress() {
+	if isShutdownInProgress(d) {
 		t.Error("expected false when lock file exists but is not locked")
 	}
 
@@ -672,7 +672,7 @@ func TestIsShutdownInProgress_ActiveLock(t *testing.T) {
 	}
 
 	// File exists and is locked - should return true
-	if !d.isShutdownInProgress() {
+	if !isShutdownInProgress(d) {
 		t.Error("expected true when lock file is actively held")
 	}
 
@@ -828,7 +828,7 @@ func TestHasPendingEvents_EmptyDir(t *testing.T) {
 
 	d := &Daemon{config: &Config{TownRoot: tmpDir}}
 
-	if d.hasPendingEvents("refinery") {
+	if hasPendingEvents(d, "refinery") {
 		t.Error("expected false for empty event directory")
 	}
 }
@@ -838,7 +838,7 @@ func TestHasPendingEvents_MissingDir(t *testing.T) {
 
 	d := &Daemon{config: &Config{TownRoot: tmpDir}}
 
-	if d.hasPendingEvents("refinery") {
+	if hasPendingEvents(d, "refinery") {
 		t.Error("expected false when event directory doesn't exist")
 	}
 }
@@ -858,7 +858,7 @@ func TestHasPendingEvents_WithEventFiles(t *testing.T) {
 
 	d := &Daemon{config: &Config{TownRoot: tmpDir}}
 
-	if !d.hasPendingEvents("refinery") {
+	if !hasPendingEvents(d, "refinery") {
 		t.Error("expected true when .event files exist")
 	}
 }
@@ -877,7 +877,7 @@ func TestHasPendingEvents_IgnoresNonEventFiles(t *testing.T) {
 
 	d := &Daemon{config: &Config{TownRoot: tmpDir}}
 
-	if d.hasPendingEvents("refinery") {
+	if hasPendingEvents(d, "refinery") {
 		t.Error("expected false when only non-.event files exist")
 	}
 }
@@ -931,7 +931,7 @@ func TestIsRigOperational_FailSafeOnDoltUnavailable(t *testing.T) {
 
 	// When Dolt is unavailable, isRigOperational should return false
 	// (fail-safe: assume not operational rather than risk starting docked rig)
-	operational, reason := d.isRigOperational(rigName)
+	operational, reason := isRigOperational(d, rigName)
 	if operational {
 		t.Error("isRigOperational should return false when Dolt is unavailable (fail-safe)")
 	}
@@ -980,7 +980,7 @@ func TestIsRigOperational_DockedRig(t *testing.T) {
 	}
 
 	// Without a rig bead, should fail-safe to not operational
-	operational, reason := d.isRigOperational(rigName)
+	operational, reason := isRigOperational(d, rigName)
 	if operational {
 		t.Error("isRigOperational should return false when rig bead is missing")
 	}

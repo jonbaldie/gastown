@@ -32,6 +32,22 @@ func ensureTown(ctx context.Context, townRoot string, hooks Hooks) error {
 		return nil
 	}
 
+	if err := ensureTownDependencies(hooks); err != nil {
+		return err
+	}
+	if err := ensureTownFiles(ctx, townRoot); err != nil {
+		return err
+	}
+	if err := ensureTownDirectories(townRoot); err != nil {
+		return err
+	}
+	if err := config.EnsureDaemonPatrolConfig(townRoot); err != nil {
+		return fmt.Errorf("writing daemon config: %w", err)
+	}
+	return nil
+}
+
+func ensureTownDependencies(hooks Hooks) error {
 	if err := deps.EnsureBeads(true); err != nil {
 		return fmt.Errorf("beads dependency check failed: %w", err)
 	}
@@ -43,7 +59,10 @@ func ensureTown(ctx context.Context, townRoot string, hooks Hooks) error {
 	if err := doltserver.EnsureDoltIdentity(); err != nil {
 		return fmt.Errorf("dolt identity setup failed (required for beads): %w", err)
 	}
+	return nil
+}
 
+func ensureTownFiles(ctx context.Context, townRoot string) error {
 	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {
 		return fmt.Errorf("creating town: %w", err)
 	}
@@ -79,7 +98,10 @@ func ensureTown(ctx context.Context, townRoot string, hooks Hooks) error {
 	if _, err := instructions.Provision(townRoot, templates.TownRootAgentsMD(), "# Gas Town"); err != nil {
 		return fmt.Errorf("writing town identity files: %w", err)
 	}
+	return nil
+}
 
+func ensureTownDirectories(townRoot string) error {
 	deaconDir := filepath.Join(townRoot, "deacon")
 	if err := os.MkdirAll(deaconDir, 0755); err != nil {
 		return fmt.Errorf("creating deacon directory: %w", err)
@@ -90,10 +112,6 @@ func ensureTown(ctx context.Context, townRoot string, hooks Hooks) error {
 	if err := os.MkdirAll(filepath.Join(townRoot, "plugins"), 0755); err != nil {
 		return fmt.Errorf("creating plugins directory: %w", err)
 	}
-	if err := config.EnsureDaemonPatrolConfig(townRoot); err != nil {
-		return fmt.Errorf("writing daemon config: %w", err)
-	}
-
 	return nil
 }
 
@@ -209,13 +227,10 @@ func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	rigsPath := constants.MayorRigsPath(townRoot)
-	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	mgr, err := loadRigManager(townRoot)
 	if err != nil {
-		return "", fmt.Errorf("loading rigs.json: %w", err)
+		return "", err
 	}
-	mgr := rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot))
-
 	if name, ok := mgr.FindByLocalRepo(repoPath); ok {
 		if nameFlag != "" && nameFlag != name {
 			return "", fmt.Errorf("repository already registered as rig %q (got --name %q)", name, nameFlag)
@@ -223,6 +238,29 @@ func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string
 		return name, nil
 	}
 
+	name, err := resolveRigName(mgr, repoPath, nameFlag)
+	if err != nil {
+		return "", err
+	}
+	if _, err := mgr.AddLocalRig(ctx, name, repoPath); err != nil {
+		return "", err
+	}
+	if err := config.AddRigToDaemonPatrols(townRoot, name); err != nil {
+		return "", fmt.Errorf("adding rig to daemon patrols: %w", err)
+	}
+	return name, nil
+}
+
+func loadRigManager(townRoot string) (*rig.Manager, error) {
+	rigsPath := constants.MayorRigsPath(townRoot)
+	rigsConfig, err := config.LoadRigsConfig(rigsPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading rigs.json: %w", err)
+	}
+	return rig.NewManager(townRoot, rigsConfig, git.NewGit(townRoot)), nil
+}
+
+func resolveRigName(mgr *rig.Manager, repoPath, nameFlag string) (string, error) {
 	name := strings.TrimSpace(nameFlag)
 	if name == "" {
 		name = SanitizeRigName(filepath.Base(repoPath))
@@ -232,13 +270,6 @@ func ensureRig(ctx context.Context, townRoot, repoPath, nameFlag string) (string
 	}
 	if mgr.RigExists(name) {
 		return "", fmt.Errorf("rig %q already exists; pass --name for this repository", name)
-	}
-
-	if _, err := mgr.AddLocalRig(ctx, name, repoPath); err != nil {
-		return "", err
-	}
-	if err := config.AddRigToDaemonPatrols(townRoot, name); err != nil {
-		return "", fmt.Errorf("adding rig to daemon patrols: %w", err)
 	}
 	return name, nil
 }

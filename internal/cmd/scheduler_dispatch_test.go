@@ -9,6 +9,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/scheduler/capacity"
+	"github.com/spf13/cobra"
 )
 
 func installFakeBD(t *testing.T, script string) {
@@ -129,11 +130,9 @@ func TestRunSchedulerClearFailsOnContextScanFailure(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldCWD) })
-	oldClearBead := schedulerClearBead
-	schedulerClearBead = ""
-	t.Cleanup(func() { schedulerClearBead = oldClearBead })
-
-	err = runSchedulerClear(nil, nil)
+	cmd := &cobra.Command{}
+	cmd.Flags().String("bead", "", "")
+	err = runSchedulerClear(cmd, nil)
 	if err == nil {
 		t.Fatal("scheduler clear succeeded with incomplete context scan")
 	}

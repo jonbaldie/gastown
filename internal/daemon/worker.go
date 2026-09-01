@@ -40,15 +40,15 @@ func newRigWorkerPool(concurrency int, timeout time.Duration, logger *log.Logger
 	}
 }
 
-// runPerRig executes fn once for each rig, with bounded concurrency and per-rig timeouts.
+// RunPerRig executes fn once for each rig, with bounded concurrency and per-rig timeouts.
 //
 // Each invocation of fn receives a child context derived from parent with the pool's
 // per-rig timeout applied. If fn respects its context (checks ctx.Done()), it will
 // be canceled when the timeout fires.
 //
-// runPerRig blocks until all goroutines complete. Errors are counted and a single
+// RunPerRig blocks until all goroutines complete. Errors are counted and a single
 // summary line is logged rather than per-rig noise.
-func (p *RigWorkerPool) runPerRig(
+func (p *RigWorkerPool) RunPerRig(
 	parent context.Context,
 	rigs []string,
 	fn func(ctx context.Context, rigName string) error,

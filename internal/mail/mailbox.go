@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	beadsdk "github.com/jonbaldie/beads"
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/runtime"
 	"github.com/jonbaldie/gastown/internal/telemetry"
@@ -30,62 +29,6 @@ var (
 	ErrMessageNotFound = errors.New("message not found")
 	ErrEmptyInbox      = errors.New("inbox is empty")
 )
-
-// Mailbox manages messages for an identity via beads.
-// When store is non-nil, beads-mode methods use the in-process beadsdk.Storage
-// directly instead of shelling out to the bd CLI.
-type Mailbox struct {
-	identity string // beads identity (e.g., "gastown/polecats/Toast")
-	workDir  string // directory to run bd commands in
-	beadsDir string // explicit .beads directory path (set via BEADS_DIR)
-	path     string // for legacy JSONL mode (crew workers)
-	legacy   bool   // true = use JSONL files, false = use beads
-
-	// store is an optional in-process beadsdk.Storage. When set, beads-mode
-	// methods bypass the bd subprocess and use the store directly.
-	// Callers are responsible for closing the store.
-	store beadsdk.Storage
-}
-
-// NewMailbox creates a mailbox for the given JSONL path (legacy mode).
-// Used by crew workers that have local JSONL inboxes.
-func NewMailbox(path string) *Mailbox {
-	return &Mailbox{
-		path:   filepath.Join(path, "inbox.jsonl"),
-		legacy: true,
-	}
-}
-
-// NewMailboxBeads creates a mailbox backed by beads.
-func NewMailboxBeads(identity, workDir string) *Mailbox {
-	return &Mailbox{
-		identity: identity,
-		workDir:  workDir,
-		legacy:   false,
-	}
-}
-
-// NewMailboxFromAddress creates a beads-backed mailbox from a GGT address.
-// Follows .beads/redirect for crew workers and polecats using shared beads.
-func NewMailboxFromAddress(address, workDir string) *Mailbox {
-	beadsDir := beads.ResolveBeadsDir(workDir)
-	return &Mailbox{
-		identity: AddressToIdentity(address),
-		workDir:  workDir,
-		beadsDir: beadsDir,
-		legacy:   false,
-	}
-}
-
-// NewMailboxWithBeadsDir creates a mailbox with an explicit beads directory.
-func NewMailboxWithBeadsDir(address, workDir, beadsDir string) *Mailbox {
-	return &Mailbox{
-		identity: AddressToIdentity(address),
-		workDir:  workDir,
-		beadsDir: beadsDir,
-		legacy:   false,
-	}
-}
 
 // beadsDirForID returns the Beads directory that owns id.
 func (m *Mailbox) beadsDirForID(id string) string {
@@ -537,20 +480,25 @@ func (m *Mailbox) getFromDir(id, beadsDir string) (*Message, error) {
 	if m.store != nil {
 		return m.storeGetFromDir(id)
 	}
+	return getFromDirViaCLI(m, id, beadsDir)
+}
 
+func getFromDirViaCLI(m *Mailbox, id, beadsDir string) (*Message, error) {
 	args := []string{"show", id, "--json"}
 
 	ctx, cancel := bdReadCtx()
 	defer cancel()
 	stdout, err := runBdCommand(ctx, args, m.workDir, beadsDir)
 	if err != nil {
-		if bdErr, ok := err.(*bdError); ok && (bdErr.ContainsError("not found") || bdErr.ContainsError("no issue found") || bdErr.ContainsError("no issue found")) {
+		if isBdNotFound(err) {
 			return nil, ErrMessageNotFound
 		}
 		return nil, err
 	}
+	return parseBeadsShowOutput(stdout)
+}
 
-	// bd show --json returns an array
+func parseBeadsShowOutput(stdout []byte) (*Message, error) {
 	if !isJSON(stdout) {
 		return nil, ErrMessageNotFound
 	}
@@ -747,42 +695,50 @@ func (m *Mailbox) markUnreadOnlyBeads(id string) error {
 	if m.store != nil {
 		return m.storeMarkUnreadOnly(id)
 	}
+	return removeReadLabel(m, id)
+}
 
-	// Remove "read" label to mark as unread
+func removeReadLabel(m *Mailbox, id string) error {
 	args := []string{"label", "remove", id, "read"}
 	primary := m.beadsDirForID(id)
 
 	ctx, cancel := bdWriteCtx()
 	defer cancel()
 	_, err := runBdCommand(ctx, args, m.workDir, primary)
-	if err != nil {
-		if isBdNotFound(err) {
-			if primary != m.beadsDir {
-				// Cross-rig bead IDs (e.g. ne-*) may live in the home DB. See ne-bgr.
-				ctx2, cancel2 := bdWriteCtx()
-				defer cancel2()
-				_, err2 := runBdCommand(ctx2, args, m.workDir, m.beadsDir)
-				if err2 != nil {
-					if isBdNotFound(err2) {
-						return ErrMessageNotFound
-					}
-					if bdErr2, ok := err2.(*bdError); ok && bdErr2.ContainsError("does not have label") {
-						return nil
-					}
-					return err2
-				}
-				return nil
-			}
-			return ErrMessageNotFound
-		}
-		// Ignore error if label doesn't exist
+	if err == nil {
+		return nil
+	}
+	return handleReadLabelError(m, args, primary, err)
+}
+
+func handleReadLabelError(m *Mailbox, args []string, primary string, err error) error {
+	if !isBdNotFound(err) {
 		if bdErr, ok := err.(*bdError); ok && bdErr.ContainsError("does not have label") {
 			return nil
 		}
 		return err
 	}
+	if primary == m.beadsDir {
+		return ErrMessageNotFound
+	}
+	return removeReadLabelFromDir(m, args)
+}
 
-	return nil
+func removeReadLabelFromDir(m *Mailbox, args []string) error {
+	// Cross-rig bead IDs (e.g. ne-*) may live in the home DB. See ne-bgr.
+	ctx, cancel := bdWriteCtx()
+	defer cancel()
+	_, err := runBdCommand(ctx, args, m.workDir, m.beadsDir)
+	if err == nil {
+		return nil
+	}
+	if isBdNotFound(err) {
+		return ErrMessageNotFound
+	}
+	if bdErr, ok := err.(*bdError); ok && bdErr.ContainsError("does not have label") {
+		return nil
+	}
+	return err
 }
 
 // MarkUnread marks a message as unread (reopens in beads).
@@ -1039,26 +995,29 @@ func (m *Mailbox) ListArchived() ([]*Message, error) {
 // PurgeArchive removes messages from the archive, optionally filtering by age.
 // If olderThanDays is 0, removes all archived messages.
 func (m *Mailbox) PurgeArchive(olderThanDays int) (int, error) {
-	if m.legacy {
-		fl, err := m.lockLegacy()
-		if err != nil {
-			return 0, err
-		}
-		defer func() { _ = fl.Unlock() }()
+	if !m.legacy {
+		return purgeArchive(m, olderThanDays)
 	}
+	fl, err := m.lockLegacy()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = fl.Unlock() }()
+	return purgeArchive(m, olderThanDays)
+}
 
+func purgeArchive(m *Mailbox, olderThanDays int) (int, error) {
 	messages, err := m.ListArchived()
 	if err != nil {
 		return 0, err
 	}
-
 	if len(messages) == 0 {
 		return 0, nil
 	}
 
 	// If no age filter, remove all
 	if olderThanDays <= 0 {
-		if err := os.Remove(m.ArchivePath()); err != nil && !os.IsNotExist(err) {
+		if err := removeArchive(m.ArchivePath()); err != nil {
 			return 0, err
 		}
 		return len(messages), nil
@@ -1077,18 +1036,24 @@ func (m *Mailbox) PurgeArchive(olderThanDays int) (int, error) {
 		}
 	}
 
-	// Rewrite archive with remaining messages
-	if len(keep) == 0 {
-		if err := os.Remove(m.ArchivePath()); err != nil && !os.IsNotExist(err) {
-			return 0, err
-		}
-	} else {
-		if err := m.rewriteArchive(keep); err != nil {
-			return 0, err
-		}
+	if err := finishArchivePurge(m, keep); err != nil {
+		return 0, err
 	}
-
 	return purged, nil
+}
+
+func removeArchive(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func finishArchivePurge(m *Mailbox, keep []*Message) error {
+	if len(keep) == 0 {
+		return removeArchive(m.ArchivePath())
+	}
+	return m.rewriteArchive(keep)
 }
 
 func (m *Mailbox) rewriteArchive(messages []*Message) error {
@@ -1134,69 +1099,77 @@ type SearchOptions struct {
 // Returns messages from both inbox and archive.
 // Query and FromFilter are treated as literal strings (not regex) to prevent ReDoS.
 func (m *Mailbox) Search(opts SearchOptions) ([]*Message, error) {
-	// Use QuoteMeta to escape special regex chars - prevents ReDoS attacks
-	// and provides intuitive literal string matching for users
+	re, fromRe, err := compileSearchRegexps(opts)
+	if err != nil {
+		return nil, err
+	}
+	all, err := m.searchMessages()
+	if err != nil {
+		return nil, err
+	}
+	return filterSearchMessages(all, re, fromRe, opts), nil
+}
+
+func compileSearchRegexps(opts SearchOptions) (*regexp.Regexp, *regexp.Regexp, error) {
+	// QuoteMeta keeps user input literal and prevents ReDoS.
 	re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(opts.Query))
 	if err != nil {
-		return nil, fmt.Errorf("invalid search pattern: %w", err)
+		return nil, nil, fmt.Errorf("invalid search pattern: %w", err)
 	}
-
-	var fromRe *regexp.Regexp
-	if opts.FromFilter != "" {
-		fromRe, err = regexp.Compile("(?i)" + regexp.QuoteMeta(opts.FromFilter))
-		if err != nil {
-			return nil, fmt.Errorf("invalid from pattern: %w", err)
-		}
+	if opts.FromFilter == "" {
+		return re, nil, nil
 	}
+	fromRe, err := regexp.Compile("(?i)" + regexp.QuoteMeta(opts.FromFilter))
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid from pattern: %w", err)
+	}
+	return re, fromRe, nil
+}
 
-	// Get inbox messages
+func (m *Mailbox) searchMessages() ([]*Message, error) {
 	inbox, err := m.List()
 	if err != nil {
 		return nil, err
 	}
-
-	// Get archived messages
 	archived, err := m.ListArchived()
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
+	return append(inbox, archived...), nil
+}
 
-	// Combine and search
-	all := append(inbox, archived...)
-	var matches []*Message
-
+func filterSearchMessages(all []*Message, re, fromRe *regexp.Regexp, opts SearchOptions) []*Message {
+	matches := make([]*Message, 0)
 	for _, msg := range all {
-		// Apply from filter
-		if fromRe != nil && !fromRe.MatchString(msg.From) {
-			continue
-		}
-
-		// Search in specified fields
-		matched := false
-		if opts.SubjectOnly {
-			matched = re.MatchString(msg.Subject)
-		} else if opts.BodyOnly {
-			matched = re.MatchString(msg.Body)
-		} else {
-			// Search in both subject and body
-			matched = re.MatchString(msg.Subject) || re.MatchString(msg.Body)
-		}
-
-		if matched {
+		if matchesSearchMessage(msg, re, fromRe, opts) {
 			matches = append(matches, msg)
 		}
 	}
+	sortMessagesByPriority(matches)
+	return matches
+}
 
-	// Sort by priority (higher first), then timestamp (newest first).
-	sort.Slice(matches, func(i, j int) bool {
-		pi, pj := PriorityToBeads(matches[i].Priority), PriorityToBeads(matches[j].Priority)
+func matchesSearchMessage(msg *Message, re, fromRe *regexp.Regexp, opts SearchOptions) bool {
+	if fromRe != nil && !fromRe.MatchString(msg.From) {
+		return false
+	}
+	if opts.SubjectOnly {
+		return re.MatchString(msg.Subject)
+	}
+	if opts.BodyOnly {
+		return re.MatchString(msg.Body)
+	}
+	return re.MatchString(msg.Subject) || re.MatchString(msg.Body)
+}
+
+func sortMessagesByPriority(messages []*Message) {
+	sort.Slice(messages, func(i, j int) bool {
+		pi, pj := PriorityToBeads(messages[i].Priority), PriorityToBeads(messages[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
-		return matches[i].Timestamp.After(matches[j].Timestamp)
+		return messages[i].Timestamp.After(messages[j].Timestamp)
 	})
-
-	return matches, nil
 }
 
 // Count returns the total and unread message counts.
@@ -1228,33 +1201,35 @@ func (m *Mailbox) AcknowledgeDeliveries(recipientAddress string, messages []*Mes
 	}
 
 	recipientIdentity := AddressToIdentity(recipientAddress)
+	toAck := messagesForDeliveryAck(messages, recipientIdentity)
+	if len(toAck) == 0 {
+		return nil
+	}
+	return acknowledgeDeliveryMessages(m, recipientIdentity, toAck)
+}
 
-	// Collect messages that need acking.
-	var toAck []*Message
+func messagesForDeliveryAck(messages []*Message, recipientIdentity string) []*Message {
+	toAck := make([]*Message, 0)
 	for _, msg := range messages {
 		if msg == nil || msg.ID == "" {
 			continue
 		}
-		if AddressToIdentity(msg.To) != recipientIdentity {
-			continue
-		}
-		if msg.DeliveryState == "" {
+		if AddressToIdentity(msg.To) != recipientIdentity || msg.DeliveryState == "" {
 			continue
 		}
 		toAck = append(toAck, msg)
 	}
-	if len(toAck) == 0 {
-		return nil
-	}
+	return toAck
+}
 
-	// Run acks concurrently with bounded parallelism.
+func acknowledgeDeliveryMessages(m *Mailbox, recipientIdentity string, messages []*Message) error {
 	const maxConcurrentAckOps = 8
 	sem := make(chan struct{}, maxConcurrentAckOps)
 	var mu sync.Mutex
 	var errs []string
 	var wg sync.WaitGroup
 
-	for _, msg := range toAck {
+	for _, msg := range messages {
 		wg.Add(1)
 		sem <- struct{}{} // acquire
 		go func(id string) {
