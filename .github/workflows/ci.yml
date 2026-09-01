@@ -191,6 +191,7 @@ jobs:
     outputs:
       has_production_go: ${{ steps.changes.outputs.has_production_go }}
       matrix: ${{ steps.changes.outputs.matrix }}
+      summary_count: ${{ steps.changes.outputs.summary_count }}
     env:
       BASE_REF: ${{ github.base_ref }}
     steps:
@@ -215,8 +216,11 @@ jobs:
           git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- \
             '*.go' ':(exclude)*_test.go' > "$list"
           if [ ! -s "$list" ]; then
-            echo 'has_production_go=false' >> "$GITHUB_OUTPUT"
-            echo 'matrix={"include":[{"package":"none","files":[]}]}' >> "$GITHUB_OUTPUT"
+            {
+              echo 'has_production_go=false'
+              echo 'matrix={"include":[{"package":"none","files":[]}]}'
+              echo 'summary_count=0'
+            } >> "$GITHUB_OUTPUT"
             echo 'No production Go code changed; skipping mutago.'
             exit 0
           fi
@@ -239,8 +243,11 @@ jobs:
               }
             ]}
           ' "$list")"
-          echo 'has_production_go=true' >> "$GITHUB_OUTPUT"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          {
+            echo 'has_production_go=true'
+            echo "matrix=$matrix"
+            echo "summary_count=$(jq '.include | length' <<< "$matrix")"
+          } >> "$GITHUB_OUTPUT"
           echo 'Changed production Go files:'
           cat "$list"
 
@@ -312,7 +319,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download mutation summaries
-        if: needs.mutago-changes.outputs.has_production_go == 'true' && needs.mutago-package.result == 'success'
+        if: needs.mutago-changes.outputs.has_production_go == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: mutago-summary-*
@@ -322,7 +329,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.mutago-changes.result }}
           HAS_PRODUCTION_GO: ${{ needs.mutago-changes.outputs.has_production_go }}
-          PACKAGE_RESULT: ${{ needs.mutago-package.result }}
+          EXPECTED_SUMMARIES: ${{ needs.mutago-changes.outputs.summary_count }}
         run: |
           if [ "$CHANGES_RESULT" != 'success' ]; then
             echo "Mutation change detection result: $CHANGES_RESULT" >&2
@@ -332,14 +339,9 @@ jobs:
             echo 'No production Go code changed; mutation gate passes.'
             exit 0
           fi
-          if [ "$PACKAGE_RESULT" != 'success' ]; then
-            echo "Mutation package result: $PACKAGE_RESULT" >&2
-            exit 1
-          fi
-
           summaries="$(find mutago-summaries -name mutago-summary.json -type f | wc -l | tr -d ' ')"
-          if [ "$summaries" -eq 0 ]; then
-            echo 'No mutation summaries found.' >&2
+          if [ "$summaries" -ne "$EXPECTED_SUMMARIES" ]; then
+            echo "Expected $EXPECTED_SUMMARIES mutation summaries, found $summaries." >&2
             exit 1
           fi
 
