@@ -19,19 +19,6 @@ if [ -e mutago-summary.json ] || [ -e mutago-agentic.json ]; then
   exit 2
 fi
 
-revision=$(git rev-parse HEAD)
-config_sha=$(shasum -a 256 .github/mutago.yml | awk '{print $1}')
-metadata="$revision $config_sha"
-
-if [ -f "$output_dir/metadata" ]; then
-  if [ "$(cat "$output_dir/metadata")" != "$metadata" ]; then
-    echo "The saved baseline belongs to a different revision or Mutago config." >&2
-    exit 2
-  fi
-else
-  printf '%s\n' "$metadata" > "$output_dir/metadata"
-fi
-
 matrix=$(git ls-files -z -- '*.go' ':(exclude)*_test.go' |
   jq -Rsc '
     def package:
@@ -46,14 +33,7 @@ matrix=$(git ls-files -z -- '*.go' ':(exclude)*_test.go' |
     {include: .}
   ')
 
-if [ -f "$output_dir/matrix.json" ]; then
-  if [ "$(jq -cS . "$output_dir/matrix.json")" != "$(jq -cS . <<< "$matrix")" ]; then
-    echo "The saved baseline has a different production-file matrix." >&2
-    exit 2
-  fi
-else
-  jq . <<< "$matrix" > "$output_dir/matrix.json"
-fi
+jq . <<< "$matrix" > "$output_dir/matrix.json"
 
 workers=${MUTAGO_WORKERS:-4}
 total=$(jq '.include | length' <<< "$matrix")
@@ -63,9 +43,15 @@ while IFS= read -r entry; do
   index=$((index + 1))
   package=$(jq -r '.package' <<< "$entry")
   slug=$(printf '%03d-%s' "$index" "$package" | tr '/.' '__')
-  summary="$output_dir/summaries/$slug-summary.json"
-  agentic="$output_dir/summaries/$slug-agentic.json"
-  log="$output_dir/logs/$slug.log"
+  if [ "$package" = "." ]; then
+    package_pathspec=':(glob)*.go'
+  else
+    package_pathspec=":(glob)$package/*.go"
+  fi
+  fingerprint=$(git ls-files -s -- "$package_pathspec" .github/mutago.yml | shasum -a 256 | awk '{print $1}')
+  summary="$output_dir/summaries/$slug-$fingerprint-summary.json"
+  agentic="$output_dir/summaries/$slug-$fingerprint-agentic.json"
+  log="$output_dir/logs/$slug-$fingerprint.log"
 
   if [ -f "$summary" ]; then
     echo "[$index/$total] checking saved result: $package"
@@ -116,11 +102,5 @@ while IFS= read -r entry; do
       'BEGIN { printf "%s covered-MSI: %.2f%% (%d/%d)\n", package, 100 * killed / covered, killed, covered }'
   fi
 done < <(jq -c '.include[]' <<< "$matrix")
-
-summary_count=$(find "$output_dir/summaries" -name '*-summary.json' -type f | wc -l | tr -d ' ')
-if [ "$summary_count" -ne "$total" ]; then
-  echo "Expected $total summaries, found $summary_count." >&2
-  exit 1
-fi
 
 echo "All $total production Go packages meet the 80% covered-MSI requirement or are N/A."
