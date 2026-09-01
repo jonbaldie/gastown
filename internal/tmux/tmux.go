@@ -371,17 +371,10 @@ func (t *Tmux) NewSessionWithCommand(name, workDir, command string) error {
 // but -e provides defense-in-depth for the initial shell environment.
 // Requires tmux >= 3.2.
 func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env map[string]string) error {
-	return t.newSessionWithCommandAndEnv(name, workDir, command, env, true)
+	return t.newSessionWithCommandAndEnv(name, workDir, command, env)
 }
 
-// NewSessionWithCommandAndEnvNoWait creates a session and treats pane creation
-// as the ready state. remain-on-exit stays on so a command that exits 0 still
-// leaves a session for attach.
-func (t *Tmux) NewSessionWithCommandAndEnvNoWait(name, workDir, command string, env map[string]string) error {
-	return t.newSessionWithCommandAndEnv(name, workDir, command, env, false)
-}
-
-func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env map[string]string, waitReady bool) error {
+func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env map[string]string) error {
 	if err := validateSessionName(name); err != nil {
 		return err
 	}
@@ -410,13 +403,6 @@ func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env ma
 		return err
 	}
 
-	if !waitReady {
-		if err := t.enableRemainOnExit(name); err != nil {
-			_ = t.KillSession(name)
-			return err
-		}
-		return nil
-	}
 	return t.checkSessionAfterCreate(name, command)
 }
 
@@ -452,13 +438,6 @@ func (t *Tmux) startSessionCommand(name, workDir, command string) error {
 	if _, err := t.run(respawnArgs...); err != nil {
 		_ = t.KillSession(name)
 		return fmt.Errorf("failed to start command in session %q: %w", name, err)
-	}
-	return nil
-}
-
-func (t *Tmux) enableRemainOnExit(name string) error {
-	if _, err := t.run("set-option", "-t", name, "remain-on-exit", "on"); err != nil {
-		return fmt.Errorf("enabling remain-on-exit on %q: %w", name, err)
 	}
 	return nil
 }

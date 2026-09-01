@@ -164,18 +164,9 @@ go install github.com/jonbaldie/beads/cmd/bd@main
 
 For full tmux-backed workflows on Windows, use WSL or another Linux environment. Native Windows shells are best treated as minimal CLI-only environments.
 
-#### Start from a git repository
+#### Create a Town
 
-From a project git repository, run `gt now`. The command finds or creates a Town at `~/gt` (or `$GT_TOWN_ROOT`), registers this repository as a Rig without a network clone, sets the mix, starts Dolt and the Mayor, and attaches this terminal to the Mayor session. The project stays a git repository: `gt now` does not write `mayor/`, `deacon/`, or `AGENTS.md` into it, and it does not run `gt enable`.
-
-```bash
-cd my-repo
-gt now --mayor cursor:grok-4.6:high --workers cursor:grok-4.6:low
-```
-
-With no flags, `gt now` picks the first agent CLI on `PATH` (`cursor`, then `claude`, then `pi`, then other builtins), uses high effort for the Mayor and Deacon, and uses low effort for Witness, Polecats, and other workers. Use `--town` for a test Town and `--no-attach` in scripts.
-
-The longer `gt install` path still creates a dedicated HQ with shell integration.
+`gt install` creates a dedicated Town with shell integration.
 
 ```bash
 git config --global user.name "Your Name"
@@ -197,9 +188,8 @@ stay in place.
 gt from ~/code
 ```
 
-For one hosted repository, use `gt rig add` to clone it into an existing HQ as a
-rig. `gt now` already registered the current repository; use `gt rig add` when you
-want a network clone of another project.
+For one hosted repository, use `gt rig add` to clone it into an existing Town as
+a Rig.
 
 ```bash
 gt rig add myproject https://github.com/you/repo.git
@@ -470,7 +460,6 @@ Gas Town supports multiple AI coding runtimes. Per-rig runtime settings are in `
 ### Workspace Management
 
 ```bash
-gt now                      # Start a Town for this git repo and attach to the Mayor
 gt install <path>           # Initialize a dedicated HQ
 gt rig add <name> <repo>    # Add project
 gt rig list                 # List projects

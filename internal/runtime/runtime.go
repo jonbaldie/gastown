@@ -66,7 +66,6 @@ func provisionRoleCommands(workDir, provider string) error {
 }
 
 // EnsureHooksForRole writes the provider hook file the runtime needs to start.
-// gt now SkipReady still calls this so Pi can load gastown-hooks.js.
 func EnsureHooksForRole(settingsDir, workDir, role string, rc *config.RuntimeConfig) error {
 	if rc == nil || rc.Hooks == nil {
 		return nil

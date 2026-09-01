@@ -105,14 +105,6 @@ jobs:
           set -o pipefail
           gotestsum --format testname --junitfile junit.xml -- -race -short -timeout=10m -coverprofile=coverage.out ./... 2>&1 | tee test-output.txt
 
-      - name: Test gt now five-second path
-        run: |
-          for attempt in 1 2 3; do
-            CGO_ENABLED=0 go test -short -run '^TestNowStartsTownInFiveSeconds$' -count=1 ./internal/cmd && exit 0
-            echo "gt now latency attempt $attempt failed; retrying" >&2
-          done
-          exit 1
-
       - name: Test Report
         if: always()
         env:

@@ -2,7 +2,7 @@
 
 Complete setup guide for Gas Town multi-agent orchestrator.
 
-For the shortest native path, install `gt` globally with `CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest`. From a project git repository, run `gt now`. Install `bd` and Dolt separately as described below. Docker supplies the runtime tools inside the container. The Beads `@main` target is intentional. Before changing it to `@latest`, inspect the `GoMod` file reported by `go mod download -json github.com/jonbaldie/beads@latest` and confirm it declares `module github.com/jonbaldie/beads`; Go rejects a selected version that declares a different module path.
+For the native path, install `gt` globally with `CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest`. Install `bd` and Dolt separately as described below. Docker supplies the runtime tools inside the container. The Beads `@main` target is intentional. Before changing it to `@latest`, inspect the `GoMod` file reported by `go mod download -json github.com/jonbaldie/beads@latest` and confirm it declares `module github.com/jonbaldie/beads`; Go rejects a selected version that declares a different module path.
 
 ## Prerequisites
 
@@ -126,21 +126,6 @@ gt version
 bd version
 dolt version
 ```
-
-### Shortest path: `gt now`
-
-From a project git repository, one command starts a Town and attaches this terminal to the Mayor session. The Town default is `~/gt`, or `$GT_TOWN_ROOT` if that is set. The project is registered as a Rig. The command does not clone over the network, does not convert the project into a Town HQ, and does not run `gt enable`.
-
-```bash
-cd my-repo
-gt now
-# or:
-gt now --mayor cursor:grok-4.6:high --workers cursor:grok-4.6:low
-```
-
-`--mayor` and `--workers` take `runtime[:model[:effort]]`. Mayor and Deacon share `--mayor`. Witness, Polecats, Refinery, Crew, Boot, and Dogs share `--workers`. Use `--town` for a test Town, `--name` when two folders share a directory name, and `--no-attach` in scripts.
-
-The steps below remain for a dedicated HQ with `--shell` and `--git`.
 
 ### Step 2: Create Your Workspace
 

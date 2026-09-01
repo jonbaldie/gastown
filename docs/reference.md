@@ -464,9 +464,6 @@ at session start. Interactive agents wait for user prompts.
 ```bash
 gt from <parent> [town]      # Town from a parent folder of local Git repos
 gt from <parent> --dry-run   # Print planned Town path and Rigs without writing
-gt now [path]                # Start a Town for this git repo and attach to the Mayor
-gt now --mayor cursor:high --workers cursor:low
-gt now --town /tmp/town --no-attach
 gt install [path]            # Create a dedicated town HQ
 gt install --git             # With git init
 gt doctor                    # Health check

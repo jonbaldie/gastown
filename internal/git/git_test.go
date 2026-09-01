@@ -1,7 +1,6 @@
 package git
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -946,61 +945,6 @@ func TestCloneBareHasOriginRefs(t *testing.T) {
 	worktreeReadme := filepath.Join(worktreePath, "README.md")
 	if _, err := os.Stat(worktreeReadme); err != nil {
 		t.Errorf("expected README.md in worktree: %v", err)
-	}
-}
-
-// TestCloneBareLocalHasOriginRefs is the gt now counterpart of
-// TestCloneBareHasOriginRefs. git clone --bare --local copies refs/heads
-// but does not create refs/remotes/origin/<branch>. Polecats and
-// default-branch-all-rigs resolve origin/<default-branch>.
-func TestCloneBareLocalHasOriginRefs(t *testing.T) {
-	src := t.TempDir()
-	cmd := exec.Command("git", "init", "--initial-branch=main")
-	cmd.Dir = src
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	for _, args := range [][]string{
-		{"config", "user.email", "test@test.com"},
-		{"config", "user.name", "Test User"},
-	} {
-		cmd = exec.Command("git", args...)
-		cmd.Dir = src
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# Test\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "initial"}} {
-		cmd = exec.Command("git", args...)
-		cmd.Dir = src
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-
-	bareDir := filepath.Join(t.TempDir(), "bare.git")
-	g := NewGit(t.TempDir())
-	if err := CloneBareLocal(g, context.Background(), src, bareDir); err != nil {
-		t.Fatalf("CloneBareLocal: %v", err)
-	}
-
-	cmd = exec.Command("git", "--git-dir", bareDir, "show-ref")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git show-ref: %v\n%s", err, out)
-	}
-	refs := string(out)
-	if !strings.Contains(refs, "refs/remotes/origin/main") {
-		t.Fatalf("expected refs/remotes/origin/main after CloneBareLocal, got:\n%s", refs)
-	}
-
-	bareGit := NewGitWithDir(bareDir, "")
-	worktreePath := filepath.Join(t.TempDir(), "worktree")
-	if err := WorktreeAddFromRef(bareGit, worktreePath, "test-branch", "origin/main"); err != nil {
-		t.Fatalf("WorktreeAddFromRef(origin/main) failed: %v", err)
 	}
 }
 

@@ -54,9 +54,9 @@ func TestMayorBinaryCheck_MissingBinaryIsError(t *testing.T) {
 	town := t.TempDir()
 	settingsPath := config.TownSettingsPath(town)
 	settings := config.NewTownSettings()
-	settings.RoleAgents = map[string]string{"mayor": "now-mayor"}
+	settings.RoleAgents = map[string]string{"mayor": "test-mayor"}
 	settings.Agents = map[string]*config.RuntimeConfig{
-		"now-mayor": {Command: "gt-now-missing-mayor-bin"},
+		"test-mayor": {Command: "gt-test-missing-mayor-bin"},
 	}
 	if err := config.SaveTownSettings(settingsPath, settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -67,14 +67,14 @@ func TestMayorBinaryCheck_MissingBinaryIsError(t *testing.T) {
 	if result.Status != StatusError {
 		t.Fatalf("status = %v (%s), want Error", result.Status, result.Message)
 	}
-	if !strings.Contains(result.Message, "gt-now-missing-mayor-bin") {
+	if !strings.Contains(result.Message, "gt-test-missing-mayor-bin") {
 		t.Fatalf("error should name the missing binary:\n%s", result.Message)
 	}
 }
 
 func TestMayorBinaryCheck_PresentBinaryIsOK(t *testing.T) {
 	bin := t.TempDir()
-	script := filepath.Join(bin, "gt-now-present-mayor-bin")
+	script := filepath.Join(bin, "gt-test-present-mayor-bin")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
 		t.Fatalf("write binary: %v", err)
 	}
@@ -82,9 +82,9 @@ func TestMayorBinaryCheck_PresentBinaryIsOK(t *testing.T) {
 
 	town := t.TempDir()
 	settings := config.NewTownSettings()
-	settings.RoleAgents = map[string]string{"mayor": "now-mayor"}
+	settings.RoleAgents = map[string]string{"mayor": "test-mayor"}
 	settings.Agents = map[string]*config.RuntimeConfig{
-		"now-mayor": {Command: "gt-now-present-mayor-bin"},
+		"test-mayor": {Command: "gt-test-present-mayor-bin"},
 	}
 	if err := config.SaveTownSettings(config.TownSettingsPath(town), settings); err != nil {
 		t.Fatalf("save settings: %v", err)

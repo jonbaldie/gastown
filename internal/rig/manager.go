@@ -1084,13 +1084,6 @@ type RigBeadsInitOptions struct {
 	// SkipDoltCheck skips creating the server-side Dolt database. Tests use this
 	// when a fake bd is on PATH.
 	SkipDoltCheck bool
-	// RequireDolt treats a missing Dolt binary or InitRig failure as an error.
-	// Clone-based Add() warns and continues; gt now requires Dolt so `bd -C <rig> create`
-	// cannot silently walk up to town hq-* beads.
-	RequireDolt bool
-	// SkipAgentBeads leaves Witness/Refinery beads to a later EnsureAgentBeads call.
-	// gt now uses this so documented `bd create` is not blocked by a dirty issues table.
-	SkipAgentBeads bool
 	// Quiet suppresses progress prints. Warnings still go to stderr.
 	Quiet bool
 }
@@ -1111,23 +1104,9 @@ func rigBeadsInitialized(rigPath string) bool {
 	return err == nil
 }
 
-const rigBeadsReadyFile = "gt-ready"
-
-func rigBeadsReady(rigPath string) bool {
-	_, err := os.Stat(filepath.Join(rigPath, ".beads", rigBeadsReadyFile))
-	return err == nil
-}
-
-func markRigBeadsReady(rigPath string) error {
-	if err := beads.EnsureDir(filepath.Join(rigPath, ".beads")); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(rigPath, ".beads", rigBeadsReadyFile), []byte("ok\n"), 0644)
-}
-
 // InitializeRigBeads creates the rig Dolt database, local .beads, issue prefix,
-// town route, and PRIME.md. Clone-based Add() and local gt now rigs share this
-// so `bd -C <town>/<rig> create` files a rig-prefixed bead instead of hq-*.
+// town route, and PRIME.md, so `bd -C <town>/<rig> create` files a
+// rig-prefixed bead instead of hq-*.
 func (m *Manager) InitializeRigBeads(rigPath, name, prefix string, opts RigBeadsInitOptions) error {
 	return initializeRigBeads(m, rigPath, name, prefix, opts)
 }
@@ -1150,8 +1129,8 @@ func initializeRigBeads(m *Manager, rigPath, name, prefix string, opts RigBeadsI
 
 func initializeRigBeadsLocked(m *Manager, rigPath, name, prefix string, opts RigBeadsInitOptions) error {
 	already := rigBeadsInitialized(rigPath)
-	if already && (!opts.RequireDolt || rigBeadsReady(rigPath)) {
-		return m.appendRigRoute(rigPath, name, prefix, opts)
+	if already {
+		return m.appendRigRoute(rigPath, name, prefix)
 	}
 	if err := ensureRigDoltDatabase(m.townRoot, name, already, opts); err != nil {
 		return err
@@ -1159,35 +1138,22 @@ func initializeRigBeadsLocked(m *Manager, rigPath, name, prefix string, opts Rig
 	if err := initializeNewRigBeads(m, rigPath, name, prefix, already, opts); err != nil {
 		return err
 	}
-	resolvedBeadsDir, err := configureRigBeads(rigPath, name, prefix, opts)
-	if err != nil {
-		return err
-	}
+	resolvedBeadsDir := configureRigBeads(rigPath, prefix)
 	if err := dropRigOrphanDBs(m.townRoot, prefix, name); err != nil {
 		return fmt.Errorf("rig init left a duplicate Dolt database: %w", err)
 	}
-	return finalizeRigBeads(m, rigPath, name, prefix, resolvedBeadsDir, opts)
+	return finalizeRigBeads(m, rigPath, name, prefix, resolvedBeadsDir)
 }
 
-func finalizeRigBeads(m *Manager, rigPath, name, prefix, resolvedBeadsDir string, opts RigBeadsInitOptions) error {
+func finalizeRigBeads(m *Manager, rigPath, name, prefix, resolvedBeadsDir string) error {
 	if err := beads.ProvisionPrimeMD(resolvedBeadsDir); err != nil {
 		warnBeads("  Warning: Could not provision PRIME.md: %v\n", err)
 	}
-	if err := m.appendRigRoute(rigPath, name, prefix, opts); err != nil {
+	if err := m.appendRigRoute(rigPath, name, prefix); err != nil {
 		return err
 	}
-	if !opts.SkipAgentBeads {
-		if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
-			warnBeads("  Warning: Could not create agent beads: %v\n", err)
-		}
-	}
-	if opts.RequireDolt {
-		if err := commitRigBeads(rigPath, resolvedBeadsDir, name, "initialize "+name+" rig beads"); err != nil {
-			return fmt.Errorf("committing rig beads for %s: %w", name, err)
-		}
-	}
-	if err := markRigBeadsReady(rigPath); err != nil {
-		return fmt.Errorf("marking rig beads ready for %s: %w", name, err)
+	if err := m.initAgentBeads(rigPath, name, prefix); err != nil {
+		warnBeads("  Warning: Could not create agent beads: %v\n", err)
 	}
 	return nil
 }
@@ -1210,15 +1176,9 @@ func ensureRigDoltDatabase(townRoot, name string, already bool, opts RigBeadsIni
 		return nil
 	}
 	if _, err := exec.LookPath("dolt"); err != nil {
-		if opts.RequireDolt {
-			return fmt.Errorf("dolt is required to initialize rig beads for %s: %w", name, err)
-		}
 		return nil
 	}
 	if _, _, err := doltserver.InitRig(townRoot, name); err != nil {
-		if opts.RequireDolt {
-			return fmt.Errorf("creating rig database %s: %w", name, err)
-		}
 		warnBeads("  Warning: Could not create rig database: %v\n", err)
 	}
 	return nil
@@ -1234,16 +1194,13 @@ func initializeNewRigBeads(m *Manager, rigPath, name, prefix string, already boo
 	}
 	printfBeads(opts, "   ✓ Initialized beads (prefix: %s)\n", prefix)
 	if err := doltserver.EnsureMetadata(m.townRoot, name); err != nil {
-		if opts.RequireDolt {
-			return fmt.Errorf("setting Dolt server metadata for %s: %w", name, err)
-		}
 		warnBeads("  Warning: Could not set Dolt server metadata: %v\n", err)
 		warnBeads("  Run 'gt doctor --fix' to repair, or it will self-heal on next daemon start.\n")
 	}
 	return nil
 }
 
-func configureRigBeads(rigPath, name, prefix string, opts RigBeadsInitOptions) (string, error) {
+func configureRigBeads(rigPath, prefix string) string {
 	rigRootBeadsDir := filepath.Join(rigPath, ".beads")
 	resolvedBeadsDir := beads.ResolveBeadsDir(rigRootBeadsDir)
 	if _, err := os.Stat(filepath.Join(rigRootBeadsDir, "redirect")); os.IsNotExist(err) {
@@ -1257,21 +1214,18 @@ func configureRigBeads(rigPath, name, prefix string, opts RigBeadsInitOptions) (
 		}
 	}
 	if err := beads.EnsureDoltConfigValue(resolvedBeadsDir, "issue_prefix", prefix); err != nil {
-		if opts.RequireDolt {
-			return "", fmt.Errorf("setting issue_prefix in rig database %s: %w", name, err)
-		}
 		warnBeads("  Warning: Could not set issue_prefix in rig database: %v\n", err)
 	}
 	_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.custom", constants.BeadsCustomTypes)
 	_ = beads.EnsureDoltConfigValue(resolvedBeadsDir, "types.infra", constants.BeadsInfraTypes)
-	return resolvedBeadsDir, nil
+	return resolvedBeadsDir
 }
 
-func (m *Manager) appendRigRoute(rigPath, name, prefix string, opts RigBeadsInitOptions) error {
-	return appendRigRoute(m.townRoot, rigPath, name, prefix, opts)
+func (m *Manager) appendRigRoute(rigPath, name, prefix string) error {
+	return appendRigRoute(m.townRoot, rigPath, name, prefix)
 }
 
-func appendRigRoute(townRoot, rigPath, name, prefix string, opts RigBeadsInitOptions) error {
+func appendRigRoute(townRoot, rigPath, name, prefix string) error {
 	if prefix == "" {
 		return nil
 	}
@@ -1284,43 +1238,9 @@ func appendRigRoute(townRoot, rigPath, name, prefix string, opts RigBeadsInitOpt
 		Path:   routePath,
 	}
 	if err := beads.AppendRoute(townRoot, route); err != nil {
-		if opts.RequireDolt {
-			return fmt.Errorf("updating routes.jsonl for %s: %w", name, err)
-		}
 		warnBeads("  Warning: Could not update routes.jsonl: %v\n", err)
 	}
 	return nil
-}
-
-// EnsureAgentBeads creates Witness and Refinery agent beads in the rig database.
-func (m *Manager) EnsureAgentBeads(rigPath, name, prefix string) error {
-	if err := initAgentBeads(rigPath, name, prefix); err != nil {
-		return err
-	}
-	if err := commitRigBeads(rigPath, beads.ResolveBeadsDir(rigPath), name, "create "+name+" agent beads"); err != nil {
-		warnBeads("  Warning: bd dolt commit after agent beads for %s: %v\n", name, err)
-	}
-	return nil
-}
-
-func commitRigBeads(rigPath, beadsDir, name, message string) error {
-	commitCmd := beads.Spawn("dolt", "commit", "-m", message)
-	commitCmd.Dir = rigPath
-	commitCmd.Env = bdSubprocessEnv(beadsDir, name)
-	out, err := commitCmd.CombinedOutput()
-	text := strings.TrimSpace(string(out))
-	if err == nil || doltCommitHasNoChanges(text) {
-		return nil
-	}
-	return fmt.Errorf("%w (%s)", err, text)
-}
-
-func doltCommitHasNoChanges(out string) bool {
-	low := strings.ToLower(out)
-	return strings.Contains(low, "nothing to commit") ||
-		strings.Contains(low, "no changes") ||
-		strings.Contains(low, "working set is clean") ||
-		strings.Contains(low, "working tree clean")
 }
 
 // InitBeads initializes the beads database at rig level.
