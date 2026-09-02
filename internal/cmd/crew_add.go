@@ -7,6 +7,7 @@ import (
 	"github.com/jonbaldie/gastown/internal/beads"
 	"github.com/jonbaldie/gastown/internal/config"
 	"github.com/jonbaldie/gastown/internal/crew"
+	"github.com/jonbaldie/gastown/internal/doltserver"
 	"github.com/jonbaldie/gastown/internal/git"
 	"github.com/jonbaldie/gastown/internal/rig"
 	"github.com/jonbaldie/gastown/internal/style"
@@ -91,6 +92,14 @@ func prepareCrewAdd(args []string) (*crewAddSetup, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	// Ensure the Dolt server is running before creating the agent bead.
+	// Without this, the bead creation fails silently (non-fatal warning) when
+	// Dolt is down, breaking GUPP auto-dispatch — gt assign can't set hook_bead
+	// on a non-existent agent bead, so gt prime --hook finds no hooked work.
+	if err := doltserver.Start(townRoot); err != nil {
+		style.PrintWarning("could not start Dolt server: %v", err)
 	}
 
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")

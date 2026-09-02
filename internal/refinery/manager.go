@@ -183,6 +183,9 @@ func (m *Manager) start(foreground bool, agentOverride string, allowForkRig bool
 	}
 	result, err := startRefinerySession(m, sessionID, townRoot, refineryRigDir, runtimeConfigDir, agentOverride)
 	if err != nil {
+		if errors.Is(err, session.ErrSessionAlive) {
+			return ErrAlreadyRunning
+		}
 		return err
 	}
 	if _, pollerErr := nudge.StartPoller(townRoot, sessionID); pollerErr != nil {

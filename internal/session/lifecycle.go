@@ -131,6 +131,14 @@ func (s *sessionStart) run() error {
 	}
 	s.envVars = sessionStartEnvironment(s)
 	if err := startSessionCommand(s.tmux, s.work, command, s.envVars); err != nil {
+		// TOCTOU race: a parallel goroutine (e.g. the daemon pre-seeding sessions
+		// during gt up) may have created the session between the caller's
+		// HasSession/KillExistingSession check and our tmux new-session call.
+		// If the session now exists, report it as "already running" so callers
+		// can treat it as ErrAlreadyRunning instead of a hard failure.
+		if exists, _ := s.tmux.HasSession(s.work.SessionID); exists {
+			return fmt.Errorf("%w: %s", ErrSessionAlive, s.work.SessionID)
+		}
 		return fmt.Errorf("creating session: %w", err)
 	}
 	if err := configureAndWaitForSession(s); err != nil {

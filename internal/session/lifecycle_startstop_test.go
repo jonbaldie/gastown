@@ -280,3 +280,26 @@ func TestKillExistingSession_AliveAgentUntouched(t *testing.T) {
 		t.Fatalf("kill calls = %d, want 0", len(mock.killCalls))
 	}
 }
+
+// TestStartSession_RaceReturnsErrSessionAlive simulates the TOCTOU race where
+// a parallel goroutine (e.g. the daemon pre-seeding sessions during gt up)
+// creates the tmux session between the caller's HasSession check and the
+// tmux new-session call. The mock's NewSessionWithCommandAndEnv returns an
+// error (duplicate session) and flips hasSession to true, simulating the
+// other goroutine having created the session. StartSession must detect this
+// and return ErrSessionAlive instead of a generic "creating session" error.
+func TestStartSession_RaceReturnsErrSessionAlive(t *testing.T) {
+	dir := t.TempDir()
+	mock := &mockTmux{
+		hasSession:    false, // no session when the caller checked
+		newSessionErr: errors.New("duplicate session: gt-race"),
+	}
+	_, err := StartSession(mock, "refinery", Work{
+		SessionID: "gt-race",
+		WorkDir:   dir,
+		Command:   "true",
+	})
+	if !errors.Is(err, ErrSessionAlive) {
+		t.Fatalf("err = %v, want ErrSessionAlive", err)
+	}
+}

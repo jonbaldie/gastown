@@ -45,7 +45,10 @@ export const GasTown = async ({ $, directory }) => {
     !/(^|\s)(?:'[^']*\/|[^'\s]*\/)?gt'?\s+dolt\s+status(\s|$)/.test(cmd);
 
   const captureDoltStatus = async () => {
-    const statusCmd = `timeout 10s ${gtCommand()} dolt status 2>&1`;
+    // Previously used `timeout 10s` but `timeout` is absent on stock macOS
+    // (exit 127 masks the real output). gt dolt status has its own internal
+    // connection timeout, so the wrapper is unnecessary.
+    const statusCmd = `${gtCommand()} dolt status 2>&1`;
     try {
       return await $`/bin/sh -lc ${statusCmd}`.cwd(directory).text();
     } catch (err) {

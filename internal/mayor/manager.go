@@ -186,6 +186,9 @@ func (m *Manager) startTMUX(agentOverride string) error {
 		Theme:         theme,
 	})
 	if err != nil {
+		if errors.Is(err, session.ErrSessionAlive) {
+			return ErrAlreadyRunning
+		}
 		return err
 	}
 
