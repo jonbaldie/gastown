@@ -2013,6 +2013,7 @@ func applyRuntimePresetDefaults(result *RuntimeConfig, preset *AgentPresetInfo) 
 	applyRuntimeInstructionsDefaults(result, preset)
 	applyRuntimeEnvDefaults(result, preset)
 	applyRuntimeACPDefaults(result, preset)
+	applyRuntimeNonInteractiveDefaults(result, preset)
 }
 
 func applyRuntimeHooksDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
@@ -2073,6 +2074,13 @@ func applyRuntimeEnvDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
 func applyRuntimeACPDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
 	if result.ACP == nil && preset.ACP != nil {
 		result.ACP = cloneACPConfig(preset.ACP)
+	}
+}
+
+func applyRuntimeNonInteractiveDefaults(result *RuntimeConfig, preset *AgentPresetInfo) {
+	if result.NonInteractive == nil && preset.NonInteractive != nil {
+		ni := *preset.NonInteractive
+		result.NonInteractive = &ni
 	}
 }
 

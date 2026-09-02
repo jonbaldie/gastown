@@ -57,7 +57,6 @@ func (c *GroqCompoundCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	// Build probe prompt with JSON enforcement appended.
-	// NonInteractiveConfig equivalent: {OutputFormat:"json", NoColor:true, MaxTurns:1}
 	probe := `Respond with exactly: {"status":"ok"}` + config.GroqJSONEnforcement
 
 	out, err := c.invokeGroqCompound(probe)
@@ -88,6 +87,10 @@ func (c *GroqCompoundCheck) Run(ctx *CheckContext) *CheckResult {
 }
 
 // invokeGroqCompound calls the claude binary with Groq routing and returns stdout.
+// The one-shot command is built via RuntimeConfig.BuildNonInteractiveArgsWithPrompt
+// so the NonInteractive config (PromptFlag, OutputFlag) drives the flag construction
+// instead of hardcoded exec.Command args. --max-turns 1 is a probe safety limit
+// carried in Args.
 func (c *GroqCompoundCheck) invokeGroqCompound(prompt string) ([]byte, error) {
 	groqAPIKey := os.Getenv("GROQ_API_KEY")
 	env := append(os.Environ(),
@@ -95,12 +98,17 @@ func (c *GroqCompoundCheck) invokeGroqCompound(prompt string) ([]byte, error) {
 		"ANTHROPIC_MODEL=compound-beta",
 		"ANTHROPIC_API_KEY="+groqAPIKey,
 	)
-	cmd := exec.Command("claude",
-		"--dangerously-skip-permissions",
-		"--output-format", "json",
-		"--max-turns", "1",
-		"-p", prompt,
-	)
+	rc := &config.RuntimeConfig{
+		Command:    "claude",
+		Args:       []string{"--dangerously-skip-permissions", "--max-turns", "1"},
+		PromptMode: "arg",
+		NonInteractive: &config.NonInteractiveConfig{
+			PromptFlag: "-p",
+			OutputFlag: "--output-format json",
+		},
+	}
+	args := rc.BuildNonInteractiveArgsWithPrompt(prompt)
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = env
 	return cmd.Output()
 }
