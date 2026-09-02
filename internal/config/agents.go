@@ -920,6 +920,12 @@ func runtimeConfigFromAgentInfo(preset AgentPreset, info *AgentPresetInfo) *Runt
 		Env:      envCopy,
 	}
 
+	// Copy NonInteractive so BuildNonInteractiveCommand works via this path too.
+	if info.NonInteractive != nil {
+		ni := *info.NonInteractive
+		rc.NonInteractive = &ni
+	}
+
 	if preset == AgentClaude && rc.Command == "claude" {
 		rc.Command = resolveClaudePath()
 	}
