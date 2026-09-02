@@ -229,7 +229,7 @@ jobs:
       # mutator list can fail this job with no gastown code change.
       - name: Install mutago
         if: steps.changes.outputs.has_production_go == 'true'
-        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.8.2
+        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.9.3
 
       # Pass the changed files, not the recursive package pattern.
       # --git-diff-lines restricts mutant execution to the PR diff, while
