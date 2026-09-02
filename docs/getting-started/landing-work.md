@@ -52,16 +52,22 @@ See what's in the queue:
 gt mq list
 ```
 
-You'll see your work branch waiting. The Refinery processes the queue in priority order. Check the status of a specific merge request:
+You'll see something like:
+
+```
+POS  BRANCH                   BEAD     STATUS
+1    crew/alice/gt-abc1       gt-abc1  pending
+```
+
+The Refinery processes the queue in priority order. Check the status:
 
 ```bash
 gt mq status
 ```
 
-Or see the next item to be processed:
-
-```bash
-gt mq next
+```
+Queue: 1 pending, 0 in-progress, 0 failed
+Next:  crew/alice/gt-abc1 (gt-abc1)
 ```
 
 ---

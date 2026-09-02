@@ -14,7 +14,7 @@ Gas Town is a Go CLI called `gt`. Install it with:
 go install github.com/jonbaldie/gastown/cmd/gt@latest
 ```
 
-You'll need Go 1.26 or later. Verify the install:
+You'll need the Go version listed in `go.mod` (or later). Verify the install:
 
 ```bash
 gt --version

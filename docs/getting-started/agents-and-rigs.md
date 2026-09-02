@@ -29,7 +29,13 @@ You should see `claude`. That's it — every agent in your Town will use Claude 
 > gt config default-agent opencode
 > ```
 >
-> The `--provider opencode` flag tells Gas Town to use opencode's built-in preset (session handling, hooks, non-interactive mode). Swap the model string for whatever your provider offers.
+> The `--provider opencode` flag tells Gas Town to use opencode's built-in preset (session handling, hooks, non-interactive mode). When Gas Town runs opencode non-interactively, it calls:
+>
+> ```bash
+> opencode -m <model> run --format json "<prompt>"
+> ```
+>
+> Swap the model string for whatever your provider offers.
 >
 > Gas Town also supports gemini, codex, cursor, copilot, and others. Run `gt config default-agent list` to see them all.
 

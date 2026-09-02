@@ -48,16 +48,10 @@ This shows every Bead with no blockers, sorted by priority. Your `gt-abc1` shoul
 
 A **Hook** is a Bead pinned to an agent as its current assignment. When a Bead is on an agent's Hook, that agent is responsible for it.
 
-Attach the Bead to your Crew agent's Hook:
+For your first Bead, attach it to your Crew agent's Hook manually:
 
 ```bash
 gt hook gt-abc1 myproject/crew/alice
-```
-
-Or, if you're inside the agent's session (e.g., you ran `gt mayor attach` and are acting as that agent):
-
-```bash
-gt hook gt-abc1
 ```
 
 Check what's on the Hook:
@@ -65,6 +59,8 @@ Check what's on the Hook:
 ```bash
 gt hook
 ```
+
+> **Later, the Mayor does this for you.** In a running Town the Mayor reads the ready queue, picks the highest-priority Bead, and assigns it to an available agent's Hook automatically. The manual `gt hook` command is useful for your first walkthrough and for one-off overrides.
 
 ---
 
