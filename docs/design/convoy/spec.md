@@ -4,7 +4,7 @@
 
 **Status**: Implementation complete (all stories DONE)
 **Owner**: Daemon subsystem
-**Related**: [convoy-lifecycle.md](convoy-lifecycle.md) | [convoy-manager.md](../daemon/convoy-manager.md)
+**Related**: [convoy-lifecycle.md](convoy-lifecycle.md)
 
 ---
 
