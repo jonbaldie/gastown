@@ -143,7 +143,7 @@ Native installs require the host tools below. Docker installs only require Docke
 Install `gt` globally with Go:
 
 ```bash
-CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest
+go install github.com/jonbaldie/gastown/cmd/gt@latest
 ```
 
 The binary lands in `$GOBIN`, or `$GOPATH/bin` when `GOBIN` is unset. Put that directory before older `gt` installations on `PATH`. Native installs also require `bd` and Dolt:
@@ -156,10 +156,9 @@ The `@main` target is intentional. Before changing it to `@latest`, inspect the 
 
 On macOS, install Dolt with `brew install dolt`. On Linux and Windows, follow the [Dolt installation guide](https://github.com/dolthub/dolt#installation).
 
-On Windows PowerShell, set the CGO environment variable before installing:
+On Windows PowerShell:
 
 ```powershell
-$env:CGO_ENABLED = "0"
 go install github.com/jonbaldie/gastown/cmd/gt@latest
 go install github.com/jonbaldie/beads/cmd/bd@main
 ```

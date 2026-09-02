@@ -161,7 +161,7 @@ func printUninstallSuccess() {
 	fmt.Printf("%s Gas Town has been uninstalled\n", style.Success.Render("✓"))
 	fmt.Println()
 	fmt.Println("To reinstall, run:")
-	fmt.Printf("  %s\n", style.Dim.Render("CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest"))
+	fmt.Printf("  %s\n", style.Dim.Render("go install github.com/jonbaldie/gastown/cmd/gt@latest"))
 	fmt.Printf("  %s\n", style.Dim.Render("gt install ~/gt --shell"))
 }
 

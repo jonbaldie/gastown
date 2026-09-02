@@ -66,6 +66,10 @@ _Avoid_: agent, run (except as the spawn-to-stop interval)
 The atomic tracked work record.
 _Avoid_: issue, ticket, task (as names for the record itself)
 
+**bd**:
+The Beads command-line program.
+_Avoid_: beads (unqualified) when you mean this program
+
 **Hook**:
 The Bead currently pinned to a Role as its assignment.
 _Avoid_: queue, inbox, worktree, Claude Code hook

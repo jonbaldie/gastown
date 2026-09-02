@@ -2,7 +2,7 @@
 
 Complete setup guide for Gas Town multi-agent orchestrator.
 
-For the native path, install `gt` globally with `CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest`. Install `bd` and Dolt separately as described below. Docker supplies the runtime tools inside the container. The Beads `@main` target is intentional. Before changing it to `@latest`, inspect the `GoMod` file reported by `go mod download -json github.com/jonbaldie/beads@latest` and confirm it declares `module github.com/jonbaldie/beads`; Go rejects a selected version that declares a different module path.
+For the native path, install `gt` globally with `go install github.com/jonbaldie/gastown/cmd/gt@latest`. Install `bd` and Dolt separately as described below. Docker supplies the runtime tools inside the container. The Beads `@main` target is intentional. Before changing it to `@latest`, inspect the `GoMod` file reported by `go mod download -json github.com/jonbaldie/beads@latest` and confirm it declares `module github.com/jonbaldie/beads`; Go rejects a selected version that declares a different module path.
 
 ## Prerequisites
 
@@ -40,7 +40,7 @@ Install Go and Dolt with Homebrew, then install `gt` and `bd` with Go.
 
 ```bash
 brew install go dolt
-CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest
+go install github.com/jonbaldie/gastown/cmd/gt@latest
 go install github.com/jonbaldie/beads/cmd/bd@main
 
 # Optional: Docker setup only
@@ -88,13 +88,12 @@ sudo dnf install -y tmux
 
 Install Go and Dolt first, then install `gt` and `bd` with Go. The binaries land in `%USERPROFILE%\go\bin`; put that directory before older `gt` or `bd` install locations on `PATH`, then open a new shell. For Docker setup, install Docker Desktop with Compose support.
 
-`make build` defaults to `CGO_ENABLED=0` and talks to Dolt as an external SQL server. Native Windows source builds that compile the ICU-backed embedded query layer (`make build-cgo`) need an MSYS2 UCRT64 or MinGW64 shell with matching `icu`, `toolchain`, and `pkg-config` packages. The repository's Windows CI uses `pacboy -S icu:p toolchain:p pkg-config:p` before running Go commands; plain PowerShell/MSVC is not enough for that CGO build.
-
 ```powershell
-$env:CGO_ENABLED = "0"
 go install github.com/jonbaldie/gastown/cmd/gt@latest
 go install github.com/jonbaldie/beads/cmd/bd@main
 ```
+
+`make build` defaults to `CGO_ENABLED=0`. Native Windows source builds that compile the optional in-process Dolt engine (`make build-cgo`) need an MSYS2 UCRT64 or MinGW64 shell with matching `icu`, `toolchain`, and `pkg-config` packages. That path is not first-run.
 
 Use WSL or another Linux environment for tmux-backed workflows. Native Windows shells are best suited to minimal CLI-only use.
 
@@ -115,7 +114,7 @@ tmux -V           # (Optional) Should show 3.0 or higher
 On macOS and Linux, install `gt` and Beads with Go after installing Dolt separately:
 
 ```bash
-CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest
+go install github.com/jonbaldie/gastown/cmd/gt@latest
 go install github.com/jonbaldie/beads/cmd/bd@main
 ```
 
@@ -359,7 +358,7 @@ bd doctor                  # Run beads health check
 Reinstall `gt` from `@latest` to pick up updates:
 
 ```bash
-CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt@latest
+go install github.com/jonbaldie/gastown/cmd/gt@latest
 command -v gt              # Should be $GOBIN or $GOPATH/bin, usually ~/go/bin/gt
 gt version
 gt doctor --fix            # Fix any post-update issues
