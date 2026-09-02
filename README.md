@@ -2,6 +2,8 @@
 
 **Multi-agent orchestration system for Claude Code, GitHub Copilot, and other AI agents with persistent work tracking**
 
+> **New to Gas Town?** Start with the [getting-started guide](docs/getting-started/start-here.md) — it walks you from zero to your first autonomous PR in about 15 minutes.
+
 ## Overview
 
 Gas Town is a workspace manager that lets you coordinate multiple AI coding agents (Claude Code, GitHub Copilot, Codex, Gemini, and others) working on different tasks. Instead of losing context when agents restart, Gas Town persists work state in git-backed hooks, enabling reliable multi-agent workflows.
