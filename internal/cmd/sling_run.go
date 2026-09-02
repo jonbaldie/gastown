@@ -366,57 +366,63 @@ func dispatchSlingTwoBeadBatch(input slingRunInput) (bool, error) {
 }
 
 func dispatchSlingSingle(ctx context.Context, input slingRunInput) error {
-	beadID, formulaName, formulaOnly, err := resolveSlingBeadOrFormula(input)
+	resolved, err := resolveSlingBeadOrFormula(input)
 	if err != nil {
 		return err
 	}
-	if formulaOnly {
+	if resolved.formulaOnly {
 		return runSlingFormula(ctx, input.args)
 	}
-	if err := worker.RefuseLiveBead(input.townRoot, beadID); err != nil {
+	if err := worker.RefuseLiveBead(input.townRoot, resolved.beadID); err != nil {
 		return err
 	}
 	if !slingState().dryRun && len(input.args) == 2 {
 		if rigName, isRig := IsRigName(input.args[1]); isRig {
-			formula := formulaName
+			formula := resolved.formulaName
 			if formula == "" {
 				formula = resolveFormula(slingState().formula, slingState().hookRawBead, input.townRoot, rigName)
 			}
-			return runRigBeadSling(ctx, beadID, rigName, formula, input.townRoot, input.townBeadsDir)
+			return runRigBeadSling(ctx, resolved.beadID, rigName, formula, input.townRoot, input.townBeadsDir)
 		}
 	}
 	target := ""
 	if len(input.args) > 1 {
 		target = input.args[1]
 	}
-	intent := intentFromCLIFlags(beadID, "", formulaName, input.townRoot, input.townBeadsDir)
+	intent := intentFromCLIFlags(resolved.beadID, "", resolved.formulaName, input.townRoot, input.townBeadsDir)
 	intent.Target = target
 	_, err = executeDeepSling(ctx, intent)
 	return err
 }
 
-func resolveSlingBeadOrFormula(input slingRunInput) (beadID, formulaName string, formulaOnly bool, err error) {
+type slingBeadOrFormula struct {
+	beadID      string
+	formulaName string
+	formulaOnly bool
+}
+
+func resolveSlingBeadOrFormula(input slingRunInput) (slingBeadOrFormula, error) {
 	if slingState().onTarget != "" {
-		formulaName = input.args[0]
-		beadID = slingState().onTarget
-		if err = verifyBeadExists(beadID); err != nil {
-			return "", "", false, err
+		formulaName := input.args[0]
+		beadID := slingState().onTarget
+		if err := verifyBeadExists(beadID); err != nil {
+			return slingBeadOrFormula{}, err
 		}
-		if err = verifyFormulaExists(formulaName, beads.ResolveHookDir(input.townRoot, beadID, ""), input.townRoot); err != nil {
-			return "", "", false, err
+		if err := verifyFormulaExists(formulaName, beads.ResolveHookDir(input.townRoot, beadID, ""), input.townRoot); err != nil {
+			return slingBeadOrFormula{}, err
 		}
-		return beadID, formulaName, false, nil
+		return slingBeadOrFormula{beadID: beadID, formulaName: formulaName}, nil
 	}
 
 	firstArg := input.args[0]
-	if err = verifyBeadExists(firstArg); err == nil {
-		return firstArg, "", false, nil
+	if err := verifyBeadExists(firstArg); err == nil {
+		return slingBeadOrFormula{beadID: firstArg}, nil
 	}
 	if formulaErr := verifyFormulaExists(firstArg, input.townRoot, input.townRoot); formulaErr == nil {
-		return "", "", true, nil
+		return slingBeadOrFormula{formulaOnly: true}, nil
 	}
 	if looksLikeBeadID(firstArg) {
-		return firstArg, "", false, nil
+		return slingBeadOrFormula{beadID: firstArg}, nil
 	}
-	return "", "", false, fmt.Errorf("'%s' is not a valid bead or formula", firstArg)
+	return slingBeadOrFormula{}, fmt.Errorf("'%s' is not a valid bead or formula", firstArg)
 }

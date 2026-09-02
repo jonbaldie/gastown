@@ -328,10 +328,11 @@ func runMQList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	_, r, _, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	r := ctx.r
 
 	// Create beads wrapper for the rig - use BeadsPath() to get the git-synced location
 	b := beads.New(r.BeadsPath())

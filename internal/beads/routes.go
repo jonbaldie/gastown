@@ -368,38 +368,44 @@ func RewriteBDCreateRepoAlias(townRoot string, argv []string) ([]string, string)
 	if !canRewriteBDCreateRepoAlias(argv, commandIndex, ok) {
 		return argv, ""
 	}
-	flagIndex, value, flagLength, ok := findBDRepoFlag(argv, commandIndex+1)
+	flag, ok := findBDRepoFlag(argv, commandIndex+1)
 	if !ok {
 		return argv, ""
 	}
-	beadsDir, ok := ResolveRepoAliasBeadsDir(townRoot, value)
+	beadsDir, ok := ResolveRepoAliasBeadsDir(townRoot, flag.value)
 	if !ok {
 		return argv, ""
 	}
-	return removeBDRepoFlag(argv, flagIndex, flagLength), beadsDir
+	return removeBDRepoFlag(argv, flag.index, flag.length), beadsDir
 }
 
 func canRewriteBDCreateRepoAlias(argv []string, commandIndex int, commandFound bool) bool {
 	return commandFound && argv[commandIndex] == "create" && countBDRepoFlags(argv, commandIndex+1) == 1
 }
 
-func findBDRepoFlag(argv []string, start int) (int, string, int, bool) {
+type bdRepoFlag struct {
+	index  int
+	value  string
+	length int
+}
+
+func findBDRepoFlag(argv []string, start int) (bdRepoFlag, bool) {
 	for index, arg := range argv[start:] {
 		index += start
 		if arg == "--" {
-			return 0, "", 0, false
+			return bdRepoFlag{}, false
 		}
 		if arg == "--repo" {
 			if index+1 == len(argv) {
-				return 0, "", 0, false
+				return bdRepoFlag{}, false
 			}
-			return index, argv[index+1], 2, true
+			return bdRepoFlag{index: index, value: argv[index+1], length: 2}, true
 		}
 		if strings.HasPrefix(arg, "--repo=") {
-			return index, strings.TrimPrefix(arg, "--repo="), 1, true
+			return bdRepoFlag{index: index, value: strings.TrimPrefix(arg, "--repo="), length: 1}, true
 		}
 	}
-	return 0, "", 0, false
+	return bdRepoFlag{}, false
 }
 
 func removeBDRepoFlag(argv []string, index, length int) []string {

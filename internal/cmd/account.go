@@ -406,7 +406,7 @@ type accountSwitchState struct {
 }
 
 func loadAccountSwitchState(targetHandle string) (*accountSwitchState, error) {
-	cfg, accountsPath, targetAcct, err := accountSwitchTarget(targetHandle)
+	target, err := accountSwitchTarget(targetHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -419,16 +419,16 @@ func loadAccountSwitchState(targetHandle string) (*accountSwitchState, error) {
 	if err != nil {
 		return nil, err
 	}
-	currentHandle, err := currentAccountFromClaudeSymlink(claudeDir, fileInfo, cfg)
+	currentHandle, err := currentAccountFromClaudeSymlink(claudeDir, fileInfo, target.cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &accountSwitchState{
-		cfg:           cfg,
-		accountsPath:  accountsPath,
+		cfg:           target.cfg,
+		accountsPath:  target.accountsPath,
 		targetHandle:  targetHandle,
-		targetAcct:    targetAcct,
+		targetAcct:    target.targetAcct,
 		claudeDir:     claudeDir,
 		fileInfo:      fileInfo,
 		currentHandle: currentHandle,
@@ -450,15 +450,21 @@ func saveAccountSwitch(state *accountSwitchState) error {
 	return config.SaveAccountsConfig(state.accountsPath, state.cfg)
 }
 
-func accountSwitchTarget(targetHandle string) (*config.AccountsConfig, string, *config.Account, error) {
+type accountSwitchTargetResult struct {
+	cfg          *config.AccountsConfig
+	accountsPath string
+	targetAcct   *config.Account
+}
+
+func accountSwitchTarget(targetHandle string) (accountSwitchTargetResult, error) {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("finding town root: %w", err)
+		return accountSwitchTargetResult{}, fmt.Errorf("finding town root: %w", err)
 	}
 	accountsPath := constants.MayorAccountsPath(townRoot)
 	cfg, err := config.LoadAccountsConfig(accountsPath)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("loading accounts config: %w", err)
+		return accountSwitchTargetResult{}, fmt.Errorf("loading accounts config: %w", err)
 	}
 	targetAcct := cfg.GetAccount(targetHandle)
 	if targetAcct == nil {
@@ -467,9 +473,9 @@ func accountSwitchTarget(targetHandle string) (*config.AccountsConfig, string, *
 			handles = append(handles, handle)
 		}
 		sort.Strings(handles)
-		return nil, "", nil, fmt.Errorf("account '%s' not found. Available accounts: %v", targetHandle, handles)
+		return accountSwitchTargetResult{}, fmt.Errorf("account '%s' not found. Available accounts: %v", targetHandle, handles)
 	}
-	return cfg, accountsPath, targetAcct, nil
+	return accountSwitchTargetResult{cfg: cfg, accountsPath: accountsPath, targetAcct: targetAcct}, nil
 }
 
 func claudeConfigDir() (string, error) {

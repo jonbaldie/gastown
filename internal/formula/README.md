@@ -213,7 +213,7 @@ count, err := formula.ProvisionFormulas("/path/to/workspace")
 report, err := formula.CheckFormulaHealth("/path/to/workspace")
 
 // Update formulas safely (preserves user modifications)
-updated, skipped, reinstalled, err := formula.UpdateFormulas("/path/to/workspace")
+counts, err := formula.UpdateFormulas("/path/to/workspace")
 ```
 
 ## Testing

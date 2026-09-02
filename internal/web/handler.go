@@ -19,22 +19,37 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
-// ConvoyFetcher defines the interface for fetching convoy data.
-type ConvoyFetcher interface {
+// ConvoyWorkFetcher fetches convoy, queue, and session rows.
+type ConvoyWorkFetcher interface {
 	FetchConvoys() ([]ConvoyRow, error)
 	FetchMergeQueue() ([]MergeQueueRow, error)
 	FetchWorkers() ([]WorkerRow, error)
+	FetchQueues() ([]QueueRow, error)
+	FetchSessions() ([]SessionRow, error)
+	FetchHooks() ([]HookRow, error)
+}
+
+// ConvoyTownFetcher fetches town-level dashboard rows.
+type ConvoyTownFetcher interface {
 	FetchMail() ([]MailRow, error)
 	FetchRigs() ([]RigRow, error)
 	FetchDogs() ([]DogRow, error)
 	FetchEscalations() ([]EscalationRow, error)
 	FetchHealth() (*HealthRow, error)
-	FetchQueues() ([]QueueRow, error)
-	FetchSessions() ([]SessionRow, error)
-	FetchHooks() ([]HookRow, error)
 	FetchMayor() (*MayorStatus, error)
+}
+
+// ConvoyBoardFetcher fetches issue and activity rows.
+type ConvoyBoardFetcher interface {
 	FetchIssues() ([]IssueRow, error)
 	FetchActivity() ([]ActivityRow, error)
+}
+
+// ConvoyFetcher defines the interface for fetching convoy data.
+type ConvoyFetcher interface {
+	ConvoyWorkFetcher
+	ConvoyTownFetcher
+	ConvoyBoardFetcher
 }
 
 // expandCacheEntry holds a cached expanded-view response.

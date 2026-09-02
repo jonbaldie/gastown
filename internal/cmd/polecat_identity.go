@@ -286,19 +286,19 @@ func collectPolecatIdentities(rigName string) ([]IdentityInfo, error) {
 }
 
 func polecatIdentityFromAgentBead(rigName, id string, issue *beads.Issue, mgr *polecat.Manager, polecatMgr *polecat.SessionManager) (IdentityInfo, bool) {
-	beadRig, role, name, ok := beads.ParseAgentBeadID(id)
-	if !ok || role != constants.RolePolecat || beadRig != rigName || issue.Status == "closed" {
+	parsed, ok := beads.ParseAgentBeadID(id)
+	if !ok || parsed.Role != constants.RolePolecat || parsed.Rig != rigName || issue.Status == "closed" {
 		return IdentityInfo{}, false
 	}
 	fields := beads.ParseAgentFields(issue.Description)
 	worktreeExists := false
-	if p, err := polecat.Get(mgr, name); err == nil && p != nil {
+	if p, err := polecat.Get(mgr, parsed.Name); err == nil && p != nil {
 		worktreeExists = true
 	}
-	sessionRunning, _ := polecatMgr.IsRunning(name)
+	sessionRunning, _ := polecatMgr.IsRunning(parsed.Name)
 	info := IdentityInfo{
 		Rig:            rigName,
-		Name:           name,
+		Name:           parsed.Name,
 		BeadID:         id,
 		AgentState:     fields.AgentState,
 		HookBead:       issue.HookBead,

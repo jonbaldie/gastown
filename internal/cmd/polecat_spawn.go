@@ -395,37 +395,43 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 	if s.SessionStarted() {
 		return s.Pane, nil
 	}
-	r, t, claudeConfigDir, err := prepareSpawnedPolecatSession(s)
+	prepared, err := prepareSpawnedPolecatSession(s)
 	if err != nil {
 		return "", err
 	}
 	fmt.Printf("Starting session for %s/%s...\n", s.RigName, s.PolecatName)
 	startOpts := polecat.SessionStartOptions{
-		RuntimeConfigDir: claudeConfigDir,
+		RuntimeConfigDir: prepared.claudeConfigDir,
 		Agent:            s.agent,
 	}
-	if err := polecat.NewSessionManager(t, r).Start(s.PolecatName, startOpts); err != nil {
+	if err := polecat.NewSessionManager(prepared.t, prepared.r).Start(s.PolecatName, startOpts); err != nil {
 		return "", fmt.Errorf("starting session: %w", err)
 	}
-	waitSpawnedPolecatRuntime(s, r, t)
-	updateSpawnedPolecatWorkingState(s, r, t)
-	return finishSpawnedPolecatSession(s, t)
+	waitSpawnedPolecatRuntime(s, prepared.r, prepared.t)
+	updateSpawnedPolecatWorkingState(s, prepared.r, prepared.t)
+	return finishSpawnedPolecatSession(s, prepared.t)
 }
 
-func prepareSpawnedPolecatSession(s *SpawnedPolecatInfo) (*rig.Rig, *tmux.Tmux, string, error) {
+type spawnedPolecatSession struct {
+	r               *rig.Rig
+	t               *tmux.Tmux
+	claudeConfigDir string
+}
+
+func prepareSpawnedPolecatSession(s *SpawnedPolecatInfo) (spawnedPolecatSession, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return spawnedPolecatSession{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 	r, err := loadSlingSpawnRig(townRoot, s.RigName)
 	if err != nil {
-		return nil, nil, "", err
+		return spawnedPolecatSession{}, err
 	}
 	claudeConfigDir, _, err := config.ResolveAccountConfigDir(constants.MayorAccountsPath(townRoot), s.account)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("resolving account: %w", err)
+		return spawnedPolecatSession{}, fmt.Errorf("resolving account: %w", err)
 	}
-	return r, tmux.NewTmux(), claudeConfigDir, nil
+	return spawnedPolecatSession{r: r, t: tmux.NewTmux(), claudeConfigDir: claudeConfigDir}, nil
 }
 
 func waitSpawnedPolecatRuntime(s *SpawnedPolecatInfo, r *rig.Rig, t *tmux.Tmux) {

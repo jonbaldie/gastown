@@ -24,21 +24,41 @@ const WLCommonsDB = "wl_commons"
 // DefaultWLDBName is the fallback database name used when no wasteland config exists.
 var DefaultWLDBName = WLCommonsDB
 
-// WLCommonsStore abstracts wl-commons database operations.
-type WLCommonsStore interface {
+// WLCommonsAdmin abstracts wl-commons database lifecycle.
+type WLCommonsAdmin interface {
 	EnsureDB() error
 	DatabaseExists(_ string) bool
+}
+
+// WLWantedBoard abstracts wanted-item writes and queries.
+type WLWantedBoard interface {
 	InsertWanted(_ *WantedItem) error
 	ClaimWanted(_, _ string) error
 	SubmitCompletion(_, _, _, _ string) error
 	QueryWanted(_ string) (*WantedItem, error)
 	QueryWantedFull(_ string) (*WantedItem, error)
+}
+
+// WLStampBoard abstracts stamp, badge, and subject queries.
+type WLStampBoard interface {
 	InsertStamp(_ *StampRecord) error
 	QueryLastStampForSubject(_ string) (*StampRecord, error)
 	QueryStampsForSubject(_ string) ([]StampRecord, error)
 	QueryBadges(_ string) ([]BadgeRecord, error)
 	QueryAllSubjects() ([]string, error)
+}
+
+// WLLeaderboardBoard abstracts leaderboard writes.
+type WLLeaderboardBoard interface {
 	UpsertLeaderboard(_ *LeaderboardEntry) error
+}
+
+// WLCommonsStore abstracts wl-commons database operations.
+type WLCommonsStore interface {
+	WLCommonsAdmin
+	WLWantedBoard
+	WLStampBoard
+	WLLeaderboardBoard
 }
 
 // WLCommons implements WLCommonsStore using the real Dolt server.

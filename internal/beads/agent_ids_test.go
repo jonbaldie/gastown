@@ -257,16 +257,16 @@ func TestAgentBeadIDRoundTrip(t *testing.T) {
 			}
 
 			// Parse back and verify role and name
-			_, gotRole, gotName, ok := ParseAgentBeadID(id)
+			parsed, ok := ParseAgentBeadID(id)
 			if !ok {
 				t.Errorf("ParseAgentBeadID(%q) failed", id)
 				return
 			}
-			if gotRole != tt.role {
-				t.Errorf("ParseAgentBeadID(%q) role = %q, want %q", id, gotRole, tt.role)
+			if parsed.Role != tt.role {
+				t.Errorf("ParseAgentBeadID(%q) role = %q, want %q", id, parsed.Role, tt.role)
 			}
-			if gotName != tt.wname {
-				t.Errorf("ParseAgentBeadID(%q) name = %q, want %q", id, gotName, tt.wname)
+			if parsed.Name != tt.wname {
+				t.Errorf("ParseAgentBeadID(%q) name = %q, want %q", id, parsed.Name, tt.wname)
 			}
 		})
 	}

@@ -91,13 +91,13 @@ func (d *Daemon) syncJsonlGitBackup() {
 	defer mol.Close()
 
 	config := d.patrolConfig.Patrols.JsonlGitBackup
-	gitRepo, scrub, databases, dataDir, ok := d.prepareJsonlGitBackup(config)
-	if !ok {
+	prep := d.prepareJsonlGitBackup(config)
+	if !prep.ok {
 		return
 	}
 
-	d.logger.Printf("jsonl_git_backup: exporting %d database(s) to %s (scrub=%v)", len(databases), gitRepo, scrub)
-	counts, failed, exported := d.exportJsonlDatabases(databases, gitRepo, dataDir, scrub)
+	d.logger.Printf("jsonl_git_backup: exporting %d database(s) to %s (scrub=%v)", len(prep.databases), prep.gitRepo, prep.scrub)
+	counts, failed, exported := d.exportJsonlDatabases(prep.databases, prep.gitRepo, prep.dataDir, prep.scrub)
 
 	if exported == 0 {
 		d.logger.Printf("jsonl_git_backup: no databases exported successfully")
@@ -106,30 +106,38 @@ func (d *Daemon) syncJsonlGitBackup() {
 	}
 
 	mol.CloseStep("export")
-	if !d.verifyJsonlGitBackup(gitRepo, databases, counts, spikeThreshold(config), mol) {
+	if !d.verifyJsonlGitBackup(prep.gitRepo, prep.databases, counts, spikeThreshold(config), mol) {
 		mol.FailStep("push", "spike detected")
 		return
 	}
-	d.commitAndReportJsonlBackup(gitRepo, databases, counts, failed, exported, mol)
+	d.commitAndReportJsonlBackup(prep.gitRepo, prep.databases, counts, failed, exported, mol)
 }
 
-func (d *Daemon) prepareJsonlGitBackup(config *JsonlGitBackupConfig) (string, bool, []string, string, bool) {
+type jsonlGitBackupPrep struct {
+	gitRepo   string
+	scrub     bool
+	databases []string
+	dataDir   string
+	ok        bool
+}
+
+func (d *Daemon) prepareJsonlGitBackup(config *JsonlGitBackupConfig) jsonlGitBackupPrep {
 	gitRepo, ok := resolveJsonlGitRepo(d.logger, config.GitRepo)
 	if !ok || !jsonlGitRepoExists(d.logger, gitRepo) {
-		return "", false, nil, "", false
+		return jsonlGitBackupPrep{}
 	}
 	databases := config.Databases
 	if len(databases) == 0 {
 		d.logger.Printf("jsonl_git_backup: no databases configured, skipping")
-		return "", false, nil, "", false
+		return jsonlGitBackupPrep{}
 	}
 	dataDir := d.jsonlDataDir()
 	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
 		d.logger.Printf("jsonl_git_backup: data dir %s does not exist, skipping", dataDir)
-		return "", false, nil, "", false
+		return jsonlGitBackupPrep{}
 	}
 	scrub := config.Scrub == nil || *config.Scrub
-	return gitRepo, scrub, databases, dataDir, true
+	return jsonlGitBackupPrep{gitRepo: gitRepo, scrub: scrub, databases: databases, dataDir: dataDir, ok: true}
 }
 
 func resolveJsonlGitRepo(logger *log.Logger, configured string) (string, bool) {

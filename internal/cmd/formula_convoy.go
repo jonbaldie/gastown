@@ -50,7 +50,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string, opt
 }
 
 func beginConvoyFormulaRun(f *formula.Formula, formulaName, targetRig string, opts formulaRunOptions) (*convoyFormulaRun, error) {
-	townBeads, rigPrefix, rigBeadsDir, err := resolveConvoyBeads(targetRig)
+	resolved, err := resolveConvoyBeads(targetRig)
 	if err != nil {
 		return nil, err
 	}
@@ -59,22 +59,28 @@ func beginConvoyFormulaRun(f *formula.Formula, formulaName, targetRig string, op
 		formulaName: formulaName,
 		targetRig:   targetRig,
 		opts:        opts,
-		townBeads:   townBeads,
-		rigPrefix:   rigPrefix,
-		rigBeadsDir: rigBeadsDir,
+		townBeads:   resolved.townBeads,
+		rigPrefix:   resolved.rigPrefix,
+		rigBeadsDir: resolved.rigBeadsDir,
 	}, nil
 }
 
-func resolveConvoyBeads(targetRig string) (townBeads, rigPrefix, rigBeadsDir string, err error) {
+type resolveConvoyBeadsResult struct {
+	townBeads   string
+	rigPrefix   string
+	rigBeadsDir string
+}
+
+func resolveConvoyBeads(targetRig string) (resolveConvoyBeadsResult, error) {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
-		return "", "", "", fmt.Errorf("finding town root: %w", err)
+		return resolveConvoyBeadsResult{}, fmt.Errorf("finding town root: %w", err)
 	}
-	townBeads = filepath.Join(townRoot, ".beads")
-	rigPrefix = beads.GetPrefixForRig(townRoot, targetRig)
-	rigBeadsDir = townBeads
+	townBeads := filepath.Join(townRoot, ".beads")
+	rigPrefix := beads.GetPrefixForRig(townRoot, targetRig)
+	rigBeadsDir := townBeads
 	if rigPrefix == "hq" {
-		return townBeads, rigPrefix, rigBeadsDir, nil
+		return resolveConvoyBeadsResult{townBeads: townBeads, rigPrefix: rigPrefix, rigBeadsDir: rigBeadsDir}, nil
 	}
 	routes, _ := beads.LoadRoutes(townBeads)
 	for _, r := range routes {
@@ -84,7 +90,7 @@ func resolveConvoyBeads(targetRig string) (townBeads, rigPrefix, rigBeadsDir str
 			break
 		}
 	}
-	return townBeads, rigPrefix, rigBeadsDir, nil
+	return resolveConvoyBeadsResult{townBeads: townBeads, rigPrefix: rigPrefix, rigBeadsDir: rigBeadsDir}, nil
 }
 
 func createConvoyFormulaBead(c *convoyFormulaRun) error {

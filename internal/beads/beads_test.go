@@ -3237,19 +3237,19 @@ func TestParseAgentBeadID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			rig, role, name, ok := ParseAgentBeadID(tt.input)
+			parsed, ok := ParseAgentBeadID(tt.input)
 			if ok != tt.wantOK {
 				t.Errorf("ParseAgentBeadID(%q) ok = %v, want %v", tt.input, ok, tt.wantOK)
 				return
 			}
-			if rig != tt.wantRig {
-				t.Errorf("ParseAgentBeadID(%q) rig = %q, want %q", tt.input, rig, tt.wantRig)
+			if parsed.Rig != tt.wantRig {
+				t.Errorf("ParseAgentBeadID(%q) rig = %q, want %q", tt.input, parsed.Rig, tt.wantRig)
 			}
-			if role != tt.wantRole {
-				t.Errorf("ParseAgentBeadID(%q) role = %q, want %q", tt.input, role, tt.wantRole)
+			if parsed.Role != tt.wantRole {
+				t.Errorf("ParseAgentBeadID(%q) role = %q, want %q", tt.input, parsed.Role, tt.wantRole)
 			}
-			if name != tt.wantName {
-				t.Errorf("ParseAgentBeadID(%q) name = %q, want %q", tt.input, name, tt.wantName)
+			if parsed.Name != tt.wantName {
+				t.Errorf("ParseAgentBeadID(%q) name = %q, want %q", tt.input, parsed.Name, tt.wantName)
 			}
 		})
 	}

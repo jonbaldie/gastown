@@ -520,9 +520,9 @@ func runNudgeChannel(channelName, message, sender string) error {
 		fmt.Printf("%s No sessions match channel %q patterns\n", style.WarningPrefix, channelName)
 		return nil
 	}
-	succeeded, failed, skipped, failures := deliverNudgeChannel(townRoot, channelName, targets, message, sender)
+	result := deliverNudgeChannel(townRoot, channelName, targets, message, sender)
 	_ = events.LogFeed(events.TypeNudge, sender, events.NudgePayload("", "channel:"+channelName, message))
-	return printNudgeChannelResult(succeeded, failed, skipped, failures)
+	return printNudgeChannelResult(result.succeeded, result.failed, result.skipped, result.failures)
 }
 
 func loadNudgeChannelTargets(channelName string) (string, []string, error) {
@@ -563,21 +563,27 @@ func resolveNudgeChannelTargets(patterns []string, agents []*AgentSession) []str
 	return targets
 }
 
-func deliverNudgeChannel(townRoot, channelName string, targets []string, message, sender string) (int, int, int, []string) {
+type nudgeChannelDelivery struct {
+	succeeded int
+	failed    int
+	skipped   int
+	failures  []string
+}
+
+func deliverNudgeChannel(townRoot, channelName string, targets []string, message, sender string) nudgeChannelDelivery {
 	t := tmux.NewTmux()
-	var succeeded, failed, skipped int
-	var failures []string
+	var result nudgeChannelDelivery
 	fmt.Printf("Nudging channel %q (%d target(s), mode=%s)...\n\n", channelName, len(targets), nudgeState().mode)
 	for i, sessionName := range targets {
 		if skip, level := skipNudgeChannelTarget(townRoot, sessionName); skip {
-			skipped++
+			result.skipped++
 			fmt.Printf("  %s %s (DND: %s)\n", style.Dim.Render("○"), sessionName, level)
 		} else if err := deliverNudge(t, sessionName, message, sender); err != nil {
-			failed++
-			failures = append(failures, fmt.Sprintf("%s: %v", sessionName, err))
+			result.failed++
+			result.failures = append(result.failures, fmt.Sprintf("%s: %v", sessionName, err))
 			fmt.Printf("  %s %s\n", style.ErrorPrefix, sessionName)
 		} else {
-			succeeded++
+			result.succeeded++
 			fmt.Printf("  %s %s\n", style.SuccessPrefix, sessionName)
 		}
 		if i < len(targets)-1 {
@@ -585,7 +591,7 @@ func deliverNudgeChannel(townRoot, channelName string, targets []string, message
 		}
 	}
 	fmt.Println()
-	return succeeded, failed, skipped, failures
+	return result
 }
 
 func skipNudgeChannelTarget(townRoot, sessionName string) (bool, string) {

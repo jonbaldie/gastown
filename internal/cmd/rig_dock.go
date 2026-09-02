@@ -77,10 +77,11 @@ func runRigDock(_ *cobra.Command, args []string) error {
 	if err := requireMainBranchForDock("dock", "Docking"); err != nil {
 		return err
 	}
-	r, bd, rigBead, err := loadRigDockBead(rigName)
+	loaded, err := loadRigDockBead(rigName)
 	if err != nil {
 		return err
 	}
+	r, bd, rigBead := loaded.r, loaded.bd, loaded.bead
 	if rigHasDockedLabel(rigBead) {
 		fmt.Printf("%s Rig %s is already docked\n", style.Dim.Render("•"), rigName)
 		return nil
@@ -108,10 +109,16 @@ func requireMainBranchForDock(action, gerund string) error {
 		"%s on other branches won't persist. Run: git checkout main", action, currentBranch, gerund)
 }
 
-func loadRigDockBead(rigName string) (*rig.Rig, *beads.Beads, *beads.Issue, error) {
+type rigDockBead struct {
+	r    *rig.Rig
+	bd   *beads.Beads
+	bead *beads.Issue
+}
+
+func loadRigDockBead(rigName string) (rigDockBead, error) {
 	_, r, err := getRig(rigName)
 	if err != nil {
-		return nil, nil, nil, err
+		return rigDockBead{}, err
 	}
 	prefix := "gt"
 	if r.Config != nil && r.Config.Prefix != "" {
@@ -124,9 +131,9 @@ func loadRigDockBead(rigName string) (*rig.Rig, *beads.Beads, *beads.Issue, erro
 		State:  beads.RigStateActive,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("ensuring rig identity bead: %w", err)
+		return rigDockBead{}, fmt.Errorf("ensuring rig identity bead: %w", err)
 	}
-	return r, bd, rigBead, nil
+	return rigDockBead{r: r, bd: bd, bead: rigBead}, nil
 }
 
 func rigHasDockedLabel(rigBead *beads.Issue) bool {

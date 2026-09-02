@@ -2146,42 +2146,48 @@ func restartImposterDoltServer(townRoot string, config *Config, pid int, verifyE
 }
 
 func launchDoltServer(townRoot string, config *Config) ([]string, *exec.Cmd, error) {
-	databases, logFile, cmd, err := prepareDoltServerLaunch(townRoot, config)
+	launch, err := prepareDoltServerLaunch(townRoot, config)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := cmd.Start(); err != nil {
-		if closeErr := logFile.Close(); closeErr != nil {
+	if err := launch.cmd.Start(); err != nil {
+		if closeErr := launch.logFile.Close(); closeErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to close dolt log file: %v\n", closeErr)
 		}
 		return nil, nil, fmt.Errorf("starting Dolt server: %w", err)
 	}
 	// Close log file in parent (child has its own handle).
-	if closeErr := logFile.Close(); closeErr != nil {
+	if closeErr := launch.logFile.Close(); closeErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to close dolt log file: %v\n", closeErr)
 	}
-	if err := os.WriteFile(config.PidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
-		_ = cmd.Process.Kill()
+	if err := os.WriteFile(config.PidFile, []byte(strconv.Itoa(launch.cmd.Process.Pid)), 0644); err != nil {
+		_ = launch.cmd.Process.Kill()
 		return nil, nil, fmt.Errorf("writing PID file: %w", err)
 	}
 	state := &State{
 		Running:   true,
-		PID:       cmd.Process.Pid,
+		PID:       launch.cmd.Process.Pid,
 		Port:      config.Port,
 		StartedAt: time.Now(),
 		DataDir:   config.DataDir,
-		Databases: databases,
+		Databases: launch.databases,
 	}
 	if err := SaveState(townRoot, state); err != nil {
 		// Non-fatal - server is still running.
 		fmt.Fprintf(os.Stderr, "Warning: failed to save state: %v\n", err)
 	}
-	return databases, cmd, nil
+	return launch.databases, launch.cmd, nil
 }
 
-func prepareDoltServerLaunch(townRoot string, config *Config) ([]string, *os.File, *exec.Cmd, error) {
+type doltServerLaunch struct {
+	databases []string
+	logFile   *os.File
+	cmd       *exec.Cmd
+}
+
+func prepareDoltServerLaunch(townRoot string, config *Config) (doltServerLaunch, error) {
 	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
-		return nil, nil, nil, fmt.Errorf("creating data directory: %w", err)
+		return doltServerLaunch{}, fmt.Errorf("creating data directory: %w", err)
 	}
 
 	// Dolt owns the contents of each database's .dolt/ directory. Do not
@@ -2189,17 +2195,17 @@ func prepareDoltServerLaunch(townRoot string, config *Config) ([]string, *os.Fil
 	databases, _ := ListDatabases(townRoot)
 	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("opening log file: %w", err)
+		return doltServerLaunch{}, fmt.Errorf("opening log file: %w", err)
 	}
 	cleanStaleDoltSocket(config)
 	if err := checkPortAvailable(config.Port); err != nil {
 		_ = logFile.Close()
-		return nil, nil, nil, err
+		return doltServerLaunch{}, err
 	}
 	configPath := filepath.Join(config.DataDir, "config.yaml")
 	if err := writeServerConfig(config, configPath); err != nil {
 		_ = logFile.Close()
-		return nil, nil, nil, fmt.Errorf("writing Dolt config: %w", err)
+		return doltServerLaunch{}, fmt.Errorf("writing Dolt config: %w", err)
 	}
 	cmd := NewSQLServerCommand("dolt", config.DataDir, configPath)
 	cmd.Stdout = logFile
@@ -2207,7 +2213,7 @@ func prepareDoltServerLaunch(townRoot string, config *Config) ([]string, *os.Fil
 	// Detach from the terminal and put Dolt in its own process group.
 	cmd.Stdin = nil
 	setProcessGroup(cmd)
-	return databases, logFile, cmd, nil
+	return doltServerLaunch{databases: databases, logFile: logFile, cmd: cmd}, nil
 }
 
 type doltStartupCheck struct {
@@ -2695,46 +2701,20 @@ func VerifyDatabases(townRoot string) (served, missing []string, err error) {
 // intended for health checks that must validate a specific server address from
 // metadata rather than the town's default local Dolt config.
 func VerifyExpectedDatabasesAtConfig(config *Config, expected []string) (served, missing []string, err error) {
-	const baseBackoff = 1 * time.Second
-	const maxBackoff = 8 * time.Second
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cmd := buildServerSQLCmd(ctx, config, "-r", "json", "-q", "SHOW DATABASES")
-		var stderrBuf bytes.Buffer
-		cmd.Stderr = &stderrBuf
-		output, queryErr := cmd.Output()
-		cancel()
+		output, queryErr := queryShowDatabasesJSON(config)
 		if queryErr != nil {
-			stderrMsg := strings.TrimSpace(stderrBuf.String())
-			errDetail := strings.TrimSpace(string(output))
-			if stderrMsg != "" {
-				errDetail = errDetail + " (stderr: " + stderrMsg + ")"
-			}
-			lastErr = fmt.Errorf("querying SHOW DATABASES: %w (output: %s)", queryErr, errDetail)
-			if attempt < 3 {
-				backoff := baseBackoff
-				for i := 1; i < attempt; i++ {
-					backoff *= 2
-					if backoff > maxBackoff {
-						backoff = maxBackoff
-						break
-					}
-				}
-				time.Sleep(backoff)
-			}
+			lastErr = queryErr
+			sleepVerifyBackoff(attempt, 3)
 			continue
 		}
-
 		served, err = parseShowDatabases(output)
 		if err != nil {
 			return nil, nil, fmt.Errorf("parsing SHOW DATABASES output: %w", err)
 		}
-
-		missing = findMissingDatabases(served, expected)
-		return served, missing, nil
+		return served, findMissingDatabases(served, expected), nil
 	}
-
 	return nil, nil, lastErr
 }
 
@@ -2752,13 +2732,12 @@ func verifyDatabasesWithRetry(townRoot string, maxAttempts int) (served, missing
 	config := DefaultConfig(townRoot)
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		var retry bool
-		served, missing, err, retry = attemptVerifyDatabases(townRoot, config)
+		result, err := attemptVerifyDatabases(townRoot, config)
 		if err == nil {
-			return served, missing, nil
+			return result.served, result.missing, nil
 		}
-		if !retry {
-			return served, missing, err
+		if !result.retry {
+			return result.served, result.missing, err
 		}
 		lastErr = err
 		sleepVerifyBackoff(attempt, maxAttempts)
@@ -2766,23 +2745,29 @@ func verifyDatabasesWithRetry(townRoot string, maxAttempts int) (served, missing
 	return nil, nil, lastErr
 }
 
-func attemptVerifyDatabases(townRoot string, config *Config) (served, missing []string, err error, retry bool) {
+type verifyDatabasesAttempt struct {
+	served  []string
+	missing []string
+	retry   bool
+}
+
+func attemptVerifyDatabases(townRoot string, config *Config) (verifyDatabasesAttempt, error) {
 	if reachErr := CheckServerReachable(townRoot); reachErr != nil {
-		return nil, nil, fmt.Errorf("server not reachable: %w", reachErr), true
+		return verifyDatabasesAttempt{retry: true}, fmt.Errorf("server not reachable: %w", reachErr)
 	}
 	output, queryErr := queryShowDatabasesJSON(config)
 	if queryErr != nil {
-		return nil, nil, queryErr, true
+		return verifyDatabasesAttempt{retry: true}, queryErr
 	}
 	served, parseErr := parseShowDatabases(output)
 	if parseErr != nil {
-		return nil, nil, fmt.Errorf("parsing SHOW DATABASES output: %w", parseErr), false
+		return verifyDatabasesAttempt{}, fmt.Errorf("parsing SHOW DATABASES output: %w", parseErr)
 	}
 	fsDatabases, fsErr := ListDatabases(townRoot)
 	if fsErr != nil {
-		return served, nil, fmt.Errorf("listing filesystem databases: %w", fsErr), false
+		return verifyDatabasesAttempt{served: served}, fmt.Errorf("listing filesystem databases: %w", fsErr)
 	}
-	return served, findMissingDatabases(served, fsDatabases), nil, false
+	return verifyDatabasesAttempt{served: served, missing: findMissingDatabases(served, fsDatabases)}, nil
 }
 
 func queryShowDatabasesJSON(config *Config) ([]byte, error) {
@@ -4235,22 +4220,38 @@ func EnsureAllMetadata(townRoot string) (updated []string, errs []error) {
 // candidates exist. Prefers the value already in metadata.json to avoid
 // oscillating corrections between two valid aliases for the same rig.
 func pickDBForRig(townRoot, rigName string, candidates []string) string {
-	beadsDir := FindRigBeadsDir(townRoot, rigName)
-	if beadsDir != "" {
-		if data, err := os.ReadFile(filepath.Join(beadsDir, "metadata.json")); err == nil {
-			var meta map[string]interface{}
-			if json.Unmarshal(data, &meta) == nil {
-				if existingDB, _ := meta["dolt_database"].(string); existingDB != "" {
-					for _, c := range candidates {
-						if c == existingDB {
-							return c // Already correct — no repair needed
-						}
-					}
-				}
-			}
+	if existing := metadataDoltDatabase(townRoot, rigName); existing != "" {
+		if candidateContains(candidates, existing) {
+			return existing // Already correct — no repair needed
 		}
 	}
 	return candidates[0] // Default: first (alphabetical from os.ReadDir)
+}
+
+func metadataDoltDatabase(townRoot, rigName string) string {
+	beadsDir := FindRigBeadsDir(townRoot, rigName)
+	if beadsDir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(beadsDir, "metadata.json"))
+	if err != nil {
+		return ""
+	}
+	var meta map[string]interface{}
+	if json.Unmarshal(data, &meta) != nil {
+		return ""
+	}
+	existingDB, _ := meta["dolt_database"].(string)
+	return existingDB
+}
+
+func candidateContains(candidates []string, want string) bool {
+	for _, c := range candidates {
+		if c == want {
+			return true
+		}
+	}
+	return false
 }
 
 // buildDatabaseToRigMap loads routes.jsonl and builds a map from database name

@@ -243,66 +243,74 @@ func CheckFormulaHealth(beadsPath string) (*HealthReport, error) {
 	return report, nil
 }
 
+// FormulaUpdateCounts is the result of a formula update pass.
+type FormulaUpdateCounts struct {
+	Updated     int
+	Skipped     int
+	Reinstalled int
+}
+
 // UpdateFormulas updates formulas that are safe to update (outdated, missing, or untracked).
 // Skips user-modified formulas (tracked files that user changed).
 // Returns counts of updated, skipped (modified), and reinstalled (missing).
-func UpdateFormulas(beadsPath string) (updated, skipped, reinstalled int, err error) {
+func UpdateFormulas(beadsPath string) (FormulaUpdateCounts, error) {
 	embedded, err := getEmbeddedFormulas()
 	if err != nil {
-		return 0, 0, 0, err
+		return FormulaUpdateCounts{}, err
 	}
 
 	formulasDir := filepath.Join(beadsPath, ".beads", "formulas")
 	if err := os.MkdirAll(formulasDir, 0755); err != nil {
-		return 0, 0, 0, fmt.Errorf("creating formulas directory: %w", err)
+		return FormulaUpdateCounts{}, fmt.Errorf("creating formulas directory: %w", err)
 	}
 
 	installed, err := loadInstalledRecord(formulasDir)
 	if err != nil {
-		return 0, 0, 0, err
+		return FormulaUpdateCounts{}, err
 	}
 
-	updated, skipped, reinstalled, err = applyFormulaUpdates(embedded, formulasDir, installed)
+	counts, err := applyFormulaUpdates(embedded, formulasDir, installed)
 	if err != nil {
-		return updated, skipped, reinstalled, err
+		return counts, err
 	}
 	if err := saveInstalledRecord(formulasDir, installed); err != nil {
-		return updated, skipped, reinstalled, fmt.Errorf("saving installed record: %w", err)
+		return counts, fmt.Errorf("saving installed record: %w", err)
 	}
-	return updated, skipped, reinstalled, nil
+	return counts, nil
 }
 
-func applyFormulaUpdates(embedded map[string]string, formulasDir string, installed *InstalledRecord) (updated, skipped, reinstalled int, err error) {
+func applyFormulaUpdates(embedded map[string]string, formulasDir string, installed *InstalledRecord) (FormulaUpdateCounts, error) {
+	var counts FormulaUpdateCounts
 	for filename, embeddedHash := range embedded {
-		u, s, r, err := applyOneFormulaUpdate(filename, embeddedHash, formulasDir, installed)
+		one, err := applyOneFormulaUpdate(filename, embeddedHash, formulasDir, installed)
 		if err != nil {
-			return updated, skipped, reinstalled, err
+			return counts, err
 		}
-		updated += u
-		skipped += s
-		reinstalled += r
+		counts.Updated += one.Updated
+		counts.Skipped += one.Skipped
+		counts.Reinstalled += one.Reinstalled
 	}
-	return updated, skipped, reinstalled, nil
+	return counts, nil
 }
 
-func applyOneFormulaUpdate(filename, embeddedHash, formulasDir string, installed *InstalledRecord) (updated, skipped, reinstalled int, err error) {
+func applyOneFormulaUpdate(filename, embeddedHash, formulasDir string, installed *InstalledRecord) (FormulaUpdateCounts, error) {
 	installedHash, wasInstalled := installed.Formulas[filename]
 	destPath := filepath.Join(formulasDir, filename)
 	currentHash, fileErr := computeFileHash(destPath)
 	decision := decideFormulaUpdate(fileErr, wasInstalled, currentHash, embeddedHash, installedHash)
 	if decision.isModified {
-		return 0, 1, 0, nil
+		return FormulaUpdateCounts{Skipped: 1}, nil
 	}
 	if !decision.shouldInstall {
-		return 0, 0, 0, nil
+		return FormulaUpdateCounts{}, nil
 	}
 	if err := writeFormulaFile(filename, destPath, embeddedHash, installed); err != nil {
-		return 0, 0, 0, err
+		return FormulaUpdateCounts{}, err
 	}
 	if decision.isMissing {
-		return 0, 0, 1, nil
+		return FormulaUpdateCounts{Reinstalled: 1}, nil
 	}
-	return 1, 0, 0, nil
+	return FormulaUpdateCounts{Updated: 1}, nil
 }
 
 func provisionMissingFormula(entry fs.DirEntry, formulasDir string, embedded map[string]string, installed *InstalledRecord) (bool, error) {

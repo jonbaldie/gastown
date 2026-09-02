@@ -225,7 +225,7 @@ func collectHandoffContext(opts *handoffOptions) {
 }
 
 func runHandoffSession(args []string, opts *handoffOptions) error {
-	t, townTmux, pane, currentSession, err := prepareHandoffTmux()
+	prepared, err := prepareHandoffTmux()
 	if err != nil {
 		return err
 	}
@@ -239,20 +239,27 @@ func runHandoffSession(args []string, opts *handoffOptions) error {
 		warnHandoffGitStatus()
 	}
 
-	targetSession, restartCmd, err := resolveHandoffTarget(args, currentSession, opts)
+	targetSession, restartCmd, err := resolveHandoffTarget(args, prepared.currentSession, opts)
 	if err != nil {
 		return err
 	}
-	if targetSession != currentSession {
+	if targetSession != prepared.currentSession {
 		// Update tmux session env before respawn (not during dry-run — see below)
-		updateSessionEnvForHandoff(townTmux, targetSession, "")
-		return handoffRemoteSession(townTmux, targetSession, restartCmd, opts)
+		updateSessionEnvForHandoff(prepared.townTmux, targetSession, "")
+		return handoffRemoteSession(prepared.townTmux, targetSession, restartCmd, opts)
 	}
 
-	return runSelfHandoff(t, pane, currentSession, restartCmd, opts)
+	return runSelfHandoff(prepared.t, prepared.pane, prepared.currentSession, restartCmd, opts)
 }
 
-func prepareHandoffTmux() (*tmux.Tmux, *tmux.Tmux, string, string, error) {
+type prepareHandoffTmuxResult struct {
+	t              *tmux.Tmux
+	townTmux       *tmux.Tmux
+	pane           string
+	currentSession string
+}
+
+func prepareHandoffTmux() (prepareHandoffTmuxResult, error) {
 	// Use a socket-aware Tmux for pane operations. The calling process may be
 	// on a different tmux server than the town socket (e.g., default socket).
 	// For self-handoff, pane operations (clear-history, respawn-pane) must target
@@ -262,19 +269,19 @@ func prepareHandoffTmux() (*tmux.Tmux, *tmux.Tmux, string, string, error) {
 	townTmux := tmux.NewTmux()
 
 	if !tmux.IsInsideTmux() {
-		return nil, nil, "", "", fmt.Errorf("not running in tmux - cannot hand off")
+		return prepareHandoffTmuxResult{}, fmt.Errorf("not running in tmux - cannot hand off")
 	}
 
 	pane := os.Getenv("TMUX_PANE")
 	if pane == "" {
-		return nil, nil, "", "", fmt.Errorf("TMUX_PANE not set - cannot hand off")
+		return prepareHandoffTmuxResult{}, fmt.Errorf("TMUX_PANE not set - cannot hand off")
 	}
 
 	currentSession, err := getCurrentTmuxSession()
 	if err != nil {
-		return nil, nil, "", "", fmt.Errorf("getting session name: %w", err)
+		return prepareHandoffTmuxResult{}, fmt.Errorf("getting session name: %w", err)
 	}
-	return t, townTmux, pane, currentSession, nil
+	return prepareHandoffTmuxResult{t: t, townTmux: townTmux, pane: pane, currentSession: currentSession}, nil
 }
 
 func resolveHandoffTarget(args []string, currentSession string, opts *handoffOptions) (string, string, error) {
@@ -528,7 +535,7 @@ func logAutoHandoff(subject string) {
 // finds the hooked work, and continues from where we left off.
 func runHandoffCycle(opts *handoffOptions) error {
 	subject, message := cycleHandoffInputs(opts)
-	t, pane, currentSession, fallback := prepareCycleSession()
+	cycle, fallback := prepareCycleSession()
 	if fallback {
 		opts.subject = subject
 		opts.message = message
@@ -536,27 +543,27 @@ func runHandoffCycle(opts *handoffOptions) error {
 	}
 
 	if opts.dryRun {
-		printCycleHandoffDryRun(subject, pane)
+		printCycleHandoffDryRun(subject, cycle.pane)
 		return nil
 	}
 
 	// Close any in-progress molecule steps before cycling (gt-e26g).
 	cleanupMoleculeOnHandoff()
 
-	if err := persistCycleHandoff(subject, message, currentSession); err != nil {
+	if err := persistCycleHandoff(subject, message, cycle.currentSession); err != nil {
 		return err
 	}
 
-	writeCycleHandoffMarker(currentSession, opts.reason)
+	writeCycleHandoffMarker(cycle.currentSession, opts.reason)
 
 	// Record handoff time for cooldown enforcement (gt-058d).
 	recordHandoffTime()
 
-	logCycleHandoff(currentSession, subject)
+	logCycleHandoff(cycle.currentSession, subject)
 
 	// Build restart command with --continue so the new session resumes
 	// the previous conversation (preserves context across compaction cycles).
-	restartCmd, err := buildRestartCommandWithOpts(currentSession, buildRestartCommandOpts{
+	restartCmd, err := buildRestartCommandWithOpts(cycle.currentSession, buildRestartCommandOpts{
 		ContinueSession: true,
 		ContinuePrompt:  "Context compacted. Continue your previous task.",
 	})
@@ -565,9 +572,9 @@ func runHandoffCycle(opts *handoffOptions) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "handoff --cycle: cycling session %s\n", currentSession)
+	fmt.Fprintf(os.Stderr, "handoff --cycle: cycling session %s\n", cycle.currentSession)
 
-	return respawnCyclePane(t, pane, currentSession, restartCmd)
+	return respawnCyclePane(cycle.t, cycle.pane, cycle.currentSession, restartCmd)
 }
 
 func cycleHandoffInputs(opts *handoffOptions) (string, string) {
@@ -586,7 +593,13 @@ func cycleHandoffInputs(opts *handoffOptions) (string, string) {
 	return subject, message
 }
 
-func prepareCycleSession() (*tmux.Tmux, string, string, bool) {
+type prepareCycleSessionResult struct {
+	t              *tmux.Tmux
+	pane           string
+	currentSession string
+}
+
+func prepareCycleSession() (prepareCycleSessionResult, bool) {
 	if !tmux.IsInsideTmux() {
 		return cycleFallback("not in tmux, falling back to state-save only")
 	}
@@ -598,12 +611,12 @@ func prepareCycleSession() (*tmux.Tmux, string, string, bool) {
 	if err != nil {
 		return cycleFallback(fmt.Sprintf("could not get session: %v, falling back to state-save only", err))
 	}
-	return tmux.NewTmuxWithSocket(tmux.SocketFromEnv()), pane, currentSession, false
+	return prepareCycleSessionResult{t: tmux.NewTmuxWithSocket(tmux.SocketFromEnv()), pane: pane, currentSession: currentSession}, false
 }
 
-func cycleFallback(reason string) (*tmux.Tmux, string, string, bool) {
+func cycleFallback(reason string) (prepareCycleSessionResult, bool) {
 	fmt.Fprintf(os.Stderr, "handoff --cycle: %s\n", reason)
-	return nil, "", "", true
+	return prepareCycleSessionResult{}, true
 }
 
 func printCycleHandoffDryRun(subject, pane string) {
@@ -1200,11 +1213,11 @@ func sessionWorkDir(sessionName, townRoot string) (string, error) {
 
 func crewSessionWorkDir(sessionName, townRoot string) (string, error) {
 	// gt-<rig>-crew-<name> -> <townRoot>/<rig>/crew/<name>
-	rig, name, _, ok := parseCrewSessionName(sessionName)
+	parsed, ok := parseCrewSessionName(sessionName)
 	if !ok {
 		return "", fmt.Errorf("cannot parse crew session name: %s", sessionName)
 	}
-	return fmt.Sprintf("%s/%s/crew/%s", townRoot, rig, name), nil
+	return fmt.Sprintf("%s/%s/crew/%s", townRoot, parsed.rigName, parsed.crewName), nil
 }
 
 func parsedSessionWorkDir(sessionName, townRoot string) (string, error) {
@@ -1403,13 +1416,13 @@ func sendHandoffMail(subject, message string) (string, error) {
 	message = normalizeHandoffMessage(message)
 
 	// Detect agent identity for self-mail
-	agentID, _, _, err := resolveSelfTarget()
+	resolved, err := resolveSelfTarget()
 	if err != nil {
 		return "", fmt.Errorf("detecting agent identity: %w", err)
 	}
 
 	// Normalize identity to match mailbox query format
-	agentID = mail.AddressToIdentity(agentID)
+	agentID := mail.AddressToIdentity(resolved.agentID)
 
 	// Detect town root for beads location
 	townRoot := detectTownRootFromCwd()
@@ -1594,10 +1607,11 @@ func hookBeadForHandoff(beadID string, dryRun bool) error {
 	}
 
 	// Determine agent identity
-	agentID, _, _, err := resolveSelfTarget()
+	resolved, err := resolveSelfTarget()
 	if err != nil {
 		return fmt.Errorf("detecting agent identity: %w", err)
 	}
+	agentID := resolved.agentID
 
 	fmt.Printf("%s Hooking %s...\n", style.Bold.Render("🪝"), beadID)
 
@@ -1782,18 +1796,18 @@ func gitRecentState(g *git.Git) []string {
 //
 // All errors are non-fatal — handoff must succeed even if cleanup fails.
 func cleanupMoleculeOnHandoff() {
-	b, handoffBead, molID, ok := handoffMoleculeContext()
+	ctx, ok := handoffMoleculeContext()
 	if !ok {
 		return
 	}
 
 	// Close descendant steps (the leaked wisps)
-	if n := closeDescendants(b, molID); n > 0 {
-		fmt.Fprintf(os.Stderr, "handoff: closed %d molecule step(s) for %s\n", n, molID)
+	if n := closeDescendants(ctx.b, ctx.molID); n > 0 {
+		fmt.Fprintf(os.Stderr, "handoff: closed %d molecule step(s) for %s\n", n, ctx.molID)
 	}
 
 	// Detach molecule with audit trail
-	if _, err := b.DetachMoleculeWithAudit(handoffBead.ID, beads.DetachOptions{
+	if _, err := ctx.b.DetachMoleculeWithAudit(ctx.handoffBead.ID, beads.DetachOptions{
 		Operation: "squash",
 		Reason:    "handoff: session cycling",
 	}); err != nil {
@@ -1803,40 +1817,46 @@ func cleanupMoleculeOnHandoff() {
 	// Close all descendant wisps first, then the molecule root.
 	// Without this, handoff leaks orphan wisps into the DB.
 	// Best-effort in handoff path — log but proceed.
-	if _, err := forceCloseDescendants(b, molID); err != nil {
-		style.PrintWarning("handoff: could not close descendants of %s: %v", molID, err)
+	if _, err := forceCloseDescendants(ctx.b, ctx.molID); err != nil {
+		style.PrintWarning("handoff: could not close descendants of %s: %v", ctx.molID, err)
 	}
 
 	// Force-close the molecule root wisp
-	if err := b.ForceCloseWithReason("handoff", molID); err != nil {
-		fmt.Fprintf(os.Stderr, "handoff: warning: couldn't close molecule %s: %v\n", molID, err)
+	if err := ctx.b.ForceCloseWithReason("handoff", ctx.molID); err != nil {
+		fmt.Fprintf(os.Stderr, "handoff: warning: couldn't close molecule %s: %v\n", ctx.molID, err)
 	}
 }
 
-func handoffMoleculeContext() (*beads.Beads, *beads.Issue, string, bool) {
+type handoffMoleculeContextResult struct {
+	b           *beads.Beads
+	handoffBead *beads.Issue
+	molID       string
+}
+
+func handoffMoleculeContext() (handoffMoleculeContextResult, bool) {
 	cwd, townRoot, ok := handoffWorkspace()
 	if !ok {
-		return nil, nil, "", false
+		return handoffMoleculeContextResult{}, false
 	}
 	agentID := handoffAgentIdentity(cwd, townRoot)
 	if agentID == "" {
-		return nil, nil, "", false
+		return handoffMoleculeContextResult{}, false
 	}
 	b, ok := handoffBeads()
 	if !ok {
-		return nil, nil, "", false
+		return handoffMoleculeContextResult{}, false
 	}
 	parts := strings.Split(agentID, "/")
 	role := parts[len(parts)-1]
 	handoffBead, err := b.FindHandoffBead(role)
 	if err != nil || handoffBead == nil {
-		return nil, nil, "", false
+		return handoffMoleculeContextResult{}, false
 	}
 	attachment := beads.ParseAttachmentFields(handoffBead)
 	if attachment == nil || attachment.AttachedMolecule == "" {
-		return nil, nil, "", false
+		return handoffMoleculeContextResult{}, false
 	}
-	return b, handoffBead, attachment.AttachedMolecule, true
+	return handoffMoleculeContextResult{b: b, handoffBead: handoffBead, molID: attachment.AttachedMolecule}, true
 }
 
 func handoffWorkspace() (string, string, bool) {

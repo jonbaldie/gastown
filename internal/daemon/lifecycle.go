@@ -1248,11 +1248,11 @@ func (d *Daemon) checkRigOrphanedWork(rigName string) {
 func (d *Daemon) extractRigFromAgentID(agentID string) string {
 	// Use the beads package helper to correctly parse agent bead IDs.
 	// Pattern: <prefix>-<rig>-polecat-<name> (e.g., gt-gastown-polecat-Toast)
-	rig, role, _, ok := beads.ParseAgentBeadID(agentID)
-	if !ok || role != constants.RolePolecat {
+	parsed, ok := beads.ParseAgentBeadID(agentID)
+	if !ok || parsed.Role != constants.RolePolecat {
 		return ""
 	}
-	return rig
+	return parsed.Rig
 }
 
 // notifyWitnessOfOrphanedWork sends a mail to the rig's witness about orphaned work.

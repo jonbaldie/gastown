@@ -17,36 +17,45 @@ import (
 var spawnPolecatForSling = SpawnPolecatForSling
 
 // resolveTargetAgentFn is a seam for tests. Production uses resolveTargetAgent.
-var resolveTargetAgentFn = resolveTargetAgent
+var resolveTargetAgentFn = func(target string) (agentID string, pane string, hookRoot string, err error) {
+	resolved, err := resolveTargetAgent(target)
+	return resolved.agentID, resolved.pane, resolved.hookRoot, err
+}
 
 // startCrewMemberForSling is a seam for tests. Production uses startCrewMember.
 var startCrewMemberForSling = startCrewMember
 
+type slingAgentTarget struct {
+	agentID  string
+	pane     string
+	hookRoot string
+}
+
 // resolveTargetAgent converts a target spec to agent ID, pane, and hook root.
-func resolveTargetAgent(target string) (agentID string, pane string, hookRoot string, err error) {
+func resolveTargetAgent(target string) (slingAgentTarget, error) {
 	// First resolve to session name
 	sessionName, err := resolveRoleToSession(target)
 	if err != nil {
-		return "", "", "", err
+		return slingAgentTarget{}, err
 	}
 
 	// Convert session name to agent ID format (this doesn't require tmux)
-	agentID = sessionToAgentID(sessionName)
+	agentID := sessionToAgentID(sessionName)
 
 	// Get the pane for that session
-	pane, err = getSessionPane(sessionName)
+	pane, err := getSessionPane(sessionName)
 	if err != nil {
-		return "", "", "", fmt.Errorf("getting pane for %s: %w", sessionName, err)
+		return slingAgentTarget{}, fmt.Errorf("getting pane for %s: %w", sessionName, err)
 	}
 
 	// Get the target's working directory for hook storage
 	t := tmux.NewTmux()
-	hookRoot, err = t.GetPaneWorkDir(sessionName)
+	hookRoot, err := t.GetPaneWorkDir(sessionName)
 	if err != nil {
-		return "", "", "", fmt.Errorf("getting working dir for %s: %w", sessionName, err)
+		return slingAgentTarget{}, fmt.Errorf("getting working dir for %s: %w", sessionName, err)
 	}
 
-	return agentID, pane, hookRoot, nil
+	return slingAgentTarget{agentID: agentID, pane: pane, hookRoot: hookRoot}, nil
 }
 
 // sessionToAgentID converts a session name to agent ID format.
@@ -77,21 +86,20 @@ func canonicalAssigneeAddress(identity *session.AgentIdentity) string {
 }
 
 // resolveSelfTarget determines agent identity, pane, and hook root for slinging to self.
-func resolveSelfTarget() (agentID string, pane string, hookRoot string, err error) {
+func resolveSelfTarget() (slingAgentTarget, error) {
 	roleInfo, err := GetRole()
 	if err != nil {
-		return "", "", "", fmt.Errorf("detecting role: %w", err)
+		return slingAgentTarget{}, fmt.Errorf("detecting role: %w", err)
 	}
-	agentID, err = selfTargetAgentID(roleInfo)
+	agentID, err := selfTargetAgentID(roleInfo)
 	if err != nil {
-		return "", "", "", err
+		return slingAgentTarget{}, err
 	}
-	pane = os.Getenv("TMUX_PANE")
-	hookRoot, err = selfTargetHookRoot(roleInfo)
+	hookRoot, err := selfTargetHookRoot(roleInfo)
 	if err != nil {
-		return "", "", "", err
+		return slingAgentTarget{}, err
 	}
-	return agentID, pane, hookRoot, nil
+	return slingAgentTarget{agentID: agentID, pane: os.Getenv("TMUX_PANE"), hookRoot: hookRoot}, nil
 }
 
 func selfTargetAgentID(roleInfo RoleInfo) (string, error) {
@@ -173,16 +181,16 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 }
 
 func resolveSelfSlingTarget(target string, result *ResolvedTarget) (*ResolvedTarget, error) {
-	agentID, pane, workDir, err := resolveSelfTarget()
+	resolved, err := resolveSelfTarget()
 	if err != nil {
 		if target == "." {
 			return nil, fmt.Errorf("resolving self for '.' target: %w", err)
 		}
 		return nil, err
 	}
-	result.Agent = agentID
-	result.Pane = pane
-	result.WorkDir = workDir
+	result.Agent = resolved.agentID
+	result.Pane = resolved.pane
+	result.WorkDir = resolved.hookRoot
 	result.IsSelfSling = true
 	return result, nil
 }
@@ -329,8 +337,8 @@ func resolveNamedSlingTarget(target string, opts *ResolveTargetOptions, result *
 }
 
 func resolveFallbackSlingTarget(target string, opts *ResolveTargetOptions, result *ResolvedTarget, resolveErr error) (*ResolvedTarget, error) {
-	if rigName, crewName, crewDir, ok := stoppedCrewTarget(target, opts.TownRoot); ok {
-		return startStoppedCrewSlingTarget(target, rigName, crewName, crewDir, opts, result)
+	if crew, ok := stoppedCrewTarget(target, opts.TownRoot); ok {
+		return startStoppedCrewSlingTarget(target, crew.rigName, crew.crewName, crew.crewDir, opts, result)
 	}
 	if rigName, ok := missingPolecatTargetRig(target, opts.Create, opts.TownRoot); ok {
 		return spawnReplacementPolecatSlingTarget(rigName, opts, result)
@@ -399,27 +407,34 @@ func moveBeadForExistingPolecat(opts *ResolveTargetOptions, result *ResolvedTarg
 	return moveBeadForSlingTarget(opts, result, parts[0])
 }
 
-func stoppedCrewTarget(target, townRoot string) (rigName, crewName, crewDir string, ok bool) {
+type stoppedCrew struct {
+	rigName  string
+	crewName string
+	crewDir  string
+}
+
+func stoppedCrewTarget(target, townRoot string) (stoppedCrew, bool) {
 	parts := strings.Split(target, "/")
+	var crew stoppedCrew
 	switch {
 	case len(parts) == 3 && parts[1] == constants.RoleCrew:
-		rigName, crewName = parts[0], parts[2]
+		crew.rigName, crew.crewName = parts[0], parts[2]
 	case len(parts) == 2 && !knownRoles[strings.ToLower(parts[1])]:
-		rigName, crewName = parts[0], parts[1]
+		crew.rigName, crew.crewName = parts[0], parts[1]
 	default:
-		return "", "", "", false
+		return stoppedCrew{}, false
 	}
 	if townRoot == "" {
 		townRoot = detectTownRootFromCwd()
 	}
 	if townRoot == "" {
-		return "", "", "", false
+		return stoppedCrew{}, false
 	}
-	crewDir = filepath.Join(townRoot, rigName, "crew", crewName)
-	if info, err := os.Stat(crewDir); err != nil || !info.IsDir() {
-		return "", "", "", false
+	crew.crewDir = filepath.Join(townRoot, crew.rigName, "crew", crew.crewName)
+	if info, err := os.Stat(crew.crewDir); err != nil || !info.IsDir() {
+		return stoppedCrew{}, false
 	}
-	return rigName, crewName, crewDir, true
+	return crew, true
 }
 
 func missingPolecatTargetRig(target string, allowShorthand bool, townRoot string) (string, bool) {

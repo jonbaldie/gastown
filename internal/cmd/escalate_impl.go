@@ -229,12 +229,12 @@ func runEscalateClose(cmd *cobra.Command, args []string) error {
 func runEscalateStale(cmd *cobra.Command, _ []string) error {
 	staleJSON := commandBoolFlag(cmd, "json")
 	dryRun := commandBoolFlag(cmd, "dry-run")
-	townRoot, escalationConfig, threshold, maxReescalations, stale, err := loadEscalateStale()
+	loaded, err := loadEscalateStale()
 	if err != nil {
 		return err
 	}
-	if len(stale) == 0 {
-		printEscalateStaleEmpty(staleJSON, threshold)
+	if len(loaded.stale) == 0 {
+		printEscalateStaleEmpty(staleJSON, loaded.threshold)
 		return nil
 	}
 	reescalatedBy := detectSender()
@@ -242,29 +242,43 @@ func runEscalateStale(cmd *cobra.Command, _ []string) error {
 		reescalatedBy = "system"
 	}
 	if dryRun {
-		printEscalateStaleDryRun(stale, threshold, maxReescalations)
+		printEscalateStaleDryRun(loaded.stale, loaded.threshold, loaded.maxReescalations)
 		return nil
 	}
-	results := reescalateStaleIssues(townRoot, escalationConfig, stale, reescalatedBy, maxReescalations)
+	results := reescalateStaleIssues(loaded.townRoot, loaded.escalationConfig, loaded.stale, reescalatedBy, loaded.maxReescalations)
 	return printEscalateStaleResults(staleJSON, results)
 }
 
-func loadEscalateStale() (string, *config.EscalationConfig, time.Duration, int, []*beads.Issue, error) {
+type loadEscalateStaleResult struct {
+	townRoot         string
+	escalationConfig *config.EscalationConfig
+	threshold        time.Duration
+	maxReescalations int
+	stale            []*beads.Issue
+}
+
+func loadEscalateStale() (loadEscalateStaleResult, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return "", nil, 0, 0, nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return loadEscalateStaleResult{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 	escalationConfig, err := config.LoadOrCreateEscalationConfig(config.EscalationConfigPath(townRoot))
 	if err != nil {
-		return "", nil, 0, 0, nil, fmt.Errorf("loading escalation config: %w", err)
+		return loadEscalateStaleResult{}, fmt.Errorf("loading escalation config: %w", err)
 	}
 	threshold := escalationConfig.GetStaleThreshold()
 	bd := beads.New(beads.ResolveBeadsDir(townRoot))
 	stale, err := bd.ListStaleEscalations(threshold)
 	if err != nil {
-		return "", nil, 0, 0, nil, fmt.Errorf("listing stale escalations: %w", err)
+		return loadEscalateStaleResult{}, fmt.Errorf("listing stale escalations: %w", err)
 	}
-	return townRoot, escalationConfig, threshold, escalationConfig.GetMaxReescalations(), stale, nil
+	return loadEscalateStaleResult{
+		townRoot:         townRoot,
+		escalationConfig: escalationConfig,
+		threshold:        threshold,
+		maxReescalations: escalationConfig.GetMaxReescalations(),
+		stale:            stale,
+	}, nil
 }
 
 func printEscalateStaleEmpty(staleJSON bool, threshold time.Duration) {

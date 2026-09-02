@@ -98,33 +98,39 @@ func loadTTLConfigWithRole(townRoot, rigName string) map[string]time.Duration {
 	for k, v := range defaultTTLs {
 		ttls[k] = v
 	}
-
-	if townRoot == "" {
+	if townRoot == "" || rigName == "" {
 		return ttls
 	}
 
 	// Layer 2: Rig config - wisp layer (middle precedence)
-	if rigName != "" {
-		cfg := wisp.NewConfig(townRoot, rigName)
-		raw := cfg.Get("wisp_ttl")
-		if raw != nil {
-			// wisp_ttl is stored as map[string]interface{} in JSON config
-			if ttlMap, ok := raw.(map[string]interface{}); ok {
-				for wispType, val := range ttlMap {
-					if s, ok := val.(string); ok {
-						if d, err := time.ParseDuration(s); err == nil {
-							ttls[wispType] = d
-						}
-					}
-				}
-			}
-		}
-
-		// Layer 2b: Rig identity bead labels (wisp_ttl_*:value)
-		applyRigBeadTTLOverrides(ttls, townRoot, rigName)
-	}
-
+	applyWispTTLMap(ttls, townRoot, rigName)
+	// Layer 2b: Rig identity bead labels (wisp_ttl_*:value)
+	applyRigBeadTTLOverrides(ttls, townRoot, rigName)
 	return ttls
+}
+
+// applyWispTTLMap overlays duration values from the rig's wisp_ttl config map.
+func applyWispTTLMap(ttls map[string]time.Duration, townRoot, rigName string) {
+	raw := wisp.NewConfig(townRoot, rigName).Get("wisp_ttl")
+	if raw == nil {
+		return
+	}
+	// wisp_ttl is stored as map[string]interface{} in JSON config
+	ttlMap, ok := raw.(map[string]interface{})
+	if !ok {
+		return
+	}
+	for wispType, val := range ttlMap {
+		s, ok := val.(string)
+		if !ok {
+			continue
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			continue
+		}
+		ttls[wispType] = d
+	}
 }
 
 // applyRigBeadTTLOverrides reads wisp_ttl_* labels from the rig identity bead

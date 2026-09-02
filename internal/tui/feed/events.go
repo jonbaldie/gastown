@@ -184,31 +184,31 @@ func parseBeadContext(beadID string) (actor, rig, role string) {
 	}
 
 	// Use the canonical parser
-	parsedRig, parsedRole, name, ok := beads.ParseAgentBeadID(beadID)
+	parsed, ok := beads.ParseAgentBeadID(beadID)
 	if !ok {
 		return
 	}
 
-	rig = parsedRig
-	role = parsedRole
+	rig = parsed.Rig
+	role = parsed.Role
 
 	// Build actor identifier
-	switch parsedRole {
+	switch parsed.Role {
 	case constants.RoleMayor, constants.RoleDeacon:
-		actor = parsedRole
+		actor = parsed.Role
 	case constants.RoleWitness, constants.RoleRefinery:
-		actor = parsedRole
+		actor = parsed.Role
 	case constants.RoleCrew:
-		if name != "" {
-			actor = parsedRig + "/crew/" + name
+		if parsed.Name != "" {
+			actor = parsed.Rig + "/crew/" + parsed.Name
 		} else {
-			actor = parsedRole
+			actor = parsed.Role
 		}
 	case constants.RolePolecat:
-		if name != "" {
-			actor = parsedRig + "/" + name
+		if parsed.Name != "" {
+			actor = parsed.Rig + "/" + parsed.Name
 		} else {
-			actor = parsedRole
+			actor = parsed.Role
 		}
 	}
 

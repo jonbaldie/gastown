@@ -231,14 +231,14 @@ func agentBeadMatches(issue *beads.Issue, role, rig string) bool {
 		}
 	}
 
-	idRig, idRole, _, ok := beads.ParseAgentBeadID(issue.ID)
-	if !ok || idRole != role {
+	parsed, ok := beads.ParseAgentBeadID(issue.ID)
+	if !ok || parsed.Role != role {
 		return false
 	}
 	if rig == "" {
-		return idRig == ""
+		return parsed.Rig == ""
 	}
-	return idRig == rig
+	return parsed.Rig == rig
 }
 
 func pickBestAgentBead(candidates []agentBeadCandidate) (*agentBeadCandidate, error) {

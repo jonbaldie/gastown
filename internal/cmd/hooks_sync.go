@@ -154,19 +154,25 @@ func syncTemplateHookTargets(townRoot string, dryRun bool) hooksSyncSummary {
 }
 
 func syncTemplateHookLocation(townRoot string, townSettings *config.TownSettings, loc hooks.RoleLocation, dryRun bool) hooksSyncSummary {
-	hooksProvider, preset, syncDirs, ok := resolveTemplateHookLocation(townRoot, townSettings, loc)
+	locResult, ok := resolveTemplateHookLocation(townRoot, townSettings, loc)
 	if !ok {
 		return hooksSyncSummary{}
 	}
 
 	var summary hooksSyncSummary
-	for _, dir := range syncDirs {
-		summary.add(syncTemplateHookDir(townRoot, loc, hooksProvider, preset, dir, dryRun))
+	for _, dir := range locResult.syncDirs {
+		summary.add(syncTemplateHookDir(townRoot, loc, locResult.hooksProvider, locResult.preset, dir, dryRun))
 	}
 	return summary
 }
 
-func resolveTemplateHookLocation(townRoot string, townSettings *config.TownSettings, loc hooks.RoleLocation) (string, *config.AgentPresetInfo, []string, bool) {
+type resolveTemplateHookLocationResult struct {
+	hooksProvider string
+	preset        *config.AgentPresetInfo
+	syncDirs      []string
+}
+
+func resolveTemplateHookLocation(townRoot string, townSettings *config.TownSettings, loc hooks.RoleLocation) (resolveTemplateHookLocationResult, bool) {
 	rigPath, rigSettings := templateHookRigConfig(townRoot, loc)
 
 	// Use ResolveRoleAgentName (not ResolveRoleAgentConfig) so that hooks are
@@ -176,12 +182,12 @@ func resolveTemplateHookLocation(townRoot string, townSettings *config.TownSetti
 	// skip creating opencode/gemini/etc. plugin files.
 	agentName, _ := config.ResolveRoleAgentName(loc.Role, townRoot, rigPath)
 	if agentName == "" {
-		return "", nil, nil, false
+		return resolveTemplateHookLocationResult{}, false
 	}
 
 	preset := config.ResolveAgentPreset(agentName, townSettings, rigSettings)
 	if preset == nil || preset.HooksDir == "" || preset.HooksSettingsFile == "" {
-		return "", nil, nil, false
+		return resolveTemplateHookLocationResult{}, false
 	}
 
 	hooksProvider := preset.HooksProvider
@@ -191,13 +197,13 @@ func resolveTemplateHookLocation(townRoot string, townSettings *config.TownSetti
 
 	// Claude targets are already handled by DiscoverTargets + syncTarget above.
 	if hooksProvider == "claude" {
-		return "", nil, nil, false
+		return resolveTemplateHookLocationResult{}, false
 	}
 
 	if loc.Rig == "" || preset.HooksUseSettingsDir {
-		return hooksProvider, preset, []string{loc.Dir}, true
+		return resolveTemplateHookLocationResult{hooksProvider: hooksProvider, preset: preset, syncDirs: []string{loc.Dir}}, true
 	}
-	return hooksProvider, preset, hooks.DiscoverWorktrees(loc.Dir), true
+	return resolveTemplateHookLocationResult{hooksProvider: hooksProvider, preset: preset, syncDirs: hooks.DiscoverWorktrees(loc.Dir)}, true
 }
 
 func templateHookRigConfig(townRoot string, loc hooks.RoleLocation) (string, *config.RigSettings) {

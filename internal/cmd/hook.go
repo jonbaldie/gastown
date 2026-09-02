@@ -257,11 +257,11 @@ func resolveHookShowTarget(args []string) (string, error) {
 	if len(args) > 0 {
 		return normalizeHookShowTarget(args[0]), nil
 	}
-	agentID, _, _, err := resolveSelfTarget()
+	resolved, err := resolveSelfTarget()
 	if err != nil {
 		return "", fmt.Errorf("auto-detecting agent (use explicit argument): %w", err)
 	}
-	return agentID, nil
+	return resolved.agentID, nil
 }
 
 func resolveHookShowWorkDir(args []string, target string) (string, error) {

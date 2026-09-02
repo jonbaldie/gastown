@@ -690,36 +690,46 @@ type cloneOptions struct {
 	filter       string // Pass --filter=<spec> to git clone (e.g. "blob:none", "tree:0")
 }
 
+type cloneDirs struct {
+	TmpDir  string
+	TmpDest string
+	Cleanup func()
+}
+
 // cloneInternal runs `git clone` in an isolated temp directory, moves the result
 // to dest, and applies post-clone configuration (hooks or refspec).
 func cloneInternal(_ *Git, url, dest string, opts cloneOptions) error {
 	dest = gitPathAbs(dest, "")
-	tmpDir, tmpDest, cleanup, err := prepareCloneDirs(dest)
+	dirs, err := prepareCloneDirs(dest)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
-	if err := runCloneCommand(url, tmpDest, tmpDir, opts); err != nil {
+	defer dirs.Cleanup()
+	if err := runCloneCommand(url, dirs.TmpDest, dirs.TmpDir, opts); err != nil {
 		return err
 	}
-	if err := moveDir(tmpDest, dest); err != nil {
+	if err := moveDir(dirs.TmpDest, dest); err != nil {
 		return fmt.Errorf("moving clone to destination: %w", err)
 	}
 	return configureClone(dest, opts)
 }
 
-func prepareCloneDirs(dest string) (tmpDir, tmpDest string, cleanup func(), err error) {
+func prepareCloneDirs(dest string) (cloneDirs, error) {
 	if protectedTownRuntimePath(dest) {
-		return "", "", nil, fmt.Errorf("%w: clone destination %s", ErrUnsafeTownRootGitMutation, dest)
+		return cloneDirs{}, fmt.Errorf("%w: clone destination %s", ErrUnsafeTownRootGitMutation, dest)
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return "", "", nil, fmt.Errorf("creating destination parent: %w", err)
+		return cloneDirs{}, fmt.Errorf("creating destination parent: %w", err)
 	}
-	tmpDir, err = os.MkdirTemp("", "gt-clone-*")
+	tmpDir, err := os.MkdirTemp("", "gt-clone-*")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("creating temp dir: %w", err)
+		return cloneDirs{}, fmt.Errorf("creating temp dir: %w", err)
 	}
-	return tmpDir, filepath.Join(tmpDir, filepath.Base(dest)), func() { _ = os.RemoveAll(tmpDir) }, nil
+	return cloneDirs{
+		TmpDir:  tmpDir,
+		TmpDest: filepath.Join(tmpDir, filepath.Base(dest)),
+		Cleanup: func() { _ = os.RemoveAll(tmpDir) },
+	}, nil
 }
 
 func cloneArgs(url, tmpDest string, opts cloneOptions) []string {

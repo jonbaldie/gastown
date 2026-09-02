@@ -318,15 +318,15 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 	offset := 0
 	bodyLength := len(body)
 	for offset < bodyLength {
-		line, nextOffset, finished, err := nextReceivePackLine(body, offset)
+		pkt, err := nextReceivePackLine(body, offset)
 		if err != nil {
 			return err
 		}
-		if finished {
+		if pkt.done {
 			break
 		}
-		offset = nextOffset
-		parts := bytes.Fields(line)
+		offset = pkt.next
+		parts := bytes.Fields(pkt.line)
 		if len(parts) < 3 {
 			continue
 		}
@@ -341,25 +341,31 @@ func validateReceivePackRefs(body []byte, cnName string) error {
 	return nil
 }
 
-func nextReceivePackLine(body []byte, offset int) ([]byte, int, bool, error) {
+type receivePackLine struct {
+	line []byte
+	next int
+	done bool
+}
+
+func nextReceivePackLine(body []byte, offset int) (receivePackLine, error) {
 	if offset+4 > len(body) {
-		return nil, 0, false, fmt.Errorf("malformed pkt-line: truncated length field at offset %d", offset)
+		return receivePackLine{}, fmt.Errorf("malformed pkt-line: truncated length field at offset %d", offset)
 	}
 	lenHex := body[offset : offset+4]
 	if bytes.Equal(lenHex, []byte("0000")) {
-		return nil, offset, true, nil
+		return receivePackLine{next: offset, done: true}, nil
 	}
 	var packetLength int
 	if _, err := fmt.Sscanf(string(lenHex), "%x", &packetLength); err != nil || packetLength < 4 {
-		return nil, 0, false, fmt.Errorf("malformed pkt-line: invalid length field %q at offset %d", lenHex, offset)
+		return receivePackLine{}, fmt.Errorf("malformed pkt-line: invalid length field %q at offset %d", lenHex, offset)
 	}
 	end := offset + packetLength
 	if end > len(body) {
-		return nil, 0, false, fmt.Errorf("malformed pkt-line: truncated body at offset %d (need %d, have %d)", offset, packetLength, len(body)-offset)
+		return receivePackLine{}, fmt.Errorf("malformed pkt-line: truncated body at offset %d (need %d, have %d)", offset, packetLength, len(body)-offset)
 	}
 	line := bytes.TrimRight(body[offset+4:end], "\n")
 	if idx := bytes.IndexByte(line, 0); idx >= 0 {
 		line = line[:idx]
 	}
-	return line, end, false, nil
+	return receivePackLine{line: line, next: end}, nil
 }

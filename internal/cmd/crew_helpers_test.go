@@ -36,17 +36,17 @@ func TestParseCrewSessionName(t *testing.T) {
 	crewName := "tester"
 	sessionName := crewSessionName(rigName, crewName)
 
-	parsedRig, parsedCrew, _, ok := parseCrewSessionName(sessionName)
+	parsed, ok := parseCrewSessionName(sessionName)
 	if !ok {
 		// In test context without PrefixRegistry, parsing may fail.
 		// This is expected - the important thing is it doesn't panic.
 		t.Skipf("parseCrewSessionName(%q) returned ok=false (no PrefixRegistry in test context)", sessionName)
 	}
-	if parsedRig != rigName {
-		t.Errorf("parsed rig = %q, want %q", parsedRig, rigName)
+	if parsed.rigName != rigName {
+		t.Errorf("parsed rig = %q, want %q", parsed.rigName, rigName)
 	}
-	if parsedCrew != crewName {
-		t.Errorf("parsed crew = %q, want %q", parsedCrew, crewName)
+	if parsed.crewName != crewName {
+		t.Errorf("parsed crew = %q, want %q", parsed.crewName, crewName)
 	}
 }
 
@@ -61,7 +61,7 @@ func TestParseCrewSessionName_Invalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, ok := parseCrewSessionName(tt.session)
+			_, ok := parseCrewSessionName(tt.session)
 			if ok {
 				t.Errorf("parseCrewSessionName(%q) returned ok=true, want false", tt.session)
 			}

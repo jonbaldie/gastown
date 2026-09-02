@@ -641,55 +641,61 @@ func RemoveRigFromDaemonPatrols(townRoot string, rigName string) error {
 
 func updateDaemonPatrolRigs(townRoot, rigName string, add bool) error {
 	path := DaemonPatrolConfigPath(townRoot)
-	raw, patrols, ok, err := loadDaemonPatrolData(path)
+	data, err := loadDaemonPatrolData(path)
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if !data.ok {
 		return nil
 	}
 
 	modified := false
 	for _, patrolName := range []string{"witness", "refinery"} {
-		updated, changed, err := updateDaemonPatrol(patrols[patrolName], patrolName, rigName, add)
+		updated, changed, err := updateDaemonPatrol(data.patrols[patrolName], patrolName, rigName, add)
 		if err != nil {
 			return err
 		}
 		if !changed {
 			continue
 		}
-		patrols[patrolName] = updated
+		data.patrols[patrolName] = updated
 		modified = true
 	}
 	if !modified {
 		return nil
 	}
-	return saveDaemonPatrolData(path, raw, patrols)
+	return saveDaemonPatrolData(path, data.raw, data.patrols)
 }
 
-func loadDaemonPatrolData(path string) (map[string]json.RawMessage, map[string]json.RawMessage, bool, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path is constructed internally
+type daemonPatrolData struct {
+	raw     map[string]json.RawMessage
+	patrols map[string]json.RawMessage
+	ok      bool
+}
+
+func loadDaemonPatrolData(path string) (daemonPatrolData, error) {
+	fileData, err := os.ReadFile(path) //nolint:gosec // G304: path is constructed internally
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, false, nil
+			return daemonPatrolData{}, nil
 		}
-		return nil, nil, false, fmt.Errorf("reading daemon config: %w", err)
+		return daemonPatrolData{}, fmt.Errorf("reading daemon config: %w", err)
 	}
 
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, nil, false, fmt.Errorf("parsing daemon config: %w", err)
+	if err := json.Unmarshal(fileData, &raw); err != nil {
+		return daemonPatrolData{}, fmt.Errorf("parsing daemon config: %w", err)
 	}
 	patrolsRaw, ok := raw["patrols"]
 	if !ok {
-		return raw, nil, false, nil
+		return daemonPatrolData{raw: raw}, nil
 	}
 
 	var patrols map[string]json.RawMessage
 	if err := json.Unmarshal(patrolsRaw, &patrols); err != nil {
-		return nil, nil, false, fmt.Errorf("parsing patrols: %w", err)
+		return daemonPatrolData{}, fmt.Errorf("parsing patrols: %w", err)
 	}
-	return raw, patrols, true, nil
+	return daemonPatrolData{raw: raw, patrols: patrols, ok: true}, nil
 }
 
 func updateDaemonPatrol(pRaw json.RawMessage, patrolName, rigName string, add bool) (json.RawMessage, bool, error) {

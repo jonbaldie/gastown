@@ -20,8 +20,8 @@ func runMailCheck(cmd *cobra.Command, _ []string) error {
 	jsonOutput := commandBoolFlag(cmd, "json")
 	identity := commandStringAliasFlag(cmd, "identity", "address")
 	address := mailCheckAddress(identity)
-	workDir, mailbox, messages, unread, handled, err := loadMailCheckInbox(address, inject)
-	if handled {
+	inbox, err := loadMailCheckInbox(address, inject)
+	if inbox.handled {
 		return nil
 	}
 	if err != nil {
@@ -29,14 +29,14 @@ func runMailCheck(cmd *cobra.Command, _ []string) error {
 	}
 
 	if jsonOutput {
-		return writeMailCheckJSON(address, unread)
+		return writeMailCheckJSON(address, inbox.unread)
 	}
 
 	if inject {
-		return injectMailCheck(workDir, address, mailbox, messages, unread)
+		return injectMailCheck(inbox.workDir, address, inbox.mailbox, inbox.messages, inbox.unread)
 	}
 
-	return finishNormalMailCheck(unread)
+	return finishNormalMailCheck(inbox.unread)
 }
 
 func mailCheckAddress(identity string) string {
@@ -46,36 +46,44 @@ func mailCheckAddress(identity string) string {
 	return detectSender()
 }
 
-func loadMailCheckInbox(address string, inject bool) (string, *mail.Mailbox, []*mail.Message, int, bool, error) {
+type loadMailCheckInboxResult struct {
+	workDir  string
+	mailbox  *mail.Mailbox
+	messages []*mail.Message
+	unread   int
+	handled  bool
+}
+
+func loadMailCheckInbox(address string, inject bool) (loadMailCheckInboxResult, error) {
 	workDir, err := findMailWorkDir()
 	if err != nil {
 		if inject {
 			fmt.Fprintf(os.Stderr, "gt mail check: workspace lookup failed: %v\n", err)
-			return "", nil, nil, 0, true, nil
+			return loadMailCheckInboxResult{handled: true}, nil
 		}
-		return "", nil, nil, 0, false, fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return loadMailCheckInboxResult{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	mailbox, err := mail.NewRouter(workDir).GetMailbox(address)
 	if err != nil {
 		if inject {
 			fmt.Fprintf(os.Stderr, "gt mail check: mailbox error for %s: %v\n", address, err)
-			return "", nil, nil, 0, true, nil
+			return loadMailCheckInboxResult{handled: true}, nil
 		}
-		return "", nil, nil, 0, false, fmt.Errorf("getting mailbox: %w", err)
+		return loadMailCheckInboxResult{}, fmt.Errorf("getting mailbox: %w", err)
 	}
 
 	// Load the inbox once. The inject path needs unread messages later, and
 	// calling Count() followed by ListUnread() doubles bd/Dolt reads.
-	messages, _, unread, err := loadInboxSnapshot(mailbox, false)
+	snapshot, err := loadInboxSnapshot(mailbox, false)
 	if err != nil {
 		if inject {
 			fmt.Fprintf(os.Stderr, "gt mail check: inbox load error for %s: %v\n", address, err)
-			return "", nil, nil, 0, true, nil
+			return loadMailCheckInboxResult{handled: true}, nil
 		}
-		return "", nil, nil, 0, false, fmt.Errorf("loading inbox: %w", err)
+		return loadMailCheckInboxResult{}, fmt.Errorf("loading inbox: %w", err)
 	}
-	return workDir, mailbox, messages, unread, false, nil
+	return loadMailCheckInboxResult{workDir: workDir, mailbox: mailbox, messages: snapshot.messages, unread: snapshot.unread}, nil
 }
 
 func writeMailCheckJSON(address string, unread int) error {

@@ -85,12 +85,12 @@ func runWlJoin(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	townCfg, handle, displayName, err := resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag)
+	identity, err := resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag)
 	if err != nil {
 		return err
 	}
 
-	ownerEmail := townCfg.Owner
+	ownerEmail := identity.townCfg.Owner
 	gtVersion := "dev"
 
 	svc := wasteland.NewService()
@@ -99,7 +99,7 @@ func runWlJoin(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Joining wasteland %s (fork to %s/%s)...\n", upstream, forkOrg, upstream[strings.Index(upstream, "/")+1:])
-	cfg, err := svc.Join(upstream, forkOrg, token, handle, displayName, ownerEmail, gtVersion, townRoot)
+	cfg, err := svc.Join(upstream, forkOrg, token, identity.handle, identity.displayName, ownerEmail, gtVersion, townRoot)
 	if err != nil {
 		return err
 	}
@@ -147,12 +147,18 @@ func reportExistingWlJoin(townRoot, upstream string) (bool, error) {
 	return true, nil
 }
 
-func resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag string) (*config.TownConfig, string, string, error) {
+type wlJoinIdentity struct {
+	townCfg     *config.TownConfig
+	handle      string
+	displayName string
+}
+
+func resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag string) (wlJoinIdentity, error) {
 	// Load town config for identity (only needed for a fresh join).
 	townConfigPath := filepath.Join(townRoot, workspace.PrimaryMarker)
 	townCfg, err := config.LoadTownConfig(townConfigPath)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("loading town config: %w", err)
+		return wlJoinIdentity{}, fmt.Errorf("loading town config: %w", err)
 	}
 
 	handle := handleFlag
@@ -166,5 +172,5 @@ func resolveWlJoinIdentity(townRoot, forkOrg, handleFlag, displayNameFlag string
 			displayName = townCfg.Name
 		}
 	}
-	return townCfg, handle, displayName, nil
+	return wlJoinIdentity{townCfg: townCfg, handle: handle, displayName: displayName}, nil
 }

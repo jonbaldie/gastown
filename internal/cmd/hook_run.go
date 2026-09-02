@@ -92,18 +92,18 @@ func rejectPolecatHook() error {
 
 func resolveHookAgent(h *hookRun) error {
 	if h.targetAgent != "" {
-		agentID, _, _, err := resolveTargetAgent(h.targetAgent)
+		resolved, err := resolveTargetAgent(h.targetAgent)
 		if err != nil {
 			return fmt.Errorf("resolving target agent: %w", err)
 		}
-		h.agentID = agentID
+		h.agentID = resolved.agentID
 		return nil
 	}
-	agentID, _, _, err := resolveSelfTarget()
+	resolved, err := resolveSelfTarget()
 	if err != nil {
 		return fmt.Errorf("detecting agent identity: %w", err)
 	}
-	h.agentID = agentID
+	h.agentID = resolved.agentID
 	return nil
 }
 

@@ -307,19 +307,19 @@ func TestUpdateFormulas_UpdatesOutdated(t *testing.T) {
 	}
 
 	// Run update
-	updated, skipped, reinstalled, err := UpdateFormulas(tmpDir)
+	counts, err := UpdateFormulas(tmpDir)
 	if err != nil {
 		t.Fatalf("UpdateFormulas() error: %v", err)
 	}
 
-	if updated != 1 {
-		t.Errorf("updated = %d, want 1", updated)
+	if counts.Updated != 1 {
+		t.Errorf("updated = %d, want 1", counts.Updated)
 	}
-	if skipped != 0 {
-		t.Errorf("skipped = %d, want 0", skipped)
+	if counts.Skipped != 0 {
+		t.Errorf("skipped = %d, want 0", counts.Skipped)
 	}
-	if reinstalled != 0 {
-		t.Errorf("reinstalled = %d, want 0", reinstalled)
+	if counts.Reinstalled != 0 {
+		t.Errorf("reinstalled = %d, want 0", counts.Reinstalled)
 	}
 
 	// Verify file was updated
@@ -366,13 +366,13 @@ func TestUpdateFormulas_SkipsModified(t *testing.T) {
 	}
 
 	// Run update - should skip the modified formula
-	_, skipped, _, err := UpdateFormulas(tmpDir)
+	counts, err := UpdateFormulas(tmpDir)
 	if err != nil {
 		t.Fatalf("UpdateFormulas() error: %v", err)
 	}
 
-	if skipped != 1 {
-		t.Errorf("skipped = %d, want 1", skipped)
+	if counts.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1", counts.Skipped)
 	}
 
 	// Verify file was NOT changed
@@ -417,13 +417,13 @@ func TestUpdateFormulas_ReinstallsMissing(t *testing.T) {
 	}
 
 	// Run update
-	_, _, reinstalled, err := UpdateFormulas(tmpDir)
+	counts, err := UpdateFormulas(tmpDir)
 	if err != nil {
 		t.Fatalf("UpdateFormulas() error: %v", err)
 	}
 
-	if reinstalled != 1 {
-		t.Errorf("reinstalled = %d, want 1", reinstalled)
+	if counts.Reinstalled != 1 {
+		t.Errorf("reinstalled = %d, want 1", counts.Reinstalled)
 	}
 
 	// Verify file was restored
@@ -449,7 +449,7 @@ func TestUpdateFormulas_InstallsNew(t *testing.T) {
 	}
 
 	// Run update - should install all formulas as "new"
-	updated, skipped, reinstalled, err := UpdateFormulas(tmpDir)
+	counts, err := UpdateFormulas(tmpDir)
 	if err != nil {
 		t.Fatalf("UpdateFormulas() error: %v", err)
 	}
@@ -460,12 +460,12 @@ func TestUpdateFormulas_InstallsNew(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total := updated + reinstalled
+	total := counts.Updated + counts.Reinstalled
 	if total != len(embedded) {
 		t.Errorf("total installed = %d, want %d", total, len(embedded))
 	}
-	if skipped != 0 {
-		t.Errorf("skipped = %d, want 0", skipped)
+	if counts.Skipped != 0 {
+		t.Errorf("skipped = %d, want 0", counts.Skipped)
 	}
 }
 
@@ -608,20 +608,20 @@ func TestUpdateFormulas_UpdatesUntracked(t *testing.T) {
 	}
 
 	// Run update - should update all untracked formulas
-	updated, skipped, reinstalled, err := UpdateFormulas(tmpDir)
+	counts, err := UpdateFormulas(tmpDir)
 	if err != nil {
 		t.Fatalf("UpdateFormulas() error: %v", err)
 	}
 
 	// All untracked files should be updated (counted as "updated", not "reinstalled")
-	if updated != len(embedded) {
-		t.Errorf("updated = %d, want %d", updated, len(embedded))
+	if counts.Updated != len(embedded) {
+		t.Errorf("updated = %d, want %d", counts.Updated, len(embedded))
 	}
-	if skipped != 0 {
-		t.Errorf("skipped = %d, want 0", skipped)
+	if counts.Skipped != 0 {
+		t.Errorf("skipped = %d, want 0", counts.Skipped)
 	}
-	if reinstalled != 0 {
-		t.Errorf("reinstalled = %d, want 0", reinstalled)
+	if counts.Reinstalled != 0 {
+		t.Errorf("reinstalled = %d, want 0", counts.Reinstalled)
 	}
 
 	// Verify files now match embedded

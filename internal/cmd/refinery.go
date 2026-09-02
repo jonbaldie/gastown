@@ -258,28 +258,33 @@ func init() {
 	rootCmd.AddCommand(refineryCmd)
 }
 
+type refineryManagerContext struct {
+	mgr     *refinery.Manager
+	r       *rig.Rig
+	rigName string
+}
+
 // getRefineryManager creates a refinery manager for a rig.
 // If rigName is empty, infers the rig from cwd.
-func getRefineryManager(rigName string) (*refinery.Manager, *rig.Rig, string, error) {
+func getRefineryManager(rigName string) (refineryManagerContext, error) {
 	// Infer rig from cwd if not provided
 	if rigName == "" {
 		townRoot, err := workspace.FindFromCwdOrError()
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("not in a Gas Town workspace: %w", err)
+			return refineryManagerContext{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 		}
 		rigName, err = inferRigFromCwd(townRoot)
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("could not determine rig: %w\nUsage: gt refinery <command> <rig>", err)
+			return refineryManagerContext{}, fmt.Errorf("could not determine rig: %w\nUsage: gt refinery <command> <rig>", err)
 		}
 	}
 
 	_, r, err := getRig(rigName)
 	if err != nil {
-		return nil, nil, "", err
+		return refineryManagerContext{}, err
 	}
 
-	mgr := refinery.NewManager(r)
-	return mgr, r, rigName, nil
+	return refineryManagerContext{mgr: refinery.NewManager(r), r: r, rigName: rigName}, nil
 }
 
 func runRefineryStart(cmd *cobra.Command, args []string) error {
@@ -291,10 +296,12 @@ func runRefineryStart(cmd *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	mgr, _, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	rigName = ctx.rigName
 
 	if err := checkRigNotParkedOrDocked(rigName); err != nil {
 		return err
@@ -328,10 +335,12 @@ func runRefineryStop(_ *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	mgr, _, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	rigName = ctx.rigName
 
 	if err := mgr.Stop(); err != nil {
 		if err == refinery.ErrNotRunning {
@@ -360,10 +369,12 @@ func runRefineryStatus(cmd *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	mgr, _, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	rigName = ctx.rigName
 
 	// ZFC: tmux is source of truth for running state
 	running, _ := mgr.IsRunning()
@@ -412,10 +423,12 @@ func runRefineryQueue(cmd *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	mgr, _, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	rigName = ctx.rigName
 
 	queue, err := mgr.Queue()
 	if err != nil {
@@ -501,10 +514,13 @@ func runRefineryAttach(cmd *cobra.Command, args []string) error {
 	}
 
 	// Use getRefineryManager to validate rig (and infer from cwd if needed)
-	mgr, r, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	r := ctx.r
+	rigName = ctx.rigName
 
 	// Session name follows the same pattern as refinery manager
 	sessionID := session.RefinerySessionName(session.PrefixFor(rigName))
@@ -565,10 +581,13 @@ func runRefineryRestart(cmd *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	mgr, r, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	r := ctx.r
+	rigName = ctx.rigName
 
 	if err := checkRigNotParkedOrDocked(rigName); err != nil {
 		return err
@@ -696,10 +715,12 @@ func runRefineryUnclaimed(cmd *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	_, r, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	r := ctx.r
+	rigName = ctx.rigName
 
 	// Query beads for merge-request issues without assignee
 	b := beads.New(r.Path)
@@ -767,10 +788,12 @@ func runRefineryReady(cmd *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	_, r, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	r := ctx.r
+	rigName = ctx.rigName
 
 	// Create engineer for the rig (it has beads access for status checking)
 	eng := refinery.NewEngineer(r)
@@ -910,10 +933,12 @@ func runRefineryBlocked(cmd *cobra.Command, args []string) error {
 		rigName = args[0]
 	}
 
-	_, r, rigName, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	r := ctx.r
+	rigName = ctx.rigName
 
 	// Create engineer for the rig (it has beads access for status checking)
 	eng := refinery.NewEngineer(r)

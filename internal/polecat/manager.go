@@ -1709,10 +1709,16 @@ func validateReuseStartPoint(polecatGit *git.Git, startPoint string) error {
 	return nil
 }
 
-func prepareReuseWorktree(m *Manager, name string, opts AddOptions) (string, *git.Git, string, error) {
+type reuseWorktree struct {
+	clonePath  string
+	polecatGit *git.Git
+	startPoint string
+}
+
+func prepareReuseWorktree(m *Manager, name string, opts AddOptions) (reuseWorktree, error) {
 	clonePath := clonePath(m, name)
 	if _, err := os.Stat(clonePath); err != nil {
-		return "", nil, "", fmt.Errorf("idle polecat worktree not found at %s: %w", clonePath, err)
+		return reuseWorktree{}, fmt.Errorf("idle polecat worktree not found at %s: %w", clonePath, err)
 	}
 	runReuseTargetClean(m, name, clonePath)
 	polecatGit := git.NewGit(clonePath)
@@ -1723,10 +1729,10 @@ func prepareReuseWorktree(m *Manager, name string, opts AddOptions) (string, *gi
 	_ = git.Fetch(polecatGit, "origin")
 	startPoint := reuseStartPoint(m, repoGit, polecatGit, opts)
 	if err := validateReuseStartPoint(polecatGit, startPoint); err != nil {
-		return "", nil, "", err
+		return reuseWorktree{}, err
 	}
 	resetReuseWorktree(m, name, clonePath, startPoint, polecatGit)
-	return clonePath, polecatGit, startPoint, nil
+	return reuseWorktree{clonePath: clonePath, polecatGit: polecatGit, startPoint: startPoint}, nil
 }
 
 func resetReuseWorktree(m *Manager, name, clonePath, startPoint string, polecatGit *git.Git) {
@@ -1797,7 +1803,7 @@ func ReuseIdlePolecat(m *Manager, name string, opts AddOptions) (*Polecat, error
 		return nil, err
 	}
 
-	clonePath, polecatGit, startPoint, err := prepareReuseWorktree(m, name, opts)
+	wt, err := prepareReuseWorktree(m, name, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1805,12 +1811,12 @@ func ReuseIdlePolecat(m *Manager, name string, opts AddOptions) (*Polecat, error
 	// Create or reset the branch tracking the start point. For resume, the branch
 	// IS opts.ResumeBranch (so pushes go back to the existing PR head). For fresh
 	// work, build a new polecat/<name>/<bead>+<ts> branch.
-	branchName, err := checkoutReuseBranch(m, name, startPoint, opts, polecatGit)
+	branchName, err := checkoutReuseBranch(m, name, wt.startPoint, opts, wt.polecatGit)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := runReuseSetup(m, clonePath, startPoint, polecatGit); err != nil {
+	if err := runReuseSetup(m, wt.clonePath, wt.startPoint, wt.polecatGit); err != nil {
 		return nil, err
 	}
 
@@ -1823,7 +1829,7 @@ func ReuseIdlePolecat(m *Manager, name string, opts AddOptions) (*Polecat, error
 		Name:      name,
 		Rig:       m.rig.Name,
 		State:     StateWorking,
-		ClonePath: clonePath,
+		ClonePath: wt.clonePath,
 		Branch:    branchName,
 		CreatedAt: now,
 		UpdatedAt: now,

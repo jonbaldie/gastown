@@ -118,18 +118,24 @@ func detectCrewFromCwd() (*crewDetection, error) {
 // parseCrewSessionName extracts rig, crew name, and prefix from a tmux session name.
 // Format: <prefix>-crew-<name>
 // Returns empty strings and false if the format doesn't match.
-func parseCrewSessionName(sessionName string) (rigName, crewName, prefix string, ok bool) {
+type parseCrewSessionNameResult struct {
+	rigName  string
+	crewName string
+	prefix   string
+}
+
+func parseCrewSessionName(sessionName string) (parseCrewSessionNameResult, bool) {
 	identity, err := session.ParseSessionName(sessionName)
 	if err != nil {
-		return "", "", "", false
+		return parseCrewSessionNameResult{}, false
 	}
 	if identity.Role != session.RoleCrew {
-		return "", "", "", false
+		return parseCrewSessionNameResult{}, false
 	}
 	if identity.Rig == "" || identity.Name == "" {
-		return "", "", "", false
+		return parseCrewSessionNameResult{}, false
 	}
-	return identity.Rig, identity.Name, identity.Prefix, true
+	return parseCrewSessionNameResult{rigName: identity.Rig, crewName: identity.Name, prefix: identity.Prefix}, true
 }
 
 // findRigCrewSessions returns all crew sessions for a given rig.
