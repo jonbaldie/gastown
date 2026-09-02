@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.8] - 2026-09-02
+
+### Added
+
+- **`gt hint`** prints a short getting-started reminder: create a Town, pick
+  Claude or OpenCode, mix the Mayor with a different agent, and start services.
+
+### Fixed
+
+- **First-run `go install` no longer compiles a database.** Documented
+  `go install` of `gt` and `bd` must succeed with Go, git, and a C compiler.
+  The in-process Dolt engine stays opt-in; Dolt is a separate program.
+- **Share Beads when `workspace.Find` returns the Rig.** Town-level Beads
+  lookup no longer misses the Rig path.
+- **NonInteractiveConfig builds a real command.** OpenCode and other
+  non-interactive runtimes get the configured `run` invocation instead of
+  a dead config struct.
+
 ### Removed
 
 - **`gt now` has been removed.** Create a Town with `gt install` or `gt from`,
