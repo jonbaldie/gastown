@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3866,6 +3867,24 @@ func TestDelegationTerms(t *testing.T) {
 	}
 }
 
+func captureBeadsStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	fn()
+	_ = w.Close()
+	os.Stderr = old
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	return string(out)
+}
+
 // TestSetupRedirect tests the beads redirect setup for worktrees.
 func TestSetupRedirect(t *testing.T) {
 	runGit := func(t *testing.T, dir string, args ...string) string {
@@ -4211,6 +4230,110 @@ func TestSetupRedirect(t *testing.T) {
 		}
 		if resolved := ResolveBeadsDir(crewPath); resolved != rigBeads {
 			t.Errorf("resolved = %q, want %q", resolved, rigBeads)
+		}
+	})
+
+	t.Run("polecat clone path with only mayor beads when town root is the rig", func(t *testing.T) {
+		rigRoot := t.TempDir()
+		mayorBeads := filepath.Join(rigRoot, "mayor", "rig", ".beads")
+		polecatPath := filepath.Join(rigRoot, "polecats", "toast", "rig")
+		if err := os.MkdirAll(mayorBeads, 0755); err != nil {
+			t.Fatalf("mkdir mayor beads: %v", err)
+		}
+		if err := os.MkdirAll(polecatPath, 0755); err != nil {
+			t.Fatalf("mkdir polecat: %v", err)
+		}
+
+		stderr := captureBeadsStderr(t, func() {
+			if err := SetupRedirect(rigRoot, polecatPath); err != nil {
+				t.Fatalf("SetupRedirect failed: %v", err)
+			}
+		})
+		if !strings.Contains(stderr, "bd doctor") {
+			t.Errorf("mayor fallback should tell the operator to run bd doctor, got %q", stderr)
+		}
+
+		content, err := os.ReadFile(filepath.Join(polecatPath, ".beads", "redirect"))
+		if err != nil {
+			t.Fatalf("read redirect: %v", err)
+		}
+		want := "../../../mayor/rig/.beads\n"
+		if string(content) != want {
+			t.Errorf("redirect content = %q, want %q", string(content), want)
+		}
+		if resolved := ResolveBeadsDir(polecatPath); resolved != mayorBeads {
+			t.Errorf("resolved = %q, want %q", resolved, mayorBeads)
+		}
+	})
+
+	t.Run("polecat clone path with only rig beads when town root is the rig", func(t *testing.T) {
+		rigRoot := t.TempDir()
+		rigBeads := filepath.Join(rigRoot, ".beads")
+		polecatPath := filepath.Join(rigRoot, "polecats", "toast", "rig")
+		if err := os.MkdirAll(rigBeads, 0755); err != nil {
+			t.Fatalf("mkdir rig beads: %v", err)
+		}
+		if err := os.MkdirAll(polecatPath, 0755); err != nil {
+			t.Fatalf("mkdir polecat: %v", err)
+		}
+
+		if err := SetupRedirect(rigRoot, polecatPath); err != nil {
+			t.Fatalf("SetupRedirect failed: %v", err)
+		}
+		content, err := os.ReadFile(filepath.Join(polecatPath, ".beads", "redirect"))
+		if err != nil {
+			t.Fatalf("read redirect: %v", err)
+		}
+		want := "../../../.beads\n"
+		if string(content) != want {
+			t.Errorf("redirect content = %q, want %q", string(content), want)
+		}
+		if resolved := ResolveBeadsDir(polecatPath); resolved != rigBeads {
+			t.Errorf("resolved = %q, want %q", resolved, rigBeads)
+		}
+	})
+
+	t.Run("nested rig without beads does not use town redirect-only beads", func(t *testing.T) {
+		townRoot := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+			t.Fatalf("mkdir town beads: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(townRoot, ".beads", "redirect"), []byte("mayor/rig/.beads\n"), 0644); err != nil {
+			t.Fatalf("write town redirect: %v", err)
+		}
+		crewPath := filepath.Join(townRoot, "testrig", "crew", "max")
+		if err := os.MkdirAll(crewPath, 0755); err != nil {
+			t.Fatalf("mkdir crew: %v", err)
+		}
+		if err := SetupRedirect(townRoot, crewPath); err == nil {
+			t.Fatal("SetupRedirect should fail when the nested rig has no beads")
+		}
+	})
+
+	t.Run("rig redirect suppresses mayor fallback warning", func(t *testing.T) {
+		rigRoot := t.TempDir()
+		mayorBeads := filepath.Join(rigRoot, "mayor", "rig", ".beads")
+		polecatPath := filepath.Join(rigRoot, "polecats", "toast", "rig")
+		if err := os.MkdirAll(filepath.Join(rigRoot, ".beads"), 0755); err != nil {
+			t.Fatalf("mkdir rig beads: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(rigRoot, ".beads", "redirect"), []byte("mayor/rig/.beads\n"), 0644); err != nil {
+			t.Fatalf("write rig redirect: %v", err)
+		}
+		if err := os.MkdirAll(mayorBeads, 0755); err != nil {
+			t.Fatalf("mkdir mayor beads: %v", err)
+		}
+		if err := os.MkdirAll(polecatPath, 0755); err != nil {
+			t.Fatalf("mkdir polecat: %v", err)
+		}
+
+		stderr := captureBeadsStderr(t, func() {
+			if err := SetupRedirect(rigRoot, polecatPath); err != nil {
+				t.Fatalf("SetupRedirect failed: %v", err)
+			}
+		})
+		if strings.Contains(stderr, "rig .beads not found") {
+			t.Errorf("tracked-beads redirect should not warn, got %q", stderr)
 		}
 	})
 

@@ -225,9 +225,11 @@ jobs:
           echo 'Changed production Go files:'
           cat "$list"
 
+      # Pin the version and the operator set. @latest plus the default
+      # mutator list can fail this job with no gastown code change.
       - name: Install mutago
         if: steps.changes.outputs.has_production_go == 'true'
-        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@latest
+        run: go install github.com/quality-gates/mutago/v2/cmd/mutago@v2.8.2
 
       # Pass the changed files, not the recursive package pattern.
       # --git-diff-lines restricts mutant execution to the PR diff, while
@@ -242,6 +244,7 @@ jobs:
         run: |
           mapfile -t files < "$MUTAGO_FILE_LIST"
           mutago \
+            --config .github/mutago.yml \
             --coverage \
             --test-flags=-short \
             --git-diff-lines \
