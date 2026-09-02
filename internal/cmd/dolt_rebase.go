@@ -68,13 +68,13 @@ func runDoltRebase(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	db, ctx, cancel, err := connectDoltRebaseDB(req.dbName)
+	conn, err := connectDoltRebaseDB(req.dbName)
 	if err != nil {
 		return err
 	}
-	defer cancel()
-	defer db.Close()
-	return runDoltRebaseOnDB(ctx, db, req)
+	defer conn.cancel()
+	defer conn.db.Close()
+	return runDoltRebaseOnDB(conn.ctx, conn.db, req)
 }
 
 func parseDoltRebaseRequest(cmd *cobra.Command, args []string) (*doltRebaseRequest, error) {
@@ -90,14 +90,20 @@ func parseDoltRebaseRequest(cmd *cobra.Command, args []string) (*doltRebaseReque
 	return &doltRebaseRequest{dbName: args[0], keepRecent: keepRecent, dryRun: dryRun}, nil
 }
 
-func connectDoltRebaseDB(dbName string) (*sql.DB, context.Context, context.CancelFunc, error) {
+type connectDoltRebaseDBResult struct {
+	db     *sql.DB
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func connectDoltRebaseDB(dbName string) (connectDoltRebaseDBResult, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return connectDoltRebaseDBResult{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 	running, _, err := doltserver.IsRunning(townRoot)
 	if err != nil || !running {
-		return nil, nil, nil, fmt.Errorf("Dolt server is not running — start with 'gt dolt start'")
+		return connectDoltRebaseDBResult{}, fmt.Errorf("Dolt server is not running — start with 'gt dolt start'")
 	}
 	config := doltserver.DefaultConfig(townRoot)
 	// wa-d6f: socket-first DSN (TCP fallback) — eliminates TIME_WAIT churn.
@@ -109,16 +115,16 @@ func connectDoltRebaseDB(dbName string) (*sql.DB, context.Context, context.Cance
 	})
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("connecting to database %s: %w", dbName, err)
+		return connectDoltRebaseDBResult{}, fmt.Errorf("connecting to database %s: %w", dbName, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	var dummy int
 	if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&dummy); err != nil {
 		cancel()
 		db.Close()
-		return nil, nil, nil, fmt.Errorf("database %q not reachable: %w", dbName, err)
+		return connectDoltRebaseDBResult{}, fmt.Errorf("database %q not reachable: %w", dbName, err)
 	}
-	return db, ctx, cancel, nil
+	return connectDoltRebaseDBResult{db: db, ctx: ctx, cancel: cancel}, nil
 }
 
 type doltRebasePreflight struct {

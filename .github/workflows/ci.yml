@@ -163,8 +163,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Pin the version. @latest can add rules to the same ruleset names and
+      # fail this job with no gastown code change.
       - name: Install messgo
-        run: go install github.com/quality-gates/messgo/cmd/messgo@latest
+        run: go install github.com/quality-gates/messgo/cmd/messgo@v0.3.0
 
       - name: Run messgo on production Go
         run: |

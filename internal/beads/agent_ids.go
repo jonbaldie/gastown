@@ -355,29 +355,36 @@ func PolecatBeadID(rig, name string) string {
 	return PolecatBeadIDWithPrefix("gt", rig, name)
 }
 
+// ParsedAgentBeadID is the rig/role/name triple from an agent bead ID.
+// Town-level agents have empty Rig. Singletons have empty Name.
+type ParsedAgentBeadID struct {
+	Rig  string
+	Role string
+	Name string
+}
+
 // ParseAgentBeadID parses an agent bead ID into its components.
-// Returns rig, role, name, and whether parsing succeeded.
-// For town-level agents, rig will be empty.
-// For singletons, name will be empty.
+// For town-level agents, Rig will be empty.
+// For singletons, Name will be empty.
 // Accepts any valid prefix (e.g., "gt-", "bd-"), not just "gt-".
 //
 // Handles the collapsed form where prefix == rig (e.g., "ff-witness" for rig "ff").
 // In collapsed form, the prefix is returned as the rig:
-//   - "ff-witness"     → rig="ff", role="witness", name=""
-//   - "ff-polecat-nux" → rig="ff", role="polecat", name="nux"
-func ParseAgentBeadID(id string) (rig, role, name string, ok bool) {
+//   - "ff-witness"     → Rig="ff", Role="witness", Name=""
+//   - "ff-polecat-nux" → Rig="ff", Role="polecat", Name="nux"
+func ParseAgentBeadID(id string) (ParsedAgentBeadID, bool) {
 	prefix, parts, ok := agentBeadIDParts(id)
 	if !ok {
-		return "", "", "", false
+		return ParsedAgentBeadID{}, false
 	}
 	if len(parts) == 1 {
 		return parseSinglePartAgentBeadID(prefix, parts[0])
 	}
 	if parts[0] == "dog" {
-		return "", "dog", strings.Join(parts[1:], "-"), true
+		return ParsedAgentBeadID{Role: "dog", Name: strings.Join(parts[1:], "-")}, true
 	}
 	if isNamedRole(parts[0]) {
-		return prefix, parts[0], strings.Join(parts[1:], "-"), true
+		return ParsedAgentBeadID{Rig: prefix, Role: parts[0], Name: strings.Join(parts[1:], "-")}, true
 	}
 	return parseRigAgentBeadID(parts)
 }
@@ -390,59 +397,71 @@ func agentBeadIDParts(id string) (string, []string, bool) {
 	return id[:hyphenIndex], strings.Split(id[hyphenIndex+1:], "-"), true
 }
 
-func parseSinglePartAgentBeadID(prefix, role string) (string, string, string, bool) {
+func parseSinglePartAgentBeadID(prefix, role string) (ParsedAgentBeadID, bool) {
 	if isTownLevelRole(role) {
-		return "", role, "", true
+		return ParsedAgentBeadID{Role: role}, true
 	}
 	if isRigLevelRole(role) {
-		return prefix, role, "", true
+		return ParsedAgentBeadID{Rig: prefix, Role: role}, true
 	}
-	return "", role, "", true
+	return ParsedAgentBeadID{Role: role}, true
 }
 
-func parseRigAgentBeadID(parts []string) (string, string, string, bool) {
+func parseRigAgentBeadID(parts []string) (ParsedAgentBeadID, bool) {
 	for index := len(parts) - 1; index >= 1; index-- {
-		if rig, role, name, ok := parseNamedRoleWithName(parts, index); ok {
-			return rig, role, name, true
+		if parsed, ok := parseNamedRoleWithName(parts, index); ok {
+			return parsed, true
 		}
-		if rig, role, name, ok := parseRigLevelRole(parts, index); ok {
-			return rig, role, name, true
+		if parsed, ok := parseRigLevelRole(parts, index); ok {
+			return parsed, true
 		}
-		if rig, role, name, ok := parseTrailingNamedRole(parts, index); ok {
-			return rig, role, name, true
+		if parsed, ok := parseTrailingNamedRole(parts, index); ok {
+			return parsed, true
 		}
 	}
 	if len(parts) == 2 {
-		return parts[0], parts[1], "", true
+		return ParsedAgentBeadID{Rig: parts[0], Role: parts[1]}, true
 	}
-	return "", "", "", false
+	return ParsedAgentBeadID{}, false
 }
 
-func parseNamedRoleWithName(parts []string, index int) (string, string, string, bool) {
+func parseNamedRoleWithName(parts []string, index int) (ParsedAgentBeadID, bool) {
 	if !isNamedRole(parts[index]) || index == len(parts)-1 {
-		return "", "", "", false
+		return ParsedAgentBeadID{}, false
 	}
-	return strings.Join(parts[:index], "-"), parts[index], strings.Join(parts[index+1:], "-"), true
+	return ParsedAgentBeadID{
+		Rig:  strings.Join(parts[:index], "-"),
+		Role: parts[index],
+		Name: strings.Join(parts[index+1:], "-"),
+	}, true
 }
 
-func parseRigLevelRole(parts []string, index int) (string, string, string, bool) {
+func parseRigLevelRole(parts []string, index int) (ParsedAgentBeadID, bool) {
 	if !isRigLevelRole(parts[index]) {
-		return "", "", "", false
+		return ParsedAgentBeadID{}, false
 	}
 	if index >= 2 && isNamedRole(parts[index-1]) {
-		return strings.Join(parts[:index-1], "-"), parts[index-1], strings.Join(parts[index:], "-"), true
+		return ParsedAgentBeadID{
+			Rig:  strings.Join(parts[:index-1], "-"),
+			Role: parts[index-1],
+			Name: strings.Join(parts[index:], "-"),
+		}, true
 	}
-	return strings.Join(parts[:index], "-"), parts[index], "", true
+	return ParsedAgentBeadID{Rig: strings.Join(parts[:index], "-"), Role: parts[index]}, true
 }
 
-func parseTrailingNamedRole(parts []string, index int) (string, string, string, bool) {
+func parseTrailingNamedRole(parts []string, index int) (ParsedAgentBeadID, bool) {
 	if !isNamedRole(parts[index]) || index != len(parts)-1 {
-		return "", "", "", false
+		return ParsedAgentBeadID{}, false
 	}
 	if index >= 2 && isNamedRole(parts[index-1]) {
-		return strings.Join(parts[:index-1], "-"), parts[index-1], parts[index], true
+		return ParsedAgentBeadID{
+			Rig:  strings.Join(parts[:index-1], "-"),
+			Role: parts[index-1],
+			Name: parts[index],
+		}, true
 	}
-	return strings.Join(parts[:index], "-"), parts[index], "", true
+	return ParsedAgentBeadID{Rig: strings.Join(parts[:index], "-"), Role: parts[index]}, true
 }
 
 // IsAgentSessionBead returns true if the bead ID represents an agent session molecule.
@@ -450,12 +469,12 @@ func parseTrailingNamedRole(parts []string, index int) (string, string, string, 
 // Supports any valid prefix (e.g., "gt-", "bd-"), not just "gt-".
 // These are used to track agent state and update frequently, which can create noise.
 func IsAgentSessionBead(beadID string) bool {
-	_, role, _, ok := ParseAgentBeadID(beadID)
+	parsed, ok := ParseAgentBeadID(beadID)
 	if !ok {
 		return false
 	}
 	// Known agent roles
-	switch role {
+	switch parsed.Role {
 	case constants.RoleMayor, constants.RoleDeacon, constants.RoleWitness, constants.RoleRefinery, constants.RoleCrew, constants.RolePolecat, "dog":
 		return true
 	default:

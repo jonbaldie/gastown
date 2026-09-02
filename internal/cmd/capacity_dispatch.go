@@ -89,12 +89,12 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		return nil, fmt.Errorf("loading scheduler state: %w", err)
 	}
 
-	maxPolecats, batchSize, spawnDelay, err := schedulerDispatchSettings(townRoot, batchOverride)
+	settings, err := schedulerDispatchSettings(townRoot, batchOverride)
 	if err != nil {
 		return nil, err
 	}
 
-	if cleanup && !state.Paused && maxPolecats > 0 {
+	if cleanup && !state.Paused && settings.maxPolecats > 0 {
 		if err := cleanupStaleContexts(townRoot); err != nil {
 			return nil, fmt.Errorf("cleaning stale scheduler contexts: %w", err)
 		}
@@ -111,13 +111,13 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 	}
 
 	ready := readySlingContextsFromAssessments(assessments)
-	dispatchPlan := buildSchedulerDispatchPlanForReady(state, maxPolecats, snapshot, batchSize, ready)
+	dispatchPlan := buildSchedulerDispatchPlanForReady(state, settings.maxPolecats, snapshot, settings.batchSize, ready)
 
 	return &schedulerDispatchPlan{
 		State:       state,
-		MaxPolecats: maxPolecats,
-		BatchSize:   batchSize,
-		SpawnDelay:  spawnDelay,
+		MaxPolecats: settings.maxPolecats,
+		BatchSize:   settings.batchSize,
+		SpawnDelay:  settings.spawnDelay,
 		Capacity:    snapshot,
 		Scheduled:   scheduledBeadInfosFromAssessments(assessments),
 		Ready:       ready,
@@ -125,10 +125,16 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 	}, nil
 }
 
-func schedulerDispatchSettings(townRoot string, batchOverride int) (int, int, time.Duration, error) {
+type schedulerDispatchSettingsResult struct {
+	maxPolecats int
+	batchSize   int
+	spawnDelay  time.Duration
+}
+
+func schedulerDispatchSettings(townRoot string, batchOverride int) (schedulerDispatchSettingsResult, error) {
 	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("loading town settings: %w", err)
+		return schedulerDispatchSettingsResult{}, fmt.Errorf("loading town settings: %w", err)
 	}
 	schedulerCfg := settings.Scheduler
 	if schedulerCfg == nil {
@@ -138,7 +144,11 @@ func schedulerDispatchSettings(townRoot string, batchOverride int) (int, int, ti
 	if batchOverride > 0 {
 		batchSize = batchOverride
 	}
-	return schedulerCfg.GetMaxPolecats(), batchSize, capacity.GetSpawnDelay(schedulerCfg), nil
+	return schedulerDispatchSettingsResult{
+		maxPolecats: schedulerCfg.GetMaxPolecats(),
+		batchSize:   batchSize,
+		spawnDelay:  capacity.GetSpawnDelay(schedulerCfg),
+	}, nil
 }
 
 func schedulerCapacitySnapshot(townRoot string, cleanup bool) (polecatCapacitySnapshot, error) {

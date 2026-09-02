@@ -424,10 +424,11 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
 
-	mgr, _, _, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
 
 	// Get the MR first to show info
 	mr, err := mgr.GetMR(mrID)
@@ -473,10 +474,11 @@ func runMQReject(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrIDOrBranch := args[1]
 
-	mgr, _, _, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
 
 	result, err := mgr.RejectMR(mrIDOrBranch, reason, notify)
 	if err != nil {
@@ -532,10 +534,12 @@ func runMQPostMerge(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
 
-	mgr, r, _, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	r := ctx.r
 	rigGit, err := getRigGit(r.Path)
 	if err != nil {
 		return fmt.Errorf("post-merge proof: %w", err)

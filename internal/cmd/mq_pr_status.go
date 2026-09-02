@@ -47,10 +47,12 @@ func runMQPRStatus(cmd *cobra.Command, args []string) error {
 	targetRepo := commandStringFlag(cmd, "repo")
 	jsonOutput := commandBoolFlag(cmd, "json")
 
-	mgr, r, _, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return err
 	}
+	mgr := ctx.mgr
+	r := ctx.r
 	mr, err := mgr.FindMR(mrID)
 	if err != nil {
 		return err

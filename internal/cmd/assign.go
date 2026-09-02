@@ -104,61 +104,73 @@ func boolAssignFlag(cmd *cobra.Command, name string, fallback bool) bool {
 
 func runAssign(cmd *cobra.Command, args []string) error {
 	opts := readAssignOptions(cmd)
-	townRoot, rigName, agentID, title, err := prepareAssign(opts, args)
+	prepared, err := prepareAssign(opts, args)
 	if err != nil {
 		return err
 	}
 
 	if opts.dryRun {
-		printAssignDryRun(opts, title, agentID)
+		printAssignDryRun(opts, prepared.title, prepared.agentID)
 		return nil
 	}
 
-	fmt.Printf("%s Creating bead for %s...\n", style.Bold.Render("📋"), agentID)
-	beadID, err := createAssignedBead(opts, title, townRoot)
+	fmt.Printf("%s Creating bead for %s...\n", style.Bold.Render("📋"), prepared.agentID)
+	beadID, err := createAssignedBead(opts, prepared.title, prepared.townRoot)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("  Created: %s\n", beadID)
 
-	fmt.Printf("%s Hooking %s to %s...\n", style.Bold.Render("🪝"), beadID, agentID)
-	if err := hookAssignedBead(beadID, agentID, townRoot); err != nil {
+	fmt.Printf("%s Hooking %s to %s...\n", style.Bold.Render("🪝"), beadID, prepared.agentID)
+	if err := hookAssignedBead(beadID, prepared.agentID, prepared.townRoot); err != nil {
 		return err
 	}
 
 	// Step 3: Update agent hook_bead field so gt hook / gt mol status can find the work.
-	townBeadsDir := filepath.Join(townRoot, ".beads")
-	rigBeadsDir := filepath.Join(townRoot, rigName, ".beads")
-	if err := updateAgentHookBead(agentID, beadID, rigBeadsDir, townBeadsDir); err != nil {
+	townBeadsDir := filepath.Join(prepared.townRoot, ".beads")
+	rigBeadsDir := filepath.Join(prepared.townRoot, prepared.rigName, ".beads")
+	if err := updateAgentHookBead(prepared.agentID, beadID, rigBeadsDir, townBeadsDir); err != nil {
 		fmt.Printf("%s Could not update agent hook: %v\n", style.Dim.Render("Warning:"), err)
 	}
 
 	// Step 4: Log event
-	if err := events.LogFeed(events.TypeHook, agentID, events.HookPayload(beadID)); err != nil {
+	if err := events.LogFeed(events.TypeHook, prepared.agentID, events.HookPayload(beadID)); err != nil {
 		fmt.Fprintf(os.Stderr, "%s Warning: failed to log event: %v\n", style.Dim.Render("⚠"), err)
 	}
 
-	fmt.Printf("%s Assigned %s to %s — %q\n", style.Bold.Render("✓"), beadID, agentID, title)
+	fmt.Printf("%s Assigned %s to %s — %q\n", style.Bold.Render("✓"), beadID, prepared.agentID, prepared.title)
 
-	return notifyAssignedAgent(opts.nudge, agentID, title)
+	return notifyAssignedAgent(opts.nudge, prepared.agentID, prepared.title)
 }
 
-func prepareAssign(opts assignOptions, args []string) (townRoot, rigName, agentID, title string, err error) {
+type prepareAssignResult struct {
+	townRoot string
+	rigName  string
+	agentID  string
+	title    string
+}
+
+func prepareAssign(opts assignOptions, args []string) (prepareAssignResult, error) {
 	crewName := args[0]
-	title = strings.Join(args[1:], " ")
-	townRoot, err = workspace.FindFromCwd()
+	title := strings.Join(args[1:], " ")
+	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("finding town root: %w", err)
+		return prepareAssignResult{}, fmt.Errorf("finding town root: %w", err)
 	}
-	rigName, err = resolveAssignRig(opts.rig, townRoot, crewName)
+	rigName, err := resolveAssignRig(opts.rig, townRoot, crewName)
 	if err != nil {
-		return "", "", "", "", err
+		return prepareAssignResult{}, err
 	}
 	crewDir := filepath.Join(townRoot, rigName, "crew", crewName)
 	if _, statErr := os.Stat(crewDir); os.IsNotExist(statErr) {
-		return "", "", "", "", fmt.Errorf("crew member %q not found in rig %q (no directory %s)", crewName, rigName, crewDir)
+		return prepareAssignResult{}, fmt.Errorf("crew member %q not found in rig %q (no directory %s)", crewName, rigName, crewDir)
 	}
-	return townRoot, rigName, rigName + "/crew/" + crewName, title, nil
+	return prepareAssignResult{
+		townRoot: townRoot,
+		rigName:  rigName,
+		agentID:  rigName + "/crew/" + crewName,
+		title:    title,
+	}, nil
 }
 
 func resolveAssignRig(rigName, townRoot, crewName string) (string, error) {

@@ -154,17 +154,17 @@ func resolveUnslingContext(request unslingRequest) (*unslingContext, error) {
 
 func resolveUnslingAgent(targetAgent string) (string, error) {
 	if targetAgent != "" {
-		agentID, _, _, err := resolveTargetAgent(targetAgent)
+		resolved, err := resolveTargetAgent(targetAgent)
 		if err != nil {
 			return "", fmt.Errorf("resolving target agent: %w", err)
 		}
-		return agentID, nil
+		return resolved.agentID, nil
 	}
-	agentID, _, _, err := resolveSelfTarget()
+	resolved, err := resolveSelfTarget()
 	if err != nil {
 		return "", fmt.Errorf("detecting agent identity: %w", err)
 	}
-	return agentID, nil
+	return resolved.agentID, nil
 }
 
 func unslingBeadsPath(townRoot, agentID, agentBeadID string) string {

@@ -455,27 +455,34 @@ func printPatrolScanCompletions(result *witness.DiscoverCompletionsResult, verbo
 }
 
 func printPatrolScanSummary(zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult) {
-	zombieCount, activeCount, stallCount, completionCount := patrolScanIssueCounts(zombieResult, stallResult, completionResult)
-	if zombieCount == 0 && stallCount == 0 && completionCount == 0 {
+	counts := patrolScanIssueCounts(zombieResult, stallResult, completionResult)
+	if counts.zombies == 0 && counts.stalls == 0 && counts.completions == 0 {
 		fmt.Printf("%s All clear — no issues detected\n", style.Success.Render("✓"))
 	} else {
 		fmt.Printf("Summary: %d zombie(s) (%d active-work), %d stall(s), %d completion(s)\n",
-			zombieCount, activeCount, stallCount, completionCount)
+			counts.zombies, counts.active, counts.stalls, counts.completions)
 	}
 
 }
 
-func patrolScanIssueCounts(zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult) (int, int, int, int) {
-	var zombieCount, activeCount, stallCount, completionCount int
+type patrolScanCounts struct {
+	zombies     int
+	active      int
+	stalls      int
+	completions int
+}
+
+func patrolScanIssueCounts(zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult) patrolScanCounts {
+	var counts patrolScanCounts
 	if zombieResult != nil {
-		zombieCount = len(zombieResult.Zombies)
-		activeCount = countActiveWorkZombies(zombieResult)
+		counts.zombies = len(zombieResult.Zombies)
+		counts.active = countActiveWorkZombies(zombieResult)
 	}
 	if stallResult != nil {
-		stallCount = len(stallResult.Stalled)
+		counts.stalls = len(stallResult.Stalled)
 	}
 	if completionResult != nil {
-		completionCount = len(completionResult.Discovered)
+		counts.completions = len(completionResult.Discovered)
 	}
-	return zombieCount, activeCount, stallCount, completionCount
+	return counts
 }

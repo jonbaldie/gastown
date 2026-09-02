@@ -8,19 +8,8 @@ import (
 	"time"
 )
 
-// Connection abstracts file operations, command execution, and tmux management
-// for both local and remote (SSH) execution contexts.
-type Connection interface {
-	// Identification
-
-	// Name returns a human-readable name for this connection.
-	Name() string
-
-	// IsLocal returns true if this is a local connection.
-	IsLocal() bool
-
-	// File operations
-
+// FileConnection abstracts filesystem operations for local and remote contexts.
+type FileConnection interface {
 	// ReadFile reads the named file and returns its contents.
 	ReadFile(_ string) ([]byte, error)
 
@@ -44,9 +33,10 @@ type Connection interface {
 
 	// Exists returns true if the path exists.
 	Exists(_ string) (bool, error)
+}
 
-	// Command execution
-
+// ExecConnection abstracts command execution for local and remote contexts.
+type ExecConnection interface {
 	// Exec runs a command and returns its combined output.
 	Exec(_ string, _ ...string) ([]byte, error)
 
@@ -55,9 +45,10 @@ type Connection interface {
 
 	// ExecEnv runs a command with additional environment variables.
 	ExecEnv(_ map[string]string, _ string, _ ...string) ([]byte, error)
+}
 
-	// Tmux operations
-
+// TmuxConnection abstracts tmux session control for local and remote contexts.
+type TmuxConnection interface {
 	// TmuxNewSession creates a new tmux session with the given name.
 	TmuxNewSession(_, _ string) error
 
@@ -76,6 +67,20 @@ type Connection interface {
 
 	// TmuxListSessions returns a list of all tmux session names.
 	TmuxListSessions() ([]string, error)
+}
+
+// Connection abstracts file operations, command execution, and tmux management
+// for both local and remote (SSH) execution contexts.
+type Connection interface {
+	// Name returns a human-readable name for this connection.
+	Name() string
+
+	// IsLocal returns true if this is a local connection.
+	IsLocal() bool
+
+	FileConnection
+	ExecConnection
+	TmuxConnection
 }
 
 // FileInfo abstracts fs.FileInfo for use over remote connections.

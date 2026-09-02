@@ -792,12 +792,12 @@ func TestCheckStageOverlapSkipsExistingConvoys(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ids, autoRestage, convoyID, err := checkStageOverlap(dag, tt.input, tt.isRestage, false)
+			got, err := checkStageOverlap(dag, tt.input, tt.isRestage, false)
 			if err != nil {
 				t.Fatalf("checkStageOverlap() error = %v", err)
 			}
-			if ids != nil || autoRestage || convoyID != "" {
-				t.Fatalf("checkStageOverlap() = (%v, %v, %q), want (nil, false, empty)", ids, autoRestage, convoyID)
+			if got.slingableIDs != nil || got.autoRestage || got.autoConvoyID != "" {
+				t.Fatalf("checkStageOverlap() = (%v, %v, %q), want (nil, false, empty)", got.slingableIDs, got.autoRestage, got.autoConvoyID)
 			}
 		})
 	}

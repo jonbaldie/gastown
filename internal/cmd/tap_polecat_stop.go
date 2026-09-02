@@ -40,8 +40,8 @@ func init() {
 }
 
 func runTapPolecatStop(_ *cobra.Command, _ []string) error {
-	polecatName, sessionName, townRoot, ok := tapPolecatContext()
-	if !ok || tapPolecatAlreadyDone(townRoot, sessionName) {
+	ctx, ok := tapPolecatContext()
+	if !ok || tapPolecatAlreadyDone(ctx.townRoot, ctx.sessionName) {
 		return nil
 	}
 
@@ -50,7 +50,7 @@ func runTapPolecatStop(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	cloneDir, ok := tapPolecatCloneDir(townRoot, rigName, polecatName)
+	cloneDir, ok := tapPolecatCloneDir(ctx.townRoot, rigName, ctx.polecatName)
 	if !ok {
 		return nil
 	}
@@ -65,22 +65,30 @@ func runTapPolecatStop(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	runTapPolecatDone(polecatName, branch, reason, cloneDir, os.Stderr)
+	runTapPolecatDone(ctx.polecatName, branch, reason, cloneDir, os.Stderr)
 	return nil
 }
 
-func tapPolecatContext() (polecatName, sessionName, townRoot string, ok bool) {
-	polecatName = os.Getenv("GT_POLECAT")
-	sessionName = os.Getenv("GT_SESSION")
-	if polecatName == "" || sessionName == "" {
-		return "", "", "", false
+type tapPolecatEnv struct {
+	polecatName string
+	sessionName string
+	townRoot    string
+}
+
+func tapPolecatContext() (tapPolecatEnv, bool) {
+	env := tapPolecatEnv{
+		polecatName: os.Getenv("GT_POLECAT"),
+		sessionName: os.Getenv("GT_SESSION"),
+	}
+	if env.polecatName == "" || env.sessionName == "" {
+		return tapPolecatEnv{}, false
 	}
 
-	townRoot, _, _ = workspace.FindFromCwdWithFallback()
-	if townRoot == "" {
-		townRoot = os.Getenv("GT_TOWN_ROOT")
+	env.townRoot, _, _ = workspace.FindFromCwdWithFallback()
+	if env.townRoot == "" {
+		env.townRoot = os.Getenv("GT_TOWN_ROOT")
 	}
-	return polecatName, sessionName, townRoot, townRoot != ""
+	return env, env.townRoot != ""
 }
 
 func tapPolecatAlreadyDone(townRoot, sessionName string) bool {

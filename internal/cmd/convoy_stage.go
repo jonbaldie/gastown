@@ -274,13 +274,19 @@ func handleConvoyStageError(category string, ids []string, err error, dag *Convo
 	return err
 }
 
-func resolveStageBeads(args []string) (map[string]string, map[string]*bdShowResult, string, error) {
+type resolveStageBeadsResult struct {
+	beadTypes   map[string]string
+	beadResults map[string]*bdShowResult
+	failedArg   string
+}
+
+func resolveStageBeads(args []string) (resolveStageBeadsResult, error) {
 	beadTypes := make(map[string]string)
 	beadResults := make(map[string]*bdShowResult)
 	for _, arg := range args {
 		result, err := bdShow(arg)
 		if err != nil {
-			return nil, nil, arg, fmt.Errorf("cannot resolve bead %s: %w", arg, err)
+			return resolveStageBeadsResult{failedArg: arg}, fmt.Errorf("cannot resolve bead %s: %w", arg, err)
 		}
 		if isConvoyIssue(result.IssueType, result.Labels) {
 			beadTypes[arg] = "convoy"
@@ -289,7 +295,7 @@ func resolveStageBeads(args []string) (map[string]string, map[string]*bdShowResu
 		}
 		beadResults[arg] = result
 	}
-	return beadTypes, beadResults, "", nil
+	return resolveStageBeadsResult{beadTypes: beadTypes, beadResults: beadResults}, nil
 }
 
 func stageRestageState(input *StageInput, beadResults map[string]*bdShowResult) (bool, string) {
@@ -303,36 +309,48 @@ func stageRestageState(input *StageInput, beadResults map[string]*bdShowResult) 
 	return false, ""
 }
 
-func checkStageOverlap(dag *ConvoyDAG, input *StageInput, isRestage, jsonOutput bool) ([]string, bool, string, error) {
+type checkStageOverlapResult struct {
+	slingableIDs []string
+	autoRestage  bool
+	autoConvoyID string
+}
+
+func checkStageOverlap(dag *ConvoyDAG, input *StageInput, isRestage, jsonOutput bool) (checkStageOverlapResult, error) {
 	if isRestage || input.Kind == StageInputConvoy {
-		return nil, false, "", nil
+		return checkStageOverlapResult{}, nil
 	}
 	slingableIDs := dagSlingableIDs(dag)
 	overlaps, err := findOverlappingConvoys(slingableIDs)
 	if err != nil {
-		return slingableIDs, false, "", fmt.Errorf("checking for overlapping convoys: %w", err)
+		return checkStageOverlapResult{slingableIDs: slingableIDs}, fmt.Errorf("checking for overlapping convoys: %w", err)
 	}
 	autoRestage, autoConvoyID, err := handleOverlappingConvoys(overlaps)
 	if err != nil {
-		return slingableIDs, false, "", err
+		return checkStageOverlapResult{slingableIDs: slingableIDs}, err
 	}
 	if autoRestage && !jsonOutput {
 		fmt.Printf("Re-staging existing convoy %s\n", autoConvoyID)
 	}
-	return slingableIDs, autoRestage, autoConvoyID, nil
+	return checkStageOverlapResult{slingableIDs: slingableIDs, autoRestage: autoRestage, autoConvoyID: autoConvoyID}, nil
 }
 
-func prepareStageTextWaves(dag *ConvoyDAG, input *StageInput, errs, warns []StagingFinding, status string, noValidate bool) ([]Wave, []GatedTask, string, error) {
+type prepareStageTextWavesResult struct {
+	waves  []Wave
+	gated  []GatedTask
+	status string
+}
+
+func prepareStageTextWaves(dag *ConvoyDAG, input *StageInput, errs, warns []StagingFinding, status string, noValidate bool) (prepareStageTextWavesResult, error) {
 	waves, gated, err := computeWaves(dag)
 	if err != nil {
-		return nil, nil, status, err
+		return prepareStageTextWavesResult{status: status}, err
 	}
 	if input.Kind == StageInputEpic && !noValidate {
 		epicID := input.IDs[0]
 		var validationID string
 		waves, validationID, err = appendValidationWave(dag, waves, epicID)
 		if err != nil {
-			return nil, nil, status, fmt.Errorf("creating validation bead: %w", err)
+			return prepareStageTextWavesResult{status: status}, fmt.Errorf("creating validation bead: %w", err)
 		}
 		if validationID != "" {
 			blockerCount := len(dag.Nodes[validationID].BlockedBy)
@@ -351,7 +369,7 @@ func prepareStageTextWaves(dag *ConvoyDAG, input *StageInput, errs, warns []Stag
 	if len(gated) > 0 {
 		status = chooseStatus(errs, warns)
 	}
-	return waves, gated, status, nil
+	return prepareStageTextWavesResult{waves: waves, gated: gated, status: status}, nil
 }
 
 func renderStageText(dag *ConvoyDAG, input *StageInput, waves []Wave, gated []GatedTask, warns []StagingFinding) {
@@ -395,13 +413,13 @@ func completeConvoyStageText(stage *convoyStageContext, errs, warns []StagingFin
 		fmt.Fprint(os.Stderr, renderErrors(errs))
 		return fmt.Errorf("convoy staging failed: %d error(s) found", len(errs))
 	}
-	waves, gated, status, err := prepareStageTextWaves(stage.dag, stage.input, errs, warns, status, options.noValidate)
+	prepared, err := prepareStageTextWaves(stage.dag, stage.input, errs, warns, status, options.noValidate)
 	if err != nil {
 		return err
 	}
-	renderStageText(stage.dag, stage.input, waves, gated, warns)
+	renderStageText(stage.dag, stage.input, prepared.waves, prepared.gated, warns)
 	title := resolveConvoyTitle(options.title, stage.input, stage.beadResults)
-	return persistStageText(stage.dag, waves, status, title, stage.isRestage, stage.restageConvoyID, options.launch, launchForce)
+	return persistStageText(stage.dag, prepared.waves, prepared.status, title, stage.isRestage, stage.restageConvoyID, options.launch, launchForce)
 }
 
 type convoyStageContext struct {
@@ -416,32 +434,32 @@ func prepareConvoyStage(args []string, jsonOutput bool) (*convoyStageContext, er
 	if err := validateStageArgs(args); err != nil {
 		return nil, handleConvoyStageError("validation", nil, err, nil, nil, jsonOutput)
 	}
-	beadTypes, beadResults, failedArg, err := resolveStageBeads(args)
+	resolved, err := resolveStageBeads(args)
 	if err != nil {
-		return nil, handleConvoyStageError("resolve", []string{failedArg}, err, nil, nil, jsonOutput)
+		return nil, handleConvoyStageError("resolve", []string{resolved.failedArg}, err, nil, nil, jsonOutput)
 	}
-	input, err := resolveInputKind(beadTypes)
+	input, err := resolveInputKind(resolved.beadTypes)
 	if err != nil {
 		return nil, handleConvoyStageError("input", args, err, nil, nil, jsonOutput)
 	}
-	isRestage, restageConvoyID := stageRestageState(input, beadResults)
+	isRestage, restageConvoyID := stageRestageState(input, resolved.beadResults)
 	beads, deps, err := collectBeads(input)
 	if err != nil {
 		return nil, handleConvoyStageError("collect", input.IDs, err, nil, nil, jsonOutput)
 	}
 	dag := buildConvoyDAG(beads, deps)
-	slingableIDs, autoRestage, autoConvoyID, err := checkStageOverlap(dag, input, isRestage, jsonOutput)
+	overlap, err := checkStageOverlap(dag, input, isRestage, jsonOutput)
 	if err != nil {
-		return nil, handleConvoyStageError("overlap", slingableIDs, err, dag, input, jsonOutput)
+		return nil, handleConvoyStageError("overlap", overlap.slingableIDs, err, dag, input, jsonOutput)
 	}
-	if autoRestage {
+	if overlap.autoRestage {
 		isRestage = true
-		restageConvoyID = autoConvoyID
+		restageConvoyID = overlap.autoConvoyID
 	}
 	return &convoyStageContext{
 		dag:             dag,
 		input:           input,
-		beadResults:     beadResults,
+		beadResults:     resolved.beadResults,
 		isRestage:       isRestage,
 		restageConvoyID: restageConvoyID,
 	}, nil
@@ -761,13 +779,13 @@ func createStagedConvoy(dag *ConvoyDAG, waves []Wave, status string, title strin
 		return "", err
 	}
 
-	convoyID, title, description, slingableIDs := stagedConvoyDetails(dag, waves, title)
-	if err := createStagedConvoyBead(townBeads, convoyID, title, description, status); err != nil {
+	details := stagedConvoyDetails(dag, waves, title)
+	if err := createStagedConvoyBead(townBeads, details.convoyID, details.title, details.description, status); err != nil {
 		return "", err
 	}
-	trackStagedConvoyBeads(townBeads, convoyID, slingableIDs, jsonMode)
+	trackStagedConvoyBeads(townBeads, details.convoyID, details.slingableIDs, jsonMode)
 
-	return convoyID, nil
+	return details.convoyID, nil
 }
 
 func ensureStagedConvoyConfig(resolvedBeads string) error {
@@ -780,7 +798,14 @@ func ensureStagedConvoyConfig(resolvedBeads string) error {
 	return nil
 }
 
-func stagedConvoyDetails(dag *ConvoyDAG, waves []Wave, title string) (string, string, string, []string) {
+type stagedConvoyDetailsResult struct {
+	convoyID     string
+	title        string
+	description  string
+	slingableIDs []string
+}
+
+func stagedConvoyDetails(dag *ConvoyDAG, waves []Wave, title string) stagedConvoyDetailsResult {
 	taskCount := 0
 	rigSet := make(map[string]bool)
 	var slingableIDs []string
@@ -800,7 +825,12 @@ func stagedConvoyDetails(dag *ConvoyDAG, waves []Wave, title string) (string, st
 	}
 	description := fmt.Sprintf("Staged convoy: %d tasks, %d waves. Staged at %s",
 		taskCount, len(waves), time.Now().UTC().Format(time.RFC3339))
-	return fmt.Sprintf("hq-cv-%s", generateShortID()), title, description, slingableIDs
+	return stagedConvoyDetailsResult{
+		convoyID:     fmt.Sprintf("hq-cv-%s", generateShortID()),
+		title:        title,
+		description:  description,
+		slingableIDs: slingableIDs,
+	}
 }
 
 func createStagedConvoyBead(townBeads, convoyID, title, description, status string) error {
@@ -1730,13 +1760,13 @@ func collectEpicBeads(epicID string) ([]BeadInfo, []DepInfo, error) {
 		}
 		visited[current.ID] = true
 
-		bead, deps, children, err := collectEpicBead(current)
+		collected, err := collectEpicBead(current)
 		if err != nil {
 			return nil, nil, err
 		}
-		allBeads = append(allBeads, bead)
-		allDeps = append(allDeps, deps...)
-		for _, child := range children {
+		allBeads = append(allBeads, collected.bead)
+		allDeps = append(allDeps, collected.deps...)
+		for _, child := range collected.children {
 			if !visited[child.ID] {
 				queue = append(queue, child)
 			}
@@ -1746,7 +1776,13 @@ func collectEpicBeads(epicID string) ([]BeadInfo, []DepInfo, error) {
 	return allBeads, allDeps, nil
 }
 
-func collectEpicBead(current bdShowResult) (BeadInfo, []DepInfo, []bdShowResult, error) {
+type collectEpicBeadResult struct {
+	bead     BeadInfo
+	deps     []DepInfo
+	children []bdShowResult
+}
+
+func collectEpicBead(current bdShowResult) (collectEpicBeadResult, error) {
 	bead := BeadInfo{
 		ID:     current.ID,
 		Title:  current.Title,
@@ -1757,7 +1793,7 @@ func collectEpicBead(current bdShowResult) (BeadInfo, []DepInfo, []bdShowResult,
 
 	deps, err := bdDepList(current.ID)
 	if err != nil {
-		return BeadInfo{}, nil, nil, fmt.Errorf("deps for %s: %w", current.ID, err)
+		return collectEpicBeadResult{}, fmt.Errorf("deps for %s: %w", current.ID, err)
 	}
 	depInfos := make([]DepInfo, 0, len(deps))
 	for _, dep := range deps {
@@ -1770,9 +1806,9 @@ func collectEpicBead(current bdShowResult) (BeadInfo, []DepInfo, []bdShowResult,
 
 	children, err := bdListChildren(current.ID)
 	if err != nil {
-		return BeadInfo{}, nil, nil, fmt.Errorf("children of %s: %w", current.ID, err)
+		return collectEpicBeadResult{}, fmt.Errorf("children of %s: %w", current.ID, err)
 	}
-	return bead, depInfos, children, nil
+	return collectEpicBeadResult{bead: bead, deps: depInfos, children: children}, nil
 }
 
 // collectTaskListBeads validates and fetches info for explicit task IDs.

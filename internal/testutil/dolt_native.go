@@ -58,7 +58,7 @@ func startNativeDoltSQLServer() (*nativeDoltServer, error) {
 		return nil, fmt.Errorf("dolt binary not found")
 	}
 
-	dataDir, port, logPath, logFile, err := prepareNativeDoltData()
+	data, err := prepareNativeDoltData()
 	if err != nil {
 		return nil, err
 	}
@@ -66,48 +66,60 @@ func startNativeDoltSQLServer() (*nativeDoltServer, error) {
 	// --name/--email keep init independent of ~/.dolt. CI installs Dolt but
 	// never sets user.name/user.email, and writing those globally from a
 	// temp dir can create .dolt before init.
-	initOut, err := initializeNativeDolt(dolt, dataDir)
+	initOut, err := initializeNativeDolt(dolt, data.dataDir)
 	if err != nil {
-		_ = logFile.Close()
-		_ = os.RemoveAll(dataDir)
-		return nil, fmt.Errorf("dolt init in %s: %w\n%s", dataDir, err, initOut)
+		_ = data.logFile.Close()
+		_ = os.RemoveAll(data.dataDir)
+		return nil, fmt.Errorf("dolt init in %s: %w\n%s", data.dataDir, err, initOut)
 	}
 
-	cmd, err := launchNativeDolt(dolt, dataDir, port, logFile)
+	cmd, err := launchNativeDolt(dolt, data.dataDir, data.port, data.logFile)
 	if err != nil {
-		_ = logFile.Close()
-		_ = os.RemoveAll(dataDir)
+		_ = data.logFile.Close()
+		_ = os.RemoveAll(data.dataDir)
 		return nil, fmt.Errorf("starting dolt sql-server: %w", err)
 	}
-	_ = logFile.Close()
+	_ = data.logFile.Close()
 
-	srv := &nativeDoltServer{cmd: cmd, dataDir: dataDir, port: port}
-	if err := waitForNativeDolt(srv, logPath); err != nil {
+	srv := &nativeDoltServer{cmd: cmd, dataDir: data.dataDir, port: data.port}
+	if err := waitForNativeDolt(srv, data.logPath); err != nil {
 		_ = stopNativeDoltSQLServer(srv)
 		return nil, err
 	}
 	return srv, nil
 }
 
-func prepareNativeDoltData() (dataDir, port, logPath string, logFile *os.File, err error) {
-	dataDir, err = os.MkdirTemp("", "gt-dolt-test-*")
+type nativeDoltData struct {
+	dataDir string
+	port    string
+	logPath string
+	logFile *os.File
+}
+
+func prepareNativeDoltData() (nativeDoltData, error) {
+	dataDir, err := os.MkdirTemp("", "gt-dolt-test-*")
 	if err != nil {
-		return "", "", "", nil, fmt.Errorf("mkdir dolt data dir: %w", err)
+		return nativeDoltData{}, fmt.Errorf("mkdir dolt data dir: %w", err)
 	}
 
-	port, err = freeTCPPort()
+	port, err := freeTCPPort()
 	if err != nil {
 		_ = os.RemoveAll(dataDir)
-		return "", "", "", nil, fmt.Errorf("allocate dolt port: %w", err)
+		return nativeDoltData{}, fmt.Errorf("allocate dolt port: %w", err)
 	}
 
-	logPath = filepath.Join(dataDir, "sql-server.log")
-	logFile, err = os.Create(logPath)
+	logPath := filepath.Join(dataDir, "sql-server.log")
+	logFile, err := os.Create(logPath)
 	if err != nil {
 		_ = os.RemoveAll(dataDir)
-		return "", "", "", nil, fmt.Errorf("create dolt log: %w", err)
+		return nativeDoltData{}, fmt.Errorf("create dolt log: %w", err)
 	}
-	return dataDir, port, logPath, logFile, nil
+	return nativeDoltData{
+		dataDir: dataDir,
+		port:    port,
+		logPath: logPath,
+		logFile: logFile,
+	}, nil
 }
 
 func initializeNativeDolt(dolt, dataDir string) ([]byte, error) {

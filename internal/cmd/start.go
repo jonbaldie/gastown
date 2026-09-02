@@ -308,66 +308,58 @@ func startCoreAgents(townRoot string, agentOverride string, mu *sync.Mutex) erro
 	var firstErr error
 	var errMu sync.Mutex
 
-	// Start Mayor in goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mayorMgr := mayor.NewManager(townRoot)
-		if err := mayorMgr.Start(agentOverride); err != nil {
-			if errors.Is(err, mayor.ErrAlreadyRunning) {
-				mu.Lock()
-				fmt.Printf("  %s Mayor already running\n", style.Dim.Render("○"))
-				mu.Unlock()
-			} else if errors.Is(err, mayor.ErrACPActive) {
-				mu.Lock()
-				fmt.Printf("  %s Mayor already running (ACP mode)\n", style.Dim.Render("○"))
-				mu.Unlock()
-			} else {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("starting Mayor: %w", err)
-				}
-				errMu.Unlock()
-				mu.Lock()
-				fmt.Printf("  %s Mayor failed: %v\n", style.Dim.Render("○"), err)
-				mu.Unlock()
-			}
-		} else {
-			mu.Lock()
-			fmt.Printf("  %s Mayor started\n", style.Bold.Render("✓"))
-			mu.Unlock()
-		}
+		msg, err := startMayorCore(townRoot, agentOverride)
+		reportCoreAgentStart(mu, &errMu, &firstErr, msg, err)
 	}()
 
-	// Start Deacon in goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		deaconMgr := deacon.NewManager(townRoot)
-		if err := deaconMgr.Start(agentOverride); err != nil {
-			if errors.Is(err, deacon.ErrAlreadyRunning) {
-				mu.Lock()
-				fmt.Printf("  %s Deacon already running\n", style.Dim.Render("○"))
-				mu.Unlock()
-			} else {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("starting Deacon: %w", err)
-				}
-				errMu.Unlock()
-				mu.Lock()
-				fmt.Printf("  %s Deacon failed: %v\n", style.Dim.Render("○"), err)
-				mu.Unlock()
-			}
-		} else {
-			mu.Lock()
-			fmt.Printf("  %s Deacon started\n", style.Bold.Render("✓"))
-			mu.Unlock()
-		}
+		msg, err := startDeaconCore(townRoot, agentOverride)
+		reportCoreAgentStart(mu, &errMu, &firstErr, msg, err)
 	}()
 
 	wg.Wait()
 	return firstErr
+}
+
+func reportCoreAgentStart(mu, errMu *sync.Mutex, firstErr *error, msg string, err error) {
+	if err != nil {
+		errMu.Lock()
+		if *firstErr == nil {
+			*firstErr = err
+		}
+		errMu.Unlock()
+	}
+	mu.Lock()
+	fmt.Print(msg)
+	mu.Unlock()
+}
+
+func startMayorCore(townRoot, agentOverride string) (string, error) {
+	if err := mayor.NewManager(townRoot).Start(agentOverride); err != nil {
+		if errors.Is(err, mayor.ErrAlreadyRunning) {
+			return fmt.Sprintf("  %s Mayor already running\n", style.Dim.Render("○")), nil
+		}
+		if errors.Is(err, mayor.ErrACPActive) {
+			return fmt.Sprintf("  %s Mayor already running (ACP mode)\n", style.Dim.Render("○")), nil
+		}
+		return fmt.Sprintf("  %s Mayor failed: %v\n", style.Dim.Render("○"), err), fmt.Errorf("starting Mayor: %w", err)
+	}
+	return fmt.Sprintf("  %s Mayor started\n", style.Bold.Render("✓")), nil
+}
+
+func startDeaconCore(townRoot, agentOverride string) (string, error) {
+	if err := deacon.NewManager(townRoot).Start(agentOverride); err != nil {
+		if errors.Is(err, deacon.ErrAlreadyRunning) {
+			return fmt.Sprintf("  %s Deacon already running\n", style.Dim.Render("○")), nil
+		}
+		return fmt.Sprintf("  %s Deacon failed: %v\n", style.Dim.Render("○"), err), fmt.Errorf("starting Deacon: %w", err)
+	}
+	return fmt.Sprintf("  %s Deacon started\n", style.Bold.Render("✓")), nil
 }
 
 // startRigAgents starts witness and refinery for all rigs in parallel.
@@ -819,34 +811,42 @@ func runImmediateShutdown(t *tmux.Tmux, gtSessions []string, townRoot string, op
 // if the session no longer exists after the kill attempt).
 func killSessionsInOrder(t *tmux.Tmux, sessions []string, mayorSession, deaconSession string) int {
 	bootSession := session.BootSessionName()
-	sessionSet, polecats, refineries, witnesses := categorizeShutdownSessions(sessions, mayorSession, deaconSession, bootSession)
-	stopped := killShutdownGroup(t, polecats)
-	stopped += killShutdownGroup(t, refineries)
-	stopped += killShutdownGroup(t, witnesses)
-	stopped += killTownShutdownSessions(t, sessionSet, mayorSession, bootSession, deaconSession)
+	groups := categorizeShutdownSessions(sessions, mayorSession, deaconSession, bootSession)
+	stopped := killShutdownGroup(t, groups.polecats)
+	stopped += killShutdownGroup(t, groups.refineries)
+	stopped += killShutdownGroup(t, groups.witnesses)
+	stopped += killTownShutdownSessions(t, groups.sessionSet, mayorSession, bootSession, deaconSession)
 	return stopped
 }
 
-func categorizeShutdownSessions(sessions []string, mayorSession, deaconSession, bootSession string) (map[string]bool, []string, []string, []string) {
-	sessionSet := make(map[string]bool, len(sessions))
-	for _, s := range sessions {
-		sessionSet[s] = true
+type shutdownSessionGroups struct {
+	sessionSet map[string]bool
+	polecats   []string
+	refineries []string
+	witnesses  []string
+}
+
+func categorizeShutdownSessions(sessions []string, mayorSession, deaconSession, bootSession string) shutdownSessionGroups {
+	groups := shutdownSessionGroups{
+		sessionSet: make(map[string]bool, len(sessions)),
 	}
-	var polecats, refineries, witnesses []string
+	for _, s := range sessions {
+		groups.sessionSet[s] = true
+	}
 	for _, sess := range sessions {
 		if sess == mayorSession || sess == deaconSession || sess == bootSession {
 			continue
 		}
 		switch shutdownSessionGroup(sess) {
 		case session.RoleWitness:
-			witnesses = append(witnesses, sess)
+			groups.witnesses = append(groups.witnesses, sess)
 		case session.RoleRefinery:
-			refineries = append(refineries, sess)
+			groups.refineries = append(groups.refineries, sess)
 		default:
-			polecats = append(polecats, sess)
+			groups.polecats = append(groups.polecats, sess)
 		}
 	}
-	return sessionSet, polecats, refineries, witnesses
+	return groups
 }
 
 func shutdownSessionGroup(sess string) session.Role {

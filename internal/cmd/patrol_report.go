@@ -51,20 +51,20 @@ func runPatrolReport(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	patrolID, _, hasPatrol, findErr := findActivePatrol(cfg)
+	patrol, findErr := findActivePatrol(cfg)
 	if findErr != nil {
 		return fmt.Errorf("finding active patrol: %w", findErr)
 	}
-	if !hasPatrol {
+	if !patrol.found {
 		return fmt.Errorf("no active patrol found for %s", cfg.RoleName)
 	}
 
 	b := patrolReportBeads(cfg)
 	stepAudit := buildStepAudit(cfg.PatrolMolName, steps)
-	updatePatrolReportSummary(b, patrolID, summary, stepAudit)
+	updatePatrolReportSummary(b, patrol.id, summary, stepAudit)
 	fmt.Println(stepAudit)
 
-	if err := closePatrolReportCycle(b, patrolID, summary); err != nil {
+	if err := closePatrolReportCycle(b, patrol.id, summary); err != nil {
 		return err
 	}
 	return startNextPatrolReport(cfg, summary)

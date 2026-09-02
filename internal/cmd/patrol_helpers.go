@@ -36,6 +36,12 @@ type PatrolConfig struct {
 // Remaining stale beads are cleaned by burnPreviousPatrolWisps at cycle end.
 const maxStalePurgePerRun = 5
 
+type activePatrol struct {
+	id    string
+	line  string
+	found bool
+}
+
 // findActivePatrol finds an active patrol molecule for the role.
 // Returns the patrol ID, display line, and whether one was found.
 // Returns an error if discovery fails (e.g. transient bd failure),
@@ -48,21 +54,21 @@ const maxStalePurgePerRun = 5
 // e.g. after a squash that didn't close the root). Stale patrols are
 // cleaned up incrementally (up to maxStalePurgePerRun per call); any
 // remaining stale beads are cleaned by burnPreviousPatrolWisps at cycle end.
-func findActivePatrol(cfg PatrolConfig) (patrolID, patrolLine string, found bool, err error) {
+func findActivePatrol(cfg PatrolConfig) (activePatrol, error) {
 	b := patrolBeads(cfg)
 	hookedBeads, listErr := listAssignedActiveWorkAcrossStatuses(b, cfg.Assignee)
 	if listErr != nil {
-		return "", "", false, fmt.Errorf("listing active patrol work: %w", listErr)
+		return activePatrol{}, fmt.Errorf("listing active patrol work: %w", listErr)
 	}
 	activeBead, staleIDs, skipped := scanActivePatrolBeads(b, cfg, hookedBeads)
 	closeStalePatrolBeads(b, staleIDs)
 	if activeBead != nil {
-		return activeBead.ID, formatBeadLine(activeBead), true, nil
+		return activePatrol{id: activeBead.ID, line: formatBeadLine(activeBead), found: true}, nil
 	}
 	if skipped > 0 {
-		return "", "", false, fmt.Errorf("discovery incomplete: %d patrol(s) skipped due to child-listing errors", skipped)
+		return activePatrol{}, fmt.Errorf("discovery incomplete: %d patrol(s) skipped due to child-listing errors", skipped)
 	}
-	return "", "", false, nil
+	return activePatrol{}, nil
 }
 
 func patrolBeads(cfg PatrolConfig) *beads.Beads {
@@ -345,7 +351,7 @@ func outputPatrolContext(cfg PatrolConfig) {
 	fmt.Printf("%s\n\n", style.Bold.Render(fmt.Sprintf("## %s %s", cfg.HeaderEmoji, cfg.HeaderTitle)))
 
 	// Try to find an active patrol
-	patrolID, patrolLine, hasPatrol, findErr := findActivePatrol(cfg)
+	patrol, findErr := findActivePatrol(cfg)
 
 	if findErr != nil {
 		// Discovery failed — do NOT auto-spawn to avoid creating duplicates
@@ -355,7 +361,8 @@ func outputPatrolContext(cfg PatrolConfig) {
 		return
 	}
 
-	if !hasPatrol {
+	patrolID := patrol.id
+	if !patrol.found {
 		// No active patrol - auto-spawn one
 		fmt.Printf("Status: **No active patrol** - creating %s...\n", cfg.PatrolMolName)
 		fmt.Println()
@@ -380,7 +387,7 @@ func outputPatrolContext(cfg PatrolConfig) {
 	} else {
 		// Has active patrol - show status
 		fmt.Println("Status: **Patrol Active**")
-		fmt.Printf("Patrol: %s\n\n", strings.TrimSpace(patrolLine))
+		fmt.Printf("Patrol: %s\n\n", strings.TrimSpace(patrol.line))
 	}
 
 	// Show patrol work loop instructions

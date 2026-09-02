@@ -708,19 +708,19 @@ func runStatusOnce(opts statusOptions) error {
 }
 
 func gatherStatus(opts statusOptions) (TownStatus, error) {
-	townRoot, fast, skipBeadsPrefetch, release, err := prepareStatusWorkspace(opts)
+	ws, err := prepareStatusWorkspace(opts)
 	if err != nil {
 		return TownStatus{}, err
 	}
-	if release != nil {
-		defer release()
+	if ws.release != nil {
+		defer ws.release()
 	}
 
-	townConfig, rigsConfig, townSettings := loadStatusConfiguration(townRoot)
+	townConfig, rigsConfig, townSettings := loadStatusConfiguration(ws.townRoot)
 
 	// Create rig manager
-	g := git.NewGit(townRoot)
-	mgr := rig.NewManager(townRoot, rigsConfig, g)
+	g := git.NewGit(ws.townRoot)
+	mgr := rig.NewManager(ws.townRoot, rigsConfig, g)
 
 	// Create tmux instance for runtime checks
 	t := tmux.NewTmux()
@@ -733,52 +733,57 @@ func gatherStatus(opts statusOptions) (TownStatus, error) {
 		return TownStatus{}, fmt.Errorf("discovering rigs: %w", err)
 	}
 
-	allAgentBeads, allHookBeads := prefetchStatusBeads(townRoot, rigs, skipBeadsPrefetch)
+	allAgentBeads, allHookBeads := prefetchStatusBeads(ws.townRoot, rigs, ws.skipBeadsPrefetch)
 
 	// Create mail router for inbox lookups
-	mailRouter := mail.NewRouter(townRoot)
+	mailRouter := mail.NewRouter(ws.townRoot)
 
-	overseerInfo := loadStatusOverseer(townRoot, mailRouter, fast)
+	overseerInfo := loadStatusOverseer(ws.townRoot, mailRouter, ws.fast)
 
 	// Build status - parallel fetch global agents and rigs
 	status := TownStatus{
 		Name:     townConfig.Name,
-		Location: townRoot,
+		Location: ws.townRoot,
 		Overseer: overseerInfo,
-		DND:      detectCurrentDNDStatus(townRoot),
+		DND:      detectCurrentDNDStatus(ws.townRoot),
 		Rigs:     make([]RigStatus, len(rigs)),
 	}
 
-	setStatusServices(&status, townRoot, allSessions)
+	setStatusServices(&status, ws.townRoot, allSessions)
 
 	var rigActiveHooks []int
 	status.Agents, status.Rigs, rigActiveHooks = discoverStatusAgentsAndRigs(
-		townRoot, rigs, allSessions, allAgentBeads, allHookBeads, mailRouter, fast,
+		ws.townRoot, rigs, allSessions, allAgentBeads, allHookBeads, mailRouter, ws.fast,
 	)
 
-	enrichStatusAgents(&status, townRoot, townSettings)
+	enrichStatusAgents(&status, ws.townRoot, townSettings)
 	aggregateStatusSummary(&status, rigActiveHooks, len(rigs))
 
 	return status, nil
 }
 
-func prepareStatusWorkspace(opts statusOptions) (string, bool, bool, func(), error) {
+type statusWorkspace struct {
+	townRoot          string
+	fast              bool
+	skipBeadsPrefetch bool
+	release           func()
+}
+
+func prepareStatusWorkspace(opts statusOptions) (statusWorkspace, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return "", false, false, nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return statusWorkspace{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-	fast := opts.fast
-	skipBeadsPrefetch := false
-	var release func()
-	if !fast {
+	ws := statusWorkspace{townRoot: townRoot, fast: opts.fast}
+	if !ws.fast {
 		if unlock, ok := tryStatusDetailLock(townRoot); ok {
-			release = unlock
+			ws.release = unlock
 		} else {
-			fast = true
-			skipBeadsPrefetch = true
+			ws.fast = true
+			ws.skipBeadsPrefetch = true
 		}
 	}
-	return townRoot, fast, skipBeadsPrefetch, release, nil
+	return ws, nil
 }
 
 func loadStatusConfiguration(townRoot string) (*config.TownConfig, *config.RigsConfig, *config.TownSettings) {
@@ -1240,31 +1245,39 @@ func writeStatusGlobalAgents(w io.Writer, status TownStatus, verbose bool, roleI
 
 func writeStatusRig(w io.Writer, r RigStatus, townRoot string, verbose bool, roleIcons map[string]string) {
 	fmt.Fprintf(w, "─── %s ───────────────────────────────────────────\n\n", style.Bold.Render(r.Name+"/"))
-	witnesses, refineries, crews, polecats := groupStatusAgents(r.Agents)
-	writeStatusWitnesses(w, witnesses, r.Hooks, townRoot, verbose, roleIcons)
-	writeStatusRefineries(w, refineries, r, townRoot, verbose, roleIcons)
-	writeStatusCrew(w, crews, r.Hooks, townRoot, verbose, roleIcons)
-	writeStatusPolecats(w, polecats, r.Hooks, townRoot, verbose, roleIcons)
-	if len(witnesses)+len(refineries)+len(crews)+len(polecats) == 0 {
+	grouped := groupStatusAgents(r.Agents)
+	writeStatusWitnesses(w, grouped.witnesses, r.Hooks, townRoot, verbose, roleIcons)
+	writeStatusRefineries(w, grouped.refineries, r, townRoot, verbose, roleIcons)
+	writeStatusCrew(w, grouped.crews, r.Hooks, townRoot, verbose, roleIcons)
+	writeStatusPolecats(w, grouped.polecats, r.Hooks, townRoot, verbose, roleIcons)
+	if len(grouped.witnesses)+len(grouped.refineries)+len(grouped.crews)+len(grouped.polecats) == 0 {
 		fmt.Fprintf(w, "   %s\n", style.Dim.Render("(no agents)"))
 	}
 	fmt.Fprintln(w)
 }
 
-func groupStatusAgents(agents []AgentRuntime) (witnesses, refineries, crews, polecats []AgentRuntime) {
+type groupedStatusAgents struct {
+	witnesses  []AgentRuntime
+	refineries []AgentRuntime
+	crews      []AgentRuntime
+	polecats   []AgentRuntime
+}
+
+func groupStatusAgents(agents []AgentRuntime) groupedStatusAgents {
+	var grouped groupedStatusAgents
 	for _, agent := range agents {
 		switch agent.Role {
 		case constants.RoleWitness:
-			witnesses = append(witnesses, agent)
+			grouped.witnesses = append(grouped.witnesses, agent)
 		case constants.RoleRefinery:
-			refineries = append(refineries, agent)
+			grouped.refineries = append(grouped.refineries, agent)
 		case constants.RoleCrew:
-			crews = append(crews, agent)
+			grouped.crews = append(grouped.crews, agent)
 		case constants.RolePolecat:
-			polecats = append(polecats, agent)
+			grouped.polecats = append(grouped.polecats, agent)
 		}
 	}
-	return witnesses, refineries, crews, polecats
+	return grouped
 }
 
 func writeStatusWitnesses(w io.Writer, agents []AgentRuntime, hooks []AgentHookInfo, townRoot string, verbose bool, roleIcons map[string]string) {
@@ -1695,86 +1708,87 @@ func resolveHookFromMap(allHandoffs map[string]*beads.Issue, role, agentAddress,
 // allAgentBeads is a preloaded map of agent beads for O(1) lookup.
 // allHookBeads is a preloaded map of hook beads for O(1) lookup.
 func discoverGlobalAgents(townRoot string, allSessions map[string]bool, allAgentBeads map[string]*beads.Issue, allHookBeads map[string]*beads.Issue, mailRouter *mail.Router, skipMail bool) []AgentRuntime {
-	// Get session names dynamically
-	mayorSession := getMayorSessionName()
-	deaconSession := getDeaconSessionName()
-
-	// Define agents to discover
-	// Note: Mayor and Deacon are town-level agents with hq- prefix bead IDs
-	agentDefs := []struct {
-		name    string
-		address string
-		session string
-		role    string
-		beadID  string
-	}{
-		{constants.RoleMayor, constants.RoleMayor + "/", mayorSession, "coordinator", beads.MayorBeadIDTown()},
-		{constants.RoleDeacon, constants.RoleDeacon + "/", deaconSession, "health-check", beads.DeaconBeadIDTown()},
-	}
-
-	agents := make([]AgentRuntime, len(agentDefs))
+	agents := make([]AgentRuntime, 2)
 	var wg sync.WaitGroup
-
-	for i, def := range agentDefs {
-		wg.Add(1)
-		go func(idx int, d struct {
-			name    string
-			address string
-			session string
-			role    string
-			beadID  string
-		}) {
-			defer wg.Done()
-
-			agent := AgentRuntime{
-				Name:    d.name,
-				Address: d.address,
-				Session: d.session,
-				Role:    d.role,
-			}
-
-			// Check tmux session from preloaded map (O(1))
-			agent.Running = allSessions[d.session]
-
-			// Check for ACP session (for Mayor)
-			if d.name == "mayor" {
-				if mayor.IsACPActive(townRoot) {
-					agent.ACP = true
-					agent.Running = true
-				}
-			}
-			applyPaneBlock(&agent)
-
-			// Look up agent bead from preloaded map (O(1))
-			if issue, ok := allAgentBeads[d.beadID]; ok {
-				// Prefer database columns over description parsing
-				// HookBead column is authoritative (cleared by unsling)
-				agent.HookBead = issue.HookBead
-				agent.State = beads.ResolveAgentState(issue.Description, issue.AgentState)
-				if agent.HookBead != "" {
-					agent.HasWork = true
-					// Get hook title from preloaded map
-					if pinnedIssue, ok := allHookBeads[agent.HookBead]; ok {
-						agent.WorkTitle = pinnedIssue.Title
-					}
-				}
-				// Parse description fields for notification level
-				if fields := beads.ParseAgentFields(issue.Description); fields != nil {
-					agent.NotificationLevel = fields.NotificationLevel
-				}
-			}
-
-			// Get mail info (skip if --fast)
-			if !skipMail {
-				populateMailInfo(&agent, mailRouter)
-			}
-
-			agents[idx] = agent
-		}(i, def)
-	}
-
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		agents[0] = discoverMayorAgent(townRoot, allSessions, allAgentBeads, allHookBeads, mailRouter, skipMail)
+	}()
+	go func() {
+		defer wg.Done()
+		agents[1] = discoverDeaconAgent(allSessions, allAgentBeads, allHookBeads, mailRouter, skipMail)
+	}()
 	wg.Wait()
 	return agents
+}
+
+func discoverMayorAgent(townRoot string, allSessions map[string]bool, allAgentBeads map[string]*beads.Issue, allHookBeads map[string]*beads.Issue, mailRouter *mail.Router, skipMail bool) AgentRuntime {
+	d := agentDef{
+		name:    constants.RoleMayor,
+		address: constants.RoleMayor + "/",
+		session: getMayorSessionName(),
+		role:    "coordinator",
+		beadID:  beads.MayorBeadIDTown(),
+	}
+	agent := newGlobalAgentRuntime(d, allSessions)
+	if mayor.IsACPActive(townRoot) {
+		agent.ACP = true
+		agent.Running = true
+	}
+	fillGlobalAgentRuntime(&agent, d, allAgentBeads, allHookBeads, mailRouter, skipMail)
+	return agent
+}
+
+func discoverDeaconAgent(allSessions map[string]bool, allAgentBeads map[string]*beads.Issue, allHookBeads map[string]*beads.Issue, mailRouter *mail.Router, skipMail bool) AgentRuntime {
+	d := agentDef{
+		name:    constants.RoleDeacon,
+		address: constants.RoleDeacon + "/",
+		session: getDeaconSessionName(),
+		role:    "health-check",
+		beadID:  beads.DeaconBeadIDTown(),
+	}
+	agent := newGlobalAgentRuntime(d, allSessions)
+	fillGlobalAgentRuntime(&agent, d, allAgentBeads, allHookBeads, mailRouter, skipMail)
+	return agent
+}
+
+func newGlobalAgentRuntime(d agentDef, allSessions map[string]bool) AgentRuntime {
+	return AgentRuntime{
+		Name:    d.name,
+		Address: d.address,
+		Session: d.session,
+		Role:    d.role,
+		Running: allSessions[d.session],
+	}
+}
+
+func fillGlobalAgentRuntime(agent *AgentRuntime, d agentDef, allAgentBeads map[string]*beads.Issue, allHookBeads map[string]*beads.Issue, mailRouter *mail.Router, skipMail bool) {
+	applyPaneBlock(agent)
+	applyGlobalAgentBead(agent, d.beadID, allAgentBeads, allHookBeads)
+	if !skipMail {
+		populateMailInfo(agent, mailRouter)
+	}
+}
+
+func applyGlobalAgentBead(agent *AgentRuntime, beadID string, allAgentBeads map[string]*beads.Issue, allHookBeads map[string]*beads.Issue) {
+	issue, ok := allAgentBeads[beadID]
+	if !ok {
+		return
+	}
+	// Prefer database columns over description parsing
+	// HookBead column is authoritative (cleared by unsling)
+	agent.HookBead = issue.HookBead
+	agent.State = beads.ResolveAgentState(issue.Description, issue.AgentState)
+	if agent.HookBead != "" {
+		agent.HasWork = true
+		if pinnedIssue, ok := allHookBeads[agent.HookBead]; ok {
+			agent.WorkTitle = pinnedIssue.Title
+		}
+	}
+	if fields := beads.ParseAgentFields(issue.Description); fields != nil {
+		agent.NotificationLevel = fields.NotificationLevel
+	}
 }
 
 // populateMailInfo fetches unread mail count and first subject for an agent

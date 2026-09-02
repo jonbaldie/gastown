@@ -507,18 +507,18 @@ func (r *Resolver) resolveChannel(name string) ([]Recipient, error) {
 //   - gt-gastown-crew-max → gastown/crew/max
 //   - ff-witness → ff/witness (collapsed prefix==rig)
 func AgentBeadIDToAddress(id string) string {
-	rig, role, name, ok := beads.ParseAgentBeadID(id)
+	parsed, ok := beads.ParseAgentBeadID(id)
 	if !ok {
 		return ""
 	}
 
-	if role == constants.RoleMayor || role == constants.RoleDeacon {
-		return role + "/"
+	if parsed.Role == constants.RoleMayor || parsed.Role == constants.RoleDeacon {
+		return parsed.Role + "/"
 	}
-	if role == "dog" {
-		return DogAddress(name)
+	if parsed.Role == "dog" {
+		return DogAddress(parsed.Name)
 	}
-	return scopedAgentAddress(rig, role, name)
+	return scopedAgentAddress(parsed.Rig, parsed.Role, parsed.Name)
 }
 
 func scopedAgentAddress(rig, role, name string) string {

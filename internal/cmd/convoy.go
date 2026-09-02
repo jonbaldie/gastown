@@ -2924,23 +2924,23 @@ func workerAge(lastActivity string) string {
 // Input: "gt-gastown-polecat-nux" -> Output: "gastown/polecat/nux"
 // Input: "gt-beads-crew-amber" -> Output: "beads/crew/amber"
 func parseWorkerFromAgentBead(agentID string) string {
-	rig, role, name, ok := beads.ParseAgentBeadID(agentID)
+	parsed, ok := beads.ParseAgentBeadID(agentID)
 	if !ok {
 		return ""
 	}
 
 	// Build path from parsed components
-	if rig == "" {
+	if parsed.Rig == "" {
 		// Town-level
-		if name != "" {
-			return role + "/" + name
+		if parsed.Name != "" {
+			return parsed.Role + "/" + parsed.Name
 		}
-		return role
+		return parsed.Role
 	}
-	if name != "" {
-		return rig + "/" + role + "/" + name
+	if parsed.Name != "" {
+		return parsed.Rig + "/" + parsed.Role + "/" + parsed.Name
 	}
-	return rig + "/" + role
+	return parsed.Rig + "/" + parsed.Role
 }
 
 // formatWorkerAge formats a duration as a short string (e.g., "5m", "2h", "1d")

@@ -904,15 +904,15 @@ func TestFindActivePatrolHooked(t *testing.T) {
 		Beads:         b,
 	}
 
-	patrolID, _, found, findErr := findActivePatrol(cfg)
+	patrol, findErr := findActivePatrol(cfg)
 	if findErr != nil {
 		t.Fatalf("findActivePatrol error: %v", findErr)
 	}
-	if !found {
+	if !patrol.found {
 		t.Fatal("expected to find active patrol, got not found")
 	}
-	if patrolID != rootID {
-		t.Errorf("patrolID = %q, want %q", patrolID, rootID)
+	if patrol.id != rootID {
+		t.Errorf("patrolID = %q, want %q", patrol.id, rootID)
 	}
 
 	// Verify the patrol is still hooked (not closed)
@@ -953,11 +953,11 @@ func TestFindActivePatrolStale(t *testing.T) {
 		Beads:         b,
 	}
 
-	_, _, found, findErr := findActivePatrol(cfg)
+	patrol, findErr := findActivePatrol(cfg)
 	if findErr != nil {
 		t.Fatalf("findActivePatrol error: %v", findErr)
 	}
-	if found {
+	if patrol.found {
 		t.Fatal("expected stale patrol (all children closed) to NOT be found as active")
 	}
 
@@ -990,15 +990,15 @@ func TestFindActivePatrolZeroChildren(t *testing.T) {
 		Beads:         b,
 	}
 
-	patrolID, _, found, findErr := findActivePatrol(cfg)
+	patrol, findErr := findActivePatrol(cfg)
 	if findErr != nil {
 		t.Fatalf("findActivePatrol error: %v", findErr)
 	}
-	if !found {
+	if !patrol.found {
 		t.Fatal("expected zero-children patrol to be treated as active (not stale)")
 	}
-	if patrolID != rootID {
-		t.Errorf("patrolID = %q, want %q", patrolID, rootID)
+	if patrol.id != rootID {
+		t.Errorf("patrolID = %q, want %q", patrol.id, rootID)
 	}
 
 	// Verify it was NOT closed
@@ -1043,15 +1043,15 @@ func TestFindActivePatrolMultiple(t *testing.T) {
 		Beads:         b,
 	}
 
-	patrolID, _, found, findErr := findActivePatrol(cfg)
+	patrol, findErr := findActivePatrol(cfg)
 	if findErr != nil {
 		t.Fatalf("findActivePatrol error: %v", findErr)
 	}
-	if !found {
+	if !patrol.found {
 		t.Fatal("expected to find active patrol")
 	}
-	if patrolID != activeID {
-		t.Errorf("patrolID = %q, want %q (should return the active one)", patrolID, activeID)
+	if patrol.id != activeID {
+		t.Errorf("patrolID = %q, want %q (should return the active one)", patrol.id, activeID)
 	}
 
 	// Verify active patrol is still hooked
@@ -1115,11 +1115,11 @@ func TestFindActivePatrol_StaleCleanupCapped(t *testing.T) {
 		Beads:         b,
 	}
 
-	_, _, found, findErr := findActivePatrol(cfg)
+	patrol, findErr := findActivePatrol(cfg)
 	if findErr != nil {
 		t.Fatalf("findActivePatrol error: %v", findErr)
 	}
-	if found {
+	if patrol.found {
 		t.Fatal("expected no active patrol (all stale)")
 	}
 

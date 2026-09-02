@@ -184,12 +184,12 @@ func (d *StuckDetector) CheckAll() ([]*ProblemAgent, error) {
 
 // analyzeAgent determines the health state of a single agent from its bead data.
 func (d *StuckDetector) analyzeAgent(id string, issue *beads.Issue) *ProblemAgent {
-	rig, role, name, ok := beads.ParseAgentBeadID(id)
+	parsed, ok := beads.ParseAgentBeadID(id)
 	if !ok {
 		return nil
 	}
 
-	agent := newProblemAgent(id, issue, rig, role, name)
+	agent := newProblemAgent(id, issue, parsed.Rig, parsed.Role, parsed.Name)
 	setAgentActivity(agent, issue.UpdatedAt)
 
 	// 1. Zombie check (tmux liveness)

@@ -60,10 +60,11 @@ func runMQNext(cmd *cobra.Command, args []string) error {
 }
 
 func readyMergeRequests(rigName string) ([]*beads.Issue, error) {
-	_, r, _, err := getRefineryManager(rigName)
+	ctx, err := getRefineryManager(rigName)
 	if err != nil {
 		return nil, err
 	}
+	r := ctx.r
 
 	b := beads.New(r.BeadsPath())
 	issues, err := b.ListMergeRequests(beads.ListOptions{

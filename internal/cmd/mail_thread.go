@@ -90,12 +90,12 @@ func runMailReply(cmd *cobra.Command, args []string) error {
 	}
 
 	msgID := args[0]
-	router, from, original, err := loadMailReply(msgID)
+	loaded, err := loadMailReply(msgID)
 	if err != nil {
 		return err
 	}
-	reply := buildMailReply(msgID, from, original, messageBody, commandStringFlag(cmd, "subject"))
-	return sendMailReply(router, from, original, reply)
+	reply := buildMailReply(msgID, loaded.from, loaded.original, messageBody, commandStringFlag(cmd, "subject"))
+	return sendMailReply(loaded.router, loaded.from, loaded.original, reply)
 }
 
 func resolveMailReplyBody(args []string, flagBody string) (string, error) {
@@ -109,22 +109,28 @@ func resolveMailReplyBody(args []string, flagBody string) (string, error) {
 	return messageBody, nil
 }
 
-func loadMailReply(msgID string) (*mail.Router, string, *mail.Message, error) {
+type loadMailReplyResult struct {
+	router   *mail.Router
+	from     string
+	original *mail.Message
+}
+
+func loadMailReply(msgID string) (loadMailReplyResult, error) {
 	workDir, err := findMailWorkDir()
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return loadMailReplyResult{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 	from := detectSender()
 	router := mail.NewRouter(workDir)
 	mailbox, err := router.GetMailbox(from)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("getting mailbox: %w", err)
+		return loadMailReplyResult{}, fmt.Errorf("getting mailbox: %w", err)
 	}
 	original, err := mailbox.Get(msgID)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("getting message: %w", err)
+		return loadMailReplyResult{}, fmt.Errorf("getting message: %w", err)
 	}
-	return router, from, original, nil
+	return loadMailReplyResult{router: router, from: from, original: original}, nil
 }
 
 func buildMailReply(msgID, from string, original *mail.Message, messageBody, subject string) *mail.Message {

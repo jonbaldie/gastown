@@ -391,32 +391,41 @@ func prepareMoleculeStatus(args []string) (moleculeStatusContext, error) {
 	if townRoot == "" {
 		return moleculeStatusContext{}, fmt.Errorf("not in a Gas Town workspace")
 	}
-	target, roleCtx, validationRole, err := resolveMoleculeStatusTarget(cwd, townRoot, args)
+	resolved, err := resolveMoleculeStatusTarget(cwd, townRoot, args)
 	if err != nil {
 		return moleculeStatusContext{}, err
 	}
-	if err := ensureRoleWorktreeIntegrity(cwd, townRoot, validationRole); err != nil {
+	if err := ensureRoleWorktreeIntegrity(cwd, townRoot, resolved.validationRole); err != nil {
 		return moleculeStatusContext{}, err
 	}
 	workDir, err := findLocalBeadsDir()
 	if err != nil {
 		return moleculeStatusContext{}, fmt.Errorf("not in a beads workspace: %w", err)
 	}
-	workDir = resolveMoleculeStatusWorkDir(workDir, target, townRoot)
+	workDir = resolveMoleculeStatusWorkDir(workDir, resolved.target, townRoot)
 	return moleculeStatusContext{
 		townRoot: townRoot,
 		workDir:  workDir,
-		target:   target,
-		roleCtx:  roleCtx,
+		target:   resolved.target,
+		roleCtx:  resolved.roleCtx,
 		beads:    beads.New(workDir),
-		status:   MoleculeStatusInfo{Target: target, Role: string(roleCtx.Role)},
+		status:   MoleculeStatusInfo{Target: resolved.target, Role: string(resolved.roleCtx.Role)},
 	}, nil
 }
 
-func resolveMoleculeStatusTarget(cwd, townRoot string, args []string) (string, RoleContext, Role, error) {
+type moleculeStatusTarget struct {
+	target         string
+	roleCtx        RoleContext
+	validationRole Role
+}
+
+func resolveMoleculeStatusTarget(cwd, townRoot string, args []string) (moleculeStatusTarget, error) {
 	if len(args) > 0 {
 		callerCtx := detectRole(cwd, townRoot)
-		return normalizeHookShowTarget(args[0]), RoleContext{}, callerCtx.Role, nil
+		return moleculeStatusTarget{
+			target:         normalizeHookShowTarget(args[0]),
+			validationRole: callerCtx.Role,
+		}, nil
 	}
 	roleCtx := detectRole(cwd, townRoot)
 	if roleCtx.Role == RoleUnknown {
@@ -424,9 +433,9 @@ func resolveMoleculeStatusTarget(cwd, townRoot string, args []string) (string, R
 	}
 	target := buildAgentIdentity(roleCtx)
 	if target == "" {
-		return "", RoleContext{}, RoleUnknown, fmt.Errorf("cannot determine agent identity (role: %s)", roleCtx.Role)
+		return moleculeStatusTarget{}, fmt.Errorf("cannot determine agent identity (role: %s)", roleCtx.Role)
 	}
-	return target, roleCtx, roleCtx.Role, nil
+	return moleculeStatusTarget{target: target, roleCtx: roleCtx, validationRole: roleCtx.Role}, nil
 }
 
 func resolveMoleculeStatusWorkDir(workDir, target, townRoot string) string {
@@ -742,24 +751,30 @@ func showGitDivergenceWarning() {
 	}
 
 	_ = git.Fetch(g, "origin")
-	remote, ahead, behind, ok := resolveDivergence(g, branch)
-	if !ok || ahead == 0 && behind == 0 {
+	div, ok := resolveDivergence(g, branch)
+	if !ok || div.ahead == 0 && div.behind == 0 {
 		return
 	}
-	printDivergenceWarning(remote, ahead, behind)
+	printDivergenceWarning(div.remote, div.ahead, div.behind)
 }
 
-func resolveDivergence(g *git.Git, branch string) (string, int, int, bool) {
+type gitDivergence struct {
+	remote string
+	ahead  int
+	behind int
+}
+
+func resolveDivergence(g *git.Git, branch string) (gitDivergence, bool) {
 	remote := "origin/" + branch
 	ahead, aheadErr := git.CommitsAhead(g, remote, "HEAD")
 	behind, behindErr := git.CountCommitsBehind(g, remote)
 	if aheadErr == nil && behindErr == nil {
-		return remote, ahead, behind, true
+		return gitDivergence{remote: remote, ahead: ahead, behind: behind}, true
 	}
 	remote = "origin/main"
 	ahead, aheadErr = git.CommitsAhead(g, remote, "HEAD")
 	behind, behindErr = git.CountCommitsBehind(g, remote)
-	return remote, ahead, behind, aheadErr == nil && behindErr == nil
+	return gitDivergence{remote: remote, ahead: ahead, behind: behind}, aheadErr == nil && behindErr == nil
 }
 
 func printDivergenceWarning(remote string, ahead, behind int) {
@@ -902,7 +917,7 @@ func prepareMoleculeCurrent(args []string) (moleculeCurrentContext, error) {
 		workDir = resolveHookLookupWorkDir(workDir, target, townRoot)
 	}
 	b := beads.New(workDir)
-	lookupBeads, handoff, moleculeID, diagnosis, err := resolveCurrentMoleculeSource(b, townRoot, target)
+	src, err := resolveCurrentMoleculeSource(b, townRoot, target)
 	if err != nil {
 		return moleculeCurrentContext{}, err
 	}
@@ -910,10 +925,10 @@ func prepareMoleculeCurrent(args []string) (moleculeCurrentContext, error) {
 		townRoot:    townRoot,
 		target:      target,
 		beads:       b,
-		lookupBeads: lookupBeads,
-		handoff:     handoff,
-		moleculeID:  moleculeID,
-		diagnosis:   diagnosis,
+		lookupBeads: src.lookupBeads,
+		handoff:     src.handoff,
+		moleculeID:  src.moleculeID,
+		diagnosis:   src.diagnosis,
 	}, nil
 }
 
@@ -1086,26 +1101,39 @@ func attachedMoleculeID(issue *beads.Issue) string {
 	return strings.TrimSpace(fields.AttachedMolecule)
 }
 
+type currentMoleculeSource struct {
+	lookupBeads *beads.Beads
+	handoff     *beads.Issue
+	moleculeID  string
+	diagnosis   string
+}
+
 // resolveCurrentMoleculeSource prefers the live Hook over a Handoff bead.
 // Patrol uses the same hooked-work lookup; a stale Handoff attachment is never
 // reported as current when a live Hook exists. Disagreement is diagnosed.
-func resolveCurrentMoleculeSource(b *beads.Beads, townRoot, identity string) (lookupBeads *beads.Beads, handoff *beads.Issue, moleculeID, diagnosis string, err error) {
+func resolveCurrentMoleculeSource(b *beads.Beads, townRoot, identity string) (currentMoleculeSource, error) {
 	role := extractRoleFromIdentity(identity)
-	handoff, err = b.FindHandoffBead(role)
+	handoff, err := b.FindHandoffBead(role)
 	if err != nil {
-		return nil, nil, "", "", fmt.Errorf("finding handoff bead: %w", err)
+		return currentMoleculeSource{}, fmt.Errorf("finding handoff bead: %w", err)
 	}
 	hook, lookupBeads, err := findCurrentMoleculeHook(b, townRoot, identity)
 	if err != nil {
-		return nil, handoff, "", "", err
+		return currentMoleculeSource{handoff: handoff}, err
 	}
 	if hook != nil {
-		return lookupBeads, handoff, attachedMoleculeID(hook), moleculeDisagreementDiagnosis(hook, handoff), nil
+		return currentMoleculeSource{
+			lookupBeads: lookupBeads,
+			handoff:     handoff,
+			moleculeID:  attachedMoleculeID(hook),
+			diagnosis:   moleculeDisagreementDiagnosis(hook, handoff),
+		}, nil
 	}
+	src := currentMoleculeSource{lookupBeads: b, handoff: handoff}
 	if handoffMol := attachedMoleculeID(handoff); handoffMol != "" {
-		diagnosis = fmt.Sprintf("stale Handoff attachment %s has no live Hook", handoffMol)
+		src.diagnosis = fmt.Sprintf("stale Handoff attachment %s has no live Hook", handoffMol)
 	}
-	return b, handoff, "", diagnosis, nil
+	return src, nil
 }
 
 func findCurrentMoleculeHook(b *beads.Beads, townRoot, identity string) (*beads.Issue, *beads.Beads, error) {

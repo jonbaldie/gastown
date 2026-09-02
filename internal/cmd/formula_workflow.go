@@ -45,7 +45,7 @@ func beginWorkflowFormulaRun(f *formula.Formula, formulaName, targetRig string, 
 	if len(f.Steps) == 0 {
 		return nil, fmt.Errorf("workflow formula '%s' has no steps", formulaName)
 	}
-	townBeads, rigPrefix, rigBeadsDir, err := resolveConvoyBeads(targetRig)
+	resolved, err := resolveConvoyBeads(targetRig)
 	if err != nil {
 		return nil, err
 	}
@@ -54,9 +54,9 @@ func beginWorkflowFormulaRun(f *formula.Formula, formulaName, targetRig string, 
 		formulaName: formulaName,
 		targetRig:   targetRig,
 		opts:        opts,
-		townBeads:   townBeads,
-		rigPrefix:   rigPrefix,
-		rigBeadsDir: rigBeadsDir,
+		townBeads:   resolved.townBeads,
+		rigPrefix:   resolved.rigPrefix,
+		rigBeadsDir: resolved.rigBeadsDir,
 		setVars:     parseSetVars(opts.set),
 	}, nil
 }

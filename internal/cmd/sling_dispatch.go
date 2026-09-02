@@ -48,8 +48,8 @@ func slingSameTarget(intent sling.Intent, info *beadInfo, townRoot string) (same
 	}
 	formulaRefresh = intent.Formula != ""
 	if intent.Target == "" || intent.Target == "." {
-		if sa, _, _, err := resolveSelfTarget(); err == nil {
-			return matchesSlingTarget(intent.Target, info.Assignee, sa), formulaRefresh
+		if resolved, err := resolveSelfTarget(); err == nil {
+			return matchesSlingTarget(intent.Target, info.Assignee, resolved.agentID), formulaRefresh
 		}
 		return false, formulaRefresh
 	}

@@ -103,7 +103,7 @@ func New(cfg Config, ca *CA) (*Server, error) {
 	if len(allowed) == 0 {
 		logger.Warn("AllowedCommands is empty — all exec requests will be denied")
 	}
-	maxConcurrent, rateLimit, rateBurst, execTimeout := execSettings(cfg)
+	settings := execSettings(cfg)
 	return &Server{
 		cfg:           cfg,
 		security:      &serverSecurity{ca: ca, denyList: NewDenyList()},
@@ -111,10 +111,10 @@ func New(cfg Config, ca *CA) (*Server, error) {
 		allowedSubs:   subcommandAllowlist(cfg.AllowedSubcommands),
 		resolvedPaths: resolvedPaths,
 		log:           logger,
-		execSem:       make(chan struct{}, maxConcurrent),
-		execTimeout:   execTimeout,
-		rateLimit:     rateLimit,
-		rateBurst:     rateBurst,
+		execSem:       make(chan struct{}, settings.maxConcurrent),
+		execTimeout:   settings.timeout,
+		rateLimit:     settings.rateLimit,
+		rateBurst:     settings.rateBurst,
 	}, nil
 }
 
@@ -161,21 +161,33 @@ func subcommandAllowlist(configured map[string][]string) map[string]map[string]b
 	return allowed
 }
 
-func execSettings(cfg Config) (maxConcurrent int, rateLimit float64, rateBurst int, timeout time.Duration) {
-	maxConcurrent, rateLimit, rateBurst, timeout = cfg.MaxConcurrentExec, cfg.ExecRateLimit, cfg.ExecRateBurst, cfg.ExecTimeout
-	if maxConcurrent <= 0 {
-		maxConcurrent = 32
+type execLimits struct {
+	maxConcurrent int
+	rateLimit     float64
+	rateBurst     int
+	timeout       time.Duration
+}
+
+func execSettings(cfg Config) execLimits {
+	settings := execLimits{
+		maxConcurrent: cfg.MaxConcurrentExec,
+		rateLimit:     cfg.ExecRateLimit,
+		rateBurst:     cfg.ExecRateBurst,
+		timeout:       cfg.ExecTimeout,
 	}
-	if rateLimit <= 0 {
-		rateLimit = 10
+	if settings.maxConcurrent <= 0 {
+		settings.maxConcurrent = 32
 	}
-	if rateBurst <= 0 {
-		rateBurst = 20
+	if settings.rateLimit <= 0 {
+		settings.rateLimit = 10
 	}
-	if timeout == 0 {
-		timeout = 60 * time.Second
+	if settings.rateBurst <= 0 {
+		settings.rateBurst = 20
 	}
-	return maxConcurrent, rateLimit, rateBurst, timeout
+	if settings.timeout == 0 {
+		settings.timeout = 60 * time.Second
+	}
+	return settings
 }
 
 // Addr returns the address the server is listening on.

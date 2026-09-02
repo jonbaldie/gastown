@@ -189,16 +189,16 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 	mayorSession := getMayorSessionName()
 	townRoot := statusLineTownRoot(t, mayorSession)
 	registeredRigs := registeredStatusLineRigs(townRoot)
-	rigStatuses, healthByType, hasDeacon, pending := collectMayorStatus(sessions, registeredRigs)
-	checkMayorWorkingSessions(t, pending)
-	for _, status := range rigStatuses {
+	collected := collectMayorStatus(sessions, registeredRigs)
+	checkMayorWorkingSessions(t, collected.pending)
+	for _, status := range collected.rigStatuses {
 		// Status-line is a tmux hot path. Do not query beads for dock/park state here;
 		// `gt rig list/status` remains the authoritative live status view.
 		status.opState = "OPERATIONAL"
 	}
 
-	parts := buildMayorAgentParts(healthByType, hasDeacon)
-	rigs := buildMayorRigInfos(rigStatuses)
+	parts := buildMayorAgentParts(collected.healthByType, collected.hasDeacon)
+	rigs := buildMayorRigInfos(collected.rigStatuses)
 	sortMayorRigInfos(rigs)
 	rigParts := renderMayorRigParts(rigs, townRoot)
 	if len(rigParts) > 0 {
@@ -209,28 +209,35 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 	return nil
 }
 
-func collectMayorStatus(sessions []string, registeredRigs map[string]bool) (map[string]*mayorRigStatus, map[AgentType]*mayorAgentHealth, bool, []mayorPendingCheck) {
-	rigStatuses := make(map[string]*mayorRigStatus, len(registeredRigs))
+type collectedMayorStatus struct {
+	rigStatuses  map[string]*mayorRigStatus
+	healthByType map[AgentType]*mayorAgentHealth
+	hasDeacon    bool
+	pending      []mayorPendingCheck
+}
+
+func collectMayorStatus(sessions []string, registeredRigs map[string]bool) collectedMayorStatus {
+	collected := collectedMayorStatus{
+		rigStatuses: make(map[string]*mayorRigStatus, len(registeredRigs)),
+		healthByType: map[AgentType]*mayorAgentHealth{
+			AgentWitness:  {},
+			AgentRefinery: {},
+		},
+	}
 	for rigName := range registeredRigs {
-		rigStatuses[rigName] = &mayorRigStatus{}
+		collected.rigStatuses[rigName] = &mayorRigStatus{}
 	}
-	healthByType := map[AgentType]*mayorAgentHealth{
-		AgentWitness:  {},
-		AgentRefinery: {},
-	}
-	var pending []mayorPendingCheck
-	hasDeacon := false
 
 	for _, s := range sessions {
 		agent := categorizeSession(s)
 		if agent == nil {
 			continue
 		}
-		if recordMayorSession(s, agent, registeredRigs, rigStatuses, healthByType, &pending) {
-			hasDeacon = true
+		if recordMayorSession(s, agent, registeredRigs, collected.rigStatuses, collected.healthByType, &collected.pending) {
+			collected.hasDeacon = true
 		}
 	}
-	return rigStatuses, healthByType, hasDeacon, pending
+	return collected
 }
 
 func recordMayorSession(s string, agent *AgentSession, registeredRigs map[string]bool, rigStatuses map[string]*mayorRigStatus, healthByType map[AgentType]*mayorAgentHealth, pending *[]mayorPendingCheck) bool {

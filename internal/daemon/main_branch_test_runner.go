@@ -196,31 +196,39 @@ func (d *Daemon) testRigMainBranch(rigName, rigPath string, timeout time.Duratio
 		d.logger.Printf("main_branch_test: %s: no test commands configured, skipping", rigName)
 		return nil
 	}
-	worktreePath, bareRepoPath, defaultBranch, err := prepareMainBranchTestWorktree(rigPath)
+	wt, err := prepareMainBranchTestWorktree(rigPath)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, timeout)
 	defer cancel()
-	if err := fetchAndAddMainTestWorktree(ctx, bareRepoPath, worktreePath, defaultBranch); err != nil {
+	if err := fetchAndAddMainTestWorktree(ctx, wt.bareRepoPath, wt.path, wt.defaultBranch); err != nil {
 		return err
 	}
-	defer cleanupMainTestWorktree(d.logger, rigName, bareRepoPath, worktreePath)
+	defer cleanupMainTestWorktree(d.logger, rigName, wt.bareRepoPath, wt.path)
 	if len(gateCfg.Gates) > 0 {
-		return d.runGatesOnWorktree(ctx, rigName, worktreePath, gateCfg.Gates)
+		return d.runGatesOnWorktree(ctx, rigName, wt.path, gateCfg.Gates)
 	}
-	return d.runCommandOnWorktree(ctx, rigName, worktreePath, "test", gateCfg.TestCommand)
+	return d.runCommandOnWorktree(ctx, rigName, wt.path, "test", gateCfg.TestCommand)
 }
 
-func prepareMainBranchTestWorktree(rigPath string) (worktreePath, bareRepoPath, defaultBranch string, err error) {
-	defaultBranch = rigMainBranchName(rigPath)
-	worktreePath = filepath.Join(rigPath, ".main-test-worktree")
-	bareRepoPath = filepath.Join(rigPath, ".repo.git")
-	if _, statErr := os.Stat(bareRepoPath); os.IsNotExist(statErr) {
-		return "", "", "", fmt.Errorf("bare repo not found at %s", bareRepoPath)
+type mainBranchTestWorktree struct {
+	path          string
+	bareRepoPath  string
+	defaultBranch string
+}
+
+func prepareMainBranchTestWorktree(rigPath string) (mainBranchTestWorktree, error) {
+	wt := mainBranchTestWorktree{
+		defaultBranch: rigMainBranchName(rigPath),
+		path:          filepath.Join(rigPath, ".main-test-worktree"),
+		bareRepoPath:  filepath.Join(rigPath, ".repo.git"),
 	}
-	removeStaleMainTestWorktree(bareRepoPath, worktreePath)
-	return worktreePath, bareRepoPath, defaultBranch, nil
+	if _, statErr := os.Stat(wt.bareRepoPath); os.IsNotExist(statErr) {
+		return mainBranchTestWorktree{}, fmt.Errorf("bare repo not found at %s", wt.bareRepoPath)
+	}
+	removeStaleMainTestWorktree(wt.bareRepoPath, wt.path)
+	return wt, nil
 }
 
 func rigMainBranchName(rigPath string) string {

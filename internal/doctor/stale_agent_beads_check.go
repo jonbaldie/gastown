@@ -170,8 +170,8 @@ func isStaleTownAgentBead(ctx *CheckContext, id string, issue *beads.Issue, rout
 	if !isActiveAgentBead(issue) {
 		return false
 	}
-	rig, role, _, ok := beads.ParseAgentBeadID(id)
-	if !ok || rig == "" {
+	parsed, ok := beads.ParseAgentBeadID(id)
+	if !ok || parsed.Rig == "" {
 		return false
 	}
 	idPrefix := agentIDPrefix(id)
@@ -182,7 +182,7 @@ func isStaleTownAgentBead(ctx *CheckContext, id string, issue *beads.Issue, rout
 		return true
 	}
 	info, exists := routes.prefixToRig[idPrefix]
-	return exists && missingKnownRigWorker(ctx, id, idPrefix, info, role)
+	return exists && missingKnownRigWorker(ctx, id, idPrefix, info, parsed.Role)
 }
 
 func isActiveAgentBead(issue *beads.Issue) bool {

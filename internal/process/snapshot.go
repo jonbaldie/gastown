@@ -123,11 +123,11 @@ func parseEtime(etime string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	hours, minutes, seconds, err := parseElapsedClock(clock)
+	clockParts, err := parseElapsedClock(clock)
 	if err != nil {
 		return 0, err
 	}
-	return days*86400 + hours*3600 + minutes*60 + seconds, nil
+	return days*86400 + clockParts.hours*3600 + clockParts.minutes*60 + clockParts.seconds, nil
 }
 
 func parseElapsedDays(etime string) (int, string, error) {
@@ -142,23 +142,27 @@ func parseElapsedDays(etime string) (int, string, error) {
 	return days, etime[idx+1:], nil
 }
 
-func parseElapsedClock(etime string) (int, int, int, error) {
+type elapsedClock struct {
+	hours, minutes, seconds int
+}
+
+func parseElapsedClock(etime string) (elapsedClock, error) {
 	parts := strings.Split(etime, ":")
 	if len(parts) < 2 || len(parts) > 3 {
-		return 0, 0, 0, os.ErrInvalid
+		return elapsedClock{}, os.ErrInvalid
 	}
 	values := make([]int, len(parts))
 	for i, part := range parts {
 		value, err := strconv.Atoi(part)
 		if err != nil {
-			return 0, 0, 0, err
+			return elapsedClock{}, err
 		}
 		values[i] = value
 	}
 	if len(values) == 2 {
-		return 0, values[0], values[1], nil
+		return elapsedClock{minutes: values[0], seconds: values[1]}, nil
 	}
-	return values[0], values[1], values[2], nil
+	return elapsedClock{hours: values[0], minutes: values[1], seconds: values[2]}, nil
 }
 
 func commandName(args string) string {

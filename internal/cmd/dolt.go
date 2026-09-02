@@ -1511,60 +1511,66 @@ func runDoltRecover(_ *cobra.Command, _ []string) error {
 func runDoltRollback(cmd *cobra.Command, args []string) error {
 	list, _ := cmd.Flags().GetBool("list")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	townRoot, backupPath, handled, err := prepareDoltRollback(args, list, dryRun)
+	prepared, err := prepareDoltRollback(args, list, dryRun)
 	if err != nil {
 		return err
 	}
-	if handled {
+	if prepared.handled {
 		return nil
 	}
 
-	if err := stopDoltBeforeRollback(townRoot); err != nil {
+	if err := stopDoltBeforeRollback(prepared.townRoot); err != nil {
 		return err
 	}
 
 	fmt.Println("\nRestoring from backup...")
-	result, err := doltserver.RestoreFromBackup(townRoot, backupPath)
+	result, err := doltserver.RestoreFromBackup(prepared.townRoot, prepared.backupPath)
 	if err != nil {
 		return fmt.Errorf("rollback failed: %w", err)
 	}
 
 	printDoltRollbackResult(result)
-	validateDoltRollback(townRoot)
+	validateDoltRollback(prepared.townRoot)
 
-	fmt.Printf("\n%s Rollback complete from %s\n", style.Bold.Render("✓"), backupPath)
+	fmt.Printf("\n%s Rollback complete from %s\n", style.Bold.Render("✓"), prepared.backupPath)
 
 	return nil
 }
 
-func prepareDoltRollback(args []string, list, dryRun bool) (townRoot, backupPath string, handled bool, err error) {
-	townRoot, err = workspace.FindFromCwdOrError()
+type prepareDoltRollbackResult struct {
+	townRoot   string
+	backupPath string
+	handled    bool
+}
+
+func prepareDoltRollback(args []string, list, dryRun bool) (prepareDoltRollbackResult, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return "", "", false, fmt.Errorf("not in a Gas Town workspace: %w", err)
+		return prepareDoltRollbackResult{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
 	config := doltserver.DefaultConfig(townRoot)
 	if config.IsRemote() {
-		return "", "", false, fmt.Errorf("Dolt server is remote (%s) — rollback requires local server access", config.HostPort())
+		return prepareDoltRollbackResult{}, fmt.Errorf("Dolt server is remote (%s) — rollback requires local server access", config.HostPort())
 	}
 
 	backups, err := doltserver.FindBackups(townRoot)
 	if err != nil {
-		return "", "", false, fmt.Errorf("finding backups: %w", err)
+		return prepareDoltRollbackResult{}, fmt.Errorf("finding backups: %w", err)
 	}
 
 	if len(backups) == 0 {
-		return "", "", false, fmt.Errorf("no migration backups found in %s\nExpected directories matching: migration-backup-YYYYMMDD-HHMMSS/", townRoot)
+		return prepareDoltRollbackResult{}, fmt.Errorf("no migration backups found in %s\nExpected directories matching: migration-backup-YYYYMMDD-HHMMSS/", townRoot)
 	}
 
 	if list {
 		printDoltBackupList(townRoot, backups)
-		return townRoot, "", true, nil
+		return prepareDoltRollbackResult{townRoot: townRoot, handled: true}, nil
 	}
 
-	backupPath, err = resolveDoltRollbackBackup(townRoot, backups, args)
+	backupPath, err := resolveDoltRollbackBackup(townRoot, backups, args)
 	if err != nil {
-		return "", "", false, err
+		return prepareDoltRollbackResult{}, err
 	}
 
 	fmt.Printf("Backup: %s\n", backupPath)
@@ -1572,9 +1578,9 @@ func prepareDoltRollback(args []string, list, dryRun bool) (townRoot, backupPath
 	if dryRun {
 		fmt.Printf("\n%s Dry run - no changes will be made\n\n", style.Bold.Render("!"))
 		printBackupContents(backupPath, townRoot)
-		return townRoot, backupPath, true, nil
+		return prepareDoltRollbackResult{townRoot: townRoot, backupPath: backupPath, handled: true}, nil
 	}
-	return townRoot, backupPath, false, nil
+	return prepareDoltRollbackResult{townRoot: townRoot, backupPath: backupPath}, nil
 }
 
 func printDoltBackupList(townRoot string, backups []doltserver.Backup) {
@@ -1754,14 +1760,14 @@ func runDoltSync(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("\nSyncing %d database(s)...\n", len(results))
-	pushed, skipped, failed, totalPurged := printDoltSyncResults(results, purgeResults, includeGC, dryRun)
+	counts := printDoltSyncResults(results, purgeResults, includeGC, dryRun)
 
-	summary := fmt.Sprintf("Summary: %d pushed, %d skipped, %d failed", pushed, skipped, failed)
-	summary = appendDoltSyncPurgeSummary(summary, totalPurged, includeGC, dryRun)
+	summary := fmt.Sprintf("Summary: %d pushed, %d skipped, %d failed", counts.pushed, counts.skipped, counts.failed)
+	summary = appendDoltSyncPurgeSummary(summary, counts.totalPurged, includeGC, dryRun)
 	fmt.Printf("\n%s\n", summary)
 
-	if failed > 0 {
-		return fmt.Errorf("%d database(s) failed to sync", failed)
+	if counts.failed > 0 {
+		return fmt.Errorf("%d database(s) failed to sync", counts.failed)
 	}
 	return nil
 }
@@ -1804,18 +1810,26 @@ func syncDoltDatabases(townRoot string, opts doltserver.SyncOptions, serverRunni
 	return doltserver.SyncDatabases(townRoot, opts)
 }
 
-func printDoltSyncResults(results []doltserver.SyncResult, purgeResults map[string]doltPurgeResult, includePurge, dryRun bool) (pushed, skipped, failed, totalPurged int) {
+type printDoltSyncResultsResult struct {
+	pushed      int
+	skipped     int
+	failed      int
+	totalPurged int
+}
+
+func printDoltSyncResults(results []doltserver.SyncResult, purgeResults map[string]doltPurgeResult, includePurge, dryRun bool) printDoltSyncResultsResult {
+	var counts printDoltSyncResultsResult
 	for _, result := range results {
 		fmt.Println()
 		if includePurge {
-			totalPurged += printDoltSyncPurgeResult(result.Database, purgeResults[result.Database], purgeResults[result.Database].purged != 0 || purgeResults[result.Database].err != nil, dryRun)
+			counts.totalPurged += printDoltSyncPurgeResult(result.Database, purgeResults[result.Database], purgeResults[result.Database].purged != 0 || purgeResults[result.Database].err != nil, dryRun)
 		}
 		resultPushed, resultSkipped, resultFailed := printDoltSyncResult(result)
-		pushed += resultPushed
-		skipped += resultSkipped
-		failed += resultFailed
+		counts.pushed += resultPushed
+		counts.skipped += resultSkipped
+		counts.failed += resultFailed
 	}
-	return pushed, skipped, failed, totalPurged
+	return counts
 }
 
 func printDoltSyncPurgeResult(database string, purge doltPurgeResult, present, dryRun bool) int {

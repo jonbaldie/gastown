@@ -351,11 +351,11 @@ func parseEtime(etime string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	hours, minutes, seconds, err := parseEtimeClock(clock)
+	clockParts, err := parseEtimeClock(clock)
 	if err != nil {
 		return 0, err
 	}
-	return days*86400 + hours*3600 + minutes*60 + seconds, nil
+	return days*86400 + clockParts.hours*3600 + clockParts.minutes*60 + clockParts.seconds, nil
 }
 
 func parseEtimeDays(etime string) (int, string, error) {
@@ -370,20 +370,24 @@ func parseEtimeDays(etime string) (int, string, error) {
 	return days, etime[idx+1:], nil
 }
 
-func parseEtimeClock(clock string) (int, int, int, error) {
+type etimeClock struct {
+	hours, minutes, seconds int
+}
+
+func parseEtimeClock(clock string) (etimeClock, error) {
 	parts := strings.Split(clock, ":")
 	labels, err := etimePartLabels(parts)
 	if err != nil {
-		return 0, 0, 0, err
+		return etimeClock{}, err
 	}
 	values, err := parseEtimeValues(parts, labels)
 	if err != nil {
-		return 0, 0, 0, err
+		return etimeClock{}, err
 	}
 	if len(values) == 2 {
-		return 0, values[0], values[1], nil
+		return etimeClock{minutes: values[0], seconds: values[1]}, nil
 	}
-	return values[0], values[1], values[2], nil
+	return etimeClock{hours: values[0], minutes: values[1], seconds: values[2]}, nil
 }
 
 func etimePartLabels(parts []string) ([]string, error) {

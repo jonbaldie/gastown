@@ -504,37 +504,46 @@ func ListAllThemes(townRoot string) []ThemeInfo {
 		})
 	}
 
-	// Add custom themes from settings/themes/
-	if townRoot != "" {
-		themesDir := filepath.Join(townRoot, "settings", "themes")
-		entries, err := os.ReadDir(themesDir)
-		if err == nil {
-			for _, e := range entries {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
-					continue
-				}
-				name := strings.TrimSuffix(e.Name(), ".txt")
-				// Skip if it collides with a built-in
-				if IsBuiltinTheme(name) {
-					continue
-				}
-				names, err := ParseThemeFile(filepath.Join(themesDir, e.Name()))
-				if err != nil {
-					continue
-				}
-				themes = append(themes, ThemeInfo{
-					Name:     name,
-					IsCustom: true,
-					Count:    len(names),
-				})
-			}
-		}
-	}
-
+	themes = append(themes, loadCustomThemes(townRoot)...)
 	sort.Slice(themes, func(i, j int) bool {
 		return themes[i].Name < themes[j].Name
 	})
 	return themes
+}
+
+func loadCustomThemes(townRoot string) []ThemeInfo {
+	if townRoot == "" {
+		return nil
+	}
+	themesDir := filepath.Join(townRoot, "settings", "themes")
+	entries, err := os.ReadDir(themesDir)
+	if err != nil {
+		return nil
+	}
+	var themes []ThemeInfo
+	for _, e := range entries {
+		theme, ok := customThemeFromEntry(themesDir, e)
+		if !ok {
+			continue
+		}
+		themes = append(themes, theme)
+	}
+	return themes
+}
+
+func customThemeFromEntry(themesDir string, e os.DirEntry) (ThemeInfo, bool) {
+	if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
+		return ThemeInfo{}, false
+	}
+	name := strings.TrimSuffix(e.Name(), ".txt")
+	if IsBuiltinTheme(name) {
+		return ThemeInfo{}, false
+	}
+	names, err := ParseThemeFile(filepath.Join(themesDir, e.Name()))
+	if err != nil {
+		return ThemeInfo{}, false
+	}
+	return ThemeInfo{Name: name, IsCustom: true, Count: len(names)}, true
 }
 
 // IsBuiltinTheme returns true if the theme name matches a built-in theme.

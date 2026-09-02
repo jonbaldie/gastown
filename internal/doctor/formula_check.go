@@ -133,18 +133,18 @@ func appendFormulaCount(parts *[]string, label string, count int) {
 
 // Fix updates outdated and missing formulas.
 func (c *FormulaCheck) Fix(ctx *CheckContext) error {
-	updated, skipped, reinstalled, err := formula.UpdateFormulas(ctx.TownRoot)
+	counts, err := formula.UpdateFormulas(ctx.TownRoot)
 	if err != nil {
 		return err
 	}
 
 	// Log what was done (caller will re-run check to show new status)
-	if updated > 0 || reinstalled > 0 || skipped > 0 {
+	if counts.Updated > 0 || counts.Reinstalled > 0 || counts.Skipped > 0 {
 		// The doctor framework will re-run the check after fix
 		// so we don't need to log here
-		_ = updated
-		_ = reinstalled
-		_ = skipped
+		_ = counts.Updated
+		_ = counts.Reinstalled
+		_ = counts.Skipped
 	}
 
 	return nil

@@ -459,15 +459,15 @@ func checkFormulaUpgrade(townRoot string) upgradeResult {
 func applyFormulaUpgrade(townRoot string) upgradeResult {
 	result := upgradeResult{step: "Formulas"}
 	fmt.Printf("\n  %s %s\n", style.Bold.Render("5."), "Updating formulas from embedded copies...")
-	updated, skipped, reinstalled, err := formula.UpdateFormulas(townRoot)
+	counts, err := formula.UpdateFormulas(townRoot)
 	if err != nil {
 		result.details = append(result.details, fmt.Sprintf("update error: %v", err))
 		fmt.Printf("     %s Could not update formulas: %v\n", style.ErrorPrefix, err)
 		return result
 	}
 
-	result.changed = updated + reinstalled
-	result.skipped = skipped
+	result.changed = counts.Updated + counts.Reinstalled
+	result.skipped = counts.Skipped
 
 	if result.changed == 0 && result.skipped == 0 {
 		// Check total count for display
@@ -481,14 +481,14 @@ func applyFormulaUpgrade(townRoot string) upgradeResult {
 	}
 
 	var parts []string
-	if updated > 0 {
-		parts = append(parts, fmt.Sprintf("%d updated", updated))
+	if counts.Updated > 0 {
+		parts = append(parts, fmt.Sprintf("%d updated", counts.Updated))
 	}
-	if reinstalled > 0 {
-		parts = append(parts, fmt.Sprintf("%d reinstalled", reinstalled))
+	if counts.Reinstalled > 0 {
+		parts = append(parts, fmt.Sprintf("%d reinstalled", counts.Reinstalled))
 	}
-	if skipped > 0 {
-		parts = append(parts, fmt.Sprintf("%d skipped (modified)", skipped))
+	if counts.Skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped (modified)", counts.Skipped))
 	}
 
 	fmt.Printf("     %s formulas: %s\n", style.SuccessPrefix, style.Dim.Render(strings.Join(parts, ", ")))

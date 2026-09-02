@@ -48,15 +48,15 @@ func runMailInbox(cmd *cobra.Command, args []string) error {
 
 	// Load the inbox once. Count() and ListUnread() both call List(), so using
 	// them here doubles the bd/Dolt reads on the hot patrol path.
-	messages, total, unread, err := loadInboxSnapshot(mailbox, unreadOnly)
+	snapshot, err := loadInboxSnapshot(mailbox, unreadOnly)
 	if err != nil {
 		return fmt.Errorf("listing messages: %w", err)
 	}
 
 	if commandBoolFlag(cmd, "json") {
-		return encodeMailJSON(messages)
+		return encodeMailJSON(snapshot.messages)
 	}
-	printInbox(address, messages, total, unread)
+	printInbox(address, snapshot.messages, snapshot.total, snapshot.unread)
 	return nil
 }
 
@@ -117,10 +117,16 @@ type inboxLister interface {
 	List() ([]*mail.Message, error)
 }
 
-func loadInboxSnapshot(mailbox inboxLister, unreadOnly bool) ([]*mail.Message, int, int, error) {
+type loadInboxSnapshotResult struct {
+	messages []*mail.Message
+	total    int
+	unread   int
+}
+
+func loadInboxSnapshot(mailbox inboxLister, unreadOnly bool) (loadInboxSnapshotResult, error) {
 	allMessages, err := mailbox.List()
 	if err != nil {
-		return nil, 0, 0, err
+		return loadInboxSnapshotResult{}, err
 	}
 	if allMessages == nil {
 		allMessages = make([]*mail.Message, 0)
@@ -128,9 +134,9 @@ func loadInboxSnapshot(mailbox inboxLister, unreadOnly bool) ([]*mail.Message, i
 
 	total, unread := countInboxMessages(allMessages)
 	if unreadOnly {
-		return filterUnreadMessages(allMessages), total, unread, nil
+		return loadInboxSnapshotResult{messages: filterUnreadMessages(allMessages), total: total, unread: unread}, nil
 	}
-	return allMessages, total, unread, nil
+	return loadInboxSnapshotResult{messages: allMessages, total: total, unread: unread}, nil
 }
 
 func countInboxMessages(messages []*mail.Message) (total, unread int) {
