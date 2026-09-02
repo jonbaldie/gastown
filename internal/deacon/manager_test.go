@@ -82,6 +82,7 @@ func newTestManager(townRoot string, mock *mockTmux) *Manager {
 	return &Manager{
 		townRoot: townRoot,
 		tmux:     mock,
+		sleep:    func(time.Duration) {},
 	}
 }
 
@@ -240,6 +241,21 @@ func TestStart_SuccessStartsNudgePoller(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("startPoller calls = %d, want 1", calls)
+	}
+}
+
+func TestStart_WaitsForRuntimePrompt(t *testing.T) {
+	m := newTestManager(t.TempDir(), &mockTmux{})
+	var slept time.Duration
+	m.sleep = func(delay time.Duration) {
+		slept = delay
+	}
+
+	if err := m.Start("claude"); err != nil {
+		t.Fatalf("Start() error = %v, want nil", err)
+	}
+	if slept != constants.ShutdownNotifyDelay {
+		t.Errorf("Start() sleep = %v, want %v", slept, constants.ShutdownNotifyDelay)
 	}
 }
 

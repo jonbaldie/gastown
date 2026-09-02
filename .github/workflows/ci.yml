@@ -195,6 +195,11 @@ jobs:
       - name: Install ICU4C development headers
         run: sudo apt-get install -y libicu-dev
 
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@gastown.test"
+
       - name: Fetch PR base
         run: >-
           git fetch --no-tags origin
