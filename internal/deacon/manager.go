@@ -116,6 +116,9 @@ func (m *Manager) start(agentOverride string) error {
 		Theme:         theme,
 		AgentName:     "Deacon",
 	}); err != nil {
+		if errors.Is(err, session.ErrSessionAlive) {
+			return ErrAlreadyRunning
+		}
 		return err
 	}
 

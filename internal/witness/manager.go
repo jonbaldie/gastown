@@ -159,6 +159,9 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 		Instructions:     "Run `gt prime --hook` and begin patrol.",
 	})
 	if err != nil {
+		if errors.Is(err, session.ErrSessionAlive) {
+			return ErrAlreadyRunning
+		}
 		return err
 	}
 
