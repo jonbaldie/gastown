@@ -76,10 +76,6 @@ type Work struct {
 	// Interactive marks an attended crew start. The role table then skips
 	// unattended waits and dialog dismissal.
 	Interactive bool
-
-	// SkipReady treats session creation as the ready state. Used by gt now so
-	// attach does not wait for a runtime prompt or the Cursor ready delay.
-	SkipReady bool
 }
 
 // StartResult contains the results of session startup.
@@ -176,7 +172,7 @@ func prepareSessionStart(s *sessionStart) error {
 	if err := ensureStartRuntimeFiles(s, settingsDir); err != nil {
 		return err
 	}
-	if s.work.RuntimeConfigDir != "" && !s.work.SkipReady {
+	if s.work.RuntimeConfigDir != "" {
 		if err := skills.ProvisionUserDir(s.work.RuntimeConfigDir); err != nil {
 			return fmt.Errorf("ensuring account skills: %w", err)
 		}
@@ -185,12 +181,6 @@ func prepareSessionStart(s *sessionStart) error {
 }
 
 func ensureStartRuntimeFiles(s *sessionStart, settingsDir string) error {
-	if s.work.SkipReady {
-		if err := runtime.EnsureHooksForRole(settingsDir, s.work.WorkDir, s.role, s.runtimeConfig); err != nil {
-			return fmt.Errorf("ensuring runtime hooks: %w", err)
-		}
-		return nil
-	}
 	if err := runtime.EnsureSettingsForRole(settingsDir, s.work.WorkDir, s.role, s.runtimeConfig); err != nil {
 		return fmt.Errorf("ensuring runtime settings: %w", err)
 	}
@@ -372,16 +362,7 @@ func activateSessionLogging(s *sessionStart) {
 	}
 }
 
-type sessionNoWait interface {
-	NewSessionWithCommandAndEnvNoWait(_, _, _ string, _ map[string]string) error
-}
-
 func startSessionCommand(tm TmuxOps, work Work, command string, envVars map[string]string) error {
-	if work.SkipReady {
-		if n, ok := tm.(sessionNoWait); ok {
-			return n.NewSessionWithCommandAndEnvNoWait(work.SessionID, work.WorkDir, command, envVars)
-		}
-	}
 	return tm.NewSessionWithCommandAndEnv(work.SessionID, work.WorkDir, command, envVars)
 }
 
