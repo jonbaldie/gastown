@@ -1008,28 +1008,16 @@ func (rc *RuntimeConfig) BuildNonInteractiveArgsWithPrompt(prompt string) []stri
 		if ni.PromptFlag != "" {
 			args = append(args, ni.PromptFlag, p)
 		} else {
-			// Fall back to per-command prompt flag (handles opencode --prompt,
-			// codex positional, etc.).
-			args = appendPromptArg(args, resolved.Command, p)
+			// No PromptFlag configured — the prompt is positional.
+			// This is correct for subcommands like "opencode run" and
+			// "codex exec" that take the message as a trailing argument.
+			args = append(args, p)
 		}
 	} else if p != "" {
 		fmt.Fprintf(os.Stderr, "warning: agent %q has prompt_mode: \"none\" — non-interactive prompt dropped\n", resolved.Command)
 	}
 
 	return args
-}
-
-// appendPromptArg adds the prompt to args using the per-command prompt flag.
-// Mirrors the switch in BuildArgsWithPrompt but operates on an existing slice.
-func appendPromptArg(args []string, command, prompt string) []string {
-	switch filepath.Base(command) {
-	case "opencode":
-		return append(args, "--prompt", prompt)
-	case "copilot", "gemini":
-		return append(args, "-i", prompt)
-	default:
-		return append(args, prompt)
-	}
 }
 
 func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {

@@ -21,20 +21,19 @@ func TestBuildNonInteractiveCommand(t *testing.T) {
 		wantNot []string // substrings that must NOT appear
 	}{
 		{
-			name: "opencode run --format json --prompt",
+			name: "opencode run --format json positional prompt",
 			rc: &RuntimeConfig{
 				Command: "opencode",
 				Args:    []string{},
 				PromptMode: "arg",
 				NonInteractive: &NonInteractiveConfig{
 					Subcommand: "run",
-					PromptFlag: "--prompt",
 					OutputFlag: "--format json",
 				},
 			},
 			prompt:  "say hello",
-			wantSub: []string{"opencode", "run", "--format", "json", "--prompt", "say hello"},
-			wantNot: nil,
+			wantSub: []string{"opencode", "run", "--format", "json", "say hello"},
+			wantNot: []string{"--prompt"},
 		},
 		{
 			name: "gemini --output-format json -p",
@@ -117,16 +116,15 @@ func TestBuildNonInteractiveArgsWithPrompt(t *testing.T) {
 
 	rc := &RuntimeConfig{
 		Command:    "opencode",
-		Args:       []string{},
+		Args:       []string{"-m", "ollama-cloud/gpt-oss:120b"},
 		PromptMode: "arg",
 		NonInteractive: &NonInteractiveConfig{
 			Subcommand: "run",
-			PromptFlag: "--prompt",
 			OutputFlag: "--format json",
 		},
 	}
 	got := rc.BuildNonInteractiveArgsWithPrompt("hello")
-	want := []string{"opencode", "run", "--format", "json", "--prompt", "hello"}
+	want := []string{"opencode", "-m", "ollama-cloud/gpt-oss:120b", "run", "--format", "json", "hello"}
 	if len(got) != len(want) {
 		t.Fatalf("got %d args %v, want %d args %v", len(got), got, len(want), want)
 	}
@@ -162,8 +160,9 @@ func TestApplyRuntimeNonInteractiveDefaults(t *testing.T) {
 	if rc.NonInteractive.OutputFlag != "--format json" {
 		t.Errorf("OutputFlag = %q, want %q", rc.NonInteractive.OutputFlag, "--format json")
 	}
-	if rc.NonInteractive.PromptFlag != "--prompt" {
-		t.Errorf("PromptFlag = %q, want %q", rc.NonInteractive.PromptFlag, "--prompt")
+	// opencode uses a positional prompt (no PromptFlag) for the "run" subcommand
+	if rc.NonInteractive.PromptFlag != "" {
+		t.Errorf("PromptFlag = %q, want empty (positional prompt for opencode run)", rc.NonInteractive.PromptFlag)
 	}
 
 	// Full resolution: applyRuntimePresetDefaults should also copy it.
@@ -211,18 +210,22 @@ func TestRuntimeConfigFromPresetCarriesNonInteractive(t *testing.T) {
 	if rc.NonInteractive.Subcommand != "run" {
 		t.Errorf("Subcommand = %q, want %q", rc.NonInteractive.Subcommand, "run")
 	}
-	if rc.NonInteractive.PromptFlag != "--prompt" {
-		t.Errorf("PromptFlag = %q, want %q", rc.NonInteractive.PromptFlag, "--prompt")
+	if rc.NonInteractive.PromptFlag != "" {
+		t.Errorf("PromptFlag = %q, want empty (positional for opencode run)", rc.NonInteractive.PromptFlag)
 	}
 	if rc.NonInteractive.OutputFlag != "--format json" {
 		t.Errorf("OutputFlag = %q, want %q", rc.NonInteractive.OutputFlag, "--format json")
 	}
 
-	// The full non-interactive command should include all three components.
+	// The full non-interactive command should include subcommand, output flag,
+	// and positional prompt — but NOT --prompt (that's for interactive mode).
 	cmd := rc.BuildNonInteractiveCommand("hello world")
-	for _, want := range []string{"opencode", "run", "--format", "json", "--prompt", "hello world"} {
+	for _, want := range []string{"opencode", "run", "--format", "json", "hello world"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("BuildNonInteractiveCommand via RuntimeConfigFromPreset = %q; missing %q", cmd, want)
 		}
+	}
+	if strings.Contains(cmd, "--prompt") {
+		t.Errorf("BuildNonInteractiveCommand via RuntimeConfigFromPreset = %q; should NOT contain --prompt (run subcommand uses positional prompt)", cmd)
 	}
 }

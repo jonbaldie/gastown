@@ -437,7 +437,6 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		},
 		NonInteractive: &NonInteractiveConfig{
 			Subcommand: "run",
-			PromptFlag: "--prompt",
 			OutputFlag: "--format json",
 		},
 		AgentRuntimeSettings: AgentRuntimeSettings{
