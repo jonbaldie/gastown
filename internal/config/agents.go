@@ -437,6 +437,7 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		},
 		NonInteractive: &NonInteractiveConfig{
 			Subcommand: "run",
+			PromptFlag: "--prompt",
 			OutputFlag: "--format json",
 		},
 		AgentRuntimeSettings: AgentRuntimeSettings{
@@ -918,6 +919,12 @@ func runtimeConfigFromAgentInfo(preset AgentPreset, info *AgentPresetInfo) *Runt
 		Command:  info.Command,
 		Args:     append([]string(nil), info.Args...),
 		Env:      envCopy,
+	}
+
+	// Copy NonInteractive so BuildNonInteractiveCommand works via this path too.
+	if info.NonInteractive != nil {
+		ni := *info.NonInteractive
+		rc.NonInteractive = &ni
 	}
 
 	if preset == AgentClaude && rc.Command == "claude" {

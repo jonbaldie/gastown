@@ -802,6 +802,13 @@ type RuntimeConfig struct {
 	// Produces: exec env VAR=val ... exitbox run --profile=gastown-polecat -- claude ...
 	ExecWrapper []string `json:"exec_wrapper,omitempty"`
 
+	// NonInteractive configures one-shot / headless agent execution.
+	// When set, BuildNonInteractiveCommand uses Subcommand, OutputFlag, and
+	// PromptFlag to produce a non-interactive invocation (e.g.
+	// "opencode run --format json --prompt <prompt>"). Copied from the
+	// agent preset by applyRuntimeNonInteractiveDefaults.
+	NonInteractive *NonInteractiveConfig `json:"non_interactive,omitempty"`
+
 	// ResolvedAgent is the agent name that was resolved during config lookup.
 	// Set by ResolveRoleAgentConfig / resolveAgentConfigInternal so that
 	// BuildStartupCommand can export GT_AGENT for process detection.
@@ -949,6 +956,82 @@ func (rc *RuntimeConfig) BuildArgsWithPrompt(prompt string) []string {
 	return args
 }
 
+// BuildNonInteractiveCommand returns the command line for non-interactive
+// (one-shot / headless) agent execution. It uses the NonInteractive config
+// (Subcommand, OutputFlag, PromptFlag) to build:
+//
+//	<command> [<subcommand>] [<outputFlag>...] [<promptFlag>] <prompt>
+//
+// When PromptFlag is empty, falls back to the per-command prompt flag logic
+// (mirrors BuildArgsWithPrompt). When NonInteractive is nil, falls back to
+// BuildCommandWithPrompt so interactive agents are unaffected.
+func (rc *RuntimeConfig) BuildNonInteractiveCommand(prompt string) string {
+	args := rc.BuildNonInteractiveArgsWithPrompt(prompt)
+	if len(args) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = ShellQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// BuildNonInteractiveArgsWithPrompt returns the arg vector for non-interactive
+// execution, suitable for exec.Command. See BuildNonInteractiveCommand for the
+// command shape.
+func (rc *RuntimeConfig) BuildNonInteractiveArgsWithPrompt(prompt string) []string {
+	resolved := normalizeRuntimeConfig(rc)
+
+	// No NonInteractive config — fall back to the interactive prompt builder
+	// so callers that ask for non-interactive on an agent without it still
+	// get a usable command.
+	if resolved.NonInteractive == nil {
+		return resolved.BuildArgsWithPrompt(prompt)
+	}
+
+	args := []string{resolved.Command}
+	args = append(args, resolved.Args...)
+
+	ni := resolved.NonInteractive
+	if ni.Subcommand != "" {
+		args = append(args, ni.Subcommand)
+	}
+	if ni.OutputFlag != "" {
+		// OutputFlag may contain multiple space-separated tokens (e.g.
+		// "--format json", "--output-format json"). Split into separate args.
+		args = append(args, strings.Fields(ni.OutputFlag)...)
+	}
+
+	p := resolvedPrompt(prompt, resolved.InitialPrompt)
+	if p != "" && resolved.PromptMode != "none" {
+		if ni.PromptFlag != "" {
+			args = append(args, ni.PromptFlag, p)
+		} else {
+			// Fall back to per-command prompt flag (handles opencode --prompt,
+			// codex positional, etc.).
+			args = appendPromptArg(args, resolved.Command, p)
+		}
+	} else if p != "" {
+		fmt.Fprintf(os.Stderr, "warning: agent %q has prompt_mode: \"none\" — non-interactive prompt dropped\n", resolved.Command)
+	}
+
+	return args
+}
+
+// appendPromptArg adds the prompt to args using the per-command prompt flag.
+// Mirrors the switch in BuildArgsWithPrompt but operates on an existing slice.
+func appendPromptArg(args []string, command, prompt string) []string {
+	switch filepath.Base(command) {
+	case "opencode":
+		return append(args, "--prompt", prompt)
+	case "copilot", "gemini":
+		return append(args, "-i", prompt)
+	default:
+		return append(args, prompt)
+	}
+}
+
 func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
 	if rc == nil {
 		rc = &RuntimeConfig{}
@@ -982,6 +1065,10 @@ func cloneNormalizedNestedConfigs(rc *RuntimeConfig) {
 	if rc.Instructions != nil {
 		i := *rc.Instructions
 		rc.Instructions = &i
+	}
+	if rc.NonInteractive != nil {
+		ni := *rc.NonInteractive
+		rc.NonInteractive = &ni
 	}
 }
 
