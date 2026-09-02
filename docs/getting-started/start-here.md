@@ -6,18 +6,21 @@ This guide walks you from zero to your first autonomous PR. It takes about 15 mi
 
 ---
 
-## Step 1 — Install `gt`
+## Step 1 — Install `gt` and `bd`
 
-Gas Town is a Go CLI called `gt`. Install it with:
+Gas Town is a Go CLI called `gt`. Beads is a CLI called `bd`. Install both with:
 
 ```bash
 go install github.com/jonbaldie/gastown/cmd/gt@latest
+go install github.com/jonbaldie/beads/cmd/bd@main
 ```
 
-You'll need the Go version listed in `go.mod` (or later). Verify the install:
+You'll need the Go version listed in `go.mod` (or later). A Town also uses **Dolt** as a separate program. On macOS: `brew install dolt`. Verify:
 
 ```bash
 gt --version
+bd version
+dolt version
 ```
 
 If `gt` isn't on your `PATH`, make sure `$(go env GOPATH)/bin` is included. On most systems:
@@ -58,7 +61,7 @@ cd ~/my-town
 
 ## What just happened
 
-You installed `gt`, the Gas Town CLI. Then you created a **Town** — the container that will hold your projects and the agents that work on them.
+You installed `gt` and `bd`. Dolt is a separate program a Town uses. Then you created a **Town** — the container that will hold your projects and the agents that work on them.
 
 Right now your Town is empty. No projects, no agents, no work. The next page adds an agent and your first project.
 

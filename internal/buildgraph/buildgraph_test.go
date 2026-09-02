@@ -43,6 +43,33 @@ func TestMatchingPrefixesEmptyWhenGraphIsClean(t *testing.T) {
 	}
 }
 
+func TestFirstRunDocsOmitCompilerFlag(t *testing.T) {
+	needle := "CGO_ENABLED=0 go install github.com/jonbaldie/gastown/cmd/gt"
+	wantGT := "go install github.com/jonbaldie/gastown/cmd/gt@latest"
+	wantBD := "go install github.com/jonbaldie/beads/cmd/bd@main"
+	for _, rel := range []string{
+		"docs/getting-started/start-here.md",
+		"README.md",
+		"docs/INSTALLING.md",
+		".goreleaser.yml",
+	} {
+		body, err := os.ReadFile(filepath.Join(moduleRoot(t), rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		text := string(body)
+		if strings.Contains(text, needle) {
+			t.Errorf("%s still teaches a compiler flag on go install gt", rel)
+		}
+		if !strings.Contains(text, wantGT) {
+			t.Errorf("%s missing %q", rel, wantGT)
+		}
+		if rel != ".goreleaser.yml" && !strings.Contains(text, wantBD) {
+			t.Errorf("%s missing %q", rel, wantBD)
+		}
+	}
+}
+
 func TestMakeDefaultsCGOOff(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -68,10 +95,10 @@ func TestCmdGTWithoutCGOOmitsForbiddenDeps(t *testing.T) {
 	}
 }
 
-func TestCmdGTWithCGOPullsEmbeddedDolt(t *testing.T) {
+func TestCmdGTWithCGOOmitsForbiddenDeps(t *testing.T) {
 	deps := listDeps(t, "1", "./cmd/gt")
-	if MatchingPrefixes(deps, []string{"github.com/jonbaldie/beads/internal/storage/embeddeddolt"}) == nil {
-		t.Fatal("CGO_ENABLED=1 ./cmd/gt should import beads embeddeddolt; that is the compile tax CGO_ENABLED=0 removes")
+	if hits := MatchingPrefixes(deps, ProductionForbiddenPrefixes); len(hits) != 0 {
+		t.Fatalf("CGO_ENABLED=1 ./cmd/gt still compiles forbidden packages:\n%s", strings.Join(hits, "\n"))
 	}
 }
 

@@ -13,7 +13,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/gofrs/flock v0.13.0
 	github.com/google/uuid v1.6.0
-	github.com/jonbaldie/beads v1.2.2-0.20260817230026-3e7110daa8e3
+	github.com/jonbaldie/beads v1.2.4-0.20260902135426-e803774b6cea
 	github.com/muesli/termenv v0.16.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1

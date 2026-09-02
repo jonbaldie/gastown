@@ -8,8 +8,9 @@ package buildgraph
 
 import "strings"
 
-// ProductionForbiddenPrefixes must not appear in the CGO-disabled ./cmd/gt
-// dependency graph. Each prefix is a known compile-time cliff:
+// ProductionForbiddenPrefixes must not appear in the default ./cmd/gt
+// dependency graph, including CGO_ENABLED=1 (the go install default when a
+// C compiler is present). Each prefix is a known compile-time cliff:
 //
 //   - github.com/dolthub/ is the embedded Dolt engine (and its cloud SDKs)
 //   - github.com/testcontainers/ is the Docker test harness
