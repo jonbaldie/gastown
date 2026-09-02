@@ -339,6 +339,15 @@ func worktreePathWithinTown(townRootAbs, worktreeAbs, townRoot, worktreePath str
 
 func (l redirectLocation) upPath() string { return strings.Repeat("../", len(l.parts)-1) }
 
+// upToRig climbs from the worktree to the Rig that owns shared beads.
+// When the Town root is the Rig, that is one level above parts[0].
+func (l redirectLocation) upToRig() string {
+	if redirectRigRoot(l) == l.townRoot {
+		return strings.Repeat("../", len(l.parts))
+	}
+	return l.upPath()
+}
+
 type redirectPaths struct {
 	townBeads  string
 	rigBeads   string
@@ -346,7 +355,7 @@ type redirectPaths struct {
 }
 
 func newRedirectPaths(location redirectLocation) redirectPaths {
-	rigRoot := filepath.Join(location.townRoot, location.parts[0])
+	rigRoot := redirectRigRoot(location)
 	return redirectPaths{
 		townBeads:  filepath.Join(location.townRoot, ".beads"),
 		rigBeads:   filepath.Join(rigRoot, ".beads"),
@@ -354,11 +363,43 @@ func newRedirectPaths(location redirectLocation) redirectPaths {
 	}
 }
 
+// redirectRigRoot returns the Rig directory that owns shared beads.
+//
+// The usual Town layout is town/<rig>/polecats|crew|refinery/.... When
+// workspace.Find matches the Rig itself (mayor/ is a secondary Town
+// marker), townRoot is the Rig and the first path component is the
+// worktree kind. Prefer a nested Rig that already has beads; otherwise
+// treat townRoot as the Rig when the first component is a worktree kind.
+func redirectRigRoot(location redirectLocation) string {
+	nested := filepath.Join(location.townRoot, location.parts[0])
+	if rigHasBeadsLocation(nested) {
+		return nested
+	}
+	if isWorktreeContainer(location.parts[0]) && rigHasBeadsLocation(location.townRoot) {
+		return location.townRoot
+	}
+	return nested
+}
+
+func rigHasBeadsLocation(root string) bool {
+	return pathExists(filepath.Join(root, ".beads")) ||
+		pathExists(filepath.Join(root, "mayor", "rig", ".beads"))
+}
+
+func isWorktreeContainer(name string) bool {
+	switch name {
+	case "polecats", "crew", "refinery", "witness":
+		return true
+	default:
+		return false
+	}
+}
+
 func ownRigRedirectTarget(location redirectLocation, paths redirectPaths) string {
-	if target, ok := directRigRedirectTarget(location.upPath(), filepath.Join(paths.rigBeads, "redirect")); ok {
+	if target, ok := directRigRedirectTarget(location.upToRig(), filepath.Join(paths.rigBeads, "redirect")); ok {
 		return target
 	}
-	return location.upPath() + ".beads"
+	return location.upToRig() + ".beads"
 }
 
 func townHasBeadsDatabase(townBeadsPath string) bool {
@@ -383,7 +424,7 @@ func fallbackRedirectTarget(location redirectLocation, paths redirectPaths) (str
 	rigHasDatabase := pathExists(filepath.Join(paths.rigBeads, "dolt")) || redirectFileExists(paths.rigBeads)
 	if !rigBeadsExists || !rigHasDatabase {
 		if _, err := os.Stat(paths.mayorBeads); !os.IsNotExist(err) {
-			return location.upPath() + "mayor/rig/.beads", nil
+			return location.upToRig() + "mayor/rig/.beads", nil
 		}
 		if !rigBeadsExists {
 			return "", fmt.Errorf("no beads found at %s, %s, or %s", paths.townBeads, paths.rigBeads, paths.mayorBeads)
@@ -444,17 +485,15 @@ func warnMayorFallback(townRoot, worktreePath, redirectPath string) {
 	if !strings.Contains(redirectPath, "mayor/rig/.beads") {
 		return
 	}
-	relPath, _ := filepath.Rel(townRoot, worktreePath)
-	parts := strings.Split(filepath.ToSlash(relPath), "/")
-	rigRoot := filepath.Join(townRoot, parts[0])
-	rigRedirectPath := filepath.Join(rigRoot, ".beads", "redirect")
-	if _, err := os.Stat(rigRedirectPath); !os.IsNotExist(err) {
+	location, err := redirectWorktreeLocation(townRoot, worktreePath)
+	if err != nil {
 		return
 	}
-	// No redirect file — this is an unexpected fallback.
-	rigBeadsPath := filepath.Join(rigRoot, ".beads")
-	mayorBeadsPath := filepath.Join(rigRoot, "mayor", "rig", ".beads")
-	fmt.Fprintf(os.Stderr, "Warning: rig .beads not found at %s, using %s\n", rigBeadsPath, mayorBeadsPath)
+	paths := newRedirectPaths(location)
+	if _, err := os.Stat(filepath.Join(paths.rigBeads, "redirect")); !os.IsNotExist(err) {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Warning: rig .beads not found at %s, using %s\n", paths.rigBeads, paths.mayorBeads)
 	fmt.Fprintf(os.Stderr, "  Run 'bd doctor' to fix rig beads configuration\n")
 }
 

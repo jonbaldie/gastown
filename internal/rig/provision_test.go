@@ -127,3 +127,76 @@ func TestProvision_MissingBeadsStillCompletes(t *testing.T) {
 		t.Fatalf("expected local exclude after missing-beads provision: %v", err)
 	}
 }
+
+func TestProvision_RigAsTownRedirectsPrimeMD(t *testing.T) {
+	rigDir := t.TempDir()
+	mayorBeads := filepath.Join(rigDir, "mayor", "rig", ".beads")
+	workDir := filepath.Join(rigDir, "polecats", "toast", filepath.Base(rigDir))
+	if err := os.MkdirAll(filepath.Join(rigDir, ".beads"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rigDir, ".beads", "redirect"), []byte("mayor/rig/.beads\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mayorBeads, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	initGitWorktree(t, workDir)
+
+	if err := Provision(rigDir, workDir, "polecat"); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(workDir, ".beads", "PRIME.md")); err == nil {
+		t.Fatal("PRIME.md must not be created in the worktree")
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".beads", "redirect")); err != nil {
+		t.Fatalf("worktree redirect missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mayorBeads, "PRIME.md")); err != nil {
+		t.Fatalf("PRIME.md missing at mayor/rig/.beads: %v", err)
+	}
+}
+
+func TestProvision_NestedTownRedirectsPrimeMD(t *testing.T) {
+	town := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(town, "mayor", "town.json"), []byte(`{"name":"test-town"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rigDir := filepath.Join(town, "wyvern")
+	mayorBeads := filepath.Join(rigDir, "mayor", "rig", ".beads")
+	workDir := filepath.Join(rigDir, "polecats", "toast", "wyvern")
+	if err := os.MkdirAll(filepath.Join(rigDir, ".beads"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rigDir, ".beads", "redirect"), []byte("mayor/rig/.beads\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mayorBeads, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	initGitWorktree(t, workDir)
+
+	if err := Provision(rigDir, workDir, "polecat"); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(workDir, ".beads", "PRIME.md")); err == nil {
+		t.Fatal("PRIME.md must not be created in the worktree")
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".beads", "redirect")); err != nil {
+		t.Fatalf("worktree redirect missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mayorBeads, "PRIME.md")); err != nil {
+		t.Fatalf("PRIME.md missing at mayor/rig/.beads: %v", err)
+	}
+}
