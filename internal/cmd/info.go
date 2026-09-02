@@ -75,6 +75,15 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.3.8",
+		Date:    "2026-09-02",
+		Changes: []string{
+			"NEW: gt hint — first-run reminder for Claude, OpenCode, and mixing the Mayor with a different agent.",
+			"FIX: documented go install of gt and bd no longer compiles the in-process Dolt engine; Dolt stays a separate program.",
+			"REMOVED: gt now — create a Town with gt install or gt from, then gt up.",
+		},
+	},
+	{
 		Version: "1.2.1",
 		Date:    "2026-06-06",
 		Changes: []string{
