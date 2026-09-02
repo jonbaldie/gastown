@@ -1,0 +1,20 @@
+name: Check doc links
+
+on:
+  pull_request:
+    paths:
+      - "docs/getting-started/**"
+  push:
+    branches: [main]
+    paths:
+      - "docs/getting-started/**"
+
+jobs:
+  link-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress docs/getting-started/
+          fail: true

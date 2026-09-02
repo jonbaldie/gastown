@@ -378,5 +378,5 @@ stories S-01 through S-18, all DONE). Remaining future work:
 ## Related
 
 - [convoy.md](../../concepts/convoy.md) - Convoy concept and usage
-- [watchdog-chain.md](../watchdog-chain.md) - Daemon/boot/deacon watchdog chain
+- [dog-infrastructure.md](../dog-infrastructure.md) - Daemon/boot/deacon watchdog chain
 - [mail-protocol.md](../mail-protocol.md) - Notification delivery
