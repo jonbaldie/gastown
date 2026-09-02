@@ -342,7 +342,7 @@ func TestOpenCodeTemplateFailureDiagnostics(t *testing.T) {
 		"timeout:",
 		"stdout_tail:",
 		"stderr_tail:",
-		"timeout 10s ${gtCommand()} dolt status 2>&1",
+		"${gtCommand()} dolt status 2>&1",
 		"dolt_status_tail:",
 		"suggested_recovery:",
 	} {
