@@ -57,6 +57,8 @@ Move into your Town:
 cd ~/my-town
 ```
 
+Stuck on the next commands? Run `gt hint` for a short Claude and OpenCode reminder.
+
 ---
 
 ## What just happened

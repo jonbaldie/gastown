@@ -63,6 +63,7 @@ var beadsExemptCommands = map[string]bool{
 	"scheduler":     true,
 	"config":        true,
 	"install":       true,
+	"hint":          true,
 	"from":          true,
 	"tap":           true,
 	"dnd":           true,
@@ -89,6 +90,7 @@ var branchCheckExemptCommands = map[string]bool{
 	"estop":       true, // Emergency stop must always work
 	"thaw":        true, // Thaw must always work
 	"install":     true, // Initial setup
+	"hint":        true, // Getting-started reminder; no Town required
 	"from":        true, // Create a Town from local repositories
 	"git-init":    true, // Git setup
 	"upgrade":     true, // Post-install migration

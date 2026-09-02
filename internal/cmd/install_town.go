@@ -459,6 +459,8 @@ func printInstallSuccess(opts installTownOptions) {
 	}
 	fmt.Printf("  %d. Add a rig: %s\n", step, style.Dim.Render("gt rig add <name> <git-url>"))
 	step++
+	fmt.Printf("  %d. Reminders for Claude and OpenCode: %s\n", step, style.Dim.Render("gt hint"))
+	step++
 	fmt.Printf("  %d. (Optional) Configure agents: %s\n", step, style.Dim.Render("gt config agent list"))
 	step++
 	fmt.Printf("  %d. Enter the Mayor's office: %s\n", step, style.Dim.Render("gt mayor attach"))
